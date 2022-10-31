@@ -31,7 +31,10 @@ impl GameState {
     }
 
     pub fn get_player_unsafe(&self, id: PlayerID) -> &FieldedPlayer {
-        &self.fielded_players[id]
+        match &self.fielded_players[id] {
+            Some(player) => &player, 
+            None => panic!(), 
+        }
     }
 
     pub fn get_adj_positions(&self, p: Position) -> impl Iterator<Item=Position> {
@@ -47,7 +50,10 @@ impl GameState {
     } 
     
     pub fn get_mut_player_unsafe(&mut self, id: PlayerID) -> &mut FieldedPlayer {
-        &mut self.fielded_players[id]
+        match &mut self.fielded_players[id] {
+            Some(player) => player, 
+            None => panic!(), 
+        }
     }
 
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position){
@@ -57,5 +63,31 @@ impl GameState {
         self.board[old_x][old_y] = None; 
         self.get_mut_player_unsafe(id).position = new_pos; 
         self.board[new_x][new_y] = Some(id); 
+    }
+
+    pub fn field_player(&mut self, player_stats: PlayerStats, position: Position) -> PlayerID {
+
+        let (new_x, new_y) = position.to_usize(); 
+        if self.board[new_x][new_y].is_some() {panic!();}
+        
+        let (id, _) = self.fielded_players.iter().enumerate()
+                                .filter(|(_, player)| player.is_none())
+                                .next().unwrap(); 
+
+        self.board[new_x][new_y] = Some(id); 
+        self.fielded_players[id] = Some(FieldedPlayer{ id, stats: player_stats, position, status: PlayerStatus::Up, used: false, moves: 0 });
+        id
+    }
+
+    pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) -> () {
+
+        let player = self.get_player_unsafe(id); 
+        let (x, y) = player.position.to_usize(); 
+
+        let dugout_player = DugoutPlayer{ stats: player.stats, place, }; 
+        self.dugout_players.push(dugout_player); 
+
+        self.board[x][y] = None; 
+        self.fielded_players[id] = None; 
     }
 } 

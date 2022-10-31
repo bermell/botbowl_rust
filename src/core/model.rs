@@ -33,17 +33,6 @@ pub struct ActionChoice{
     positions: Option<Vec<Position>>, 
 }
 
-#[derive(Debug)]
-pub enum PlayerPlace{
-    OnPitch(Position, PlayerStatus), 
-    //InAir(Position), 
-    ReservesBox,
-    KnockOutBox, 
-    InjuriedBox,
-    Ejected,
-    Heated, 
-}
-
 #[derive(Debug, PartialEq)]
 pub enum PlayerStatus{
     Up, 
@@ -51,7 +40,7 @@ pub enum PlayerStatus{
     Stunned, 
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PlayerStats{
     pub str_: u8, 
     pub ma: u8, 
@@ -64,9 +53,22 @@ pub struct PlayerStats{
 }
 impl PlayerStats{
     pub fn new(team: TeamType) -> PlayerStats {
-        
         PlayerStats { str_: 3, ma: 6, ag: 3, av: 8, team}
     }
+}
+
+#[derive(Debug)]
+pub enum DogoutPlace {
+    Reserves, 
+    Heated,
+    KnockOut, 
+    Injuried, 
+    Ejected, 
+}
+
+pub struct DugoutPlayer{
+    pub stats: PlayerStats, 
+    pub place: DogoutPlace, 
 }
 
 #[derive(Debug)]
@@ -91,7 +93,7 @@ pub struct FieldedPlayer{
     //has_blocked: bool
 }
 impl FieldedPlayer {
-    fn new() -> FieldedPlayer {
+    pub fn new() -> FieldedPlayer {
         FieldedPlayer { stats: PlayerStats::new( TeamType::Home), 
                         position: Position { x: 66, y: 66 }, 
                         status: PlayerStatus::Stunned,
@@ -103,9 +105,6 @@ impl FieldedPlayer {
 
 
 pub struct TeamState {
-    pub reserves: Vec<PlayerStats>, 
-    pub kos: Vec<PlayerStats>, 
-    pub casualties: Vec<PlayerStats>,  
     bribes: u8, 
     //babes: u8, 
     //apothecaries: u8,
@@ -123,7 +122,7 @@ pub struct TeamState {
 }
 impl TeamState {
     fn new() -> TeamState {
-        TeamState { reserves: Vec::new(), kos: Vec::new(), casualties: Vec::new() , bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
+        TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
 }
 
@@ -151,7 +150,8 @@ pub enum Weather{
 pub struct GameState {
     pub home: TeamState, 
     pub away: TeamState,
-    pub fielded_players: Vec<FieldedPlayer>,  
+    pub fielded_players: [Option<FieldedPlayer>; 22],  
+    pub dugout_players: Vec<DugoutPlayer>, 
     pub board: [[Option<PlayerID>; HEIGHT]; WIDTH], 
     pub ball: BallState, 
     pub stack: Vec<Box<dyn Procedure>>, 
@@ -204,10 +204,7 @@ impl GameStateBuilder {
     pub fn build(&mut self) -> GameState {
                 
         let mut board = [[None; HEIGHT]; WIDTH]; 
-        let mut fielded_players: Vec<FieldedPlayer> = Vec::new(); 
-        for _ in 0..22 {
-            fielded_players.push(FieldedPlayer::new()); 
-        }
+        let mut fielded_players: [Option<FieldedPlayer>; 22] = Default::default(); 
 
         let mut add_players = | positions: &[Position], team: TeamType | {
             let mut id: PlayerID = match team {
@@ -222,7 +219,7 @@ impl GameStateBuilder {
                 let player = FieldedPlayer{position: *position, stats, status: PlayerStatus::Up, used: false, id, moves: 0 }; 
                
                 board[usize::try_from(position.x).unwrap()][usize::try_from(position.y).unwrap()] = Some(id); 
-                fielded_players[id] = player; 
+                fielded_players[id] = Some(player); 
                 
                 id += 1; 
             }
@@ -241,7 +238,8 @@ impl GameStateBuilder {
             half: 1, 
             turn: 1,
             active_player: None, 
-            game_over: false, 
+            game_over: false,
+            dugout_players: Vec::new(), 
         }; 
         
         if let Some(pos) = self.ball_pos {
