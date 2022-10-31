@@ -1,0 +1,61 @@
+use core::panic;
+
+use crate::core::model; 
+
+use model::*; 
+
+#[derive(Debug)]
+pub struct Tomato{}
+
+const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
+
+
+impl GameState {
+    pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
+        self.get_player_id_at_coord(p.x, p.y)
+    } 
+    pub fn get_player_at(&self, p: Position) -> Option<&FieldedPlayer> {
+        self.get_player_at_coord(p.x, p.y)
+    }
+    
+    pub fn get_player_id_at_coord(&self, x: Coord, y: Coord) -> Option<PlayerID> {
+        let xx = usize::try_from(x).unwrap(); 
+        let yy = usize::try_from(y).unwrap(); 
+        self.board[xx][yy]
+    } 
+    pub fn get_player_at_coord(&self, x: Coord, y: Coord) -> Option<&FieldedPlayer> {
+        match self.get_player_id_at_coord(x, y){
+            None => None, 
+            Some(id) => Some(self.get_player_unsafe(id)),
+        }
+    }
+
+    pub fn get_player_unsafe(&self, id: PlayerID) -> &FieldedPlayer {
+        &self.fielded_players[id]
+    }
+
+    pub fn get_adj_positions(&self, p: Position) -> impl Iterator<Item=Position> {
+        match p {
+            Position{x, ..} if x == 0 || x >= WIDTH_ => panic!(), 
+            Position{y, ..} if y == 0 || y >= HEIGHT_ => panic!(), 
+            Position{x, y} => DIRECTIONS.iter().map(move |(dx, dy)| Position{x: x+dx, y: y+dy}), 
+        }
+    } 
+
+    pub fn get_adj_players(&self, p: Position) -> impl Iterator<Item=&FieldedPlayer> + '_ {
+        self.get_adj_positions(p).filter_map(|adj_pos|self.get_player_at(adj_pos))
+    } 
+    
+    pub fn get_mut_player_unsafe(&mut self, id: PlayerID) -> &mut FieldedPlayer {
+        &mut self.fielded_players[id]
+    }
+
+    pub fn move_player(&mut self, id: PlayerID, new_pos: Position){
+        let (old_x, old_y) = self.get_player_unsafe(id).position.to_usize(); 
+        let (new_x, new_y) = new_pos.to_usize(); 
+        if self.board[new_x][new_y].is_some() {panic!();}
+        self.board[old_x][old_y] = None; 
+        self.get_mut_player_unsafe(id).position = new_pos; 
+        self.board[new_x][new_y] = Some(id); 
+    }
+} 
