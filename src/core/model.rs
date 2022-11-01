@@ -140,14 +140,19 @@ pub enum Weather{
     Sweltering,
 }
 
+pub struct Path{
+    steps: Vec<Position>, 
+    prop: f32, 
+}
+
 pub struct GameState {
     pub home: TeamState, 
     pub away: TeamState,
     pub fielded_players: [Option<FieldedPlayer>; 22],  
     pub dugout_players: Vec<DugoutPlayer>, 
-    pub board: [[Option<PlayerID>; HEIGHT]; WIDTH], 
+    pub board: [[Option<PlayerID>; HEIGHT]; WIDTH],
+    pub paths: [[Option<Path>; HEIGHT]; WIDTH],  
     pub ball: BallState, 
-    pub stack: Vec<Box<dyn Procedure>>, 
     pub half: u8, 
     pub turn: u8,
     pub active_player: Option<PlayerID>,  
@@ -230,7 +235,6 @@ impl GameStateBuilder {
             away: TeamState::new(), 
             board, 
             ball: BallState::OffPitch,
-            stack: Vec::new(), 
             half: 1, 
             turn: 1,
             active_player: None, 
@@ -238,7 +242,8 @@ impl GameStateBuilder {
             dugout_players: Vec::new(), 
             proc_stack: Vec::new(), 
             new_procs: VecDeque::new(), 
-            available_actions: Vec::new(), 
+            available_actions: Vec::new(),
+            paths: Default::default(), 
             }; 
             
             if let Some(pos) = self.ball_pos {
