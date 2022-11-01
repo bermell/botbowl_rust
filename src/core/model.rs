@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::core::table; 
 
 pub type PlayerID = usize; 
@@ -23,7 +25,7 @@ impl Position{
 }
 
 
-pub enum Actoin {
+pub enum Action {
     Positional(table::PosAT, Position),
     Simple(table::SimpleAT), 
 }
@@ -150,13 +152,16 @@ pub struct GameState {
     pub turn: u8,
     pub active_player: Option<PlayerID>,  
     pub game_over: bool, 
+    pub proc_stack: Vec<Box<dyn Procedure>>, //shouldn't be pub
+    pub new_procs: VecDeque<Box<dyn Procedure>>, //shouldn't be pub
+    pub available_actions: Vec<ActionChoice>, 
     //rerolled_procs: ???? //TODO!!! 
 
 }
 
 pub trait Procedure {
     fn start(&self, g: &GameState) {}
-    fn step(&self, g: &mut GameState) -> bool; 
+    fn step(&self, g: &mut GameState, action: Option<Action>) -> bool; 
     fn end(&self, g: &mut GameState) {}
     fn available_actions(&self, g: &mut GameState) -> Vec<ActionChoice> {Vec::new()}
 }
@@ -231,9 +236,12 @@ impl GameStateBuilder {
             active_player: None, 
             game_over: false,
             dugout_players: Vec::new(), 
-        }; 
-        
-        if let Some(pos) = self.ball_pos {
+            proc_stack: Vec::new(), 
+            new_procs: VecDeque::new(), 
+            available_actions: Vec::new(), 
+            }; 
+            
+            if let Some(pos) = self.ball_pos {
             state.ball = match state.get_player_at(pos) {
                 None => BallState::OnGround(pos), 
                 Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id), 

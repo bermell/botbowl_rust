@@ -90,4 +90,39 @@ impl GameState {
         self.board[x][y] = None; 
         self.fielded_players[id] = None; 
     }
+
+    pub fn push_proc(&mut self, proc: Box<dyn Procedure>) {
+        self.new_procs.push_back(proc); 
+    }
+    
+    pub fn step(&mut self, action: Action) {
+        let mut top_proc = self.proc_stack.pop().unwrap(); 
+        let mut done = top_proc.step(self, Some(action)); 
+        
+        //todo: Check that action is allowed. 
+        loop {
+            if self.game_over {
+                break;
+            }
+            top_proc = match (self.new_procs.pop_back(), done) {
+                (Some(new_top_proc), true) => {new_top_proc}
+                (Some(new_top_proc), false) => {self.proc_stack.push(top_proc); new_top_proc}
+                (None, true) => {self.proc_stack.pop().unwrap()}
+                (None, false) => {top_proc}
+            };
+            
+            while let Some(new_proc) = self.new_procs.pop_front() {
+                self.proc_stack.push(new_proc); 
+            }
+            
+            self.available_actions = top_proc.available_actions(self); 
+            if !self.available_actions.is_empty() {
+                break;
+            }
+
+            done = top_proc.step(self, None ); 
+        }
+
+
+    }
 } 
