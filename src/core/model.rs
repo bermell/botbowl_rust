@@ -8,7 +8,7 @@ pub const WIDTH_: Coord = 26;
 pub const HEIGHT: usize = 17;
 pub const HEIGHT_: Coord = 17; 
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Position {
     pub x: Coord, 
     pub y: Coord, 
@@ -33,7 +33,7 @@ pub struct ActionChoice{
     positions: Option<Vec<Position>>, 
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PlayerStatus{
     Up, 
     Down, 
@@ -92,37 +92,28 @@ pub struct FieldedPlayer{
     //squares_moved: List['Square'] //might need this
     //has_blocked: bool
 }
-impl FieldedPlayer {
-    pub fn new() -> FieldedPlayer {
-        FieldedPlayer { stats: PlayerStats::new( TeamType::Home), 
-                        position: Position { x: 66, y: 66 }, 
-                        status: PlayerStatus::Stunned,
-                        used: false,
-                        id: 66,
-                        moves: 0, }
-    }
-}
 
-
+#[derive(Debug, Clone, Copy)]
 pub struct TeamState {
-    bribes: u8, 
+    //bribes: u8, 
     //babes: u8, 
     //apothecaries: u8,
     //wizard_available: bool,
     //masterchef: bool,
-    score: u8,
-    turn: u8,
-    rerolls_start: u8,
-    rerolls: u8,
+    //score: u8,
+    //turn: u8,
+    //rerolls_start: u8,
+    //rerolls: u8,
     //ass_coaches: u8,
     //cheerleaders: u8,
-    fame: u8,
-    reroll_used: bool,
+    //fame: u8,
+    //reroll_used: bool,
     //time_violation: u8,
 }
 impl TeamState {
     fn new() -> TeamState {
-        TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
+        TeamState {  }       
+        //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
 }
 
@@ -164,9 +155,9 @@ pub struct GameState {
 }
 
 pub trait Procedure {
-    fn start(&self, g: &GameState) -> () {}
+    fn start(&self, g: &GameState) {}
     fn step(&self, g: &mut GameState) -> bool; 
-    fn end(&self, g: &mut GameState) -> () {}
+    fn end(&self, g: &mut GameState) {}
     fn available_actions(&self, g: &mut GameState) -> Vec<ActionChoice> {Vec::new()}
 }
 

@@ -35,11 +35,9 @@ mod tests {
         for x in 0..WIDTH_ {
             for y in 0..HEIGHT_ {
                 let pos = Position{x, y}; 
-                match state.get_player_at(pos) {
-                    Some(player) => {assert_eq!(player.position, pos); 
-                                     assert!(ids.insert(player.id)); 
-                                    }  
-                    _ => (), 
+                if let Some(player) = state.get_player_at(pos) {
+                    assert_eq!(player.position, pos); 
+                    assert!(ids.insert(player.id)); 
                 }
             }
         }
@@ -56,9 +54,10 @@ mod tests {
     #[test]
     fn mutate_player(){
         let mut state = standard_state(); 
-        assert_eq!(state.get_mut_player_unsafe(0).used, false); 
+
+        assert!(!state.get_mut_player_unsafe(0).used); 
         state.get_mut_player_unsafe(0).used = true; 
-        assert_eq!(state.get_mut_player_unsafe(0).used, true); 
+        assert!(state.get_mut_player_unsafe(0).used); 
     }
 
     #[test]
@@ -81,7 +80,7 @@ mod tests {
 
     #[test]
     fn draw_board(){
-        let state = standard_state(); 
+        let _state = standard_state(); 
         
         println!("This is in red: {}", Red.strikethrough().paint("a red string"));
         // use unique greek letter for each player, color blue and red for home and away
@@ -91,7 +90,7 @@ mod tests {
         // use  ▒▒▒▒ for unoccupied positions
     }
     #[test]
-    fn field_a_player() {
+    fn field_a_player() { 
         let mut state = standard_state(); 
         let player_stats = PlayerStats::new(TeamType::Home); 
         let position = Position{x: 10, y: 10}; 

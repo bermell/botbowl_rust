@@ -32,7 +32,7 @@ impl GameState {
 
     pub fn get_player_unsafe(&self, id: PlayerID) -> &FieldedPlayer {
         match &self.fielded_players[id] {
-            Some(player) => &player, 
+            Some(player) => player, 
             None => panic!(), 
         }
     }
@@ -71,15 +71,15 @@ impl GameState {
         if self.board[new_x][new_y].is_some() {panic!();}
         
         let (id, _) = self.fielded_players.iter().enumerate()
-                                .filter(|(_, player)| player.is_none())
-                                .next().unwrap(); 
+                                .find(|(_, player)| player.is_none())
+                                .unwrap(); 
 
         self.board[new_x][new_y] = Some(id); 
         self.fielded_players[id] = Some(FieldedPlayer{ id, stats: player_stats, position, status: PlayerStatus::Up, used: false, moves: 0 });
         id
     }
 
-    pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) -> () {
+    pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) {
 
         let player = self.get_player_unsafe(id); 
         let (x, y) = player.position.to_usize(); 
