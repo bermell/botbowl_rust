@@ -4,6 +4,7 @@ use crate::core::table;
 
 pub type PlayerID = usize; 
 pub type Coord = i8; 
+pub type FullPitch<T> = [[T; HEIGHT]; WIDTH]; 
 
 pub const WIDTH: usize = 26; 
 pub const WIDTH_: Coord = 26; 
@@ -150,8 +151,8 @@ pub struct GameState {
     pub away: TeamState,
     pub fielded_players: [Option<FieldedPlayer>; 22],  
     pub dugout_players: Vec<DugoutPlayer>, 
-    pub board: [[Option<PlayerID>; HEIGHT]; WIDTH],
-    pub paths: [[Option<Path>; HEIGHT]; WIDTH],  
+    pub board: FullPitch<Option<PlayerID>>, 
+    pub paths: FullPitch<Option<Path>>,
     pub ball: BallState, 
     pub half: u8, 
     pub turn: u8,
