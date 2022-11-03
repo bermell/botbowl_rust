@@ -56,9 +56,9 @@ mod tests {
     fn mutate_player(){
         let mut state = standard_state(); 
 
-        assert!(!state.get_mut_player_unsafe(0).used); 
-        state.get_mut_player_unsafe(0).used = true; 
-        assert!(state.get_mut_player_unsafe(0).used); 
+        assert!(!(state.get_player(0).unwrap().used)); 
+        state.get_mut_player(0).unwrap().used = true; 
+        assert!(state.get_player(0).unwrap().used); 
     }
 
     #[test]
@@ -69,14 +69,14 @@ mod tests {
         let new_pos = Position{x: 10, y: 10}; 
 
         assert_eq!(state.get_player_id_at(old_pos), Some(id)); 
-        assert_eq!(state.get_player_unsafe(id).unwrap().position, old_pos); 
+        assert_eq!(state.get_player(id).unwrap().position, old_pos); 
         assert!(state.get_player_id_at(new_pos).is_none()); 
 
         state.move_player(id, new_pos); 
 
         assert!(state.get_player_id_at(old_pos).is_none()); 
         assert_eq!(state.get_player_id_at(new_pos), Some(id)); 
-        assert_eq!(state.get_player_unsafe(id).unwrap().position, new_pos); 
+        assert_eq!(state.get_player(id).unwrap().position, new_pos); 
     }
 
     #[test]
@@ -101,7 +101,7 @@ mod tests {
         let id = state.field_player(player_stats, position).unwrap();  
        
         assert_eq!(state.get_player_id_at(position), Some(id)); 
-        assert_eq!(state.get_player_unsafe(id).unwrap().position, position); 
+        assert_eq!(state.get_player(id).unwrap().position, position); 
         
         state.unfield_player(id, DogoutPlace::Reserves); 
         
