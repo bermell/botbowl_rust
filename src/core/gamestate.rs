@@ -1,4 +1,5 @@
 use core::panic;
+use std::error;
 
 use crate::core::model; 
 
@@ -19,6 +20,7 @@ impl GameState {
     }
     
     pub fn get_player_id_at_coord(&self, x: Coord, y: Coord) -> Option<PlayerID> {
+        //unwrap is OK here because if you're requesting negative indicies, you want the program to crash!  
         let xx = usize::try_from(x).unwrap(); 
         let yy = usize::try_from(y).unwrap(); 
         self.board[xx][yy]
@@ -26,14 +28,15 @@ impl GameState {
     pub fn get_player_at_coord(&self, x: Coord, y: Coord) -> Option<&FieldedPlayer> {
         match self.get_player_id_at_coord(x, y){
             None => None, 
-            Some(id) => Some(self.get_player_unsafe(id)),
+            Some(id) => Some(self.get_player_unsafe(id).unwrap()), 
+            //above unwrap is safe for bad input. If it panics it's an interal logical error!  
         }
     }
 
-    pub fn get_player_unsafe(&self, id: PlayerID) -> &FieldedPlayer {
+    pub fn get_player_unsafe(&self, id: PlayerID) -> Result<&FieldedPlayer> {
         match &self.fielded_players[id] {
-            Some(player) => player, 
-            None => panic!(), 
+            Some(player) => Ok(player), 
+            None => Err(Box::new(InvalidPlayerId{id})), 
         }
     }
 
@@ -56,18 +59,19 @@ impl GameState {
         }
     }
 
-    pub fn move_player(&mut self, id: PlayerID, new_pos: Position){
-        let (old_x, old_y) = self.get_player_unsafe(id).position.to_usize(); 
-        let (new_x, new_y) = new_pos.to_usize(); 
+    pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()>{
+        let (old_x, old_y) = self.get_player_unsafe(id)?.position.to_usize()?; 
+        let (new_x, new_y) = new_pos.to_usize()?; 
         if self.board[new_x][new_y].is_some() {panic!();}
         self.board[old_x][old_y] = None; 
         self.get_mut_player_unsafe(id).position = new_pos; 
         self.board[new_x][new_y] = Some(id); 
+        Ok(())
     }
 
-    pub fn field_player(&mut self, player_stats: PlayerStats, position: Position) -> PlayerID {
+    pub fn field_player(&mut self, player_stats: PlayerStats, position: Position) -> Result<PlayerID> {
 
-        let (new_x, new_y) = position.to_usize(); 
+        let (new_x, new_y) = position.to_usize()?; 
         if self.board[new_x][new_y].is_some() {panic!();}
         
         let (id, _) = self.fielded_players.iter().enumerate()
@@ -76,27 +80,31 @@ impl GameState {
 
         self.board[new_x][new_y] = Some(id); 
         self.fielded_players[id] = Some(FieldedPlayer{ id, stats: player_stats, position, status: PlayerStatus::Up, used: false, moves: 0 });
-        id
+        Ok(id) 
     }
 
-    pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) {
+    pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) -> Result<()> {
 
-        let player = self.get_player_unsafe(id); 
-        let (x, y) = player.position.to_usize(); 
+        let player = self.get_player_unsafe(id)?; 
+        let (x, y) = player.position.to_usize()?; 
 
         let dugout_player = DugoutPlayer{ stats: player.stats, place, }; 
         self.dugout_players.push(dugout_player); 
 
         self.board[x][y] = None; 
         self.fielded_players[id] = None; 
+        Ok(())
     }
 
     pub fn push_proc(&mut self, proc: Box<dyn Procedure>) {
         self.new_procs.push_back(proc); 
     }
     
-    pub fn step(&mut self, action: Action) {
-        let mut top_proc = self.proc_stack.pop().unwrap(); 
+    pub fn step(&mut self, action: Action) -> Result<()> {
+        let mut top_proc = match self.proc_stack.pop() {
+            Some(proc) => proc, 
+            None => return Err(Box::new(InvalidPlayerId{id: 0})), 
+        };
         let mut done = top_proc.step(self, Some(action)); 
         
         //todo: Check that action is allowed. 
@@ -122,7 +130,7 @@ impl GameState {
 
             done = top_proc.step(self, None ); 
         }
-
+        Ok(())
 
     }
 } 

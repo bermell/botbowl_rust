@@ -11,17 +11,43 @@ pub const WIDTH_: Coord = 26;
 pub const HEIGHT: usize = 17;
 pub const HEIGHT_: Coord = 17; 
 
+use std::error;
+use std::fmt;
+
+// Change the alias to `Box<error::Error>`.
+pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
+
+#[derive(Debug, Clone)]
+pub struct InvalidPlayerId{
+    pub id: PlayerID, 
+}
+
+impl error::Error for InvalidPlayerId {
+    
+}
+
+impl fmt::Display for InvalidPlayerId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Not valid PlayerId: {}", self.id)
+    }
+}
+
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Position {
     pub x: Coord, 
     pub y: Coord, 
 }
 impl Position{
-    pub fn to_usize(&self) -> (usize, usize) {
-        (usize::try_from(self.x).unwrap(), usize::try_from(self.y).unwrap())
+    pub fn to_usize(&self) -> Result<(usize, usize)> {
+        let x: usize = usize::try_from(self.x)?;
+        let y: usize = usize::try_from(self.y)?; 
+        Ok((x, y))
     }
-    pub fn from_usize(x: usize, y: usize) -> Position {
-        Position { x: Coord::try_from(x).unwrap(), y: Coord::try_from(y).unwrap() }
+    pub fn from_usize(x: usize, y: usize) -> Result<Position> {
+        let x_: Coord = Coord::try_from(x)?; 
+        let y_: Coord = Coord::try_from(y)?; 
+        Ok(Position{x: x_, y: y_} )
     }
 }
 
@@ -205,36 +231,11 @@ impl GameStateBuilder {
 
     pub fn build(&mut self) -> GameState {
                 
-        let mut board = [[None; HEIGHT]; WIDTH]; 
-        let mut fielded_players: [Option<FieldedPlayer>; 22] = Default::default(); 
-
-        let mut add_players = | positions: &[Position], team: TeamType | {
-            let mut id: PlayerID = match team {
-                TeamType::Home => 0, 
-                TeamType::Away => 11, 
-            }; 
-            for position in positions {
-                if board[usize::try_from(position.x).unwrap()][usize::try_from(position.y).unwrap()].is_some(){
-                    panic!(); 
-                }
-                let stats = PlayerStats::new(team); 
-                let player = FieldedPlayer{position: *position, stats, status: PlayerStatus::Up, used: false, id, moves: 0 }; 
-               
-                board[usize::try_from(position.x).unwrap()][usize::try_from(position.y).unwrap()] = Some(id); 
-                fielded_players[id] = Some(player); 
-                
-                id += 1; 
-            }
-        }; 
-
-        add_players(&self.home_players, TeamType::Home); 
-        add_players(&self.away_players, TeamType::Away); 
-
         let mut state = GameState {
-            fielded_players, 
+            fielded_players: Default::default(), 
             home: TeamState::new(), 
             away: TeamState::new(), 
-            board, 
+            board: Default::default(), 
             ball: BallState::OffPitch,
             half: 1, 
             turn: 1,
@@ -247,12 +248,23 @@ impl GameStateBuilder {
             paths: Default::default(), 
             }; 
             
-            if let Some(pos) = self.ball_pos {
-            state.ball = match state.get_player_at(pos) {
-                None => BallState::OnGround(pos), 
-                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id), 
-                _ => panic!(),
-            }
+        
+        for position in self.home_players.iter() {
+            let player_stats = PlayerStats::new(TeamType::Home); 
+            _ = state.field_player(player_stats, *position)
+        }
+
+        for position in self.away_players.iter() {
+            let player_stats = PlayerStats::new(TeamType::Away); 
+            _ = state.field_player(player_stats, *position)
+        }
+
+        if let Some(pos) = self.ball_pos {
+        state.ball = match state.get_player_at(pos) {
+            None => BallState::OnGround(pos), 
+            Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id), 
+            _ => panic!(),
+        }
         }
         
         state
