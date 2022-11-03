@@ -1,7 +1,7 @@
 use crate::core::model; 
 use model::*; 
 
-struct Turn; 
+pub struct Turn; 
 impl Procedure for Turn {
     fn step(&self, g: &mut GameState, action: Option<Action>) -> bool {
         todo!()
@@ -11,7 +11,7 @@ impl Procedure for Turn {
     }
 }
 
-struct MoveAction; 
+pub struct MoveAction; 
 impl Procedure for MoveAction {
     fn step(&self, g: &mut GameState, action: Option<Action>) -> bool {
         todo!()

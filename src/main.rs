@@ -1,4 +1,5 @@
 use crate::core::model::*; 
+use crate::core::table::*; 
 pub mod core;
 
 fn main() {
@@ -16,8 +17,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
-    use std::collections::HashSet;
-    use crate::core::model::{Position, GameStateBuilder, GameState, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace}; 
+    use std::collections::{HashSet, HashMap};
+    use crate::core::{model::{Position, GameStateBuilder, GameState, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice}, table::{AnyAT, PosAT}}; 
     use ansi_term::Colour::Red;
 
     fn standard_state() -> GameState {
@@ -68,14 +69,14 @@ mod tests {
         let new_pos = Position{x: 10, y: 10}; 
 
         assert_eq!(state.get_player_id_at(old_pos), Some(id)); 
-        assert_eq!(state.get_player_unsafe(id).position, old_pos); 
+        assert_eq!(state.get_player_unsafe(id).unwrap().position, old_pos); 
         assert!(state.get_player_id_at(new_pos).is_none()); 
 
         state.move_player(id, new_pos); 
 
         assert!(state.get_player_id_at(old_pos).is_none()); 
         assert_eq!(state.get_player_id_at(new_pos), Some(id)); 
-        assert_eq!(state.get_player_unsafe(id).position, new_pos); 
+        assert_eq!(state.get_player_unsafe(id).unwrap().position, new_pos); 
     }
 
     #[test]
@@ -97,15 +98,24 @@ mod tests {
         
         assert!(state.get_player_id_at(position).is_none()); 
         
-        let id = state.field_player(player_stats, position); 
+        let id = state.field_player(player_stats, position).unwrap();  
        
         assert_eq!(state.get_player_id_at(position), Some(id)); 
-        assert_eq!(state.get_player_unsafe(id).position, position); 
+        assert_eq!(state.get_player_unsafe(id).unwrap().position, position); 
         
         state.unfield_player(id, DogoutPlace::Reserves); 
         
         assert!(state.get_player_id_at(position).is_none()); 
-        
+    }
 
+    #[test]
+    fn start_move_action(){
+        let state = standard_state(); 
+        //let aa: HashMap<AnyAT, ActionChoice> = state.get_available_actions(); 
+        let aa: HashMap<AnyAT, ActionChoice> = HashMap::new(); 
+        match aa.get(&AnyAT::from(PosAT::StartMove)) {
+            Some(ac) => (), 
+            None => (), 
+        }
     }
 }
