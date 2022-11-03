@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use crate::core::table; 
@@ -13,6 +14,10 @@ pub const HEIGHT_: Coord = 17;
 
 use std::error;
 use std::fmt;
+
+use super::table::AnyAT;
+use super::table::PosAT;
+use super::table::SimpleAT;
 
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -57,10 +62,11 @@ pub enum Action {
     Simple(table::SimpleAT), 
 }
 
-pub struct ActionChoice{
-    action_type: table::AnyAT,
-    positions: Option<Vec<Position>>, 
+pub enum ActionChoice {
+    Positional(Vec<Position>),
+    Simple, 
 }
+
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PlayerStatus{
@@ -186,7 +192,7 @@ pub struct GameState {
     pub game_over: bool, 
     pub proc_stack: Vec<Box<dyn Procedure>>, //shouldn't be pub
     pub new_procs: VecDeque<Box<dyn Procedure>>, //shouldn't be pub
-    pub available_actions: Vec<ActionChoice>, 
+    pub available_actions: HashMap<AnyAT, ActionChoice>, 
     //rerolled_procs: ???? //TODO!!! 
 
 }
@@ -195,7 +201,7 @@ pub trait Procedure {
     fn start(&self, g: &GameState) {}
     fn step(&self, g: &mut GameState, action: Option<Action>) -> bool; 
     fn end(&self, g: &mut GameState) {}
-    fn available_actions(&self, g: &mut GameState) -> Vec<ActionChoice> {Vec::new()}
+    fn available_actions(&self, g: &mut GameState) -> HashMap<AnyAT, ActionChoice> {HashMap::new()}
 }
 
 pub struct GameStateBuilder {
@@ -244,7 +250,7 @@ impl GameStateBuilder {
             dugout_players: Vec::new(), 
             proc_stack: Vec::new(), 
             new_procs: VecDeque::new(), 
-            available_actions: Vec::new(),
+            available_actions: HashMap::new(),
             paths: Default::default(), 
             }; 
             

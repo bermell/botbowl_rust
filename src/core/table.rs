@@ -13,6 +13,7 @@ pub enum SimpleAT{
     SelectBothDown, 
     UseReroll, 
     DontUseReroll, 
+    EndPlayerTurn, 
 }
 
 #[derive(Eq, Hash, PartialEq)]

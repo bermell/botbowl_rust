@@ -1,9 +1,11 @@
 use core::panic;
-use std::error;
+use std::{error, collections::HashMap};
 
 use crate::core::model; 
 
-use model::*; 
+use model::*;
+
+use super::table::AnyAT; 
 
 #[derive(Debug)]
 pub struct Tomato{}
@@ -69,6 +71,9 @@ impl GameState {
         self.get_mut_player(id)?.position = new_pos; 
         self.board[new_x][new_y] = Some(id); 
         Ok(())
+    }
+    pub fn get_available_actions(&self) -> &HashMap<AnyAT, ActionChoice> {
+        &self.available_actions
     }
 
     pub fn field_player(&mut self, player_stats: PlayerStats, position: Position) -> Result<PlayerID> {
