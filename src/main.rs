@@ -18,8 +18,10 @@ fn main() {
 mod tests {
 
     use std::collections::{HashSet, HashMap};
-    use crate::core::{model::{Position, GameStateBuilder, GameState, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice}, table::{AnyAT, PosAT}}; 
+    use crate::core::{model::{Position, GameStateBuilder, GameState, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}}; 
     use ansi_term::Colour::Red;
+    use crate::core::table::*; 
+    use crate::core::model::*; 
 
     fn standard_state() -> GameState {
         GameStateBuilder::new(&[(1, 2), (2, 2), (3, 1)], 
@@ -110,12 +112,44 @@ mod tests {
 
     #[test]
     fn start_move_action(){
-        let state = standard_state(); 
-        //let aa: HashMap<AnyAT, ActionChoice> = state.get_available_actions(); 
-        let aa: HashMap<AnyAT, ActionChoice> = HashMap::new(); 
-        match aa.get(&AnyAT::from(PosAT::StartMove)) {
-            Some(ac) => (), 
-            None => (), 
+        let mut state = standard_state(); 
+        let starting_pos = Position{x: 3, y: 1}; 
+        let move_target = Position{x: 4, y: 1};  
+
+        assert!(state.get_player_at(starting_pos).is_some());
+        assert!(state.get_player_at(move_target).is_none());
+        
+        match state.get_available_actions().get(&AnyAT::from(PosAT::StartMove)) {
+            Some(ActionChoice::Positional(positions)) => 
+                assert!(positions.iter().any(|p|*p==starting_pos)), 
+            _ => panic!(), 
         }
+
+        let mut result = state.step(Action::Positional(PosAT::StartMove, starting_pos)); 
+        assert!(result.is_ok()); 
+
+        match state.get_available_actions().get(&AnyAT::from(PosAT::Move)) {
+            Some(ActionChoice::Positional(positions)) => 
+                assert!(positions.iter().any(|p|*p==move_target)), 
+            _ => panic!(), 
+        }
+        
+        result = state.step(Action::Positional(PosAT::Move, move_target)); 
+        assert!(result.is_ok()); 
+
+        assert!(state.get_player_at(starting_pos).is_none());
+        assert!(state.get_player_at(move_target).is_some());
+
+
+        result = state.step(Action::Simple(SimpleAT::EndPlayerTurn)); 
+        assert!(result.is_ok());
+        assert!(state.get_player_at(move_target).unwrap().used); 
+
+        match state.get_available_actions().get(&AnyAT::from(PosAT::StartMove)) {
+            Some(ActionChoice::Positional(positions)) => 
+                assert!(!positions.iter().any(|p|*p==move_target)), 
+            _ => panic!(), 
+        }
+
     }
 }
