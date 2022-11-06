@@ -111,38 +111,22 @@ mod tests {
     }
 
     #[test]
-    fn start_move_action(){
+    fn start_move_action() -> Result<()> {
         let mut state = standard_state(); 
         let starting_pos = Position{x: 3, y: 1}; 
         let move_target = Position{x: 4, y: 1};  
 
         assert!(state.get_player_at(starting_pos).is_some());
         assert!(state.get_player_at(move_target).is_none());
-        
-        match state.get_available_actions().get(&AnyAT::from(PosAT::StartMove)) {
-            Some(ActionChoice::Positional(positions)) => 
-                assert!(positions.iter().any(|p|*p==starting_pos)), 
-            _ => panic!(), 
-        }
-
-        let mut result = state.step(Action::Positional(PosAT::StartMove, starting_pos)); 
-        assert!(result.is_ok()); 
-
-        match state.get_available_actions().get(&AnyAT::from(PosAT::Move)) {
-            Some(ActionChoice::Positional(positions)) => 
-                assert!(positions.iter().any(|p|*p==move_target)), 
-            _ => panic!(), 
-        }
-        
-        result = state.step(Action::Positional(PosAT::Move, move_target)); 
-        assert!(result.is_ok()); 
+       
+        state.step(Action::Positional(PosAT::StartMove, starting_pos))?; 
+        state.step(Action::Positional(PosAT::Move, move_target))?;
 
         assert!(state.get_player_at(starting_pos).is_none());
         assert!(state.get_player_at(move_target).is_some());
 
-
-        result = state.step(Action::Simple(SimpleAT::EndPlayerTurn)); 
-        assert!(result.is_ok());
+        state.step(Action::Simple(SimpleAT::EndPlayerTurn))?; 
+        
         assert!(state.get_player_at(move_target).unwrap().used); 
 
         match state.get_available_actions().get(&AnyAT::from(PosAT::StartMove)) {
@@ -151,5 +135,6 @@ mod tests {
             _ => panic!(), 
         }
 
+        Ok(())
     }
 }
