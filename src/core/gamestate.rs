@@ -113,17 +113,14 @@ impl GameState {
     }
     
     pub fn step(&mut self, action: Action) -> Result<()> {
-        //let mut top_proc = match self.proc_stack.pop() {
-        //    Some(proc) => proc, 
-        //    None => return Err(Box::new(InvalidPlayerId{id: 0})), 
-        //};
         
+        assert!(self.is_legal_action(&action)); 
+
         let mut top_proc = self.proc_stack.pop()
             .ok_or_else(|| Box::new(InvalidPlayerId{id: 0}))?;  
         
         let mut top_proc_is_finished = top_proc.step(self, Some(action)); 
         
-        //todo: Check that action is allowed. 
         loop {
             if self.game_over {
                 break;
@@ -142,6 +139,7 @@ impl GameState {
             
             self.available_actions = top_proc.available_actions(self); 
             if !self.available_actions.is_empty() {
+                self.proc_stack.push(top_proc); 
                 break;
             }
 
@@ -149,5 +147,26 @@ impl GameState {
         }
         Ok(())
 
+    }
+
+    pub fn is_legal_action(&mut self, action: &Action) -> bool {
+        
+        let top_proc = self.proc_stack.pop().unwrap(); 
+        debug_assert_eq!(top_proc.available_actions(self), self.available_actions); 
+        self.proc_stack.push(top_proc); 
+         
+        action_in_aa(&self.available_actions, action)
+    }
+}
+
+pub fn action_in_aa(available_actions: &HashMap<AnyAT, ActionChoice>, action: &Action) -> bool {
+    match *action {
+        Action::Simple(at) => available_actions.get(&AnyAT::from(at)).is_some(), 
+        Action::Positional(at, position) => {
+            match available_actions.get(&AnyAT::from(at)) {
+                Some(ActionChoice::Positional(positions)) => positions.contains(&position),
+                _ => false, 
+            }
+        }
     }
 } 
