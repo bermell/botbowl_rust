@@ -1,3 +1,4 @@
+use crate::core::gamestate::GameStateBuilder;
 use crate::core::model::*; 
 use crate::core::table::*; 
 pub mod core;
@@ -18,7 +19,7 @@ fn main() {
 mod tests {
 
     use std::collections::{HashSet, HashMap};
-    use crate::core::{model::{Position, GameStateBuilder, GameState, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}}; 
+    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
     use crate::core::model::*; 

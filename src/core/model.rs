@@ -15,6 +15,7 @@ pub const HEIGHT_: Coord = 17;
 use std::error;
 use std::fmt;
 
+use super::gamestate::GameState;
 use super::procedures::Turn;
 use super::table::AnyAT;
 use super::table::PosAT;
@@ -149,7 +150,7 @@ pub struct TeamState {
     //time_violation: u8,
 }
 impl TeamState {
-    fn new() -> TeamState {
+    pub fn new() -> TeamState {
         TeamState {  }       
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
@@ -181,24 +182,6 @@ pub struct Path{
     prop: f32, 
 }
 
-pub struct GameState {
-    pub home: TeamState, 
-    pub away: TeamState,
-    pub fielded_players: [Option<FieldedPlayer>; 22],  
-    pub dugout_players: Vec<DugoutPlayer>, 
-    pub board: FullPitch<Option<PlayerID>>, 
-    pub paths: FullPitch<Option<Path>>,
-    pub ball: BallState, 
-    pub half: u8, 
-    pub turn: u8,
-    pub active_player: Option<PlayerID>,  
-    pub game_over: bool, 
-    pub proc_stack: Vec<Box<dyn Procedure>>, //shouldn't be pub
-    pub new_procs: VecDeque<Box<dyn Procedure>>, //shouldn't be pub
-    pub available_actions: HashMap<AnyAT, ActionChoice>, 
-    //rerolled_procs: ???? //TODO!!! 
-
-}
 
 pub trait Procedure {
     fn start(&self, g: &GameState) {}
@@ -207,79 +190,3 @@ pub trait Procedure {
     fn available_actions(&self, g: &mut GameState) -> HashMap<AnyAT, ActionChoice> {HashMap::new()}
 }
 
-pub struct GameStateBuilder {
-    home_players: Vec<Position>, 
-    away_players: Vec<Position>, 
-    ball_pos: Option<Position>, 
-}
-
-impl GameStateBuilder {
-    pub fn new(home_players: &[(Coord, Coord)], 
-               away_players: &[(Coord, Coord)] ) -> GameStateBuilder {
-        let mut builder = GameStateBuilder{
-            home_players: Vec::new(), 
-            away_players: Vec::new(), 
-            ball_pos: None, 
-        }; 
-
-        for (x, y) in home_players {
-            let p = Position{x: *x, y: *y}; 
-            builder.home_players.push(p); 
-        }
-        for (x, y) in away_players {
-            let p = Position{x: *x, y: *y}; 
-            builder.away_players.push(p); 
-        }
-        builder
-    }
-
-    pub fn add_ball(&mut self, xy: (Coord, Coord)) -> &mut GameStateBuilder {
-        self.ball_pos = Some(Position{x: xy.0, y: xy.1}); 
-        self
-    }
-
-    pub fn build(&mut self) -> GameState {
-                
-        let mut state = GameState {
-            fielded_players: Default::default(), 
-            home: TeamState::new(), 
-            away: TeamState::new(), 
-            board: Default::default(), 
-            ball: BallState::OffPitch,
-            half: 1, 
-            turn: 1,
-            active_player: None, 
-            game_over: false,
-            dugout_players: Vec::new(), 
-            proc_stack: Vec::new(), 
-            new_procs: VecDeque::new(), 
-            available_actions: HashMap::new(),
-            paths: Default::default(), 
-            }; 
-            
-        
-        for position in self.home_players.iter() {
-            let player_stats = PlayerStats::new(TeamType::Home); 
-            _ = state.field_player(player_stats, *position)
-        }
-
-        for position in self.away_players.iter() {
-            let player_stats = PlayerStats::new(TeamType::Away); 
-            _ = state.field_player(player_stats, *position)
-        }
-
-        if let Some(pos) = self.ball_pos {
-            state.ball = match state.get_player_at(pos) {
-                None => BallState::OnGround(pos), 
-                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id), 
-                _ => panic!(),
-            }
-        }
-        let proc = Turn{team: TeamType::Home}; 
-        state.available_actions = proc.available_actions(&mut state); 
-        state.proc_stack.push(Box::new(proc));
-         
-        state
-    }
-
-}

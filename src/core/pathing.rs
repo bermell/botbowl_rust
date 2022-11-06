@@ -1,5 +1,7 @@
 use crate::core::model; 
-use model::*; 
+use model::*;
+
+use super::gamestate::GameState; 
 
 pub enum Roll{ //Make more clever! 
     Dodge(u8), 

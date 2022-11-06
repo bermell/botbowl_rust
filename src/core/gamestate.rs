@@ -1,17 +1,108 @@
 use core::panic;
-use std::{error, collections::HashMap};
+use std::{error, collections::{HashMap, VecDeque}};
 
 use crate::core::model; 
 
 use model::*;
 
-use super::table::AnyAT; 
-
-#[derive(Debug)]
-pub struct Tomato{}
+use super::{table::AnyAT, procedures::Turn}; 
 
 const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 
+pub struct GameStateBuilder {
+    home_players: Vec<Position>, 
+    away_players: Vec<Position>, 
+    ball_pos: Option<Position>, 
+}
+
+impl GameStateBuilder {
+    pub fn new(home_players: &[(Coord, Coord)], 
+               away_players: &[(Coord, Coord)] ) -> GameStateBuilder {
+        let mut builder = GameStateBuilder{
+            home_players: Vec::new(), 
+            away_players: Vec::new(), 
+            ball_pos: None, 
+        }; 
+
+        for (x, y) in home_players {
+            let p = Position{x: *x, y: *y}; 
+            builder.home_players.push(p); 
+        }
+        for (x, y) in away_players {
+            let p = Position{x: *x, y: *y}; 
+            builder.away_players.push(p); 
+        }
+        builder
+    }
+
+    pub fn add_ball(&mut self, xy: (Coord, Coord)) -> &mut GameStateBuilder {
+        self.ball_pos = Some(Position{x: xy.0, y: xy.1}); 
+        self
+    }
+
+    pub fn build(&mut self) -> GameState {
+                
+        let mut state = GameState {
+            fielded_players: Default::default(), 
+            home: TeamState::new(), 
+            away: TeamState::new(), 
+            board: Default::default(), 
+            ball: BallState::OffPitch,
+            half: 1, 
+            turn: 1,
+            active_player: None, 
+            game_over: false,
+            dugout_players: Vec::new(), 
+            proc_stack: Vec::new(), 
+            new_procs: VecDeque::new(), 
+            available_actions: HashMap::new(),
+            paths: Default::default(), 
+            }; 
+            
+        
+        for position in self.home_players.iter() {
+            let player_stats = PlayerStats::new(TeamType::Home); 
+            _ = state.field_player(player_stats, *position)
+        }
+
+        for position in self.away_players.iter() {
+            let player_stats = PlayerStats::new(TeamType::Away); 
+            _ = state.field_player(player_stats, *position)
+        }
+
+        if let Some(pos) = self.ball_pos {
+            state.ball = match state.get_player_at(pos) {
+                None => BallState::OnGround(pos), 
+                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id), 
+                _ => panic!(),
+            }
+        }
+        let proc = Turn{team: TeamType::Home}; 
+        state.available_actions = proc.available_actions(&mut state); 
+        state.proc_stack.push(Box::new(proc));
+         
+        state
+    }
+
+}
+
+pub struct GameState {
+    pub home: TeamState, 
+    pub away: TeamState,
+    fielded_players: [Option<FieldedPlayer>; 22],  
+    dugout_players: Vec<DugoutPlayer>, 
+    board: FullPitch<Option<PlayerID>>, 
+    paths: FullPitch<Option<Path>>,
+    pub ball: BallState, 
+    pub half: u8, 
+    pub turn: u8,
+    pub active_player: Option<PlayerID>,  
+    pub game_over: bool, 
+    proc_stack: Vec<Box<dyn Procedure>>, //shouldn't be pub
+    new_procs: VecDeque<Box<dyn Procedure>>, //shouldn't be pub
+    available_actions: HashMap<AnyAT, ActionChoice>, 
+    //rerolled_procs: ???? //TODO!!! 
+}
 
 impl GameState {
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
@@ -101,6 +192,11 @@ impl GameState {
     }
 
     pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) -> Result<()> {
+        if let BallState::Carried(carrier_id) = self.ball {
+            if carrier_id == id {
+                return Err(Box::new(InvalidPlayerId{id: 4}))
+            }
+        }
 
         let player = self.get_player(id)?; 
         let (x, y) = player.position.to_usize()?; 
@@ -164,7 +260,7 @@ impl GameState {
     }
 }
 
-pub fn action_in_aa(available_actions: &HashMap<AnyAT, ActionChoice>, action: &Action) -> bool {
+fn action_in_aa(available_actions: &HashMap<AnyAT, ActionChoice>, action: &Action) -> bool {
     match *action {
         Action::Simple(at) => available_actions.get(&AnyAT::from(at)).is_some(), 
         Action::Positional(at, position) => {

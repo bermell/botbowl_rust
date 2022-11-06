@@ -6,7 +6,7 @@ use crate::core::table::*;
 use std::collections::HashMap;
 use crate::core::table;
 
-use super::table::AnyAT; 
+use super::{table::AnyAT, gamestate::GameState}; 
 
 pub struct Turn{
     pub team: TeamType, 
