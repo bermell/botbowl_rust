@@ -15,6 +15,7 @@ pub const HEIGHT_: Coord = 17;
 use std::error;
 use std::fmt;
 
+use super::procedures::Turn;
 use super::table::AnyAT;
 use super::table::PosAT;
 use super::table::SimpleAT;
@@ -57,11 +58,13 @@ impl Position{
 }
 
 
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Action {
     Positional(table::PosAT, Position),
     Simple(table::SimpleAT), 
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum ActionChoice {
     Positional(Vec<Position>),
     Simple, 
@@ -152,7 +155,7 @@ impl TeamState {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TeamType{
     Home,
     Away,
@@ -266,13 +269,16 @@ impl GameStateBuilder {
         }
 
         if let Some(pos) = self.ball_pos {
-        state.ball = match state.get_player_at(pos) {
-            None => BallState::OnGround(pos), 
-            Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id), 
-            _ => panic!(),
+            state.ball = match state.get_player_at(pos) {
+                None => BallState::OnGround(pos), 
+                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id), 
+                _ => panic!(),
+            }
         }
-        }
-        
+        let proc = Turn{team: TeamType::Home}; 
+        state.available_actions = proc.available_actions(&mut state); 
+        state.proc_stack.push(Box::new(proc));
+         
         state
     }
 

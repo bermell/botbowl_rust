@@ -75,7 +75,12 @@ impl GameState {
     pub fn get_available_actions(&self) -> &HashMap<AnyAT, ActionChoice> {
         &self.available_actions
     }
-
+    pub fn get_players_on_pitch(&self) -> impl Iterator<Item=&FieldedPlayer>{
+        self.fielded_players.iter().filter_map(|x|x.as_ref())
+    } 
+    pub fn get_players_on_pitch_in_team(&self, team: TeamType) -> impl Iterator<Item=&FieldedPlayer>{
+        self.get_players_on_pitch().filter(move|p| p.stats.team == team)
+    }
     pub fn field_player(&mut self, player_stats: PlayerStats, position: Position) -> Result<PlayerID> {
 
         let (new_x, new_y) = position.to_usize()?; 

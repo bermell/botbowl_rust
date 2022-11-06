@@ -1,4 +1,4 @@
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum PosAT{
     StartMove, 
     Move, 
@@ -7,16 +7,17 @@ pub enum PosAT{
 }
 
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum SimpleAT{
     StartGame, 
     SelectBothDown, 
     UseReroll, 
     DontUseReroll, 
-    EndPlayerTurn, 
+    EndPlayerTurn,
+    EndTurn,  
 }
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq,  Debug, Clone, Copy)]
 pub enum AnyAT{
     Simple(SimpleAT),
     Postional(PosAT), 
