@@ -1,5 +1,5 @@
 use core::panic;
-use std::{error, collections::{HashMap, VecDeque}};
+use std::{collections::{HashMap, VecDeque}};
 
 use crate::core::model; 
 
@@ -86,6 +86,7 @@ impl GameStateBuilder {
 
 }
 
+#[allow(dead_code)]
 pub struct GameState {
     pub home: TeamState, 
     pub away: TeamState,

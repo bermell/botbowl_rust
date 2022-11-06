@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::collections::VecDeque;
+
 
 use crate::core::table; 
 
@@ -16,10 +16,10 @@ use std::error;
 use std::fmt;
 
 use super::gamestate::GameState;
-use super::procedures::Turn;
+
 use super::table::AnyAT;
-use super::table::PosAT;
-use super::table::SimpleAT;
+
+
 
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -150,6 +150,7 @@ pub struct TeamState {
     //time_violation: u8,
 }
 impl TeamState {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> TeamState {
         TeamState {  }       
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
@@ -177,12 +178,13 @@ pub enum Weather{
     Sweltering,
 }
 
+#[allow(dead_code)]
 pub struct Path{
     steps: Vec<Position>, 
     prop: f32, 
 }
 
-
+#[allow(unused_variables)]
 pub trait Procedure {
     fn start(&self, g: &GameState) {}
     fn step(&self, g: &mut GameState, action: Option<Action>) -> bool; 

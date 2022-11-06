@@ -8,6 +8,7 @@ pub enum Roll{ //Make more clever!
     GFI(u8),  
 }
 
+#[allow(dead_code)]
 pub struct Node<'a> { 
     parent: Option<&'a Node<'a>>, 
     position: Position, 
@@ -19,11 +20,13 @@ pub struct Node<'a> {
     rolls: Vec<Roll>, 
 }
 
+#[allow(dead_code)]
 pub struct Path {
     steps: Vec<(Position, Vec<Roll>)>, 
     prob: f32, 
 }
 
+#[allow(dead_code)]
 pub struct PathFinder<'a> {
     game_state: &'a GameState, 
 

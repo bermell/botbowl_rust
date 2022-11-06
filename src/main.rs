@@ -1,6 +1,5 @@
 use crate::core::gamestate::GameStateBuilder;
 use crate::core::model::*; 
-use crate::core::table::*; 
 pub mod core;
 
 fn main() {
@@ -18,7 +17,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
-    use std::collections::{HashSet, HashMap};
+    use std::collections::{HashSet};
     use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
@@ -65,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn move_player(){
+    fn move_player() -> Result<()> {
         let mut state = standard_state(); 
         let id = 1;  
         let old_pos = Position{x: 2, y: 2}; 
@@ -75,11 +74,12 @@ mod tests {
         assert_eq!(state.get_player(id).unwrap().position, old_pos); 
         assert!(state.get_player_id_at(new_pos).is_none()); 
 
-        state.move_player(id, new_pos); 
+        state.move_player(id, new_pos)?; 
 
         assert!(state.get_player_id_at(old_pos).is_none()); 
         assert_eq!(state.get_player_id_at(new_pos), Some(id)); 
         assert_eq!(state.get_player(id).unwrap().position, new_pos); 
+        Ok(())
     }
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
         // use  ▒▒▒▒ for unoccupied positions
     }
     #[test]
-    fn field_a_player() { 
+    fn field_a_player() -> Result<()> { 
         let mut state = standard_state(); 
         let player_stats = PlayerStats::new(TeamType::Home); 
         let position = Position{x: 10, y: 10}; 
@@ -106,9 +106,10 @@ mod tests {
         assert_eq!(state.get_player_id_at(position), Some(id)); 
         assert_eq!(state.get_player(id).unwrap().position, position); 
         
-        state.unfield_player(id, DogoutPlace::Reserves); 
+        state.unfield_player(id, DogoutPlace::Reserves)?; 
         
         assert!(state.get_player_id_at(position).is_none()); 
+        Ok(())
     }
 
     #[test]

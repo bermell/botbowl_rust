@@ -12,9 +12,7 @@ pub struct Turn{
     pub team: TeamType, 
 }
 impl Procedure for Turn {
-    fn start(&self, g: &GameState) {}
 
-    fn end(&self, g: &mut GameState) {}
 
     fn available_actions(&self, g: &mut GameState) -> HashMap<table::AnyAT, ActionChoice> {
         let positions = g.get_players_on_pitch_in_team(self.team)
@@ -43,9 +41,7 @@ pub struct MoveAction{
     pub player_id: PlayerID, 
 }
 impl Procedure for MoveAction {
-    fn start(&self, g: &GameState) {}
 
-    fn end(&self, g: &mut GameState) {}
 
     fn available_actions(&self, g: &mut GameState) -> HashMap<table::AnyAT, ActionChoice> {
         let mut aa = HashMap::new(); 
