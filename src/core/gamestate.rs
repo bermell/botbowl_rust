@@ -1,11 +1,11 @@
 use core::panic;
 use std::{collections::{HashMap, VecDeque}};
 
-use crate::core::model; 
+use crate::core::{model, bb_errors::EmptyProcStackError}; 
 
 use model::*;
 
-use super::{table::AnyAT, procedures::Turn}; 
+use super::{table::AnyAT, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}}; 
 
 const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 
@@ -149,7 +149,7 @@ impl GameState {
     pub fn get_mut_player(&mut self, id: PlayerID) -> Result<&mut FieldedPlayer> {
         match &mut self.fielded_players[id] {
             Some(player) => Ok(player), 
-            None => Err(Box::new(InvalidPlayerId{id: 0})), 
+            None => Err(Box::new(InvalidPlayerId{id})), 
         }
     }
 
@@ -157,7 +157,7 @@ impl GameState {
         let (old_x, old_y) = self.get_player(id)?.position.to_usize()?; 
         let (new_x, new_y) = new_pos.to_usize()?; 
         if self.board[new_x][new_y].is_some() {
-            return Err(Box::new(InvalidPlayerId{id: 5} ))
+            return Err(Box::new(IllegalMovePosition{position: new_pos} ))
         }
         self.board[old_x][old_y] = None; 
         self.get_mut_player(id)?.position = new_pos; 
@@ -177,14 +177,14 @@ impl GameState {
 
         let (new_x, new_y) = position.to_usize()?; 
         if self.board[new_x][new_y].is_some() {
-            return Err(Box::new(InvalidPlayerId{id: 5} ))
+            return Err(Box::new(IllegalMovePosition{position} ))
         }
         
         let id = match self.fielded_players.iter().enumerate()
                                             .find(|(_, player)| player.is_none()) 
                                 {
                                     Some((id, _)) => id, 
-                                    None => return Err(Box::new(InvalidPlayerId{id: 5} )), //todo 
+                                    None => panic!("Not room in gamestate of another fielded player!") 
                                 }; 
 
         self.board[new_x][new_y] = Some(id); 
@@ -194,9 +194,10 @@ impl GameState {
 
     pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) -> Result<()> {
         if let BallState::Carried(carrier_id) = self.ball {
-            if carrier_id == id {
-                return Err(Box::new(InvalidPlayerId{id: 4}))
-            }
+            assert_ne!(carrier_id, id); 
+            //if carrier_id == id {
+                //return Err(Box::new(InvalidPlayerId{id: 4}))
+            //}
         }
 
         let player = self.get_player(id)?; 
@@ -219,7 +220,7 @@ impl GameState {
         assert!(self.is_legal_action(&action)); 
 
         let mut top_proc = self.proc_stack.pop()
-            .ok_or_else(|| Box::new(InvalidPlayerId{id: 0}))?;  
+            .ok_or_else(|| Box::new(EmptyProcStackError{}))?;  
         
         let mut top_proc_is_finished = top_proc.step(self, Some(action)); 
         
@@ -231,8 +232,8 @@ impl GameState {
                 (Some(new_top_proc), false) => {self.proc_stack.push(top_proc); new_top_proc}
                 (Some(new_top_proc), true) => new_top_proc,
                 (None, false) => top_proc,
-                (None, true) => {self.proc_stack.pop()
-                                        .ok_or_else(|| Box::new(InvalidPlayerId{id: 1}))?}
+                (None, true) => self.proc_stack.pop()
+                                        .ok_or_else(|| Box::new(EmptyProcStackError{}))?,
             };
             
             while let Some(new_proc) = self.new_procs.pop_front() {

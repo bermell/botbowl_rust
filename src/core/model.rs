@@ -1,7 +1,9 @@
 use std::collections::HashMap;
-
+use std::error;
 
 use crate::core::table; 
+use super::gamestate::GameState;
+use super::table::AnyAT;
 
 pub type PlayerID = usize; 
 pub type Coord = i8; 
@@ -12,32 +14,8 @@ pub const WIDTH_: Coord = 26;
 pub const HEIGHT: usize = 17;
 pub const HEIGHT_: Coord = 17; 
 
-use std::error;
-use std::fmt;
-
-use super::gamestate::GameState;
-
-use super::table::AnyAT;
-
-
-
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
-
-#[derive(Debug, Clone)]
-pub struct InvalidPlayerId{
-    pub id: PlayerID, 
-}
-
-impl error::Error for InvalidPlayerId {
-    
-}
-
-impl fmt::Display for InvalidPlayerId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Not valid PlayerId: {}", self.id)
-    }
-}
 
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
