@@ -18,7 +18,7 @@ fn main() {
 mod tests {
 
     use std::collections::{HashSet};
-    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}}; 
+    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::PathFinder}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
     use crate::core::model::*; 
@@ -135,6 +135,31 @@ mod tests {
             Some(ActionChoice::Positional(positions)) => 
                 assert!(!positions.iter().any(|p|*p==move_target)), 
             _ => panic!(), 
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn pathing() -> Result<()> {
+        let mut state = standard_state(); 
+        let starting_pos = Position{x: 3, y: 1}; 
+        let id = state.get_player_id_at(starting_pos).unwrap(); 
+        state.step(Action::Positional(PosAT::StartMove, starting_pos))?; 
+        let mut pf = PathFinder::new(&mut state); 
+        let paths = pf.player_paths(id)?; 
+       
+        for x in 1..8 {
+            for y in 1..8 {
+                let x_usize = usize::try_from(x).unwrap(); 
+                let y_usize = usize::try_from(y).unwrap(); 
+                match (state.get_player_id_at_coord(x, y), &paths[x_usize][y_usize]) {
+                    (Some(_), None) => (), 
+                    (None, Some(_)) => (), 
+                    (Some(_), Some(_)) => panic!("Shouldn't be a path to ({},{}) because it's occupied!", x, y), 
+                    (None, None) => panic!("Should be a path to ({},{}) because it's empty!", x, y),  
+                }
+            }
         }
 
         Ok(())
