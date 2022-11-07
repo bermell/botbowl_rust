@@ -23,15 +23,9 @@ impl GameStateBuilder {
             away_players: Vec::new(), 
             ball_pos: None, 
         }; 
+        home_players.iter().for_each(|(x, y)| builder.home_players.push(Position{ x: *x, y: *y})); 
+        away_players.iter().for_each(|(x, y)| builder.away_players.push(Position{ x: *x, y: *y})); 
 
-        for (x, y) in home_players {
-            let p = Position{x: *x, y: *y}; 
-            builder.home_players.push(p); 
-        }
-        for (x, y) in away_players {
-            let p = Position{x: *x, y: *y}; 
-            builder.away_players.push(p); 
-        }
         builder
     }
 
