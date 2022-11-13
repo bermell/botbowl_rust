@@ -16,7 +16,6 @@ pub enum Roll{ //Make more clever!
     GFI(u8),  
 }
 
-#[allow(dead_code)]
 pub struct Node { 
     parent: OptRcNode, 
     position: Position, 
@@ -144,17 +143,6 @@ impl<'a> PathFinder <'a>{
                 self.expand_node(node); 
             } 
 
-            //clear 
-            for x in 0..WIDTH {
-                for y in 0..HEIGHT {
-                    if let Some(node) = &self.nodes[x][y] {
-                        if Some(node) > self.locked_nodes[x][y].as_ref() {
-                            self.locked_nodes[x][y] = Some(node.clone()) ; 
-                        }
-                    }
-                }
-            }
-
             for (node, locked) in zip(gimmi_mut_iter(&mut self.nodes), gimmi_mut_iter(&mut self.locked_nodes)){
                 match node {
                     Some(_) if node > locked => *locked = node.clone(), 
@@ -177,11 +165,7 @@ impl<'a> PathFinder <'a>{
                 *path = Some(Path::new(node));
             }
         }
-
-
         Ok(paths)
-
-
     }
 
     fn expand_node(&mut self, node: Rc<Node>){
@@ -223,7 +207,6 @@ impl<'a> PathFinder <'a>{
                     self.nodes[x][y] = Some(better_node); 
                 }
                 None => (), 
-
             }
         }
     }
