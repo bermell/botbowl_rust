@@ -5,9 +5,9 @@ use crate::core::{model, bb_errors::EmptyProcStackError};
 
 use model::*;
 
-use super::{table::AnyAT, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}}; 
+use super::{table::AnyAT, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}, pathing::Path}; 
 
-const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
+pub const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 
 pub struct GameStateBuilder {
     home_players: Vec<Position>, 

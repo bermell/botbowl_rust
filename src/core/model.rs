@@ -1,5 +1,7 @@
+use std::cmp::max;
 use std::collections::HashMap;
 use std::error;
+use std::ops::Add;
 
 use crate::core::table; 
 use super::gamestate::GameState;
@@ -17,6 +19,13 @@ pub const HEIGHT_: Coord = 17;
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
 
+pub fn gimmi_iter<T>(pitch: &FullPitch<T>) -> impl Iterator<Item=&T> {
+    pitch.iter().flat_map(|r| r.iter())
+}
+
+pub fn gimmi_mut_iter<T>(pitch: &mut FullPitch<T>) -> impl Iterator<Item=&mut T> {
+    pitch.iter_mut().flat_map(|r| r.iter_mut())
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Position {
@@ -33,6 +42,16 @@ impl Position{
         let x_: Coord = Coord::try_from(x)?; 
         let y_: Coord = Coord::try_from(y)?; 
         Ok(Position{x: x_, y: y_} )
+    }
+    pub fn distance(&self, other: &Position) -> i8 {
+        max((self.x - other.x).abs(), (self.y-other.y).abs())
+    }
+}
+impl Add<(Coord, Coord)> for Position {
+    type Output = Position;
+
+    fn add(self, rhs: (Coord, Coord)) -> Self::Output {
+        Position{ x: self.x + rhs.0, y: self.y + rhs.1}
     }
 }
 
@@ -154,12 +173,6 @@ pub enum Weather{
     Rain, 
     Blizzard,
     Sweltering,
-}
-
-#[allow(dead_code)]
-pub struct Path{
-    steps: Vec<Position>, 
-    prop: f32, 
 }
 
 #[allow(unused_variables)]
