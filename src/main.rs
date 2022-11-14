@@ -17,7 +17,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
-    use std::collections::{HashSet};
+    use std::collections::{HashSet, HashMap};
     use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::PathFinder}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
@@ -156,8 +156,51 @@ mod tests {
                 match (state.get_player_id_at_coord(x, y), &paths[x_usize][y_usize]) {
                     (Some(_), None) => (), 
                     (None, Some(_)) => (), 
-                    (Some(_), Some(_)) => panic!("Shouldn't be a path to ({},{}) because it's occupied!", x, y), 
-                    (None, None) => panic!("Should be a path to ({},{}) because it's empty!", x, y),  
+                    (Some(_), Some(_)) => panic!("Found path already occupied square ({},{})", x, y), 
+                    (None, None) => panic!("Missing a path to ({},{})!", x, y),  
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn pathing_probs() -> Result<()> {
+        let mut state = GameStateBuilder::new(&[(3, 2)], &[(1, 3), (3, 3), (4, 2)]).build(); 
+        let starting_pos = Position{x: 3, y: 2}; 
+        let id = state.get_player_id_at(starting_pos).unwrap(); 
+        
+        let mut pf = PathFinder::new(&mut state); 
+        let paths = pf.player_paths(id)?; 
+        
+        let mut pos_to_prob: HashMap<(usize, usize), Option<f32>> = HashMap::new();  
+        pos_to_prob.insert((1, 1), Some(2.0/3.0)); 
+        pos_to_prob.insert((1, 2), Some(2.0/3.0)); 
+        pos_to_prob.insert((1, 3), None);  
+        pos_to_prob.insert((1, 4), Some(2.0/9.0)); 
+        pos_to_prob.insert((2, 1), Some(2.0/3.0)); 
+        pos_to_prob.insert((2, 2), Some(2.0/3.0)); 
+        pos_to_prob.insert((2, 3), Some(1.0/3.0)); 
+        pos_to_prob.insert((2, 4), Some(2.0/9.0)); 
+        pos_to_prob.insert((3, 1), Some(2.0/3.0)); 
+        pos_to_prob.insert((3, 2), None);  
+        pos_to_prob.insert((3, 3), None);  
+        pos_to_prob.insert((3, 4), Some(2.0/9.0)); 
+        pos_to_prob.insert((4, 1), Some(1.0/2.0)); 
+        pos_to_prob.insert((4, 2), None);  
+        pos_to_prob.insert((4, 3), Some(1.0/3.0)); 
+        pos_to_prob.insert((4, 4), Some(2.0/9.0)); 
+
+        for x in 1..5 {
+            for y in 1..5 {
+                match (pos_to_prob.get(&(x, y)).unwrap(), &paths[x][y]) {
+                    (Some(correct_prob), Some(path)) if *correct_prob != path.prob => panic!("Path to ({}, {}) has wrong prob. \nExpected prob: {}\nGot prob: {}\n", x, y, *correct_prob, path.prob), 
+                    (Some(correct_prob), Some(path)) if *correct_prob == path.prob => (), 
+                    (None, None) => (), 
+                    (Some(_), None) => panic!("No path to ({}, {})", x, y), 
+                    (None, Some(path)) => panic!("There shouldn't be a path to ({}, {}). Found: {:?}", x, y, path), 
+                    _ => (), 
                 }
             }
         }

@@ -15,7 +15,7 @@ pub enum Roll{ //Make more clever!
     Dodge(u8), 
     GFI(u8),  
 }
-
+#[derive(Debug)]
 pub struct Node { 
     parent: OptRcNode, 
     position: Position, 
@@ -27,55 +27,48 @@ pub struct Node {
     rolls: Vec<Roll>, 
 } 
 impl Node {
+    fn apply_gfi(&mut self, target: u8) {
+        self.prob *= (7.0-f32::from(target))/6.0; 
+    }
+    fn apply_dodge(&mut self, target: u8) {
+        self.prob *= (7.0-f32::from(target))/6.0; 
+    }
+    fn apply_pickup(&mut self, target: u8) {}
+
     fn is_dominant_over(&self, othr: &Node) -> bool {
+        assert_eq!(self.position, othr.position); 
+        panic!("EEYYY YOOO"); 
         if self.prob > othr.prob && self.moves_left + self.gfis_left > othr.moves_left + othr.gfis_left {
+            println!("{:?}\n is dominant over\n{:?}", self, othr);
             return true; 
         } 
-        //if othr.prob > self.prob && othr.moves_left + othr.gfis_left > self.moves_left + self.gfis_left {
-        //    return Some(a); 
-        //} 
+        if othr.prob > self.prob && othr.moves_left + othr.gfis_left > self.moves_left + self.gfis_left {
+            println!("{:?}\n is NOT dominant over\n{:?}", self, othr);
+            return false; 
+        } 
+        println!("{:?}\n is NOT dominant over\n{:?}", self, othr);
+        false 
+    }
+
+    fn is_better_than(&self, othr: &Node) -> bool {
+        assert_eq!(self.position, othr.position); 
+        
+        if self.prob > othr.prob {return true;}
+        if self.prob < othr.prob {return false;} 
+        
+        let self_moves = self.moves_left+self.gfis_left; 
+        let othr_moves = othr.moves_left+othr.gfis_left;       
+
+        if self_moves < othr_moves {return true;}
         false
     }
-    fn apply_gfi(&mut self, target: u8) {}
-    fn apply_dodge(&mut self, target: u8) {}
-    fn apply_pickup(&mut self, target: u8) {}
-}
-impl std::cmp::PartialEq for Node {
-    fn eq(&self, other: &Self) -> bool {
-        //self.parent == other.parent && self.position == other.position && self.moves_left == other.moves_left && self.gfis_left == other.gfis_left && self.prob == other.prob
-        todo!()
-    }
 }
 
-impl std::cmp::PartialOrd for Node {
-    fn partial_cmp(&self, other: &Node) -> Option<std::cmp::Ordering> {
-        //Helper function
-        fn is_greater_or_less(o: Option<Ordering>) -> bool {
-            match o {
-                Some(Ordering::Equal) => false, 
-                Some(Ordering::Greater) => true, 
-                Some(Ordering::Less) => true, 
-                None => panic!("Expected successful comparison!"),
-            }
-        }
-        let tmp = f32::partial_cmp(&self.prob,
-                                  &other.prob);
-        if is_greater_or_less(tmp) {return tmp;}
 
-        let tmp = i8::partial_cmp(&(self.moves_left+self.gfis_left),
-                                 &(other.moves_left+other.gfis_left));
-        if is_greater_or_less(tmp) {return tmp;}
-
-
-        Some(Ordering::Equal)
-        
-    }
-}
-
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct Path {
-    steps: Vec<(Position, Vec<Roll>)>, 
-    prob: f32, 
+    pub steps: Vec<(Position, Vec<Roll>)>, 
+    pub prob: f32, 
 }
 impl Path {
     fn new(final_node: &Node) -> Path {
@@ -134,7 +127,14 @@ impl<'a> PathFinder <'a>{
         self.start_pos = player.position;  
         
         let root_node = Rc::new( Node{ parent: None, position: self.start_pos, moves_left: self.max_moves, gfis_left: self.max_gfis, prob: 1.0, rolls: Vec::new() }); 
-
+       
+        for player in self.game_state.get_players_on_pitch_in_team(TeamType::Away) {
+            for pos in self.game_state.get_adj_positions(player.position) {
+                let (x, y) = pos.to_usize()?; 
+                self.tzones[x][y] += 1; 
+            }
+        }
+        
         self.open_set.push(root_node); 
         
         loop {
@@ -144,8 +144,9 @@ impl<'a> PathFinder <'a>{
             } 
 
             for (node, locked) in zip(gimmi_mut_iter(&mut self.nodes), gimmi_mut_iter(&mut self.locked_nodes)){
-                match node {
-                    Some(_) if node > locked => *locked = node.clone(), 
+                match (&node, &locked) {
+                    (Some(n), Some(l)) if n.is_better_than(l) => *locked = node.clone(),
+                    (Some(_), None) => *locked = node.clone(),
                     _ => (),
                 }
             }
@@ -228,15 +229,18 @@ impl<'a> PathFinder <'a>{
                 return None; 
             }
         }
-
         let mut next_node =  Node{ parent: from_node.parent.clone(), 
                                            position: to, 
                                            moves_left: moves_left_next, 
                                            gfis_left: gfis_left_next, 
                                            prob: from_node.prob, 
                                            rolls: Vec::new()}; 
-        if gfi {next_node.apply_gfi(2);}
-        if self.tzones[x][y] > 0 {next_node.apply_dodge(3);}
+        if gfi {
+            next_node.apply_gfi(2);
+        }
+        if self.tzones[x][y] > 0 {
+            next_node.apply_dodge(self.tzones[x][y]);
+        }
         match self.ball_pos {
             Some(ball_pos) if ball_pos == to => next_node.apply_pickup(3), 
             _ => (),
@@ -268,6 +272,7 @@ impl RiskySet {
         }
     }
 }
+
 
 // Nasty workaround to get hashable floats
 #[derive(Debug, Copy, Clone)]
