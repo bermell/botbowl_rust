@@ -192,11 +192,12 @@ mod tests {
         pos_to_prob.insert((4, 3), Some(1.0/3.0)); 
         pos_to_prob.insert((4, 4), Some(2.0/9.0)); 
 
+        #[allow(clippy::needless_range_loop)]
         for x in 1..5 {
             for y in 1..5 {
                 match (pos_to_prob.get(&(x, y)).unwrap(), &paths[x][y]) {
-                    (Some(correct_prob), Some(path)) if *correct_prob != path.prob => panic!("Path to ({}, {}) has wrong prob. \nExpected prob: {}\nGot prob: {}\n", x, y, *correct_prob, path.prob), 
-                    (Some(correct_prob), Some(path)) if *correct_prob == path.prob => (), 
+                    (Some(correct_prob), Some(path)) if (*correct_prob - path.prob).abs() > 0.001 => panic!("Path to ({}, {}) has wrong prob. \nExpected prob: {}\nGot prob: {}\n", x, y, *correct_prob, path.prob), 
+                    (Some(correct_prob), Some(path)) if (*correct_prob - path.prob).abs() <= 0.001 => (), 
                     (None, None) => (), 
                     (Some(_), None) => panic!("No path to ({}, {})", x, y), 
                     (None, Some(path)) => panic!("There shouldn't be a path to ({}, {}). Found: {:?}", x, y, path), 
