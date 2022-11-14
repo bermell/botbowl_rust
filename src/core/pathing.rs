@@ -1,5 +1,5 @@
-use core::panic;
-use std::{rc::Rc, collections::HashMap, hash, cmp::{max, Ordering}, iter::zip};
+use std::{rc::Rc, collections::HashMap, hash, cmp::{max, min}, iter::zip};
+use std::fmt::Debug;
 
 use crate::core::model; 
 use model::*;
@@ -33,20 +33,18 @@ impl Node {
     fn apply_dodge(&mut self, target: u8) {
         self.prob *= (7.0-f32::from(target))/6.0; 
     }
-    fn apply_pickup(&mut self, target: u8) {}
+    fn apply_pickup(&mut self, target: u8) {
+        self.prob *= (7.0-f32::from(target))/6.0; 
+    }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
         assert_eq!(self.position, othr.position); 
-        panic!("EEYYY YOOO"); 
-        if self.prob > othr.prob && self.moves_left + self.gfis_left > othr.moves_left + othr.gfis_left {
-            println!("{:?}\n is dominant over\n{:?}", self, othr);
+        if self.prob > othr.prob && self.moves_left + self.gfis_left < othr.moves_left + othr.gfis_left {
             return true; 
         } 
-        if othr.prob > self.prob && othr.moves_left + othr.gfis_left > self.moves_left + self.gfis_left {
-            println!("{:?}\n is NOT dominant over\n{:?}", self, othr);
+        if othr.prob > self.prob && othr.moves_left + othr.gfis_left < self.moves_left + self.gfis_left {
             return false; 
         } 
-        println!("{:?}\n is NOT dominant over\n{:?}", self, othr);
         false 
     }
 
@@ -93,6 +91,7 @@ pub struct PathFinder<'a> {
     ball_pos: Option<Position>, 
     max_moves: i8, 
     max_gfis: i8, 
+    ag: u8, 
     open_set: Vec<Rc<Node>>, 
     start_pos: Position, 
     risky_sets: RiskySet, 
@@ -109,6 +108,7 @@ impl<'a> PathFinder <'a>{
                         BallState::OnGround(position) => Some(position), 
                         _ => None, 
                      }, 
+                     ag: 0, 
                      max_gfis: 0, 
                      open_set: Vec::new(), 
                      start_pos: Position { x: 0, y: 0 }, 
@@ -124,7 +124,8 @@ impl<'a> PathFinder <'a>{
         let player = self.game_state.get_player(id).unwrap(); 
         self.max_moves = i8::try_from(player.stats.ma).unwrap(); 
         self.max_gfis = 2; 
-        self.start_pos = player.position;  
+        self.start_pos = player.position; 
+        self.ag = player.stats.ag;  
         
         let root_node = Rc::new( Node{ parent: None, position: self.start_pos, moves_left: self.max_moves, gfis_left: self.max_gfis, prob: 1.0, rolls: Vec::new() }); 
        
@@ -158,6 +159,7 @@ impl<'a> PathFinder <'a>{
                                 Some(new_open_set) => new_open_set, 
                                 None => break, 
             }; 
+            assert!(!self.open_set.is_empty()); 
         }
 
         let mut paths: FullPitch<Option<Path>> = Default::default(); 
@@ -238,8 +240,9 @@ impl<'a> PathFinder <'a>{
         if gfi {
             next_node.apply_gfi(2);
         }
-        if self.tzones[x][y] > 0 {
-            next_node.apply_dodge(self.tzones[x][y]);
+        if self.tackles_zones_at(&from_node.position) > 0 {
+            let target = max(2, min(6, 6-self.ag+self.tzones[x][y])); 
+            next_node.apply_dodge(target);
         }
         match self.ball_pos {
             Some(ball_pos) if ball_pos == to => next_node.apply_pickup(3), 
