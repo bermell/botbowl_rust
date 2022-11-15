@@ -17,8 +17,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
-    use std::{collections::{HashSet, HashMap}};
-    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::PathFinder}; 
+    use std::{collections::{HashSet, HashMap}, iter::zip};
+    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::{PathFinder, Path, Roll}}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
     use crate::core::model::*; 
@@ -214,6 +214,37 @@ mod tests {
         let no_errors: Vec<String> = Vec::new(); 
         assert_eq!(no_errors, errors); 
         
+        Ok(())
+    }
+
+    #[test]
+    fn one_long_path() -> Result<()> {
+        let mut state = GameStateBuilder::new(
+            &[(1, 1)], 
+            &[(1, 2), (2, 3),(2, 4),  (5, 3), (6, 4)])
+            .add_ball((4, 6))
+            .build(); 
+        let starting_pos = Position{x: 1, y: 1}; 
+        let id = state.get_player_id_at(starting_pos).unwrap(); 
+        let mut pf = PathFinder::new(&mut state); 
+        let paths = pf.player_paths(id)?; 
+
+        let expected_steps = vec![  (Position{x: 4, y: 6}, vec![Roll::GFI(2), Roll::Pickup(3)]), 
+                                    (Position{x: 4, y: 5}, vec![Roll::Dodge(3)]), 
+                                    (Position{x: 4, y: 4}, vec![Roll::Dodge(4)]), 
+                                    (Position{x: 4, y: 3}, vec![Roll::Dodge(4)]), 
+                                    (Position{x: 3, y: 2}, vec![]), 
+                                    (Position{x: 3, y: 1}, vec![Roll::Dodge(3)]), 
+                                    (Position{x: 2, y: 1}, vec![Roll::Dodge(4)]), ]; 
+        let expected_prob = 0.1; 
+
+        for (i, (expected, actual)) in zip(expected_steps, paths[4][6].clone().unwrap().steps).enumerate(){
+            if expected != actual {
+                panic!("Step {}: {:?} != {:?}",i, expected, actual ); 
+            }
+        }
+
+
         Ok(())
     }
 }
