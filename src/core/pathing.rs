@@ -10,10 +10,12 @@ type OptRcNode = Option<Rc<Node>>;
 
 
 
-#[derive(Debug, Clone, Copy )]
+#[derive(Debug, Clone, Copy, PartialEq, Eq )]
 pub enum Roll{ //Make more clever! 
     Dodge(u8), 
-    GFI(u8),  
+    GFI(u8), 
+    Pickup(u8),  
+    StandUp, 
 }
 #[derive(Debug)]
 pub struct Node { 
@@ -29,12 +31,15 @@ pub struct Node {
 impl Node {
     fn apply_gfi(&mut self, target: u8) {
         self.prob *= (7.0-f32::from(target))/6.0; 
+        self.rolls.push(Roll::GFI(target)); 
     }
     fn apply_dodge(&mut self, target: u8) {
         self.prob *= (7.0-f32::from(target))/6.0; 
+        self.rolls.push(Roll::Dodge(target)); 
     }
     fn apply_pickup(&mut self, target: u8) {
         self.prob *= (7.0-f32::from(target))/6.0; 
+        self.rolls.push(Roll::Pickup(target)); 
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -64,7 +69,7 @@ impl Node {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Path {
     pub steps: Vec<(Position, Vec<Roll>)>, 
     pub prob: f32, 
@@ -75,6 +80,11 @@ impl Path {
         let mut steps = vec![(node.position, node.rolls.clone())]; 
         
         while let Some(parent) = &node.parent {
+            if parent.parent.is_none(){
+                //only the root node has no parent. 
+                //And we don't want the root node here 
+                break; 
+            }
             steps.push((parent.position, parent.rolls.clone()));  
             node = parent; 
         }
@@ -248,7 +258,7 @@ impl<'a> PathFinder <'a>{
                 return None; 
             }
         }
-        let mut next_node =  Node{ parent: from_node.parent.clone(), 
+        let mut next_node =  Node{ parent: Some(from_node.clone()), 
                                            position: to, 
                                            moves_left: moves_left_next, 
                                            gfis_left: gfis_left_next, 
@@ -268,10 +278,6 @@ impl<'a> PathFinder <'a>{
         
         let next_node = next_node; //we're done mutating. 
         
-        if let Some(current_best) = &self.nodes[to_x][to_y] {
-            assert!((current_best.prob - next_node.prob).abs() < 0.0001); 
-        }   
-
         if let Some(best_before) = &self.locked_nodes[to_x][to_y]{
             assert!(best_before.prob > next_node.prob);
             if !next_node.is_dominant_over(best_before){
