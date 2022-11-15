@@ -39,11 +39,12 @@ impl Node {
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
         assert_eq!(self.position, othr.position); 
-        if self.prob > othr.prob && self.moves_left + self.gfis_left < othr.moves_left + othr.gfis_left {
+        
+        let self_moves_left = self.moves_left+self.gfis_left; 
+        let othr_moves_left = othr.moves_left+othr.gfis_left;       
+        
+        if self.prob > othr.prob && self_moves_left > othr_moves_left {
             return true; 
-        } 
-        if othr.prob > self.prob && othr.moves_left + othr.gfis_left < self.moves_left + self.gfis_left {
-            return false; 
         } 
         false 
     }
@@ -54,10 +55,10 @@ impl Node {
         if self.prob > othr.prob {return true;}
         if self.prob < othr.prob {return false;} 
         
-        let self_moves = self.moves_left+self.gfis_left; 
-        let othr_moves = othr.moves_left+othr.gfis_left;       
+        let self_moves_left = self.moves_left+self.gfis_left; 
+        let othr_moves_left = othr.moves_left+othr.gfis_left;       
 
-        if self_moves < othr_moves {return true;}
+        if self_moves_left > othr_moves_left {return true;}
         false
     }
 }
@@ -137,13 +138,13 @@ impl<'a> PathFinder <'a>{
         }
         
         self.open_set.push(root_node); 
-        
         loop {
             //expansion 
             while let Some(node) = self.open_set.pop() {
                 self.expand_node(node); 
             } 
-
+            
+            //clear 
             for (node, locked) in zip(gimmi_mut_iter(&mut self.nodes), gimmi_mut_iter(&mut self.locked_nodes)){
                 match (&node, &locked) {
                     (Some(n), Some(l)) if n.is_better_than(l) => *locked = node.clone(),
@@ -151,15 +152,31 @@ impl<'a> PathFinder <'a>{
                     _ => (),
                 }
             }
-
             self.nodes = Default::default(); 
 
-            //prepare nodes 
-            self.open_set = match self.risky_sets.get_next_batch() {
-                                Some(new_open_set) => new_open_set, 
-                                None => break, 
+            //prepare nodes
+            match self.risky_sets.get_next_batch() {
+                None => break, 
+                Some(new_open_set) => {
+                    for new_node in new_open_set {
+                        let (x,y) = new_node.position.to_usize().unwrap(); 
+                        if let Some(best_before) = &self.locked_nodes[x][y] {
+                            if ! new_node.is_dominant_over(best_before) {
+                                continue; 
+                            }
+                        }
+                        let current_best = &mut self.nodes[x][y]; 
+                        if current_best.is_some() && ! new_node.is_better_than(current_best.as_ref().unwrap()) {
+                            continue;
+                        }
+                        *current_best = Some(new_node.clone()); 
+                        self.open_set.push(new_node); 
+                    }
+                }, 
             }; 
-            assert!(!self.open_set.is_empty()); 
+            if self.open_set.is_empty() && self.risky_sets.is_empty(){
+                break; 
+            }
         }
 
         let mut paths: FullPitch<Option<Path>> = Default::default(); 
@@ -200,7 +217,7 @@ impl<'a> PathFinder <'a>{
                 if position.distance(&to_square) < 2 && (self.tackles_zones_at(position) == 0 || self.tackles_zones_at(&to_square) == 0) {
                     continue;
                 } 
-            } 
+            }
             
             match self.expand_to(&node, to_square) {
                 Some(risky_node) if risky_node.prob < node.prob  => self.risky_sets.insert_node(risky_node), 
@@ -222,12 +239,12 @@ impl<'a> PathFinder <'a>{
     }
     fn expand_move_to(&self, from_node: &Rc<Node>, to: Position) -> OptRcNode { 
         let gfi = from_node.moves_left == 0; 
-        let (x, y) = to.to_usize().unwrap(); 
+        let (to_x, to_y) = to.to_usize().unwrap(); 
         let moves_left_next = max(0, from_node.moves_left-1); 
         let gfis_left_next = from_node.gfis_left - i8::from(gfi);   
 
-        if let Some(best_node) = &self.nodes[x][y] {
-            if moves_left_next + gfis_left_next <= best_node.moves_left + best_node.gfis_left{
+        if let Some(current_best) = &self.nodes[to_x][to_y] {
+            if moves_left_next + gfis_left_next <= current_best.moves_left + current_best.gfis_left{
                 return None; 
             }
         }
@@ -241,22 +258,30 @@ impl<'a> PathFinder <'a>{
             next_node.apply_gfi(2);
         }
         if self.tackles_zones_at(&from_node.position) > 0 {
-            let target = max(2, min(6, 6-self.ag+self.tzones[x][y])); 
+            let target = max(2, min(6, 6-self.ag+self.tzones[to_x][to_y])); 
             next_node.apply_dodge(target);
         }
         match self.ball_pos {
             Some(ball_pos) if ball_pos == to => next_node.apply_pickup(3), 
             _ => (),
         } 
-        if let Some(best_before) = &self.locked_nodes[x][y]{
-            if best_before.is_dominant_over(&next_node) {
-                return None; 
+        
+        let next_node = next_node; //we're done mutating. 
+        
+        if let Some(current_best) = &self.nodes[to_x][to_y] {
+            assert!((current_best.prob - next_node.prob).abs() < 0.0001); 
+        }   
+
+        if let Some(best_before) = &self.locked_nodes[to_x][to_y]{
+            assert!(best_before.prob > next_node.prob);
+            if !next_node.is_dominant_over(best_before){
+                return None 
             }
         } 
         Some(Rc::new(next_node))
     }
 }
- 
+
 
 #[derive(Default)]
 struct RiskySet{
@@ -273,6 +298,9 @@ impl RiskySet {
             Some(max_prob) => self.set.remove(&HashableFloat(max_prob)), 
             None => None, 
         }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
     }
 }
 impl Debug for RiskySet {
