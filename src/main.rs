@@ -17,7 +17,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
-    use std::{collections::{HashSet, HashMap}, iter::zip};
+    use std::{collections::{HashSet, HashMap}, iter::{zip, repeat_with}};
     use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::{PathFinder, Path, Roll}}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
@@ -236,15 +236,51 @@ mod tests {
                                     (Position{x: 3, y: 2}, vec![]), 
                                     (Position{x: 3, y: 1}, vec![Roll::Dodge(3)]), 
                                     (Position{x: 2, y: 1}, vec![Roll::Dodge(4)]), ]; 
-        let expected_prob = 0.1; 
+        let expected_prob = 0.03086; 
+        let path = paths[4][6].clone().unwrap(); 
 
-        for (i, (expected, actual)) in zip(expected_steps, paths[4][6].clone().unwrap().steps).enumerate(){
+        for (i, (expected, actual)) in zip(expected_steps, path.steps).enumerate(){
             if expected != actual {
                 panic!("Step {}: {:?} != {:?}",i, expected, actual ); 
             }
         }
 
+        assert!((expected_prob-path.prob).abs() < 0.0001); 
 
         Ok(())
     }
+
+    
+    #[test]
+    fn rng_seed_in_gamestate() -> Result<()> {
+        let mut state = standard_state(); 
+        let seed = 5; 
+        state.set_seed(seed); 
+        
+        fn get_random_rolls(state: &mut GameState) -> Vec<D6> {
+            repeat_with(|| state.get_roll()).take(200).collect()
+        }
+        
+        let numbers: Vec<D6> = get_random_rolls(&mut state);  
+        let different_numbers = get_random_rolls(&mut state);
+        assert_ne!(numbers, different_numbers); 
+
+        state.set_seed(seed); 
+        let same_numbers = get_random_rolls(&mut state);
+
+        assert_eq!(numbers, same_numbers); 
+
+        Ok(())
+    }
+
+    #[test]
+    fn fixed_rolls() {
+        let mut state = standard_state(); 
+        let fixes = vec![D6::One, D6::Three, D6::Five, D6::Two, D6::Four, D6::Six]; 
+        state.d6_fixes.extend(fixes.iter()); 
+
+        let rolls: Vec<D6> = repeat_with(|| state.get_roll()).take(fixes.len()).collect(); 
+        assert_eq!(fixes, rolls); 
+    }
 }
+ 

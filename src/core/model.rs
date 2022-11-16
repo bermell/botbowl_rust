@@ -167,6 +167,7 @@ pub enum BallState {
     InAir(Position),  
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Weather{
     Nice, 
     Sunny,

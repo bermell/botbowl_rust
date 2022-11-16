@@ -1,11 +1,13 @@
 use core::panic;
 use std::{collections::{HashMap, VecDeque}};
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
 
 use crate::core::{model, bb_errors::EmptyProcStackError}; 
 
 use model::*;
 
-use super::{table::AnyAT, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}, pathing::Path}; 
+use super::{table::{AnyAT, D6}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}, pathing::Path}; 
 
 pub const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 
@@ -51,6 +53,8 @@ impl GameStateBuilder {
             new_procs: VecDeque::new(), 
             available_actions: HashMap::new(),
             paths: Default::default(), 
+            rng: ChaCha8Rng::from_entropy(), 
+            d6_fixes: VecDeque::new(), 
             }; 
             
         
@@ -93,13 +97,26 @@ pub struct GameState {
     pub turn: u8,
     pub active_player: Option<PlayerID>,  
     pub game_over: bool, 
-    proc_stack: Vec<Box<dyn Procedure>>, //shouldn't be pub
-    new_procs: VecDeque<Box<dyn Procedure>>, //shouldn't be pub
+    proc_stack: Vec<Box<dyn Procedure>>, 
+    new_procs: VecDeque<Box<dyn Procedure>>, 
     available_actions: HashMap<AnyAT, ActionChoice>, 
+    rng: ChaCha8Rng, 
+    pub d6_fixes: VecDeque<D6>, 
     //rerolled_procs: ???? //TODO!!! 
 }
 
 impl GameState {
+    pub fn set_seed(&mut self, state: u64) {
+        self.rng = ChaCha8Rng::seed_from_u64(state); 
+    } 
+    
+    pub fn get_roll(&mut self) -> D6 {
+        match self.d6_fixes.pop_front(){
+            Some(roll) => roll, 
+            None => self.rng.gen(), 
+        }
+    }
+    
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
         self.get_player_id_at_coord(p.x, p.y)
     } 
