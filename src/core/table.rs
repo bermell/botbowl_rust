@@ -36,6 +36,7 @@ impl From<PosAT> for AnyAT {
 }
 
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skill{
     Dodge, 
     Block, 
