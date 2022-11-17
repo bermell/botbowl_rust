@@ -204,3 +204,29 @@ pub trait Procedure {
     fn available_actions(&mut self, game_state: &GameState) -> HashMap<AnyAT, ActionChoice> {HashMap::new()}
 }
 
+pub struct AvailableActions {
+
+}
+impl AvailableActions {
+    pub fn new_empty() -> Self {
+        todo!()
+    }
+    pub fn new(team: TeamType) -> Self {
+        todo!()
+    }
+    pub fn is_empty(&self) -> bool {
+        todo!()
+    }  
+    pub fn insert_simple(&mut self, action_type: SimpleAT) {
+        todo!()
+    }
+    pub fn insert_positional(&mut self, action_type: PosAT, positions: Vec<Position>) {
+        todo!()
+    }
+    pub fn is_legal_action(&self, action: Action) -> bool {
+        todo!()
+    }
+    pub fn get_team(&self) -> Option<TeamType> {
+        todo!()
+    }
+}
