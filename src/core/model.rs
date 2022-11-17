@@ -5,7 +5,7 @@ use std::ops::Add;
 
 use crate::core::table; 
 use super::gamestate::GameState;
-use super::table::AnyAT;
+use super::table::{AnyAT, Skill, SimpleAT, PosAT};
 
 pub type PlayerID = usize; 
 pub type Coord = i8; 
@@ -114,7 +114,7 @@ pub struct FieldedPlayer{
     pub position: Position, 
     pub status: PlayerStatus, 
     pub used: bool, 
-    pub moves: u16, 
+    pub moves: u8, 
     //bone_headed: bool
     //hypnotized: bool
     //really_stupid: bool
@@ -178,9 +178,9 @@ pub enum Weather{
 
 #[allow(unused_variables)]
 pub trait Procedure {
-    fn start(&self, g: &GameState) {}
-    fn step(&self, g: &mut GameState, action: Option<Action>) -> bool; 
-    fn end(&self, g: &mut GameState) {}
-    fn available_actions(&self, g: &mut GameState) -> HashMap<AnyAT, ActionChoice> {HashMap::new()}
+    fn start(&self, game_state: &GameState) {}
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool; 
+    fn end(&self, game_state: &mut GameState) {}
+    fn available_actions(&mut self, game_state: &GameState) -> HashMap<AnyAT, ActionChoice> {HashMap::new()}
 }
 

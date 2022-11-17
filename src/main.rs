@@ -18,7 +18,7 @@ fn main() {
 mod tests {
 
     use std::{collections::{HashSet, HashMap}, iter::{zip, repeat_with}};
-    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::{PathFinder, Path, Roll}}; 
+    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::{PathFinder, Roll}}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
     use crate::core::model::*; 
@@ -111,6 +111,35 @@ mod tests {
         assert!(state.get_player_id_at(position).is_none()); 
         Ok(())
     }
+    
+    #[test]
+    fn long_move_action() -> Result<()> {
+        let mut state = standard_state(); 
+        let starting_pos = Position{x: 3, y: 1}; 
+        let move_target = Position{x: 2, y: 5};  
+        state.d6_fixes.extend(&[D6::Six, D6::Six, D6::Six]); 
+
+        assert!(state.get_player_at(starting_pos).is_some());
+        assert!(state.get_player_at(move_target).is_none());
+       
+        state.step(Action::Positional(PosAT::StartMove, starting_pos))?; 
+        state.step(Action::Positional(PosAT::Move, move_target))?;
+
+        assert!(state.get_player_at(starting_pos).is_none());
+        assert!(state.get_player_at(move_target).is_some());
+
+        state.step(Action::Simple(SimpleAT::EndPlayerTurn))?; 
+        
+        assert!(state.get_player_at(move_target).unwrap().used); 
+
+        match state.get_available_actions().get(&AnyAT::from(PosAT::StartMove)) {
+            Some(ActionChoice::Positional(positions)) => 
+                assert!(!positions.iter().any(|p|*p==move_target)), 
+            _ => panic!(), 
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn start_move_action() -> Result<()> {
@@ -146,7 +175,7 @@ mod tests {
         let starting_pos = Position{x: 3, y: 1}; 
         let id = state.get_player_id_at(starting_pos).unwrap(); 
         state.step(Action::Positional(PosAT::StartMove, starting_pos))?; 
-        let mut pf = PathFinder::new(&mut state); 
+        let mut pf = PathFinder::new(&state); 
         let paths = pf.player_paths(id)?; 
       
         let mut errors = Vec::new(); 
@@ -170,11 +199,11 @@ mod tests {
 
     #[test]
     fn pathing_probs() -> Result<()> {
-        let mut state = GameStateBuilder::new(&[(3, 2)], &[(1, 3), (3, 3), (4, 2)]).build(); 
+        let state = GameStateBuilder::new(&[(3, 2)], &[(1, 3), (3, 3), (4, 2)]).build(); 
         let starting_pos = Position{x: 3, y: 2}; 
         let id = state.get_player_id_at(starting_pos).unwrap(); 
         
-        let mut pf = PathFinder::new(&mut state); 
+        let mut pf = PathFinder::new(&state); 
         let paths = pf.player_paths(id)?; 
         
         let mut pos_to_prob: HashMap<(usize, usize), Option<f32>> = HashMap::new();  
@@ -219,14 +248,14 @@ mod tests {
 
     #[test]
     fn one_long_path() -> Result<()> {
-        let mut state = GameStateBuilder::new(
+        let state = GameStateBuilder::new(
             &[(1, 1)], 
             &[(1, 2), (2, 3),(2, 4),  (5, 3), (6, 4)])
             .add_ball((4, 6))
             .build(); 
         let starting_pos = Position{x: 1, y: 1}; 
         let id = state.get_player_id_at(starting_pos).unwrap(); 
-        let mut pf = PathFinder::new(&mut state); 
+        let mut pf = PathFinder::new(&state); 
         let paths = pf.player_paths(id)?; 
 
         let expected_steps = vec![  (Position{x: 4, y: 6}, vec![Roll::GFI(2), Roll::Pickup(3)]), 
@@ -281,6 +310,13 @@ mod tests {
 
         let rolls: Vec<D6> = repeat_with(|| state.get_roll()).take(fixes.len()).collect(); 
         assert_eq!(fixes, rolls); 
+    }
+
+    #[test]
+    fn movement() -> Result<()>{
+        let mut state = standard_state(); 
+        state.step(Action::Positional(PosAT::StartMove, Position { x: 3, y: 2 }))?; 
+        Ok(())
     }
 }
  
