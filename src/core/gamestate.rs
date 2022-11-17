@@ -7,7 +7,7 @@ use crate::core::{model, bb_errors::EmptyProcStackError};
 
 use model::*;
 
-use super::{table::{AnyAT, D6}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}, pathing::Path}; 
+use super::{table::{AnyAT, D6}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}}; 
 
 pub const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 

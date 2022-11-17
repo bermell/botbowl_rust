@@ -15,7 +15,7 @@ pub enum Roll{ //Make more clever!
     Dodge(u8), 
     GFI(u8), 
     Pickup(u8),  
-    StandUp, 
+    //StandUp, 
 }
 #[derive(Debug)]
 pub struct Node { 
@@ -72,30 +72,30 @@ impl Node {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Path {
     pub steps: Vec<(Position, Vec<Roll>)>, 
+    pub target: Position, 
     pub prob: f32, 
 }
 impl Path {
     fn new(final_node: &Node) -> Path {
+        let mut path = Path{steps: vec![(final_node.position, final_node.rolls.clone())],
+                            prob: final_node.prob, 
+                            target: final_node.position }; 
         let mut node: &Node = final_node; 
-        let mut steps = vec![(node.position, node.rolls.clone())]; 
-        
         while let Some(parent) = &node.parent {
             if parent.parent.is_none(){
-                //only the root node has no parent. 
-                //And we don't want the root node here 
+                //We don't want the root node here 
                 break; 
             }
-            steps.push((parent.position, parent.rolls.clone()));  
+            path.steps.push((parent.position, parent.rolls.clone()));  
             node = parent; 
         }
-
-        Path{steps, prob: final_node.prob}
+        path
     }
 }
 
 #[allow(dead_code)]
 pub struct PathFinder<'a> {
-    pub game_state: &'a GameState, 
+    game_state: &'a GameState, 
     nodes: FullPitch<OptRcNode>, 
     locked_nodes: FullPitch<OptRcNode>, 
     tzones: FullPitch<u8>, 
@@ -109,7 +109,7 @@ pub struct PathFinder<'a> {
 } 
 
 impl<'a> PathFinder <'a>{
-    pub fn new(game_state: &'a mut GameState) -> PathFinder<'a> {
+    pub fn new(game_state: &'a GameState) -> PathFinder<'a> {
         PathFinder { game_state, 
                      nodes: Default::default(),
                      locked_nodes: Default::default(),
