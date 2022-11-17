@@ -52,7 +52,6 @@ impl GameStateBuilder {
             proc_stack: Vec::new(), 
             new_procs: VecDeque::new(), 
             available_actions: HashMap::new(),
-            paths: Default::default(), 
             rng: ChaCha8Rng::from_entropy(), 
             d6_fixes: VecDeque::new(), 
             }; 
@@ -75,8 +74,8 @@ impl GameStateBuilder {
                 _ => panic!(),
             }
         }
-        let proc = Turn{team: TeamType::Home}; 
-        state.available_actions = proc.available_actions(&mut state); 
+        let mut proc = Turn{team: TeamType::Home}; 
+        state.available_actions = proc.available_actions(&state); 
         state.proc_stack.push(Box::new(proc));
          
         state
@@ -91,7 +90,6 @@ pub struct GameState {
     fielded_players: [Option<FieldedPlayer>; 22],  
     dugout_players: Vec<DugoutPlayer>, 
     board: FullPitch<Option<PlayerID>>, 
-    paths: FullPitch<Option<Path>>,
     pub ball: BallState, 
     pub half: u8, 
     pub turn: u8,
@@ -115,6 +113,32 @@ impl GameState {
             Some(roll) => roll, 
             None => self.rng.gen(), 
         }
+    }
+
+    pub fn get_team(&self, team: TeamType) -> &TeamState {
+        match team {
+            TeamType::Home => &self.home,
+            TeamType::Away => &self.away,
+        }
+    }
+    
+    pub fn get_mut_team(&mut self, team: TeamType) -> &mut TeamState {
+        match team {
+            TeamType::Home => &mut self.home,
+            TeamType::Away => &mut self.away,
+        }
+    }
+    pub fn get_active_teamtype(&self) -> TeamType {
+        todo!();
+        TeamType::Home
+    }
+
+    pub fn get_active_team(&self) -> &TeamState {
+        self.get_team(self.get_active_teamtype())
+    }
+
+    pub fn get_active_team_mut(&mut self) -> &mut TeamState {
+        self.get_mut_team(self.get_active_teamtype())
     }
     
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
@@ -265,7 +289,7 @@ impl GameState {
 
     pub fn is_legal_action(&mut self, action: &Action) -> bool {
         
-        let top_proc = self.proc_stack.pop().unwrap(); 
+        let mut top_proc = self.proc_stack.pop().unwrap(); 
         debug_assert_eq!(top_proc.available_actions(self), self.available_actions); 
         self.proc_stack.push(top_proc); 
          

@@ -128,6 +128,20 @@ pub struct FieldedPlayer{
     //squares_moved: List['Square'] //might need this
     //has_blocked: bool
 }
+impl FieldedPlayer {
+    pub fn moves_left(&self) -> u8 {
+        self.stats.ma +2 - self.moves
+    }
+    pub fn can_use_skill(&self, skill: Skill) -> bool {
+        true 
+    }
+    pub fn has_skill(&self, skill: Skill) -> bool {
+        true 
+    }
+    pub fn use_skill(&mut self, skill: Skill) {
+
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct TeamState {
@@ -139,7 +153,7 @@ pub struct TeamState {
     //score: u8,
     //turn: u8,
     //rerolls_start: u8,
-    //rerolls: u8,
+    pub rerolls: u8,
     //ass_coaches: u8,
     //cheerleaders: u8,
     //fame: u8,
@@ -149,8 +163,14 @@ pub struct TeamState {
 impl TeamState {
     #[allow(clippy::new_without_default)]
     pub fn new() -> TeamState {
-        TeamState {  }       
+        TeamState {rerolls: 3  }       
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
+    }
+    pub fn can_use_reroll(&self) -> bool {
+        !todo!(); 
+    }
+    pub fn use_reroll(&mut self) {
+        !todo!(); 
     }
 }
 
