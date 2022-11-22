@@ -251,8 +251,9 @@ impl GameState {
     }
     
     pub fn step(&mut self, action: Action) -> Result<()> {
-        
-        assert!(self.is_legal_action(&action)); 
+        if !self.is_legal_action(&action) {
+            return Err(Box::new(IllegalActionError{action})); 
+        } 
 
         let mut top_proc = self.proc_stack.pop()
             .ok_or_else(|| Box::new(EmptyProcStackError{}))?;  

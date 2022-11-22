@@ -35,3 +35,15 @@ impl fmt::Display for EmptyProcStackError{
     }
 }
 
+
+#[derive(Debug, Clone, Copy)]
+pub struct IllegalActionError{
+    pub action: Action,
+}
+
+impl error::Error for IllegalActionError{}
+impl fmt::Display for IllegalActionError{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Action is not allowed: {:?}", self.action)
+    }
+}
