@@ -1,11 +1,11 @@
 use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error;
 use std::ops::Add;
 
 use crate::core::table; 
 use super::gamestate::GameState;
-use super::table::{AnyAT, Skill, SimpleAT, PosAT};
+use super::table::{Skill, SimpleAT, PosAT};
 
 pub type PlayerID = usize; 
 pub type Coord = i8; 
@@ -133,13 +133,13 @@ impl FieldedPlayer {
         self.stats.ma +2 - self.moves
     }
     pub fn can_use_skill(&self, skill: Skill) -> bool {
-        true 
+        todo!()
     }
     pub fn has_skill(&self, skill: Skill) -> bool {
-        true 
+        todo!()
     }
     pub fn use_skill(&mut self, skill: Skill) {
-
+        todo!()
     }
 }
 
@@ -167,10 +167,10 @@ impl TeamState {
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
     pub fn can_use_reroll(&self) -> bool {
-        !todo!(); 
+        todo!(); 
     }
     pub fn use_reroll(&mut self) {
-        !todo!(); 
+        todo!(); 
     }
 }
 

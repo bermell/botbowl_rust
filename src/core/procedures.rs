@@ -3,22 +3,19 @@ use model::*;
 
 use crate::core::table::*; 
 
-use std::{collections::HashMap, hash::Hash};
-use crate::core::table;
-
-use super::{table::AnyAT, gamestate::{GameState, self}, pathing::{PathFinder, Path, Roll}}; 
+use super::{gamestate::{GameState}, pathing::{PathFinder, Path, Roll}}; 
 
 pub struct Turn{
     pub team: TeamType, 
 }
 impl Procedure for Turn {
-    fn available_actions(&mut self, game_state: &GameState) -> HashMap<table::AnyAT, ActionChoice> {
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
         let positions = game_state.get_players_on_pitch_in_team(self.team)
             .filter(|p| !p.used)
             .map(|p| p.position);
-        let mut aa = HashMap::new(); 
-        aa.insert(AnyAT::from(PosAT::StartMove), ActionChoice::Positional(positions.collect()));
-        aa.insert(AnyAT::from(SimpleAT::EndTurn), ActionChoice::Simple);
+        let mut aa = AvailableActions::new(self.team); 
+        aa.insert_positional(PosAT::StartMove, positions.collect());
+        aa.insert_simple(SimpleAT::EndTurn); 
         aa
     }
 
@@ -53,30 +50,49 @@ impl MoveAction{
     pub fn new(id: PlayerID) -> MoveAction {
         MoveAction { player_id: id, paths: Default::default(), active_path: None, rolls: None }
     }
+    fn consolidate_active_path(&mut self) {
+        if let Some(rolls) = &self.rolls {
+            if !rolls.is_empty(){
+                return; 
+            }
+        }
+        if let Some(path) = &self.active_path {
+            if !path.steps.is_empty() {
+                return; 
+            }  
+        }
+        self.rolls = None; 
+        self.active_path = None; 
+    }
 
-
-    fn contine_active_path(&mut self, game_state: &mut GameState) -> bool {
-        let roll_len_before = self.rolls.as_ref().map_or(0, |rolls| rolls.len());//debugging 
+    fn continue_active_path(&mut self, game_state: &mut GameState) {
+        let debug_roll_len_before = self.rolls.as_ref().map_or(0, |rolls| rolls.len());
 
         //are the rolls left to handle?  
         if let Some(next_roll) = self.rolls.as_mut().map(|rolls| rolls.pop()).flatten() {
             let new_proc = proc_from_roll(next_roll, &self); 
             game_state.push_proc(new_proc); 
             
-            let roll_len_after = self.rolls.as_ref().map_or(0, |rolls| rolls.len()); //debugging 
-            assert_eq!(roll_len_before-1, roll_len_after); //debugging 
+            let debug_roll_len_after = self.rolls.as_ref().map_or(0, |rolls| rolls.len()); 
+            assert_eq!(debug_roll_len_before-1, debug_roll_len_after); 
             
-            return true; 
+            return; 
         }
         
         let path = self.active_path.as_mut().unwrap(); 
        
         // check if any rolls left to handle, if not then just move to end of path
-        if path.steps.iter().any(|(_, rolls)| !rolls.is_empty()){
-            game_state.move_player(self.player_id, path.target).unwrap(); 
-            return false; 
+        if path.steps.iter().all(|(_, rolls)| rolls.is_empty()){
+            
+            //check if already there
+            if let Some(id) = game_state.get_player_id_at(path.target) {
+                assert_eq!(id, self.player_id); 
+            } else {
+                game_state.move_player(self.player_id, path.target).unwrap(); 
+            }
+            path.steps.clear(); 
+            return;
         }
-
         while let Some((position, mut rolls)) = path.steps.pop(){
             
             game_state.move_player(self.player_id, position).unwrap(); 
@@ -87,17 +103,16 @@ impl MoveAction{
                 if !rolls.is_empty(){
                     self.rolls = Some(rolls); 
                 }
-                return true; 
+                return; 
             }
         }
         
-        true
     } 
 
 }
 impl Procedure for MoveAction {
-    fn available_actions(&mut self, g: &GameState) -> HashMap<table::AnyAT, ActionChoice> {
-        let mut aa = HashMap::new(); 
+    fn available_actions(&mut self, g: &GameState) -> AvailableActions {
+        let mut aa = AvailableActions::new(g.get_player(self.player_id).unwrap().stats.team); 
         if self.active_path.is_some(){
             return aa; 
         }
@@ -111,9 +126,9 @@ impl Procedure for MoveAction {
                     .flatten()
                     .map(|path| path.target).collect();
             
-            aa.insert(AnyAT::from(PosAT::Move), ActionChoice::Positional(move_positions));
+            aa.insert_positional(PosAT::Move, move_positions);
         }
-        aa.insert(AnyAT::from(SimpleAT::EndPlayerTurn), ActionChoice::Simple); 
+        aa.insert_simple(SimpleAT::EndPlayerTurn); 
         aa
     }
 
@@ -126,7 +141,9 @@ impl Procedure for MoveAction {
                 let (x, y) = position.to_usize().unwrap(); 
                 self.active_path = self.paths[x][y].clone(); 
                 self.paths = Default::default();  
-                self.contine_active_path(game_state) 
+                self.continue_active_path(game_state); 
+                self.consolidate_active_path(); 
+                false 
             }
             Some(Action::Simple(SimpleAT::EndPlayerTurn)) => {
                 game_state.get_mut_player(self.player_id).unwrap().used = true; 
@@ -137,7 +154,9 @@ impl Procedure for MoveAction {
                     return true; 
                 }
                 
-                self.contine_active_path(game_state) 
+                self.continue_active_path(game_state); 
+                self.consolidate_active_path();
+                false
             }
 
             _ => panic!("very wrong!")
@@ -164,7 +183,7 @@ impl SimpleProc for DodgeProc{
     }
 }
 
-
+#[allow(unused_variables)]
 trait SimpleProc {
     fn d6_target(&self) -> D6; //called immidiately before 
     fn reroll_skill(&self) -> Option<Skill>; 
@@ -233,17 +252,16 @@ where
         self.proc.apply_failure(game_state); 
         true
     }
-    fn available_actions(&mut self, game_state: &GameState) -> HashMap<AnyAT, ActionChoice> {
-        let mut aa = HashMap::new(); 
-        
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
         match self.state {
-            RollProcState::Init => (), 
+            RollProcState::Init => AvailableActions::new_empty(), 
             RollProcState::WaitingForTeamReroll => {
-                aa.insert(AnyAT::from(SimpleAT::UseReroll), ActionChoice::Simple); 
-                aa.insert(AnyAT::from(SimpleAT::DontUseReroll), ActionChoice::Simple); 
+                let mut aa = AvailableActions::new(game_state.get_player(self.id).unwrap().stats.team);
+                aa.insert_simple(SimpleAT::UseReroll); 
+                aa.insert_simple(SimpleAT::DontUseReroll); 
+                aa
             }, 
             _ => panic!("Illegal state!"), 
         }
-        aa
     }
 }
