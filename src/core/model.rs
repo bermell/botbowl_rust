@@ -201,32 +201,45 @@ pub trait Procedure {
     fn start(&self, game_state: &GameState) {}
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool; 
     fn end(&self, game_state: &mut GameState) {}
-    fn available_actions(&mut self, game_state: &GameState) -> HashMap<AnyAT, ActionChoice> {HashMap::new()}
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {AvailableActions::new_empty()}
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct AvailableActions {
-
+    team: Option<TeamType>, 
+    simple: HashSet<SimpleAT>, 
+    positional: HashMap<PosAT, Vec<Position>>, 
 }
 impl AvailableActions {
     pub fn new_empty() -> Self {
-        todo!()
+        AvailableActions { team: None, simple: HashSet::new(), positional: HashMap::new() }
     }
     pub fn new(team: TeamType) -> Self {
-        todo!()
+        AvailableActions { team: Some(team), simple: HashSet::new(), positional: HashMap::new() }
     }
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.simple.is_empty() && ! self.positional.iter().any(|(_, positions)| !positions.is_empty()) 
     }  
     pub fn insert_simple(&mut self, action_type: SimpleAT) {
-        todo!()
+        assert!(self.team.is_some()); 
+        self.simple.insert(action_type); 
+
     }
     pub fn insert_positional(&mut self, action_type: PosAT, positions: Vec<Position>) {
-        todo!()
+        assert!(self.team.is_some()); 
+        assert!(!self.positional.contains_key(&action_type)); 
+        self.positional.insert(action_type, positions); 
     }
     pub fn is_legal_action(&self, action: Action) -> bool {
-        todo!()
+        match action {
+            Action::Positional(at, pos) => match self.positional.get(&at) {
+                                                Some(legal_positions) => legal_positions.contains(&pos),
+                                                None => false,
+            }
+            Action::Simple(at) => self.simple.contains(&at),
+        }
     }
     pub fn get_team(&self) -> Option<TeamType> {
-        todo!()
+        self.team
     }
 }

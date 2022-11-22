@@ -1,5 +1,5 @@
 use core::panic;
-use std::{collections::{HashMap, VecDeque}};
+use std::{collections::{VecDeque}};
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 
@@ -7,7 +7,7 @@ use crate::core::{model, bb_errors::EmptyProcStackError};
 
 use model::*;
 
-use super::{table::{AnyAT, D6}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition}}; 
+use super::{table::{D6}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition, IllegalActionError}}; 
 
 pub const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 
@@ -51,9 +51,10 @@ impl GameStateBuilder {
             dugout_players: Vec::new(), 
             proc_stack: Vec::new(), 
             new_procs: VecDeque::new(), 
-            available_actions: HashMap::new(),
+            available_actions: AvailableActions::new_empty(),
             rng: ChaCha8Rng::from_entropy(), 
-            d6_fixes: VecDeque::new(), 
+            d6_fixes: VecDeque::new(),
+            rng_enabled: false,  
             }; 
             
         
@@ -97,7 +98,8 @@ pub struct GameState {
     pub game_over: bool, 
     proc_stack: Vec<Box<dyn Procedure>>, 
     new_procs: VecDeque<Box<dyn Procedure>>, 
-    available_actions: HashMap<AnyAT, ActionChoice>, 
+    available_actions: AvailableActions,  
+    pub rng_enabled: bool, 
     rng: ChaCha8Rng, 
     pub d6_fixes: VecDeque<D6>, 
     //rerolled_procs: ???? //TODO!!! 
@@ -111,7 +113,8 @@ impl GameState {
     pub fn get_roll(&mut self) -> D6 {
         match self.d6_fixes.pop_front(){
             Some(roll) => roll, 
-            None => self.rng.gen(), 
+            None => {assert!(self.rng_enabled);
+                     self.rng.gen()} 
         }
     }
 
@@ -130,7 +133,6 @@ impl GameState {
     }
     pub fn get_active_teamtype(&self) -> TeamType {
         todo!();
-        TeamType::Home
     }
 
     pub fn get_active_team(&self) -> &TeamState {
@@ -191,16 +193,14 @@ impl GameState {
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()>{
         let (old_x, old_y) = self.get_player(id)?.position.to_usize()?; 
         let (new_x, new_y) = new_pos.to_usize()?; 
-        if self.board[new_x][new_y].is_some() {
+        if let Some(occupied_id) = self.board[new_x][new_y] {
+            panic!("Tried to move {}, to {:?} but it was already occupied by {}", id, new_pos, occupied_id); 
             return Err(Box::new(IllegalMovePosition{position: new_pos} ))
         }
         self.board[old_x][old_y] = None; 
         self.get_mut_player(id)?.position = new_pos; 
         self.board[new_x][new_y] = Some(id); 
         Ok(())
-    }
-    pub fn get_available_actions(&self) -> &HashMap<AnyAT, ActionChoice> {
-        &self.available_actions
     }
     pub fn get_players_on_pitch(&self) -> impl Iterator<Item=&FieldedPlayer>{
         self.fielded_players.iter().filter_map(|x|x.as_ref())
@@ -290,22 +290,10 @@ impl GameState {
 
     pub fn is_legal_action(&mut self, action: &Action) -> bool {
         
-        let mut top_proc = self.proc_stack.pop().unwrap(); 
+        let mut top_proc = self.proc_stack.pop().unwrap(); //TODO: remove these three lines at some point!  
         debug_assert_eq!(top_proc.available_actions(self), self.available_actions); 
         self.proc_stack.push(top_proc); 
          
-        action_in_aa(&self.available_actions, action)
+        self.available_actions.is_legal_action(*action)
     }
 }
-
-fn action_in_aa(available_actions: &HashMap<AnyAT, ActionChoice>, action: &Action) -> bool {
-    match *action {
-        Action::Simple(at) => available_actions.get(&AnyAT::from(at)).is_some(), 
-        Action::Positional(at, position) => {
-            match available_actions.get(&AnyAT::from(at)) {
-                Some(ActionChoice::Positional(positions)) => positions.contains(&position),
-                _ => false, 
-            }
-        }
-    }
-} 

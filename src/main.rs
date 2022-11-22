@@ -18,7 +18,7 @@ fn main() {
 mod tests {
 
     use std::{collections::{HashSet, HashMap}, iter::{zip, repeat_with}};
-    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, ActionChoice, Action}, table::{AnyAT, PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::{PathFinder, Roll}}; 
+    use crate::core::{model::{Position, WIDTH_, HEIGHT_, PlayerStats, TeamType, DogoutPlace, Action}, table::{PosAT}, gamestate::{GameState, GameStateBuilder}, pathing::{PathFinder, Roll}}; 
     use ansi_term::Colour::Red;
     use crate::core::table::*; 
     use crate::core::model::*; 
@@ -131,12 +131,7 @@ mod tests {
         state.step(Action::Simple(SimpleAT::EndPlayerTurn))?; 
         
         assert!(state.get_player_at(move_target).unwrap().used); 
-
-        match state.get_available_actions().get(&AnyAT::from(PosAT::StartMove)) {
-            Some(ActionChoice::Positional(positions)) => 
-                assert!(!positions.iter().any(|p|*p==move_target)), 
-            _ => panic!(), 
-        }
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::StartMove, move_target))); 
 
         Ok(())
     }
@@ -159,12 +154,7 @@ mod tests {
         state.step(Action::Simple(SimpleAT::EndPlayerTurn))?; 
         
         assert!(state.get_player_at(move_target).unwrap().used); 
-
-        match state.get_available_actions().get(&AnyAT::from(PosAT::StartMove)) {
-            Some(ActionChoice::Positional(positions)) => 
-                assert!(!positions.iter().any(|p|*p==move_target)), 
-            _ => panic!(), 
-        }
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::StartMove, move_target))); 
 
         Ok(())
     }
@@ -283,6 +273,7 @@ mod tests {
     #[test]
     fn rng_seed_in_gamestate() -> Result<()> {
         let mut state = standard_state(); 
+        state.rng_enabled = true; 
         let seed = 5; 
         state.set_seed(seed); 
         
@@ -305,6 +296,7 @@ mod tests {
     #[test]
     fn fixed_rolls() {
         let mut state = standard_state(); 
+        state.rng_enabled = true; 
         let fixes = vec![D6::One, D6::Three, D6::Five, D6::Two, D6::Four, D6::Six]; 
         state.d6_fixes.extend(fixes.iter()); 
 
@@ -315,7 +307,7 @@ mod tests {
     #[test]
     fn movement() -> Result<()>{
         let mut state = standard_state(); 
-        state.step(Action::Positional(PosAT::StartMove, Position { x: 3, y: 2 }))?; 
+        state.step(Action::Positional(PosAT::StartMove, Position { x: 3, y: 1 }))?; 
         Ok(())
     }
 }
