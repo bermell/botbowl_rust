@@ -76,20 +76,21 @@ pub enum PlayerStatus{
     Stunned, 
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct PlayerStats{
     pub str_: u8, 
     pub ma: u8, 
     pub ag: u8, 
     pub av: u8,
     pub team: TeamType,  
+    pub skills: HashSet<Skill>, 
     //skills: [Option<table::Skill>; 3],  
     //injuries 
     //spp 
 }
 impl PlayerStats{
     pub fn new(team: TeamType) -> PlayerStats {
-        PlayerStats { str_: 3, ma: 6, ag: 3, av: 8, team}
+        PlayerStats { str_: 3, ma: 6, ag: 3, av: 8, team, skills: HashSet::new()}
     }
 }
 
@@ -115,6 +116,7 @@ pub struct FieldedPlayer{
     pub status: PlayerStatus, 
     pub used: bool, 
     pub moves: u8, 
+    pub used_skills: HashSet<Skill>, 
     //bone_headed: bool
     //hypnotized: bool
     //really_stupid: bool
@@ -133,13 +135,14 @@ impl FieldedPlayer {
         self.stats.ma +2 - self.moves
     }
     pub fn can_use_skill(&self, skill: Skill) -> bool {
-        todo!()
+        self.has_skill(skill) && !self.used_skills.contains(&skill)
     }
     pub fn has_skill(&self, skill: Skill) -> bool {
-        todo!()
+        self.stats.skills.contains(&skill)   
     }
     pub fn use_skill(&mut self, skill: Skill) {
-        todo!()
+        let not_present_before = self.used_skills.insert(skill);
+        debug_assert!(not_present_before);
     }
 }
 

@@ -1,5 +1,5 @@
 use core::panic;
-use std::{collections::{VecDeque}};
+use std::{collections::{VecDeque, HashSet}};
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 
@@ -195,7 +195,7 @@ impl GameState {
         let (new_x, new_y) = new_pos.to_usize()?; 
         if let Some(occupied_id) = self.board[new_x][new_y] {
             panic!("Tried to move {}, to {:?} but it was already occupied by {}", id, new_pos, occupied_id); 
-            return Err(Box::new(IllegalMovePosition{position: new_pos} ))
+            //return Err(Box::new(IllegalMovePosition{position: new_pos} ))
         }
         self.board[old_x][old_y] = None; 
         self.get_mut_player(id)?.position = new_pos; 
@@ -223,7 +223,7 @@ impl GameState {
                                 }; 
 
         self.board[new_x][new_y] = Some(id); 
-        self.fielded_players[id] = Some(FieldedPlayer{ id, stats: player_stats, position, status: PlayerStatus::Up, used: false, moves: 0 });
+        self.fielded_players[id] = Some(FieldedPlayer{ id, stats: player_stats, position, status: PlayerStatus::Up, used: false, moves: 0, used_skills: HashSet::new() });
         Ok(id) 
     }
 
@@ -238,7 +238,7 @@ impl GameState {
         let player = self.get_player(id)?; 
         let (x, y) = player.position.to_usize()?; 
 
-        let dugout_player = DugoutPlayer{ stats: player.stats, place, }; 
+        let dugout_player = DugoutPlayer{ stats: player.stats.clone(), place, }; 
         self.dugout_players.push(dugout_player); 
 
         self.board[x][y] = None; 

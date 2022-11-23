@@ -34,9 +34,9 @@ impl Procedure for Turn {
 
 fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
     match roll {
-        Roll::Dodge(target) => Box::new(DodgeProc::new(move_action.player_id)), 
-        Roll::GFI(target) => todo!(), 
-        Roll::Pickup(target) => todo!(), 
+        Roll::Dodge(target) => Box::new(DodgeProc::new(move_action.player_id, D6::try_from(target).unwrap())), 
+        Roll::GFI(_) => todo!(), 
+        Roll::Pickup(_) => todo!(), 
     }
 }
 
@@ -169,8 +169,8 @@ struct DodgeProc{
     id: PlayerID, 
 }
 impl DodgeProc {
-    fn new(id: PlayerID) -> MovementProc<DodgeProc> {
-        MovementProc::new(DodgeProc { target: D6::Five, id }, id)
+    fn new(id: PlayerID, target: D6) -> MovementProc<DodgeProc> {
+        MovementProc::new(DodgeProc { target, id }, id)
     }
 }
 impl SimpleProc for DodgeProc{
