@@ -164,6 +164,7 @@ impl Procedure for MoveAction {
     }
 }
 
+#[allow(dead_code)]
 struct DodgeProc{
     target: D6,
     id: PlayerID, 
