@@ -69,8 +69,8 @@ impl MoveAction{
         let debug_roll_len_before = self.rolls.as_ref().map_or(0, |rolls| rolls.len());
 
         //are the rolls left to handle?  
-        if let Some(next_roll) = self.rolls.as_mut().map(|rolls| rolls.pop()).flatten() {
-            let new_proc = proc_from_roll(next_roll, &self); 
+        if let Some(next_roll) = self.rolls.as_mut().and_then(|rolls| rolls.pop()) {
+            let new_proc = proc_from_roll(next_roll, self); 
             game_state.push_proc(new_proc); 
             
             let debug_roll_len_after = self.rolls.as_ref().map_or(0, |rolls| rolls.len()); 
