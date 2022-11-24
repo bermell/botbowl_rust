@@ -160,20 +160,22 @@ pub struct TeamState {
     //ass_coaches: u8,
     //cheerleaders: u8,
     //fame: u8,
-    //reroll_used: bool,
+    reroll_used: bool,
     //time_violation: u8,
 }
 impl TeamState {
     #[allow(clippy::new_without_default)]
     pub fn new() -> TeamState {
-        TeamState {rerolls: 3  }       
+        TeamState {rerolls: 3, reroll_used: false }       
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
     pub fn can_use_reroll(&self) -> bool {
-        todo!(); 
+        !self.reroll_used && self.rerolls > 0
     }
     pub fn use_reroll(&mut self) {
-        todo!(); 
+        assert!(self.can_use_reroll()); 
+        self.reroll_used = true; 
+        self.rerolls -= 1; 
     }
 }
 

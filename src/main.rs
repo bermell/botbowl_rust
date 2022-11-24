@@ -30,6 +30,34 @@ mod tests {
                                     .build() 
     }
 
+    #[test] 
+    fn dodge_reroll() -> Result<()> {
+        let mut state = GameStateBuilder::new(&[(1, 1)], &[(2, 1)]).build(); 
+        let id = state.get_player_id_at_coord(1, 1).unwrap(); 
+        state.get_mut_player(id)?.stats.skills.insert(Skill::Dodge); 
+        assert!(state.get_player(id).unwrap().has_skill(Skill::Dodge)); 
+
+        state.step(Action::Positional(PosAT::StartMove, Position { x: 1, y: 1 }))?; 
+         
+        state.d6_fixes.push_back(D6::Three); //fail first (4+) 
+        state.d6_fixes.push_back(D6::Four); //Succeed on skill reroll
+        state.d6_fixes.push_back(D6::Two); //fail second dodge  (3+)
+        
+        state.step(Action::Positional(PosAT::Move, Position { x: 3, y: 3 }))?; 
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll))); 
+        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge)); 
+        
+        state.d6_fixes.push_back(D6::Three); //succeed with team reroll  
+        state.step(Action::Simple(SimpleAT::UseReroll))?; 
+
+        assert_eq!(state.get_player_id_at_coord(3, 3).unwrap(), id);  
+        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll()); 
+        assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2); 
+
+        state.step(Action::Simple(SimpleAT::EndPlayerTurn))?; 
+
+        Ok(())
+    }
     #[test]
     fn player_unique_id_and_correct_positions() {
         let state = standard_state(); 

@@ -118,6 +118,18 @@ impl GameState {
         }
     }
 
+    pub fn get_team_from_player(&self, id: PlayerID) -> Result<&TeamState> {
+        self.get_player(id).
+            map(|player| player.stats.team).
+            map(|team| self.get_team(team))
+    }
+
+    pub fn get_mut_team_from_player(&mut self, id: PlayerID) -> Result<&mut TeamState> {
+        self.get_player(id).
+            map(|player| player.stats.team).
+            map(|team| self.get_mut_team(team))
+    }
+
     pub fn get_team(&self, team: TeamType) -> &TeamState {
         match team {
             TeamType::Home => &self.home,
@@ -131,16 +143,17 @@ impl GameState {
             TeamType::Away => &mut self.away,
         }
     }
-    pub fn get_active_teamtype(&self) -> TeamType {
-        todo!();
+    pub fn get_active_teamtype(&self) -> Option<TeamType> {
+        self.available_actions.get_team()
     }
 
-    pub fn get_active_team(&self) -> &TeamState {
-        self.get_team(self.get_active_teamtype())
+
+    pub fn get_active_team(&self) -> Option<&TeamState> {
+        self.get_active_teamtype().and_then(|team_type| Some(self.get_team(team_type)))
     }
 
-    pub fn get_active_team_mut(&mut self) -> &mut TeamState {
-        self.get_mut_team(self.get_active_teamtype())
+    pub fn get_active_team_mut(&mut self) -> Option<&mut TeamState> {
+        self.get_active_teamtype().and_then(|team_type| Some(self.get_mut_team(team_type)))
     }
     
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {

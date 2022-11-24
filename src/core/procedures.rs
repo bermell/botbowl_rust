@@ -86,7 +86,7 @@ impl MoveAction{
             
             //check if already there
             if let Some(id) = game_state.get_player_id_at(path.target) {
-                assert_eq!(id, self.player_id); 
+                debug_assert_eq!(id, self.player_id); 
             } else {
                 game_state.move_player(self.player_id, path.target).unwrap(); 
             }
@@ -222,7 +222,7 @@ where
                 return true;
             } 
             Some(Action::Simple(SimpleAT::UseReroll)) => {
-                game_state.get_active_team_mut().use_reroll(); 
+                game_state.get_active_team_mut().unwrap().use_reroll(); 
                 self.state = RollProcState::RerollUsed; 
             } 
             _ => (), 
@@ -245,7 +245,8 @@ where
                 }
                 _ => (), 
             }
-            if game_state.get_active_team().can_use_reroll(){
+            
+            if game_state.get_team_from_player(self.id).unwrap().can_use_reroll(){
                 self.state = RollProcState::WaitingForTeamReroll; 
                 return false; 
             }
