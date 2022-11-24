@@ -35,8 +35,8 @@ impl Procedure for Turn {
 fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
     match roll {
         Roll::Dodge(target) => Box::new(DodgeProc::new(move_action.player_id, D6::try_from(target).unwrap())), 
-        Roll::GFI(_) => todo!(), 
-        Roll::Pickup(_) => todo!(), 
+        Roll::GFI(target) =>   Box::new(GfiProc::new(move_action.player_id, D6::try_from(target).unwrap())), 
+        Roll::Pickup(target) => Box::new(PickupProc::new(move_action.player_id, D6::try_from(target).unwrap())), 
     }
 }
 
@@ -89,6 +89,7 @@ impl MoveAction{
                 debug_assert_eq!(id, self.player_id); 
             } else {
                 game_state.move_player(self.player_id, path.target).unwrap(); 
+                game_state.get_mut_player(self.player_id).unwrap().add_move(u8::try_from(path.steps.len()).unwrap())
             }
             path.steps.clear(); 
             return;
@@ -96,7 +97,8 @@ impl MoveAction{
         while let Some((position, mut rolls)) = path.steps.pop(){
             
             game_state.move_player(self.player_id, position).unwrap(); 
-            
+            game_state.get_mut_player(self.player_id).unwrap().add_move(1); 
+
             if let Some(next_roll) = rolls.pop() {
                 let new_proc = proc_from_roll(next_roll, self); 
                 game_state.push_proc(new_proc); 
@@ -120,7 +122,7 @@ impl Procedure for MoveAction {
         if player.used {
             return aa; 
         }
-        if player.moves_left() > 0 {
+        if player.total_movement_left() > 0 {
             self.paths = PathFinder::new(g).player_paths(self.player_id).unwrap(); 
             let move_positions = gimmi_iter(&self.paths)
                     .flatten()
@@ -181,6 +183,44 @@ impl SimpleProc for DodgeProc{
 
     fn reroll_skill(&self) -> Option<Skill> {
         Some(Skill::Dodge)
+    }
+}
+
+struct GfiProc {
+    target: D6, 
+    id: PlayerID, 
+}
+impl GfiProc {
+    fn new(id: PlayerID, target: D6) -> MovementProc<GfiProc> {
+        MovementProc::new(GfiProc { target, id }, id)
+    }
+}
+impl SimpleProc for GfiProc{
+    fn d6_target(&self) -> D6 {
+        self.target
+    }
+
+    fn reroll_skill(&self) -> Option<Skill> {
+        Some(Skill::SureFeet)
+    }
+}
+
+struct PickupProc {
+    target: D6, 
+    id: PlayerID, 
+}
+impl PickupProc {
+    fn new(id: PlayerID, target: D6) -> MovementProc<PickupProc> {
+        MovementProc::new(PickupProc { target, id }, id)
+    }
+}
+impl SimpleProc for PickupProc{
+    fn d6_target(&self) -> D6 {
+        self.target
+    }
+
+    fn reroll_skill(&self) -> Option<Skill> {
+        Some(Skill::SureHands)
     }
 }
 

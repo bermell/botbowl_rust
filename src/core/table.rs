@@ -42,6 +42,7 @@ pub enum Skill{
     Block, 
     Catch, 
     SureHands, 
+    SureFeet, 
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]

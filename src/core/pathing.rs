@@ -21,8 +21,8 @@ pub enum Roll{ //Make more clever!
 pub struct Node { 
     parent: OptRcNode, 
     position: Position, 
-    moves_left: i8, 
-    gfis_left: i8, 
+    moves_left: u8, 
+    gfis_left: u8, 
     // foul_roll, handoff_roll, block_dice
     //euclidiean_distance: f32, 
     prob: f32, 
@@ -100,8 +100,6 @@ pub struct PathFinder<'a> {
     locked_nodes: FullPitch<OptRcNode>, 
     tzones: FullPitch<u8>, 
     ball_pos: Option<Position>, 
-    max_moves: i8, 
-    max_gfis: i8, 
     ag: u8, 
     open_set: Vec<Rc<Node>>, 
     start_pos: Position, 
@@ -114,13 +112,11 @@ impl<'a> PathFinder <'a>{
                      nodes: Default::default(),
                      locked_nodes: Default::default(),
                      tzones: Default::default(), 
-                     max_moves: 0, 
                      ball_pos: match game_state.ball {
                         BallState::OnGround(position) => Some(position), 
                         _ => None, 
                      }, 
                      ag: 0, 
-                     max_gfis: 0, 
                      open_set: Vec::new(), 
                      start_pos: Position { x: 0, y: 0 }, 
                      risky_sets: Default::default(), 
@@ -133,12 +129,15 @@ impl<'a> PathFinder <'a>{
 
     pub fn player_paths(&mut self, id: PlayerID) -> Result<FullPitch<Option<Path>>> {
         let player = self.game_state.get_player(id).unwrap(); 
-        self.max_moves = i8::try_from(player.stats.ma).unwrap(); 
-        self.max_gfis = 2; 
         self.start_pos = player.position; 
         self.ag = player.stats.ag;  
         
-        let root_node = Rc::new( Node{ parent: None, position: self.start_pos, moves_left: self.max_moves, gfis_left: self.max_gfis, prob: 1.0, rolls: Vec::new() }); 
+        let root_node = Rc::new( Node{  parent: None, 
+                                        position: self.start_pos, 
+                                        moves_left: player.moves_left(), 
+                                        gfis_left: player.gfis_left(), 
+                                        prob: 1.0, 
+                                        rolls: Vec::new() }); 
        
         for player in self.game_state.get_players_on_pitch_in_team(TeamType::Away) {
             for pos in self.game_state.get_adj_positions(player.position) {
@@ -250,8 +249,11 @@ impl<'a> PathFinder <'a>{
     fn expand_move_to(&self, from_node: &Rc<Node>, to: Position) -> OptRcNode { 
         let gfi = from_node.moves_left == 0; 
         let (to_x, to_y) = to.to_usize().unwrap(); 
-        let moves_left_next = max(0, from_node.moves_left-1); 
-        let gfis_left_next = from_node.gfis_left - i8::from(gfi);   
+        let moves_left_next = match gfi {
+            true => 0, 
+            false => from_node.moves_left-1,  
+        }; 
+        let gfis_left_next = from_node.gfis_left - u8::from(gfi);   
 
         if let Some(current_best) = &self.nodes[to_x][to_y] {
             if moves_left_next + gfis_left_next <= current_best.moves_left + current_best.gfis_left{

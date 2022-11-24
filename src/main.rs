@@ -30,6 +30,38 @@ mod tests {
                                     .build() 
     }
 
+    #[test]
+    fn gfi_reroll() -> Result<()> {
+        let mut state = GameStateBuilder::new(&[(1, 1)], &[]).build(); 
+        let id = state.get_player_id_at_coord(1, 1).unwrap(); 
+
+        state.step(Action::Positional(PosAT::StartMove, Position { x: 1, y: 1 }))?; 
+         
+        state.d6_fixes.push_back(D6::One); //fail first (2+) 
+        state.step(Action::Positional(PosAT::Move, Position { x: 9, y: 1 }))?; 
+        
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll))); 
+        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge)); 
+        
+        state.d6_fixes.push_back(D6::Two); //succeed with team reroll  
+        state.d6_fixes.push_back(D6::Two); //succeed next gfi roll
+        state.step(Action::Simple(SimpleAT::UseReroll))?; 
+
+        let state = state; 
+        let player = state.get_player(id).unwrap(); 
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Move, Position { x: 9, y: 2 })));
+        assert_eq!(state.get_player_id_at_coord(9, 1).unwrap(), id);  
+        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll()); 
+        assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2); 
+        assert_eq!(state.get_legal_positions(PosAT::Move).len(), 0); 
+        assert_eq!(player.total_movement_left(), 0);
+        assert_eq!(player.gfis_left() , 0);
+        assert_eq!(player.moves_left(), 0);
+
+
+        Ok(())
+    }
+
     #[test] 
     fn dodge_reroll() -> Result<()> {
         let mut state = GameStateBuilder::new(&[(1, 1)], &[(2, 1)]).build(); 
@@ -53,7 +85,9 @@ mod tests {
         assert_eq!(state.get_player_id_at_coord(3, 3).unwrap(), id);  
         assert!(!state.get_team_from_player(id).unwrap().can_use_reroll()); 
         assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2); 
-
+        assert_eq!(state.get_mut_player(id).unwrap().total_movement_left(), 6);
+        assert_eq!(state.get_mut_player(id).unwrap().gfis_left() , 2);
+        assert_eq!(state.get_mut_player(id).unwrap().moves_left(), 4);
         state.step(Action::Simple(SimpleAT::EndPlayerTurn))?; 
 
         Ok(())

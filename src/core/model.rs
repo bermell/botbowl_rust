@@ -132,7 +132,26 @@ pub struct FieldedPlayer{
 }
 impl FieldedPlayer {
     pub fn moves_left(&self) -> u8 {
-        self.stats.ma +2 - self.moves
+        if self.moves <= self.stats.ma {
+            self.stats.ma - self.moves
+        } else {
+            0
+        }
+    }
+    pub fn gfis_left(&self) -> u8 {
+        if self.moves <= self.stats.ma {
+            2
+        } else {
+            2 + self.stats.ma - self.moves 
+        } 
+    }
+    pub fn total_movement_left(&self) -> u8 {
+        debug_assert!(self.moves <= self.stats.ma + 2); 
+        self.stats.ma + 2 - self.moves
+    }
+    pub fn add_move(&mut self, num_moves: u8) {
+        assert!(self.total_movement_left() >= num_moves); 
+        self.moves += num_moves; 
     }
     pub fn can_use_skill(&self, skill: Skill) -> bool {
         self.has_skill(skill) && !self.used_skills.contains(&skill)
@@ -143,6 +162,11 @@ impl FieldedPlayer {
     pub fn use_skill(&mut self, skill: Skill) {
         let not_present_before = self.used_skills.insert(skill);
         debug_assert!(not_present_before);
+    }
+    pub fn reset_skills_and_moves(&mut self) {
+        self.moves = 0; 
+        self.used = false; 
+        self.used_skills.clear(); 
     }
 }
 
@@ -211,9 +235,9 @@ pub trait Procedure {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct AvailableActions {
-    team: Option<TeamType>, 
-    simple: HashSet<SimpleAT>, 
-    positional: HashMap<PosAT, Vec<Position>>, 
+    pub team: Option<TeamType>, 
+    pub simple: HashSet<SimpleAT>, 
+    pub positional: HashMap<PosAT, Vec<Position>>, 
 }
 impl AvailableActions {
     pub fn new_empty() -> Self {

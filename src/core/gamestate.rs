@@ -7,7 +7,7 @@ use crate::core::{model, bb_errors::EmptyProcStackError};
 
 use model::*;
 
-use super::{table::{D6}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition, IllegalActionError}}; 
+use super::{table::{D6, PosAT}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition, IllegalActionError}}; 
 
 pub const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 
@@ -149,11 +149,11 @@ impl GameState {
 
 
     pub fn get_active_team(&self) -> Option<&TeamState> {
-        self.get_active_teamtype().and_then(|team_type| Some(self.get_team(team_type)))
+        self.get_active_teamtype().map(|team_type| self.get_team(team_type))
     }
 
     pub fn get_active_team_mut(&mut self) -> Option<&mut TeamState> {
-        self.get_active_teamtype().and_then(|team_type| Some(self.get_mut_team(team_type)))
+        self.get_active_teamtype().map(|team_type| self.get_mut_team(team_type))
     }
     
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
@@ -301,12 +301,19 @@ impl GameState {
 
     }
 
-    pub fn is_legal_action(&mut self, action: &Action) -> bool {
+    pub fn is_legal_action(&/*mut*/ self, action: &Action) -> bool {
         
-        let mut top_proc = self.proc_stack.pop().unwrap(); //TODO: remove these three lines at some point!  
+        /*let mut top_proc = self.proc_stack.pop().unwrap(); //TODO: remove these three lines at some point!  
         debug_assert_eq!(top_proc.available_actions(self), self.available_actions); 
         self.proc_stack.push(top_proc); 
-         
+         */
         self.available_actions.is_legal_action(*action)
+    }
+
+    pub fn get_legal_positions(&self, at: PosAT) -> Vec<Position> {
+        match self.available_actions.positional.get(&at) {
+            Some(positions) => positions.clone(),
+            None => Vec::new(),
+        }
     }
 }
