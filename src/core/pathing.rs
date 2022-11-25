@@ -118,7 +118,7 @@ impl<'a> PathFinder <'a>{
                      }, 
                      ag: 0, 
                      open_set: Vec::new(), 
-                     start_pos: Position { x: 0, y: 0 }, 
+                     start_pos: Position::new ((0, 0 )), 
                      risky_sets: Default::default(), 
                     }
     }
@@ -217,8 +217,7 @@ impl<'a> PathFinder <'a>{
         
         for direction in DIRECTIONS {
             let to_square = node.position + direction;  
-            if to_square.x == 0 || to_square.x == WIDTH_ || to_square.y == 0 || to_square.y == HEIGHT_ {
-                // out of bounds
+            if to_square.is_out() {
                 continue;
             }
             if let Some( Node { position, ..  }) = parent.as_deref() {

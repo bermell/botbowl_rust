@@ -25,8 +25,8 @@ impl GameStateBuilder {
             away_players: Vec::new(), 
             ball_pos: None, 
         }; 
-        home_players.iter().for_each(|(x, y)| builder.home_players.push(Position{ x: *x, y: *y})); 
-        away_players.iter().for_each(|(x, y)| builder.away_players.push(Position{ x: *x, y: *y})); 
+        home_players.iter().for_each(|(x, y)| builder.home_players.push(Position::new(( *x, *y)))); 
+        away_players.iter().for_each(|(x, y)| builder.away_players.push(Position::new(( *x, *y)))); 
 
         builder
     }
@@ -186,9 +186,8 @@ impl GameState {
 
     pub fn get_adj_positions(&self, p: Position) -> impl Iterator<Item=Position> {
         match p {
-            Position{x, ..} if x == 0 || x >= WIDTH_ => panic!(), 
-            Position{y, ..} if y == 0 || y >= HEIGHT_ => panic!(), 
-            Position{x, y} => DIRECTIONS.iter().map(move |(dx, dy)| Position{x: x+dx, y: y+dy}), 
+            position if position.is_out() => panic!(), 
+            Position{x, y} => DIRECTIONS.iter().map(move |(dx, dy)| Position::new(( x+dx, y+dy))), 
         }
     } 
 
