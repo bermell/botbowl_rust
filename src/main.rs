@@ -7,7 +7,7 @@ fn main() {
                                              &[(5,2), (5, 5)])
                                                     .add_ball((3, 2))
                                                     .build(); 
-    let p = Position {x: 1, y:2}; 
+    let p = Position::new((1,2));
     println!("I'm at {:?}!", p); 
 
     println!("testing gamestate {:?}", g.get_player_at(p)); 
@@ -35,10 +35,10 @@ mod tests {
         let mut state = GameStateBuilder::new(&[(1, 1)], &[]).build(); 
         let id = state.get_player_id_at_coord(1, 1).unwrap(); 
 
-        state.step(Action::Positional(PosAT::StartMove, Position { x: 1, y: 1 }))?; 
+        state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?; 
          
         state.d6_fixes.push_back(D6::One); //fail first (2+) 
-        state.step(Action::Positional(PosAT::Move, Position { x: 9, y: 1 }))?; 
+        state.step(Action::Positional(PosAT::Move, Position::new((9, 1))))?; 
         
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll))); 
         assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge)); 
@@ -49,7 +49,7 @@ mod tests {
 
         let state = state; 
         let player = state.get_player(id).unwrap(); 
-        assert!(!state.is_legal_action(&Action::Positional(PosAT::Move, Position { x: 9, y: 2 })));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Move, Position::new((9, 2)))));
         assert_eq!(state.get_player_id_at_coord(9, 1).unwrap(), id);  
         assert!(!state.get_team_from_player(id).unwrap().can_use_reroll()); 
         assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2); 
@@ -69,13 +69,13 @@ mod tests {
         state.get_mut_player(id)?.stats.skills.insert(Skill::Dodge); 
         assert!(state.get_player(id).unwrap().has_skill(Skill::Dodge)); 
 
-        state.step(Action::Positional(PosAT::StartMove, Position { x: 1, y: 1 }))?; 
+        state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?; 
          
         state.d6_fixes.push_back(D6::Three); //fail first (4+) 
         state.d6_fixes.push_back(D6::Four); //Succeed on skill reroll
         state.d6_fixes.push_back(D6::Two); //fail second dodge  (3+)
         
-        state.step(Action::Positional(PosAT::Move, Position { x: 3, y: 3 }))?; 
+        state.step(Action::Positional(PosAT::Move, Position::new((3, 3))))?; 
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll))); 
         assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge)); 
         
@@ -99,7 +99,7 @@ mod tests {
         let mut ids = HashSet::new(); 
         for x in 0..WIDTH_ {
             for y in 0..HEIGHT_ {
-                let pos = Position{x, y}; 
+                let pos = Position::new((x,y));
                 if let Some(player) = state.get_player_at(pos) {
                     assert_eq!(player.position, pos); 
                     assert!(ids.insert(player.id)); 
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn adjescent() {
         let state = standard_state(); 
-        let num_adj = state.get_adj_players(Position { x: 2, y: 2 }).count(); 
+        let num_adj = state.get_adj_players(Position::new((2, 2))).count(); 
         assert_eq!(num_adj, 3); 
     }
 
@@ -129,8 +129,8 @@ mod tests {
     fn move_player() -> Result<()> {
         let mut state = standard_state(); 
         let id = 1;  
-        let old_pos = Position{x: 2, y: 2}; 
-        let new_pos = Position{x: 10, y: 10}; 
+        let old_pos = Position::new((2,2)); 
+        let new_pos = Position::new((10,10)); 
 
         assert_eq!(state.get_player_id_at(old_pos), Some(id)); 
         assert_eq!(state.get_player(id).unwrap().position, old_pos); 
@@ -159,7 +159,7 @@ mod tests {
     fn field_a_player() -> Result<()> { 
         let mut state = standard_state(); 
         let player_stats = PlayerStats::new(TeamType::Home); 
-        let position = Position{x: 10, y: 10}; 
+        let position = Position::new(( 10, 10)); 
         
         assert!(state.get_player_id_at(position).is_none()); 
         
@@ -177,8 +177,8 @@ mod tests {
     #[test]
     fn long_move_action() -> Result<()> {
         let mut state = standard_state(); 
-        let starting_pos = Position{x: 3, y: 1}; 
-        let move_target = Position{x: 2, y: 5};  
+        let starting_pos = Position::new(( 3, 1)); 
+        let move_target = Position::new(( 2, 5));  
         state.d6_fixes.extend(&[D6::Six, D6::Six, D6::Six]); 
 
         assert!(state.get_player_at(starting_pos).is_some());
@@ -201,8 +201,8 @@ mod tests {
     #[test]
     fn start_move_action() -> Result<()> {
         let mut state = standard_state(); 
-        let starting_pos = Position{x: 3, y: 1}; 
-        let move_target = Position{x: 4, y: 1};  
+        let starting_pos = Position::new(( 3, 1)); 
+        let move_target = Position::new(( 4, 1));  
 
         assert!(state.get_player_at(starting_pos).is_some());
         assert!(state.get_player_at(move_target).is_none());
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn pathing() -> Result<()> {
         let mut state = standard_state(); 
-        let starting_pos = Position{x: 3, y: 1}; 
+        let starting_pos = Position::new(( 3, 1)); 
         let id = state.get_player_id_at(starting_pos).unwrap(); 
         state.step(Action::Positional(PosAT::StartMove, starting_pos))?; 
         let mut pf = PathFinder::new(&state); 
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn pathing_probs() -> Result<()> {
         let state = GameStateBuilder::new(&[(3, 2)], &[(1, 3), (3, 3), (4, 2)]).build(); 
-        let starting_pos = Position{x: 3, y: 2}; 
+        let starting_pos = Position::new(( 3, 2)); 
         let id = state.get_player_id_at(starting_pos).unwrap(); 
         
         let mut pf = PathFinder::new(&state); 
@@ -305,18 +305,18 @@ mod tests {
             &[(1, 2), (2, 3),(2, 4),  (5, 3), (6, 4)])
             .add_ball((4, 6))
             .build(); 
-        let starting_pos = Position{x: 1, y: 1}; 
+        let starting_pos = Position::new(( 1, 1)); 
         let id = state.get_player_id_at(starting_pos).unwrap(); 
         let mut pf = PathFinder::new(&state); 
         let paths = pf.player_paths(id)?; 
 
-        let expected_steps = vec![  (Position{x: 4, y: 6}, vec![Roll::GFI(2), Roll::Pickup(3)]), 
-                                    (Position{x: 4, y: 5}, vec![Roll::Dodge(3)]), 
-                                    (Position{x: 4, y: 4}, vec![Roll::Dodge(4)]), 
-                                    (Position{x: 4, y: 3}, vec![Roll::Dodge(4)]), 
-                                    (Position{x: 3, y: 2}, vec![]), 
-                                    (Position{x: 3, y: 1}, vec![Roll::Dodge(3)]), 
-                                    (Position{x: 2, y: 1}, vec![Roll::Dodge(4)]), ]; 
+        let expected_steps = vec![  (Position::new(( 4, 6)), vec![Roll::GFI(2), Roll::Pickup(3)]), 
+                                    (Position::new(( 4, 5)), vec![Roll::Dodge(3)]), 
+                                    (Position::new(( 4, 4)), vec![Roll::Dodge(4)]), 
+                                    (Position::new(( 4, 3)), vec![Roll::Dodge(4)]), 
+                                    (Position::new(( 3, 2)), vec![]), 
+                                    (Position::new(( 3, 1)), vec![Roll::Dodge(3)]), 
+                                    (Position::new(( 2, 1)), vec![Roll::Dodge(4)]), ]; 
         let expected_prob = 0.03086; 
         let path = paths[4][6].clone().unwrap(); 
 
@@ -340,7 +340,7 @@ mod tests {
         state.set_seed(seed); 
         
         fn get_random_rolls(state: &mut GameState) -> Vec<D6> {
-            repeat_with(|| state.get_roll()).take(200).collect()
+            repeat_with(|| state.get_d6_roll()).take(200).collect()
         }
         
         let numbers: Vec<D6> = get_random_rolls(&mut state);  
@@ -362,14 +362,14 @@ mod tests {
         let fixes = vec![D6::One, D6::Three, D6::Five, D6::Two, D6::Four, D6::Six]; 
         state.d6_fixes.extend(fixes.iter()); 
 
-        let rolls: Vec<D6> = repeat_with(|| state.get_roll()).take(fixes.len()).collect(); 
+        let rolls: Vec<D6> = repeat_with(|| state.get_d6_roll()).take(fixes.len()).collect(); 
         assert_eq!(fixes, rolls); 
     }
 
     #[test]
     fn movement() -> Result<()>{
         let mut state = standard_state(); 
-        state.step(Action::Positional(PosAT::StartMove, Position { x: 3, y: 1 }))?; 
+        state.step(Action::Positional(PosAT::StartMove, Position::new((3, 1 ))))?; 
         Ok(())
     }
 }

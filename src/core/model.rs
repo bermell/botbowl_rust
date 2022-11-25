@@ -33,6 +33,10 @@ pub struct Position {
     pub y: Coord, 
 }
 impl Position{
+    pub fn new(xy: (Coord, Coord)) -> Position {
+        let (x,y) = xy; 
+        Position { x, y } 
+    }
     pub fn to_usize(&self) -> Result<(usize, usize)> {
         let x: usize = usize::try_from(self.x)?;
         let y: usize = usize::try_from(self.y)?; 
@@ -41,19 +45,31 @@ impl Position{
     pub fn from_usize(x: usize, y: usize) -> Result<Position> {
         let x_: Coord = Coord::try_from(x)?; 
         let y_: Coord = Coord::try_from(y)?; 
-        Ok(Position{x: x_, y: y_} )
+        Ok(Position::new((x_, y_)))
     }
     pub fn distance(&self, other: &Position) -> i8 {
         max((self.x - other.x).abs(), (self.y-other.y).abs())
+    }
+    pub fn is_out(&self) -> bool {
+        self.x <= 0 || self.x >= WIDTH_ || self.y <= 0 || self.y >= HEIGHT_    
     }
 }
 impl Add<(Coord, Coord)> for Position {
     type Output = Position;
 
     fn add(self, rhs: (Coord, Coord)) -> Self::Output {
-        Position{ x: self.x + rhs.0, y: self.y + rhs.1}
+        Position::new((self.x + rhs.0, self.y + rhs.1))
     }
 }
+
+impl Add<Position> for Position {
+    type Output = Position;
+
+    fn add(self, rhs: Position) -> Self::Output {
+        Position::new((self.x + rhs.x, self.y + rhs.y)) 
+    }
+}
+
 
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -209,6 +225,7 @@ pub enum TeamType{
     Away,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum BallState {
     OffPitch, 
     OnGround(Position), 
