@@ -244,9 +244,9 @@ pub enum Weather{
 
 #[allow(unused_variables)]
 pub trait Procedure {
-    fn start(&self, game_state: &GameState) {}
+    //fn start(&self, game_state: &GameState) {}
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool; 
-    fn end(&self, game_state: &mut GameState) {}
+    //fn end(&self, game_state: &mut GameState) {}
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {AvailableActions::new_empty()}
 }
 

@@ -1,5 +1,7 @@
 use rand::{distributions::{Standard}, prelude::Distribution};
 
+use super::{model::Position, gamestate::DIRECTIONS};
+
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum PosAT{
     StartMove, 
@@ -44,6 +46,48 @@ pub enum Skill{
     SureHands, 
     SureFeet, 
 }
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub enum D8 {
+    One=1,
+    Two, 
+    Three, 
+    Four,
+    Five, 
+    Six, 
+    Seven, 
+    Eight,
+}
+impl Distribution<D8> for Standard{
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> D8 {
+        D8::try_from(rng.gen_range(1..=6)).unwrap() 
+    }
+}
+
+impl TryFrom<u8> for D8 {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value { 
+            1 => Ok(D8::One), 
+            2 => Ok(D8::Two), 
+            3 => Ok(D8::Three), 
+            4 => Ok(D8::Four), 
+            5 => Ok(D8::Five), 
+            6 => Ok(D8::Six), 
+            7 => Ok(D8::Seven), 
+            8 => Ok(D8::Eight), 
+            _ => Err(()),
+        }
+    }
+}
+impl From<D8> for Position {
+    fn from(roll: D8) -> Self {
+        Position::new(DIRECTIONS[roll as usize - 1]) 
+    }
+}
+
+
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum D6 {

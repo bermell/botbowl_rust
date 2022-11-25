@@ -184,6 +184,12 @@ impl SimpleProc for DodgeProc{
     fn reroll_skill(&self) -> Option<Skill> {
         Some(Skill::Dodge)
     }
+
+    fn apply_success(&self, _game_state: &mut GameState) {}
+
+    fn apply_failure(&self, game_state: &mut GameState) {
+        todo!()
+    }
 }
 
 struct GfiProc {
@@ -202,6 +208,12 @@ impl SimpleProc for GfiProc{
 
     fn reroll_skill(&self) -> Option<Skill> {
         Some(Skill::SureFeet)
+    }
+
+    fn apply_success(&self, _game_state: &mut GameState) {}
+
+    fn apply_failure(&self, game_state: &mut GameState) {
+        todo!()
     }
 }
 
@@ -222,14 +234,25 @@ impl SimpleProc for PickupProc{
     fn reroll_skill(&self) -> Option<Skill> {
         Some(Skill::SureHands)
     }
+
+    fn apply_success(&self, game_state: &mut GameState) {
+        game_state.ball = BallState::Carried(self.id); 
+    }
+
+    fn apply_failure(&self, game_state: &mut GameState) {
+        game_state.get_mut_player(self.id).unwrap().used = true; 
+        game_state.push_proc(
+            Box::new( Bounce{})
+        ); 
+    }
 }
 
 #[allow(unused_variables)]
 trait SimpleProc {
     fn d6_target(&self) -> D6; //called immidiately before 
     fn reroll_skill(&self) -> Option<Skill>; 
-    fn apply_success(&self, game_state: &mut GameState) {}
-    fn apply_failure(&self, game_state: &mut GameState) {}
+    fn apply_success(&self, game_state: &mut GameState); 
+    fn apply_failure(&self, game_state: &mut GameState);
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -269,7 +292,7 @@ where
         }
         
         loop{
-            let roll = game_state.get_roll(); 
+            let roll = game_state.get_d6_roll(); 
             if roll >= self.proc.d6_target() {
                 self.proc.apply_success(game_state); 
                 return true; 
@@ -305,5 +328,40 @@ where
             }, 
             _ => panic!("Illegal state!"), 
         }
+    }
+}
+
+struct KnockDown{
+    id: PlayerID, 
+}
+impl Procedure for KnockDown {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+        todo!()
+    }
+}
+
+struct Armor{
+    id: PlayerID, 
+}
+impl Procedure for Armor {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+        todo!()
+    }
+}
+
+
+struct Injury{
+    id: PlayerID, 
+}
+impl Procedure for Injury{
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+        todo!()
+    }
+}
+
+struct Bounce; 
+impl Procedure for Bounce {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+        todo!()
     }
 }

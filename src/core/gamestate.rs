@@ -7,7 +7,7 @@ use crate::core::{model, bb_errors::EmptyProcStackError};
 
 use model::*;
 
-use super::{table::{D6, PosAT}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition, IllegalActionError}}; 
+use super::{table::{D6, PosAT, D8}, procedures::Turn, bb_errors::{InvalidPlayerId, IllegalMovePosition, IllegalActionError}}; 
 
 pub const DIRECTIONS: [(Coord, Coord); 8] = [(1, 1), (0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1), (-1, -1)];  
 
@@ -32,7 +32,12 @@ impl GameStateBuilder {
     }
 
     pub fn add_ball(&mut self, xy: (Coord, Coord)) -> &mut GameStateBuilder {
-        self.ball_pos = Some(Position{x: xy.0, y: xy.1}); 
+        self.ball_pos = Some(Position::new(( xy.0, xy.1))); 
+        self
+    }
+
+    pub fn add_ball_pos(&mut self, position: Position) -> &mut GameStateBuilder {
+        self.ball_pos = Some(position); 
         self
     }
 
@@ -54,7 +59,8 @@ impl GameStateBuilder {
             available_actions: AvailableActions::new_empty(),
             rng: ChaCha8Rng::from_entropy(), 
             d6_fixes: VecDeque::new(),
-            rng_enabled: false,  
+            d8_fixes: VecDeque::new(),
+            rng_enabled: false,
             }; 
             
         
@@ -102,6 +108,7 @@ pub struct GameState {
     pub rng_enabled: bool, 
     rng: ChaCha8Rng, 
     pub d6_fixes: VecDeque<D6>, 
+    pub d8_fixes: VecDeque<D8>, 
     //rerolled_procs: ???? //TODO!!! 
 }
 
@@ -110,8 +117,15 @@ impl GameState {
         self.rng = ChaCha8Rng::seed_from_u64(state); 
     } 
     
-    pub fn get_roll(&mut self) -> D6 {
+    pub fn get_d6_roll(&mut self) -> D6 {
         match self.d6_fixes.pop_front(){
+            Some(roll) => roll, 
+            None => {assert!(self.rng_enabled);
+                     self.rng.gen()} 
+        }
+    }
+    pub fn get_d8_roll(&mut self) -> D8 {
+        match self.d8_fixes.pop_front(){
             Some(roll) => roll, 
             None => {assert!(self.rng_enabled);
                      self.rng.gen()} 

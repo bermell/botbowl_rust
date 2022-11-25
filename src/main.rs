@@ -31,6 +31,58 @@ mod tests {
     }
 
     #[test]
+    fn failed_pickedup_and_bounce() -> Result<()> {
+        let ball_pos = Position::new((5, 5)); 
+        let mut state = GameStateBuilder::new(&[(1, 1)], &[])
+                        .add_ball_pos(ball_pos)
+                        .build(); 
+        let id = state.get_player_id_at_coord(1, 1).unwrap(); 
+
+        let d8_fix = D8::One; 
+        let direction = Position::from(d8_fix); 
+
+        state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?; 
+        state.d6_fixes.push_back(D6::Two); //fail pickup (3+) 
+        state.d8_fixes.push_back(d8_fix); 
+        state.step(Action::Positional(PosAT::Move, ball_pos))?; 
+        state.step(Action::Simple(SimpleAT::DontUseReroll))?; 
+        
+        let player = state.get_player(id).unwrap(); 
+        assert!(player.used); 
+        assert!(matches!(state.ball, BallState::OnGround(pos) if pos == direction + ball_pos)); 
+         
+        Ok(())
+    }
+
+    #[test]
+    fn pickup_success() -> Result<()> {
+        let mut state = GameStateBuilder::new(&[(1, 1)], &[])
+                        .add_ball((5, 5))
+                        .build(); 
+        
+        match state.ball {
+            BallState::OnGround(pos) if pos == Position::new((5, 5)) => (), 
+            _ => panic!("wrong ball carried"),  
+        }
+        let id = state.get_player_id_at_coord(1, 1).unwrap(); 
+        state.get_mut_player(id).unwrap().stats.skills.insert(Skill::SureHands); 
+
+        state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?; 
+         
+        state.d6_fixes.push_back(D6::Two); //fail first (3+) 
+        state.d6_fixes.push_back(D6::Three); //succeed on reroll (3+) 
+        state.step(Action::Positional(PosAT::Move, Position::new((5, 5))))?; 
+        
+        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::SureHands)); 
+
+        match state.ball {
+            BallState::Carried(id_carrier) if id_carrier == id => (), 
+            _ => panic!("wrong ball carried"),  
+        }
+
+        Ok(())
+    }
+    #[test]
     fn gfi_reroll() -> Result<()> {
         let mut state = GameStateBuilder::new(&[(1, 1)], &[]).build(); 
         let id = state.get_player_id_at_coord(1, 1).unwrap(); 
