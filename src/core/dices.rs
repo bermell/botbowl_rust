@@ -1,15 +1,13 @@
-use std::{
-    cmp::{max, min},
-    ops::Add,
-};
+use std::cmp::{max, min};
 
 use rand::{distributions::Standard, prelude::Distribution};
 
 use super::{gamestate::DIRECTIONS, model::Position};
 
-trait RollTarget<T> {
+pub trait RollTarget<T> {
     fn is_success(&self, roll: T) -> bool;
-    fn add_modifer(&mut self, modifer: i8);
+    fn add_modifer(&mut self, modifer: i8) -> &mut Self;
+    fn success_prob(&self) -> f32;
 }
 
 // Shamelessly copied from https://github.com/vadorovsky/enum-try-from
@@ -91,17 +89,9 @@ impl Distribution<D6> for Standard {
     }
 }
 
-impl Add<i8> for D6 {
-    type Output = D6;
-
-    fn add(self, rhs: i8) -> Self::Output {
-        let result: u8 = truncate_to(1, 6, self as i8 + rhs) as u8;
-        D6::try_from(result).unwrap()
-    }
-}
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
     pub enum D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -119,8 +109,22 @@ impl RollTarget<D6> for D6Target {
         (*self as u8) <= (roll as u8)
     }
 
-    fn add_modifer(&mut self, modifer: i8) {
-        *self = D6Target::try_from(truncate_to(2, 6, *self as i8 + modifer) as u8).unwrap();
+    fn add_modifer(&mut self, modifer: i8) -> &mut D6Target {
+        *self = D6Target::try_from(truncate_to(2, 6, *self as i8 - modifer) as u8).unwrap();
+        self
+    }
+
+    fn success_prob(&self) -> f32 {
+        const PROBS: [f32; 7] = [
+            f32::NAN,
+            f32::NAN,
+            5.0 / 6.0,
+            4.0 / 6.0,
+            3.0 / 6.0,
+            2.0 / 6.0,
+            1.0 / 6.0,
+        ];
+        PROBS[*self as usize]
     }
 }
 
@@ -176,7 +180,27 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
         (*self as u8) <= (roll as u8)
     }
 
-    fn add_modifer(&mut self, modifer: i8) {
-        *self = Sum2D6Target::try_from(truncate_to(2, 12, *self as i8 + modifer) as u8).unwrap();
+    fn add_modifer(&mut self, modifer: i8) -> &mut Sum2D6Target {
+        *self = Sum2D6Target::try_from(truncate_to(2, 12, *self as i8 - modifer) as u8).unwrap();
+        self
+    }
+
+    fn success_prob(&self) -> f32 {
+        const PROBS: [f32; 13] = [
+            f32::NAN,
+            f32::NAN,
+            1.0,
+            35.0/36.0, 
+            33.0/36.0, 
+            30.0/36.0, 
+            26.0/36.0, 
+            21.0/36.0, 
+            15.0/36.0, 
+            10.0/36.0, 
+            6.0/36.0, 
+            3.0/36.0, 
+            1.0/36.0, 
+        ];
+        PROBS[*self as usize]
     }
 }

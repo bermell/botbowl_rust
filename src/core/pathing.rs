@@ -1,15 +1,10 @@
 use std::fmt::Debug;
-use std::{
-    cmp::{max, min},
-    collections::HashMap,
-    hash,
-    iter::zip,
-    rc::Rc,
-};
+use std::{collections::HashMap, hash, iter::zip, rc::Rc};
 
 use crate::core::model;
 use model::*;
 
+use super::dices::{D6Target, RollTarget};
 use super::gamestate::{GameState, DIRECTIONS};
 
 type OptRcNode = Option<Rc<Node>>;
@@ -17,9 +12,9 @@ type OptRcNode = Option<Rc<Node>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Roll {
     //Make more clever!
-    Dodge(u8),
-    GFI(u8),
-    Pickup(u8),
+    Dodge(D6Target),
+    GFI(D6Target),
+    Pickup(D6Target),
     //StandUp,
 }
 #[derive(Debug)]
@@ -34,16 +29,16 @@ pub struct Node {
     rolls: Vec<Roll>,
 }
 impl Node {
-    fn apply_gfi(&mut self, target: u8) {
-        self.prob *= (7.0 - f32::from(target)) / 6.0;
+    fn apply_gfi(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
         self.rolls.push(Roll::GFI(target));
     }
-    fn apply_dodge(&mut self, target: u8) {
-        self.prob *= (7.0 - f32::from(target)) / 6.0;
+    fn apply_dodge(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
         self.rolls.push(Roll::Dodge(target));
     }
-    fn apply_pickup(&mut self, target: u8) {
-        self.prob *= (7.0 - f32::from(target)) / 6.0;
+    fn apply_pickup(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
         self.rolls.push(Roll::Pickup(target));
     }
 
@@ -110,12 +105,15 @@ pub struct PathFinder<'a> {
     game_state: &'a GameState,
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
-    tzones: FullPitch<u8>,
+    tzones: FullPitch<i8>,
     ball_pos: Option<Position>,
     ag: u8,
     open_set: Vec<Rc<Node>>,
     start_pos: Position,
     risky_sets: RiskySet,
+    dodge_target: D6Target,
+    gfi_target: D6Target,
+    pickup_target: D6Target,
 }
 
 impl<'a> PathFinder<'a> {
@@ -133,9 +131,12 @@ impl<'a> PathFinder<'a> {
             open_set: Vec::new(),
             start_pos: Position::new((0, 0)),
             risky_sets: Default::default(),
+            dodge_target: D6Target::SixPlus,
+            gfi_target: D6Target::TwoPlus,
+            pickup_target: D6Target::SixPlus,
         }
     }
-    fn tackles_zones_at(&self, position: &Position) -> u8 {
+    fn tackles_zones_at(&self, position: &Position) -> i8 {
         let (x, y) = position.to_usize().unwrap();
         self.tzones[x][y]
     }
@@ -144,6 +145,14 @@ impl<'a> PathFinder<'a> {
         let player = self.game_state.get_player(id).unwrap();
         self.start_pos = player.position;
         self.ag = player.stats.ag;
+        self.dodge_target = *player.ag_target().add_modifer(1);
+        self.pickup_target = *player.ag_target().add_modifer(1);
+        if let Weather::Blizzard = self.game_state.weather {
+            self.gfi_target.add_modifer(-1);
+        }
+        if let Weather::Rain = self.game_state.weather {
+            self.pickup_target.add_modifer(-1);
+        }
 
         let root_node = Rc::new(Node {
             parent: None,
@@ -296,14 +305,23 @@ impl<'a> PathFinder<'a> {
             rolls: Vec::new(),
         };
         if gfi {
-            next_node.apply_gfi(2);
+            next_node.apply_gfi(self.gfi_target);
         }
         if self.tackles_zones_at(&from_node.position) > 0 {
-            let target = max(2, min(6, 6 - self.ag + self.tzones[to_x][to_y]));
-            next_node.apply_dodge(target);
+            next_node.apply_dodge(
+                *self
+                    .dodge_target
+                    .clone()
+                    .add_modifer(-self.tzones[to_x][to_y]),
+            );
         }
         match self.ball_pos {
-            Some(ball_pos) if ball_pos == to => next_node.apply_pickup(3),
+            Some(ball_pos) if ball_pos == to => next_node.apply_pickup(
+                *self
+                    .pickup_target
+                    .clone()
+                    .add_modifer(-self.tzones[to_x][to_y]),
+            ),
             _ => (),
         }
 

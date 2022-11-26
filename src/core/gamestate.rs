@@ -217,6 +217,14 @@ impl GameState {
         }
     }
 
+    pub fn get_player_unsafe(&self, id: PlayerID) -> &FieldedPlayer {
+        self.fielded_players[id].as_ref().unwrap()
+    }
+
+    pub fn get_mut_player_unsafe(&mut self, id: PlayerID) -> &mut FieldedPlayer {
+        self.fielded_players[id].as_mut().unwrap()
+    }
+
     pub fn get_player(&self, id: PlayerID) -> Result<&FieldedPlayer> {
         match &self.fielded_players[id] {
             Some(player) => Ok(player),

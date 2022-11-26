@@ -4,10 +4,19 @@ use model::*;
 use crate::core::table::*;
 
 use super::{
-    dices::D6,
+    dices::{D6Target, RollTarget, D6},
     gamestate::GameState,
     pathing::{Path, PathFinder, Roll},
 };
+
+#[allow(unused_variables)]
+trait SimpleProc {
+    fn d6_target(&self) -> D6Target; //called immidiately before
+    fn reroll_skill(&self) -> Option<Skill>;
+    fn apply_success(&self, game_state: &mut GameState);
+    fn apply_failure(&self, game_state: &mut GameState);
+    fn player_id(&self) -> PlayerID;
+}
 
 pub struct Turn {
     pub team: TeamType,
@@ -39,11 +48,9 @@ impl Procedure for Turn {
 
 fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
     match roll {
-        Roll::Dodge(target) => DodgeProc::new(move_action.player_id, D6::try_from(target).unwrap()),
-        Roll::GFI(target) => GfiProc::new(move_action.player_id, D6::try_from(target).unwrap()),
-        Roll::Pickup(target) => {
-            PickupProc::new(move_action.player_id, D6::try_from(target).unwrap())
-        }
+        Roll::Dodge(target) => DodgeProc::new(move_action.player_id, target),
+        Roll::GFI(target) => GfiProc::new(move_action.player_id, target),
+        Roll::Pickup(target) => PickupProc::new(move_action.player_id, target),
     }
 }
 
@@ -101,8 +108,7 @@ impl MoveAction {
             } else {
                 game_state.move_player(self.player_id, path.target).unwrap();
                 game_state
-                    .get_mut_player(self.player_id)
-                    .unwrap()
+                    .get_mut_player_unsafe(self.player_id)
                     .add_move(u8::try_from(path.steps.len()).unwrap())
             }
             path.steps.clear();
@@ -110,10 +116,7 @@ impl MoveAction {
         }
         while let Some((position, mut rolls)) = path.steps.pop() {
             game_state.move_player(self.player_id, position).unwrap();
-            game_state
-                .get_mut_player(self.player_id)
-                .unwrap()
-                .add_move(1);
+            game_state.get_mut_player_unsafe(self.player_id).add_move(1);
 
             if let Some(next_roll) = rolls.pop() {
                 let new_proc = proc_from_roll(next_roll, self);
@@ -128,11 +131,11 @@ impl MoveAction {
 }
 impl Procedure for MoveAction {
     fn available_actions(&mut self, g: &GameState) -> AvailableActions {
-        let mut aa = AvailableActions::new(g.get_player(self.player_id).unwrap().stats.team);
+        let mut aa = AvailableActions::new(g.get_player_unsafe(self.player_id).stats.team);
         if self.active_path.is_some() {
             return aa;
         }
-        let player = g.get_player(self.player_id).unwrap();
+        let player = g.get_player_unsafe(self.player_id);
         if player.used {
             return aa;
         }
@@ -163,11 +166,11 @@ impl Procedure for MoveAction {
                 false
             }
             Some(Action::Simple(SimpleAT::EndPlayerTurn)) => {
-                game_state.get_mut_player(self.player_id).unwrap().used = true;
+                game_state.get_mut_player_unsafe(self.player_id).used = true;
                 true
             }
             None => {
-                if game_state.get_player(self.player_id).unwrap().used {
+                if game_state.get_player_unsafe(self.player_id).used {
                     return true;
                 }
 
@@ -183,16 +186,16 @@ impl Procedure for MoveAction {
 
 #[allow(dead_code)]
 struct DodgeProc {
-    target: D6,
+    target: D6Target,
     id: PlayerID,
 }
 impl DodgeProc {
-    fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<DodgeProc>> {
+    fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<DodgeProc>> {
         SimpleProcContainer::new(DodgeProc { target, id })
     }
 }
 impl SimpleProc for DodgeProc {
-    fn d6_target(&self) -> D6 {
+    fn d6_target(&self) -> D6Target {
         self.target
     }
 
@@ -212,16 +215,16 @@ impl SimpleProc for DodgeProc {
 }
 
 struct GfiProc {
-    target: D6,
+    target: D6Target,
     id: PlayerID,
 }
 impl GfiProc {
-    fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<GfiProc>> {
+    fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<GfiProc>> {
         SimpleProcContainer::new(GfiProc { target, id })
     }
 }
 impl SimpleProc for GfiProc {
-    fn d6_target(&self) -> D6 {
+    fn d6_target(&self) -> D6Target {
         self.target
     }
 
@@ -241,16 +244,16 @@ impl SimpleProc for GfiProc {
 }
 
 struct PickupProc {
-    target: D6,
+    target: D6Target,
     id: PlayerID,
 }
 impl PickupProc {
-    fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<PickupProc>> {
+    fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<PickupProc>> {
         SimpleProcContainer::new(PickupProc { target, id })
     }
 }
 impl SimpleProc for PickupProc {
-    fn d6_target(&self) -> D6 {
+    fn d6_target(&self) -> D6Target {
         self.target
     }
 
@@ -270,15 +273,6 @@ impl SimpleProc for PickupProc {
     fn player_id(&self) -> PlayerID {
         self.id
     }
-}
-
-#[allow(unused_variables)]
-trait SimpleProc {
-    fn d6_target(&self) -> D6; //called immidiately before
-    fn reroll_skill(&self) -> Option<Skill>;
-    fn apply_success(&self, game_state: &mut GameState);
-    fn apply_failure(&self, game_state: &mut GameState);
-    fn player_id(&self) -> PlayerID;
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -324,7 +318,7 @@ where
 
         loop {
             let roll = game_state.get_d6_roll();
-            if roll >= self.proc.d6_target() {
+            if self.proc.d6_target().is_success(roll) {
                 self.proc.apply_success(game_state);
                 return true;
             }
@@ -332,16 +326,8 @@ where
                 break;
             }
             match self.proc.reroll_skill() {
-                Some(skill)
-                    if game_state
-                        .get_player(self.id())
-                        .unwrap()
-                        .can_use_skill(skill) =>
-                {
-                    game_state
-                        .get_mut_player(self.id())
-                        .unwrap()
-                        .use_skill(skill);
+                Some(skill) if game_state.get_player_unsafe(self.id()).can_use_skill(skill) => {
+                    game_state.get_mut_player_unsafe(self.id()).use_skill(skill);
                     self.state = RollProcState::RerollUsed;
                     continue;
                 }
@@ -365,7 +351,7 @@ where
             RollProcState::Init => AvailableActions::new_empty(),
             RollProcState::WaitingForTeamReroll => {
                 let mut aa =
-                    AvailableActions::new(game_state.get_player(self.id()).unwrap().stats.team);
+                    AvailableActions::new(game_state.get_player_unsafe(self.id()).stats.team);
                 aa.insert_simple(SimpleAT::UseReroll);
                 aa.insert_simple(SimpleAT::DontUseReroll);
                 aa
@@ -410,7 +396,7 @@ impl Procedure for Bounce {
 
         if let Some(player) = game_state.get_player_at(new_pos) {
             if player.can_catch() {
-                game_state.push_proc(Catch::new(player.id, D6::Five /*player.ag_target()*/));
+                game_state.push_proc(Catch::new(player.id, todo!()));
                 true
             } else {
                 false //will run bounce again
@@ -436,15 +422,15 @@ impl Procedure for ThrowIn {
 }
 struct Catch {
     id: PlayerID,
-    target: D6,
+    target: D6Target,
 }
 impl Catch {
-    pub fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<Catch>> {
+    pub fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<Catch>> {
         SimpleProcContainer::new(Catch { id, target })
     }
 }
 impl SimpleProc for Catch {
-    fn d6_target(&self) -> D6 {
+    fn d6_target(&self) -> D6Target {
         self.target
     }
 
