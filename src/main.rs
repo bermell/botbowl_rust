@@ -362,10 +362,7 @@ mod tests {
                         ))
                     }
                     (Some(correct_prob), Some(path))
-                        if (*correct_prob - path.prob).abs() <= 0.001 =>
-                    {
-                        ()
-                    }
+                        if (*correct_prob - path.prob).abs() <= 0.001 => {}
                     (None, None) => (),
                     (Some(_), None) => errors.push(format!("No path to ({}, {})", x, y)),
                     (None, Some(path)) => errors.push(format!(
