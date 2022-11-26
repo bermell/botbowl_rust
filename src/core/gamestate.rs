@@ -9,8 +9,9 @@ use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
+    dices::{D6, D8},
     procedures::Turn,
-    table::{PosAT, D6, D8},
+    table::PosAT,
 };
 
 pub const DIRECTIONS: [(Coord, Coord); 8] = [

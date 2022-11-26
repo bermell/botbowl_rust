@@ -4,6 +4,7 @@ use model::*;
 use crate::core::table::*;
 
 use super::{
+    dices::D6,
     gamestate::GameState,
     pathing::{Path, PathFinder, Roll},
 };

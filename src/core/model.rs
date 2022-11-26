@@ -3,8 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::error;
 use std::ops::Add;
 
+use super::dices::D6Target;
 use super::gamestate::GameState;
-use super::table::{D6Target, PosAT, SimpleAT, Skill};
+use super::table::{PosAT, SimpleAT, Skill};
 use crate::core::table;
 
 pub type PlayerID = usize;

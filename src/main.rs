@@ -15,6 +15,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
+    use crate::core::dices::D6;
+    use crate::core::dices::D8;
     use crate::core::model::*;
     use crate::core::table::*;
     use crate::core::{
