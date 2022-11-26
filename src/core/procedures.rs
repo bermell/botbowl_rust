@@ -160,6 +160,7 @@ impl Procedure for MoveAction {
                 }
                 let (x, y) = position.to_usize().unwrap();
                 self.active_path = self.paths[x][y].clone();
+                debug_assert!(self.active_path.is_some()); 
                 self.paths = Default::default();
                 self.continue_active_path(game_state);
                 self.consolidate_active_path();
