@@ -34,9 +34,9 @@ impl Procedure for Turn {
 
 fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
     match roll {
-        Roll::Dodge(target) => Box::new(DodgeProc::new(move_action.player_id, D6::try_from(target).unwrap())), 
-        Roll::GFI(target) =>   Box::new(GfiProc::new(move_action.player_id, D6::try_from(target).unwrap())), 
-        Roll::Pickup(target) => Box::new(PickupProc::new(move_action.player_id, D6::try_from(target).unwrap())), 
+        Roll::Dodge(target) => DodgeProc::new(move_action.player_id, D6::try_from(target).unwrap()), 
+        Roll::GFI(target) =>   GfiProc::new(move_action.player_id, D6::try_from(target).unwrap()), 
+        Roll::Pickup(target) =>PickupProc::new(move_action.player_id, D6::try_from(target).unwrap()), 
     }
 }
 
@@ -172,8 +172,8 @@ struct DodgeProc{
     id: PlayerID, 
 }
 impl DodgeProc {
-    fn new(id: PlayerID, target: D6) -> MovementProc<DodgeProc> {
-        MovementProc::new(DodgeProc { target, id }, id)
+    fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<DodgeProc>> {
+        SimpleProcContainer::new(DodgeProc { target, id })
     }
 }
 impl SimpleProc for DodgeProc{
@@ -190,6 +190,10 @@ impl SimpleProc for DodgeProc{
     fn apply_failure(&self, game_state: &mut GameState) {
         todo!()
     }
+
+    fn player_id(&self) -> PlayerID {
+        self.id
+    }
 }
 
 struct GfiProc {
@@ -197,8 +201,8 @@ struct GfiProc {
     id: PlayerID, 
 }
 impl GfiProc {
-    fn new(id: PlayerID, target: D6) -> MovementProc<GfiProc> {
-        MovementProc::new(GfiProc { target, id }, id)
+    fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<GfiProc>> {
+        SimpleProcContainer::new(GfiProc { target, id })
     }
 }
 impl SimpleProc for GfiProc{
@@ -215,6 +219,10 @@ impl SimpleProc for GfiProc{
     fn apply_failure(&self, game_state: &mut GameState) {
         todo!()
     }
+
+    fn player_id(&self) -> PlayerID {
+        self.id
+    }
 }
 
 struct PickupProc {
@@ -222,8 +230,8 @@ struct PickupProc {
     id: PlayerID, 
 }
 impl PickupProc {
-    fn new(id: PlayerID, target: D6) -> MovementProc<PickupProc> {
-        MovementProc::new(PickupProc { target, id }, id)
+    fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<PickupProc>> {
+        SimpleProcContainer::new(PickupProc { target, id })
     }
 }
 impl SimpleProc for PickupProc{
@@ -245,6 +253,11 @@ impl SimpleProc for PickupProc{
             Box::new( Bounce{})
         ); 
     }
+
+    fn player_id(&self) -> PlayerID {
+        self.id
+    }
+
 }
 
 #[allow(unused_variables)]
@@ -253,6 +266,7 @@ trait SimpleProc {
     fn reroll_skill(&self) -> Option<Skill>; 
     fn apply_success(&self, game_state: &mut GameState); 
     fn apply_failure(&self, game_state: &mut GameState);
+    fn player_id(&self) -> PlayerID; 
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -262,18 +276,20 @@ enum RollProcState {
     RerollUsed, 
     //WaitingForSkillReroll, 
 }
-struct MovementProc<T: SimpleProc> {
+struct SimpleProcContainer<T: SimpleProc> {
     proc: T, 
     state: RollProcState, 
-    id: PlayerID
 }
-impl<T: SimpleProc> MovementProc<T> {
-    pub fn new(proc: T, id: PlayerID) -> Self {
-        MovementProc { proc, state: RollProcState::Init, id}
+impl<T: SimpleProc> SimpleProcContainer<T> {
+    pub fn new(proc: T) -> Box<Self> {
+        Box::new(SimpleProcContainer { proc, state: RollProcState::Init})
+    }
+    pub fn id(&self) -> PlayerID {
+        self.proc.player_id()
     }
 }
 
-impl<T> Procedure for MovementProc<T> 
+impl<T> Procedure for SimpleProcContainer<T> 
 where
     T: SimpleProc  
 {
@@ -301,15 +317,15 @@ where
                 break; 
             }
             match self.proc.reroll_skill() {
-                Some(skill) if game_state.get_player(self.id).unwrap().can_use_skill(skill) => {
-                    game_state.get_mut_player(self.id).unwrap().use_skill(skill); 
+                Some(skill) if game_state.get_player(self.id()).unwrap().can_use_skill(skill) => {
+                    game_state.get_mut_player(self.id()).unwrap().use_skill(skill); 
                     self.state = RollProcState::RerollUsed; 
                     continue;
                 }
                 _ => (), 
             }
             
-            if game_state.get_team_from_player(self.id).unwrap().can_use_reroll(){
+            if game_state.get_team_from_player(self.id()).unwrap().can_use_reroll(){
                 self.state = RollProcState::WaitingForTeamReroll; 
                 return false; 
             }
@@ -321,7 +337,7 @@ where
         match self.state {
             RollProcState::Init => AvailableActions::new_empty(), 
             RollProcState::WaitingForTeamReroll => {
-                let mut aa = AvailableActions::new(game_state.get_player(self.id).unwrap().stats.team);
+                let mut aa = AvailableActions::new(game_state.get_player(self.id()).unwrap().stats.team);
                 aa.insert_simple(SimpleAT::UseReroll); 
                 aa.insert_simple(SimpleAT::DontUseReroll); 
                 aa
@@ -361,7 +377,61 @@ impl Procedure for Injury{
 
 struct Bounce; 
 impl Procedure for Bounce {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+        let current_ball_pos = game_state.get_ball_position().unwrap();
+        let new_pos =  current_ball_pos + Position::from(game_state.get_d8_roll()); 
+        
+        if let Some(player) = game_state.get_player_at(new_pos) {
+            if player.can_catch(){
+                game_state.push_proc(Catch::new(player.id, D6::Five/*player.ag_target()*/)); 
+                true 
+            } else {
+                false //will run bounce again
+            }
+        } else if new_pos.is_out() {
+            game_state.push_proc(Box::new(ThrowIn{from_position: current_ball_pos }));
+            true 
+        } else {
+            game_state.ball = BallState::OnGround(new_pos); 
+            true 
+        }
+    }
+}
+struct ThrowIn{
+    from_position: Position, 
+}
+impl Procedure for ThrowIn {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
         todo!()
+    }
+}
+struct Catch{
+    id: PlayerID, 
+    target: D6, 
+}
+impl Catch {
+    pub fn new(id: PlayerID, target: D6) -> Box<SimpleProcContainer<Catch>> {
+        SimpleProcContainer::new(Catch{id, target})
+    }
+}
+impl SimpleProc for Catch {
+    fn d6_target(&self) -> D6 {
+        self.target
+    }
+
+    fn reroll_skill(&self) -> Option<Skill> {
+        Some(Skill::Catch) 
+    }
+
+    fn apply_success(&self, game_state: &mut GameState) {
+        game_state.ball = BallState::Carried(self.id); 
+    }
+
+    fn apply_failure(&self, game_state: &mut GameState) {
+        game_state.push_proc(Box::new(Bounce{})); 
+    }
+
+    fn player_id(&self) -> PlayerID {
+        self.id 
     }
 }

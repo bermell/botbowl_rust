@@ -5,7 +5,7 @@ use std::ops::Add;
 
 use crate::core::table; 
 use super::gamestate::GameState;
-use super::table::{Skill, SimpleAT, PosAT};
+use super::table::{Skill, SimpleAT, PosAT, D6Target};
 
 pub type PlayerID = usize; 
 pub type Coord = i8; 
@@ -147,6 +147,24 @@ pub struct FieldedPlayer{
     //has_blocked: bool
 }
 impl FieldedPlayer {
+    pub fn ag_target(&self) -> D6Target {
+        D6Target::try_from(7-self.stats.ag).unwrap()
+    }
+
+    pub fn can_catch(&self) -> bool {
+        match self.status {
+            PlayerStatus::Up => true,
+            PlayerStatus::Down => false,
+            PlayerStatus::Stunned => false,
+        }
+    }
+    pub fn has_tackle_zone(&self) -> bool {
+        match self.status {
+            PlayerStatus::Up => true,
+            PlayerStatus::Down => false,
+            PlayerStatus::Stunned => false,
+        }
+    }
     pub fn moves_left(&self) -> u8 {
         if self.moves <= self.stats.ma {
             self.stats.ma - self.moves

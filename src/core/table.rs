@@ -1,3 +1,5 @@
+use std::{ops::{Add}, cmp::{max, min}};
+
 use rand::{distributions::{Standard}, prelude::Distribution};
 
 use super::{model::Position, gamestate::DIRECTIONS};
@@ -118,5 +120,58 @@ impl TryFrom<u8> for D6 {
             6 => Ok(D6::Six), 
             _ => Err(()),
         }
+    }
+}
+
+impl Add<i8> for D6{
+    type Output = D6;
+
+    fn add(self, rhs: i8) -> Self::Output {
+        let result: u8 = max(1, min(6, self as i8 + rhs)) as u8; 
+        D6::try_from(result).unwrap() 
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum D6Target{
+    TwoPlus=2, 
+    ThreePlus, 
+    FourPlus, 
+    FivePlus, 
+    SixPlus, 
+}
+
+trait RollTarget<T> {
+    fn is_success(&self, roll: T) -> bool; 
+}
+
+impl RollTarget<D6> for D6Target{
+    fn is_success(&self, roll: D6) -> bool {
+        (*self as u8) <= (roll as u8)
+    }
+}
+
+impl TryFrom<u8> for D6Target{
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        let result = match value {
+            2 => D6Target::TwoPlus,
+            3 => D6Target::ThreePlus,
+            4 => D6Target::FourPlus,
+            5 => D6Target::FivePlus,
+            6 => D6Target::SixPlus,
+            _ => return Err(()),
+        }; 
+        Ok(result)
+    }
+}
+
+impl Add<i8> for D6Target {
+    type Output=D6Target;
+
+    fn add(self, rhs: i8) -> Self::Output {
+        let result: u8 = max(1, min(6, self as i8 + rhs)) as u8; 
+        D6Target::try_from(result).unwrap() 
     }
 }

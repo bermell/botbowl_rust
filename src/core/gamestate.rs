@@ -61,6 +61,7 @@ impl GameStateBuilder {
             d6_fixes: VecDeque::new(),
             d8_fixes: VecDeque::new(),
             rng_enabled: false,
+            weather: Weather::Nice,
             }; 
             
         
@@ -102,6 +103,7 @@ pub struct GameState {
     pub turn: u8,
     pub active_player: Option<PlayerID>,  
     pub game_over: bool, 
+    pub weather: Weather, 
     proc_stack: Vec<Box<dyn Procedure>>, 
     new_procs: VecDeque<Box<dyn Procedure>>, 
     available_actions: AvailableActions,  
@@ -213,6 +215,27 @@ impl GameState {
         match &mut self.fielded_players[id] {
             Some(player) => Ok(player), 
             None => Err(Box::new(InvalidPlayerId{id})), 
+        }
+    }
+    pub fn get_catch_modifers(&self, id: PlayerID) -> Result<i8> {
+        let player =self.get_player(id)?;  
+        let team = player.stats.team; 
+        let mut modifier = -(self.get_adj_players(player.position)
+                     .filter(|player_| player_.stats.team != team && player_.has_tackle_zone())
+                     .count() as i8); 
+        
+        if let Weather::Rain = self.weather {
+            modifier -= 1; 
+        }
+        Ok(modifier) 
+    }
+
+    pub fn get_ball_position(&self) -> Option<Position> {
+        match self.ball {
+            BallState::OffPitch => None, 
+            BallState::OnGround(pos) => Some(pos),
+            BallState::Carried(id) => Some(self.get_player(id).unwrap().position),
+            BallState::InAir(pos) => Some(pos),
         }
     }
 
