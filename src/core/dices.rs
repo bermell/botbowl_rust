@@ -7,6 +7,11 @@ use rand::{distributions::Standard, prelude::Distribution};
 
 use super::{gamestate::DIRECTIONS, model::Position};
 
+trait RollTarget<T> {
+    fn is_success(&self, roll: T) -> bool;
+    fn add_modifer(&mut self, modifer: i8);
+}
+
 // Shamelessly copied from https://github.com/vadorovsky/enum-try-from
 macro_rules! impl_enum_try_from {
     ($(#[$meta:meta])* $vis:vis enum $name:ident {
@@ -34,40 +39,30 @@ fn truncate_to<T: Ord>(lower_limit: T, upper_limit: T, value: T) -> T {
     max(lower_limit, min(upper_limit, value))
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub enum D8 {
-    One = 1,
-    Two,
-    Three,
-    Four,
-    Five,
-    Six,
-    Seven,
-    Eight,
+impl_enum_try_from! {
+    #[repr(u8)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    pub enum D8 {
+        One = 1,
+        Two,
+        Three,
+        Four,
+        Five,
+        Six,
+        Seven,
+        Eight,
+    },
+    u8,
+    (),
+    ()
 }
+
 impl Distribution<D8> for Standard {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> D8 {
         D8::try_from(rng.gen_range(1..=6)).unwrap()
     }
 }
 
-impl TryFrom<u8> for D8 {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(D8::One),
-            2 => Ok(D8::Two),
-            3 => Ok(D8::Three),
-            4 => Ok(D8::Four),
-            5 => Ok(D8::Five),
-            6 => Ok(D8::Six),
-            7 => Ok(D8::Seven),
-            8 => Ok(D8::Eight),
-            _ => Err(()),
-        }
-    }
-}
 impl From<D8> for Position {
     fn from(roll: D8) -> Self {
         Position::new(DIRECTIONS[roll as usize - 1])
@@ -119,22 +114,13 @@ impl_enum_try_from! {
     ()
 }
 
-trait RollTarget<T> {
-    fn is_success(&self, roll: T) -> bool;
-}
-
 impl RollTarget<D6> for D6Target {
     fn is_success(&self, roll: D6) -> bool {
         (*self as u8) <= (roll as u8)
     }
-}
 
-impl Add<i8> for D6Target {
-    type Output = D6Target;
-
-    fn add(self, rhs: i8) -> Self::Output {
-        let result: u8 = max(1, min(6, self as i8 + rhs)) as u8;
-        D6Target::try_from(result).unwrap()
+    fn add_modifer(&mut self, modifer: i8) {
+        *self = D6Target::try_from(truncate_to(2, 6, *self as i8 + modifer) as u8).unwrap();
     }
 }
 
@@ -158,6 +144,11 @@ impl_enum_try_from! {
     (),
     ()
 }
+impl Distribution<Sum2D6> for Standard {
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Sum2D6 {
+        Sum2D6::try_from(rng.gen_range(1..=6) + rng.gen_range(1..=6)).unwrap()
+    }
+}
 
 impl_enum_try_from! {
     #[repr(u8)]
@@ -178,4 +169,14 @@ impl_enum_try_from! {
     u8,
     (),
     ()
+}
+
+impl RollTarget<Sum2D6> for Sum2D6Target {
+    fn is_success(&self, roll: Sum2D6) -> bool {
+        (*self as u8) <= (roll as u8)
+    }
+
+    fn add_modifer(&mut self, modifer: i8) {
+        *self = Sum2D6Target::try_from(truncate_to(2, 12, *self as i8 + modifer) as u8).unwrap();
+    }
 }
