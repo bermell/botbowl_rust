@@ -9,7 +9,7 @@ use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
-    dices::{Sum2D6, D6, D8},
+    dices::{D6Target, RollTarget, Sum2D6, D6, D8},
     procedures::Turn,
     table::PosAT,
 };
@@ -256,18 +256,21 @@ impl GameState {
             None => Err(Box::new(InvalidPlayerId { id })),
         }
     }
-    pub fn get_catch_modifers(&self, id: PlayerID) -> Result<i8> {
+    pub fn get_catch_modifers(&self, id: PlayerID) -> Result<D6Target> {
         let player = self.get_player(id)?;
+        let mut target = player.ag_target();
         let team = player.stats.team;
-        let mut modifier = -(self
-            .get_adj_players(player.position)
-            .filter(|player_| player_.stats.team != team && player_.has_tackle_zone())
-            .count() as i8);
+        target.add_modifer(
+            -(self
+                .get_adj_players(player.position)
+                .filter(|player_| player_.stats.team != team && player_.has_tackle_zone())
+                .count() as i8),
+        );
 
         if let Weather::Rain = self.weather {
-            modifier -= 1;
+            target.add_modifer(-1);
         }
-        Ok(modifier)
+        Ok(target)
     }
 
     pub fn get_ball_position(&self) -> Option<Position> {

@@ -142,7 +142,7 @@ impl<'a> PathFinder<'a> {
     }
 
     pub fn player_paths(&mut self, id: PlayerID) -> Result<FullPitch<Option<Path>>> {
-        let player = self.game_state.get_player(id).unwrap();
+        let player = self.game_state.get_player_unsafe(id);
         self.start_pos = player.position;
         self.ag = player.stats.ag;
         self.dodge_target = *player.ag_target().add_modifer(1);
@@ -163,12 +163,14 @@ impl<'a> PathFinder<'a> {
             rolls: Vec::new(),
         });
 
-        for player in self.game_state.get_players_on_pitch_in_team(TeamType::Away) {
-            for pos in self.game_state.get_adj_positions(player.position) {
-                let (x, y) = pos.to_usize()?;
-                self.tzones[x][y] += 1;
-            }
-        }
+        let team = player.stats.team;
+        self.game_state
+            .get_players_on_pitch()
+            .filter(|player| player.stats.team != team)
+            .filter(|player| player.has_tackle_zone())
+            .flat_map(|player| self.game_state.get_adj_positions(player.position))
+            .map(|position| position.to_usize().unwrap())
+            .for_each(|(x, y)| self.tzones[x][y] += 1);
 
         self.open_set.push(root_node);
         loop {

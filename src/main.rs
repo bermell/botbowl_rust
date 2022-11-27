@@ -18,7 +18,6 @@ mod tests {
     use crate::core::dices::D6Target;
     use crate::core::dices::D6;
     use crate::core::dices::D8;
-    use crate::core::gamestate;
     use crate::core::model::*;
     use crate::core::table::*;
     use crate::core::{
@@ -44,8 +43,6 @@ mod tests {
         let mut state = standard_state();
         let id = state.get_player_id_at_coord(2, 2).unwrap();
         assert!(state.dugout_players.is_empty());
-
-        let a = DugoutPlace::Ejected;
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((2, 2))))?;
 

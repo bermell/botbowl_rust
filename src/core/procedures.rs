@@ -4,7 +4,7 @@ use model::*;
 use crate::core::table::*;
 
 use super::{
-    dices::{D6Target, RollTarget, Sum2D6Target, D6},
+    dices::{D6Target, RollTarget, Sum2D6Target},
     gamestate::GameState,
     pathing::{Path, PathFinder, Roll},
 };
@@ -451,7 +451,10 @@ impl Procedure for Bounce {
 
         if let Some(player) = game_state.get_player_at(new_pos) {
             if player.can_catch() {
-                game_state.push_proc(Catch::new(player.id, todo!()));
+                game_state.push_proc(Catch::new(
+                    player.id,
+                    game_state.get_catch_modifers(player.id).unwrap(),
+                ));
                 true
             } else {
                 false //will run bounce again
