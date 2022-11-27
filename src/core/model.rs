@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::error;
 use std::ops::Add;
 
-use super::dices::D6Target;
+use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
 use super::table::{PosAT, SimpleAT, Skill};
 use crate::core::table;
@@ -116,7 +116,7 @@ impl PlayerStats {
 }
 
 #[derive(Debug)]
-pub enum DogoutPlace {
+pub enum DugoutPlace {
     Reserves,
     Heated,
     KnockOut,
@@ -126,7 +126,7 @@ pub enum DogoutPlace {
 
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
-    pub place: DogoutPlace,
+    pub place: DugoutPlace,
 }
 
 #[derive(Debug)]
@@ -152,6 +152,10 @@ pub struct FieldedPlayer {
     //has_blocked: bool
 }
 impl FieldedPlayer {
+    pub fn armor_target(&self) -> Sum2D6Target {
+        Sum2D6Target::try_from(self.stats.av + 1).unwrap()
+    }
+
     pub fn ag_target(&self) -> D6Target {
         D6Target::try_from(7 - self.stats.ag).unwrap()
     }

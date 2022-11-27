@@ -1,4 +1,7 @@
-use std::cmp::{max, min};
+use std::{
+    cmp::{max, min},
+    ops::Add,
+};
 
 use rand::{distributions::Standard, prelude::Distribution};
 
@@ -89,6 +92,14 @@ impl Distribution<D6> for Standard {
     }
 }
 
+impl Add<D6> for D6 {
+    type Output = Sum2D6;
+
+    fn add(self, rhs: D6) -> Self::Output {
+        Sum2D6::try_from(self as u8 + rhs as u8).unwrap()
+    }
+}
+
 impl_enum_try_from! {
     #[repr(u8)]
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -130,7 +141,7 @@ impl RollTarget<D6> for D6Target {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
     pub enum Sum2D6 {
         Two = 2,
         Three,
@@ -156,7 +167,7 @@ impl Distribution<Sum2D6> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
     pub enum Sum2D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -190,16 +201,16 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
             f32::NAN,
             f32::NAN,
             1.0,
-            35.0/36.0, 
-            33.0/36.0, 
-            30.0/36.0, 
-            26.0/36.0, 
-            21.0/36.0, 
-            15.0/36.0, 
-            10.0/36.0, 
-            6.0/36.0, 
-            3.0/36.0, 
-            1.0/36.0, 
+            35.0 / 36.0,
+            33.0 / 36.0,
+            30.0 / 36.0,
+            26.0 / 36.0,
+            21.0 / 36.0,
+            15.0 / 36.0,
+            10.0 / 36.0,
+            6.0 / 36.0,
+            3.0 / 36.0,
+            1.0 / 36.0,
         ];
         PROBS[*self as usize]
     }

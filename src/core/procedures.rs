@@ -4,7 +4,7 @@ use model::*;
 use crate::core::table::*;
 
 use super::{
-    dices::{D6Target, RollTarget, D6},
+    dices::{D6Target, RollTarget, Sum2D6Target, D6},
     gamestate::GameState,
     pathing::{Path, PathFinder, Roll},
 };
@@ -130,17 +130,22 @@ impl MoveAction {
     }
 }
 impl Procedure for MoveAction {
-    fn available_actions(&mut self, g: &GameState) -> AvailableActions {
-        let mut aa = AvailableActions::new(g.get_player_unsafe(self.player_id).stats.team);
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+        let player = match game_state.get_player(self.player_id) {
+            Ok(player) if !player.used => player,
+            Ok(_) => return AvailableActions::new_empty(), // Player is used
+            Err(_) => return AvailableActions::new_empty(), // Player not on field anymore
+        };
+
         if self.active_path.is_some() {
-            return aa;
+            return AvailableActions::new_empty();
         }
-        let player = g.get_player_unsafe(self.player_id);
-        if player.used {
-            return aa;
-        }
+
+        let mut aa = AvailableActions::new(player.stats.team);
         if player.total_movement_left() > 0 {
-            self.paths = PathFinder::new(g).player_paths(self.player_id).unwrap();
+            self.paths = PathFinder::new(game_state)
+                .player_paths(self.player_id)
+                .unwrap();
             let move_positions = gimmi_iter(&self.paths)
                 .flatten()
                 .map(|path| path.target)
@@ -160,7 +165,7 @@ impl Procedure for MoveAction {
                 }
                 let (x, y) = position.to_usize().unwrap();
                 self.active_path = self.paths[x][y].clone();
-                debug_assert!(self.active_path.is_some()); 
+                debug_assert!(self.active_path.is_some());
                 self.paths = Default::default();
                 self.continue_active_path(game_state);
                 self.consolidate_active_path();
@@ -171,8 +176,10 @@ impl Procedure for MoveAction {
                 true
             }
             None => {
-                if game_state.get_player_unsafe(self.player_id).used {
-                    return true;
+                match game_state.get_player(self.player_id) {
+                    Ok(player) if !player.used => (),
+                    Ok(_) => return true,  // Player is used
+                    Err(_) => return true, // Player not on field anymore
                 }
 
                 self.continue_active_path(game_state);
@@ -207,7 +214,7 @@ impl SimpleProc for DodgeProc {
     fn apply_success(&self, _game_state: &mut GameState) {}
 
     fn apply_failure(&self, game_state: &mut GameState) {
-        todo!()
+        game_state.push_proc(KnockDown::new(self.id))
     }
 
     fn player_id(&self) -> PlayerID {
@@ -236,7 +243,7 @@ impl SimpleProc for GfiProc {
     fn apply_success(&self, _game_state: &mut GameState) {}
 
     fn apply_failure(&self, game_state: &mut GameState) {
-        todo!()
+        game_state.push_proc(KnockDown::new(self.id));
     }
 
     fn player_id(&self) -> PlayerID {
@@ -365,31 +372,78 @@ where
 struct KnockDown {
     id: PlayerID,
 }
+impl KnockDown {
+    pub fn new(id: PlayerID) -> Box<KnockDown> {
+        Box::new(KnockDown { id })
+    }
+}
 impl Procedure for KnockDown {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
-        todo!()
+        let mut player = game_state.get_mut_player_unsafe(self.id);
+        debug_assert!(matches!(player.status, PlayerStatus::Up));
+        player.status = PlayerStatus::Down;
+        if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
+            game_state.push_proc(Bounce::new());
+        }
+        game_state.push_proc(Armor::new(self.id));
+        true
     }
 }
 
 struct Armor {
     id: PlayerID,
 }
+impl Armor {
+    pub fn new(id: PlayerID) -> Box<Armor> {
+        Box::new(Armor { id })
+    }
+}
 impl Procedure for Armor {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
-        todo!()
+        let player = game_state.get_player_unsafe(self.id);
+        let target = player.armor_target();
+        let roll = game_state.get_2d6_roll();
+        if target.is_success(roll) {
+            game_state.push_proc(Injury::new(self.id));
+        }
+        true
     }
 }
 
 struct Injury {
     id: PlayerID,
 }
+impl Injury {
+    pub fn new(id: PlayerID) -> Box<Injury> {
+        Box::new(Injury { id })
+    }
+}
 impl Procedure for Injury {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
-        todo!()
+        let cas_target = Sum2D6Target::TenPlus;
+        let ko_target = Sum2D6Target::EightPlus;
+        let roll = game_state.get_2d6_roll();
+        if cas_target.is_success(roll) {
+            game_state
+                .unfield_player(self.id, DugoutPlace::Injuried)
+                .unwrap();
+        } else if ko_target.is_success(roll) {
+            game_state
+                .unfield_player(self.id, DugoutPlace::KnockOut)
+                .unwrap();
+        } else {
+            game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
+        }
+        true
     }
 }
 
 struct Bounce;
+impl Bounce {
+    pub fn new() -> Box<Bounce> {
+        Box::new(Bounce {})
+    }
+}
 impl Procedure for Bounce {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
         let current_ball_pos = game_state.get_ball_position().unwrap();

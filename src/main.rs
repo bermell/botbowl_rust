@@ -18,11 +18,12 @@ mod tests {
     use crate::core::dices::D6Target;
     use crate::core::dices::D6;
     use crate::core::dices::D8;
+    use crate::core::gamestate;
     use crate::core::model::*;
     use crate::core::table::*;
     use crate::core::{
         gamestate::{GameState, GameStateBuilder},
-        model::{Action, DogoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
+        model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
         pathing::{PathFinder, Roll},
         table::PosAT,
     };
@@ -36,6 +37,40 @@ mod tests {
         GameStateBuilder::new(&[(1, 2), (2, 2), (3, 1)], &[(5, 2), (5, 5), (2, 3)])
             .add_ball((3, 2))
             .build()
+    }
+
+    #[test]
+    fn failed_dodge_ko() -> Result<()> {
+        let mut state = standard_state();
+        let id = state.get_player_id_at_coord(2, 2).unwrap();
+        assert!(state.dugout_players.is_empty());
+
+        let a = DugoutPlace::Ejected;
+
+        state.step(Action::Positional(PosAT::StartMove, Position::new((2, 2))))?;
+
+        state.d6_fixes.push_back(D6::Two);
+        state.step(Action::Positional(PosAT::Move, Position::new((2, 1))))?;
+
+        state.d6_fixes.push_back(D6::Four); //armor
+        state.d6_fixes.push_back(D6::Five); //armor
+        state.d6_fixes.push_back(D6::Four); //injury
+        state.d6_fixes.push_back(D6::Five); //injury
+        state.step(Action::Simple(SimpleAT::DontUseReroll))?;
+
+        assert!(state.d6_fixes.is_empty());
+        assert!(state.get_player_id_at_coord(2, 1).is_none());
+        assert!(state.get_players_on_pitch().all(|player| player.id != id));
+
+        match state.dugout_players.pop() {
+            Some(DugoutPlayer {
+                place: DugoutPlace::KnockOut,
+                ..
+            }) => (),
+            _ => panic!("Should match!"),
+        }
+        assert!(state.dugout_players.is_empty());
+        Ok(())
     }
 
     #[test]
@@ -238,7 +273,7 @@ mod tests {
         assert_eq!(state.get_player_id_at(position), Some(id));
         assert_eq!(state.get_player(id).unwrap().position, position);
 
-        state.unfield_player(id, DogoutPlace::Reserves)?;
+        state.unfield_player(id, DugoutPlace::Reserves)?;
 
         assert!(state.get_player_id_at(position).is_none());
         Ok(())

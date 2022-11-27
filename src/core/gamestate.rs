@@ -9,7 +9,7 @@ use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
-    dices::{D6, D8},
+    dices::{Sum2D6, D6, D8},
     procedures::Turn,
     table::PosAT,
 };
@@ -115,7 +115,7 @@ pub struct GameState {
     pub home: TeamState,
     pub away: TeamState,
     fielded_players: [Option<FieldedPlayer>; 22],
-    dugout_players: Vec<DugoutPlayer>,
+    pub dugout_players: Vec<DugoutPlayer>,
     board: FullPitch<Option<PlayerID>>,
     pub ball: BallState,
     pub half: u8,
@@ -147,6 +147,10 @@ impl GameState {
             }
         }
     }
+    pub fn get_2d6_roll(&mut self) -> Sum2D6 {
+        self.get_d6_roll() + self.get_d6_roll()
+    }
+
     pub fn get_d8_roll(&mut self) -> D8 {
         match self.d8_fixes.pop_front() {
             Some(roll) => roll,
@@ -333,7 +337,7 @@ impl GameState {
         Ok(id)
     }
 
-    pub fn unfield_player(&mut self, id: PlayerID, place: DogoutPlace) -> Result<()> {
+    pub fn unfield_player(&mut self, id: PlayerID, place: DugoutPlace) -> Result<()> {
         if let BallState::Carried(carrier_id) = self.ball {
             assert_ne!(carrier_id, id);
             //if carrier_id == id {
