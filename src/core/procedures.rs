@@ -382,6 +382,7 @@ impl Procedure for KnockDown {
         let mut player = game_state.get_mut_player_unsafe(self.id);
         debug_assert!(matches!(player.status, PlayerStatus::Up));
         player.status = PlayerStatus::Down;
+        player.used = true;
         if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
             game_state.push_proc(Bounce::new());
         }

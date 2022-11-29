@@ -1,15 +1,7 @@
-use crate::core::gamestate::GameStateBuilder;
-use crate::core::model::*;
 pub mod core;
 
 fn main() {
-    let g = GameStateBuilder::new(&[(1, 2), (2, 2)], &[(5, 2), (5, 5)])
-        .add_ball((3, 2))
-        .build();
-    let p = Position::new((1, 2));
-    println!("I'm at {:?}!", p);
-
-    println!("testing gamestate {:?}", g.get_player_at(p));
+    println!("Hello world!")
 }
 
 #[cfg(test)]
@@ -33,9 +25,51 @@ mod tests {
     };
 
     fn standard_state() -> GameState {
-        GameStateBuilder::new(&[(1, 2), (2, 2), (3, 1)], &[(5, 2), (5, 5), (2, 3)])
+        GameStateBuilder::new()
+            .add_home_players(&[(1, 2), (2, 2), (3, 1)])
+            .add_away_players(&[(5, 2), (5, 5), (2, 3)])
             .add_ball((3, 2))
             .build()
+    }
+
+    #[test]
+    fn single_dice_block() -> Result<()> {
+        let mut state = GameStateBuilder::new().build();
+        Ok(())
+    }
+
+    #[test]
+    fn bounce_on_knockdown() -> Result<()> {
+        let start_pos = Position::new((2, 2));
+        let move_to = Position::new((3, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((1, 1)))
+            .add_ball_pos(start_pos)
+            .build();
+
+        let d8_fix = D8::One;
+        let direction = Position::from(d8_fix);
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert_eq!(state.ball, BallState::Carried(id));
+        state.step(Action::Positional(PosAT::StartMove, start_pos))?;
+
+        state.d6_fixes.push_back(D6::Two);
+
+        state.step(Action::Positional(PosAT::Move, move_to))?;
+
+        state.d6_fixes.push_back(D6::One); //armor
+        state.d6_fixes.push_back(D6::Five); //armor
+        state.d8_fixes.push_back(d8_fix);
+
+        state.step(Action::Simple(SimpleAT::DontUseReroll))?;
+
+        let player = state.get_player_unsafe(id);
+        assert!(player.used);
+        assert_eq!(state.ball, BallState::OnGround(move_to + direction));
+
+        Ok(())
     }
 
     #[test]
@@ -59,29 +93,33 @@ mod tests {
         assert!(state.get_player_id_at_coord(2, 1).is_none());
         assert!(state.get_players_on_pitch().all(|player| player.id != id));
 
-        match state.dugout_players.pop() {
+        assert!(matches!(
+            state.dugout_players.pop(),
             Some(DugoutPlayer {
                 place: DugoutPlace::KnockOut,
                 ..
-            }) => (),
-            _ => panic!("Should match!"),
-        }
+            })
+        ));
+
         assert!(state.dugout_players.is_empty());
         Ok(())
     }
 
     #[test]
-    fn failed_pickedup_and_bounce() -> Result<()> {
+    fn pickup_fail_and_bounce() -> Result<()> {
         let ball_pos = Position::new((5, 5));
-        let mut state = GameStateBuilder::new(&[(1, 1)], &[])
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
             .add_ball_pos(ball_pos)
             .build();
-        let id = state.get_player_id_at_coord(1, 1).unwrap();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
 
         let d8_fix = D8::One;
         let direction = Position::from(d8_fix);
 
-        state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?;
+        state.step(Action::Positional(PosAT::StartMove, start_pos))?;
         state.d6_fixes.push_back(D6::Two); //fail pickup (3+)
         state.d8_fixes.push_back(d8_fix);
         state.step(Action::Positional(PosAT::Move, ball_pos))?;
@@ -96,15 +134,17 @@ mod tests {
 
     #[test]
     fn pickup_success() -> Result<()> {
-        let mut state = GameStateBuilder::new(&[(1, 1)], &[])
-            .add_ball((5, 5))
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(ball_pos)
             .build();
 
-        match state.ball {
-            BallState::OnGround(pos) if pos == Position::new((5, 5)) => (),
-            _ => panic!("wrong ball carried"),
-        }
-        let id = state.get_player_id_at_coord(1, 1).unwrap();
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert_eq!(state.ball, BallState::OnGround(ball_pos));
+
         state
             .get_mut_player(id)
             .unwrap()
@@ -132,8 +172,10 @@ mod tests {
     }
     #[test]
     fn gfi_reroll() -> Result<()> {
-        let mut state = GameStateBuilder::new(&[(1, 1)], &[]).build();
-        let id = state.get_player_id_at_coord(1, 1).unwrap();
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?;
 
@@ -163,8 +205,14 @@ mod tests {
 
     #[test]
     fn dodge_reroll() -> Result<()> {
-        let mut state = GameStateBuilder::new(&[(1, 1)], &[(2, 1)]).build();
-        let id = state.get_player_id_at_coord(1, 1).unwrap();
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((2, 1)))
+            .build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
         state.get_mut_player(id)?.stats.skills.insert(Skill::Dodge);
         assert!(state.get_player(id).unwrap().has_skill(Skill::Dodge));
 
@@ -355,8 +403,12 @@ mod tests {
 
     #[test]
     fn pathing_probs() -> Result<()> {
-        let state = GameStateBuilder::new(&[(3, 2)], &[(1, 3), (3, 3), (4, 2)]).build();
         let starting_pos = Position::new((3, 2));
+        let state = GameStateBuilder::new()
+            .add_home_player(starting_pos)
+            .add_away_players(&[(1, 3), (3, 3), (4, 2)])
+            .build();
+
         let id = state.get_player_id_at(starting_pos).unwrap();
 
         let mut pf = PathFinder::new(&state);
@@ -415,10 +467,12 @@ mod tests {
 
     #[test]
     fn one_long_path() -> Result<()> {
-        let state = GameStateBuilder::new(&[(1, 1)], &[(1, 2), (2, 3), (2, 4), (5, 3), (6, 4)])
+        let starting_pos = Position::new((1, 1));
+        let state = GameStateBuilder::new()
+            .add_home_player(starting_pos)
+            .add_away_players(&[(1, 2), (2, 3), (2, 4), (5, 3), (6, 4)])
             .add_ball((4, 6))
             .build();
-        let starting_pos = Position::new((1, 1));
         let id = state.get_player_id_at(starting_pos).unwrap();
         let mut pf = PathFinder::new(&state);
         let paths = pf.player_paths(id)?;

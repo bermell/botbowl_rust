@@ -32,23 +32,36 @@ pub struct GameStateBuilder {
 }
 
 impl GameStateBuilder {
-    pub fn new(
-        home_players: &[(Coord, Coord)],
-        away_players: &[(Coord, Coord)],
-    ) -> GameStateBuilder {
+    pub fn new() -> GameStateBuilder {
         let mut builder = GameStateBuilder {
             home_players: Vec::new(),
             away_players: Vec::new(),
             ball_pos: None,
         };
-        home_players
-            .iter()
-            .for_each(|(x, y)| builder.home_players.push(Position::new((*x, *y))));
-        away_players
-            .iter()
-            .for_each(|(x, y)| builder.away_players.push(Position::new((*x, *y))));
-
         builder
+    }
+    pub fn add_home_player(&mut self, position: Position) -> &mut GameStateBuilder {
+        self.home_players.push(position);
+        self
+    }
+
+    pub fn add_away_player(&mut self, position: Position) -> &mut GameStateBuilder {
+        self.away_players.push(position);
+        self
+    }
+
+    pub fn add_home_players(&mut self, players: &[(Coord, Coord)]) -> &mut GameStateBuilder {
+        players
+            .iter()
+            .for_each(|(x, y)| self.home_players.push(Position::new((*x, *y))));
+        self
+    }
+
+    pub fn add_away_players(&mut self, players: &[(Coord, Coord)]) -> &mut GameStateBuilder {
+        players
+            .iter()
+            .for_each(|(x, y)| self.away_players.push(Position::new((*x, *y))));
+        self
     }
 
     pub fn add_ball(&mut self, xy: (Coord, Coord)) -> &mut GameStateBuilder {
