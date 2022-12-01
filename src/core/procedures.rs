@@ -31,9 +31,6 @@ impl Procedure for Turn {
             .map(|p| p.position)
             .collect();
 
-        aa.insert_positional(PosAT::StartMove, positions);
-        aa.insert_positional(PosAT::StartHandoff, positions);
-
         let block_positions: Vec<Position> = positions
             .iter()
             .filter(|&&pos| {
@@ -45,6 +42,8 @@ impl Procedure for Turn {
             .collect();
         aa.insert_positional(PosAT::StartBlock, block_positions);
 
+        aa.insert_positional(PosAT::StartMove, positions.clone());
+        aa.insert_positional(PosAT::StartHandoff, positions);
         aa.insert_simple(SimpleAT::EndTurn);
         aa
     }

@@ -151,7 +151,7 @@ impl GameState {
         self.active_player = None;
     }
     pub fn set_active_player(&mut self, id: PlayerID) {
-        debug_assert_eq!(self.get_player(id).is_ok());
+        debug_assert!(self.get_player(id).is_ok());
         self.active_player = Some(id);
     }
 
