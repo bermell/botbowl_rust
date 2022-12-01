@@ -1,6 +1,7 @@
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum PosAT {
     StartMove,
+    StartHandoff,
     Move,
     StartBlock,
     Block,
@@ -39,4 +40,13 @@ pub enum Skill {
     Catch,
     SureHands,
     SureFeet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NumBlockDices {
+    Three,
+    Two,
+    One,
+    TwoUphill,
+    ThreeUphill,
 }

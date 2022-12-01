@@ -23,23 +23,48 @@ pub struct Turn {
 }
 impl Procedure for Turn {
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        let positions = game_state
+        let mut aa = AvailableActions::new(self.team);
+
+        let positions: Vec<Position> = game_state
             .get_players_on_pitch_in_team(self.team)
             .filter(|p| !p.used)
-            .map(|p| p.position);
-        let mut aa = AvailableActions::new(self.team);
-        aa.insert_positional(PosAT::StartMove, positions.collect());
+            .map(|p| p.position)
+            .collect();
+
+        aa.insert_positional(PosAT::StartMove, positions);
+        aa.insert_positional(PosAT::StartHandoff, positions);
+
+        let block_positions: Vec<Position> = positions
+            .iter()
+            .filter(|&&pos| {
+                game_state.get_adj_players(pos).any(|adj_player| {
+                    adj_player.status == PlayerStatus::Up && adj_player.stats.team != self.team
+                })
+            })
+            .map(|&pos| pos)
+            .collect();
+        aa.insert_positional(PosAT::StartBlock, block_positions);
+
         aa.insert_simple(SimpleAT::EndTurn);
         aa
     }
 
-    fn step(&mut self, g: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
         match action {
-            Some(Action::Positional(PosAT::StartMove, position)) => {
-                let move_action = MoveAction::new(g.get_player_id_at(position).unwrap());
-                g.push_proc(Box::new(move_action));
+            Some(Action::Positional(at, position)) => {
+                game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
+                match at {
+                    PosAT::StartMove => {
+                        game_state.push_proc(MoveAction::new(game_state.active_player.unwrap()));
+                    }
+                    PosAT::StartBlock => {
+                        game_state.push_proc(BlockAction::new());
+                    }
+                    _ => todo!(),
+                }
                 false
             }
+
             Some(Action::Simple(SimpleAT::EndTurn)) => true,
             _ => panic!("Action not allowed: {:?}", action),
         }
@@ -61,13 +86,13 @@ pub struct MoveAction {
     rolls: Option<Vec<Roll>>,
 }
 impl MoveAction {
-    pub fn new(id: PlayerID) -> MoveAction {
-        MoveAction {
+    pub fn new(id: PlayerID) -> Box<MoveAction> {
+        Box::new(MoveAction {
             player_id: id,
             paths: Default::default(),
             active_path: None,
             rolls: None,
-        }
+        })
     }
     fn consolidate_active_path(&mut self) {
         if let Some(rolls) = &self.rolls {
@@ -143,9 +168,7 @@ impl Procedure for MoveAction {
 
         let mut aa = AvailableActions::new(player.stats.team);
         if player.total_movement_left() > 0 {
-            self.paths = PathFinder::new(game_state)
-                .player_paths(self.player_id)
-                .unwrap();
+            self.paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
             let move_positions = gimmi_iter(&self.paths)
                 .flatten()
                 .map(|path| path.target)
@@ -507,5 +530,46 @@ impl SimpleProc for Catch {
 
     fn player_id(&self) -> PlayerID {
         self.id
+    }
+}
+
+struct BlockAction {}
+
+impl BlockAction {
+    fn new() -> Box<BlockAction> {
+        Box::new(BlockAction {})
+    }
+}
+impl Procedure for BlockAction {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+        // find the corresponding BlockActionChoice here, push block procedure
+        todo!()
+    }
+
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+        let player = game_state.get_active_player().unwrap();
+        let aa = AvailableActions::new(player.stats.team);
+        // construct the Vec<BlockActionChoice> here
+        aa
+    }
+}
+
+struct Block {
+    dices: NumBlockDices,
+    //is_blitz: bool //prepare for Horns, Juggernaught, etc..
+}
+
+impl Block {
+    fn new(dices: NumBlockDices) -> Box<Block> {
+        // the point is that number of dices has already been calculated, so this proc doesn't need to redo it.
+        Box::new(Block { dices })
+    }
+}
+impl Procedure for Block {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+        todo!()
+    }
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+        AvailableActions::new_empty()
     }
 }

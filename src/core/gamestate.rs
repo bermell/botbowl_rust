@@ -147,6 +147,30 @@ pub struct GameState {
 }
 
 impl GameState {
+    pub fn clear_active_player(&mut self) {
+        self.active_player = None;
+    }
+    pub fn set_active_player(&mut self, id: PlayerID) {
+        debug_assert_eq!(self.get_player(id).is_ok());
+        self.active_player = Some(id);
+    }
+
+    pub fn get_active_player(&self) -> Option<&FieldedPlayer> {
+        self.active_player
+            .map(|id| self.get_player(id).ok())
+            .flatten()
+    }
+    pub fn get_active_player_mut(&mut self) -> Option<&mut FieldedPlayer> {
+        self.active_player
+            .map(|id| self.get_mut_player(id).ok())
+            .flatten()
+    }
+    pub fn get_endzone_x(&self, team: TeamType) -> Coord {
+        match team {
+            TeamType::Home => 1,
+            TeamType::Away => WIDTH_ - 1,
+        }
+    }
     pub fn set_seed(&mut self, state: u64) {
         self.rng = ChaCha8Rng::seed_from_u64(state);
     }

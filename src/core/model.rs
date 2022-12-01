@@ -5,17 +5,17 @@ use std::ops::Add;
 
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
-use super::table::{PosAT, SimpleAT, Skill};
+use super::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 use crate::core::table;
 
 pub type PlayerID = usize;
 pub type Coord = i8;
 pub type FullPitch<T> = [[T; HEIGHT]; WIDTH];
 
-pub const WIDTH: usize = 26;
-pub const WIDTH_: Coord = 26;
+pub const WIDTH: usize = 28;
 pub const HEIGHT: usize = 17;
-pub const HEIGHT_: Coord = 17;
+pub const WIDTH_: Coord = WIDTH as Coord;
+pub const HEIGHT_: Coord = HEIGHT as Coord;
 
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -255,7 +255,7 @@ pub enum TeamType {
     Away,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BallState {
     OffPitch,
     OnGround(Position),
@@ -287,6 +287,7 @@ pub struct AvailableActions {
     pub team: Option<TeamType>,
     pub simple: HashSet<SimpleAT>,
     pub positional: HashMap<PosAT, Vec<Position>>,
+    pub blocks: Vec<BlockActionChoice>,
 }
 impl AvailableActions {
     pub fn new_empty() -> Self {
@@ -294,6 +295,7 @@ impl AvailableActions {
             team: None,
             simple: HashSet::new(),
             positional: HashMap::new(),
+            blocks: Vec::new(),
         }
     }
     pub fn new(team: TeamType) -> Self {
@@ -301,6 +303,7 @@ impl AvailableActions {
             team: Some(team),
             simple: HashSet::new(),
             positional: HashMap::new(),
+            blocks: Vec::new(),
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -319,8 +322,15 @@ impl AvailableActions {
         assert!(!self.positional.contains_key(&action_type));
         self.positional.insert(action_type, positions);
     }
+    pub fn insert_block(&mut self, ac: Vec<BlockActionChoice>) {
+        self.blocks = ac;
+    }
+
     pub fn is_legal_action(&self, action: Action) -> bool {
         match action {
+            Action::Positional(PosAT::Block, position) => {
+                self.blocks.iter().any(|ac| ac.position == position)
+            }
             Action::Positional(at, pos) => match self.positional.get(&at) {
                 Some(legal_positions) => legal_positions.contains(&pos),
                 None => false,
@@ -331,4 +341,10 @@ impl AvailableActions {
     pub fn get_team(&self) -> Option<TeamType> {
         self.team
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockActionChoice {
+    pub num_dices: NumBlockDices,
+    pub position: Position,
 }

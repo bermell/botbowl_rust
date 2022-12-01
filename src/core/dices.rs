@@ -13,6 +13,14 @@ pub trait RollTarget<T> {
     fn success_prob(&self) -> f32;
 }
 
+pub enum BlockDice {
+    Skull,
+    BothDown,
+    Push,
+    PowPush,
+    Pow,
+}
+
 // Shamelessly copied from https://github.com/vadorovsky/enum-try-from
 macro_rules! impl_enum_try_from {
     ($(#[$meta:meta])* $vis:vis enum $name:ident {
