@@ -377,8 +377,7 @@ mod tests {
         let starting_pos = Position::new((3, 1));
         let id = state.get_player_id_at(starting_pos).unwrap();
         state.step(Action::Positional(PosAT::StartMove, starting_pos))?;
-        let mut pf = PathFinder::new(&state);
-        let paths = pf.player_paths(id)?;
+        let paths = PathFinder::player_paths(&state, id)?;
 
         let mut errors = Vec::new();
 
@@ -411,8 +410,7 @@ mod tests {
 
         let id = state.get_player_id_at(starting_pos).unwrap();
 
-        let mut pf = PathFinder::new(&state);
-        let paths = pf.player_paths(id)?;
+        let paths = PathFinder::player_paths(&state, id)?;
 
         let mut pos_to_prob: HashMap<(usize, usize), Option<f32>> = HashMap::new();
         pos_to_prob.insert((1, 1), Some(2.0 / 3.0));
@@ -474,8 +472,7 @@ mod tests {
             .add_ball((4, 6))
             .build();
         let id = state.get_player_id_at(starting_pos).unwrap();
-        let mut pf = PathFinder::new(&state);
-        let paths = pf.player_paths(id)?;
+        let paths = PathFinder::player_paths(&state, id)?;
 
         let expected_steps = vec![
             (
