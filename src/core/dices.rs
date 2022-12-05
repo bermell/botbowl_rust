@@ -5,20 +5,16 @@ use std::{
 
 use rand::{distributions::Standard, prelude::Distribution};
 
-use super::{gamestate::DIRECTIONS, model::Position};
+use super::{
+    gamestate::DIRECTIONS,
+    model::Position,
+    table::{PosAT, SimpleAT},
+};
 
 pub trait RollTarget<T> {
     fn is_success(&self, roll: T) -> bool;
     fn add_modifer(&mut self, modifer: i8) -> &mut Self;
     fn success_prob(&self) -> f32;
-}
-
-pub enum BlockDice {
-    Skull,
-    BothDown,
-    Push,
-    PowPush,
-    Pow,
 }
 
 // Shamelessly copied from https://github.com/vadorovsky/enum-try-from
@@ -75,6 +71,39 @@ impl Distribution<D8> for Standard {
 impl From<D8> for Position {
     fn from(roll: D8) -> Self {
         Position::new(DIRECTIONS[roll as usize - 1])
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BlockDice {
+    Skull,
+    BothDown,
+    Push,
+    PowPush,
+    Pow,
+}
+
+impl From<BlockDice> for SimpleAT {
+    fn from(roll: BlockDice) -> Self {
+        match roll {
+            BlockDice::Skull => SimpleAT::SelectSkull,
+            BlockDice::BothDown => SimpleAT::SelectBothDown,
+            BlockDice::Push => SimpleAT::SelectPush,
+            BlockDice::PowPush => SimpleAT::SelectPowPush,
+            BlockDice::Pow => SimpleAT::SelectPow,
+        }
+    }
+}
+
+impl Distribution<BlockDice> for Standard {
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> BlockDice {
+        match rng.gen_range(1..=6) {
+            1 => BlockDice::Skull,
+            2 => BlockDice::BothDown,
+            3 | 4 => BlockDice::Push,
+            5 => BlockDice::PowPush,
+            6 => BlockDice::Pow,
+            _ => panic!("very wrong!"),
+        }
     }
 }
 

@@ -6,6 +6,7 @@ use model::*;
 
 use super::dices::{D6Target, RollTarget};
 use super::gamestate::{GameState, DIRECTIONS};
+use super::table::NumBlockDices;
 
 type OptRcNode = Option<Rc<Node>>;
 
@@ -15,6 +16,7 @@ pub enum Roll {
     Dodge(D6Target),
     GFI(D6Target),
     Pickup(D6Target),
+    Block(PlayerID, NumBlockDices),
     //StandUp,
 }
 #[derive(Debug)]
@@ -262,14 +264,16 @@ impl<'a> PathFinder<'a> {
             Some(pos) => self.info.tackles_zones_at(&pos) == 0,
             None => false,
         };
-        let a: Vec<NodeType> = DIRECTIONS
+        
+
+        DIRECTIONS
             .iter()
             .map(|direction| node.position + *direction)
             .filter(|to_square| !to_square.is_out())
             .map(|to_square| (to_square, to_square.to_usize().unwrap()))
             .filter(|(to, (x, y))| {
                 if let Some(parent_pos) = parent_square {
-                    (parent_tz && 0 < self.info.tzones[*x][*y]) || parent_pos.distance(&to) == 2
+                    (parent_tz && 0 < self.info.tzones[*x][*y]) || parent_pos.distance(to) == 2
                 } else {
                     true
                 }
@@ -281,10 +285,7 @@ impl<'a> PathFinder<'a> {
                     &mut self.nodes[x][y],
                     &self.locked_nodes[x][y],
                 )
-            })
-            .collect();
-
-        a.into_iter().for_each(|node_type| match node_type {
+            }).for_each(|node_type| match node_type {
             NodeType::Risky(node) => self.risky_sets.insert_node(node),
             NodeType::ContinueExpanding(node) => self.open_set.push(node),
             NodeType::NoNode => (),

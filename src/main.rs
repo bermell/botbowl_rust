@@ -7,6 +7,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
 
+    use crate::core::dices::BlockDice;
     use crate::core::dices::D6Target;
     use crate::core::dices::D6;
     use crate::core::dices::D8;
@@ -34,7 +35,23 @@ mod tests {
 
     #[test]
     fn single_dice_block() -> Result<()> {
-        let mut state = GameStateBuilder::new().build();
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let push_pos = Position::new((7, 7));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+
+        state.step(Action::Positional(PosAT::StartBlock, home_pos))?;
+        state.blockdice_fixes.push_back(BlockDice::Pow);
+        state.step(Action::Positional(PosAT::Block, away_pos))?;
+        state.step(Action::Simple(SimpleAT::SelectPow))?;
+        state.step(Action::Positional(PosAT::Push, push_pos))?;
+        state.d6_fixes.push_back(D6::One);
+        state.d6_fixes.push_back(D6::One);
+        state.step(Action::Positional(PosAT::FollowUp, away_pos))?;
+
         Ok(())
     }
 

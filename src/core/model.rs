@@ -1,7 +1,7 @@
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::error;
-use std::ops::Add;
+use std::ops::{Add, Sub};
 
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
@@ -33,6 +33,7 @@ pub struct Position {
     pub x: Coord,
     pub y: Coord,
 }
+
 impl Position {
     pub fn new(xy: (Coord, Coord)) -> Position {
         let (x, y) = xy;
@@ -68,6 +69,14 @@ impl Add<Position> for Position {
 
     fn add(self, rhs: Position) -> Self::Output {
         Position::new((self.x + rhs.x, self.y + rhs.y))
+    }
+}
+
+impl Sub<Position> for Position {
+    type Output = (Coord, Coord);
+
+    fn sub(self, rhs: Position) -> Self::Output {
+        (self.x - rhs.x, self.y - rhs.y)
     }
 }
 
@@ -254,6 +263,12 @@ pub enum TeamType {
     Home,
     Away,
 }
+pub fn other_team(team: TeamType) -> TeamType {
+    match team {
+        TeamType::Home => TeamType::Away,
+        TeamType::Away => TeamType::Home,
+    }
+}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum BallState {
@@ -345,6 +360,7 @@ impl AvailableActions {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockActionChoice {
+    // This will have all things needed in the Block procedure. Might as well merge them. Slightly funny code but it's ok!
     pub num_dices: NumBlockDices,
     pub position: Position,
 }

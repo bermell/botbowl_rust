@@ -1,6 +1,8 @@
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum PosAT {
     StartMove,
+    Push,
+    FollowUp,
     StartHandoff,
     Move,
     StartBlock,
@@ -11,6 +13,10 @@ pub enum PosAT {
 pub enum SimpleAT {
     StartGame,
     SelectBothDown,
+    SelectPow,
+    SelectPush,
+    SelectPowPush,
+    SelectSkull,
     UseReroll,
     DontUseReroll,
     EndPlayerTurn,
@@ -49,4 +55,16 @@ pub enum NumBlockDices {
     One,
     TwoUphill,
     ThreeUphill,
+}
+
+impl From<NumBlockDices> for u8 {
+    fn from(value: NumBlockDices) -> Self {
+        match value {
+            NumBlockDices::Three => 3,
+            NumBlockDices::Two => 2,
+            NumBlockDices::One => 1,
+            NumBlockDices::TwoUphill => 2,
+            NumBlockDices::ThreeUphill => 3,
+        }
+    }
 }

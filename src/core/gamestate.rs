@@ -9,9 +9,9 @@ use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
-    dices::{D6Target, RollTarget, Sum2D6, D6, D8},
+    dices::{BlockDice, D6Target, RollTarget, Sum2D6, D6, D8},
     procedures::Turn,
-    table::PosAT,
+    table::{NumBlockDices, PosAT},
 };
 
 pub const DIRECTIONS: [(Coord, Coord); 8] = [
@@ -33,12 +33,11 @@ pub struct GameStateBuilder {
 
 impl GameStateBuilder {
     pub fn new() -> GameStateBuilder {
-        let mut builder = GameStateBuilder {
+        GameStateBuilder {
             home_players: Vec::new(),
             away_players: Vec::new(),
             ball_pos: None,
-        };
-        builder
+        }
     }
     pub fn add_home_player(&mut self, position: Position) -> &mut GameStateBuilder {
         self.home_players.push(position);
@@ -94,6 +93,8 @@ impl GameStateBuilder {
             d8_fixes: VecDeque::new(),
             rng_enabled: false,
             weather: Weather::Nice,
+            blockdice_fixes: VecDeque::new(),
+            team_turn: TeamType::Home,
         };
 
         for position in self.home_players.iter() {
@@ -123,6 +124,12 @@ impl GameStateBuilder {
     }
 }
 
+impl Default for GameStateBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[allow(dead_code)]
 pub struct GameState {
     pub home: TeamState,
@@ -134,6 +141,7 @@ pub struct GameState {
     pub half: u8,
     pub turn: u8,
     pub active_player: Option<PlayerID>,
+    pub team_turn: TeamType,
     pub game_over: bool,
     pub weather: Weather,
     proc_stack: Vec<Box<dyn Procedure>>,
@@ -142,11 +150,16 @@ pub struct GameState {
     pub rng_enabled: bool,
     rng: ChaCha8Rng,
     pub d6_fixes: VecDeque<D6>,
+    pub blockdice_fixes: VecDeque<BlockDice>,
     pub d8_fixes: VecDeque<D8>,
     //rerolled_procs: ???? //TODO!!!
 }
 
 impl GameState {
+    pub fn get_available_actions(&self) -> &AvailableActions {
+        &self.available_actions
+    }
+
     pub fn clear_active_player(&mut self) {
         self.active_player = None;
     }
@@ -156,14 +169,11 @@ impl GameState {
     }
 
     pub fn get_active_player(&self) -> Option<&FieldedPlayer> {
-        self.active_player
-            .map(|id| self.get_player(id).ok())
-            .flatten()
+        self.active_player.and_then(|id| self.get_player(id).ok())
     }
     pub fn get_active_player_mut(&mut self) -> Option<&mut FieldedPlayer> {
         self.active_player
-            .map(|id| self.get_mut_player(id).ok())
-            .flatten()
+            .and_then(|id| self.get_mut_player(id).ok())
     }
     pub fn get_endzone_x(&self, team: TeamType) -> Coord {
         match team {
@@ -198,6 +208,16 @@ impl GameState {
         }
     }
 
+    pub fn get_block_dice_roll(&mut self) -> BlockDice {
+        match self.blockdice_fixes.pop_front() {
+            Some(roll) => roll,
+            None => {
+                assert!(self.rng_enabled);
+                self.rng.gen()
+            }
+        }
+    }
+
     pub fn get_team_from_player(&self, id: PlayerID) -> Result<&TeamState> {
         self.get_player(id)
             .map(|player| player.stats.team)
@@ -222,6 +242,16 @@ impl GameState {
             TeamType::Home => &mut self.home,
             TeamType::Away => &mut self.away,
         }
+    }
+    pub fn get_active_players_team(&self) -> Option<&TeamState> {
+        self.active_player
+            .and_then(|id| self.get_player(id).ok())
+            .map(|player| self.get_team(player.stats.team))
+    }
+
+    pub fn get_active_players_team_mut(&mut self) -> Option<&mut TeamState> {
+        self.get_mut_team_from_player(self.active_player.unwrap())
+            .ok()
     }
     pub fn get_active_teamtype(&self) -> Option<TeamType> {
         self.available_actions.get_team()
@@ -319,6 +349,62 @@ impl GameState {
         }
     }
 
+    pub fn get_tz_on(&self, id: PlayerID) -> u8 {
+        let player = self.get_player_unsafe(id);
+        let team = player.stats.team;
+        let position = player.position;
+
+        self.get_adj_players(position)
+            .filter(|adj_player| adj_player.stats.team != team && adj_player.has_tackle_zone())
+            .count() as u8
+    }
+
+    pub fn get_blockdices(&self, attacker: PlayerID, defender: PlayerID) -> NumBlockDices {
+        let attr = self.get_player_unsafe(attacker);
+        let defr = self.get_player_unsafe(defender);
+
+        debug_assert_ne!(attr.stats.team, defr.stats.team);
+        debug_assert_eq!(attr.position.distance(&defr.position), 1);
+        debug_assert!(attr.has_tackle_zone());
+        debug_assert_eq!(defr.status, PlayerStatus::Up);
+
+        let defr_tz = u8::from(defr.has_tackle_zone()); // preparing for bonehead, hypnotized, etc ...
+
+        let mut attr_str = attr.stats.str_;
+        let mut defr_str = defr.stats.str_;
+
+        attr_str += self
+            .get_adj_players(defr.position)
+            .filter(|adj_player| {
+                adj_player.id != attr.id
+                    && adj_player.stats.team == attr.stats.team
+                    && adj_player.has_tackle_zone()
+                    && self.get_tz_on(adj_player.id) == defr_tz
+            })
+            .count() as u8;
+
+        defr_str += self
+            .get_adj_players(attr.position)
+            .filter(|adj_player| {
+                adj_player.id != defr.id
+                    && adj_player.stats.team == defr.stats.team
+                    && adj_player.has_tackle_zone()
+                    && self.get_tz_on(adj_player.id) == 1
+            })
+            .count() as u8;
+
+        if attr_str > 2 * defr_str {
+            NumBlockDices::Three
+        } else if attr_str > defr_str {
+            NumBlockDices::Two
+        } else if attr_str == defr_str {
+            NumBlockDices::One
+        } else if 2 * attr_str < defr_str {
+            NumBlockDices::ThreeUphill
+        } else {
+            NumBlockDices::TwoUphill
+        }
+    }
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()> {
         let (old_x, old_y) = self.get_player(id)?.position.to_usize()?;
         let (new_x, new_y) = new_pos.to_usize()?;
@@ -383,6 +469,9 @@ impl GameState {
             //if carrier_id == id {
             //return Err(Box::new(InvalidPlayerId{id: 4}))
             //}
+        }
+        if matches!(self.active_player, Some(active_id) if active_id == id) {
+            self.active_player = None;
         }
 
         let player = self.get_player(id)?;
