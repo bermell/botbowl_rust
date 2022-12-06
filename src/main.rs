@@ -33,11 +33,54 @@ mod tests {
             .build()
     }
 
+
+    #[test]
+    fn test_block_2d_bothdown_casualty() -> Result<()> {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_home_player(Position::new((5, 6)))
+            .add_away_player(away_pos)
+            .build();
+
+        state.step(Action::Positional(PosAT::StartBlock, home_pos))?;
+        state.blockdice_fixes.push_back(BlockDice::Pow);
+        state.blockdice_fixes.push_back(BlockDice::BothDown);
+        state.step(Action::Positional(PosAT::Block, away_pos))?;
+        state.d6_fixes.push_back(D6::One); //away armor
+        state.d6_fixes.push_back(D6::One); //away armor
+        state.d6_fixes.push_back(D6::Five); //home armor
+        state.d6_fixes.push_back(D6::Six); //home armor
+        state.d6_fixes.push_back(D6::Six); //home injury
+        state.d6_fixes.push_back(D6::Six); //home injury
+        state.step(Action::Simple(SimpleAT::SelectBothDown))?;
+
+        assert!(state.get_player_at(home_pos).is_none());
+        assert!(matches!(
+            state.dugout_players.pop(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Injuried,
+                stats: PlayerStats {
+                    team: TeamType::Home,
+                    ..
+                },
+            })
+        ));
+        assert_eq!(
+            state.get_player_at(away_pos).unwrap().status,
+            PlayerStatus::Down
+        );
+
+        assert!(state.fixed_dice_empty());
+        Ok(())
+    }
+
     #[test]
     fn single_dice_block() -> Result<()> {
         let home_pos = Position::new((5, 5));
         let away_pos = Position::new((6, 6));
-        let push_pos = Position::new((7, 7));
+        let push_pos = Position::new((6, 7));
         let mut state = GameStateBuilder::new()
             .add_home_player(home_pos)
             .add_away_player(away_pos)
@@ -51,6 +94,12 @@ mod tests {
         state.d6_fixes.push_back(D6::One);
         state.d6_fixes.push_back(D6::One);
         state.step(Action::Positional(PosAT::FollowUp, away_pos))?;
+
+        assert_eq!(
+            state.get_player_at(push_pos).unwrap().status,
+            PlayerStatus::Down
+        );
+        assert!(state.fixed_dice_empty());
 
         Ok(())
     }

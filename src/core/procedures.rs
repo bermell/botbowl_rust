@@ -769,7 +769,7 @@ impl Push {
         let mut push_squares = match direction {
             (0, _) => vec![self.on + (1, 0), self.on + (-1, 0)],
             (_, 0) => vec![self.on + (0, 1), self.on + (0, -1)],
-            (dx, dy) => vec![self.on + (-dx, 0), self.on + (0, -dy)],
+            (dx, dy) => vec![self.on + (dx, 0), self.on + (0, dy)],
         };
         push_squares.push(self.on + direction);
         let free_squares: Vec<Position> = push_squares

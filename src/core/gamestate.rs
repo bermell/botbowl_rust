@@ -208,6 +208,10 @@ impl GameState {
         }
     }
 
+    pub fn fixed_dice_empty(&self) -> bool {
+        self.d6_fixes.is_empty() && self.d8_fixes.is_empty() && self.blockdice_fixes.is_empty()
+    }
+
     pub fn get_block_dice_roll(&mut self) -> BlockDice {
         match self.blockdice_fixes.pop_front() {
             Some(roll) => roll,

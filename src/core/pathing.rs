@@ -12,13 +12,12 @@ type OptRcNode = Option<Rc<Node>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Roll {
-    //Make more clever!
     Dodge(D6Target),
     GFI(D6Target),
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
-    //StandUp,
 }
+
 #[derive(Debug)]
 pub struct Node {
     parent: OptRcNode,
@@ -264,7 +263,6 @@ impl<'a> PathFinder<'a> {
             Some(pos) => self.info.tackles_zones_at(&pos) == 0,
             None => false,
         };
-        
 
         DIRECTIONS
             .iter()
@@ -285,11 +283,12 @@ impl<'a> PathFinder<'a> {
                     &mut self.nodes[x][y],
                     &self.locked_nodes[x][y],
                 )
-            }).for_each(|node_type| match node_type {
-            NodeType::Risky(node) => self.risky_sets.insert_node(node),
-            NodeType::ContinueExpanding(node) => self.open_set.push(node),
-            NodeType::NoNode => (),
-        });
+            })
+            .for_each(|node_type| match node_type {
+                NodeType::Risky(node) => self.risky_sets.insert_node(node),
+                NodeType::ContinueExpanding(node) => self.open_set.push(node),
+                NodeType::NoNode => (),
+            });
     }
 
     fn new_expand_to(
