@@ -115,7 +115,7 @@ mod tests {
             .build();
 
         let d8_fix = D8::One;
-        let direction = Position::from(d8_fix);
+        let direction = Direction::from(d8_fix);
         let id = state.get_player_id_at(start_pos).unwrap();
 
         assert_eq!(state.ball, BallState::Carried(id));
@@ -183,7 +183,7 @@ mod tests {
         let id = state.get_player_id_at(start_pos).unwrap();
 
         let d8_fix = D8::One;
-        let direction = Position::from(d8_fix);
+        let direction = Direction::from(d8_fix);
 
         state.step(Action::Positional(PosAT::StartMove, start_pos))?;
         state.d6_fixes.push_back(D6::Two); //fail pickup (3+)
@@ -193,7 +193,7 @@ mod tests {
 
         let player = state.get_player(id).unwrap();
         assert!(player.used);
-        assert!(matches!(state.ball, BallState::OnGround(pos) if pos == direction + ball_pos));
+        assert!(matches!(state.ball, BallState::OnGround(pos) if pos == ball_pos + direction));
 
         Ok(())
     }

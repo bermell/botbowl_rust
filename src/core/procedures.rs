@@ -1,4 +1,4 @@
-use crate::core::model;
+use crate::core::{dices::D6, model};
 use model::*;
 
 use crate::core::table::*;
@@ -484,7 +484,7 @@ impl Bounce {
 impl Procedure for Bounce {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
         let current_ball_pos = game_state.get_ball_position().unwrap();
-        let new_pos = current_ball_pos + Position::from(game_state.get_d8_roll());
+        let new_pos = current_ball_pos + Direction::from(game_state.get_d8_roll());
 
         if let Some(player) = game_state.get_player_at(new_pos) {
             if player.can_catch() {
@@ -767,9 +767,9 @@ impl Push {
     fn get_push_squares(&self, game_state: &GameState) -> Vec<Position> {
         let direction = self.on - self.from;
         let mut push_squares = match direction {
-            (0, _) => vec![self.on + (1, 0), self.on + (-1, 0)],
-            (_, 0) => vec![self.on + (0, 1), self.on + (0, -1)],
-            (dx, dy) => vec![self.on + (dx, 0), self.on + (0, dy)],
+            Direction { dx: 0, dy: _ } => vec![self.on + (1, 0), self.on + (-1, 0)],
+            Direction { dx: _, dy: 0 } => vec![self.on + (0, 1), self.on + (0, -1)],
+            Direction { dx, dy } => vec![self.on + (dx, 0), self.on + (0, dy)],
         };
         push_squares.push(self.on + direction);
         let free_squares: Vec<Position> = push_squares

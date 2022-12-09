@@ -5,7 +5,7 @@ use crate::core::model;
 use model::*;
 
 use super::dices::{D6Target, RollTarget};
-use super::gamestate::{GameState, DIRECTIONS};
+use super::gamestate::GameState;
 use super::table::NumBlockDices;
 
 type OptRcNode = Option<Rc<Node>>;
@@ -263,9 +263,7 @@ impl<'a> PathFinder<'a> {
             Some(pos) => self.info.tackles_zones_at(&pos) == 0,
             None => false,
         };
-
-        DIRECTIONS
-            .iter()
+        Direction::all_directions_iter()
             .map(|direction| node.position + *direction)
             .filter(|to_square| !to_square.is_out())
             .map(|to_square| (to_square, to_square.to_usize().unwrap()))
@@ -339,7 +337,7 @@ impl<'a> PathFinder<'a> {
                 parent = &None;
             }
         }
-        for direction in DIRECTIONS {
+        for direction in Direction::all_directions_as_array() {
             let to_square = node.position + direction;
             if to_square.is_out() {
                 continue;

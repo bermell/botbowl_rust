@@ -5,11 +5,7 @@ use std::{
 
 use rand::{distributions::Standard, prelude::Distribution};
 
-use super::{
-    gamestate::DIRECTIONS,
-    model::Position,
-    table::{PosAT, SimpleAT},
-};
+use super::{model::Direction, table::SimpleAT};
 
 pub trait RollTarget<T> {
     fn is_success(&self, roll: T) -> bool;
@@ -68,9 +64,9 @@ impl Distribution<D8> for Standard {
     }
 }
 
-impl From<D8> for Position {
+impl From<D8> for Direction {
     fn from(roll: D8) -> Self {
-        Position::new(DIRECTIONS[roll as usize - 1])
+        Direction::all_directions_as_array()[roll as usize - 1]
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]

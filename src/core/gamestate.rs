@@ -14,17 +14,6 @@ use super::{
     table::{NumBlockDices, PosAT},
 };
 
-pub const DIRECTIONS: [(Coord, Coord); 8] = [
-    (1, 1),
-    (0, 1),
-    (-1, 1),
-    (1, 0),
-    (-1, 0),
-    (1, -1),
-    (0, -1),
-    (-1, -1),
-];
-
 pub struct GameStateBuilder {
     home_players: Vec<Position>,
     away_players: Vec<Position>,
@@ -307,13 +296,9 @@ impl GameState {
         }
     }
 
-    pub fn get_adj_positions(&self, p: Position) -> impl Iterator<Item = Position> {
-        match p {
-            position if position.is_out() => panic!(),
-            Position { x, y } => DIRECTIONS
-                .iter()
-                .map(move |(dx, dy)| Position::new((x + dx, y + dy))),
-        }
+    pub fn get_adj_positions(&self, position: Position) -> impl Iterator<Item = Position> {
+        debug_assert!(!position.is_out());
+        Direction::all_directions_iter().map(move |&direction| position + direction)
     }
 
     pub fn get_adj_players(&self, p: Position) -> impl Iterator<Item = &FieldedPlayer> + '_ {

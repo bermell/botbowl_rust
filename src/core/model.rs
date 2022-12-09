@@ -1,7 +1,7 @@
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::error;
-use std::ops::{Add, Sub};
+use std::ops::{Add, Mul, Sub, SubAssign};
 
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
@@ -26,6 +26,36 @@ pub fn gimmi_iter<T>(pitch: &FullPitch<T>) -> impl Iterator<Item = &T> {
 
 pub fn gimmi_mut_iter<T>(pitch: &mut FullPitch<T>) -> impl Iterator<Item = &mut T> {
     pitch.iter_mut().flat_map(|r| r.iter_mut())
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Direction {
+    pub dx: Coord,
+    pub dy: Coord,
+}
+impl From<(Coord, Coord)> for Direction {
+    fn from(xy: (Coord, Coord)) -> Self {
+        let (dx, dy) = xy;
+        Direction { dx, dy }
+    }
+}
+const all_directions: [Direction; 8] = [
+    Direction { dx: 1, dy: 1 },
+    Direction { dx: 0, dy: 1 },
+    Direction { dx: -1, dy: 1 },
+    Direction { dx: 1, dy: 0 },
+    Direction { dx: -1, dy: 0 },
+    Direction { dx: 1, dy: -1 },
+    Direction { dx: 0, dy: -1 },
+    Direction { dx: -1, dy: -1 },
+];
+impl Direction {
+    pub fn all_directions_iter() -> impl Iterator<Item = &'static Direction> {
+        all_directions.iter()
+    }
+    pub fn all_directions_as_array() -> [Direction; 8] {
+        all_directions
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -56,27 +86,54 @@ impl Position {
         self.x <= 0 || self.x >= WIDTH_ || self.y <= 0 || self.y >= HEIGHT_
     }
 }
+impl Add<Direction> for Position {
+    type Output = Position;
+
+    fn add(self, rhs: Direction) -> Self::Output {
+        Position::new((self.x + rhs.dx, self.y + rhs.dy))
+    }
+}
 impl Add<(Coord, Coord)> for Position {
     type Output = Position;
 
     fn add(self, rhs: (Coord, Coord)) -> Self::Output {
-        Position::new((self.x + rhs.0, self.y + rhs.1))
+        self + Direction::from(rhs)
     }
 }
-
-impl Add<Position> for Position {
-    type Output = Position;
-
-    fn add(self, rhs: Position) -> Self::Output {
-        Position::new((self.x + rhs.x, self.y + rhs.y))
+impl SubAssign<Direction> for Position {
+    fn sub_assign(&mut self, rhs: Direction) {
+        self.x -= rhs.dx;
+        self.y -= rhs.dy;
     }
 }
 
 impl Sub<Position> for Position {
-    type Output = (Coord, Coord);
+    type Output = Direction;
 
     fn sub(self, rhs: Position) -> Self::Output {
-        (self.x - rhs.x, self.y - rhs.y)
+        Direction {
+            dx: self.x - rhs.x,
+            dy: self.y - rhs.y,
+        }
+    }
+}
+
+impl Sub<Direction> for Position {
+    type Output = Position;
+
+    fn sub(self, rhs: Direction) -> Self::Output {
+        Position::new((self.x - rhs.dx, self.y - rhs.dy))
+    }
+}
+
+impl Mul<i8> for Direction {
+    type Output = Direction;
+
+    fn mul(self, rhs: i8) -> Self::Output {
+        Direction {
+            dx: self.dx * rhs,
+            dy: self.dy * rhs,
+        }
     }
 }
 
