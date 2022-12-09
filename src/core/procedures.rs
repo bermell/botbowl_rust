@@ -18,8 +18,66 @@ trait SimpleProc {
     fn player_id(&self) -> PlayerID;
 }
 
+pub struct Half {
+    half: u8,
+    started: bool,
+}
+impl Half {
+    pub fn new(half: u8) -> Box<Half> {
+        debug_assert!(half == 1 || half == 2);
+        Box::new(Half {
+            half,
+            started: false,
+        })
+    }
+}
+
+impl Procedure for Half {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+        let info = &mut game_state.info;
+        if !self.started {
+            self.started = true;
+            info.half = self.half;
+            info.home_turn = 0;
+            info.away_turn = 0;
+        }
+
+        if info.home_turn == 8 && info.away_turn == 8 {
+            return true;
+        }
+
+        let kicking_this_half = if self.half == 1 {
+            info.kicking_first_half
+        } else {
+            other_team(info.kicking_first_half)
+        };
+
+        let next_team: TeamType = if info.home_turn == info.away_turn {
+            kicking_this_half
+        } else {
+            other_team(kicking_this_half)
+        };
+
+        match next_team {
+            TeamType::Home => info.home_turn += 1,
+            TeamType::Away => info.away_turn += 1,
+        }
+
+        info.team_turn = next_team;
+
+        game_state.push_proc(Turn::new(next_team));
+
+        false
+    }
+}
+
 pub struct Turn {
     pub team: TeamType,
+}
+impl Turn {
+    pub fn new(team: TeamType) -> Box<Turn> {
+        Box::new(Turn { team })
+    }
 }
 impl Procedure for Turn {
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
@@ -54,7 +112,8 @@ impl Procedure for Turn {
                 game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
                 match at {
                     PosAT::StartMove => {
-                        game_state.push_proc(MoveAction::new(game_state.active_player.unwrap()));
+                        game_state
+                            .push_proc(MoveAction::new(game_state.info.active_player.unwrap()));
                     }
                     PosAT::StartBlock => {
                         game_state.push_proc(BlockAction::new());
@@ -698,7 +757,7 @@ impl Procedure for Block {
                 false
             }
             Some(Action::Simple(dice_action_type)) => {
-                let attacker_id = game_state.active_player.unwrap();
+                let attacker_id = game_state.info.active_player.unwrap();
                 let mut knockdown_attacker = false;
                 let mut knockdown_defender = false;
                 let mut push = false;
@@ -872,7 +931,7 @@ impl Procedure for Push {
                     self.target = PushState::Crowd;
                     AvailableActions::new_empty()
                 } else {
-                    let mut aa = AvailableActions::new(game_state.team_turn);
+                    let mut aa = AvailableActions::new(game_state.info.team_turn);
                     aa.insert_positional(PosAT::Push, push_squares);
                     aa
                 }

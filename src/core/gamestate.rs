@@ -10,8 +10,8 @@ use model::*;
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
     dices::{BlockDice, D6Target, RollTarget, Sum2D6, D6, D8},
-    procedures::Turn,
-    table::{NumBlockDices, PosAT},
+    procedures::{Half, Turn},
+    table::{NumBlockDices, PosAT, SimpleAT},
 };
 
 pub struct GameStateBuilder {
@@ -69,10 +69,6 @@ impl GameStateBuilder {
             away: TeamState::new(),
             board: Default::default(),
             ball: BallState::OffPitch,
-            half: 1,
-            turn: 1,
-            active_player: None,
-            game_over: false,
             dugout_players: Vec::new(),
             proc_stack: Vec::new(),
             new_procs: VecDeque::new(),
@@ -81,9 +77,8 @@ impl GameStateBuilder {
             d6_fixes: VecDeque::new(),
             d8_fixes: VecDeque::new(),
             rng_enabled: false,
-            weather: Weather::Nice,
             blockdice_fixes: VecDeque::new(),
-            team_turn: TeamType::Home,
+            info: GameInfo::new(),
         };
 
         for position in self.home_players.iter() {
@@ -103,11 +98,9 @@ impl GameStateBuilder {
                 _ => panic!(),
             }
         }
-        let mut proc = Turn {
-            team: TeamType::Home,
-        };
-        state.available_actions = proc.available_actions(&state);
-        state.proc_stack.push(Box::new(proc));
+
+        state.proc_stack.push(Half::new(1));
+        state.step(Action::Simple(SimpleAT::EndTurn)).unwrap();
 
         state
     }
@@ -119,20 +112,41 @@ impl Default for GameStateBuilder {
     }
 }
 
-#[allow(dead_code)]
-pub struct GameState {
-    pub home: TeamState,
-    pub away: TeamState,
-    fielded_players: [Option<FieldedPlayer>; 22],
-    pub dugout_players: Vec<DugoutPlayer>,
-    board: FullPitch<Option<PlayerID>>,
-    pub ball: BallState,
+pub struct GameInfo {
     pub half: u8,
-    pub turn: u8,
+    pub home_turn: u8,
+    pub away_turn: u8,
     pub active_player: Option<PlayerID>,
     pub team_turn: TeamType,
     pub game_over: bool,
     pub weather: Weather,
+    pub kicking_first_half: TeamType,
+}
+impl GameInfo {
+    fn new() -> GameInfo {
+        GameInfo {
+            half: 0,
+            active_player: None,
+            team_turn: TeamType::Home,
+            game_over: false,
+            weather: Weather::Nice,
+            kicking_first_half: TeamType::Home,
+            home_turn: 0,
+            away_turn: 0,
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub struct GameState {
+    pub info: GameInfo,
+    pub home: TeamState,
+    pub away: TeamState,
+
+    fielded_players: [Option<FieldedPlayer>; 22],
+    pub dugout_players: Vec<DugoutPlayer>,
+    board: FullPitch<Option<PlayerID>>,
+    pub ball: BallState,
     proc_stack: Vec<Box<dyn Procedure>>,
     new_procs: VecDeque<Box<dyn Procedure>>,
     available_actions: AvailableActions,
@@ -149,19 +163,19 @@ impl GameState {
         &self.available_actions
     }
 
-    pub fn clear_active_player(&mut self) {
-        self.active_player = None;
-    }
     pub fn set_active_player(&mut self, id: PlayerID) {
         debug_assert!(self.get_player(id).is_ok());
-        self.active_player = Some(id);
+        self.info.active_player = Some(id);
     }
 
     pub fn get_active_player(&self) -> Option<&FieldedPlayer> {
-        self.active_player.and_then(|id| self.get_player(id).ok())
+        self.info
+            .active_player
+            .and_then(|id| self.get_player(id).ok())
     }
     pub fn get_active_player_mut(&mut self) -> Option<&mut FieldedPlayer> {
-        self.active_player
+        self.info
+            .active_player
             .and_then(|id| self.get_mut_player(id).ok())
     }
     pub fn get_endzone_x(&self, team: TeamType) -> Coord {
@@ -237,13 +251,14 @@ impl GameState {
         }
     }
     pub fn get_active_players_team(&self) -> Option<&TeamState> {
-        self.active_player
+        self.info
+            .active_player
             .and_then(|id| self.get_player(id).ok())
             .map(|player| self.get_team(player.stats.team))
     }
 
     pub fn get_active_players_team_mut(&mut self) -> Option<&mut TeamState> {
-        self.get_mut_team_from_player(self.active_player.unwrap())
+        self.get_mut_team_from_player(self.info.active_player.unwrap())
             .ok()
     }
     pub fn get_active_teamtype(&self) -> Option<TeamType> {
@@ -323,7 +338,7 @@ impl GameState {
                 .count() as i8),
         );
 
-        if let Weather::Rain = self.weather {
+        if let Weather::Rain = self.info.weather {
             target.add_modifer(-1);
         }
         Ok(target)
@@ -353,7 +368,7 @@ impl GameState {
         let defr = self.get_player_unsafe(defender);
 
         debug_assert_ne!(attr.stats.team, defr.stats.team);
-        debug_assert_eq!(attr.position.distance(&defr.position), 1);
+        debug_assert_eq!(attr.position.distance_to(&defr.position), 1);
         debug_assert!(attr.has_tackle_zone());
         debug_assert_eq!(defr.status, PlayerStatus::Up);
 
@@ -459,8 +474,8 @@ impl GameState {
             //return Err(Box::new(InvalidPlayerId{id: 4}))
             //}
         }
-        if matches!(self.active_player, Some(active_id) if active_id == id) {
-            self.active_player = None;
+        if matches!(self.info.active_player, Some(active_id) if active_id == id) {
+            self.info.active_player = None;
         }
 
         let player = self.get_player(id)?;
@@ -482,8 +497,12 @@ impl GameState {
     }
 
     pub fn step(&mut self, action: Action) -> Result<()> {
-        if !self.is_legal_action(&action) {
+        let mut opt_action = None;
+        if self.available_actions.is_empty() {
+        } else if !self.is_legal_action(&action) {
             return Err(Box::new(IllegalActionError { action }));
+        } else {
+            opt_action = Some(action);
         }
 
         let mut top_proc = self
@@ -491,10 +510,10 @@ impl GameState {
             .pop()
             .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
-        let mut top_proc_is_finished = top_proc.step(self, Some(action));
+        let mut top_proc_is_finished = top_proc.step(self, opt_action);
 
         loop {
-            if self.game_over {
+            if self.info.game_over {
                 break;
             }
             top_proc = match (self.new_procs.pop_back(), top_proc_is_finished) {

@@ -56,6 +56,9 @@ impl Direction {
     pub fn all_directions_as_array() -> [Direction; 8] {
         all_directions
     }
+    pub fn distance(&self) -> Coord {
+        max(self.dx.abs(), self.dy.abs())
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -79,11 +82,25 @@ impl Position {
         let y_: Coord = Coord::try_from(y)?;
         Ok(Position::new((x_, y_)))
     }
-    pub fn distance(&self, other: &Position) -> i8 {
-        max((self.x - other.x).abs(), (self.y - other.y).abs())
+    pub fn distance_to(&self, other: &Position) -> Coord {
+        (*self - *other).distance()
     }
     pub fn is_out(&self) -> bool {
-        self.x <= 0 || self.x >= WIDTH_ || self.y <= 0 || self.y >= HEIGHT_
+        self.x <= 0 || self.x >= WIDTH_ - 1 || self.y <= 0 || self.y >= HEIGHT_ - 1
+    }
+}
+impl From<(usize, usize)> for Position {
+    fn from(xy: (usize, usize)) -> Self {
+        Position {
+            x: Coord::try_from(xy.0).unwrap(),
+            y: Coord::try_from(xy.1).unwrap(),
+        }
+    }
+}
+impl From<Position> for (usize, usize) {
+    fn from(p: Position) -> Self {
+        debug_assert!(!p.is_out());
+        (usize::try_from(p.x).unwrap(), usize::try_from(p.y).unwrap())
     }
 }
 impl Add<Direction> for Position {
@@ -320,6 +337,7 @@ pub enum TeamType {
     Home,
     Away,
 }
+
 pub fn other_team(team: TeamType) -> TeamType {
     match team {
         TeamType::Home => TeamType::Away,

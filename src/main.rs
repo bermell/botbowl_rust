@@ -1,7 +1,25 @@
+use crate::core::gamestate::GameStateBuilder;
+
+use crate::core::gamestate::GameState;
+
 pub mod core;
 
+// fn draw_board(game_state: &GameState) {
+//     :
+// }
+
+pub fn standard_state() -> GameState {
+    GameStateBuilder::new()
+        .add_home_players(&[(1, 2), (2, 2), (3, 1)])
+        .add_away_players(&[(5, 2), (5, 5), (2, 3)])
+        .add_ball((3, 2))
+        .build()
+}
+
 fn main() {
-    println!("Hello world!")
+    let state = standard_state();
+    println!("Hello world!");
+    //draw_board(&state);
 }
 
 #[cfg(test)]
@@ -19,20 +37,37 @@ mod tests {
         pathing::{PathFinder, Roll},
         table::PosAT,
     };
+    use crate::standard_state;
     use ansi_term::Colour::Red;
     use std::{
         collections::{HashMap, HashSet},
         iter::{repeat_with, zip},
     };
 
-    fn standard_state() -> GameState {
-        GameStateBuilder::new()
-            .add_home_players(&[(1, 2), (2, 2), (3, 1)])
-            .add_away_players(&[(5, 2), (5, 5), (2, 3)])
-            .add_ball((3, 2))
-            .build()
-    }
+    #[test]
+    fn turn_order() -> Result<()> {
+        let mut state = standard_state();
+        assert_eq!(state.info.half, 1);
+        assert_eq!(state.info.home_turn, 1);
+        assert_eq!(state.info.away_turn, 0);
+        assert_eq!(state.info.team_turn, TeamType::Home);
 
+        state.step(Action::Simple(SimpleAT::EndTurn))?;
+
+        assert_eq!(state.info.half, 1);
+        assert_eq!(state.info.home_turn, 1);
+        assert_eq!(state.info.away_turn, 1);
+        assert_eq!(state.info.team_turn, TeamType::Away);
+
+        state.step(Action::Simple(SimpleAT::EndTurn))?;
+
+        assert_eq!(state.info.half, 1);
+        assert_eq!(state.info.home_turn, 2);
+        assert_eq!(state.info.away_turn, 1);
+        assert_eq!(state.info.team_turn, TeamType::Home);
+
+        Ok(())
+    }
 
     #[test]
     fn test_block_2d_bothdown_casualty() -> Result<()> {

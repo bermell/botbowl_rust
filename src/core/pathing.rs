@@ -140,10 +140,10 @@ impl GameInfo {
         let mut gfi_target = D6Target::TwoPlus;
         let mut pickup_target = *player.ag_target().add_modifer(1);
 
-        if game_state.weather == Weather::Blizzard {
+        if game_state.info.weather == Weather::Blizzard {
             gfi_target.add_modifer(-1);
         }
-        if game_state.weather == Weather::Rain {
+        if game_state.info.weather == Weather::Rain {
             pickup_target.add_modifer(-1);
         }
 
@@ -269,7 +269,7 @@ impl<'a> PathFinder<'a> {
             .map(|to_square| (to_square, to_square.to_usize().unwrap()))
             .filter(|(to, (x, y))| {
                 if let Some(parent_pos) = parent_square {
-                    (parent_tz && 0 < self.info.tzones[*x][*y]) || parent_pos.distance(to) == 2
+                    (parent_tz && 0 < self.info.tzones[*x][*y]) || parent_pos.distance_to(to) == 2
                 } else {
                     true
                 }
@@ -344,7 +344,7 @@ impl<'a> PathFinder<'a> {
             }
             if let Some(Node { position, .. }) = parent.as_deref() {
                 // filter bad paths early
-                if position.distance(&to_square) < 2
+                if position.distance_to(&to_square) < 2
                     && (self.info.tackles_zones_at(position) == 0
                         || self.info.tackles_zones_at(&to_square) == 0)
                 {
