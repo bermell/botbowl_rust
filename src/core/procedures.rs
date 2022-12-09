@@ -511,8 +511,50 @@ struct ThrowIn {
     from_position: Position,
 }
 impl Procedure for ThrowIn {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
-        todo!()
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+        const MAX_X: Coord = HEIGHT_ - 2;
+        const MAX_Y: Coord = WIDTH_ - 2;
+        let directions: [(Coord, Coord); 3] = match self.from_position {
+            Position { x: 1, y: 1 } => [(1, 0), (1, 1), (0, 1)],
+            Position { x: 1, y: MAX_Y } => [(1, 0), (1, -1), (0, -1)],
+            Position { x: MAX_X, y: 1 } => [(-1, 0), (-1, 1), (0, 1)],
+            Position { x: MAX_X, y: MAX_Y } => [(-1, 0), (-1, -1), (0, -1)],
+            Position { x: 1, .. } => [(1, 1), (1, 0), (1, -1)],
+            Position { x: MAX_X, .. } => [(-1, 1), (-1, 0), (-1, -1)],
+            Position { y: 1, .. } => [(1, 1), (0, 1), (-1, 1)],
+            Position { y: MAX_Y, .. } => [(1, -1), (0, -1), (-1, -1)],
+            _ => panic!("very wrong!"),
+        };
+        let direction = Direction::from(match game_state.get_d6_roll() {
+            D6::One | D6::Two => directions[0],
+            D6::Three | D6::Four => directions[1],
+            D6::Five | D6::Six => directions[2],
+        });
+
+        let length = game_state.get_2d6_roll() as i8;
+        let target: Position = self.from_position + direction * length;
+
+        if target.is_out() {
+            self.from_position = target - direction;
+
+            while self.from_position.is_out() {
+                self.from_position -= direction;
+            }
+
+            return false;
+        }
+
+        match game_state.get_player_at(target) {
+            Some(player) if player.can_catch() => game_state.push_proc(Catch::new(
+                player.id,
+                game_state.get_catch_modifers(player.id).unwrap(),
+            )),
+            _ => {
+                game_state.ball = BallState::InAir(target);
+                game_state.push_proc(Bounce::new());
+            }
+        }
+        true
     }
 }
 struct Catch {
