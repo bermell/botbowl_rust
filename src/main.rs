@@ -44,6 +44,51 @@ mod tests {
         iter::{repeat_with, zip},
     };
 
+    #[test]
+    fn crowd_surf_ball_carrier() {
+        let carrier_pos = Position::new((5, 1));
+        let blocker_pos = Position::new((5, 2));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(blocker_pos)
+            .add_away_player(carrier_pos)
+            .add_ball_pos(carrier_pos)
+            .build();
+
+        state
+            .step(Action::Positional(PosAT::StartBlock, blocker_pos))
+            .unwrap();
+
+        state.blockdice_fixes.push_back(BlockDice::Pow);
+
+        state
+            .step(Action::Positional(PosAT::Block, carrier_pos))
+            .unwrap();
+        state.step(Action::Simple(SimpleAT::SelectPow)).unwrap();
+
+        state.d6_fixes.push_back(D6::One); //armor
+        state.d6_fixes.push_back(D6::One); //armor
+        state.d8_fixes.push_back(D8::Two); //throw in direction down
+        state.d6_fixes.push_back(D6::One); //throw in length
+        state.d6_fixes.push_back(D6::One); //throw in length
+        state.d8_fixes.push_back(D8::Two); //bounce direction down
+
+        state
+            .step(Action::Positional(PosAT::FollowUp, carrier_pos))
+            .unwrap();
+
+        assert_eq!(state.ball, BallState::OnGround(Position::new((5, 4))));
+
+        assert!(matches!(
+            state.dugout_players.pop(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Reserves,
+                stats: PlayerStats {
+                    team: TeamType::Away,
+                    ..
+                },
+            })
+        ));
+    }
 
     #[test]
     fn path_with_two_failures() -> Result<()> {
