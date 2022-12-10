@@ -10,7 +10,7 @@ use model::*;
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
     dices::{BlockDice, D6Target, RollTarget, Sum2D6, D6, D8},
-    procedures::{Half, Turn},
+    procedures::Half,
     table::{NumBlockDices, PosAT, SimpleAT},
 };
 
@@ -71,7 +71,7 @@ impl GameStateBuilder {
             ball: BallState::OffPitch,
             dugout_players: Vec::new(),
             proc_stack: Vec::new(),
-            new_procs: VecDeque::new(),
+            //new_procs: VecDeque::new(),
             available_actions: AvailableActions::new_empty(),
             rng: ChaCha8Rng::from_entropy(),
             d6_fixes: VecDeque::new(),
@@ -148,7 +148,7 @@ pub struct GameState {
     board: FullPitch<Option<PlayerID>>,
     pub ball: BallState,
     proc_stack: Vec<Box<dyn Procedure>>,
-    new_procs: VecDeque<Box<dyn Procedure>>,
+    // new_procs: VecDeque<Box<dyn Procedure>>,
     available_actions: AvailableActions,
     pub rng_enabled: bool,
     rng: ChaCha8Rng,
@@ -492,12 +492,9 @@ impl GameState {
         Ok(())
     }
 
-    pub fn push_proc(&mut self, proc: Box<dyn Procedure>) {
-        self.new_procs.push_back(proc);
-    }
-
     pub fn step(&mut self, action: Action) -> Result<()> {
         let mut opt_action = None;
+
         if self.available_actions.is_empty() {
         } else if !self.is_legal_action(&action) {
             return Err(Box::new(IllegalActionError { action }));
@@ -510,36 +507,44 @@ impl GameState {
             .pop()
             .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
-        let mut top_proc_is_finished = top_proc.step(self, opt_action);
+        let mut top_proc_state: ProcState = top_proc.step(self, opt_action);
 
         loop {
             if self.info.game_over {
                 break;
             }
-            top_proc = match (self.new_procs.pop_back(), top_proc_is_finished) {
-                (Some(new_top_proc), false) => {
+            match top_proc_state {
+                ProcState::NotDoneNewProcs(mut new_procs) => {
                     self.proc_stack.push(top_proc);
-                    new_top_proc
+                    top_proc = new_procs.pop().unwrap();
+                    self.proc_stack.extend(new_procs.into_iter());
                 }
-                (Some(new_top_proc), true) => new_top_proc,
-                (None, false) => top_proc,
-                (None, true) => self
-                    .proc_stack
-                    .pop()
-                    .ok_or_else(|| Box::new(EmptyProcStackError {}))?,
+                ProcState::DoneNewProcs(mut new_procs) => {
+                    top_proc = new_procs.pop().unwrap();
+                    self.proc_stack.extend(new_procs.into_iter());
+                }
+                ProcState::NotDoneNew(new_proc) => {
+                    self.proc_stack.push(top_proc);
+                    top_proc = new_proc;
+                }
+                ProcState::DoneNew(new_proc) => {
+                    top_proc = new_proc;
+                }
+                ProcState::NotDone => (),
+                ProcState::Done => {
+                    top_proc = self
+                        .proc_stack
+                        .pop()
+                        .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
+                }
+                ProcState::NeedAction(aa) => {
+                    self.available_actions = aa;
+                    self.proc_stack.push(top_proc);
+                    break;
+                }
             };
 
-            while let Some(new_proc) = self.new_procs.pop_front() {
-                self.proc_stack.push(new_proc);
-            }
-
-            self.available_actions = top_proc.available_actions(self);
-            if !self.available_actions.is_empty() {
-                self.proc_stack.push(top_proc);
-                break;
-            }
-
-            top_proc_is_finished = top_proc.step(self, None);
+            top_proc_state = top_proc.step(self, None);
         }
         Ok(())
     }

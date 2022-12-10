@@ -44,6 +44,39 @@ mod tests {
         iter::{repeat_with, zip},
     };
 
+
+    #[test]
+    fn path_with_two_failures() -> Result<()> {
+        let start_pos = Position::new((1, 1));
+        let target_pos = Position::new((3, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((1, 2)))
+            .build();
+
+        state.step(Action::Positional(PosAT::StartMove, start_pos))?;
+
+        state.d6_fixes.push_back(D6::One);
+
+        state.step(Action::Positional(PosAT::Move, target_pos))?;
+
+        state.d6_fixes.push_back(D6::Four); //succeed first reroll
+        state.d6_fixes.push_back(D6::One); //fail next dodge
+        state.d6_fixes.push_back(D6::One); //armor
+        state.d6_fixes.push_back(D6::One); //armor
+
+        state.step(Action::Simple(SimpleAT::UseReroll))?;
+
+        assert_eq!(
+            state.get_player_at(target_pos).unwrap().status,
+            PlayerStatus::Down
+        );
+
+        assert!(state.get_player_at(target_pos).unwrap().used);
+
+        Ok(())
+    }
+
     #[test]
     fn turn_order() -> Result<()> {
         let mut state = standard_state();

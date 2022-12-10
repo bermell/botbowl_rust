@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::core::{dices::D6, model};
 use model::*;
 
@@ -13,9 +15,20 @@ use super::{
 trait SimpleProc {
     fn d6_target(&self) -> D6Target; //called immidiately before
     fn reroll_skill(&self) -> Option<Skill>;
-    fn apply_success(&self, game_state: &mut GameState);
-    fn apply_failure(&self, game_state: &mut GameState);
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        Vec::new()
+    }
+    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>>;
     fn player_id(&self) -> PlayerID;
+}
+impl From<Vec<Box<dyn Procedure>>> for ProcState {
+    fn from(procs: Vec<Box<dyn Procedure>>) -> Self {
+        match procs.len() {
+            0 => ProcState::Done,
+            // 1 => ProcState::DoneNew(procs.pop().unwrap()),
+            _ => ProcState::DoneNewProcs(procs),
+        }
+    }
 }
 
 pub struct Half {
@@ -33,7 +46,7 @@ impl Half {
 }
 
 impl Procedure for Half {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         let info = &mut game_state.info;
         if !self.started {
             self.started = true;
@@ -43,7 +56,7 @@ impl Procedure for Half {
         }
 
         if info.home_turn == 8 && info.away_turn == 8 {
-            return true;
+            return ProcState::Done;
         }
 
         let kicking_this_half = if self.half == 1 {
@@ -65,9 +78,7 @@ impl Procedure for Half {
 
         info.team_turn = next_team;
 
-        game_state.push_proc(Turn::new(next_team));
-
-        false
+        ProcState::NotDoneNew(Turn::new(next_team))
     }
 }
 
@@ -106,24 +117,22 @@ impl Procedure for Turn {
         aa
     }
 
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match action {
+            None => ProcState::NeedAction(self.available_actions(game_state)),
+
             Some(Action::Positional(at, position)) => {
                 game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
                 match at {
-                    PosAT::StartMove => {
-                        game_state
-                            .push_proc(MoveAction::new(game_state.info.active_player.unwrap()));
-                    }
-                    PosAT::StartBlock => {
-                        game_state.push_proc(BlockAction::new());
-                    }
+                    PosAT::StartMove => ProcState::NotDoneNewProcs(vec![MoveAction::new(
+                        game_state.info.active_player.unwrap(),
+                    )]),
+                    PosAT::StartBlock => ProcState::NotDoneNewProcs(vec![BlockAction::new()]),
                     _ => todo!(),
                 }
-                false
             }
 
-            Some(Action::Simple(SimpleAT::EndTurn)) => true,
+            Some(Action::Simple(SimpleAT::EndTurn)) => ProcState::Done,
             _ => panic!("Action not allowed: {:?}", action),
         }
     }
@@ -168,18 +177,17 @@ impl MoveAction {
         self.active_path = None;
     }
 
-    fn continue_active_path(&mut self, game_state: &mut GameState) {
+    fn continue_active_path(&mut self, game_state: &mut GameState) -> ProcState {
         let debug_roll_len_before = self.rolls.as_ref().map_or(0, |rolls| rolls.len());
 
         //are the rolls left to handle?
         if let Some(next_roll) = self.rolls.as_mut().and_then(|rolls| rolls.pop()) {
             let new_proc = proc_from_roll(next_roll, self);
-            game_state.push_proc(new_proc);
 
             let debug_roll_len_after = self.rolls.as_ref().map_or(0, |rolls| rolls.len());
             assert_eq!(debug_roll_len_before - 1, debug_roll_len_after);
 
-            return;
+            return ProcState::NotDoneNew(new_proc);
         }
 
         let path = self.active_path.as_mut().unwrap();
@@ -196,7 +204,7 @@ impl MoveAction {
                     .add_move(u8::try_from(path.steps.len()).unwrap())
             }
             path.steps.clear();
-            return;
+            return ProcState::NotDone;
         }
         while let Some((position, mut rolls)) = path.steps.pop() {
             game_state.move_player(self.player_id, position).unwrap();
@@ -204,13 +212,13 @@ impl MoveAction {
 
             if let Some(next_roll) = rolls.pop() {
                 let new_proc = proc_from_roll(next_roll, self);
-                game_state.push_proc(new_proc);
                 if !rolls.is_empty() {
                     self.rolls = Some(rolls);
                 }
-                return;
+                return ProcState::NotDoneNew(new_proc);
             }
         }
+        panic!("Should not get here!");
     }
 }
 impl Procedure for MoveAction {
@@ -239,7 +247,7 @@ impl Procedure for MoveAction {
         aa
     }
 
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match action {
             Some(Action::Positional(PosAT::Move, position)) => {
                 if game_state.get_player_at(position).is_some() {
@@ -249,32 +257,32 @@ impl Procedure for MoveAction {
                 self.active_path = self.paths[x][y].clone();
                 debug_assert!(self.active_path.is_some());
                 self.paths = Default::default();
-                self.continue_active_path(game_state);
+                let state = self.continue_active_path(game_state);
                 self.consolidate_active_path();
-                false
+                state
             }
             Some(Action::Simple(SimpleAT::EndPlayerTurn)) => {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
-                true
+                ProcState::Done
             }
-            None => {
+            None if self.active_path.is_some() => {
                 match game_state.get_player(self.player_id) {
                     Ok(player) if !player.used => (),
-                    Ok(_) => return true,  // Player is used
-                    Err(_) => return true, // Player not on field anymore
+                    Ok(_) => return ProcState::Done, // Player is used
+                    Err(_) => return ProcState::Done, // Player not on field anymore
                 }
 
-                self.continue_active_path(game_state);
+                let state = self.continue_active_path(game_state);
                 self.consolidate_active_path();
-                false
+                state
             }
+            None => ProcState::NeedAction(self.available_actions(game_state)),
 
             _ => panic!("very wrong!"),
         }
     }
 }
 
-#[allow(dead_code)]
 struct DodgeProc {
     target: D6Target,
     id: PlayerID,
@@ -293,10 +301,8 @@ impl SimpleProc for DodgeProc {
         Some(Skill::Dodge)
     }
 
-    fn apply_success(&self, _game_state: &mut GameState) {}
-
-    fn apply_failure(&self, game_state: &mut GameState) {
-        game_state.push_proc(KnockDown::new(self.id))
+    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        vec![KnockDown::new(self.id)]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -322,10 +328,8 @@ impl SimpleProc for GfiProc {
         Some(Skill::SureFeet)
     }
 
-    fn apply_success(&self, _game_state: &mut GameState) {}
-
-    fn apply_failure(&self, game_state: &mut GameState) {
-        game_state.push_proc(KnockDown::new(self.id));
+    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        vec![KnockDown::new(self.id)]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -351,13 +355,14 @@ impl SimpleProc for PickupProc {
         Some(Skill::SureHands)
     }
 
-    fn apply_success(&self, game_state: &mut GameState) {
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.ball = BallState::Carried(self.id);
+        Vec::new()
     }
 
-    fn apply_failure(&self, game_state: &mut GameState) {
+    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.get_mut_player(self.id).unwrap().used = true;
-        game_state.push_proc(Box::new(Bounce {}));
+        vec![Box::new(Bounce {})]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -368,7 +373,6 @@ impl SimpleProc for PickupProc {
 #[derive(Debug, PartialEq, Eq)]
 enum RollProcState {
     Init,
-    WaitingForTeamReroll,
     RerollUsed,
     //WaitingForSkillReroll,
 }
@@ -392,12 +396,11 @@ impl<T> Procedure for SimpleProcContainer<T>
 where
     T: SimpleProc,
 {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         // if action is DON*T REROLL, apply failure, return true
         match action {
             Some(Action::Simple(SimpleAT::DontUseReroll)) => {
-                self.proc.apply_failure(game_state);
-                return true;
+                return ProcState::from(self.proc.apply_failure(game_state));
             }
             Some(Action::Simple(SimpleAT::UseReroll)) => {
                 game_state.get_active_team_mut().unwrap().use_reroll();
@@ -409,8 +412,7 @@ where
         loop {
             let roll = game_state.get_d6_roll();
             if self.proc.d6_target().is_success(roll) {
-                self.proc.apply_success(game_state);
-                return true;
+                return ProcState::from(self.proc.apply_success(game_state));
             }
             if self.state == RollProcState::RerollUsed {
                 break;
@@ -429,25 +431,16 @@ where
                 .unwrap()
                 .can_use_reroll()
             {
-                self.state = RollProcState::WaitingForTeamReroll;
-                return false;
-            }
-        }
-        self.proc.apply_failure(game_state);
-        true
-    }
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        match self.state {
-            RollProcState::Init => AvailableActions::new_empty(),
-            RollProcState::WaitingForTeamReroll => {
-                let mut aa =
-                    AvailableActions::new(game_state.get_player_unsafe(self.id()).stats.team);
+                let team = game_state.get_player_unsafe(self.id()).stats.team;
+                let mut aa = AvailableActions::new(team);
                 aa.insert_simple(SimpleAT::UseReroll);
                 aa.insert_simple(SimpleAT::DontUseReroll);
-                aa
+                return ProcState::NeedAction(aa);
+            } else {
+                break;
             }
-            _ => panic!("Illegal state!"),
         }
+        ProcState::from(self.proc.apply_failure(game_state))
     }
 }
 
@@ -460,20 +453,20 @@ impl KnockDown {
     }
 }
 impl Procedure for KnockDown {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
-        debug_assert_eq!(action, None);
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         let mut player = match game_state.get_mut_player(self.id) {
             Ok(player_) => player_,
-            Err(_) => return true, //Means the player is already off the pitch, most likely crowd push
+            Err(_) => return ProcState::Done, //Means the player is already off the pitch, most likely crowd push
         };
         debug_assert!(matches!(player.status, PlayerStatus::Up));
         player.status = PlayerStatus::Down;
         player.used = true;
+        let armor_proc = Armor::new(self.id);
         if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
-            game_state.push_proc(Bounce::new());
+            ProcState::DoneNewProcs(vec![Bounce::new(), armor_proc])
+        } else {
+            ProcState::DoneNew(armor_proc)
         }
-        game_state.push_proc(Armor::new(self.id));
-        true
     }
 }
 
@@ -486,14 +479,14 @@ impl Armor {
     }
 }
 impl Procedure for Armor {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
-        let player = game_state.get_player_unsafe(self.id);
-        let target = player.armor_target();
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        let target = game_state.get_player_unsafe(self.id).armor_target();
         let roll = game_state.get_2d6_roll();
         if target.is_success(roll) {
-            game_state.push_proc(Injury::new(self.id));
+            ProcState::DoneNew(Injury::new(self.id))
+        } else {
+            ProcState::Done
         }
-        true
     }
 }
 
@@ -511,7 +504,7 @@ impl Injury {
     }
 }
 impl Procedure for Injury {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         let cas_target = Sum2D6Target::TenPlus;
         let ko_target = Sum2D6Target::EightPlus;
         let roll = game_state.get_2d6_roll();
@@ -530,7 +523,7 @@ impl Procedure for Injury {
         } else {
             game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
         }
-        true
+        ProcState::Done
     }
 }
 
@@ -541,28 +534,28 @@ impl Bounce {
     }
 }
 impl Procedure for Bounce {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         let current_ball_pos = game_state.get_ball_position().unwrap();
         let new_pos = current_ball_pos + Direction::from(game_state.get_d8_roll());
 
         if let Some(player) = game_state.get_player_at(new_pos) {
             if player.can_catch() {
-                game_state.push_proc(Catch::new(
+                ProcState::DoneNew(Catch::new(
                     player.id,
                     game_state.get_catch_modifers(player.id).unwrap(),
-                ));
-                true
+                ))
             } else {
-                false //will run bounce again
+                //will run bounce again
+                game_state.ball = BallState::InAir(new_pos);
+                ProcState::NotDone
             }
         } else if new_pos.is_out() {
-            game_state.push_proc(Box::new(ThrowIn {
+            ProcState::DoneNew(Box::new(ThrowIn {
                 from_position: current_ball_pos,
-            }));
-            true
+            }))
         } else {
             game_state.ball = BallState::OnGround(new_pos);
-            true
+            ProcState::Done
         }
     }
 }
@@ -570,7 +563,7 @@ struct ThrowIn {
     from_position: Position,
 }
 impl Procedure for ThrowIn {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         const MAX_X: Coord = HEIGHT_ - 2;
         const MAX_Y: Coord = WIDTH_ - 2;
         let directions: [(Coord, Coord); 3] = match self.from_position {
@@ -600,20 +593,19 @@ impl Procedure for ThrowIn {
                 self.from_position -= direction;
             }
 
-            return false;
-        }
-
-        match game_state.get_player_at(target) {
-            Some(player) if player.can_catch() => game_state.push_proc(Catch::new(
-                player.id,
-                game_state.get_catch_modifers(player.id).unwrap(),
-            )),
-            _ => {
-                game_state.ball = BallState::InAir(target);
-                game_state.push_proc(Bounce::new());
+            ProcState::NotDone
+        } else {
+            match game_state.get_player_at(target) {
+                Some(player) if player.can_catch() => ProcState::DoneNew(Catch::new(
+                    player.id,
+                    game_state.get_catch_modifers(player.id).unwrap(),
+                )),
+                _ => {
+                    game_state.ball = BallState::InAir(target);
+                    ProcState::DoneNew(Bounce::new())
+                }
             }
         }
-        true
     }
 }
 struct Catch {
@@ -634,12 +626,13 @@ impl SimpleProc for Catch {
         Some(Skill::Catch)
     }
 
-    fn apply_success(&self, game_state: &mut GameState) {
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.ball = BallState::Carried(self.id);
+        Vec::new()
     }
 
-    fn apply_failure(&self, game_state: &mut GameState) {
-        game_state.push_proc(Box::new(Bounce {}));
+    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        vec![Box::new(Bounce {})]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -655,8 +648,9 @@ impl BlockAction {
     }
 }
 impl Procedure for BlockAction {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match action {
+            None => ProcState::NeedAction(self.available_actions(game_state)),
             Some(Action::Positional(PosAT::Block, position)) => {
                 let ac = game_state
                     .get_available_actions()
@@ -665,11 +659,10 @@ impl Procedure for BlockAction {
                     .find(|ac| ac.position == position)
                     .unwrap();
                 let defender_id = game_state.get_player_id_at(position).unwrap();
-                game_state.push_proc(Block::new(ac.num_dices, defender_id));
+                ProcState::DoneNew(Block::new(ac.num_dices, defender_id))
             }
             _ => todo!(),
         }
-        true
     }
 
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
@@ -727,7 +720,7 @@ impl Block {
     }
 }
 impl Procedure for Block {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match action {
             None => {
                 for i in 0..u8::from(self.dices) {
@@ -742,19 +735,18 @@ impl Procedure for Block {
                     (true, false) => BlockProcState::SelectDiceOrReroll,
                     (false, _) => BlockProcState::SelectDice,
                 };
-                false
+                ProcState::NeedAction(self.available_actions(game_state))
             }
             Some(Action::Simple(SimpleAT::UseReroll)) => {
-                self.state = BlockProcState::Init;
                 game_state
                     .get_active_players_team_mut()
                     .unwrap()
                     .use_reroll();
-                false
+                ProcState::NotDone
             }
             Some(Action::Simple(SimpleAT::DontUseReroll)) => {
                 self.state = BlockProcState::SelectDice;
-                false
+                ProcState::NotDone
             }
             Some(Action::Simple(dice_action_type)) => {
                 let attacker_id = game_state.info.active_player.unwrap();
@@ -798,22 +790,23 @@ impl Procedure for Block {
                     SimpleAT::SelectSkull => knockdown_attacker = true,
                     _ => panic!("very wrong!"),
                 }
+                let mut procs: Vec<Box<dyn Procedure>> = Vec::with_capacity(3);
                 if knockdown_attacker {
-                    game_state.push_proc(KnockDown::new(attacker_id));
+                    procs.push(KnockDown::new(attacker_id));
                 }
                 if knockdown_defender {
-                    game_state.push_proc(KnockDown::new(self.defender));
+                    procs.push(KnockDown::new(self.defender));
                 }
                 if push {
-                    game_state.push_proc(FollowUp::new(
+                    procs.push(FollowUp::new(
                         game_state.get_player_unsafe(self.defender).position,
                     ));
-                    game_state.push_proc(Push::new(
+                    procs.push(Push::new(
                         game_state.get_player_unsafe(attacker_id).position,
                         game_state.get_player_unsafe(self.defender).position,
                     ));
                 }
-                true
+                ProcState::from(procs)
             }
             _ => panic!("very wrong!"),
         }
@@ -822,7 +815,6 @@ impl Procedure for Block {
         let mut aa = AvailableActions::new_empty();
         let team = game_state.get_active_player().unwrap().stats.team;
         match self.state {
-            BlockProcState::Init => {}
             BlockProcState::SelectDice => {
                 aa.team = Some(if self.is_uphill {
                     other_team(team)
@@ -841,11 +833,13 @@ impl Procedure for Block {
                 aa.insert_simple(SimpleAT::UseReroll);
                 aa.insert_simple(SimpleAT::DontUseReroll);
             }
+            BlockProcState::Init => panic!("should not happen!"),
         }
         aa
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PushState {
     NotDecided,
     Square(Position),
@@ -867,10 +861,11 @@ impl Push {
     }
     fn get_push_squares(&self, game_state: &GameState) -> Vec<Position> {
         let direction = self.on - self.from;
+        let opposite_pos = self.on + direction;
         let mut push_squares = match direction {
-            Direction { dx: 0, dy: _ } => vec![self.on + (1, 0), self.on + (-1, 0)],
-            Direction { dx: _, dy: 0 } => vec![self.on + (0, 1), self.on + (0, -1)],
-            Direction { dx, dy } => vec![self.on + (dx, 0), self.on + (0, dy)],
+            Direction { dx: 0, dy: _ } => vec![opposite_pos + (1, 0), opposite_pos + (-1, 0)],
+            Direction { dx: _, dy: 0 } => vec![opposite_pos + (0, 1), opposite_pos + (0, -1)],
+            Direction { dx, dy } => vec![opposite_pos + (-dx, 0), opposite_pos + (0, -dy)],
         };
         push_squares.push(self.on + direction);
         let free_squares: Vec<Position> = push_squares
@@ -887,56 +882,48 @@ impl Push {
             push_squares
         }
     }
-    fn do_move(&self, game_state: &mut GameState) {
+    fn do_move(&self, game_state: &mut GameState) -> ProcState {
         let id = game_state.get_player_id_at(self.on).unwrap();
         match self.target {
-            PushState::Square(to) => game_state.move_player(id, to).unwrap(),
-            PushState::Crowd => game_state.push_proc(Injury::new_crowd(id)),
+            PushState::Square(to) => {
+                game_state.move_player(id, to).unwrap();
+                ProcState::Done
+            }
+            PushState::Crowd => ProcState::DoneNew(Injury::new_crowd(id)),
             _ => panic!("very wrong!"),
         }
     }
-    fn handle_selected_square(&mut self, game_state: &mut GameState, position: Position) -> bool {
+    fn handle_selected_square(
+        &mut self,
+        game_state: &mut GameState,
+        position: Position,
+    ) -> ProcState {
         self.target = PushState::Square(position);
         match game_state.get_player_id_at(position) {
-            Some(_chain_push_id) => {
-                game_state.push_proc(Push::new(self.on, position));
-                false
-            }
-            None => {
-                self.do_move(game_state);
-                true
-            }
+            Some(_chain_push_id) => ProcState::NotDoneNew(Push::new(self.on, position)),
+            None => self.do_move(game_state),
         }
     }
 }
 impl Procedure for Push {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match action {
-            Some(Action::Positional(PosAT::Push, position)) => {
-                self.handle_selected_square(game_state, position)
-            }
-            None => {
-                self.do_move(game_state);
-                true
-            }
-            _ => panic!("very wrong!"),
-        }
-    }
-
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        match self.target {
-            PushState::NotDecided => {
+            None if self.target == PushState::NotDecided => {
                 let push_squares = self.get_push_squares(game_state);
                 if push_squares.is_empty() {
                     self.target = PushState::Crowd;
-                    AvailableActions::new_empty()
+                    ProcState::NotDone
                 } else {
                     let mut aa = AvailableActions::new(game_state.info.team_turn);
                     aa.insert_positional(PosAT::Push, push_squares);
-                    aa
+                    ProcState::NeedAction(aa)
                 }
             }
-            _ => AvailableActions::new_empty(),
+            None => self.do_move(game_state),
+            Some(Action::Positional(PosAT::Push, position)) => {
+                self.handle_selected_square(game_state, position)
+            }
+            _ => panic!("very wrong!"),
         }
     }
 }
@@ -951,23 +938,21 @@ impl FollowUp {
     }
 }
 impl Procedure for FollowUp {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         let player = game_state.get_active_player().unwrap();
         match action {
+            None => {
+                let mut aa = AvailableActions::new(player.stats.team);
+                aa.insert_positional(PosAT::FollowUp, vec![player.position, self.to]);
+                ProcState::NeedAction(aa)
+            }
             Some(Action::Positional(PosAT::FollowUp, position)) => {
                 if player.position != position {
                     game_state.move_player(player.id, position).unwrap();
                 }
-                true
+                ProcState::Done
             }
             _ => panic!("very wrong!"),
         }
-    }
-
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        let player = game_state.get_active_player().unwrap();
-        let mut aa = AvailableActions::new(player.stats.team);
-        aa.insert_positional(PosAT::FollowUp, vec![player.position, self.to]);
-        aa
     }
 }

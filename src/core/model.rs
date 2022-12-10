@@ -1,5 +1,5 @@
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error;
 use std::ops::{Add, Mul, Sub, SubAssign};
 
@@ -362,10 +362,20 @@ pub enum Weather {
     Sweltering,
 }
 
+pub enum ProcState {
+    DoneNewProcs(Vec<Box<dyn Procedure>>),
+    NotDoneNewProcs(Vec<Box<dyn Procedure>>),
+    NotDoneNew(Box<dyn Procedure>),
+    DoneNew(Box<dyn Procedure>),
+    Done,
+    NotDone,
+    NeedAction(AvailableActions),
+}
+
 #[allow(unused_variables)]
 pub trait Procedure {
     //fn start(&self, game_state: &GameState) {}
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> bool;
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState;
     //fn end(&self, game_state: &mut GameState) {}
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
         AvailableActions::new_empty()
