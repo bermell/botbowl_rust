@@ -75,6 +75,55 @@ mod tests {
     }
 
     #[test]
+    fn crowd_chain_push() {
+        let mut field = "".to_string();
+        field += " aa\n";
+        field += " aa\n";
+        field += "h  \n";
+        let first_pos = Position::new((5, 1));
+        let mut state = GameStateBuilder::new().add_str(first_pos, &field).build();
+
+        assert_eq!(
+            state
+                .get_player_at(Position::new((5, 3)))
+                .unwrap()
+                .stats
+                .team,
+            TeamType::Home
+        );
+        assert_eq!(
+            state
+                .get_player_at(Position::new((6, 2)))
+                .unwrap()
+                .stats
+                .team,
+            TeamType::Away
+        );
+
+        state.step_positional(PosAT::StartBlock, Position::new((5, 3)));
+        state.blockdice_fixes.push_back(BlockDice::Push);
+        state.step_positional(PosAT::Block, Position::new((6, 2)));
+        state.step_positional(PosAT::Push, Position::new((6, 1)));
+        state.d6_fixes.push_back(D6::One);
+        state.d6_fixes.push_back(D6::One);
+
+        state.step_positional(PosAT::FollowUp, Position::new((6, 2)));
+
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(matches!(
+            state.dugout_players.pop(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Reserves,
+                stats: PlayerStats {
+                    team: TeamType::Away,
+                    ..
+                },
+            })
+        ));
+    }
+
+    #[test]
     fn crowd_surf_ball_carrier() {
         let carrier_pos = Position::new((5, 1));
         let blocker_pos = Position::new((5, 2));
