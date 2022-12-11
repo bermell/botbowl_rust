@@ -83,23 +83,6 @@ mod tests {
         let first_pos = Position::new((5, 1));
         let mut state = GameStateBuilder::new().add_str(first_pos, &field).build();
 
-        assert_eq!(
-            state
-                .get_player_at(Position::new((5, 3)))
-                .unwrap()
-                .stats
-                .team,
-            TeamType::Home
-        );
-        assert_eq!(
-            state
-                .get_player_at(Position::new((6, 2)))
-                .unwrap()
-                .stats
-                .team,
-            TeamType::Away
-        );
-
         state.step_positional(PosAT::StartBlock, Position::new((5, 3)));
         state.blockdice_fixes.push_back(BlockDice::Push);
         state.step_positional(PosAT::Block, Position::new((6, 2)));
