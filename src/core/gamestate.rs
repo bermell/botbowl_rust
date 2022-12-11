@@ -28,6 +28,35 @@ impl GameStateBuilder {
             ball_pos: None,
         }
     }
+    pub fn add_str(&mut self, start_pos: Position, s: &str) -> &mut GameStateBuilder {
+        let mut pos = start_pos;
+        let start_x = pos.x;
+        let mut newline = false;
+        for c in s.chars() {
+            match c {
+                'a' => self.away_players.push(pos),
+                'h' => self.home_players.push(pos),
+                'H' => {
+                    self.home_players.push(pos);
+                    self.ball_pos = Some(pos);
+                }
+                'A' => {
+                    self.away_players.push(pos);
+                    self.ball_pos = Some(pos);
+                }
+                '\n' => newline = true,
+                _ => (),
+            }
+            if newline {
+                pos.y += 1;
+                pos.x = start_x;
+                newline = false;
+            } else {
+                pos.x += 1;
+            }
+        }
+        self
+    }
     pub fn add_home_player(&mut self, position: Position) -> &mut GameStateBuilder {
         self.home_players.push(position);
         self
@@ -562,5 +591,14 @@ impl GameState {
             Some(positions) => positions.clone(),
             None => Vec::new(),
         }
+    }
+    pub fn step_simple(&mut self, action: SimpleAT) {
+        self.step(Action::Simple(action)).unwrap();
+        debug_assert!(self.fixed_dice_empty());
+    }
+
+    pub fn step_positional(&mut self, action: PosAT, position: Position) {
+        self.step(Action::Positional(action, position)).unwrap();
+        debug_assert!(self.fixed_dice_empty());
     }
 }

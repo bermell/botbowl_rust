@@ -45,6 +45,36 @@ mod tests {
     };
 
     #[test]
+    fn state_from_str() {
+        let mut field = "".to_string();
+        field += " aa\n";
+        field += " Aa\n";
+        field += "h  \n";
+        let first_pos = Position::new((5, 1));
+        let state = GameStateBuilder::new().add_str(first_pos, &field).build();
+        assert_eq!(
+            state
+                .get_player_at(Position::new((5, 3)))
+                .unwrap()
+                .stats
+                .team,
+            TeamType::Home
+        );
+
+        assert_eq!(
+            state
+                .get_player_at(Position::new((6, 2)))
+                .unwrap()
+                .stats
+                .team,
+            TeamType::Away
+        );
+
+        let id = state.get_player_id_at_coord(6, 2).unwrap();
+        assert_eq!(state.ball, BallState::Carried(id));
+    }
+
+    #[test]
     fn crowd_surf_ball_carrier() {
         let carrier_pos = Position::new((5, 1));
         let blocker_pos = Position::new((5, 2));
