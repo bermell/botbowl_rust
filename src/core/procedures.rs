@@ -551,7 +551,7 @@ impl Procedure for Bounce {
             }
         } else if new_pos.is_out() {
             ProcState::DoneNew(Box::new(ThrowIn {
-                from_position: current_ball_pos,
+                from: current_ball_pos,
             }))
         } else {
             game_state.ball = BallState::OnGround(new_pos);
@@ -560,13 +560,18 @@ impl Procedure for Bounce {
     }
 }
 struct ThrowIn {
-    from_position: Position,
+    from: Position,
+}
+impl ThrowIn {
+    pub fn new(from: Position) -> Box<ThrowIn> {
+        Box::new(ThrowIn { from })
+    }
 }
 impl Procedure for ThrowIn {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         const MAX_X: Coord = HEIGHT_ - 2;
         const MAX_Y: Coord = WIDTH_ - 2;
-        let directions: [(Coord, Coord); 3] = match self.from_position {
+        let directions: [(Coord, Coord); 3] = match self.from {
             Position { x: 1, y: 1 } => [(1, 0), (1, 1), (0, 1)],
             Position { x: 1, y: MAX_Y } => [(1, 0), (1, -1), (0, -1)],
             Position { x: MAX_X, y: 1 } => [(-1, 0), (-1, 1), (0, 1)],
@@ -584,13 +589,13 @@ impl Procedure for ThrowIn {
         });
 
         let length = game_state.get_2d6_roll() as i8;
-        let target: Position = self.from_position + direction * length;
+        let target: Position = self.from + direction * length;
 
         if target.is_out() {
-            self.from_position = target - direction;
+            self.from = target - direction;
 
-            while self.from_position.is_out() {
-                self.from_position -= direction;
+            while self.from.is_out() {
+                self.from -= direction;
             }
 
             ProcState::NotDone
@@ -794,17 +799,17 @@ impl Procedure for Block {
                 if knockdown_attacker {
                     procs.push(KnockDown::new(attacker_id));
                 }
-                if knockdown_defender {
-                    procs.push(KnockDown::new(self.defender));
-                }
                 if push {
-                    procs.push(FollowUp::new(
-                        game_state.get_player_unsafe(self.defender).position,
-                    ));
-                    procs.push(Push::new(
+                    let mut push_proc = Push::new(
                         game_state.get_player_unsafe(attacker_id).position,
                         game_state.get_player_unsafe(self.defender).position,
-                    ));
+                    );
+                    if knockdown_defender {
+                        push_proc.knockdown_proc = Some(KnockDown::new(self.defender));
+                    }
+                    procs.push(push_proc);
+                } else if knockdown_defender {
+                    procs.push(KnockDown::new(self.defender));
                 }
                 ProcState::from(procs)
             }
@@ -839,16 +844,17 @@ impl Procedure for Block {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PushState {
-    NotDecided,
-    Square(Position),
-    Crowd,
+enum PushSquares {
+    Crowd(Position),
+    ChainPush(Vec<Position>),
+    FreeSquares(Vec<Position>),
 }
 struct Push {
     from: Position,
     on: Position,
-    target: PushState,
+    knockdown_proc: Option<Box<dyn Procedure>>,
+    moves_to_make: Vec<(Position, Position)>,
+    follow_up_pos: Position,
 }
 
 impl Push {
@@ -856,18 +862,21 @@ impl Push {
         Box::new(Push {
             from,
             on,
-            target: PushState::NotDecided,
+            moves_to_make: Vec::with_capacity(1),
+            knockdown_proc: None,
+            follow_up_pos: on,
         })
     }
-    fn get_push_squares(&self, game_state: &GameState) -> Vec<Position> {
-        let direction = self.on - self.from;
-        let opposite_pos = self.on + direction;
+
+    fn get_push_squares(on: Position, from: Position, game_state: &GameState) -> PushSquares {
+        let direction = on - from;
+        let opposite_pos = on + direction;
         let mut push_squares = match direction {
             Direction { dx: 0, dy: _ } => vec![opposite_pos + (1, 0), opposite_pos + (-1, 0)],
             Direction { dx: _, dy: 0 } => vec![opposite_pos + (0, 1), opposite_pos + (0, -1)],
             Direction { dx, dy } => vec![opposite_pos + (-dx, 0), opposite_pos + (0, -dy)],
         };
-        push_squares.push(self.on + direction);
+        push_squares.push(on + direction);
         let free_squares: Vec<Position> = push_squares
             .iter()
             .filter(|&pos| !pos.is_out() && game_state.get_player_at(*pos).is_none())
@@ -875,53 +884,74 @@ impl Push {
             .collect();
 
         if !free_squares.is_empty() {
-            free_squares
+            PushSquares::FreeSquares(free_squares)
         } else if push_squares.iter().any(|&pos| pos.is_out()) {
-            Vec::new()
+            PushSquares::Crowd(push_squares.pop().unwrap())
         } else {
-            push_squares
+            PushSquares::ChainPush(push_squares)
         }
     }
-    fn do_move(&self, game_state: &mut GameState) -> ProcState {
-        let id = game_state.get_player_id_at(self.on).unwrap();
-        match self.target {
-            PushState::Square(to) => {
-                game_state.move_player(id, to).unwrap();
-                ProcState::Done
+    fn do_moves(&self, game_state: &mut GameState) {
+        self.moves_to_make.iter().rev().for_each(|(from, to)| {
+            let id = game_state.get_player_id_at(*from).unwrap();
+            game_state.move_player(id, *to).unwrap();
+        });
+    }
+
+    fn handle_aftermath(&mut self, game_state: &mut GameState) -> ProcState {
+        let mut procs: Vec<Box<dyn Procedure>> = Vec::with_capacity(2);
+        let (last_push_from, last_push_to) = self.moves_to_make.pop().unwrap();
+        if last_push_to.is_out() {
+            let id = game_state.get_player_id_at(last_push_to).unwrap();
+            if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
+                game_state.ball = BallState::InAir(last_push_from);
+                procs.push(ThrowIn::new(last_push_from));
             }
-            PushState::Crowd => ProcState::DoneNew(Injury::new_crowd(id)),
-            _ => panic!("very wrong!"),
+            procs.push(Injury::new_crowd(id));
+            if self.moves_to_make.is_empty() {
+                //Means there was only one push which was the already handled crowd push, so we can forget about any knockdown proc
+                self.knockdown_proc = None;
+            }
         }
+        if let Some(proc) = self.knockdown_proc.take() {
+            procs.push(proc);
+        }
+        ProcState::from(procs)
     }
-    fn handle_selected_square(
-        &mut self,
-        game_state: &mut GameState,
-        position: Position,
-    ) -> ProcState {
-        self.target = PushState::Square(position);
-        match game_state.get_player_id_at(position) {
-            Some(_chain_push_id) => ProcState::NotDoneNew(Push::new(self.on, position)),
-            None => self.do_move(game_state),
+
+    fn calculate_next_state(&mut self, game_state: &mut GameState) -> ProcState {
+        let mut aa = AvailableActions::new(game_state.info.team_turn);
+        match Push::get_push_squares(self.on, self.from, game_state) {
+            PushSquares::Crowd(position_in_crowd) => {
+                self.moves_to_make.push((self.on, position_in_crowd));
+                self.do_moves(game_state);
+                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
+            }
+            PushSquares::ChainPush(positions) | PushSquares::FreeSquares(positions) => {
+                aa.insert_positional(PosAT::Push, positions);
+                ProcState::NeedAction(aa)
+            }
         }
     }
 }
+
 impl Procedure for Push {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match action {
-            None if self.target == PushState::NotDecided => {
-                let push_squares = self.get_push_squares(game_state);
-                if push_squares.is_empty() {
-                    self.target = PushState::Crowd;
-                    ProcState::NotDone
-                } else {
-                    let mut aa = AvailableActions::new(game_state.info.team_turn);
-                    aa.insert_positional(PosAT::Push, push_squares);
-                    ProcState::NeedAction(aa)
-                }
+            None if self.moves_to_make.is_empty() => self.calculate_next_state(game_state),
+            None => self.handle_aftermath(game_state),
+            Some(Action::Positional(PosAT::Push, position_to))
+                if game_state.get_player_at(position_to).is_some() =>
+            {
+                self.moves_to_make.push((self.on, position_to));
+                self.from = self.on;
+                self.on = position_to;
+                self.calculate_next_state(game_state)
             }
-            None => self.do_move(game_state),
             Some(Action::Positional(PosAT::Push, position)) => {
-                self.handle_selected_square(game_state, position)
+                self.moves_to_make.push((self.on, position));
+                self.do_moves(game_state);
+                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
             }
             _ => panic!("very wrong!"),
         }

@@ -86,6 +86,8 @@ mod tests {
         state.step_positional(PosAT::StartBlock, Position::new((5, 3)));
         state.blockdice_fixes.push_back(BlockDice::Push);
         state.step_positional(PosAT::Block, Position::new((6, 2)));
+        state.step_simple(SimpleAT::SelectPush);
+
         state.step_positional(PosAT::Push, Position::new((6, 1)));
         state.d6_fixes.push_back(D6::One);
         state.d6_fixes.push_back(D6::One);
@@ -129,7 +131,7 @@ mod tests {
 
         state.d6_fixes.push_back(D6::One); //armor
         state.d6_fixes.push_back(D6::One); //armor
-        state.d8_fixes.push_back(D8::Two); //throw in direction down
+        state.d6_fixes.push_back(D6::Three); //throw in direction down
         state.d6_fixes.push_back(D6::One); //throw in length
         state.d6_fixes.push_back(D6::One); //throw in length
         state.d8_fixes.push_back(D8::Two); //bounce direction down

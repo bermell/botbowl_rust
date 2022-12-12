@@ -33,6 +33,7 @@ impl GameStateBuilder {
         let start_x = pos.x;
         let mut newline = false;
         for c in s.chars() {
+            assert!(!pos.is_out());
             match c {
                 'a' => self.away_players.push(pos),
                 'h' => self.home_players.push(pos),
