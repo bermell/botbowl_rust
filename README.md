@@ -11,7 +11,7 @@ List of things to implement and write tests for in order to use as engine for fo
 
 **Rules left to implement**
 - [ ] Fouling (in pathfinding, ejection) 
-- [ ] Blocking 
+- [x] Blocking 
 - [ ] Passing (in pathfinding) 
 - [ ] Handing off (in pathfinding) 
 - [ ] Kickoff 
