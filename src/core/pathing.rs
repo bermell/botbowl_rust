@@ -235,7 +235,7 @@ impl<'a> GameInfo<'a> {
         &self,
         to: Position,
         parent_node: &Rc<Node>,
-        prev: &mut OptRcNode,
+        prev: &OptRcNode,
     ) -> Option<Node> {
         let gfi = parent_node.moves_left == 0;
         let (to_x, to_y) = to.to_usize().unwrap();
@@ -374,22 +374,23 @@ impl<'a> PathFinder<'a> {
                 parent = &None;
             }
         }
-        let parent_square: Option<Position> = parent.clone().map(|node| node.position);
-        let parent_tz = match parent_square {
-            Some(pos) => self.info.tackles_zones_at(&pos) == 0,
-            None => false,
+        let parent_square: Option<Position> = parent.as_ref().map(|node| node.position);
+        let parent_in_tz: bool = match parent_square {
+            Some(pos) => self.info.tackles_zones_at(&pos) > 0,
+            None => false, //this value doesn't matter
         };
         Direction::all_directions_iter()
             .map(|direction| node.position + *direction)
             .filter(|to_square| !to_square.is_out())
             .map(|to_square| (to_square, to_square.to_usize().unwrap()))
-            // .filter(|(to, (x, y))| {
-            //     if let Some(parent_pos) = parent_square {
-            //         (parent_tz && 0 < self.info.tzones[*x][*y]) || parent_pos.distance_to(to) == 2
-            //     } else {
-            //         true
-            //     }
-            // })
+            .filter(|(to, (x, y))| {
+                if let Some(parent_pos) = parent_square {
+                    (parent_in_tz && 0 < self.info.tzones[*x][*y])
+                        || parent_pos.distance_to(to) == 2
+                } else {
+                    true
+                }
+            })
             .map(|(to_square, (x, y))| {
                 self.info.new_expand_to(
                     to_square,
