@@ -308,8 +308,8 @@ impl<'a> PathFinder<'a> {
         loop {
             //expansion
             while let Some(node) = pf.open_set.pop() {
-                pf.expand_node(node);
-                //pf.new_expand_node(node);
+                // pf.expand_node(node);
+                pf.new_expand_node(node);
             }
 
             //clear
@@ -366,6 +366,8 @@ impl<'a> PathFinder<'a> {
     }
 
     fn new_expand_node(&mut self, node: Rc<Node>) {
+        debug_assert!(self.info.new_continue_expanding(&node));
+
         let mut parent = &node.parent;
         if let Some(parent_node) = parent {
             if parent_node.position == node.position {
@@ -381,13 +383,13 @@ impl<'a> PathFinder<'a> {
             .map(|direction| node.position + *direction)
             .filter(|to_square| !to_square.is_out())
             .map(|to_square| (to_square, to_square.to_usize().unwrap()))
-            .filter(|(to, (x, y))| {
-                if let Some(parent_pos) = parent_square {
-                    (parent_tz && 0 < self.info.tzones[*x][*y]) || parent_pos.distance_to(to) == 2
-                } else {
-                    true
-                }
-            })
+            // .filter(|(to, (x, y))| {
+            //     if let Some(parent_pos) = parent_square {
+            //         (parent_tz && 0 < self.info.tzones[*x][*y]) || parent_pos.distance_to(to) == 2
+            //     } else {
+            //         true
+            //     }
+            // })
             .map(|(to_square, (x, y))| {
                 self.info.new_expand_to(
                     to_square,
@@ -407,9 +409,7 @@ impl<'a> PathFinder<'a> {
     }
 
     fn expand_node(&mut self, node: Rc<Node>) {
-        if !self.info.new_continue_expanding(&node) {
-            return;
-        }
+        debug_assert!(self.info.new_continue_expanding(&node));
 
         let mut parent = &node.parent;
 
