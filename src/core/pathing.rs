@@ -173,7 +173,7 @@ impl<'a> GameInfo<'a> {
             game_state,
         }
     }
-    fn new_continue_expanding(&self, node: &Rc<Node>) -> bool {
+    fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
         if node.remaining_movement() == 0 {
             //todo: and can't handoff here.
             return false;
@@ -187,19 +187,19 @@ impl<'a> GameInfo<'a> {
         }
     }
 
-    fn new_expand_to(
+    fn expand_to(
         &self,
         to: Position,
         parent_node: &Rc<Node>,
         prev: &mut OptRcNode,
         best: &OptRcNode,
     ) -> NodeType {
-        debug_assert!(self.new_continue_expanding(parent_node));
+        debug_assert!(self.can_continue_expanding(parent_node));
 
         // expand to move_node, block_node, handoff_mode
         let new_node: Option<Node> = match self.game_state.get_player_id_at(to) {
             Some(_) => return NodeType::NoNode,
-            None => self.new_expand_move_to(to, parent_node, prev),
+            None => self.expand_move_to(to, parent_node, prev),
         };
 
         let new_node: Rc<Node> = match new_node {
@@ -224,14 +224,14 @@ impl<'a> GameInfo<'a> {
 
         *prev = Some(new_node.clone());
 
-        if self.new_continue_expanding(&new_node) {
+        if self.can_continue_expanding(&new_node) {
             NodeType::ContinueExpanding(new_node)
         } else {
             NodeType::NoNode
         }
     }
 
-    fn new_expand_move_to(
+    fn expand_move_to(
         &self,
         to: Position,
         parent_node: &Rc<Node>,
@@ -303,56 +303,31 @@ impl<'a> PathFinder<'a> {
             rolls: Vec::new(),
         });
 
-        assert!(pf.info.new_continue_expanding(&root_node));
+        assert!(pf.info.can_continue_expanding(&root_node));
         pf.open_set.push(root_node);
         loop {
             //expansion
             while let Some(node) = pf.open_set.pop() {
-                // pf.expand_node(node);
-                pf.new_expand_node(node);
+                pf.expand_node(node);
             }
 
-            //clear
+            //clear pf.nodes
             for (node, locked) in zip(
                 gimmi_mut_iter(&mut pf.nodes),
                 gimmi_mut_iter(&mut pf.locked_nodes),
             ) {
                 match (&node, &locked) {
-                    (Some(n), Some(l)) if n.is_better_than(l) => *locked = node.clone(),
-                    (Some(_), None) => *locked = node.clone(),
+                    (Some(n), Some(l)) if n.is_better_than(l) => *locked = node.take(),
+                    (Some(_), None) => *locked = node.take(),
+                    (Some(_), _) => *node = None,
                     _ => (),
                 }
             }
-            pf.nodes = Default::default();
 
             //prepare nodes
             match pf.risky_sets.get_next_batch() {
                 None => break,
-                Some(new_open_set) => {
-                    for new_node in new_open_set {
-                        let (x, y) = new_node.position.to_usize().unwrap();
-                        if pf.locked_nodes[x][y]
-                            .as_ref()
-                            .map(|locked| locked.is_dominant_over(&new_node))
-                            .unwrap_or(false)
-                        {
-                            continue;
-                        }
-
-                        let best_in_batch = &mut pf.nodes[x][y];
-                        if let Some(best_in_batch) = &best_in_batch {
-                            debug_assert!((best_in_batch.prob - new_node.prob).abs() < 0.001);
-                            if !new_node.is_better_than(best_in_batch) {
-                                continue;
-                            }
-                        }
-                        *best_in_batch = Some(new_node.clone());
-
-                        if pf.info.new_continue_expanding(&new_node) {
-                            pf.open_set.push(new_node);
-                        }
-                    }
-                }
+                Some(new_open_set) => pf.prepare_nodes(new_open_set),
             };
         }
 
@@ -365,34 +340,60 @@ impl<'a> PathFinder<'a> {
         Ok(paths)
     }
 
-    fn new_expand_node(&mut self, node: Rc<Node>) {
-        debug_assert!(self.info.new_continue_expanding(&node));
+    fn prepare_nodes(&mut self, new_nodes: Vec<Rc<Node>>) {
+        for new_node in new_nodes {
+            let (x, y) = new_node.position.to_usize().unwrap();
+            if self.locked_nodes[x][y]
+                .as_ref()
+                .map(|locked| locked.is_dominant_over(&new_node))
+                .unwrap_or(false)
+            {
+                continue;
+            }
 
-        let mut parent = &node.parent;
-        if let Some(parent_node) = parent {
-            if parent_node.position == node.position {
-                parent = &None;
+            let best_in_batch = &mut self.nodes[x][y];
+            if let Some(best_in_batch) = &best_in_batch {
+                debug_assert!((best_in_batch.prob - new_node.prob).abs() < 0.001);
+                if !new_node.is_better_than(best_in_batch) {
+                    continue;
+                }
+            }
+            *best_in_batch = Some(new_node.clone());
+
+            if self.info.can_continue_expanding(&new_node) {
+                self.open_set.push(new_node);
             }
         }
-        let parent_square: Option<Position> = parent.as_ref().map(|node| node.position);
-        let parent_in_tz: bool = match parent_square {
-            Some(pos) => self.info.tackles_zones_at(&pos) > 0,
-            None => false, //this value doesn't matter
-        };
+    }
+
+    fn expand_node(&mut self, node: Rc<Node>) {
+        debug_assert!(self.info.can_continue_expanding(&node));
+
+        let parent_pos_and_in_tz: Option<(Position, bool)> = node
+            .parent
+            .as_ref()
+            .filter(|parent| parent.position != node.position)
+            .map(|parent| {
+                (
+                    parent.position,
+                    self.info.tackles_zones_at(&parent.position) > 0,
+                )
+            });
+
         Direction::all_directions_iter()
             .map(|direction| node.position + *direction)
-            .filter(|to_square| !to_square.is_out())
-            .map(|to_square| (to_square, to_square.to_usize().unwrap()))
-            .filter(|(to, (x, y))| {
-                if let Some(parent_pos) = parent_square {
-                    (parent_in_tz && 0 < self.info.tzones[*x][*y])
-                        || parent_pos.distance_to(to) == 2
-                } else {
-                    true
-                }
+            .filter(|to_pos| !to_pos.is_out())
+            .map(|to_pos| (to_pos, to_pos.to_usize().unwrap()))
+            .filter(|(to_pos, (x, y))| {
+                parent_pos_and_in_tz
+                    .map(|(parent_pos, parent_in_tz)| {
+                        parent_pos.distance_to(to_pos) == 2
+                            || (parent_in_tz && 0 < self.info.tzones[*x][*y])
+                    })
+                    .unwrap_or(true)
             })
             .map(|(to_square, (x, y))| {
-                self.info.new_expand_to(
+                self.info.expand_to(
                     to_square,
                     &node,
                     &mut self.nodes[x][y],
@@ -402,113 +403,11 @@ impl<'a> PathFinder<'a> {
             .for_each(|node_type| match node_type {
                 NodeType::Risky(node) => self.risky_sets.insert_node(node),
                 NodeType::ContinueExpanding(node) => {
-                    debug_assert!(self.info.new_continue_expanding(&node));
+                    debug_assert!(self.info.can_continue_expanding(&node));
                     self.open_set.push(node);
                 }
                 NodeType::NoNode => (),
             });
-    }
-
-    fn expand_node(&mut self, node: Rc<Node>) {
-        debug_assert!(self.info.new_continue_expanding(&node));
-
-        let mut parent = &node.parent;
-
-        if let Some(parent_node) = parent {
-            if parent_node.position == node.position {
-                parent = &None;
-            }
-        }
-        for direction in Direction::all_directions_as_array() {
-            let to_square = node.position + direction;
-            if to_square.is_out() {
-                continue;
-            }
-            if let Some(Node { position, .. }) = parent.as_deref() {
-                // filter bad paths early
-                if position.distance_to(&to_square) < 2
-                    && (self.info.tackles_zones_at(position) == 0
-                        || self.info.tackles_zones_at(&to_square) == 0)
-                {
-                    continue;
-                }
-            }
-
-            match self.expand_to(&node, to_square) {
-                Some(risky_node) if risky_node.prob < node.prob => {
-                    self.risky_sets.insert_node(risky_node)
-                }
-                Some(better_node) => {
-                    if self.info.new_continue_expanding(&better_node) {
-                        self.open_set.push(better_node.clone());
-                    }
-                    let (x, y) = better_node.position.to_usize().unwrap();
-                    self.nodes[x][y] = Some(better_node);
-                }
-                None => (),
-            }
-        }
-    }
-
-    fn expand_to(&self, from_node: &Rc<Node>, to: Position) -> OptRcNode {
-        match self.info.game_state.get_player_at(to) {
-            Some(_) => None,
-            None => self.expand_move_to(from_node, to),
-        }
-    }
-    fn expand_move_to(&self, from_node: &Rc<Node>, to: Position) -> OptRcNode {
-        let gfi = from_node.moves_left == 0;
-        let (to_x, to_y) = to.to_usize().unwrap();
-
-        if let Some(current_best) = &self.nodes[to_x][to_y] {
-            if from_node.remaining_movement() - 1 <= current_best.remaining_movement() {
-                return None;
-            }
-        }
-        let (moves_left, gfis_left) = match gfi {
-            true => (0, from_node.gfis_left - 1),
-            false => (from_node.moves_left - 1, from_node.gfis_left),
-        };
-
-        let mut next_node = Node {
-            parent: Some(from_node.clone()),
-            position: to,
-            moves_left,
-            gfis_left,
-            prob: from_node.prob,
-            rolls: Vec::new(),
-        };
-        if gfi {
-            next_node.apply_gfi(self.info.gfi_target);
-        }
-        if self.info.tackles_zones_at(&from_node.position) > 0 {
-            next_node.apply_dodge(
-                *self
-                    .info
-                    .dodge_target
-                    .clone()
-                    .add_modifer(-self.info.tzones[to_x][to_y]),
-            );
-        }
-        if matches!(self.info.ball, PathingBallState::OnGround(ball_pos) if ball_pos == to ) {
-            next_node.apply_pickup(
-                *self
-                    .info
-                    .pickup_target
-                    .clone()
-                    .add_modifer(-self.info.tzones[to_x][to_y]),
-            );
-        }
-
-        let next_node = next_node; //we're done mutating.
-
-        if let Some(best_before) = &self.locked_nodes[to_x][to_y] {
-            assert!(best_before.prob > next_node.prob);
-            if !next_node.is_dominant_over(best_before) {
-                return None;
-            }
-        }
-        Some(Rc::new(next_node))
     }
 }
 
