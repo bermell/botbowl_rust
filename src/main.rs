@@ -420,17 +420,17 @@ mod tests {
 
         let id = state.get_player_id_at(start_pos).unwrap();
 
-        state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?;
+        state.step_positional(PosAT::StartMove, Position::new((1, 1)));
 
         state.d6_fixes.push_back(D6::One); //fail first (2+)
-        state.step(Action::Positional(PosAT::Move, Position::new((9, 1))))?;
+        state.step_positional(PosAT::Move, Position::new((9, 1)));
 
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
         assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge));
 
         state.d6_fixes.push_back(D6::Two); //succeed with team reroll
         state.d6_fixes.push_back(D6::Two); //succeed next gfi roll
-        state.step(Action::Simple(SimpleAT::UseReroll))?;
+        state.step_simple(SimpleAT::UseReroll);
 
         let state = state;
         let player = state.get_player(id).unwrap();

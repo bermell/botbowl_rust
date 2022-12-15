@@ -100,12 +100,11 @@ impl Path {
 
 #[allow(dead_code)]
 pub struct PathFinder<'a> {
-    game_state: &'a GameState,
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
     open_set: Vec<Rc<Node>>,
     risky_sets: RiskySet,
-    info: GameInfo,
+    info: GameInfo<'a>,
 }
 
 enum NodeType {
@@ -121,7 +120,8 @@ enum PathingBallState {
 }
 
 //This struct gather all infomation needed about the board
-struct GameInfo {
+struct GameInfo<'a> {
+    game_state: &'a GameState,
     tzones: FullPitch<i8>,
     ball: PathingBallState,
     start_pos: Position,
@@ -129,13 +129,13 @@ struct GameInfo {
     gfi_target: D6Target,
     pickup_target: D6Target,
 }
-impl GameInfo {
+impl<'a> GameInfo<'a> {
     fn tackles_zones_at(&self, position: &Position) -> i8 {
         let (x, y) = position.to_usize().unwrap();
         self.tzones[x][y]
     }
 
-    fn new(game_state: &GameState, player: &FieldedPlayer) -> GameInfo {
+    fn new(game_state: &'a GameState, player: &FieldedPlayer) -> GameInfo<'a> {
         let dodge_target = *player.ag_target().add_modifer(1);
         let mut gfi_target = D6Target::TwoPlus;
         let mut pickup_target = *player.ag_target().add_modifer(1);
@@ -170,7 +170,116 @@ impl GameInfo {
             dodge_target,
             gfi_target,
             pickup_target,
+            game_state,
         }
+    }
+    fn new_continue_expanding(&self, node: &Rc<Node>) -> bool {
+        if node.remaining_movement() == 0 {
+            //todo: and can't handoff here.
+            return false;
+        }
+        // todo: stop if block roll or handoff roll is set
+
+        match self.ball {
+            PathingBallState::IsCarrier(endzone_x) if endzone_x == node.position.x => false,
+            PathingBallState::OnGround(ball_pos) if ball_pos == node.position => false,
+            _ => true,
+        }
+    }
+
+    fn new_expand_to(
+        &self,
+        to: Position,
+        parent_node: &Rc<Node>,
+        prev: &mut OptRcNode,
+        best: &OptRcNode,
+    ) -> NodeType {
+        debug_assert!(self.new_continue_expanding(parent_node));
+
+        // expand to move_node, block_node, handoff_mode
+        let new_node: Option<Node> = match self.game_state.get_player_id_at(to) {
+            Some(_) => return NodeType::NoNode,
+            None => self.new_expand_move_to(to, parent_node, prev),
+        };
+
+        let new_node: Rc<Node> = match new_node {
+            Some(node) => Rc::new(node),
+            None => return NodeType::NoNode,
+        };
+
+        if let Some(best_before) = &best {
+            debug_assert!(best_before.prob > new_node.prob); //this is only here to remind us of this fact
+            if !best_before.is_dominant_over(&new_node) {
+                return NodeType::NoNode;
+            }
+        }
+
+        if new_node.prob < parent_node.prob {
+            return NodeType::Risky(new_node);
+        }
+
+        if let Some(previous) = prev {
+            debug_assert!(new_node.is_better_than(previous)); //this should be the case!
+        }
+
+        *prev = Some(new_node.clone());
+
+        if self.new_continue_expanding(&new_node) {
+            NodeType::ContinueExpanding(new_node)
+        } else {
+            NodeType::NoNode
+        }
+    }
+
+    fn new_expand_move_to(
+        &self,
+        to: Position,
+        parent_node: &Rc<Node>,
+        prev: &mut OptRcNode,
+    ) -> Option<Node> {
+        let gfi = parent_node.moves_left == 0;
+        let (to_x, to_y) = to.to_usize().unwrap();
+
+        if let Some(current_best) = &prev {
+            if parent_node.remaining_movement() - 1 <= current_best.remaining_movement() {
+                return None;
+            }
+        }
+        let (moves_left, gfis_left) = match gfi {
+            true if parent_node.gfis_left > 0 => (0, parent_node.gfis_left - 1),
+            true => (0, 0),
+            false => (parent_node.moves_left - 1, parent_node.gfis_left),
+        };
+
+        let mut next_node = Node {
+            parent: Some(parent_node.clone()),
+            position: to,
+            moves_left,
+            gfis_left,
+            prob: parent_node.prob,
+            rolls: Vec::new(),
+        };
+        if gfi {
+            next_node.apply_gfi(self.gfi_target);
+        }
+        if self.tackles_zones_at(&parent_node.position) > 0 {
+            next_node.apply_dodge(
+                *self
+                    .dodge_target
+                    .clone()
+                    .add_modifer(-self.tzones[to_x][to_y]),
+            );
+        }
+        if matches!(self.ball, PathingBallState::OnGround(ball_pos) if ball_pos == to ) {
+            next_node.apply_pickup(
+                *self
+                    .pickup_target
+                    .clone()
+                    .add_modifer(-self.tzones[to_x][to_y]),
+            );
+        }
+
+        Some(next_node)
     }
 }
 
@@ -178,7 +287,6 @@ impl<'a> PathFinder<'a> {
     pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<Option<Path>>> {
         let player = game_state.get_player_unsafe(id);
         let mut pf = PathFinder {
-            game_state,
             nodes: Default::default(),
             locked_nodes: Default::default(),
             open_set: Default::default(),
@@ -200,6 +308,7 @@ impl<'a> PathFinder<'a> {
             //expansion
             while let Some(node) = pf.open_set.pop() {
                 pf.expand_node(node);
+                //pf.new_expand_node(node);
             }
 
             //clear
@@ -233,7 +342,10 @@ impl<'a> PathFinder<'a> {
                             continue;
                         }
                         *current_best = Some(new_node.clone());
+
+                        //     if pf.info.new_continue_expanding(&new_node) {
                         pf.open_set.push(new_node);
+                        //     }
                     }
                 }
             };
@@ -275,7 +387,7 @@ impl<'a> PathFinder<'a> {
                 }
             })
             .map(|(to_square, (x, y))| {
-                PathFinder::new_expand_to(
+                self.info.new_expand_to(
                     to_square,
                     &node,
                     &mut self.nodes[x][y],
@@ -284,49 +396,16 @@ impl<'a> PathFinder<'a> {
             })
             .for_each(|node_type| match node_type {
                 NodeType::Risky(node) => self.risky_sets.insert_node(node),
-                NodeType::ContinueExpanding(node) => self.open_set.push(node),
+                NodeType::ContinueExpanding(node) => {
+                    debug_assert!(self.info.new_continue_expanding(&node));
+                    self.open_set.push(node);
+                }
                 NodeType::NoNode => (),
             });
     }
 
-    fn new_expand_to(
-        to: Position,
-        parent_node: &Rc<Node>,
-        prev: &mut OptRcNode,
-        best: &OptRcNode,
-    ) -> NodeType {
-        // todo: need to send all kinds of immutable shit along: game_state, dodge_target, gfi_target, tacklezones etc etc...
-        //       wrap it all in a struct within Pathfinder.
-
-        // expand to move_node, block_node, handoff_mode
-        // if new_node.prob is lower than parent -> RiskyNode(new_node)
-        // if new_node is dominant over best_before and better than current_best {
-        // ---- *prev = new_node.clone()
-        // ---- if new_node should be further expanded -> Node(new_node)
-        //PathFinder::new_continue_expanding(&node, &self.info)
-        // else -> NoNode
-        // }
-        // else (meaning it didn't beat current best and dominant over best before) -> NoNode
-
-        NodeType::NoNode
-    }
-
-    fn new_continue_expanding(node: &Rc<Node>, info: &GameInfo) -> bool {
-        if node.remaining_movement() == 0 {
-            //todo: and can't handoff here.
-            return false;
-        }
-        // todo: stop if block roll or handoff roll is set
-
-        match info.ball {
-            PathingBallState::IsCarrier(endzone_x) if endzone_x == node.position.x => false,
-            PathingBallState::OnGround(ball_pos) if ball_pos == node.position => false,
-            _ => true,
-        }
-    }
-
     fn expand_node(&mut self, node: Rc<Node>) {
-        if !PathFinder::new_continue_expanding(&node, &self.info) {
+        if !self.info.new_continue_expanding(&node) {
             return;
         }
 
@@ -367,7 +446,7 @@ impl<'a> PathFinder<'a> {
     }
 
     fn expand_to(&self, from_node: &Rc<Node>, to: Position) -> OptRcNode {
-        match self.game_state.get_player_at(to) {
+        match self.info.game_state.get_player_at(to) {
             Some(_) => None,
             None => self.expand_move_to(from_node, to),
         }
