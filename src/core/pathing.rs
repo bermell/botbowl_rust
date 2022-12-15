@@ -112,7 +112,7 @@ enum NodeType {
     ContinueExpanding(Rc<Node>),
     NoNode,
 }
-
+#[derive(Debug)]
 enum PathingBallState {
     IsCarrier(Coord),
     OnGround(Position),
@@ -303,6 +303,7 @@ impl<'a> PathFinder<'a> {
             rolls: Vec::new(),
         });
 
+        assert!(pf.info.new_continue_expanding(&root_node));
         pf.open_set.push(root_node);
         loop {
             //expansion
@@ -347,15 +348,12 @@ impl<'a> PathFinder<'a> {
                         }
                         *best_in_batch = Some(new_node.clone());
 
-                        //if pf.info.new_continue_expanding(&new_node) {
-                        pf.open_set.push(new_node);
-                        //}
+                        if pf.info.new_continue_expanding(&new_node) {
+                            pf.open_set.push(new_node);
+                        }
                     }
                 }
             };
-            if pf.open_set.is_empty() && pf.risky_sets.is_empty() {
-                break;
-            }
         }
 
         let mut paths: FullPitch<Option<Path>> = Default::default();
@@ -440,7 +438,9 @@ impl<'a> PathFinder<'a> {
                     self.risky_sets.insert_node(risky_node)
                 }
                 Some(better_node) => {
-                    self.open_set.push(better_node.clone());
+                    if self.info.new_continue_expanding(&better_node) {
+                        self.open_set.push(better_node.clone());
+                    }
                     let (x, y) = better_node.position.to_usize().unwrap();
                     self.nodes[x][y] = Some(better_node);
                 }
