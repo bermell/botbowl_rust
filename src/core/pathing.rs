@@ -330,22 +330,26 @@ impl<'a> PathFinder<'a> {
                 Some(new_open_set) => {
                     for new_node in new_open_set {
                         let (x, y) = new_node.position.to_usize().unwrap();
-                        if let Some(best_before) = &pf.locked_nodes[x][y] {
-                            if !new_node.is_dominant_over(best_before) {
-                                continue;
-                            }
-                        }
-                        let current_best = &mut pf.nodes[x][y];
-                        if current_best.is_some()
-                            && !new_node.is_better_than(current_best.as_ref().unwrap())
+                        if pf.locked_nodes[x][y]
+                            .as_ref()
+                            .map(|locked| locked.is_dominant_over(&new_node))
+                            .unwrap_or(false)
                         {
                             continue;
                         }
-                        *current_best = Some(new_node.clone());
 
-                        //     if pf.info.new_continue_expanding(&new_node) {
+                        let best_in_batch = &mut pf.nodes[x][y];
+                        if let Some(best_in_batch) = &best_in_batch {
+                            debug_assert!((best_in_batch.prob - new_node.prob).abs() < 0.001);
+                            if !new_node.is_better_than(best_in_batch) {
+                                continue;
+                            }
+                        }
+                        *best_in_batch = Some(new_node.clone());
+
+                        //if pf.info.new_continue_expanding(&new_node) {
                         pf.open_set.push(new_node);
-                        //     }
+                        //}
                     }
                 }
             };
