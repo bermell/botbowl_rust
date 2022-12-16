@@ -45,6 +45,30 @@ mod tests {
     };
 
     #[test]
+    fn handoff() {
+        let start_pos = Position::new((1, 1));
+        let target_pos = Position::new((5, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        let start_id = state.get_player_id_at(start_pos).unwrap();
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+
+        state.step_positional(PosAT::StartHandoff, start_pos);
+
+        state.d6_fixes.push_back(D6::Two);
+        state.step_positional(PosAT::Handoff, target_pos);
+
+        state.d6_fixes.push_back(D6::Three);
+        state.step_simple(SimpleAT::UseReroll);
+
+        assert!(state.get_player_unsafe(start_id).used);
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+    }
+
+    #[test]
     fn state_from_str() {
         let mut field = "".to_string();
         field += " aa\n";
