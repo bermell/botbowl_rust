@@ -12,6 +12,22 @@ pub type PlayerID = usize;
 pub type Coord = i8;
 pub type FullPitch<T> = [[T; HEIGHT]; WIDTH];
 
+pub trait PitchContainer<T> {
+    fn get(&self, position: Position) -> &T;
+    fn get_mut(&mut self, position: Position) -> &mut T;
+}
+
+impl<T> PitchContainer<T> for FullPitch<T> {
+    fn get(&self, position: Position) -> &T {
+        let (x, y) = position.to_usize().unwrap();
+        &self[x][y]
+    }
+    fn get_mut(&mut self, position: Position) -> &mut T {
+        let (x, y) = position.to_usize().unwrap();
+        &mut self[x][y]
+    }
+}
+
 pub const WIDTH: usize = 28;
 pub const HEIGHT: usize = 17;
 pub const WIDTH_: Coord = WIDTH as Coord;

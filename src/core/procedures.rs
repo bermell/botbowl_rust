@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use crate::core::{dices::D6, model};
 use model::*;
 
@@ -147,18 +145,25 @@ fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
     }
 }
 
+enum MoveActionState {
+    Init,
+    ActivePath(Path),
+    SelectPath(FullPitch<Option<Path>>),
+}
 pub struct MoveAction {
     player_id: PlayerID,
-    paths: FullPitch<Option<Path>>,
-    active_path: Option<Path>,
+    state: MoveActionState,
+    // paths: FullPitch<Option<Path>>,
+    // active_path: Option<Path>,
     rolls: Option<Vec<Roll>>,
 }
 impl MoveAction {
     pub fn new(id: PlayerID) -> Box<MoveAction> {
         Box::new(MoveAction {
+            state: MoveActionState::Init,
             player_id: id,
-            paths: Default::default(),
-            active_path: None,
+            // paths: Default::default(),
+            // active_path: None,
             rolls: None,
         })
     }
@@ -168,13 +173,13 @@ impl MoveAction {
                 return;
             }
         }
-        if let Some(path) = &self.active_path {
+        if let MoveActionState::ActivePath(path) = &self.state {
             if !path.steps.is_empty() {
                 return;
             }
         }
         self.rolls = None;
-        self.active_path = None;
+        self.state = MoveActionState::Init;
     }
 
     fn continue_active_path(&mut self, game_state: &mut GameState) -> ProcState {
@@ -187,10 +192,15 @@ impl MoveAction {
             let debug_roll_len_after = self.rolls.as_ref().map_or(0, |rolls| rolls.len());
             assert_eq!(debug_roll_len_before - 1, debug_roll_len_after);
 
+            self.consolidate_active_path();
             return ProcState::NotDoneNew(new_proc);
         }
 
-        let path = self.active_path.as_mut().unwrap();
+        let path = if let MoveActionState::ActivePath(path) = &mut self.state {
+            path
+        } else {
+            panic!()
+        };
 
         // check if any rolls left to handle, if not then just move to end of path
         if path.steps.iter().all(|(_, rolls)| rolls.is_empty()) {
@@ -204,6 +214,7 @@ impl MoveAction {
                     .add_move(u8::try_from(path.steps.len()).unwrap())
             }
             path.steps.clear();
+            self.consolidate_active_path();
             return ProcState::NotDone;
         }
         while let Some((position, mut rolls)) = path.steps.pop() {
@@ -215,6 +226,7 @@ impl MoveAction {
                 if !rolls.is_empty() {
                     self.rolls = Some(rolls);
                 }
+                self.consolidate_active_path();
                 return ProcState::NotDoneNew(new_proc);
             }
         }
@@ -223,60 +235,48 @@ impl MoveAction {
 }
 impl Procedure for MoveAction {
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        let player = match game_state.get_player(self.player_id) {
-            Ok(player) if !player.used => player,
-            Ok(_) => return AvailableActions::new_empty(), // Player is used
-            Err(_) => return AvailableActions::new_empty(), // Player not on field anymore
-        };
-
-        if self.active_path.is_some() {
-            return AvailableActions::new_empty();
-        }
+        let player = game_state.get_player_unsafe(self.player_id);
 
         let mut aa = AvailableActions::new(player.stats.team);
         if player.total_movement_left() > 0 {
-            self.paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
-            let move_positions = gimmi_iter(&self.paths)
+            let paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
+            let move_positions = gimmi_iter(&paths)
                 .flatten()
                 .map(|path| path.target)
                 .collect();
 
             aa.insert_positional(PosAT::Move, move_positions);
+            self.state = MoveActionState::SelectPath(paths);
         }
         aa.insert_simple(SimpleAT::EndPlayerTurn);
         aa
     }
 
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        match action {
-            Some(Action::Positional(PosAT::Move, position)) => {
-                if game_state.get_player_at(position).is_some() {
-                    panic!("Very wrong!");
-                }
-                let (x, y) = position.to_usize().unwrap();
-                self.active_path = self.paths[x][y].clone();
-                debug_assert!(self.active_path.is_some());
-                self.paths = Default::default();
-                let state = self.continue_active_path(game_state);
-                self.consolidate_active_path();
-                state
+        match game_state.get_player(self.player_id) {
+            Ok(player) if player.used => return ProcState::Done,
+            Err(_) => return ProcState::Done, // Player not on field anymore
+            _ => (),
+        }
+
+        match (action, &mut self.state) {
+            (
+                Some(Action::Positional(PosAT::Move, position)),
+                MoveActionState::SelectPath(all_paths),
+            ) => {
+                assert!(game_state.get_player_at(position).is_none());
+                self.state =
+                    MoveActionState::ActivePath(all_paths.get_mut(position).take().unwrap());
+                self.continue_active_path(game_state)
             }
-            Some(Action::Simple(SimpleAT::EndPlayerTurn)) => {
+            (Some(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
                 ProcState::Done
             }
-            None if self.active_path.is_some() => {
-                match game_state.get_player(self.player_id) {
-                    Ok(player) if !player.used => (),
-                    Ok(_) => return ProcState::Done, // Player is used
-                    Err(_) => return ProcState::Done, // Player not on field anymore
-                }
-
-                let state = self.continue_active_path(game_state);
-                self.consolidate_active_path();
-                state
+            (None, MoveActionState::ActivePath(_)) => self.continue_active_path(game_state),
+            (None, MoveActionState::Init) => {
+                ProcState::NeedAction(self.available_actions(game_state))
             }
-            None => ProcState::NeedAction(self.available_actions(game_state)),
 
             _ => panic!("very wrong!"),
         }

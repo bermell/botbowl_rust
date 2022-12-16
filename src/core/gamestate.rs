@@ -576,6 +576,7 @@ impl GameState {
 
             top_proc_state = top_proc.step(self, None);
         }
+        debug_assert!(!self.available_actions.is_empty() || self.info.game_over);
         Ok(())
     }
 
