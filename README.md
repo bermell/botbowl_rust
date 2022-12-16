@@ -13,7 +13,7 @@ List of things to implement and write tests for in order to use as engine for fo
 - [ ] Fouling (in pathfinding, ejection) 
 - [x] Blocking 
 - [ ] Passing (in pathfinding) 
-- [ ] Handing off (in pathfinding) 
+- [x] Handing off (in pathfinding) 
 - [ ] Kickoff 
 - [ ] Setup 
 - [ ] Touchdown

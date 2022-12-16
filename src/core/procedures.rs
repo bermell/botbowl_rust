@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::core::{dices::D6, model};
 use model::*;
 
@@ -116,21 +118,31 @@ impl Procedure for Turn {
     }
 
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        match action {
-            None => ProcState::NeedAction(self.available_actions(game_state)),
+        game_state.info.active_player = None;
+        game_state.info.player_action_type = None;
+        if action.is_none() {
+            return ProcState::NeedAction(self.available_actions(game_state));
+        }
 
-            Some(Action::Positional(at, position)) => {
-                game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
-                match at {
-                    PosAT::StartMove => ProcState::NotDoneNewProcs(vec![MoveAction::new(
-                        game_state.info.active_player.unwrap(),
-                    )]),
-                    PosAT::StartBlock => ProcState::NotDoneNewProcs(vec![BlockAction::new()]),
-                    _ => todo!(),
-                }
+        if let Some(Action::Positional(_, position)) = action {
+            game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
+        }
+
+        match action.unwrap() {
+            Action::Positional(PosAT::StartMove, _) => {
+                game_state.info.player_action_type = Some(PlayerActionType::MoveAction);
+                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
+            }
+            Action::Positional(PosAT::StartHandoff, _) => {
+                game_state.info.player_action_type = Some(PlayerActionType::HandoffAction);
+                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
+            }
+            Action::Positional(PosAT::StartBlock, _) => {
+                game_state.info.player_action_type = Some(PlayerActionType::BlockAction);
+                ProcState::NotDoneNew(BlockAction::new())
             }
 
-            Some(Action::Simple(SimpleAT::EndTurn)) => ProcState::Done,
+            Action::Simple(SimpleAT::EndTurn) => ProcState::Done,
             _ => panic!("Action not allowed: {:?}", action),
         }
     }
@@ -142,6 +154,7 @@ fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
         Roll::GFI(target) => GfiProc::new(move_action.player_id, target),
         Roll::Pickup(target) => PickupProc::new(move_action.player_id, target),
         Roll::Block(id, dices) => Block::new(dices, id),
+        Roll::Handoff(id, target) => Catch::new(id, target),
     }
 }
 
@@ -218,9 +231,12 @@ impl MoveAction {
             return ProcState::NotDone;
         }
         while let Some((position, mut rolls)) = path.steps.pop() {
-            game_state.move_player(self.player_id, position).unwrap();
-            game_state.get_mut_player_unsafe(self.player_id).add_move(1);
-
+            if let Some(Roll::Handoff(_, _)) = rolls.last() {
+                game_state.get_mut_player_unsafe(self.player_id).used = true;
+            } else {
+                game_state.move_player(self.player_id, position).unwrap();
+                game_state.get_mut_player_unsafe(self.player_id).add_move(1);
+            }
             if let Some(next_roll) = rolls.pop() {
                 let new_proc = proc_from_roll(next_roll, self);
                 if !rolls.is_empty() {
@@ -240,12 +256,10 @@ impl Procedure for MoveAction {
         let mut aa = AvailableActions::new(player.stats.team);
         if player.total_movement_left() > 0 {
             let paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
-            let move_positions = gimmi_iter(&paths)
+            gimmi_iter(&paths)
                 .flatten()
-                .map(|path| path.target)
-                .collect();
+                .for_each(|path| aa.insert_single_positional(path.action_type, path.target));
 
-            aa.insert_positional(PosAT::Move, move_positions);
             self.state = MoveActionState::SelectPath(paths);
         }
         aa.insert_simple(SimpleAT::EndPlayerTurn);
@@ -254,17 +268,18 @@ impl Procedure for MoveAction {
 
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match game_state.get_player(self.player_id) {
-            Ok(player) if player.used => return ProcState::Done,
-            Err(_) => return ProcState::Done, // Player not on field anymore
+            Ok(player) if player.used => {
+                return ProcState::Done;
+            }
+            Err(_) => {
+                // Player not on field anymore
+                return ProcState::Done;
+            }
             _ => (),
         }
 
         match (action, &mut self.state) {
-            (
-                Some(Action::Positional(PosAT::Move, position)),
-                MoveActionState::SelectPath(all_paths),
-            ) => {
-                assert!(game_state.get_player_at(position).is_none());
+            (Some(Action::Positional(_, position)), MoveActionState::SelectPath(all_paths)) => {
                 self.state =
                     MoveActionState::ActivePath(all_paths.get_mut(position).take().unwrap());
                 self.continue_active_path(game_state)

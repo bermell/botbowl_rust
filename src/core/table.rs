@@ -9,6 +9,14 @@ pub enum PosAT {
     StartBlock,
     Block,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerActionType {
+    MoveAction,
+    HandoffAction,
+    PassAction,
+    BlockAction,
+    BlitzAction,
+}
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum SimpleAT {

@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn handoff() {
-        let start_pos = Position::new((1, 1));
+        let start_pos = Position::new((2, 1));
         let target_pos = Position::new((5, 5));
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
@@ -58,11 +58,11 @@ mod tests {
 
         state.step_positional(PosAT::StartHandoff, start_pos);
 
-        state.d6_fixes.push_back(D6::Two);
+        state.d6_fixes.push_back(D6::Six);
         state.step_positional(PosAT::Handoff, target_pos);
 
-        state.d6_fixes.push_back(D6::Three);
-        state.step_simple(SimpleAT::UseReroll);
+        // state.d6_fixes.push_back(D6::Three);
+        // state.step_simple(SimpleAT::UseReroll);
 
         assert!(state.get_player_unsafe(start_id).used);
         assert_eq!(state.ball, BallState::Carried(carrier_id));

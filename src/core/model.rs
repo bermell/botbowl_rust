@@ -438,6 +438,16 @@ impl AvailableActions {
         assert!(!self.positional.contains_key(&action_type));
         self.positional.insert(action_type, positions);
     }
+    pub fn insert_single_positional(&mut self, action_type: PosAT, position: Position) {
+        match self.positional.entry(action_type) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(vec![position]);
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                e.get_mut().push(position);
+            }
+        };
+    }
     pub fn insert_block(&mut self, ac: Vec<BlockActionChoice>) {
         self.blocks = ac;
     }

@@ -6,7 +6,7 @@ use model::*;
 
 use super::dices::{D6Target, RollTarget};
 use super::gamestate::GameState;
-use super::table::NumBlockDices;
+use super::table::{NumBlockDices, PlayerActionType, PosAT};
 
 type OptRcNode = Option<Rc<Node>>;
 
@@ -16,6 +16,7 @@ pub enum Roll {
     GFI(D6Target),
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
+    Handoff(PlayerID, D6Target),
 }
 
 #[derive(Debug)]
@@ -44,6 +45,11 @@ impl Node {
     fn apply_pickup(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
         self.rolls.push(Roll::Pickup(target));
+    }
+
+    fn apply_handoff(&mut self, id: PlayerID, target: D6Target) {
+        self.prob *= target.success_prob();
+        self.rolls.push(Roll::Handoff(id, target));
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -76,15 +82,24 @@ impl Node {
 pub struct Path {
     pub steps: Vec<(Position, Vec<Roll>)>,
     pub target: Position,
+    pub action_type: PosAT,
     pub prob: f32,
 }
 impl Path {
     fn new(final_node: &Node) -> Path {
+        let action_type = match final_node.rolls.last() {
+            Some(Roll::Block(_, _)) => PosAT::Block,
+            Some(Roll::Handoff(_, _)) => PosAT::Handoff,
+            _ => PosAT::Move,
+        };
+
         let mut path = Path {
             steps: vec![(final_node.position, final_node.rolls.clone())],
             prob: final_node.prob,
             target: final_node.position,
+            action_type,
         };
+
         let mut node: &Node = final_node;
         while let Some(parent) = &node.parent {
             if parent.parent.is_none() {
@@ -122,6 +137,8 @@ enum PathingBallState {
 //This struct gather all infomation needed about the board
 struct GameInfo<'a> {
     game_state: &'a GameState,
+    player_action: PlayerActionType,
+    team: TeamType,
     tzones: FullPitch<i8>,
     ball: PathingBallState,
     start_pos: Position,
@@ -156,21 +173,37 @@ impl<'a> GameInfo<'a> {
             .flat_map(|player| game_state.get_adj_positions(player.position))
             .map(|position| position.to_usize().unwrap())
             .for_each(|(x, y)| tzones[x][y] += 1);
+        let ball = match game_state.ball {
+            BallState::OnGround(position) => PathingBallState::OnGround(position),
+            BallState::Carried(id) if id == player.id => {
+                PathingBallState::IsCarrier(game_state.get_endzone_x(player.stats.team))
+            }
+            _ => PathingBallState::NotRelevant,
+        };
+        let mut player_action = game_state
+            .info
+            .player_action_type
+            .unwrap_or(PlayerActionType::MoveAction);
+        if player_action == PlayerActionType::HandoffAction
+            && !matches!(ball, PathingBallState::IsCarrier(_))
+        {
+            // Can't handoff if not ball carrier
+            player_action = PlayerActionType::MoveAction;
+        }
 
         GameInfo {
             tzones,
-            ball: match game_state.ball {
-                BallState::OnGround(position) => PathingBallState::OnGround(position),
-                BallState::Carried(id) if id == player.id => {
-                    PathingBallState::IsCarrier(game_state.get_endzone_x(player.stats.team))
-                }
-                _ => PathingBallState::NotRelevant,
-            },
+            ball,
             start_pos: player.position,
             dodge_target,
             gfi_target,
             pickup_target,
             game_state,
+            team: player.stats.team,
+            player_action: game_state
+                .info
+                .player_action_type
+                .unwrap_or(PlayerActionType::MoveAction),
         }
     }
     fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
@@ -197,9 +230,16 @@ impl<'a> GameInfo<'a> {
         debug_assert!(self.can_continue_expanding(parent_node));
 
         // expand to move_node, block_node, handoff_mode
-        let new_node: Option<Node> = match self.game_state.get_player_id_at(to) {
-            Some(_) => return NodeType::NoNode,
+        let new_node: Option<Node> = match self.game_state.get_player_at(to) {
+            Some(player)
+                if self.player_action == PlayerActionType::HandoffAction
+                    && player.stats.team == self.team
+                    && player.can_catch() =>
+            {
+                self.expand_handoff_to(to, player.id, parent_node, prev)
+            }
             None => self.expand_move_to(to, parent_node, prev),
+            _ => return NodeType::NoNode,
         };
 
         let new_node: Rc<Node> = match new_node {
@@ -229,6 +269,34 @@ impl<'a> GameInfo<'a> {
         } else {
             NodeType::NoNode
         }
+    }
+
+    fn expand_handoff_to(
+        &self,
+        to: Position,
+        id: PlayerID,
+        parent_node: &Rc<Node>,
+        prev: &OptRcNode,
+    ) -> Option<Node> {
+        let mut next_node = Node {
+            parent: Some(parent_node.clone()),
+            position: to,
+            moves_left: 0,
+            gfis_left: 0,
+            prob: parent_node.prob,
+            rolls: Vec::new(),
+        };
+
+        let target: D6Target = self.game_state.get_catch_modifers(id).unwrap();
+        next_node.apply_handoff(id, target);
+        if let Some(current_best) = prev {
+            if current_best.is_better_than(&next_node) {
+                // todo: if there is a current_best, it will always have higher prob right?
+                //       that's just how it works with the risky batches. Oh well, optimize later..
+                return None;
+            }
+        }
+        Some(next_node)
     }
 
     fn expand_move_to(
