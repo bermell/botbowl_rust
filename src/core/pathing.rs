@@ -25,12 +25,24 @@ pub struct Node {
     position: Position,
     moves_left: u8,
     gfis_left: u8,
+    block_dice: Option<NumBlockDices>,
     // foul_roll, handoff_roll, block_dice
     //euclidiean_distance: f32,
     prob: f32,
     rolls: Vec<Roll>,
 }
 impl Node {
+    fn new(parent: OptRcNode, position: Position, moves_left: u8, gfis_left: u8) -> Node {
+        Node {
+            prob: parent.as_ref().map(|node| node.prob).unwrap_or(1.0),
+            parent,
+            position,
+            moves_left,
+            gfis_left,
+            block_dice: None,
+            rolls: Vec::new(),
+        }
+    }
     fn remaining_movement(&self) -> u8 {
         self.moves_left + self.gfis_left
     }
@@ -51,11 +63,18 @@ impl Node {
         self.prob *= target.success_prob();
         self.rolls.push(Roll::Handoff(id, target));
     }
+    fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
+        self.block_dice = Some(target);
+        self.rolls.push(Roll::Block(vicitm_id, target));
+    }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
         assert_eq!(self.position, othr.position);
 
-        if self.prob > othr.prob && self.remaining_movement() > othr.remaining_movement() {
+        if self.prob > othr.prob
+            && self.remaining_movement() > othr.remaining_movement()
+            && self.block_dice > othr.block_dice
+        {
             return true;
         }
         false
@@ -71,6 +90,13 @@ impl Node {
             return false;
         }
 
+        match (self.block_dice, othr.block_dice) {
+            (Some(s), Some(o)) if s != o => return s > o,
+            (Some(_), None) => panic!("very wrong"), // casual debugging
+            (None, Some(_)) => panic!("very wrong"), // casual debugging
+            _ => (),
+        }
+
         if self.remaining_movement() > othr.remaining_movement() {
             return true;
         }
@@ -83,14 +109,21 @@ pub struct Path {
     pub steps: Vec<(Position, Vec<Roll>)>,
     pub target: Position,
     pub action_type: PosAT,
+    pub block_dice: Option<NumBlockDices>,
     pub prob: f32,
 }
 impl Path {
     fn new(final_node: &Node) -> Path {
-        let action_type = match final_node.rolls.last() {
-            Some(Roll::Block(_, _)) => PosAT::Block,
-            Some(Roll::Handoff(_, _)) => PosAT::Handoff,
-            _ => PosAT::Move,
+        let action_type = {
+            if final_node.block_dice.is_some() {
+                PosAT::Block
+            } else {
+                match final_node.rolls.last() {
+                    Some(Roll::Block(_, _)) => PosAT::Block,
+                    Some(Roll::Handoff(_, _)) => PosAT::Handoff,
+                    _ => PosAT::Move,
+                }
+            }
         };
 
         let mut path = Path {
@@ -98,6 +131,7 @@ impl Path {
             prob: final_node.prob,
             target: final_node.position,
             action_type,
+            block_dice: final_node.block_dice,
         };
 
         let mut node: &Node = final_node;
@@ -145,6 +179,7 @@ struct GameInfo<'a> {
     dodge_target: D6Target,
     gfi_target: D6Target,
     pickup_target: D6Target,
+    id: PlayerID,
 }
 impl<'a> GameInfo<'a> {
     fn tackles_zones_at(&self, position: &Position) -> i8 {
@@ -200,14 +235,12 @@ impl<'a> GameInfo<'a> {
             pickup_target,
             game_state,
             team: player.stats.team,
-            player_action: game_state
-                .info
-                .player_action_type
-                .unwrap_or(PlayerActionType::MoveAction),
+            player_action,
+            id: player.id,
         }
     }
     fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
-        if node.remaining_movement() == 0 {
+        if node.remaining_movement() == 0 && self.player_action != PlayerActionType::HandoffAction {
             //todo: and can't handoff here.
             return false;
         }
@@ -238,7 +271,17 @@ impl<'a> GameInfo<'a> {
             {
                 self.expand_handoff_to(to, player.id, parent_node, prev)
             }
-            None => self.expand_move_to(to, parent_node, prev),
+            Some(player)
+                if self.player_action == PlayerActionType::BlitzAction
+                    && player.stats.team != self.team
+                    && parent_node.remaining_movement() > 0
+                    && player.status == PlayerStatus::Up =>
+            {
+                self.expand_block_to(to, player.id, parent_node, prev)
+            }
+            None if parent_node.remaining_movement() > 0 => {
+                self.expand_move_to(to, parent_node, prev)
+            }
             _ => return NodeType::NoNode,
         };
 
@@ -271,6 +314,34 @@ impl<'a> GameInfo<'a> {
         }
     }
 
+    fn expand_block_to(
+        &self,
+        to: Position,
+        victim_id: PlayerID,
+        parent_node: &Rc<Node>,
+        prev: &OptRcNode,
+    ) -> Option<Node> {
+        let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
+
+        if parent_node.moves_left == 0 {
+            next_node.apply_gfi(self.gfi_target);
+        }
+
+        next_node.apply_block(
+            victim_id,
+            self.game_state
+                .get_blockdices_from(self.id, parent_node.position, victim_id),
+        );
+        if let Some(current_best) = prev {
+            if !next_node.is_better_than(current_best) {
+                // todo: if there is a current_best, it will always have higher prob right?
+                //       that's just how it works with the risky batches. Oh well, optimize later..
+                return None;
+            }
+        }
+        Some(next_node)
+    }
+
     fn expand_handoff_to(
         &self,
         to: Position,
@@ -278,14 +349,7 @@ impl<'a> GameInfo<'a> {
         parent_node: &Rc<Node>,
         prev: &OptRcNode,
     ) -> Option<Node> {
-        let mut next_node = Node {
-            parent: Some(parent_node.clone()),
-            position: to,
-            moves_left: 0,
-            gfis_left: 0,
-            prob: parent_node.prob,
-            rolls: Vec::new(),
-        };
+        let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
 
         let target: D6Target = self.game_state.get_catch_modifers(id).unwrap();
         next_node.apply_handoff(id, target);
@@ -319,14 +383,8 @@ impl<'a> GameInfo<'a> {
             false => (parent_node.moves_left - 1, parent_node.gfis_left),
         };
 
-        let mut next_node = Node {
-            parent: Some(parent_node.clone()),
-            position: to,
-            moves_left,
-            gfis_left,
-            prob: parent_node.prob,
-            rolls: Vec::new(),
-        };
+        let mut next_node = Node::new(Some(parent_node.clone()), to, moves_left, gfis_left);
+
         if gfi {
             next_node.apply_gfi(self.gfi_target);
         }
@@ -362,14 +420,12 @@ impl<'a> PathFinder<'a> {
             info: GameInfo::new(game_state, player),
         };
 
-        let root_node = Rc::new(Node {
-            parent: None,
-            position: pf.info.start_pos,
-            moves_left: player.moves_left(),
-            gfis_left: player.gfis_left(),
-            prob: 1.0,
-            rolls: Vec::new(),
-        });
+        let root_node = Rc::new(Node::new(
+            None,
+            pf.info.start_pos,
+            player.moves_left(),
+            player.gfis_left(),
+        ));
 
         assert!(pf.info.can_continue_expanding(&root_node));
         pf.open_set.push(root_node);
@@ -495,9 +551,9 @@ impl RiskySet {
             None => None,
         }
     }
-    pub fn is_empty(&self) -> bool {
-        self.set.is_empty()
-    }
+    // pub fn is_empty(&self) -> bool {
+    //     self.set.is_empty()
+    // }
 }
 impl Debug for RiskySet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

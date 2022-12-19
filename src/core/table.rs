@@ -1,6 +1,8 @@
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum PosAT {
     StartMove,
+    StartBlitz,
+    StartPass,
     Push,
     FollowUp,
     StartHandoff,
@@ -59,11 +61,11 @@ pub enum Skill {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NumBlockDices {
-    Three,
-    Two,
-    One,
-    TwoUphill,
     ThreeUphill,
+    TwoUphill,
+    One,
+    Two,
+    Three,
 }
 
 impl From<NumBlockDices> for u8 {

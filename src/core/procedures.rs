@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::core::{dices::D6, model};
 use model::*;
 
@@ -77,6 +75,9 @@ impl Procedure for Half {
         }
 
         info.team_turn = next_team;
+        info.handoff_available = true;
+        info.blitz_available = true;
+        info.pass_available = true;
 
         ProcState::NotDoneNew(Turn::new(next_team))
     }
@@ -110,9 +111,19 @@ impl Procedure for Turn {
             .copied()
             .collect();
         aa.insert_positional(PosAT::StartBlock, block_positions);
+        if game_state.info.handoff_available {
+            aa.insert_positional(PosAT::StartHandoff, positions.clone());
+        }
 
-        aa.insert_positional(PosAT::StartMove, positions.clone());
-        aa.insert_positional(PosAT::StartHandoff, positions);
+        if game_state.info.blitz_available {
+            aa.insert_positional(PosAT::StartBlitz, positions.clone());
+        }
+
+        if game_state.info.pass_available {
+            aa.insert_positional(PosAT::StartPass, positions.clone());
+        }
+
+        aa.insert_positional(PosAT::StartMove, positions);
         aa.insert_simple(SimpleAT::EndTurn);
         aa
     }
@@ -135,6 +146,12 @@ impl Procedure for Turn {
             }
             Action::Positional(PosAT::StartHandoff, _) => {
                 game_state.info.player_action_type = Some(PlayerActionType::HandoffAction);
+                game_state.info.handoff_available = false;
+                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
+            }
+            Action::Positional(PosAT::StartBlitz, _) => {
+                game_state.info.player_action_type = Some(PlayerActionType::BlitzAction);
+                game_state.info.blitz_available = false;
                 ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
             }
             Action::Positional(PosAT::StartBlock, _) => {
@@ -158,6 +175,7 @@ fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum MoveActionState {
     Init,
     ActivePath(Path),
@@ -230,9 +248,15 @@ impl MoveAction {
             self.consolidate_active_path();
             return ProcState::NotDone;
         }
+
+        //todo: need to consolidate the roll handling below and above to avoid code duplication.
+        //      no 100% sure it's needed
+
         while let Some((position, mut rolls)) = path.steps.pop() {
             if let Some(Roll::Handoff(_, _)) = rolls.last() {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
+            } else if let Some(Roll::Block(_, _)) = rolls.last() {
+                game_state.get_mut_player_unsafe(self.player_id).add_move(1);
             } else {
                 game_state.move_player(self.player_id, position).unwrap();
                 game_state.get_mut_player_unsafe(self.player_id).add_move(1);
@@ -258,7 +282,7 @@ impl Procedure for MoveAction {
             let paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
             gimmi_iter(&paths)
                 .flatten()
-                .for_each(|path| aa.insert_single_positional(path.action_type, path.target));
+                .for_each(|path| aa.insert_path(path));
 
             self.state = MoveActionState::SelectPath(paths);
         }
@@ -316,7 +340,7 @@ impl SimpleProc for DodgeProc {
         Some(Skill::Dodge)
     }
 
-    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         vec![KnockDown::new(self.id)]
     }
 
@@ -343,7 +367,7 @@ impl SimpleProc for GfiProc {
         Some(Skill::SureFeet)
     }
 
-    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         vec![KnockDown::new(self.id)]
     }
 
@@ -651,7 +675,7 @@ impl SimpleProc for Catch {
         Vec::new()
     }
 
-    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         vec![Box::new(Bounce {})]
     }
 

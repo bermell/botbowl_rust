@@ -1,10 +1,11 @@
 use std::cmp::max;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::error;
 use std::ops::{Add, Mul, Sub, SubAssign};
 
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
+use super::pathing::Path;
 use super::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 use crate::core::table;
 
@@ -55,7 +56,7 @@ impl From<(Coord, Coord)> for Direction {
         Direction { dx, dy }
     }
 }
-const all_directions: [Direction; 8] = [
+const ALL_DIRECTIONS: [Direction; 8] = [
     Direction { dx: 1, dy: 1 },
     Direction { dx: 0, dy: 1 },
     Direction { dx: -1, dy: 1 },
@@ -67,10 +68,10 @@ const all_directions: [Direction; 8] = [
 ];
 impl Direction {
     pub fn all_directions_iter() -> impl Iterator<Item = &'static Direction> {
-        all_directions.iter()
+        ALL_DIRECTIONS.iter()
     }
     pub fn all_directions_as_array() -> [Direction; 8] {
-        all_directions
+        ALL_DIRECTIONS
     }
     pub fn distance(&self) -> Coord {
         max(self.dx.abs(), self.dy.abs())
@@ -433,6 +434,18 @@ impl AvailableActions {
         assert!(self.team.is_some());
         self.simple.insert(action_type);
     }
+    pub fn insert_path(&mut self, path: &Path) {
+        assert!(self.team.is_some());
+        if let Some(num_dices) = path.block_dice {
+            self.blocks.push(BlockActionChoice {
+                num_dices,
+                position: path.target,
+            })
+        } else {
+            self.insert_single_positional(path.action_type, path.target);
+        }
+    }
+
     pub fn insert_positional(&mut self, action_type: PosAT, positions: Vec<Position>) {
         assert!(self.team.is_some());
         assert!(!self.positional.contains_key(&action_type));
@@ -449,7 +462,11 @@ impl AvailableActions {
         };
     }
     pub fn insert_block(&mut self, ac: Vec<BlockActionChoice>) {
-        self.blocks = ac;
+        if self.blocks.is_empty() {
+            self.blocks = ac;
+        } else {
+            self.blocks.extend(ac);
+        }
     }
 
     pub fn is_legal_action(&self, action: Action) -> bool {

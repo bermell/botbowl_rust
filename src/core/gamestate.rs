@@ -152,6 +152,9 @@ pub struct GameInfo {
     pub game_over: bool,
     pub weather: Weather,
     pub kicking_first_half: TeamType,
+    pub handoff_available: bool,
+    pub pass_available: bool,
+    pub blitz_available: bool,
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -165,6 +168,9 @@ impl GameInfo {
             home_turn: 0,
             away_turn: 0,
             player_action_type: None,
+            handoff_available: true,
+            pass_available: true,
+            blitz_available: true,
         }
     }
 }
@@ -385,47 +391,69 @@ impl GameState {
         }
     }
 
+    pub fn get_tz_on_except_from_id(&self, id: PlayerID, except_from_id: PlayerID) -> u8 {
+        let player = self.get_player_unsafe(id);
+        let team = player.stats.team;
+
+        self.get_adj_players(player.position)
+            .filter(|adj_player| {
+                adj_player.stats.team != team
+                    && adj_player.has_tackle_zone()
+                    && adj_player.id != except_from_id
+            })
+            .count() as u8
+    }
+
     pub fn get_tz_on(&self, id: PlayerID) -> u8 {
         let player = self.get_player_unsafe(id);
         let team = player.stats.team;
-        let position = player.position;
 
-        self.get_adj_players(position)
+        self.get_adj_players(player.position)
             .filter(|adj_player| adj_player.stats.team != team && adj_player.has_tackle_zone())
             .count() as u8
     }
 
     pub fn get_blockdices(&self, attacker: PlayerID, defender: PlayerID) -> NumBlockDices {
+        let attacker_pos = self.get_player_unsafe(attacker).position;
+        self.get_blockdices_from(attacker, attacker_pos, defender)
+    }
+
+    pub fn get_blockdices_from(
+        &self,
+        attacker: PlayerID,
+        attacker_pos: Position,
+        defender: PlayerID,
+    ) -> NumBlockDices {
         let attr = self.get_player_unsafe(attacker);
         let defr = self.get_player_unsafe(defender);
 
         debug_assert_ne!(attr.stats.team, defr.stats.team);
-        debug_assert_eq!(attr.position.distance_to(&defr.position), 1);
+        debug_assert_eq!(attacker_pos.distance_to(&defr.position), 1);
         debug_assert!(attr.has_tackle_zone());
         debug_assert_eq!(defr.status, PlayerStatus::Up);
-
-        let defr_tz = u8::from(defr.has_tackle_zone()); // preparing for bonehead, hypnotized, etc ...
 
         let mut attr_str = attr.stats.str_;
         let mut defr_str = defr.stats.str_;
 
         attr_str += self
             .get_adj_players(defr.position)
-            .filter(|adj_player| {
-                adj_player.id != attr.id
-                    && adj_player.stats.team == attr.stats.team
-                    && adj_player.has_tackle_zone()
-                    && self.get_tz_on(adj_player.id) == defr_tz
+            .filter(|attr_assister| {
+                attr_assister.id != attr.id
+                    && attr_assister.stats.team == attr.stats.team
+                    && attr_assister.has_tackle_zone()
+                    && self.get_tz_on_except_from_id(attr_assister.id, defr.id) == 0
+                //what is guard anyway?
             })
             .count() as u8;
 
         defr_str += self
-            .get_adj_players(attr.position)
-            .filter(|adj_player| {
-                adj_player.id != defr.id
-                    && adj_player.stats.team == defr.stats.team
-                    && adj_player.has_tackle_zone()
-                    && self.get_tz_on(adj_player.id) == 1
+            .get_adj_players(attacker_pos)
+            .filter(|defr_assister| {
+                defr_assister.id != defr.id
+                    && defr_assister.stats.team == defr.stats.team
+                    && defr_assister.has_tackle_zone()
+                    && self.get_tz_on_except_from_id(defr_assister.id, attr.id) == 0
+                //what is guard anyway?
             })
             .count() as u8;
 

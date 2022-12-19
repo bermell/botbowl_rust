@@ -17,7 +17,7 @@ pub fn standard_state() -> GameState {
 }
 
 fn main() {
-    let state = standard_state();
+    // let state = standard_state();
     println!("Hello world!");
     //draw_board(&state);
 }
@@ -44,6 +44,72 @@ mod tests {
         iter::{repeat_with, zip},
     };
 
+    #[test]
+    fn blitz() {
+        let start_pos = Position::new((2, 1));
+        let target_pos = Position::new((5, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(target_pos)
+            .build();
+        state.step_positional(PosAT::StartBlitz, start_pos);
+
+        state.blockdice_fixes.push_front(BlockDice::Skull);
+        state.step_positional(PosAT::Block, target_pos);
+    }
+
+    #[test]
+    fn double_gfi_blitz() {
+        let start_pos = Position::new((10, 1));
+        let target_pos = Position::new((18, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(target_pos)
+            .build();
+        state.step_positional(PosAT::StartBlitz, start_pos);
+        state.d6_fixes.push_back(D6::Two); //GFI
+                                           // state.d6_fixes.push_back(D6::Two); //GFI
+        state.blockdice_fixes.push_front(BlockDice::Pow);
+
+        state.step_positional(PosAT::Block, target_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, target_pos + (1, 0));
+
+        state.d6_fixes.push_back(D6::Two); //armor
+        state.d6_fixes.push_back(D6::Two); //armor
+    }
+
+    #[test]
+    fn double_gfi_handoff() {
+        let start_pos = Position::new((2, 1));
+        let target_pos = Position::new((11, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        state.step_positional(PosAT::StartHandoff, start_pos);
+        state.d6_fixes.push_back(D6::Two); //GFI
+        state.d6_fixes.push_back(D6::Two); //GFI
+        state.d6_fixes.push_back(D6::Four); //Catch
+
+        state.step_positional(PosAT::Handoff, target_pos);
+
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+    }
+
+    #[test]
+    fn can_only_handoff_when_carrying_the_ball() {
+        let start_pos = Position::new((2, 1));
+        let target_pos = Position::new((5, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .build();
+        state.step_positional(PosAT::StartHandoff, start_pos);
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Handoff, target_pos)));
+    }
     #[test]
     fn handoff() {
         let start_pos = Position::new((2, 1));
