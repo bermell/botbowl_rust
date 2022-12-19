@@ -104,11 +104,9 @@ impl GameStateBuilder {
             //new_procs: VecDeque::new(),
             available_actions: AvailableActions::new_empty(),
             rng: ChaCha8Rng::from_entropy(),
-            d6_fixes: VecDeque::new(),
-            d8_fixes: VecDeque::new(),
             rng_enabled: false,
-            blockdice_fixes: VecDeque::new(),
             info: GameInfo::new(),
+            fixes: Default::default(),
         };
 
         for position in self.home_players.iter() {
@@ -174,6 +172,26 @@ impl GameInfo {
         }
     }
 }
+#[derive(Default)]
+pub struct FixedDice {
+    pub d6_fixes: VecDeque<D6>,
+    pub blockdice_fixes: VecDeque<BlockDice>,
+    pub d8_fixes: VecDeque<D8>,
+}
+impl FixedDice {
+    pub fn fix_d6(&mut self, value: u8) {
+        self.d6_fixes.push_back(D6::try_from(value).unwrap());
+    }
+    pub fn fix_d8(&mut self, value: u8) {
+        self.d8_fixes.push_back(D8::try_from(value).unwrap());
+    }
+    pub fn fix_blockdice(&mut self, value: BlockDice) {
+        self.blockdice_fixes.push_back(value);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.d6_fixes.is_empty() && self.d8_fixes.is_empty() && self.blockdice_fixes.is_empty()
+    }
+}
 
 #[allow(dead_code)]
 pub struct GameState {
@@ -189,10 +207,8 @@ pub struct GameState {
     // new_procs: VecDeque<Box<dyn Procedure>>,
     available_actions: AvailableActions,
     pub rng_enabled: bool,
+    pub fixes: FixedDice,
     rng: ChaCha8Rng,
-    pub d6_fixes: VecDeque<D6>,
-    pub blockdice_fixes: VecDeque<BlockDice>,
-    pub d8_fixes: VecDeque<D8>,
     //rerolled_procs: ???? //TODO!!!
 }
 
@@ -227,7 +243,7 @@ impl GameState {
     }
 
     pub fn get_d6_roll(&mut self) -> D6 {
-        match self.d6_fixes.pop_front() {
+        match self.fixes.d6_fixes.pop_front() {
             Some(roll) => roll,
             None => {
                 assert!(self.rng_enabled);
@@ -240,7 +256,7 @@ impl GameState {
     }
 
     pub fn get_d8_roll(&mut self) -> D8 {
-        match self.d8_fixes.pop_front() {
+        match self.fixes.d8_fixes.pop_front() {
             Some(roll) => roll,
             None => {
                 assert!(self.rng_enabled);
@@ -249,12 +265,8 @@ impl GameState {
         }
     }
 
-    pub fn fixed_dice_empty(&self) -> bool {
-        self.d6_fixes.is_empty() && self.d8_fixes.is_empty() && self.blockdice_fixes.is_empty()
-    }
-
     pub fn get_block_dice_roll(&mut self) -> BlockDice {
-        match self.blockdice_fixes.pop_front() {
+        match self.fixes.blockdice_fixes.pop_front() {
             Some(roll) => roll,
             None => {
                 assert!(self.rng_enabled);
@@ -626,11 +638,11 @@ impl GameState {
     }
     pub fn step_simple(&mut self, action: SimpleAT) {
         self.step(Action::Simple(action)).unwrap();
-        debug_assert!(self.fixed_dice_empty());
+        debug_assert!(self.fixes.is_empty());
     }
 
     pub fn step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
-        debug_assert!(self.fixed_dice_empty());
+        debug_assert!(self.fixes.is_empty());
     }
 }

@@ -54,7 +54,7 @@ mod tests {
             .build();
         state.step_positional(PosAT::StartBlitz, start_pos);
 
-        state.blockdice_fixes.push_front(BlockDice::Skull);
+        state.fixes.fix_blockdice(BlockDice::Skull);
         state.step_positional(PosAT::Block, target_pos);
     }
 
@@ -67,16 +67,16 @@ mod tests {
             .add_away_player(target_pos)
             .build();
         state.step_positional(PosAT::StartBlitz, start_pos);
-        state.d6_fixes.push_back(D6::Two); //GFI
-                                           // state.d6_fixes.push_back(D6::Two); //GFI
-        state.blockdice_fixes.push_front(BlockDice::Pow);
+        state.fixes.fix_d6(2); //GFI
+                               // state.fixes.fix_d6(2); //GFI
+        state.fixes.fix_blockdice(BlockDice::Pow);
 
         state.step_positional(PosAT::Block, target_pos);
         state.step_simple(SimpleAT::SelectPow);
         state.step_positional(PosAT::Push, target_pos + (1, 0));
 
-        state.d6_fixes.push_back(D6::Two); //armor
-        state.d6_fixes.push_back(D6::Two); //armor
+        state.fixes.fix_d6(2); //armor
+        state.fixes.fix_d6(2); //armor
     }
 
     #[test]
@@ -89,9 +89,9 @@ mod tests {
             .add_ball_pos(start_pos)
             .build();
         state.step_positional(PosAT::StartHandoff, start_pos);
-        state.d6_fixes.push_back(D6::Two); //GFI
-        state.d6_fixes.push_back(D6::Two); //GFI
-        state.d6_fixes.push_back(D6::Four); //Catch
+        state.fixes.fix_d6(2); //GFI
+        state.fixes.fix_d6(2); //GFI
+        state.fixes.fix_d6(4); //Catch
 
         state.step_positional(PosAT::Handoff, target_pos);
 
@@ -124,10 +124,10 @@ mod tests {
 
         state.step_positional(PosAT::StartHandoff, start_pos);
 
-        state.d6_fixes.push_back(D6::Six);
+        state.fixes.fix_d6(6);
         state.step_positional(PosAT::Handoff, target_pos);
 
-        // state.d6_fixes.push_back(D6::Three);
+        // state.fixes.fix_d6(3);
         // state.step_simple(SimpleAT::UseReroll);
 
         assert!(state.get_player_unsafe(start_id).used);
@@ -174,13 +174,13 @@ mod tests {
         let mut state = GameStateBuilder::new().add_str(first_pos, &field).build();
 
         state.step_positional(PosAT::StartBlock, Position::new((5, 3)));
-        state.blockdice_fixes.push_back(BlockDice::Push);
+        state.fixes.fix_blockdice(BlockDice::Push);
         state.step_positional(PosAT::Block, Position::new((6, 2)));
         state.step_simple(SimpleAT::SelectPush);
 
         state.step_positional(PosAT::Push, Position::new((6, 1)));
-        state.d6_fixes.push_back(D6::One);
-        state.d6_fixes.push_back(D6::One);
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(1);
 
         state.step_positional(PosAT::FollowUp, Position::new((6, 2)));
 
@@ -212,19 +212,19 @@ mod tests {
             .step(Action::Positional(PosAT::StartBlock, blocker_pos))
             .unwrap();
 
-        state.blockdice_fixes.push_back(BlockDice::Pow);
+        state.fixes.fix_blockdice(BlockDice::Pow);
 
         state
             .step(Action::Positional(PosAT::Block, carrier_pos))
             .unwrap();
         state.step(Action::Simple(SimpleAT::SelectPow)).unwrap();
 
-        state.d6_fixes.push_back(D6::One); //armor
-        state.d6_fixes.push_back(D6::One); //armor
-        state.d6_fixes.push_back(D6::Three); //throw in direction down
-        state.d6_fixes.push_back(D6::One); //throw in length
-        state.d6_fixes.push_back(D6::One); //throw in length
-        state.d8_fixes.push_back(D8::Two); //bounce direction down
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(3); //throw in direction down
+        state.fixes.fix_d6(1); //throw in length
+        state.fixes.fix_d6(1); //throw in length
+        state.fixes.fix_d8(2); //bounce direction down
 
         state
             .step(Action::Positional(PosAT::FollowUp, carrier_pos))
@@ -255,14 +255,14 @@ mod tests {
 
         state.step(Action::Positional(PosAT::StartMove, start_pos))?;
 
-        state.d6_fixes.push_back(D6::One);
+        state.fixes.fix_d6(1);
 
         state.step(Action::Positional(PosAT::Move, target_pos))?;
 
-        state.d6_fixes.push_back(D6::Four); //succeed first reroll
-        state.d6_fixes.push_back(D6::One); //fail next dodge
-        state.d6_fixes.push_back(D6::One); //armor
-        state.d6_fixes.push_back(D6::One); //armor
+        state.fixes.fix_d6(4); //succeed first reroll
+        state.fixes.fix_d6(1); //fail next dodge
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(1); //armor
 
         state.step(Action::Simple(SimpleAT::UseReroll))?;
 
@@ -312,15 +312,15 @@ mod tests {
             .build();
 
         state.step(Action::Positional(PosAT::StartBlock, home_pos))?;
-        state.blockdice_fixes.push_back(BlockDice::Pow);
-        state.blockdice_fixes.push_back(BlockDice::BothDown);
+        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fixes.fix_blockdice(BlockDice::BothDown);
         state.step(Action::Positional(PosAT::Block, away_pos))?;
-        state.d6_fixes.push_back(D6::One); //away armor
-        state.d6_fixes.push_back(D6::One); //away armor
-        state.d6_fixes.push_back(D6::Five); //home armor
-        state.d6_fixes.push_back(D6::Six); //home armor
-        state.d6_fixes.push_back(D6::Six); //home injury
-        state.d6_fixes.push_back(D6::Six); //home injury
+        state.fixes.fix_d6(1); //away armor
+        state.fixes.fix_d6(1); //away armor
+        state.fixes.fix_d6(5); //home armor
+        state.fixes.fix_d6(6); //home armor
+        state.fixes.fix_d6(6); //home injury
+        state.fixes.fix_d6(6); //home injury
         state.step(Action::Simple(SimpleAT::SelectBothDown))?;
 
         assert!(state.get_player_at(home_pos).is_none());
@@ -339,7 +339,7 @@ mod tests {
             PlayerStatus::Down
         );
 
-        assert!(state.fixed_dice_empty());
+        assert!(state.fixes.is_empty());
         Ok(())
     }
 
@@ -354,19 +354,19 @@ mod tests {
             .build();
 
         state.step(Action::Positional(PosAT::StartBlock, home_pos))?;
-        state.blockdice_fixes.push_back(BlockDice::Pow);
+        state.fixes.fix_blockdice(BlockDice::Pow);
         state.step(Action::Positional(PosAT::Block, away_pos))?;
         state.step(Action::Simple(SimpleAT::SelectPow))?;
         state.step(Action::Positional(PosAT::Push, push_pos))?;
-        state.d6_fixes.push_back(D6::One);
-        state.d6_fixes.push_back(D6::One);
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(1);
         state.step(Action::Positional(PosAT::FollowUp, away_pos))?;
 
         assert_eq!(
             state.get_player_at(push_pos).unwrap().status,
             PlayerStatus::Down
         );
-        assert!(state.fixed_dice_empty());
+        assert!(state.fixes.is_empty());
 
         Ok(())
     }
@@ -388,13 +388,13 @@ mod tests {
         assert_eq!(state.ball, BallState::Carried(id));
         state.step(Action::Positional(PosAT::StartMove, start_pos))?;
 
-        state.d6_fixes.push_back(D6::Two);
+        state.fixes.fix_d6(2);
 
         state.step(Action::Positional(PosAT::Move, move_to))?;
 
-        state.d6_fixes.push_back(D6::One); //armor
-        state.d6_fixes.push_back(D6::Five); //armor
-        state.d8_fixes.push_back(d8_fix);
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d8(d8_fix as u8);
 
         state.step(Action::Simple(SimpleAT::DontUseReroll))?;
 
@@ -413,16 +413,16 @@ mod tests {
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((2, 2))))?;
 
-        state.d6_fixes.push_back(D6::Two);
+        state.fixes.fix_d6(2);
         state.step(Action::Positional(PosAT::Move, Position::new((2, 1))))?;
 
-        state.d6_fixes.push_back(D6::Four); //armor
-        state.d6_fixes.push_back(D6::Five); //armor
-        state.d6_fixes.push_back(D6::Four); //injury
-        state.d6_fixes.push_back(D6::Five); //injury
+        state.fixes.fix_d6(4); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d6(4); //injury
+        state.fixes.fix_d6(5); //injury
         state.step(Action::Simple(SimpleAT::DontUseReroll))?;
 
-        assert!(state.d6_fixes.is_empty());
+        assert!(state.fixes.is_empty());
         assert!(state.get_player_id_at_coord(2, 1).is_none());
         assert!(state.get_players_on_pitch().all(|player| player.id != id));
 
@@ -453,8 +453,8 @@ mod tests {
         let direction = Direction::from(d8_fix);
 
         state.step(Action::Positional(PosAT::StartMove, start_pos))?;
-        state.d6_fixes.push_back(D6::Two); //fail pickup (3+)
-        state.d8_fixes.push_back(d8_fix);
+        state.fixes.fix_d6(2); //fail pickup (3+)
+        state.fixes.fix_d8(d8_fix as u8);
         state.step(Action::Positional(PosAT::Move, ball_pos))?;
         state.step(Action::Simple(SimpleAT::DontUseReroll))?;
 
@@ -487,8 +487,8 @@ mod tests {
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?;
 
-        state.d6_fixes.push_back(D6::Two); //fail first (3+)
-        state.d6_fixes.push_back(D6::Three); //succeed on reroll (3+)
+        state.fixes.fix_d6(2); //fail first (3+)
+        state.fixes.fix_d6(3); //succeed on reroll (3+)
         state.step(Action::Positional(PosAT::Move, Position::new((5, 5))))?;
 
         assert!(!state
@@ -512,14 +512,14 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, Position::new((1, 1)));
 
-        state.d6_fixes.push_back(D6::One); //fail first (2+)
+        state.fixes.fix_d6(1); //fail first (2+)
         state.step_positional(PosAT::Move, Position::new((9, 1)));
 
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
         assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge));
 
-        state.d6_fixes.push_back(D6::Two); //succeed with team reroll
-        state.d6_fixes.push_back(D6::Two); //succeed next gfi roll
+        state.fixes.fix_d6(2); //succeed with team reroll
+        state.fixes.fix_d6(2); //succeed next gfi roll
         state.step_simple(SimpleAT::UseReroll);
 
         let state = state;
@@ -551,15 +551,15 @@ mod tests {
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?;
 
-        state.d6_fixes.push_back(D6::Three); //fail first (4+)
-        state.d6_fixes.push_back(D6::Four); //Succeed on skill reroll
-        state.d6_fixes.push_back(D6::Two); //fail second dodge  (3+)
+        state.fixes.fix_d6(3); //fail first (4+)
+        state.fixes.fix_d6(4); //Succeed on skill reroll
+        state.fixes.fix_d6(2); //fail second dodge  (3+)
 
         state.step(Action::Positional(PosAT::Move, Position::new((3, 3))))?;
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
         assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge));
 
-        state.d6_fixes.push_back(D6::Three); //succeed with team reroll
+        state.fixes.fix_d6(3); //succeed with team reroll
         state.step(Action::Simple(SimpleAT::UseReroll))?;
 
         assert_eq!(state.get_player_id_at_coord(3, 3).unwrap(), id);
@@ -662,7 +662,9 @@ mod tests {
         let mut state = standard_state();
         let starting_pos = Position::new((3, 1));
         let move_target = Position::new((2, 5));
-        state.d6_fixes.extend(&[D6::Six, D6::Six, D6::Six]);
+        state.fixes.fix_d6(6);
+        state.fixes.fix_d6(6);
+        state.fixes.fix_d6(6);
 
         assert!(state.get_player_at(starting_pos).is_some());
         assert!(state.get_player_at(move_target).is_none());
@@ -869,10 +871,10 @@ mod tests {
     fn fixed_rolls() {
         let mut state = standard_state();
         state.rng_enabled = true;
-        let fixes = vec![D6::One, D6::Three, D6::Five, D6::Two, D6::Four, D6::Six];
-        state.d6_fixes.extend(fixes.iter());
+        let fixes = vec![1, 3, 5, 2, 4, 6];
+        fixes.iter().for_each(|val| state.fixes.fix_d6(*val));
 
-        let rolls: Vec<D6> = repeat_with(|| state.get_d6_roll())
+        let rolls: Vec<u8> = repeat_with(|| state.get_d6_roll() as u8)
             .take(fixes.len())
             .collect();
         assert_eq!(fixes, rolls);
