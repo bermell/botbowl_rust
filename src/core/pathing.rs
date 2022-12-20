@@ -18,6 +18,69 @@ pub enum Roll {
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedQueue<T> {
+    data: [Option<T>; 6],
+}
+
+impl<T> Default for FixedQueue<T> {
+    fn default() -> Self {
+        FixedQueue {
+            data: Default::default(),
+        }
+    }
+}
+impl<T> FixedQueue<T> {
+    pub fn len(&self) -> usize {
+        self.data.iter().filter(|val| val.is_some()).count()
+    }
+    pub fn push_back(&mut self, val: T) {
+        self.add(val)
+    }
+    pub fn add(&mut self, val: T) {
+        assert!(!self.is_full());
+
+        let next_entry = self.data.iter_mut().find(|val| val.is_none()).unwrap();
+        *next_entry = Some(val);
+    }
+    pub fn pop(&mut self) -> Option<T> {
+        if self.is_empty() {
+            return None;
+        }
+
+        self.data
+            .iter_mut()
+            .find(|val| val.is_some())
+            .unwrap()
+            .take()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.data.iter().all(|entry| entry.is_none())
+    }
+    pub fn is_full(&self) -> bool {
+        // self.data.last().is_some()
+        self.data[5].is_some()
+    }
+    pub fn last(&self) -> Option<&T> {
+        if self.is_empty() {
+            None
+        } else {
+            self.data
+                .iter()
+                .rev()
+                .filter(|val| val.is_some())
+                .flatten()
+                .next()
+        }
+    }
+}
+impl<T> From<Vec<T>> for FixedQueue<T> {
+    fn from(vector: Vec<T>) -> Self {
+        let mut q: Self = Default::default();
+        vector.into_iter().for_each(|val| q.add(val));
+        q
+    }
+}
 
 #[derive(Debug)]
 pub struct Node {
@@ -29,7 +92,7 @@ pub struct Node {
     // foul_roll, handoff_roll, block_dice
     //euclidiean_distance: f32,
     prob: f32,
-    rolls: Vec<Roll>,
+    rolls: FixedQueue<Roll>,
 }
 impl Node {
     fn new(parent: OptRcNode, position: Position, moves_left: u8, gfis_left: u8) -> Node {
@@ -40,7 +103,7 @@ impl Node {
             moves_left,
             gfis_left,
             block_dice: None,
-            rolls: Vec::new(),
+            rolls: Default::default(),
         }
     }
     fn remaining_movement(&self) -> u8 {
@@ -48,24 +111,24 @@ impl Node {
     }
     fn apply_gfi(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push(Roll::GFI(target));
+        self.rolls.push_back(Roll::GFI(target));
     }
     fn apply_dodge(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push(Roll::Dodge(target));
+        self.rolls.push_back(Roll::Dodge(target));
     }
     fn apply_pickup(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push(Roll::Pickup(target));
+        self.rolls.push_back(Roll::Pickup(target));
     }
 
     fn apply_handoff(&mut self, id: PlayerID, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push(Roll::Handoff(id, target));
+        self.rolls.push_back(Roll::Handoff(id, target));
     }
     fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
         self.block_dice = Some(target);
-        self.rolls.push(Roll::Block(vicitm_id, target));
+        self.rolls.push_back(Roll::Block(vicitm_id, target));
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -106,7 +169,7 @@ impl Node {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Path {
-    pub steps: Vec<(Position, Vec<Roll>)>,
+    pub steps: Vec<(Position, FixedQueue<Roll>)>,
     pub target: Position,
     pub action_type: PosAT,
     pub block_dice: Option<NumBlockDices>,

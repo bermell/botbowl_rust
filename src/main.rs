@@ -30,6 +30,7 @@ mod tests {
     use crate::core::dices::D6;
     use crate::core::dices::D8;
     use crate::core::model::*;
+    use crate::core::pathing::FixedQueue;
     use crate::core::table::*;
     use crate::core::{
         gamestate::{GameState, GameStateBuilder},
@@ -826,23 +827,32 @@ mod tests {
         let expected_steps = vec![
             (
                 Position::new((4, 6)),
-                vec![
+                FixedQueue::from(vec![
                     Roll::GFI(D6Target::TwoPlus),
                     Roll::Pickup(D6Target::ThreePlus),
-                ],
+                ]),
             ),
             (
                 Position::new((4, 5)),
-                vec![Roll::Dodge(D6Target::ThreePlus)],
+                FixedQueue::from(vec![Roll::Dodge(D6Target::ThreePlus)]),
             ),
-            (Position::new((4, 4)), vec![Roll::Dodge(D6Target::FourPlus)]),
-            (Position::new((4, 3)), vec![Roll::Dodge(D6Target::FourPlus)]),
-            (Position::new((3, 2)), vec![]),
+            (
+                Position::new((4, 4)),
+                FixedQueue::from(vec![Roll::Dodge(D6Target::FourPlus)]),
+            ),
+            (
+                Position::new((4, 3)),
+                FixedQueue::from(vec![Roll::Dodge(D6Target::FourPlus)]),
+            ),
+            (Position::new((3, 2)), FixedQueue::from(vec![])),
             (
                 Position::new((3, 1)),
-                vec![Roll::Dodge(D6Target::ThreePlus)],
+                FixedQueue::from(vec![Roll::Dodge(D6Target::ThreePlus)]),
             ),
-            (Position::new((2, 1)), vec![Roll::Dodge(D6Target::FourPlus)]),
+            (
+                Position::new((2, 1)),
+                FixedQueue::from(vec![Roll::Dodge(D6Target::FourPlus)]),
+            ),
         ];
         let expected_prob = 0.03086;
         let path = paths[4][6].clone().unwrap();

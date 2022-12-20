@@ -6,7 +6,7 @@ use crate::core::table::*;
 use super::{
     dices::{BlockDice, D6Target, RollTarget, Sum2D6Target},
     gamestate::GameState,
-    pathing::{Path, PathFinder, Roll},
+    pathing::{FixedQueue, Path, PathFinder, Roll},
 };
 
 #[allow(unused_variables)]
@@ -186,7 +186,7 @@ pub struct MoveAction {
     state: MoveActionState,
     // paths: FullPitch<Option<Path>>,
     // active_path: Option<Path>,
-    rolls: Option<Vec<Roll>>,
+    rolls: Option<FixedQueue<Roll>>,
 }
 impl MoveAction {
     pub fn new(id: PlayerID) -> Box<MoveAction> {
