@@ -191,6 +191,15 @@ impl FixedDice {
     pub fn is_empty(&self) -> bool {
         self.d6_fixes.is_empty() && self.d8_fixes.is_empty() && self.blockdice_fixes.is_empty()
     }
+    pub fn assert_is_empty(&self) {
+        assert!(
+            self.is_empty(),
+            "d6:{:?}, d8: {:?}, blockdice: {:?}",
+            self.d6_fixes,
+            self.d8_fixes,
+            self.blockdice_fixes
+        );
+    }
 }
 
 #[allow(dead_code)]
@@ -638,11 +647,11 @@ impl GameState {
     }
     pub fn step_simple(&mut self, action: SimpleAT) {
         self.step(Action::Simple(action)).unwrap();
-        debug_assert!(self.fixes.is_empty());
+        self.fixes.assert_is_empty();
     }
 
     pub fn step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
-        debug_assert!(self.fixes.is_empty());
+        self.fixes.assert_is_empty();
     }
 }
