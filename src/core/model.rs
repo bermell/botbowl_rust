@@ -320,7 +320,7 @@ pub struct TeamState {
     //apothecaries: u8,
     //wizard_available: bool,
     //masterchef: bool,
-    //score: u8,
+    pub score: u8,
     //turn: u8,
     //rerolls_start: u8,
     pub rerolls: u8,
@@ -336,6 +336,7 @@ impl TeamState {
         TeamState {
             rerolls: 3,
             reroll_used: false,
+            score: 0,
         }
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }

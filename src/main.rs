@@ -46,6 +46,142 @@ mod tests {
     };
 
     #[test]
+    fn follow_up_to_touchdown() {
+        let carrier_pos = Position::new((2, 5));
+        let victim_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(carrier_pos)
+            .add_ball_pos(carrier_pos)
+            .add_away_player(victim_pos)
+            .build();
+
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+        state.step_positional(PosAT::StartBlock, carrier_pos);
+        state.fixes.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        //no need to select push position because crowd
+        state.step_positional(PosAT::FollowUp, victim_pos);
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.away.score, 0);
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+    }
+
+    #[test]
+    fn no_td_when_knocked_down_with_ball() {
+        let carrier_pos = Position::new((2, 5));
+        let blocker_pos = Position::new((3, 5));
+        let td_pos = carrier_pos + (carrier_pos - blocker_pos);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(carrier_pos)
+            .add_ball_pos(carrier_pos)
+            .add_away_player(blocker_pos)
+            .build();
+
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+        state.step_simple(SimpleAT::EndTurn);
+        state.step_positional(PosAT::StartBlock, blocker_pos);
+        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, td_pos);
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d8(4);
+        state.step_positional(PosAT::FollowUp, blocker_pos);
+        // state.step_simple(SimpleAT::EndPlayerTurn);
+        state.step_simple(SimpleAT::EndTurn);
+        state.step_positional(PosAT::StartMove, td_pos);
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+        assert_eq!(state.ball, BallState::OnGround(td_pos + (1, 0)));
+    }
+
+    #[test]
+    fn pushed_to_touchdown() {
+        let carrier_pos = Position::new((2, 5));
+        let blocker_pos = Position::new((3, 5));
+        let td_pos = carrier_pos + (carrier_pos - blocker_pos);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(carrier_pos)
+            .add_ball_pos(carrier_pos)
+            .add_home_player(blocker_pos)
+            .build();
+
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+        state.step_simple(SimpleAT::EndTurn);
+        state.step_positional(PosAT::StartBlock, blocker_pos);
+        state.fixes.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, td_pos);
+        state.step_positional(PosAT::FollowUp, carrier_pos);
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.away.score, 0);
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+    }
+
+    #[test]
+    fn failed_gfi_touchdown() {
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(start_pos)
+            .build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+        let ma = state.get_player_unsafe(id).stats.ma;
+        state.get_mut_player_unsafe(id).moves = ma;
+        assert_eq!(state.get_player_unsafe(id).moves_left(), 0);
+        assert_eq!(state.get_player_unsafe(id).total_movement_left(), 2);
+
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fixes.fix_d6(1);
+        state.step_positional(PosAT::Move, td_pos);
+
+        state.fixes.fix_d8(4);
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(1);
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+        assert_eq!(state.ball, BallState::OnGround(td_pos + (1, 0)));
+        assert_eq!(state.get_player_unsafe(id).position, td_pos);
+    }
+
+    #[test]
+    fn touchdown() {
+        let start_pos = Position::new((2, 1));
+        let td_pos = Position::new((5, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(start_pos)
+            .build();
+
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, td_pos);
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.away.score, 0);
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+    }
+
+    #[test]
     fn blitz() {
         let start_pos = Position::new((2, 1));
         let target_pos = Position::new((5, 5));
