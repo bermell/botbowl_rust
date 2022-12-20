@@ -61,22 +61,36 @@ mod tests {
     #[test]
     fn double_gfi_blitz() {
         let start_pos = Position::new((10, 1));
-        let target_pos = Position::new((18, 5));
+        let target_pos = Position::new((12, 1));
+        let push_pos = target_pos + (1, 0);
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
             .add_away_player(target_pos)
             .build();
-        state.step_positional(PosAT::StartBlitz, start_pos);
-        state.fixes.fix_d6(2); //GFI
-                               // state.fixes.fix_d6(2); //GFI
-        state.fixes.fix_blockdice(BlockDice::Pow);
+        let id = state.get_player_id_at(start_pos).unwrap();
+        let ma = state.get_player_unsafe(id).stats.ma;
+        state.get_mut_player_unsafe(id).moves = ma;
+        assert_eq!(state.get_player_unsafe(id).moves_left(), 0);
+        assert_eq!(state.get_player_unsafe(id).total_movement_left(), 2);
 
+        state.step_positional(PosAT::StartBlitz, start_pos);
+
+        state.fixes.fix_d6(2); //GFI
+        state.fixes.fix_d6(2); //GFI
+        state.fixes.fix_blockdice(BlockDice::Pow);
         state.step_positional(PosAT::Block, target_pos);
+
         state.step_simple(SimpleAT::SelectPow);
         state.step_positional(PosAT::Push, target_pos + (1, 0));
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(1); //armor
+        state.step_positional(PosAT::FollowUp, target_pos);
 
-        state.fixes.fix_d6(2); //armor
-        state.fixes.fix_d6(2); //armor
+        assert_eq!(
+            state.get_player_at(push_pos).unwrap().status,
+            PlayerStatus::Down
+        );
+        assert_eq!(state.get_player_at(target_pos).unwrap().id, id);
     }
 
     #[test]

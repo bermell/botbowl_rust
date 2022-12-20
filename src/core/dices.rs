@@ -69,7 +69,7 @@ impl From<D8> for Direction {
         Direction::all_directions_as_array()[roll as usize - 1]
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDice {
     Skull,
     BothDown,
