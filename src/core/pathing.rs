@@ -58,7 +58,6 @@ impl<T> FixedQueue<T> {
         self.data.iter().all(|entry| entry.is_none())
     }
     pub fn is_full(&self) -> bool {
-        // self.data.last().is_some()
         self.data[5].is_some()
     }
     pub fn last(&self) -> Option<&T> {
