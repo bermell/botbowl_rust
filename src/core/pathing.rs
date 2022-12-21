@@ -465,16 +465,20 @@ impl<'a> GameInfo<'a> {
                     .add_modifer(-self.tzones[to_x][to_y]),
             );
         }
-        if matches!(self.ball, PathingBallState::OnGround(ball_pos) if ball_pos == to ) {
-            //handle pickup. The pickup procedure will check for touchdown
-            next_node.apply_pickup(
-                *self
-                    .pickup_target
-                    .clone()
-                    .add_modifer(-self.tzones[to_x][to_y]),
-            );
-        } else if matches!(self.ball, PathingBallState::IsCarrier(endzone_x) if to.x == endzone_x) {
-            next_node.apply_touchdown(self.id);
+        match self.ball {
+            PathingBallState::OnGround(ball_pos) if ball_pos == to => {
+                // touchdown by pickup is handled by the pickup procedure
+                next_node.apply_pickup(
+                    *self
+                        .pickup_target
+                        .clone()
+                        .add_modifer(-self.tzones[to_x][to_y]),
+                );
+            }
+            PathingBallState::IsCarrier(endzone_x) if to.x == endzone_x => {
+                next_node.apply_touchdown(self.id);
+            }
+            _ => (),
         }
 
         Some(next_node)
