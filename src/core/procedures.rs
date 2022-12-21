@@ -6,7 +6,7 @@ use crate::core::table::*;
 use super::{
     dices::{BlockDice, D6Target, RollTarget, Sum2D6Target},
     gamestate::GameState,
-    pathing::{FixedQueue, Path, PathFinder, Roll},
+    pathing::{FixedQueue, Path, PathFinder, PathingEvent},
 };
 
 #[allow(unused_variables)]
@@ -129,6 +129,12 @@ impl Procedure for Turn {
     }
 
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        if let Some(id) = game_state.info.handle_td_by {
+            //todo, set internal state to kickoff next (or if it was the last turn return done )
+            game_state.info.handle_td_by = None;
+            return ProcState::NotDoneNew(Touchdown::new(id));
+        }
+
         game_state.info.active_player = None;
         game_state.info.player_action_type = None;
         if action.is_none() {
@@ -165,13 +171,14 @@ impl Procedure for Turn {
     }
 }
 
-fn proc_from_roll(roll: Roll, move_action: &MoveAction) -> Box<dyn Procedure> {
+fn proc_from_roll(roll: PathingEvent, move_action: &MoveAction) -> Box<dyn Procedure> {
     match roll {
-        Roll::Dodge(target) => DodgeProc::new(move_action.player_id, target),
-        Roll::GFI(target) => GfiProc::new(move_action.player_id, target),
-        Roll::Pickup(target) => PickupProc::new(move_action.player_id, target),
-        Roll::Block(id, dices) => Block::new(dices, id),
-        Roll::Handoff(id, target) => Catch::new(id, target),
+        PathingEvent::Dodge(target) => DodgeProc::new(move_action.player_id, target),
+        PathingEvent::GFI(target) => GfiProc::new(move_action.player_id, target),
+        PathingEvent::Pickup(target) => PickupProc::new(move_action.player_id, target),
+        PathingEvent::Block(id, dices) => Block::new(dices, id),
+        PathingEvent::Handoff(id, target) => Catch::new(id, target),
+        PathingEvent::Touchdown(id) => Touchdown::new(id),
     }
 }
 
@@ -186,7 +193,7 @@ pub struct MoveAction {
     state: MoveActionState,
     // paths: FullPitch<Option<Path>>,
     // active_path: Option<Path>,
-    rolls: Option<FixedQueue<Roll>>,
+    rolls: Option<FixedQueue<PathingEvent>>,
 }
 impl MoveAction {
     pub fn new(id: PlayerID) -> Box<MoveAction> {
@@ -253,9 +260,9 @@ impl MoveAction {
         //      no 100% sure it's needed
 
         while let Some((position, mut rolls)) = path.steps.pop() {
-            if let Some(Roll::Handoff(_, _)) = rolls.last() {
+            if let Some(PathingEvent::Handoff(_, _)) = rolls.last() {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
-            } else if let Some(Roll::Block(_, _)) = rolls.last() {
+            } else if let Some(PathingEvent::Block(_, _)) = rolls.last() {
                 game_state.get_mut_player_unsafe(self.player_id).add_move(1);
             } else {
                 game_state.move_player(self.player_id, position).unwrap();
@@ -291,6 +298,11 @@ impl Procedure for MoveAction {
     }
 
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        if game_state.info.handle_td_by.is_some() {
+            game_state.get_mut_player_unsafe(self.player_id).used = true;
+            return ProcState::Done;
+        }
+
         match game_state.get_player(self.player_id) {
             Ok(player) if player.used => {
                 return ProcState::Done;
@@ -396,6 +408,10 @@ impl SimpleProc for PickupProc {
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.ball = BallState::Carried(self.id);
+        let player = game_state.get_player_unsafe(self.id);
+        if player.position.x == game_state.get_endzone_x(player.stats.team) {
+            game_state.info.handle_td_by = Some(self.id);
+        }
         Vec::new()
     }
 
@@ -575,7 +591,9 @@ impl Bounce {
 impl Procedure for Bounce {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         let current_ball_pos = game_state.get_ball_position().unwrap();
-        let new_pos = current_ball_pos + Direction::from(game_state.get_d8_roll());
+        let dice = game_state.get_d8_roll();
+        let dir = Direction::from(dice);
+        let new_pos = current_ball_pos + dir;
 
         if let Some(player) = game_state.get_player_at(new_pos) {
             if player.can_catch() {
@@ -672,6 +690,10 @@ impl SimpleProc for Catch {
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.ball = BallState::Carried(self.id);
+        let player = game_state.get_player_unsafe(self.id);
+        if player.position.x == game_state.get_endzone_x(player.stats.team) {
+            game_state.info.handle_td_by = Some(self.id);
+        }
         Vec::new()
     }
 
@@ -934,6 +956,9 @@ impl Push {
         self.moves_to_make.iter().rev().for_each(|(from, to)| {
             let id = game_state.get_player_id_at(*from).unwrap();
             game_state.move_player(id, *to).unwrap();
+            if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == id && to.x == game_state.get_endzone_x(game_state.get_player_unsafe(id).stats.team)) {
+                game_state.info.handle_td_by = Some(id);
+            }
         });
     }
 
@@ -1017,11 +1042,41 @@ impl Procedure for FollowUp {
             }
             Some(Action::Positional(PosAT::FollowUp, position)) => {
                 if player.position != position {
+                    let id = player.id;
+                    let team = player.stats.team;
+
                     game_state.move_player(player.id, position).unwrap();
+
+                    if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == id)
+                        && game_state.get_endzone_x(team) == position.x
+                    {
+                        game_state.info.handle_td_by = Some(id)
+                    }
                 }
                 ProcState::Done
             }
             _ => panic!("very wrong!"),
         }
+    }
+}
+
+struct Touchdown {
+    id: PlayerID,
+}
+impl Touchdown {
+    fn new(id: PlayerID) -> Box<Touchdown> {
+        Box::new(Touchdown { id })
+    }
+}
+impl Procedure for Touchdown {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        if let BallState::Carried(carrier_id) = game_state.ball {
+            if carrier_id == self.id {
+                game_state.get_mut_team_from_player(self.id).unwrap().score += 1;
+                game_state.get_mut_player_unsafe(self.id).used = true;
+            }
+        }
+
+        ProcState::Done
     }
 }

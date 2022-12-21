@@ -11,12 +11,13 @@ use super::table::{NumBlockDices, PlayerActionType, PosAT};
 type OptRcNode = Option<Rc<Node>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Roll {
+pub enum PathingEvent {
     Dodge(D6Target),
     GFI(D6Target),
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
+    Touchdown(PlayerID),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixedQueue<T> {
@@ -91,7 +92,7 @@ pub struct Node {
     // foul_roll, handoff_roll, block_dice
     //euclidiean_distance: f32,
     prob: f32,
-    rolls: FixedQueue<Roll>,
+    events: FixedQueue<PathingEvent>,
 }
 impl Node {
     fn new(parent: OptRcNode, position: Position, moves_left: u8, gfis_left: u8) -> Node {
@@ -102,7 +103,7 @@ impl Node {
             moves_left,
             gfis_left,
             block_dice: None,
-            rolls: Default::default(),
+            events: Default::default(),
         }
     }
     fn remaining_movement(&self) -> u8 {
@@ -110,24 +111,28 @@ impl Node {
     }
     fn apply_gfi(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push_back(Roll::GFI(target));
+        self.events.push_back(PathingEvent::GFI(target));
     }
     fn apply_dodge(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push_back(Roll::Dodge(target));
+        self.events.push_back(PathingEvent::Dodge(target));
     }
     fn apply_pickup(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push_back(Roll::Pickup(target));
+        self.events.push_back(PathingEvent::Pickup(target));
     }
 
     fn apply_handoff(&mut self, id: PlayerID, target: D6Target) {
         self.prob *= target.success_prob();
-        self.rolls.push_back(Roll::Handoff(id, target));
+        self.events.push_back(PathingEvent::Handoff(id, target));
     }
     fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
         self.block_dice = Some(target);
-        self.rolls.push_back(Roll::Block(vicitm_id, target));
+        self.events
+            .push_back(PathingEvent::Block(vicitm_id, target));
+    }
+    fn apply_touchdown(&mut self, id: PlayerID) {
+        self.events.push_back(PathingEvent::Touchdown(id));
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -168,7 +173,7 @@ impl Node {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Path {
-    pub steps: Vec<(Position, FixedQueue<Roll>)>,
+    pub steps: Vec<(Position, FixedQueue<PathingEvent>)>,
     pub target: Position,
     pub action_type: PosAT,
     pub block_dice: Option<NumBlockDices>,
@@ -180,16 +185,16 @@ impl Path {
             if final_node.block_dice.is_some() {
                 PosAT::Block
             } else {
-                match final_node.rolls.last() {
-                    Some(Roll::Block(_, _)) => PosAT::Block,
-                    Some(Roll::Handoff(_, _)) => PosAT::Handoff,
+                match final_node.events.last() {
+                    Some(PathingEvent::Block(_, _)) => PosAT::Block,
+                    Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
                     _ => PosAT::Move,
                 }
             }
         };
 
         let mut path = Path {
-            steps: vec![(final_node.position, final_node.rolls.clone())],
+            steps: vec![(final_node.position, final_node.events.clone())],
             prob: final_node.prob,
             target: final_node.position,
             action_type,
@@ -202,7 +207,7 @@ impl Path {
                 //We don't want the root node here
                 break;
             }
-            path.steps.push((parent.position, parent.rolls.clone()));
+            path.steps.push((parent.position, parent.events.clone()));
             node = parent;
         }
         path
@@ -415,6 +420,8 @@ impl<'a> GameInfo<'a> {
 
         let target: D6Target = self.game_state.get_catch_modifers(id).unwrap();
         next_node.apply_handoff(id, target);
+        // the Catch procedure will check fo touchdown
+
         if let Some(current_best) = prev {
             if current_best.is_better_than(&next_node) {
                 // todo: if there is a current_best, it will always have higher prob right?
@@ -459,12 +466,15 @@ impl<'a> GameInfo<'a> {
             );
         }
         if matches!(self.ball, PathingBallState::OnGround(ball_pos) if ball_pos == to ) {
+            //handle pickup. The pickup procedure will check for touchdown
             next_node.apply_pickup(
                 *self
                     .pickup_target
                     .clone()
                     .add_modifer(-self.tzones[to_x][to_y]),
             );
+        } else if matches!(self.ball, PathingBallState::IsCarrier(endzone_x) if to.x == endzone_x) {
+            next_node.apply_touchdown(self.id);
         }
 
         Some(next_node)

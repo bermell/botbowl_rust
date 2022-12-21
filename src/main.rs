@@ -1,6 +1,8 @@
+use crate::core::dices::D8;
 use crate::core::gamestate::GameStateBuilder;
 
 use crate::core::gamestate::GameState;
+use crate::core::model::Direction;
 
 pub mod core;
 
@@ -17,9 +19,19 @@ pub fn standard_state() -> GameState {
 }
 
 fn main() {
-    // let state = standard_state();
     println!("Hello world!");
-    //draw_board(&state);
+    let mut state = standard_state();
+
+    for x in 1..=8 {
+        state.fixes.fix_d8(x);
+        let dice = state.get_d8_roll();
+        let direction_from_dice = Direction::from(dice);
+        let dice_from_dir = D8::from(direction_from_dice);
+        println!(
+            "{} -> {:?} -> {:?} -> {:?} ",
+            x, dice, direction_from_dice, dice_from_dir
+        )
+    }
 }
 
 #[cfg(test)]
@@ -35,7 +47,7 @@ mod tests {
     use crate::core::{
         gamestate::{GameState, GameStateBuilder},
         model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
-        pathing::{PathFinder, Roll},
+        pathing::{PathFinder, PathingEvent},
         table::PosAT,
     };
     use crate::standard_state;
@@ -45,6 +57,83 @@ mod tests {
         iter::{repeat_with, zip},
     };
 
+    #[test]
+    fn touchdown_when_catching_bouncing_ball() {
+        let mut field = "".to_string();
+        field += "hh \n";
+        field += " A \n";
+        field += "  h\n";
+        let td_pos = Position::new((1, 3));
+        let carrier_pos = td_pos + (1, 1);
+        let blocker_pos = carrier_pos + (1, 1);
+        let push_pos = carrier_pos + (-1, 0);
+        let mut state = GameStateBuilder::new().add_str(td_pos, &field).build();
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+
+        state.step_positional(PosAT::StartBlock, blocker_pos);
+
+        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fixes.fix_blockdice(BlockDice::Pow);
+
+        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, push_pos);
+
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(2); //armor
+        state.fixes.fix_d6(4); //catch
+        state
+            .fixes
+            .fix_d8(D8::from(Direction { dx: 0, dy: -1 }) as u8); // bounce direction up
+        state.step_positional(PosAT::FollowUp, blocker_pos);
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.away.score, 0);
+    }
+
+    #[test]
+    fn no_td_when_failed_pickup_in_endzone() {
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+
+        state.step_positional(PosAT::StartMove, start_pos);
+
+        state.fixes.fix_d6(2);
+        state.step_positional(PosAT::Move, td_pos);
+
+        state.fixes.fix_d8(4);
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+    }
+
+    #[test]
+    fn touchdown_pickup_in_endzone() {
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
+        assert_eq!(state.home.score, 0);
+        assert_eq!(state.away.score, 0);
+
+        state.step_positional(PosAT::StartMove, start_pos);
+
+        state.fixes.fix_d6(3);
+        state.step_positional(PosAT::Move, td_pos);
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.away.score, 0);
+    }
     #[test]
     fn follow_up_to_touchdown() {
         let carrier_pos = Position::new((2, 5));
@@ -59,14 +148,16 @@ mod tests {
         assert_eq!(state.away.score, 0);
         state.step_positional(PosAT::StartBlock, carrier_pos);
         state.fixes.fix_blockdice(BlockDice::Push);
-        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_positional(PosAT::Block, victim_pos);
         state.step_simple(SimpleAT::SelectPush);
         //no need to select push position because crowd
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(1);
         state.step_positional(PosAT::FollowUp, victim_pos);
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        assert_eq!(state.get_players_on_pitch().count(), 0);
+        // assert_eq!(state.get_players_on_pitch().count(), 0);
     }
 
     #[test]
@@ -94,7 +185,7 @@ mod tests {
         state.step_positional(PosAT::FollowUp, blocker_pos);
         // state.step_simple(SimpleAT::EndPlayerTurn);
         state.step_simple(SimpleAT::EndTurn);
-        state.step_positional(PosAT::StartMove, td_pos);
+        // state.step_positional(PosAT::StartMove, td_pos);
         assert_eq!(state.home.score, 0);
         assert_eq!(state.away.score, 0);
         assert_eq!(state.ball, BallState::OnGround(td_pos + (1, 0)));
@@ -108,7 +199,7 @@ mod tests {
         let mut state = GameStateBuilder::new()
             .add_home_player(carrier_pos)
             .add_ball_pos(carrier_pos)
-            .add_home_player(blocker_pos)
+            .add_away_player(blocker_pos)
             .build();
 
         assert_eq!(state.home.score, 0);
@@ -123,7 +214,7 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        assert_eq!(state.get_players_on_pitch().count(), 0);
+        // assert_eq!(state.get_players_on_pitch().count(), 0);
     }
 
     #[test]
@@ -164,7 +255,7 @@ mod tests {
     #[test]
     fn touchdown() {
         let start_pos = Position::new((2, 1));
-        let td_pos = Position::new((5, 5));
+        let td_pos = Position::new((1, 5));
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
             .add_ball_pos(start_pos)
@@ -178,7 +269,7 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        assert_eq!(state.get_players_on_pitch().count(), 0);
+        // assert_eq!(state.get_players_on_pitch().count(), 0);
     }
 
     #[test]
@@ -977,30 +1068,30 @@ mod tests {
             (
                 Position::new((4, 6)),
                 FixedQueue::from(vec![
-                    Roll::GFI(D6Target::TwoPlus),
-                    Roll::Pickup(D6Target::ThreePlus),
+                    PathingEvent::GFI(D6Target::TwoPlus),
+                    PathingEvent::Pickup(D6Target::ThreePlus),
                 ]),
             ),
             (
                 Position::new((4, 5)),
-                FixedQueue::from(vec![Roll::Dodge(D6Target::ThreePlus)]),
+                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::ThreePlus)]),
             ),
             (
                 Position::new((4, 4)),
-                FixedQueue::from(vec![Roll::Dodge(D6Target::FourPlus)]),
+                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::FourPlus)]),
             ),
             (
                 Position::new((4, 3)),
-                FixedQueue::from(vec![Roll::Dodge(D6Target::FourPlus)]),
+                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::FourPlus)]),
             ),
             (Position::new((3, 2)), FixedQueue::from(vec![])),
             (
                 Position::new((3, 1)),
-                FixedQueue::from(vec![Roll::Dodge(D6Target::ThreePlus)]),
+                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::ThreePlus)]),
             ),
             (
                 Position::new((2, 1)),
-                FixedQueue::from(vec![Roll::Dodge(D6Target::FourPlus)]),
+                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::FourPlus)]),
             ),
         ];
         let expected_prob = 0.03086;

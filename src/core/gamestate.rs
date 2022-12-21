@@ -153,6 +153,7 @@ pub struct GameInfo {
     pub handoff_available: bool,
     pub pass_available: bool,
     pub blitz_available: bool,
+    pub handle_td_by: Option<PlayerID>,
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -169,14 +170,15 @@ impl GameInfo {
             handoff_available: true,
             pass_available: true,
             blitz_available: true,
+            handle_td_by: None,
         }
     }
 }
 #[derive(Default)]
 pub struct FixedDice {
-    pub d6_fixes: VecDeque<D6>,
-    pub blockdice_fixes: VecDeque<BlockDice>,
-    pub d8_fixes: VecDeque<D8>,
+    d6_fixes: VecDeque<D6>,
+    blockdice_fixes: VecDeque<BlockDice>,
+    d8_fixes: VecDeque<D8>,
 }
 impl FixedDice {
     pub fn fix_d6(&mut self, value: u8) {
@@ -194,7 +196,7 @@ impl FixedDice {
     pub fn assert_is_empty(&self) {
         assert!(
             self.is_empty(),
-            "d6:{:?}, d8: {:?}, blockdice: {:?}",
+            "fixed dices are not empty: d6:{:?}, d8: {:?}, blockdice: {:?}",
             self.d6_fixes,
             self.d8_fixes,
             self.blockdice_fixes

@@ -5,7 +5,10 @@ use std::{
 
 use rand::{distributions::Standard, prelude::Distribution};
 
-use super::{model::Direction, table::SimpleAT};
+use super::{
+    model::{Coord, Direction},
+    table::SimpleAT,
+};
 
 pub trait RollTarget<T> {
     fn is_success(&self, roll: T) -> bool;
@@ -60,7 +63,7 @@ impl_enum_try_from! {
 
 impl Distribution<D8> for Standard {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> D8 {
-        D8::try_from(rng.gen_range(1..=6)).unwrap()
+        D8::try_from(rng.gen_range(1..=8)).unwrap()
     }
 }
 
@@ -69,6 +72,24 @@ impl From<D8> for Direction {
         Direction::all_directions_as_array()[roll as usize - 1]
     }
 }
+
+impl From<Direction> for D8 {
+    fn from(direction: Direction) -> Self {
+        Direction::all_directions_iter()
+            .enumerate()
+            .find(|(_, &dir)| dir == direction)
+            .map(|(index, _)| D8::try_from((1 + index) as u8).unwrap())
+            .unwrap()
+    }
+}
+
+impl From<(Coord, Coord)> for D8 {
+    fn from(dxdy: (Coord, Coord)) -> Self {
+        let dir: Direction = Direction::from(dxdy);
+        D8::from(dir)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockDice {
     Skull,
