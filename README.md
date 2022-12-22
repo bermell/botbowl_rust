@@ -10,15 +10,16 @@ List of things to implement and write tests for in order to use as engine for fo
 - Two Human team, only starting skills without Ogre
 
 **Rules left to implement**
-- [ ] Fouling (in pathfinding, ejection) 
-- [x] Blocking 
+- [x] Fouling (in pathfinding, ejection) 
+- [x] Blocking (incl crowd surf and chain pushing)
 - [ ] Passing (in pathfinding) 
 - [x] Handing off (in pathfinding) 
-- [ ] Kickoff 
+- [ ] Kickoff table
 - [ ] Setup 
-- [ ] Touchdown
+- [x] Touchdown
 
 **Other things**
+- [ ] Play in terminal
 - [ ] Gym Env 
 - [ ] FFI to python 
 - [ ] MCTS example bot

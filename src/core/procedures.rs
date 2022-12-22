@@ -77,6 +77,7 @@ impl Procedure for Half {
         info.team_turn = next_team;
         info.handoff_available = true;
         info.blitz_available = true;
+        info.foul_available = true;
         info.pass_available = true;
 
         ProcState::NotDoneNew(Turn::new(next_team))
@@ -119,6 +120,10 @@ impl Procedure for Turn {
             aa.insert_positional(PosAT::StartBlitz, positions.clone());
         }
 
+        if game_state.info.foul_available {
+            aa.insert_positional(PosAT::StartFoul, positions.clone());
+        }
+
         if game_state.info.pass_available {
             aa.insert_positional(PosAT::StartPass, positions.clone());
         }
@@ -155,6 +160,11 @@ impl Procedure for Turn {
                 game_state.info.handoff_available = false;
                 ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
             }
+            Action::Positional(PosAT::StartFoul, _) => {
+                game_state.info.player_action_type = Some(PlayerActionType::FoulAction);
+                game_state.info.foul_available = false;
+                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
+            }
             Action::Positional(PosAT::StartBlitz, _) => {
                 game_state.info.player_action_type = Some(PlayerActionType::BlitzAction);
                 game_state.info.blitz_available = false;
@@ -179,6 +189,9 @@ fn proc_from_roll(roll: PathingEvent, move_action: &MoveAction) -> Box<dyn Proce
         PathingEvent::Block(id, dices) => Block::new(dices, id),
         PathingEvent::Handoff(id, target) => Catch::new(id, target),
         PathingEvent::Touchdown(id) => Touchdown::new(id),
+        PathingEvent::Foul(victim, target) => {
+            Armor::new_foul(victim, target, move_action.player_id)
+        }
     }
 }
 
@@ -256,18 +269,20 @@ impl MoveAction {
             return ProcState::NotDone;
         }
 
-        //todo: need to consolidate the roll handling below and above to avoid code duplication.
-        //      no 100% sure it's needed
-
         while let Some((position, mut rolls)) = path.steps.pop() {
-            if let Some(PathingEvent::Handoff(_, _)) = rolls.last() {
-                game_state.get_mut_player_unsafe(self.player_id).used = true;
-            } else if let Some(PathingEvent::Block(_, _)) = rolls.last() {
-                game_state.get_mut_player_unsafe(self.player_id).add_move(1);
-            } else {
-                game_state.move_player(self.player_id, position).unwrap();
-                game_state.get_mut_player_unsafe(self.player_id).add_move(1);
+            match rolls.last() {
+                Some(PathingEvent::Handoff(_, _)) | Some(PathingEvent::Foul(_, _)) => {
+                    game_state.get_mut_player_unsafe(self.player_id).used = true;
+                }
+                Some(PathingEvent::Block(_, _)) => {
+                    game_state.get_mut_player_unsafe(self.player_id).add_move(1);
+                }
+                _ => {
+                    game_state.move_player(self.player_id, position).unwrap();
+                    game_state.get_mut_player_unsafe(self.player_id).add_move(1);
+                }
             }
+
             if let Some(next_roll) = rolls.pop() {
                 let new_proc = proc_from_roll(next_roll, self);
                 if !rolls.is_empty() {
@@ -277,7 +292,7 @@ impl MoveAction {
                 return ProcState::NotDoneNew(new_proc);
             }
         }
-        panic!("Should not get here!");
+        unreachable!();
     }
 }
 impl Procedure for MoveAction {
@@ -527,18 +542,67 @@ impl Procedure for KnockDown {
 
 struct Armor {
     id: PlayerID,
+    foul_target: Option<(PlayerID, Sum2D6Target)>,
 }
 impl Armor {
     pub fn new(id: PlayerID) -> Box<Armor> {
-        Box::new(Armor { id })
+        Box::new(Armor {
+            id,
+            foul_target: None,
+        })
+    }
+    pub fn new_foul(id: PlayerID, target: Sum2D6Target, fouler_id: PlayerID) -> Box<Armor> {
+        Box::new(Armor {
+            id,
+            foul_target: Some((fouler_id, target)),
+        })
     }
 }
 impl Procedure for Armor {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        let target = game_state.get_player_unsafe(self.id).armor_target();
-        let roll = game_state.get_2d6_roll();
+        let roll1 = game_state.get_d6_roll();
+        let roll2 = game_state.get_d6_roll();
+        let roll = roll1 + roll2;
+        let mut procs: Vec<Box<dyn Procedure>> = Vec::new();
+        let mut injury_proc = Injury::new(self.id);
+
+        let target = if let Some((fouler_id, foul_target)) = self.foul_target {
+            if roll1 == roll2 {
+                procs.push(Ejection::new(fouler_id));
+            } else {
+                injury_proc.fouler = Some(fouler_id);
+            }
+            foul_target
+        } else {
+            game_state.get_player_unsafe(self.id).armor_target()
+        };
+
         if target.is_success(roll) {
-            ProcState::DoneNew(Injury::new(self.id))
+            procs.push(injury_proc);
+        }
+
+        ProcState::from(procs)
+    }
+}
+
+struct Ejection {
+    id: PlayerID,
+}
+impl Ejection {
+    pub fn new(id: PlayerID) -> Box<Ejection> {
+        Box::new(Ejection { id })
+    }
+}
+impl Procedure for Ejection {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        let position = game_state.get_player_unsafe(self.id).position;
+        game_state
+            .unfield_player(self.id, DugoutPlace::Ejected)
+            .unwrap();
+
+        if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
+            game_state.ball = BallState::InAir(position);
+            ProcState::DoneNew(Bounce::new())
         } else {
             ProcState::Done
         }
@@ -548,21 +612,45 @@ impl Procedure for Armor {
 struct Injury {
     id: PlayerID,
     crowd: bool,
+    fouler: Option<PlayerID>,
 }
 impl Injury {
     pub fn new(id: PlayerID) -> Box<Injury> {
-        Box::new(Injury { id, crowd: false })
+        Box::new(Injury {
+            id,
+            crowd: false,
+            fouler: None,
+        })
     }
 
     pub fn new_crowd(id: PlayerID) -> Box<Injury> {
-        Box::new(Injury { id, crowd: true })
+        Box::new(Injury {
+            id,
+            crowd: true,
+            fouler: None,
+        })
+    }
+    pub fn new_foul(id: PlayerID, fouler: PlayerID) -> Box<Injury> {
+        Box::new(Injury {
+            id,
+            crowd: false,
+            fouler: Some(fouler),
+        })
     }
 }
 impl Procedure for Injury {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
         let cas_target = Sum2D6Target::TenPlus;
         let ko_target = Sum2D6Target::EightPlus;
-        let roll = game_state.get_2d6_roll();
+        let roll1 = game_state.get_d6_roll();
+        let roll2 = game_state.get_d6_roll();
+        let roll = roll1 + roll2;
+        let mut procs: Vec<Box<dyn Procedure>> = Vec::new();
+
+        if self.fouler.is_some() && roll1 == roll2 {
+            procs.push(Ejection::new(self.fouler.unwrap()))
+        }
+
         if cas_target.is_success(roll) {
             game_state
                 .unfield_player(self.id, DugoutPlace::Injuried)
@@ -578,7 +666,7 @@ impl Procedure for Injury {
         } else {
             game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
         }
-        ProcState::Done
+        ProcState::from(procs)
     }
 }
 

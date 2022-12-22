@@ -4,7 +4,7 @@ use std::{collections::HashMap, hash, iter::zip, rc::Rc};
 use crate::core::model;
 use model::*;
 
-use super::dices::{D6Target, RollTarget};
+use super::dices::{D6Target, RollTarget, Sum2D6Target};
 use super::gamestate::GameState;
 use super::table::{NumBlockDices, PlayerActionType, PosAT};
 
@@ -18,6 +18,7 @@ pub enum PathingEvent {
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
     Touchdown(PlayerID),
+    Foul(PlayerID, Sum2D6Target),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixedQueue<T> {
@@ -131,6 +132,9 @@ impl Node {
         self.events
             .push_back(PathingEvent::Block(vicitm_id, target));
     }
+    fn apply_foul(&mut self, vicitm_id: PlayerID, target: Sum2D6Target) {
+        self.events.push_back(PathingEvent::Foul(vicitm_id, target));
+    }
     fn apply_touchdown(&mut self, id: PlayerID) {
         self.events.push_back(PathingEvent::Touchdown(id));
     }
@@ -164,6 +168,15 @@ impl Node {
             _ => (),
         }
 
+        // best foul target, low is better
+        match (self.events.last(), othr.events.last()) {
+            (
+                Some(PathingEvent::Foul(_, self_target)),
+                Some(PathingEvent::Foul(_, othr_target)),
+            ) if self_target != othr_target => return self_target < othr_target,
+            _ => (),
+        }
+
         if self.remaining_movement() > othr.remaining_movement() {
             return true;
         }
@@ -188,6 +201,7 @@ impl Path {
                 match final_node.events.last() {
                     Some(PathingEvent::Block(_, _)) => PosAT::Block,
                     Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
+                    Some(PathingEvent::Foul(_, _)) => PosAT::Foul,
                     _ => PosAT::Move,
                 }
             }
@@ -346,6 +360,14 @@ impl<'a> GameInfo<'a> {
             {
                 self.expand_block_to(to, player.id, parent_node, prev)
             }
+            Some(player)
+                if self.player_action == PlayerActionType::FoulAction
+                    && player.stats.team != self.team
+                    && parent_node.remaining_movement() > 0
+                    && player.status != PlayerStatus::Up =>
+            {
+                self.expand_foul_to(to, player.id, parent_node, prev)
+            }
             None if parent_node.remaining_movement() > 0 => {
                 self.expand_move_to(to, parent_node, prev)
             }
@@ -379,6 +401,54 @@ impl<'a> GameInfo<'a> {
         } else {
             NodeType::NoNode
         }
+    }
+
+    fn expand_foul_to(
+        &self,
+        to: Position,
+        victim_id: PlayerID,
+        parent_node: &Rc<Node>,
+        prev: &OptRcNode,
+    ) -> Option<Node> {
+        let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
+        let victim = self.game_state.get_player_unsafe(victim_id);
+        let mut target = victim.armor_target();
+
+        target.add_modifer(
+            self.game_state
+                .get_adj_players(victim.position)
+                .filter(|adj_player| {
+                    adj_player.id != self.id
+                        && adj_player.stats.team == self.team
+                        && self.game_state.get_tz_on(adj_player.id) == 0
+                })
+                .count() as i8,
+        );
+        target.add_modifer(
+            -(self
+                .game_state
+                .get_adj_players(parent_node.position)
+                .filter(|adj_player| {
+                    adj_player.stats.team != self.team
+                        && adj_player.has_tackle_zone()
+                        && self
+                            .game_state
+                            .get_tz_on_except_from_id(adj_player.id, self.id)
+                            == 0
+                })
+                .count() as i8),
+        );
+
+        next_node.apply_foul(victim_id, target);
+
+        if let Some(current_best) = prev {
+            if !next_node.is_better_than(current_best) {
+                // todo: if there is a current_best, it will always have higher prob right?
+                //       that's just how it works with the risky batches. Oh well, optimize later..
+                return None;
+            }
+        }
+        Some(next_node)
     }
 
     fn expand_block_to(

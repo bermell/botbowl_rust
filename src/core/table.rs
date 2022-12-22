@@ -3,11 +3,13 @@ pub enum PosAT {
     StartMove,
     StartBlitz,
     StartPass,
+    StartFoul,
     Push,
     FollowUp,
     StartHandoff,
     Handoff,
     Move,
+    Foul,
     StartBlock,
     Block,
 }
@@ -18,6 +20,7 @@ pub enum PlayerActionType {
     PassAction,
     BlockAction,
     BlitzAction,
+    FoulAction,
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]

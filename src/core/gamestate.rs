@@ -151,6 +151,7 @@ pub struct GameInfo {
     pub weather: Weather,
     pub kicking_first_half: TeamType,
     pub handoff_available: bool,
+    pub foul_available: bool,
     pub pass_available: bool,
     pub blitz_available: bool,
     pub handle_td_by: Option<PlayerID>,
@@ -169,6 +170,7 @@ impl GameInfo {
             player_action_type: None,
             handoff_available: true,
             pass_available: true,
+            foul_available: true,
             blitz_available: true,
             handle_td_by: None,
         }
