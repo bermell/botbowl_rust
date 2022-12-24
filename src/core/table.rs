@@ -25,7 +25,6 @@ pub enum PlayerActionType {
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum SimpleAT {
-    StartGame,
     SelectBothDown,
     SelectPow,
     SelectPush,
@@ -35,6 +34,13 @@ pub enum SimpleAT {
     DontUseReroll,
     EndPlayerTurn,
     EndTurn,
+    Heads,
+    Tails,
+    Kick,
+    Receive,
+    SetupLine,
+    EndSetup,
+    KickoffAimMiddle,
 }
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
@@ -56,6 +62,7 @@ impl From<PosAT> for AnyAT {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Skill {
     Dodge,
+    Throw,
     Block,
     Catch,
     SureHands,

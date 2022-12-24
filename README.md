@@ -9,13 +9,20 @@ List of things to implement and write tests for in order to use as engine for fo
 - Botbowl 2016 rules 
 - Two Human team, only starting skills without Ogre
 
+**Refactor and optimizations** 
+- [ ] Available action require less heap allocation
+- [ ] Refactor away unnessary struct and enums: 
+          - Pathing::Path (Node is fine, also only traverse back when necessary),
+          - Pathing::PlayerActionType (it's fine to use PosAT::{StartMove, StartBlitz} etc.. )
+
 **Rules left to implement**
 - [x] Fouling (in pathfinding, ejection) 
 - [x] Blocking (incl crowd surf and chain pushing)
 - [ ] Passing (in pathfinding) 
 - [x] Handing off (in pathfinding) 
-- [ ] Kickoff table
-- [ ] Setup 
+- [ ] (1/11) Kickoff table 
+- [x] Very basic setup 
+- [ ] Useful setup
 - [x] Touchdown
 
 **Other things**

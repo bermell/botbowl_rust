@@ -38,6 +38,7 @@ fn main() {
 mod tests {
 
     use crate::core::dices::BlockDice;
+    use crate::core::dices::Coin;
     use crate::core::dices::D6Target;
     use crate::core::dices::D6;
     use crate::core::dices::D8;
@@ -56,6 +57,35 @@ mod tests {
         collections::{HashMap, HashSet},
         iter::{repeat_with, zip},
     };
+
+    #[test]
+    fn start_of_game() {
+        let mut state: GameState = GameStateBuilder::new_start_of_game();
+
+        state.fixes.fix_coin(Coin::Heads);
+        state.step_simple(SimpleAT::Heads);
+
+        state.step_simple(SimpleAT::Kick);
+
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+
+        state.fixes.fix_d8(3); // scatter direction
+        state.fixes.fix_d6(4); // scatter length
+
+        state.fixes.fix_d6(3); // fix changing whether kickoff result
+        state.fixes.fix_d6(4); // fix changing weather kickoff result
+
+        state.fixes.fix_d6(2); // Nice weather
+        state.fixes.fix_d6(5); // nice weather
+
+        state.fixes.fix_d8(3); // gust of wind
+
+        state.step_simple(SimpleAT::KickoffAimMiddle);
+    }
 
     #[test]
     fn foul_ejected_at_armor() {
@@ -79,13 +109,14 @@ mod tests {
         state.step_positional(PosAT::Foul, foul_pos);
 
         assert!(matches!(
-            state.dugout_players.pop(),
+            state.get_dugout().next(),
             Some(DugoutPlayer {
                 place: DugoutPlace::Ejected,
                 stats: PlayerStats {
                     team: TeamType::Home,
                     ..
                 },
+                ..
             })
         ));
     }
@@ -112,13 +143,14 @@ mod tests {
         state.step_positional(PosAT::Foul, foul_pos);
 
         assert!(matches!(
-            state.dugout_players.pop(),
+            state.get_dugout().next(),
             Some(DugoutPlayer {
                 place: DugoutPlace::Ejected,
                 stats: PlayerStats {
                     team: TeamType::Home,
                     ..
                 },
+                ..
             })
         ));
     }
@@ -192,6 +224,9 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
+
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
     }
 
     #[test]
@@ -235,6 +270,8 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
     }
     #[test]
     fn follow_up_to_touchdown() {
@@ -259,7 +296,8 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        // assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
     }
 
     #[test]
@@ -316,7 +354,8 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        // assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
     }
 
     #[test]
@@ -371,7 +410,8 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        // assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
     }
 
     #[test]
@@ -544,13 +584,14 @@ mod tests {
         state.step_simple(SimpleAT::EndTurn);
 
         assert!(matches!(
-            state.dugout_players.pop(),
+            state.get_dugout().next(),
             Some(DugoutPlayer {
                 place: DugoutPlace::Reserves,
                 stats: PlayerStats {
                     team: TeamType::Away,
                     ..
                 },
+                ..
             })
         ));
     }
@@ -590,13 +631,14 @@ mod tests {
         assert_eq!(state.ball, BallState::OnGround(Position::new((5, 4))));
 
         assert!(matches!(
-            state.dugout_players.pop(),
+            state.get_dugout().next(),
             Some(DugoutPlayer {
                 place: DugoutPlace::Reserves,
                 stats: PlayerStats {
                     team: TeamType::Away,
                     ..
                 },
+                ..
             })
         ));
     }
@@ -682,13 +724,14 @@ mod tests {
 
         assert!(state.get_player_at(home_pos).is_none());
         assert!(matches!(
-            state.dugout_players.pop(),
+            state.get_dugout().next(),
             Some(DugoutPlayer {
                 place: DugoutPlace::Injuried,
                 stats: PlayerStats {
                     team: TeamType::Home,
                     ..
                 },
+                ..
             })
         ));
         assert_eq!(
@@ -766,7 +809,7 @@ mod tests {
     fn failed_dodge_ko() -> Result<()> {
         let mut state = standard_state();
         let id = state.get_player_id_at_coord(2, 2).unwrap();
-        assert!(state.dugout_players.is_empty());
+        assert!(state.get_dugout().next().is_none());
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((2, 2))))?;
 
@@ -784,14 +827,14 @@ mod tests {
         assert!(state.get_players_on_pitch().all(|player| player.id != id));
 
         assert!(matches!(
-            state.dugout_players.pop(),
+            state.get_dugout().next(),
             Some(DugoutPlayer {
                 place: DugoutPlace::KnockOut,
                 ..
             })
         ));
 
-        assert!(state.dugout_players.is_empty());
+        assert_eq!(state.get_dugout().count(), 1);
         Ok(())
     }
 
@@ -839,8 +882,7 @@ mod tests {
             .get_mut_player(id)
             .unwrap()
             .stats
-            .skills
-            .insert(Skill::SureHands);
+            .give_skill(Skill::SureHands);
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?;
 
@@ -903,7 +945,7 @@ mod tests {
 
         let id = state.get_player_id_at(start_pos).unwrap();
 
-        state.get_mut_player(id)?.stats.skills.insert(Skill::Dodge);
+        state.get_mut_player(id)?.stats.give_skill(Skill::Dodge);
         assert!(state.get_player(id).unwrap().has_skill(Skill::Dodge));
 
         state.step(Action::Positional(PosAT::StartMove, Position::new((1, 1))))?;
@@ -998,12 +1040,14 @@ mod tests {
     #[test]
     fn field_a_player() -> Result<()> {
         let mut state = standard_state();
-        let player_stats = PlayerStats::new(TeamType::Home);
+        let player_stats = PlayerStats::new_lineman(TeamType::Home);
         let position = Position::new((10, 10));
 
         assert!(state.get_player_id_at(position).is_none());
 
-        let id = state.field_player(player_stats, position).unwrap();
+        let id = state
+            .add_new_player_to_field(player_stats, position)
+            .unwrap();
 
         assert_eq!(state.get_player_id_at(position), Some(id));
         assert_eq!(state.get_player(id).unwrap().position, position);

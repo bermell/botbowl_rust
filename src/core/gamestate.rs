@@ -3,14 +3,14 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use std::collections::{HashSet, VecDeque};
 
-use crate::core::{bb_errors::EmptyProcStackError, model};
+use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
 
 use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
-    dices::{BlockDice, D6Target, RollTarget, Sum2D6, D6, D8},
-    procedures::Half,
+    dices::{BlockDice, Coin, D6Target, RollTarget, Sum2D6, D6, D8},
+    procedures::{GameOver, Half},
     table::{NumBlockDices, PlayerActionType, PosAT, SimpleAT},
 };
 
@@ -21,6 +21,33 @@ pub struct GameStateBuilder {
 }
 
 impl GameStateBuilder {
+    pub fn new_start_of_game() -> GameState {
+        let mut state = GameStateBuilder::empty_state();
+
+        // Dugout
+        let place = DugoutPlace::Reserves;
+        for team in [TeamType::Home, TeamType::Away] {
+            for _ in 0..6 {
+                state.dugout_add_new_player(PlayerStats::new_lineman(team), place);
+            }
+            for _ in 0..2 {
+                state.dugout_add_new_player(PlayerStats::new_blitzer(team), place);
+            }
+            for _ in 0..2 {
+                state.dugout_add_new_player(PlayerStats::new_catcher(team), place);
+            }
+            for _ in 0..2 {
+                state.dugout_add_new_player(PlayerStats::new_thrower(team), place);
+            }
+        }
+
+        state.proc_stack = vec![GameOver::new(), Half::new(2), Half::new(1), CoinToss::new()];
+        state.step_simple(SimpleAT::EndTurn);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::Heads)));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::Tails)));
+        // available_actions: AvailableActions::new_empty(),
+        state
+    }
     pub fn new() -> GameStateBuilder {
         GameStateBuilder {
             home_players: Vec::new(),
@@ -92,14 +119,14 @@ impl GameStateBuilder {
         self
     }
 
-    pub fn build(&mut self) -> GameState {
-        let mut state = GameState {
+    pub fn empty_state() -> GameState {
+        GameState {
             fielded_players: Default::default(),
             home: TeamState::new(),
             away: TeamState::new(),
             board: Default::default(),
             ball: BallState::OffPitch,
-            dugout_players: Vec::new(),
+            dugout_players: Default::default(),
             proc_stack: Vec::new(),
             //new_procs: VecDeque::new(),
             available_actions: AvailableActions::new_empty(),
@@ -107,16 +134,19 @@ impl GameStateBuilder {
             rng_enabled: false,
             info: GameInfo::new(),
             fixes: Default::default(),
-        };
+        }
+    }
+    pub fn build(&mut self) -> GameState {
+        let mut state = GameStateBuilder::empty_state();
 
         for position in self.home_players.iter() {
-            let player_stats = PlayerStats::new(TeamType::Home);
-            _ = state.field_player(player_stats, *position)
+            let player_stats = PlayerStats::new_lineman(TeamType::Home);
+            _ = state.add_new_player_to_field(player_stats, *position)
         }
 
         for position in self.away_players.iter() {
-            let player_stats = PlayerStats::new(TeamType::Away);
-            _ = state.field_player(player_stats, *position)
+            let player_stats = PlayerStats::new_lineman(TeamType::Away);
+            _ = state.add_new_player_to_field(player_stats, *position)
         }
 
         if let Some(pos) = self.ball_pos {
@@ -126,8 +156,11 @@ impl GameStateBuilder {
                 _ => panic!(),
             }
         }
+        let mut half_proc = Half::new(1);
+        half_proc.started = true;
+        state.info.half = 1;
 
-        state.proc_stack.push(Half::new(1));
+        state.proc_stack.push(half_proc);
         state.step(Action::Simple(SimpleAT::EndTurn)).unwrap();
 
         state
@@ -144,12 +177,14 @@ pub struct GameInfo {
     pub half: u8,
     pub home_turn: u8,
     pub away_turn: u8,
+    pub winner: Option<TeamType>,
     pub active_player: Option<PlayerID>,
     pub player_action_type: Option<PlayerActionType>,
     pub team_turn: TeamType,
     pub game_over: bool,
     pub weather: Weather,
     pub kicking_first_half: TeamType,
+    pub kickoff_by_team: Option<TeamType>,
     pub handoff_available: bool,
     pub foul_available: bool,
     pub pass_available: bool,
@@ -163,6 +198,7 @@ impl GameInfo {
             active_player: None,
             team_turn: TeamType::Home,
             game_over: false,
+            winner: None,
             weather: Weather::Nice,
             kicking_first_half: TeamType::Home,
             home_turn: 0,
@@ -173,6 +209,7 @@ impl GameInfo {
             foul_available: true,
             blitz_available: true,
             handle_td_by: None,
+            kickoff_by_team: None,
         }
     }
 }
@@ -181,8 +218,12 @@ pub struct FixedDice {
     d6_fixes: VecDeque<D6>,
     blockdice_fixes: VecDeque<BlockDice>,
     d8_fixes: VecDeque<D8>,
+    coin_fixes: VecDeque<Coin>,
 }
 impl FixedDice {
+    pub fn fix_coin(&mut self, value: Coin) {
+        self.coin_fixes.push_back(value);
+    }
     pub fn fix_d6(&mut self, value: u8) {
         self.d6_fixes.push_back(D6::try_from(value).unwrap());
     }
@@ -213,7 +254,7 @@ pub struct GameState {
     pub away: TeamState,
 
     fielded_players: [Option<FieldedPlayer>; 22],
-    pub dugout_players: Vec<DugoutPlayer>,
+    dugout_players: [Option<DugoutPlayer>; 32],
     board: FullPitch<Option<PlayerID>>,
     pub ball: BallState,
     proc_stack: Vec<Box<dyn Procedure>>,
@@ -226,6 +267,33 @@ pub struct GameState {
 }
 
 impl GameState {
+    pub fn get_dugout(&self) -> impl Iterator<Item = &DugoutPlayer> {
+        self.dugout_players.iter().flatten()
+    }
+    pub fn get_dugout_mut(&mut self) -> impl Iterator<Item = &mut DugoutPlayer> {
+        self.dugout_players.iter_mut().flatten()
+    }
+    pub fn dugout_add_new_player(&mut self, player_stats: PlayerStats, place: DugoutPlace) {
+        let id = match self
+            .dugout_players
+            .iter()
+            .enumerate()
+            .find(|(_, player)| player.is_none())
+        {
+            Some((id, _)) => id,
+            None => panic!("Not room in gamestate of another dugout player!"),
+        };
+        self.dugout_players[id] = Some(DugoutPlayer {
+            stats: player_stats,
+            place,
+            id,
+        })
+    }
+    pub fn field_dugout_player(&mut self, dugout_id: PlayerID, position: Position) {
+        let DugoutPlayer { stats, place, .. } = self.dugout_players[dugout_id].take().unwrap();
+        assert_eq!(place, DugoutPlace::Reserves, "Must field from reserves_box");
+        self.add_new_player_to_field(stats, position).unwrap();
+    }
     pub fn get_available_actions(&self) -> &AvailableActions {
         &self.available_actions
     }
@@ -278,6 +346,22 @@ impl GameState {
         }
     }
 
+    pub fn get_coin_toss(&mut self) -> Coin {
+        match self.fixes.coin_fixes.pop_front() {
+            Some(fixed_toss) => fixed_toss,
+            None => {
+                assert!(self.rng_enabled);
+                self.rng.gen()
+            }
+        }
+    }
+
+    pub fn get_best_kickoff_aim(&self, team: TeamType) -> Position {
+        match team {
+            TeamType::Home => Position::new((WIDTH_ / 4, HEIGHT_ / 2)),
+            TeamType::Away => Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2)),
+        }
+    }
     pub fn get_block_dice_roll(&mut self) -> BlockDice {
         match self.fixes.blockdice_fixes.pop_front() {
             Some(roll) => roll,
@@ -494,6 +578,12 @@ impl GameState {
             NumBlockDices::TwoUphill
         }
     }
+    pub fn get_line_of_scrimage_x(&self, team: TeamType) -> Coord {
+        match team {
+            TeamType::Home => LINE_OF_SCRIMMAGE_HOME_X,
+            TeamType::Away => LINE_OF_SCRIMMAGE_AWAY_X,
+        }
+    }
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()> {
         let (old_x, old_y) = self.get_player(id)?.position.to_usize()?;
         let (new_x, new_y) = new_pos.to_usize()?;
@@ -519,7 +609,7 @@ impl GameState {
         self.get_players_on_pitch()
             .filter(move |p| p.stats.team == team)
     }
-    pub fn field_player(
+    pub fn add_new_player_to_field(
         &mut self,
         player_stats: PlayerStats,
         position: Position,
@@ -555,37 +645,33 @@ impl GameState {
     pub fn unfield_player(&mut self, id: PlayerID, place: DugoutPlace) -> Result<()> {
         if let BallState::Carried(carrier_id) = self.ball {
             assert_ne!(carrier_id, id);
-            //if carrier_id == id {
-            //return Err(Box::new(InvalidPlayerId{id: 4}))
-            //}
         }
         if matches!(self.info.active_player, Some(active_id) if active_id == id) {
             self.info.active_player = None;
         }
 
-        let player = self.get_player(id)?;
-        let (x, y) = player.position.to_usize()?;
+        let FieldedPlayer {
+            stats,
+            position: Position { x, y },
+            ..
+        } = self.fielded_players[id].take().unwrap();
 
-        let dugout_player = DugoutPlayer {
-            stats: player.stats.clone(),
-            place,
-        };
-        self.dugout_players.push(dugout_player);
+        self.dugout_add_new_player(stats, place);
 
-        self.board[x][y] = None;
-        self.fielded_players[id] = None;
+        self.board[x as usize][y as usize] = None;
         Ok(())
     }
 
     pub fn step(&mut self, action: Action) -> Result<()> {
-        let mut opt_action = None;
-
-        if self.available_actions.is_empty() {
-        } else if !self.is_legal_action(&action) {
-            return Err(Box::new(IllegalActionError { action }));
-        } else {
-            opt_action = Some(action);
-        }
+        let opt_action: Option<Action> = {
+            if self.available_actions.is_empty() {
+                None
+            } else if !self.is_legal_action(&action) {
+                return Err(Box::new(IllegalActionError { action }));
+            } else {
+                Some(action)
+            }
+        };
 
         let mut top_proc = self
             .proc_stack
@@ -641,6 +727,43 @@ impl GameState {
         self.proc_stack.push(top_proc);
          */
         self.available_actions.is_legal_action(*action)
+    }
+
+    pub fn is_setup_legal(&self, team: TeamType) -> bool {
+        let mut north_wing = 0;
+        let mut south_wing = 0;
+        let mut line_of_scrimage = 0;
+        let num_players_on_pitch = self.get_players_on_pitch_in_team(team).count();
+        let num_players_on_bench = self
+            .get_dugout()
+            .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
+            .count();
+        let num_available_players = num_players_on_bench + num_players_on_pitch;
+        let min_people_on_pitch = 11.min(num_available_players);
+        let min_people_on_scrimage = 3.min(num_available_players);
+
+        if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > 11 {
+            return false;
+        }
+        let line_of_scrimage_x = self.get_line_of_scrimage_x(team);
+
+        for pos in self.get_players_on_pitch_in_team(team).map(|p| p.position) {
+            if pos.is_out()
+                || (team == TeamType::Home && pos.x < line_of_scrimage_x)
+                || (team == TeamType::Away && pos.x > line_of_scrimage_x)
+            {
+                return false;
+            }
+
+            if pos.x == line_of_scrimage_x && LINE_OF_SCRIMMAGE_Y_RANGE.contains(&pos.y) {
+                line_of_scrimage += 1;
+            } else if SOUTH_WING_Y_RANGE.contains(&pos.y) {
+                south_wing += 1;
+            } else if NORTH_WING_Y_RANGE.contains(&pos.y) {
+                north_wing += 1;
+            }
+        }
+        north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
     }
 
     pub fn get_legal_positions(&self, at: PosAT) -> Vec<Position> {

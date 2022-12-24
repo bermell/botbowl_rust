@@ -33,6 +33,11 @@ pub const WIDTH: usize = 28;
 pub const HEIGHT: usize = 17;
 pub const WIDTH_: Coord = WIDTH as Coord;
 pub const HEIGHT_: Coord = HEIGHT as Coord;
+pub const LINE_OF_SCRIMMAGE_HOME_X: Coord = 14;
+pub const LINE_OF_SCRIMMAGE_AWAY_X: Coord = 13;
+pub const LINE_OF_SCRIMMAGE_Y_RANGE: std::ops::RangeInclusive<Coord> = 5..=11;
+pub const NORTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 1..=4;
+pub const SOUTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 12..=15;
 
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -197,13 +202,13 @@ pub struct PlayerStats {
     pub ag: u8,
     pub av: u8,
     pub team: TeamType,
-    pub skills: HashSet<Skill>,
+    skills: HashSet<Skill>,
     //skills: [Option<table::Skill>; 3],
     //injuries
     //spp
 }
 impl PlayerStats {
-    pub fn new(team: TeamType) -> PlayerStats {
+    pub fn new_lineman(team: TeamType) -> PlayerStats {
         PlayerStats {
             str_: 3,
             ma: 6,
@@ -213,9 +218,42 @@ impl PlayerStats {
             skills: HashSet::new(),
         }
     }
+    pub fn new_blitzer(team: TeamType) -> PlayerStats {
+        PlayerStats {
+            str_: 3,
+            ma: 7,
+            ag: 3,
+            av: 9,
+            team,
+            skills: HashSet::from_iter([Skill::Block]),
+        }
+    }
+    pub fn new_catcher(team: TeamType) -> PlayerStats {
+        PlayerStats {
+            str_: 2,
+            ma: 8,
+            ag: 3,
+            av: 8,
+            team,
+            skills: HashSet::from_iter([Skill::Dodge, Skill::Catch]),
+        }
+    }
+    pub fn new_thrower(team: TeamType) -> PlayerStats {
+        PlayerStats {
+            str_: 3,
+            ma: 6,
+            ag: 3,
+            av: 8,
+            team,
+            skills: HashSet::from_iter([Skill::SureHands, Skill::Throw]),
+        }
+    }
+    pub fn give_skill(&mut self, skill: Skill) {
+        self.skills.insert(skill);
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DugoutPlace {
     Reserves,
     Heated,
@@ -227,6 +265,7 @@ pub enum DugoutPlace {
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
+    pub id: PlayerID,
 }
 
 #[derive(Debug)]

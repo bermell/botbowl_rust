@@ -1,10 +1,12 @@
 use crate::core::{dices::D6, model};
 use model::*;
+use rand::Rng;
+use std::{iter::repeat_with, ops::RangeInclusive};
 
 use crate::core::table::*;
 
 use super::{
-    dices::{BlockDice, D6Target, RollTarget, Sum2D6Target},
+    dices::{BlockDice, D6Target, RollTarget, Sum2D6, Sum2D6Target},
     gamestate::GameState,
     pathing::{FixedQueue, Path, PathFinder, PathingEvent},
 };
@@ -30,8 +32,10 @@ impl From<Vec<Box<dyn Procedure>>> for ProcState {
 }
 
 pub struct Half {
-    half: u8,
-    started: bool,
+    pub half: u8,
+    pub started: bool,
+    pub kicking_this_half: TeamType,
+    pub kickoff: Option<TeamType>,
 }
 impl Half {
     pub fn new(half: u8) -> Box<Half> {
@@ -39,7 +43,42 @@ impl Half {
         Box::new(Half {
             half,
             started: false,
+            kicking_this_half: TeamType::Home,
+            kickoff: None,
         })
+    }
+    fn do_kickoff(&mut self, kicking_team: TeamType, game_state: &mut GameState) -> ProcState {
+        //SCORING IN THE OPPONENT’S TURN
+        // In some rare cases a team will score a touchdown in the
+        // opponent’s turn. For example, a player holding the ball could be
+        // pushed into the End Zone by a block. If one of your players is
+        // holding the ball in the opposing team's End Zone at any point
+        // during your opponent's turn then your team scores a touchdown
+        // immediately, but must move their Turn marker one space along
+        // the Turn track to represent the extra time the players spend
+        // celebrating this unusual method of scoring!
+
+        let procs: Vec<Box<dyn Procedure>> = vec![
+            Kickoff::new(kicking_team),
+            Setup::new(kicking_team),
+            Setup::new(other_team(kicking_team)),
+            KOWakeUp::new(),
+        ];
+
+        game_state.ball = BallState::OffPitch;
+        let player_id_on_pitch: Vec<PlayerID> = game_state
+            .get_players_on_pitch()
+            .map(|player| player.id)
+            .collect();
+
+        player_id_on_pitch.into_iter().for_each(|id| {
+            game_state
+                .unfield_player(id, DugoutPlace::Reserves)
+                .unwrap()
+        });
+
+
+        ProcState::from(procs)
     }
 }
 
@@ -51,22 +90,31 @@ impl Procedure for Half {
             info.half = self.half;
             info.home_turn = 0;
             info.away_turn = 0;
+            self.kicking_this_half = {
+                if self.half == 1 {
+                    info.kicking_first_half
+                } else {
+                    other_team(info.kicking_first_half)
+                }
+            };
+            self.kickoff = Some(self.kicking_this_half);
+        } else {
+            self.kickoff = info.kickoff_by_team;
         }
 
         if info.home_turn == 8 && info.away_turn == 8 {
             return ProcState::Done;
         }
 
-        let kicking_this_half = if self.half == 1 {
-            info.kicking_first_half
-        } else {
-            other_team(info.kicking_first_half)
-        };
+        if let Some(team) = self.kickoff {
+            self.kickoff = None;
+            return self.do_kickoff(team, game_state);
+        }
 
         let next_team: TeamType = if info.home_turn == info.away_turn {
-            kicking_this_half
+            self.kicking_this_half
         } else {
-            other_team(kicking_this_half)
+            other_team(self.kicking_this_half)
         };
 
         match next_team {
@@ -79,6 +127,8 @@ impl Procedure for Half {
         info.blitz_available = true;
         info.foul_available = true;
         info.pass_available = true;
+
+        //Todo: Turn stunned, clear used
 
         ProcState::NotDoneNew(Turn::new(next_team))
     }
@@ -138,6 +188,10 @@ impl Procedure for Turn {
             //todo, set internal state to kickoff next (or if it was the last turn return done )
             game_state.info.handle_td_by = None;
             return ProcState::NotDoneNew(Touchdown::new(id));
+        }
+
+        if game_state.info.kickoff_by_team.is_some() {
+            return ProcState::Done;
         }
 
         game_state.info.active_player = None;
@@ -1162,9 +1216,251 @@ impl Procedure for Touchdown {
             if carrier_id == self.id {
                 game_state.get_mut_team_from_player(self.id).unwrap().score += 1;
                 game_state.get_mut_player_unsafe(self.id).used = true;
+                game_state.info.kickoff_by_team =
+                    Some(game_state.get_player_unsafe(self.id).stats.team);
             }
         }
 
         ProcState::Done
+    }
+}
+pub struct GameOver;
+impl GameOver {
+    pub fn new() -> Box<GameOver> {
+        Box::new(GameOver {})
+    }
+}
+impl Procedure for GameOver {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        game_state.info.winner = {
+            if game_state.home.score < game_state.away.score {
+                Some(TeamType::Away)
+            } else if game_state.home.score > game_state.away.score {
+                Some(TeamType::Home)
+            } else {
+                None
+            }
+        };
+        game_state.info.game_over = true;
+
+        let mut aa = AvailableActions::new(TeamType::Home);
+        aa.insert_simple(SimpleAT::EndSetup);
+        aa.insert_simple(SimpleAT::DontUseReroll);
+        ProcState::NeedAction(aa)
+    }
+}
+pub struct Kickoff {
+    team: TeamType,
+}
+impl Kickoff {
+    pub fn new(team: TeamType) -> Box<Kickoff> {
+        Box::new(Kickoff { team })
+    }
+    fn changing_weather(&self, game_state: &mut GameState) {
+        let roll = game_state.get_2d6_roll();
+        game_state.info.weather = Weather::from(roll);
+        if game_state.info.weather == Weather::Nice {
+            let d8 = game_state.get_d8_roll();
+            let gust_of_wind = Direction::from(d8);
+            game_state.ball =
+                BallState::InAir(game_state.get_ball_position().unwrap() + gust_of_wind);
+        }
+    }
+}
+impl Procedure for Kickoff {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        if action.is_none() {
+            let mut aa = AvailableActions::new(self.team);
+            aa.insert_simple(SimpleAT::KickoffAimMiddle);
+            return ProcState::NeedAction(aa);
+        }
+        let mut ball_pos: Position = match action {
+            Some(Action::Simple(SimpleAT::KickoffAimMiddle)) => {
+                game_state.get_best_kickoff_aim(self.team)
+            }
+            _ => unreachable!(),
+        };
+
+        let dir_roll = game_state.get_d8_roll();
+        let len_roll = game_state.get_d6_roll();
+        ball_pos = ball_pos + Direction::from(dir_roll) * (len_roll as Coord);
+        game_state.ball = BallState::InAir(ball_pos);
+
+        let kickoff_roll = game_state.get_2d6_roll();
+        match kickoff_roll {
+            Sum2D6::Two => todo!(),
+            Sum2D6::Three => todo!(),
+            Sum2D6::Four => todo!(),
+            Sum2D6::Five => todo!(),
+            Sum2D6::Six => todo!(),
+            Sum2D6::Seven => {
+                self.changing_weather(game_state);
+            }
+            Sum2D6::Eight => todo!(),
+            Sum2D6::Nine => todo!(),
+            Sum2D6::Ten => todo!(),
+            Sum2D6::Eleven => todo!(),
+            Sum2D6::Twelve => todo!(),
+        }
+
+        ProcState::Done
+    }
+}
+pub struct Setup {
+    team: TeamType,
+}
+impl Setup {
+    pub fn new(team: TeamType) -> Box<Setup> {
+        Box::new(Setup { team })
+    }
+    fn get_empty_pos_in_box(
+        game_state: &GameState,
+        x_range: RangeInclusive<Coord>,
+        y_range: RangeInclusive<Coord>,
+    ) -> Position {
+        let mut rng = rand::thread_rng();
+        loop {
+            let x = rng.gen_range(x_range.clone());
+            let y = rng.gen_range(y_range.clone());
+            if game_state.get_player_id_at_coord(x, y).is_none() {
+                return Position { x, y };
+            }
+        }
+    }
+    pub fn random_setup(&self, game_state: &mut GameState) {
+        let players: Vec<PlayerID> = game_state
+            .get_dugout()
+            .take(11)
+            .filter(|dplayer| dplayer.stats.team == self.team)
+            .map(|p| p.id)
+            .collect();
+
+        let mut ids = players.into_iter();
+        let los_x = game_state.get_line_of_scrimage_x(self.team);
+        let los_x_range = los_x..=los_x;
+        let x_range = match self.team {
+            TeamType::Home => los_x..=WIDTH_ - 2,
+            TeamType::Away => 1..=los_x,
+        };
+        for _ in 0..3 {
+            if let Some(id) = ids.next() {
+                let p = Setup::get_empty_pos_in_box(
+                    game_state,
+                    los_x_range.clone(),
+                    LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
+                );
+                game_state.field_dugout_player(id, p);
+            }
+        }
+        for id in ids {
+            let p = Setup::get_empty_pos_in_box(
+                game_state,
+                x_range.clone(),
+                LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
+            );
+            game_state.field_dugout_player(id, p);
+        }
+    }
+}
+impl Procedure for Setup {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        let mut aa = AvailableActions::new(self.team);
+        if action.is_none() {
+            aa.insert_simple(SimpleAT::SetupLine);
+            return ProcState::NeedAction(aa);
+        }
+
+        match action {
+            Some(Action::Simple(SimpleAT::SetupLine)) => {
+                self.random_setup(game_state);
+                aa.insert_simple(SimpleAT::EndSetup);
+                ProcState::NeedAction(aa)
+            }
+
+            Some(Action::Simple(SimpleAT::EndSetup)) => ProcState::Done,
+            _ => unreachable!(),
+        }
+    }
+}
+pub struct KOWakeUp {}
+impl KOWakeUp {
+    pub fn new() -> Box<KOWakeUp> {
+        Box::new(KOWakeUp {})
+    }
+}
+impl Procedure for KOWakeUp {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        let target = D6Target::FourPlus;
+        let num_kos = game_state
+            .get_dugout()
+            .filter(|player| player.place == DugoutPlace::KnockOut)
+            .count();
+        let rolls: Vec<D6> = repeat_with(|| game_state.get_d6_roll())
+            .take(num_kos)
+            .collect();
+
+        game_state
+            .get_dugout_mut()
+            .filter(|player| player.place == DugoutPlace::KnockOut)
+            .zip(rolls.into_iter())
+            .filter(|(_, roll)| target.is_success(*roll))
+            .for_each(|(player, _)| {
+                player.place = DugoutPlace::Reserves;
+            });
+
+        ProcState::Done
+    }
+}
+pub struct CoinToss {
+    coin_toss_winner: TeamType,
+}
+impl CoinToss {
+    pub fn new() -> Box<CoinToss> {
+        Box::new(CoinToss {
+            coin_toss_winner: TeamType::Home,
+        })
+    }
+}
+impl Procedure for CoinToss {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        if action.is_none() {
+            let mut aa = AvailableActions::new(TeamType::Away);
+            aa.insert_simple(SimpleAT::Heads);
+            aa.insert_simple(SimpleAT::Tails);
+            return ProcState::NeedAction(aa);
+        }
+
+        let simple_action = {
+            if let Some(Action::Simple(simple_at)) = action {
+                simple_at
+            } else {
+                panic!();
+            }
+        };
+        match simple_action {
+            SimpleAT::Heads | SimpleAT::Tails => {
+                let toss = game_state.get_coin_toss();
+                self.coin_toss_winner = if simple_action == SimpleAT::from(toss) {
+                    TeamType::Away
+                } else {
+                    TeamType::Home
+                };
+
+                let mut aa = AvailableActions::new(self.coin_toss_winner);
+                aa.insert_simple(SimpleAT::Receive);
+                aa.insert_simple(SimpleAT::Kick);
+                return ProcState::NeedAction(aa);
+            }
+            SimpleAT::Receive => {
+                game_state.info.kicking_first_half = other_team(self.coin_toss_winner);
+                ProcState::Done
+            }
+            SimpleAT::Kick => {
+                game_state.info.kicking_first_half = self.coin_toss_winner;
+                ProcState::Done
+            }
+
+            _ => unreachable!(),
+        }
     }
 }

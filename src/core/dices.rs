@@ -6,7 +6,7 @@ use std::{
 use rand::{distributions::Standard, prelude::Distribution};
 
 use super::{
-    model::{Coord, Direction},
+    model::{Coord, Direction, Weather},
     table::SimpleAT,
 };
 
@@ -41,6 +41,32 @@ macro_rules! impl_enum_try_from {
 
 fn truncate_to<T: Ord>(lower_limit: T, upper_limit: T, value: T) -> T {
     max(lower_limit, min(upper_limit, value))
+}
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Coin {
+    Heads,
+    Tails,
+}
+
+impl From<Coin> for SimpleAT {
+    fn from(coin: Coin) -> Self {
+        match coin {
+            Coin::Heads => SimpleAT::Heads,
+            Coin::Tails => SimpleAT::Tails,
+        }
+    }
+}
+
+impl Distribution<Coin> for Standard {
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Coin {
+        match rng.gen_range(1..=2) {
+            1 => Coin::Heads,
+            2 => Coin::Tails,
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl_enum_try_from! {
@@ -213,6 +239,20 @@ impl_enum_try_from! {
     (),
     ()
 }
+
+// The Weather table
+impl From<Sum2D6> for Weather {
+    fn from(value: Sum2D6) -> Self {
+        match value {
+            Sum2D6::Two => Weather::Sweltering,
+            Sum2D6::Three => Weather::Sunny,
+            Sum2D6::Eleven => Weather::Rain,
+            Sum2D6::Twelve => Weather::Blizzard,
+            _ => Weather::Nice,
+        }
+    }
+}
+
 impl Distribution<Sum2D6> for Standard {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Sum2D6 {
         Sum2D6::try_from(rng.gen_range(1..=6) + rng.gen_range(1..=6)).unwrap()
