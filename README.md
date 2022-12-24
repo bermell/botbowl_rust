@@ -21,6 +21,7 @@ List of things to implement and write tests for in order to use as engine for fo
 - [ ] Passing (in pathfinding) 
 - [x] Handing off (in pathfinding) 
 - [ ] (1/11) Kickoff table 
+- [ ] kickoff touchback
 - [x] Very basic setup 
 - [ ] Useful setup
 - [x] Touchdown

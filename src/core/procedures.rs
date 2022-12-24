@@ -1278,19 +1278,39 @@ impl Procedure for Kickoff {
 
         let kickoff_roll = game_state.get_2d6_roll();
         match kickoff_roll {
-            Sum2D6::Two => todo!(),
-            Sum2D6::Three => todo!(),
-            Sum2D6::Four => todo!(),
-            Sum2D6::Five => todo!(),
-            Sum2D6::Six => todo!(),
+            Sum2D6::Two => {
+                //get the ref
+            }
+            Sum2D6::Three => {
+                //Riot
+            }
+            Sum2D6::Four => {
+                //Perfect Defence
+            }
+            Sum2D6::Five => {
+                //High Kick
+            }
+            Sum2D6::Six => {
+                //Cheering fans
+            }
             Sum2D6::Seven => {
                 self.changing_weather(game_state);
             }
-            Sum2D6::Eight => todo!(),
-            Sum2D6::Nine => todo!(),
-            Sum2D6::Ten => todo!(),
-            Sum2D6::Eleven => todo!(),
-            Sum2D6::Twelve => todo!(),
+            Sum2D6::Eight => {
+                //Brilliant coaching
+            }
+            Sum2D6::Nine => {
+                //Quick snap
+            }
+            Sum2D6::Ten => {
+                //Blitz!
+            }
+            Sum2D6::Eleven => {
+                //Throw a rock
+            }
+            Sum2D6::Twelve => {
+                //Pitch invasion
+            }
         }
 
         ProcState::Done
@@ -1455,5 +1475,34 @@ impl Procedure for CoinToss {
 
             _ => unreachable!(),
         }
+    }
+}
+
+pub struct LandKickoff {}
+impl LandKickoff {
+    pub fn new() -> Box<LandKickoff> {
+        Box::new(LandKickoff {})
+    }
+}
+impl Procedure for LandKickoff {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        let pos = match game_state.ball {
+            BallState::InAir(pos) => pos,
+            _ => unreachable!(),
+        };
+
+        if pos.is_out() {
+            //todo touchback
+        }
+        match game_state.get_player_id_at(pos) {
+            Some(id) => {
+                // catch, if fail and bounce out of bounds or to opp side -> touchback
+            }
+            None => {
+                // bounce, if bounce out of bounds or to opp side -> touchback
+            }
+        }
+
+        todo!();
     }
 }

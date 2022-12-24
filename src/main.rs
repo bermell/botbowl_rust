@@ -73,8 +73,8 @@ mod tests {
         state.step_simple(SimpleAT::SetupLine);
         state.step_simple(SimpleAT::EndSetup);
 
-        state.fixes.fix_d8(3); // scatter direction
-        state.fixes.fix_d6(4); // scatter length
+        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+        state.fixes.fix_d6(5); // scatter length
 
         state.fixes.fix_d6(3); // fix changing whether kickoff result
         state.fixes.fix_d6(4); // fix changing weather kickoff result
@@ -82,9 +82,14 @@ mod tests {
         state.fixes.fix_d6(2); // Nice weather
         state.fixes.fix_d6(5); // nice weather
 
-        state.fixes.fix_d8(3); // gust of wind
+        state.fixes.fix_d8_direction(Direction::right()); // gust of wind
+                                                          // state.fixes.fix_d8_direction(Direction::right()); // bounce
 
         state.step_simple(SimpleAT::KickoffAimMiddle);
+
+        // assert!(
+        //     matches!(state.ball, BallState::OnGround(ball_pos) if ball_pos == Position::new((17, 3)))
+        // );
     }
 
     #[test]

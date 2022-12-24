@@ -81,6 +81,30 @@ impl Direction {
     pub fn distance(&self) -> Coord {
         max(self.dx.abs(), self.dy.abs())
     }
+    pub fn up() -> Direction {
+        Direction { dx: 0, dy: -1 }
+    }
+    pub fn upleft() -> Direction {
+        Direction { dx: -1, dy: -1 }
+    }
+    pub fn upright() -> Direction {
+        Direction { dx: 1, dy: -1 }
+    }
+    pub fn left() -> Direction {
+        Direction { dx: -1, dy: 0 }
+    }
+    pub fn right() -> Direction {
+        Direction { dx: 1, dy: 0 }
+    }
+    pub fn down() -> Direction {
+        Direction { dx: 0, dy: 1 }
+    }
+    pub fn downleft() -> Direction {
+        Direction { dx: -1, dy: 1 }
+    }
+    pub fn downright() -> Direction {
+        Direction { dx: 1, dy: 1 }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

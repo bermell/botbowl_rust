@@ -230,6 +230,9 @@ impl FixedDice {
     pub fn fix_d8(&mut self, value: u8) {
         self.d8_fixes.push_back(D8::try_from(value).unwrap());
     }
+    pub fn fix_d8_direction(&mut self, direction: Direction) {
+        self.d8_fixes.push_back(D8::from(direction));
+    }
     pub fn fix_blockdice(&mut self, value: BlockDice) {
         self.blockdice_fixes.push_back(value);
     }
