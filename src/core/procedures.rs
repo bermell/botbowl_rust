@@ -66,6 +66,8 @@ impl Half {
         ];
 
         game_state.ball = BallState::OffPitch;
+
+        #[allow(clippy::needless_collect)]
         let player_id_on_pitch: Vec<PlayerID> = game_state
             .get_players_on_pitch()
             .map(|player| player.id)
@@ -76,7 +78,6 @@ impl Half {
                 .unfield_player(id, DugoutPlace::Reserves)
                 .unwrap()
         });
-
 
         ProcState::from(procs)
     }
@@ -684,13 +685,6 @@ impl Injury {
             fouler: None,
         })
     }
-    pub fn new_foul(id: PlayerID, fouler: PlayerID) -> Box<Injury> {
-        Box::new(Injury {
-            id,
-            crowd: false,
-            fouler: Some(fouler),
-        })
-    }
 }
 impl Procedure for Injury {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
@@ -1231,15 +1225,11 @@ impl GameOver {
     }
 }
 impl Procedure for GameOver {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        game_state.info.winner = {
-            if game_state.home.score < game_state.away.score {
-                Some(TeamType::Away)
-            } else if game_state.home.score > game_state.away.score {
-                Some(TeamType::Home)
-            } else {
-                None
-            }
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        game_state.info.winner = match game_state.home.score.cmp(&game_state.away.score) {
+            std::cmp::Ordering::Less => Some(TeamType::Away),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(TeamType::Home),
         };
         game_state.info.game_over = true;
 
@@ -1328,6 +1318,7 @@ impl Setup {
         }
     }
     pub fn random_setup(&self, game_state: &mut GameState) {
+        #[allow(clippy::needless_collect)]
         let players: Vec<PlayerID> = game_state
             .get_dugout()
             .take(11)
@@ -1395,6 +1386,8 @@ impl Procedure for KOWakeUp {
             .get_dugout()
             .filter(|player| player.place == DugoutPlace::KnockOut)
             .count();
+
+        #[allow(clippy::needless_collect)]
         let rolls: Vec<D6> = repeat_with(|| game_state.get_d6_roll())
             .take(num_kos)
             .collect();
@@ -1449,7 +1442,7 @@ impl Procedure for CoinToss {
                 let mut aa = AvailableActions::new(self.coin_toss_winner);
                 aa.insert_simple(SimpleAT::Receive);
                 aa.insert_simple(SimpleAT::Kick);
-                return ProcState::NeedAction(aa);
+                ProcState::NeedAction(aa)
             }
             SimpleAT::Receive => {
                 game_state.info.kicking_first_half = other_team(self.coin_toss_winner);
