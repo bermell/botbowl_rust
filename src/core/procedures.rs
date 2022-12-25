@@ -58,8 +58,9 @@ impl Half {
         // the Turn track to represent the extra time the players spend
         // celebrating this unusual method of scoring!
 
+        game_state.info.kicking_this_drive = kicking_team;
         let procs: Vec<Box<dyn Procedure>> = vec![
-            Kickoff::new(kicking_team),
+            Kickoff::new(),
             Setup::new(kicking_team),
             Setup::new(other_team(kicking_team)),
             KOWakeUp::new(),
@@ -302,11 +303,7 @@ impl MoveAction {
             return ProcState::NotDoneNew(new_proc);
         }
 
-        let path = if let MoveActionState::ActivePath(path) = &mut self.state {
-            path
-        } else {
-            panic!()
-        };
+        let MoveActionState::ActivePath(path) = &mut self.state else {panic!()};
 
         // check if any rolls left to handle, if not then just move to end of path
         if path.steps.iter().all(|(_, rolls)| rolls.is_empty()) {
@@ -487,7 +484,7 @@ impl SimpleProc for PickupProc {
 
     fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.get_mut_player(self.id).unwrap().used = true;
-        vec![Box::new(Bounce {})]
+        vec![Bounce::new()]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -718,10 +715,15 @@ impl Procedure for Injury {
     }
 }
 
-struct Bounce;
+struct Bounce {
+    kick: bool,
+}
 impl Bounce {
     pub fn new() -> Box<Bounce> {
-        Box::new(Bounce {})
+        Box::new(Bounce { kick: false })
+    }
+    pub fn new_with_kick_arg(kick: bool) -> Box<Bounce> {
+        Box::new(Bounce { kick })
     }
 }
 impl Procedure for Bounce {
@@ -731,11 +733,18 @@ impl Procedure for Bounce {
         let dir = Direction::from(dice);
         let new_pos = current_ball_pos + dir;
 
+        if self.kick
+            && (new_pos.is_out() || new_pos.is_on_team_side(game_state.info.kicking_this_drive))
+        {
+            return ProcState::DoneNew(Touchback::new());
+        }
+
         if let Some(player) = game_state.get_player_at(new_pos) {
             if player.can_catch() {
-                ProcState::DoneNew(Catch::new(
+                ProcState::DoneNew(Catch::new_with_kick_arg(
                     player.id,
-                    game_state.get_catch_modifers(player.id).unwrap(),
+                    game_state.get_catch_target(player.id).unwrap(),
+                    self.kick,
                 ))
             } else {
                 //will run bounce again
@@ -743,9 +752,7 @@ impl Procedure for Bounce {
                 ProcState::NotDone
             }
         } else if new_pos.is_out() {
-            ProcState::DoneNew(Box::new(ThrowIn {
-                from: current_ball_pos,
-            }))
+            ProcState::DoneNew(ThrowIn::new(current_ball_pos))
         } else {
             game_state.ball = BallState::OnGround(new_pos);
             ProcState::Done
@@ -796,7 +803,7 @@ impl Procedure for ThrowIn {
             match game_state.get_player_at(target) {
                 Some(player) if player.can_catch() => ProcState::DoneNew(Catch::new(
                     player.id,
-                    game_state.get_catch_modifers(player.id).unwrap(),
+                    game_state.get_catch_target(player.id).unwrap(),
                 )),
                 _ => {
                     game_state.ball = BallState::InAir(target);
@@ -809,10 +816,22 @@ impl Procedure for ThrowIn {
 struct Catch {
     id: PlayerID,
     target: D6Target,
+    kick: bool,
 }
 impl Catch {
     pub fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<Catch>> {
-        SimpleProcContainer::new(Catch { id, target })
+        SimpleProcContainer::new(Catch {
+            id,
+            target,
+            kick: false,
+        })
+    }
+    pub fn new_with_kick_arg(
+        id: PlayerID,
+        target: D6Target,
+        kick: bool,
+    ) -> Box<SimpleProcContainer<Catch>> {
+        SimpleProcContainer::new(Catch { id, target, kick })
     }
 }
 impl SimpleProc for Catch {
@@ -834,7 +853,7 @@ impl SimpleProc for Catch {
     }
 
     fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
-        vec![Box::new(Bounce {})]
+        vec![Bounce::new_with_kick_arg(self.kick)]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -1239,34 +1258,33 @@ impl Procedure for GameOver {
         ProcState::NeedAction(aa)
     }
 }
-pub struct Kickoff {
-    team: TeamType,
-}
+pub struct Kickoff {}
 impl Kickoff {
-    pub fn new(team: TeamType) -> Box<Kickoff> {
-        Box::new(Kickoff { team })
+    pub fn new() -> Box<Kickoff> {
+        Box::new(Kickoff {})
     }
     fn changing_weather(&self, game_state: &mut GameState) {
         let roll = game_state.get_2d6_roll();
         game_state.info.weather = Weather::from(roll);
-        if game_state.info.weather == Weather::Nice {
+        let ball_pos = game_state.get_ball_position().unwrap();
+        if game_state.info.weather == Weather::Nice && !ball_pos.is_out() {
             let d8 = game_state.get_d8_roll();
             let gust_of_wind = Direction::from(d8);
-            game_state.ball =
-                BallState::InAir(game_state.get_ball_position().unwrap() + gust_of_wind);
+            game_state.ball = BallState::InAir(ball_pos + gust_of_wind);
         }
     }
 }
 impl Procedure for Kickoff {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        let team = game_state.info.kicking_this_drive;
         if action.is_none() {
-            let mut aa = AvailableActions::new(self.team);
+            let mut aa = AvailableActions::new(team);
             aa.insert_simple(SimpleAT::KickoffAimMiddle);
             return ProcState::NeedAction(aa);
         }
         let mut ball_pos: Position = match action {
             Some(Action::Simple(SimpleAT::KickoffAimMiddle)) => {
-                game_state.get_best_kickoff_aim(self.team)
+                game_state.get_best_kickoff_aim_for(team)
             }
             _ => unreachable!(),
         };
@@ -1277,6 +1295,7 @@ impl Procedure for Kickoff {
         game_state.ball = BallState::InAir(ball_pos);
 
         let kickoff_roll = game_state.get_2d6_roll();
+        let procs: Vec<Box<dyn Procedure>> = vec![LandKickoff::new()];
         match kickoff_roll {
             Sum2D6::Two => {
                 //get the ref
@@ -1313,7 +1332,7 @@ impl Procedure for Kickoff {
             }
         }
 
-        ProcState::Done
+        ProcState::from(procs)
     }
 }
 pub struct Setup {
@@ -1443,13 +1462,8 @@ impl Procedure for CoinToss {
             return ProcState::NeedAction(aa);
         }
 
-        let simple_action = {
-            if let Some(Action::Simple(simple_at)) = action {
-                simple_at
-            } else {
-                panic!();
-            }
-        };
+        let Some(Action::Simple(simple_action)) = action else {unreachable!()};
+
         match simple_action {
             SimpleAT::Heads | SimpleAT::Tails => {
                 let toss = game_state.get_coin_toss();
@@ -1486,23 +1500,44 @@ impl LandKickoff {
 }
 impl Procedure for LandKickoff {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        let pos = match game_state.ball {
-            BallState::InAir(pos) => pos,
-            _ => unreachable!(),
-        };
+        let BallState::InAir(ball_position) = game_state.ball else { unreachable!() };
 
-        if pos.is_out() {
-            //todo touchback
-        }
-        match game_state.get_player_id_at(pos) {
-            Some(id) => {
-                // catch, if fail and bounce out of bounds or to opp side -> touchback
-            }
-            None => {
-                // bounce, if bounce out of bounds or to opp side -> touchback
-            }
+        if ball_position.is_out()
+            || !ball_position.is_on_team_side(other_team(game_state.info.kicking_this_drive))
+        {
+            return ProcState::DoneNew(Touchback::new());
         }
 
-        todo!();
+        match game_state.get_player_id_at(ball_position) {
+            Some(id) => ProcState::DoneNew(Catch::new_with_kick_arg(
+                id,
+                game_state.get_catch_target(id).unwrap(),
+                true,
+            )),
+            None => ProcState::DoneNew(Bounce::new_with_kick_arg(true)),
+        }
+    }
+}
+pub struct Touchback {}
+impl Touchback {
+    pub fn new() -> Box<Touchback> {
+        Box::new(Touchback {})
+    }
+}
+impl Procedure for Touchback {
+    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+        if let Some(Action::Positional(_, position)) = action {
+            game_state.ball = BallState::Carried(game_state.get_player_id_at(position).unwrap());
+            ProcState::Done
+        } else {
+            let team = other_team(game_state.info.kicking_this_drive);
+            let mut aa = AvailableActions::new(team);
+            let positions: Vec<_> = game_state
+                .get_players_on_pitch_in_team(team)
+                .map(|p| p.position)
+                .collect();
+            aa.insert_positional(PosAT::SelectPosition, positions);
+            ProcState::NeedAction(aa)
+        }
     }
 }

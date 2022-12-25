@@ -4,6 +4,7 @@ pub enum PosAT {
     StartBlitz,
     StartPass,
     StartFoul,
+    SelectPosition,
     Push,
     FollowUp,
     StartHandoff,

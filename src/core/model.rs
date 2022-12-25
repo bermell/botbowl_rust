@@ -134,6 +134,12 @@ impl Position {
     pub fn is_out(&self) -> bool {
         self.x <= 0 || self.x >= WIDTH_ - 1 || self.y <= 0 || self.y >= HEIGHT_ - 1
     }
+    pub fn is_on_team_side(&self, team: TeamType) -> bool {
+        match team {
+            TeamType::Home => self.x >= WIDTH_ / 2,
+            TeamType::Away => self.x < WIDTH_ / 2,
+        }
+    }
 }
 impl From<(usize, usize)> for Position {
     fn from(xy: (usize, usize)) -> Self {

@@ -83,7 +83,7 @@ mod tests {
         state.fixes.fix_d6(5); // nice weather
 
         state.fixes.fix_d8_direction(Direction::right()); // gust of wind
-                                                          // state.fixes.fix_d8_direction(Direction::right()); // bounce
+        state.fixes.fix_d8_direction(Direction::right()); // bounce
 
         state.step_simple(SimpleAT::KickoffAimMiddle);
 

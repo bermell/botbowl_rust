@@ -488,7 +488,7 @@ impl<'a> GameInfo<'a> {
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
 
-        let target: D6Target = self.game_state.get_catch_modifers(id).unwrap();
+        let target: D6Target = self.game_state.get_catch_target(id).unwrap();
         next_node.apply_handoff(id, target);
         // the Catch procedure will check fo touchdown
 

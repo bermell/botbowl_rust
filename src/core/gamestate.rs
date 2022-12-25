@@ -185,6 +185,7 @@ pub struct GameInfo {
     pub weather: Weather,
     pub kicking_first_half: TeamType,
     pub kickoff_by_team: Option<TeamType>,
+    pub kicking_this_drive: TeamType,
     pub handoff_available: bool,
     pub foul_available: bool,
     pub pass_available: bool,
@@ -210,6 +211,7 @@ impl GameInfo {
             blitz_available: true,
             handle_td_by: None,
             kickoff_by_team: None,
+            kicking_this_drive: TeamType::Home,
         }
     }
 }
@@ -359,7 +361,7 @@ impl GameState {
         }
     }
 
-    pub fn get_best_kickoff_aim(&self, team: TeamType) -> Position {
+    pub fn get_best_kickoff_aim_for(&self, team: TeamType) -> Position {
         match team {
             TeamType::Home => Position::new((WIDTH_ / 4, HEIGHT_ / 2)),
             TeamType::Away => Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2)),
@@ -477,7 +479,7 @@ impl GameState {
             None => Err(Box::new(InvalidPlayerId { id })),
         }
     }
-    pub fn get_catch_modifers(&self, id: PlayerID) -> Result<D6Target> {
+    pub fn get_catch_target(&self, id: PlayerID) -> Result<D6Target> {
         let player = self.get_player(id)?;
         let mut target = player.ag_target();
         let team = player.stats.team;
