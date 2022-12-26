@@ -101,7 +101,7 @@ impl Procedure for Half {
             };
             self.kickoff = Some(self.kicking_this_half);
         } else {
-            self.kickoff = info.kickoff_by_team;
+            self.kickoff = info.kickoff_by_team.take();
         }
 
         if info.home_turn == 8 && info.away_turn == 8 {

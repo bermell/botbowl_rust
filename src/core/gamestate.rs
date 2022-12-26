@@ -302,6 +302,18 @@ impl GameState {
     pub fn get_available_actions(&self) -> &AvailableActions {
         &self.available_actions
     }
+    pub fn home_to_act(&self) -> bool {
+        self.get_available_actions()
+            .get_team()
+            .map(|team| team == TeamType::Home)
+            .unwrap_or(false)
+    }
+    pub fn away_to_act(&self) -> bool {
+        self.get_available_actions()
+            .get_team()
+            .map(|team| team == TeamType::Away)
+            .unwrap_or(false)
+    }
 
     pub fn set_active_player(&mut self, id: PlayerID) {
         debug_assert!(self.get_player(id).is_ok());
@@ -363,8 +375,8 @@ impl GameState {
 
     pub fn get_best_kickoff_aim_for(&self, team: TeamType) -> Position {
         match team {
-            TeamType::Home => Position::new((WIDTH_ / 4, HEIGHT_ / 2)),
-            TeamType::Away => Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2)),
+            TeamType::Home => Position::new((WIDTH_ / 4, HEIGHT_ / 2 - 1)),
+            TeamType::Away => Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2 - 1)),
         }
     }
     pub fn get_block_dice_roll(&mut self) -> BlockDice {

@@ -62,14 +62,18 @@ mod tests {
     fn start_of_game() {
         let mut state: GameState = GameStateBuilder::new_start_of_game();
 
+        assert!(state.away_to_act());
         state.fixes.fix_coin(Coin::Heads);
         state.step_simple(SimpleAT::Heads);
 
+        assert!(state.away_to_act());
         state.step_simple(SimpleAT::Kick);
 
+        assert!(state.home_to_act());
         state.step_simple(SimpleAT::SetupLine);
         state.step_simple(SimpleAT::EndSetup);
 
+        assert!(state.away_to_act());
         state.step_simple(SimpleAT::SetupLine);
         state.step_simple(SimpleAT::EndSetup);
 
@@ -85,11 +89,12 @@ mod tests {
         state.fixes.fix_d8_direction(Direction::right()); // gust of wind
         state.fixes.fix_d8_direction(Direction::right()); // bounce
 
+        assert!(state.away_to_act());
         state.step_simple(SimpleAT::KickoffAimMiddle);
 
-        // assert!(
-        //     matches!(state.ball, BallState::OnGround(ball_pos) if ball_pos == Position::new((17, 3)))
-        // );
+        let ball_pos = state.get_ball_position().unwrap();
+        assert!(matches!(state.ball, BallState::OnGround(_)));
+        assert_eq!(ball_pos, Position::new((21, 4)));
     }
 
     #[test]
