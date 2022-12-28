@@ -327,7 +327,9 @@ impl<'a> GameInfo<'a> {
         }
     }
     fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
-        if node.remaining_movement() == 0 && self.player_action != PosAT::StartHandoff {
+        if node.remaining_movement() == 0
+            && !matches!(self.player_action, PosAT::StartFoul | PosAT::StartHandoff)
+        {
             //todo: and can't handoff here.
             return false;
         }
@@ -369,7 +371,6 @@ impl<'a> GameInfo<'a> {
             Some(player)
                 if self.player_action == PosAT::StartFoul
                     && player.stats.team != self.team
-                    && parent_node.remaining_movement() > 0
                     && player.status != PlayerStatus::Up =>
             {
                 self.expand_foul_to(to, player.id, parent_node, prev)
@@ -551,25 +552,33 @@ impl<'a> GameInfo<'a> {
 }
 
 impl<'a> PathFinder<'a> {
-    pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<Option<Path>>> {
-        let player = game_state.get_player_unsafe(id);
-        let mut pf = PathFinder {
+    fn new(info: GameInfo) -> PathFinder {
+        PathFinder {
             nodes: Default::default(),
             locked_nodes: Default::default(),
             open_set: Default::default(),
             risky_sets: Default::default(),
-            info: GameInfo::new(game_state, player),
-        };
-
+            info,
+        }
+    }
+    pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<Option<Path>>> {
+        let player = game_state.get_player_unsafe(id);
+        let info = GameInfo::new(game_state, player);
         let root_node = Rc::new(Node::new(
             None,
-            pf.info.start_pos,
+            info.start_pos,
             player.moves_left(),
             player.gfis_left(),
         ));
 
-        assert!(pf.info.can_continue_expanding(&root_node));
+        if !info.can_continue_expanding(&root_node) {
+            return Ok(Default::default());
+        }
+
+        let mut pf = PathFinder::new(info);
+
         pf.open_set.push(root_node);
+
         loop {
             //expansion
             while let Some(node) = pf.open_set.pop() {

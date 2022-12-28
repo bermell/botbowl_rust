@@ -358,12 +358,10 @@ impl Procedure for MoveAction {
         let player = game_state.get_player_unsafe(self.player_id);
 
         let mut aa = AvailableActions::new(player.stats.team);
-        if player.total_movement_left() > 0 {
-            let paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
-            paths.iter().flatten().for_each(|path| aa.insert_path(path));
+        let paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
+        paths.iter().flatten().for_each(|path| aa.insert_path(path));
 
-            self.state = MoveActionState::SelectPath(paths);
-        }
+        self.state = MoveActionState::SelectPath(paths);
         aa.insert_simple(SimpleAT::EndPlayerTurn);
         aa
     }
@@ -375,13 +373,8 @@ impl Procedure for MoveAction {
         }
 
         match game_state.get_player(self.player_id) {
-            Ok(player) if player.used => {
-                return ProcState::Done;
-            }
-            Err(_) => {
-                // Player not on field anymore
-                return ProcState::Done;
-            }
+            Ok(player) if player.used => return ProcState::Done,
+            Err(_) => return ProcState::Done, // player not on field anymore
             _ => (),
         }
 

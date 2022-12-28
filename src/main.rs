@@ -529,6 +529,82 @@ mod tests {
     }
 
     #[test]
+    fn double_gfi_handoff_with_incremental_steps() {
+        let start_pos = Position::new((10, 1));
+        let target_pos = Position::new((13, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        let id = state.get_player_id_at(start_pos).unwrap();
+        let ma = state.get_player_unsafe(id).stats.ma;
+        state.get_mut_player_unsafe(id).moves = ma;
+        assert_eq!(state.get_player_unsafe(id).moves_left(), 0);
+        assert_eq!(state.get_player_unsafe(id).total_movement_left(), 2);
+
+        state.step_positional(PosAT::StartHandoff, start_pos);
+        state.fixes.fix_d6(2); //GFI
+        state.fixes.fix_d6(2); //GFI
+
+        state.step_positional(PosAT::Move, target_pos + (-1, 0));
+
+        state.fixes.fix_d6(4); //Catch
+        state.step_positional(PosAT::Handoff, target_pos);
+
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert_eq!(
+            state
+                .get_player_unsafe(id)
+                .position
+                .distance_to(&target_pos),
+            1
+        );
+    }
+
+    #[test]
+    fn double_gfi_foul() {
+        let start_pos = Position::new((10, 1));
+        let target_pos = Position::new((13, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(target_pos)
+            .build();
+        let victim_id = state.get_player_id_at(target_pos).unwrap();
+        state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+        let id = state.get_player_id_at(start_pos).unwrap();
+        let ma = state.get_player_unsafe(id).stats.ma;
+        state.get_mut_player_unsafe(id).moves = ma;
+        assert_eq!(state.get_player_unsafe(id).moves_left(), 0);
+        assert_eq!(state.get_player_unsafe(id).total_movement_left(), 2);
+
+        state.step_positional(PosAT::StartFoul, start_pos);
+        state.fixes.fix_d6(2); //GFI
+        state.fixes.fix_d6(2); //GFI
+
+        state.step_positional(PosAT::Move, target_pos + (-1, 0));
+
+        state.fixes.fix_d6(4);
+        state.fixes.fix_d6(5);
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(2);
+        state.step_positional(PosAT::Foul, target_pos);
+
+        assert_eq!(
+            state
+                .get_player_unsafe(id)
+                .position
+                .distance_to(&target_pos),
+            1
+        );
+        assert_eq!(
+            state.get_player_unsafe(victim_id).status,
+            PlayerStatus::Stunned
+        );
+    }
+
+    #[test]
     fn can_only_handoff_when_carrying_the_ball() {
         let start_pos = Position::new((2, 1));
         let target_pos = Position::new((5, 5));
