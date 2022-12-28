@@ -204,37 +204,25 @@ impl Procedure for Turn {
             return ProcState::NeedAction(self.available_actions(game_state));
         }
 
-        if let Some(Action::Positional(_, position)) = action {
+        if let Some(Action::Positional(at, position)) = action {
             game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
-        }
-
-        match action.unwrap() {
-            Action::Positional(PosAT::StartMove, _) => {
-                game_state.info.player_action_type = Some(PlayerActionType::MoveAction);
-                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
+            let info = &mut game_state.info;
+            info.player_action_type = Some(at);
+            match at {
+                PosAT::StartMove => (),
+                PosAT::StartHandoff => info.handoff_available = false,
+                PosAT::StartFoul => info.foul_available = false,
+                PosAT::StartBlitz => info.blitz_available = false,
+                PosAT::StartBlock => {
+                    return ProcState::NotDoneNew(BlockAction::new());
+                }
+                _ => unreachable!(),
             }
-            Action::Positional(PosAT::StartHandoff, _) => {
-                game_state.info.player_action_type = Some(PlayerActionType::HandoffAction);
-                game_state.info.handoff_available = false;
-                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
-            }
-            Action::Positional(PosAT::StartFoul, _) => {
-                game_state.info.player_action_type = Some(PlayerActionType::FoulAction);
-                game_state.info.foul_available = false;
-                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
-            }
-            Action::Positional(PosAT::StartBlitz, _) => {
-                game_state.info.player_action_type = Some(PlayerActionType::BlitzAction);
-                game_state.info.blitz_available = false;
-                ProcState::NotDoneNew(MoveAction::new(game_state.info.active_player.unwrap()))
-            }
-            Action::Positional(PosAT::StartBlock, _) => {
-                game_state.info.player_action_type = Some(PlayerActionType::BlockAction);
-                ProcState::NotDoneNew(BlockAction::new())
-            }
-
-            Action::Simple(SimpleAT::EndTurn) => ProcState::Done,
-            _ => panic!("Action not allowed: {:?}", action),
+            ProcState::NotDoneNew(MoveAction::new(info.active_player.unwrap()))
+        } else if let Some(Action::Simple(SimpleAT::EndTurn)) = action {
+            ProcState::Done
+        } else {
+            unreachable!()
         }
     }
 }

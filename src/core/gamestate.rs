@@ -11,7 +11,7 @@ use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
     dices::{BlockDice, Coin, D6Target, RollTarget, Sum2D6, D6, D8},
     procedures::{GameOver, Half},
-    table::{NumBlockDices, PlayerActionType, PosAT, SimpleAT},
+    table::{NumBlockDices, PosAT, SimpleAT},
 };
 
 pub struct GameStateBuilder {
@@ -179,7 +179,7 @@ pub struct GameInfo {
     pub away_turn: u8,
     pub winner: Option<TeamType>,
     pub active_player: Option<PlayerID>,
-    pub player_action_type: Option<PlayerActionType>,
+    pub player_action_type: Option<PosAT>,
     pub team_turn: TeamType,
     pub game_over: bool,
     pub weather: Weather,

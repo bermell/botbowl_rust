@@ -6,7 +6,7 @@ use model::*;
 
 use super::dices::{D6Target, RollTarget, Sum2D6Target};
 use super::gamestate::GameState;
-use super::table::{NumBlockDices, PlayerActionType, PosAT};
+use super::table::{NumBlockDices, PosAT};
 
 type OptRcNode = Option<Rc<Node>>;
 
@@ -262,7 +262,7 @@ enum PathingBallState {
 //This struct gather all infomation needed about the board
 struct GameInfo<'a> {
     game_state: &'a GameState,
-    player_action: PlayerActionType,
+    player_action: PosAT,
     team: TeamType,
     tzones: FullPitch<i8>,
     ball: PathingBallState,
@@ -307,12 +307,10 @@ impl<'a> GameInfo<'a> {
         let mut player_action = game_state
             .info
             .player_action_type
-            .unwrap_or(PlayerActionType::MoveAction);
-        if player_action == PlayerActionType::HandoffAction
-            && !matches!(ball, PathingBallState::IsCarrier(_))
-        {
+            .unwrap_or(PosAT::StartMove);
+        if player_action == PosAT::StartHandoff && !matches!(ball, PathingBallState::IsCarrier(_)) {
             // Can't handoff if not ball carrier
-            player_action = PlayerActionType::MoveAction;
+            player_action = PosAT::StartMove;
         }
 
         GameInfo {
@@ -329,7 +327,7 @@ impl<'a> GameInfo<'a> {
         }
     }
     fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
-        if node.remaining_movement() == 0 && self.player_action != PlayerActionType::HandoffAction {
+        if node.remaining_movement() == 0 && self.player_action != PosAT::StartHandoff {
             //todo: and can't handoff here.
             return false;
         }
@@ -354,14 +352,14 @@ impl<'a> GameInfo<'a> {
         // expand to move_node, block_node, handoff_mode
         let new_node: Option<Node> = match self.game_state.get_player_at(to) {
             Some(player)
-                if self.player_action == PlayerActionType::HandoffAction
+                if self.player_action == PosAT::StartHandoff
                     && player.stats.team == self.team
                     && player.can_catch() =>
             {
                 self.expand_handoff_to(to, player.id, parent_node, prev)
             }
             Some(player)
-                if self.player_action == PlayerActionType::BlitzAction
+                if self.player_action == PosAT::StartBlitz
                     && player.stats.team != self.team
                     && parent_node.remaining_movement() > 0
                     && player.status == PlayerStatus::Up =>
@@ -369,7 +367,7 @@ impl<'a> GameInfo<'a> {
                 self.expand_block_to(to, player.id, parent_node, prev)
             }
             Some(player)
-                if self.player_action == PlayerActionType::FoulAction
+                if self.player_action == PosAT::StartFoul
                     && player.stats.team != self.team
                     && parent_node.remaining_movement() > 0
                     && player.status != PlayerStatus::Up =>
