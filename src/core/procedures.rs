@@ -31,6 +31,7 @@ impl From<Vec<Box<dyn Procedure>>> for ProcState {
     }
 }
 
+#[derive(Debug)]
 pub struct Half {
     pub half: u8,
     pub started: bool,
@@ -59,6 +60,7 @@ impl Half {
         // celebrating this unusual method of scoring!
 
         game_state.info.kicking_this_drive = kicking_team;
+
         let procs: Vec<Box<dyn Procedure>> = vec![
             Kickoff::new(),
             Setup::new(kicking_team),
@@ -79,8 +81,7 @@ impl Half {
                 .unfield_player(id, DugoutPlace::Reserves)
                 .unwrap()
         });
-
-        ProcState::from(procs)
+        ProcState::NotDoneNewProcs(procs)
     }
 }
 
@@ -136,6 +137,7 @@ impl Procedure for Half {
     }
 }
 
+#[derive(Debug)]
 pub struct Turn {
     pub team: TeamType,
 }
@@ -257,6 +259,22 @@ enum MoveActionState {
     ActivePath(Path),
     SelectPath(FullPitch<Option<Path>>),
 }
+impl std::fmt::Debug for MoveActionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            MoveActionState::Init => f.write_str("Init"),
+            MoveActionState::ActivePath(path) => {
+                f.debug_struct("ActivePath").field("", &path).finish()
+            }
+            MoveActionState::SelectPath(paths) => f
+                .debug_struct("SelectPath")
+                .field("", &paths.iter().filter(|&path| path.is_some()).count())
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct MoveAction {
     player_id: PlayerID,
     state: MoveActionState,
@@ -354,9 +372,7 @@ impl Procedure for MoveAction {
         let mut aa = AvailableActions::new(player.stats.team);
         if player.total_movement_left() > 0 {
             let paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
-            gimmi_iter(&paths)
-                .flatten()
-                .for_each(|path| aa.insert_path(path));
+            paths.iter().flatten().for_each(|path| aa.insert_path(path));
 
             self.state = MoveActionState::SelectPath(paths);
         }
@@ -383,8 +399,7 @@ impl Procedure for MoveAction {
 
         match (action, &mut self.state) {
             (Some(Action::Positional(_, position)), MoveActionState::SelectPath(all_paths)) => {
-                self.state =
-                    MoveActionState::ActivePath(all_paths.get_mut(position).take().unwrap());
+                self.state = MoveActionState::ActivePath(all_paths[position].take().unwrap());
                 self.continue_active_path(game_state)
             }
             (Some(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
@@ -401,6 +416,7 @@ impl Procedure for MoveAction {
     }
 }
 
+#[derive(Debug)]
 struct DodgeProc {
     target: D6Target,
     id: PlayerID,
@@ -428,6 +444,7 @@ impl SimpleProc for DodgeProc {
     }
 }
 
+#[derive(Debug)]
 struct GfiProc {
     target: D6Target,
     id: PlayerID,
@@ -455,6 +472,7 @@ impl SimpleProc for GfiProc {
     }
 }
 
+#[derive(Debug)]
 struct PickupProc {
     target: D6Target,
     id: PlayerID,
@@ -498,11 +516,12 @@ enum RollProcState {
     RerollUsed,
     //WaitingForSkillReroll,
 }
-struct SimpleProcContainer<T: SimpleProc> {
+#[derive(Debug)]
+struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug> {
     proc: T,
     state: RollProcState,
 }
-impl<T: SimpleProc> SimpleProcContainer<T> {
+impl<T: SimpleProc + std::fmt::Debug> SimpleProcContainer<T> {
     pub fn new(proc: T) -> Box<Self> {
         Box::new(SimpleProcContainer {
             proc,
@@ -516,7 +535,7 @@ impl<T: SimpleProc> SimpleProcContainer<T> {
 
 impl<T> Procedure for SimpleProcContainer<T>
 where
-    T: SimpleProc,
+    T: SimpleProc + std::fmt::Debug,
 {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         // if action is DON*T REROLL, apply failure, return true
@@ -566,6 +585,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct KnockDown {
     id: PlayerID,
 }
@@ -592,6 +612,7 @@ impl Procedure for KnockDown {
     }
 }
 
+#[derive(Debug)]
 struct Armor {
     id: PlayerID,
     foul_target: Option<(PlayerID, Sum2D6Target)>,
@@ -637,6 +658,7 @@ impl Procedure for Armor {
     }
 }
 
+#[derive(Debug)]
 struct Ejection {
     id: PlayerID,
 }
@@ -661,6 +683,7 @@ impl Procedure for Ejection {
     }
 }
 
+#[derive(Debug)]
 struct Injury {
     id: PlayerID,
     crowd: bool,
@@ -715,6 +738,7 @@ impl Procedure for Injury {
     }
 }
 
+#[derive(Debug)]
 struct Bounce {
     kick: bool,
 }
@@ -759,6 +783,7 @@ impl Procedure for Bounce {
         }
     }
 }
+#[derive(Debug)]
 struct ThrowIn {
     from: Position,
 }
@@ -813,6 +838,7 @@ impl Procedure for ThrowIn {
         }
     }
 }
+#[derive(Debug)]
 struct Catch {
     id: PlayerID,
     target: D6Target,
@@ -861,6 +887,7 @@ impl SimpleProc for Catch {
     }
 }
 
+#[derive(Debug)]
 struct BlockAction {}
 
 impl BlockAction {
@@ -905,6 +932,7 @@ impl Procedure for BlockAction {
     }
 }
 
+#[derive(Debug)]
 struct Block {
     dices: NumBlockDices,
     defender: PlayerID,
@@ -914,7 +942,7 @@ struct Block {
     //attacker is game_state.active_player()
     //is_blitz: bool //prepare for Horns, Juggernaught, etc..
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockProcState {
     Init,               //step shall roll first dice
     SelectDice,         //attacker (or defender if uphill) to choose dice
@@ -1060,15 +1088,17 @@ impl Procedure for Block {
     }
 }
 
+#[derive(Debug)]
 enum PushSquares {
     Crowd(Position),
     ChainPush(Vec<Position>),
     FreeSquares(Vec<Position>),
 }
+#[derive(Debug)]
 struct Push {
     from: Position,
     on: Position,
-    knockdown_proc: Option<Box<dyn Procedure>>,
+    knockdown_proc: Option<Box<KnockDown>>,
     moves_to_make: Vec<(Position, Position)>,
     follow_up_pos: Position,
 }
@@ -1177,6 +1207,7 @@ impl Procedure for Push {
     }
 }
 
+#[derive(Debug)]
 struct FollowUp {
     to: Position,
     //from is active player,
@@ -1215,6 +1246,7 @@ impl Procedure for FollowUp {
     }
 }
 
+#[derive(Debug)]
 struct Touchdown {
     id: PlayerID,
 }
@@ -1230,13 +1262,14 @@ impl Procedure for Touchdown {
                 game_state.get_mut_team_from_player(self.id).unwrap().score += 1;
                 game_state.get_mut_player_unsafe(self.id).used = true;
                 game_state.info.kickoff_by_team =
-                    Some(game_state.get_player_unsafe(self.id).stats.team);
+                    Some(other_team(game_state.get_player_unsafe(self.id).stats.team));
             }
         }
 
         ProcState::Done
     }
 }
+#[derive(Debug)]
 pub struct GameOver;
 impl GameOver {
     pub fn new() -> Box<GameOver> {
@@ -1258,6 +1291,7 @@ impl Procedure for GameOver {
         ProcState::NeedAction(aa)
     }
 }
+#[derive(Debug)]
 pub struct Kickoff {}
 impl Kickoff {
     pub fn new() -> Box<Kickoff> {
@@ -1335,6 +1369,7 @@ impl Procedure for Kickoff {
         ProcState::from(procs)
     }
 }
+#[derive(Debug)]
 pub struct Setup {
     team: TeamType,
 }
@@ -1412,6 +1447,7 @@ impl Procedure for Setup {
         }
     }
 }
+#[derive(Debug)]
 pub struct KOWakeUp {}
 impl KOWakeUp {
     pub fn new() -> Box<KOWakeUp> {
@@ -1443,6 +1479,7 @@ impl Procedure for KOWakeUp {
         ProcState::Done
     }
 }
+#[derive(Debug)]
 pub struct CoinToss {
     coin_toss_winner: TeamType,
 }
@@ -1492,6 +1529,7 @@ impl Procedure for CoinToss {
     }
 }
 
+#[derive(Debug)]
 pub struct LandKickoff {}
 impl LandKickoff {
     pub fn new() -> Box<LandKickoff> {
@@ -1518,6 +1556,7 @@ impl Procedure for LandKickoff {
         }
     }
 }
+#[derive(Debug)]
 pub struct Touchback {}
 impl Touchback {
     pub fn new() -> Box<Touchback> {

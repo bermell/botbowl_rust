@@ -59,6 +59,28 @@ mod tests {
     };
 
     #[test]
+    fn kickoff_after_td() {
+        let start_pos = Position::new((2, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(start_pos)
+            .build();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, Position::new((1, 5)));
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.away.score, 0);
+
+        assert!(state.home_to_act());
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+    }
+    #[test]
     fn start_of_game() {
         let mut state: GameState = GameStateBuilder::new_start_of_game();
 
@@ -94,7 +116,7 @@ mod tests {
 
         let ball_pos = state.get_ball_position().unwrap();
         assert!(matches!(state.ball, BallState::OnGround(_)));
-        assert_eq!(ball_pos, Position::new((21, 4)));
+        assert_eq!(ball_pos, Position::new((23, 2)));
     }
 
     #[test]
@@ -1129,9 +1151,8 @@ mod tests {
 
         for x in 1..8 {
             for y in 1..8 {
-                let x_usize = usize::try_from(x).unwrap();
-                let y_usize = usize::try_from(y).unwrap();
-                match (state.get_player_id_at_coord(x, y), &paths[x_usize][y_usize]) {
+                let pos = Position::new((x, y));
+                match (state.get_player_id_at(pos), &paths[pos]) {
                     (Some(_), None) => (),
                     (None, Some(_)) => (),
                     (Some(_), Some(_)) => {
@@ -1181,7 +1202,7 @@ mod tests {
         #[allow(clippy::needless_range_loop)]
         for x in 1..5 {
             for y in 1..5 {
-                match (pos_to_prob.get(&(x, y)).unwrap(), &paths[x][y]) {
+                match (pos_to_prob.get(&(x, y)).unwrap(), paths.get(x, y)) {
                     (Some(correct_prob), Some(path))
                         if (*correct_prob - path.prob).abs() > 0.001 =>
                     {
@@ -1251,7 +1272,7 @@ mod tests {
             ),
         ];
         let expected_prob = 0.03086;
-        let path = paths[4][6].clone().unwrap();
+        let path = paths.get(4, 6).clone().unwrap();
 
         for (i, (expected, actual)) in zip(expected_steps, path.steps).enumerate() {
             if expected != actual {

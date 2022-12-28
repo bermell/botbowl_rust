@@ -184,13 +184,23 @@ impl Node {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Path {
     pub steps: Vec<(Position, FixedQueue<PathingEvent>)>,
     pub target: Position,
     pub action_type: PosAT,
     pub block_dice: Option<NumBlockDices>,
     pub prob: f32,
+}
+impl std::fmt::Debug for Path {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Path")
+            .field("target", &self.target)
+            .field("prob", &self.prob)
+            .field("action", &self.action_type)
+            .field("len", &self.steps.len())
+            .finish()
+    }
 }
 impl Path {
     fn new(final_node: &Node) -> Path {
@@ -263,9 +273,8 @@ struct GameInfo<'a> {
     id: PlayerID,
 }
 impl<'a> GameInfo<'a> {
-    fn tackles_zones_at(&self, position: &Position) -> i8 {
-        let (x, y) = position.to_usize().unwrap();
-        self.tzones[x][y]
+    fn tackles_zones_at(&self, position: Position) -> i8 {
+        self.tzones[position]
     }
 
     fn new(game_state: &'a GameState, player: &FieldedPlayer) -> GameInfo<'a> {
@@ -287,8 +296,7 @@ impl<'a> GameInfo<'a> {
             .filter(|player| player.stats.team != team)
             .filter(|player| player.has_tackle_zone())
             .flat_map(|player| game_state.get_adj_positions(player.position))
-            .map(|position| position.to_usize().unwrap())
-            .for_each(|(x, y)| tzones[x][y] += 1);
+            .for_each(|position| tzones[position] += 1);
         let ball = match game_state.ball {
             BallState::OnGround(position) => PathingBallState::OnGround(position),
             BallState::Carried(id) if id == player.id => {
@@ -509,7 +517,6 @@ impl<'a> GameInfo<'a> {
         prev: &OptRcNode,
     ) -> Option<Node> {
         let gfi = parent_node.moves_left == 0;
-        let (to_x, to_y) = to.to_usize().unwrap();
 
         if let Some(current_best) = &prev {
             if parent_node.remaining_movement() - 1 <= current_best.remaining_movement() {
@@ -527,23 +534,13 @@ impl<'a> GameInfo<'a> {
         if gfi {
             next_node.apply_gfi(self.gfi_target);
         }
-        if self.tackles_zones_at(&parent_node.position) > 0 {
-            next_node.apply_dodge(
-                *self
-                    .dodge_target
-                    .clone()
-                    .add_modifer(-self.tzones[to_x][to_y]),
-            );
+        if self.tackles_zones_at(parent_node.position) > 0 {
+            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]));
         }
         match self.ball {
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
                 // touchdown by pickup is handled by the pickup procedure
-                next_node.apply_pickup(
-                    *self
-                        .pickup_target
-                        .clone()
-                        .add_modifer(-self.tzones[to_x][to_y]),
-                );
+                next_node.apply_pickup(*self.pickup_target.clone().add_modifer(-self.tzones[to]));
             }
             PathingBallState::IsCarrier(endzone_x) if to.x == endzone_x => {
                 next_node.apply_touchdown(self.id);
@@ -582,10 +579,7 @@ impl<'a> PathFinder<'a> {
             }
 
             //clear pf.nodes
-            for (node, locked) in zip(
-                gimmi_mut_iter(&mut pf.nodes),
-                gimmi_mut_iter(&mut pf.locked_nodes),
-            ) {
+            for (node, locked) in zip(pf.nodes.iter_mut(), pf.locked_nodes.iter_mut()) {
                 match (&node, &locked) {
                     (Some(n), Some(l)) if n.is_better_than(l) => *locked = node.take(),
                     (Some(_), None) => *locked = node.take(),
@@ -602,7 +596,7 @@ impl<'a> PathFinder<'a> {
         }
 
         let mut paths: FullPitch<Option<Path>> = Default::default();
-        for (path, locked_node) in zip(gimmi_mut_iter(&mut paths), gimmi_iter(&pf.locked_nodes)) {
+        for (path, locked_node) in zip(paths.iter_mut(), pf.locked_nodes.iter()) {
             if let Some(node) = locked_node {
                 *path = Some(Path::new(node));
             }
@@ -612,8 +606,7 @@ impl<'a> PathFinder<'a> {
 
     fn prepare_nodes(&mut self, new_nodes: Vec<Rc<Node>>) {
         for new_node in new_nodes {
-            let (x, y) = new_node.position.to_usize().unwrap();
-            if self.locked_nodes[x][y]
+            if self.locked_nodes[new_node.position]
                 .as_ref()
                 .map(|locked| locked.is_dominant_over(&new_node))
                 .unwrap_or(false)
@@ -621,7 +614,7 @@ impl<'a> PathFinder<'a> {
                 continue;
             }
 
-            let best_in_batch = &mut self.nodes[x][y];
+            let best_in_batch = &mut self.nodes[new_node.position];
             if let Some(best_in_batch) = &best_in_batch {
                 debug_assert!((best_in_batch.prob - new_node.prob).abs() < 0.001);
                 if !new_node.is_better_than(best_in_batch) {
@@ -646,28 +639,27 @@ impl<'a> PathFinder<'a> {
             .map(|parent| {
                 (
                     parent.position,
-                    self.info.tackles_zones_at(&parent.position) > 0,
+                    self.info.tackles_zones_at(parent.position) > 0,
                 )
             });
 
         Direction::all_directions_iter()
             .map(|direction| node.position + *direction)
             .filter(|to_pos| !to_pos.is_out())
-            .map(|to_pos| (to_pos, to_pos.to_usize().unwrap()))
-            .filter(|(to_pos, (x, y))| {
+            .filter(|to_pos| {
                 parent_pos_and_in_tz
                     .map(|(parent_pos, parent_in_tz)| {
                         parent_pos.distance_to(to_pos) == 2
-                            || (parent_in_tz && 0 < self.info.tzones[*x][*y])
+                            || (parent_in_tz && 0 < self.info.tzones[*to_pos])
                     })
                     .unwrap_or(true)
             })
-            .map(|(to_square, (x, y))| {
+            .map(|to_pos| {
                 self.info.expand_to(
-                    to_square,
+                    to_pos,
                     &node,
-                    &mut self.nodes[x][y],
-                    &self.locked_nodes[x][y],
+                    &mut self.nodes[to_pos],
+                    &self.locked_nodes[to_pos],
                 )
             })
             .for_each(|node_type| match node_type {

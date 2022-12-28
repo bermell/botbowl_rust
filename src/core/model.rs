@@ -1,7 +1,7 @@
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::error;
-use std::ops::{Add, Mul, Sub, SubAssign};
+use std::ops::{Add, Index, IndexMut, Mul, Sub, SubAssign};
 
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
@@ -11,21 +11,47 @@ use crate::core::table;
 
 pub type PlayerID = usize;
 pub type Coord = i8;
-pub type FullPitch<T> = [[T; HEIGHT]; WIDTH];
 
-pub trait PitchContainer<T> {
-    fn get(&self, position: Position) -> &T;
-    fn get_mut(&mut self, position: Position) -> &mut T;
+pub struct FullPitch<T> {
+    data: [[T; HEIGHT]; WIDTH],
+}
+impl<T> Index<Position> for FullPitch<T> {
+    type Output = T;
+
+    fn index(&self, index: Position) -> &Self::Output {
+        let (x, y) = index.to_usize().unwrap();
+        &self.data[x][y]
+    }
+}
+impl<T> IndexMut<Position> for FullPitch<T> {
+    fn index_mut(&mut self, index: Position) -> &mut Self::Output {
+        let (x, y) = index.to_usize().unwrap();
+        &mut self.data[x][y]
+    }
 }
 
-impl<T> PitchContainer<T> for FullPitch<T> {
-    fn get(&self, position: Position) -> &T {
-        let (x, y) = position.to_usize().unwrap();
-        &self[x][y]
+impl<T> FullPitch<T> {
+    pub fn get(&self, x: usize, y: usize) -> &T {
+        &self.data[x][y]
     }
-    fn get_mut(&mut self, position: Position) -> &mut T {
-        let (x, y) = position.to_usize().unwrap();
-        &mut self[x][y]
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.data.iter().flat_map(|r| r.iter())
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.data.iter_mut().flat_map(|r| r.iter_mut())
+    }
+}
+impl<T: Default> Default for FullPitch<T> {
+    fn default() -> Self {
+        FullPitch {
+            data: Default::default(),
+        }
+    }
+}
+impl<T> FullPitch<Option<T>> {
+    pub fn clear(&mut self) {
+        *self = Default::default();
     }
 }
 
@@ -41,14 +67,6 @@ pub const SOUTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 12..=15;
 
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
-
-pub fn gimmi_iter<T>(pitch: &FullPitch<T>) -> impl Iterator<Item = &T> {
-    pitch.iter().flat_map(|r| r.iter())
-}
-
-pub fn gimmi_mut_iter<T>(pitch: &mut FullPitch<T>) -> impl Iterator<Item = &mut T> {
-    pitch.iter_mut().flat_map(|r| r.iter_mut())
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Direction {
@@ -449,6 +467,7 @@ pub enum Weather {
     Sweltering,
 }
 
+#[derive(Debug)]
 pub enum ProcState {
     DoneNewProcs(Vec<Box<dyn Procedure>>),
     NotDoneNewProcs(Vec<Box<dyn Procedure>>),
@@ -460,7 +479,7 @@ pub enum ProcState {
 }
 
 #[allow(unused_variables)]
-pub trait Procedure {
+pub trait Procedure: std::fmt::Debug {
     //fn start(&self, game_state: &GameState) {}
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState;
     //fn end(&self, game_state: &mut GameState) {}
@@ -469,12 +488,31 @@ pub trait Procedure {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct AvailableActions {
     pub team: Option<TeamType>,
     pub simple: HashSet<SimpleAT>,
     pub positional: HashMap<PosAT, Vec<Position>>,
     pub blocks: Vec<BlockActionChoice>,
+}
+impl std::fmt::Debug for AvailableActions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut info = f.debug_struct("Point");
+        if let Some(team) = self.team {
+            info.field("team:", &team);
+        }
+        if !self.simple.is_empty() {
+            info.field("simple", &self.simple);
+        }
+        if !self.positional.is_empty() {
+            info.field("positional", &self.positional.keys());
+        }
+        if !self.blocks.is_empty() {
+            info.field("blocks", &self.blocks);
+        }
+
+        info.finish()
+    }
 }
 impl AvailableActions {
     pub fn new_empty() -> Self {

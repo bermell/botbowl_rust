@@ -448,9 +448,10 @@ impl GameState {
 
     pub fn get_player_id_at_coord(&self, x: Coord, y: Coord) -> Option<PlayerID> {
         //unwrap is OK here because if you're requesting negative indicies, you want the program to crash!
-        let xx = usize::try_from(x).unwrap();
-        let yy = usize::try_from(y).unwrap();
-        self.board[xx][yy]
+        // let xx = usize::try_from(x).unwrap();
+        // let yy = usize::try_from(y).unwrap();
+        // self.board[xx][yy]
+        self.board[Position::new((x, y))]
     }
     pub fn get_player_at_coord(&self, x: Coord, y: Coord) -> Option<&FieldedPlayer> {
         match self.get_player_id_at_coord(x, y) {
@@ -602,18 +603,17 @@ impl GameState {
         }
     }
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()> {
-        let (old_x, old_y) = self.get_player(id)?.position.to_usize()?;
-        let (new_x, new_y) = new_pos.to_usize()?;
-        if let Some(occupied_id) = self.board[new_x][new_y] {
+        let old_pos = self.get_player(id)?.position;
+        if let Some(occupied_id) = self.board[new_pos] {
             panic!(
                 "Tried to move {}, to {:?} but it was already occupied by {}",
                 id, new_pos, occupied_id
             );
             //return Err(Box::new(IllegalMovePosition{position: new_pos} ))
         }
-        self.board[old_x][old_y] = None;
+        self.board[old_pos] = None;
         self.get_mut_player(id)?.position = new_pos;
-        self.board[new_x][new_y] = Some(id);
+        self.board[new_pos] = Some(id);
         Ok(())
     }
     pub fn get_players_on_pitch(&self) -> impl Iterator<Item = &FieldedPlayer> {
@@ -631,8 +631,7 @@ impl GameState {
         player_stats: PlayerStats,
         position: Position,
     ) -> Result<PlayerID> {
-        let (new_x, new_y) = position.to_usize()?;
-        if self.board[new_x][new_y].is_some() {
+        if self.board[position].is_some() {
             return Err(Box::new(IllegalMovePosition { position }));
         }
 
@@ -646,7 +645,7 @@ impl GameState {
             None => panic!("Not room in gamestate of another fielded player!"),
         };
 
-        self.board[new_x][new_y] = Some(id);
+        self.board[position] = Some(id);
         self.fielded_players[id] = Some(FieldedPlayer {
             id,
             stats: player_stats,
@@ -668,14 +667,12 @@ impl GameState {
         }
 
         let FieldedPlayer {
-            stats,
-            position: Position { x, y },
-            ..
+            stats, position, ..
         } = self.fielded_players[id].take().unwrap();
 
         self.dugout_add_new_player(stats, place);
 
-        self.board[x as usize][y as usize] = None;
+        self.board[position] = None;
         Ok(())
     }
 
@@ -695,12 +692,14 @@ impl GameState {
             .pop()
             .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
+        println!("STEPPING: {:?}", top_proc);
         let mut top_proc_state: ProcState = top_proc.step(self, opt_action);
 
         loop {
             if self.info.game_over {
                 break;
             }
+            println!("{:?} reported: {:?}", top_proc, top_proc_state);
             match top_proc_state {
                 ProcState::NotDoneNewProcs(mut new_procs) => {
                     self.proc_stack.push(top_proc);
@@ -731,6 +730,8 @@ impl GameState {
                     break;
                 }
             };
+
+            println!("STEPPING: {:?}", top_proc);
 
             top_proc_state = top_proc.step(self, None);
         }
@@ -797,5 +798,25 @@ impl GameState {
     pub fn step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
         self.fixes.assert_is_empty();
+    }
+}
+
+#[cfg(test)]
+mod gamestate_tests {
+    use crate::core::model::Position;
+
+    use super::GameStateBuilder;
+
+    #[test]
+    fn kickoff_position() {
+        let state = GameStateBuilder::new().build();
+        assert_eq!(
+            state.get_best_kickoff_aim_for(crate::core::model::TeamType::Home),
+            Position::new((7, 7))
+        );
+        assert_eq!(
+            state.get_best_kickoff_aim_for(crate::core::model::TeamType::Away),
+            Position::new((21, 7))
+        );
     }
 }
