@@ -178,6 +178,7 @@ pub struct GameInfo {
     pub home_turn: u8,
     pub away_turn: u8,
     pub winner: Option<TeamType>,
+    pub turnover: bool,
     pub active_player: Option<PlayerID>,
     pub player_action_type: Option<PosAT>,
     pub team_turn: TeamType,
@@ -212,6 +213,7 @@ impl GameInfo {
             handle_td_by: None,
             kickoff_by_team: None,
             kicking_this_drive: TeamType::Home,
+            turnover: false,
         }
     }
 }
@@ -618,6 +620,9 @@ impl GameState {
     }
     pub fn get_players_on_pitch(&self) -> impl Iterator<Item = &FieldedPlayer> {
         self.fielded_players.iter().filter_map(|x| x.as_ref())
+    }
+    pub fn get_players_on_pitch_mut(&mut self) -> impl Iterator<Item = &mut FieldedPlayer> {
+        self.fielded_players.iter_mut().filter_map(|x| x.as_mut())
     }
     pub fn get_players_on_pitch_in_team(
         &self,

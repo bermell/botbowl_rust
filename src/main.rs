@@ -59,6 +59,82 @@ mod tests {
     };
 
     #[test]
+    fn turnover() {
+        let h1_pos = Position::new((5, 5));
+        let h2_pos = Position::new((5, 6));
+        let a1_pos = Position::new((6, 5));
+        let a2_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(h1_pos)
+            .add_home_player(h2_pos)
+            .add_away_player(a1_pos)
+            .add_away_player(a2_pos)
+            .build();
+
+        let id_h1 = state.get_player_id_at(h1_pos).unwrap();
+        let id_h2 = state.get_player_id_at(h2_pos).unwrap();
+        let id_a1 = state.get_player_id_at(a1_pos).unwrap();
+        let id_a2 = state.get_player_id_at(a2_pos).unwrap();
+
+        state.home.rerolls = 0;
+        state.away.rerolls = 0;
+        state.step_positional(PosAT::StartMove, h1_pos);
+        state.fixes.fix_d6(1); //dodge fail
+        state.fixes.fix_d6(6); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d6(1); //injury
+        state.fixes.fix_d6(1); //injury
+        state.step_positional(PosAT::Move, h1_pos + (-1, -1));
+
+        assert!(state.away_to_act());
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+    }
+
+    #[test]
+    fn clear_used() {
+        let start_pos = Position::new((2, 5));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert!(state.home_to_act());
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        assert!(state.get_player_unsafe(id).used);
+
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert!(!state.get_player_unsafe(id).used);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+    }
+    #[test]
+    fn turn_stunned() {
+        let start_pos = Position::new((2, 5));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert!(state.home_to_act());
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Stunned;
+        state.get_mut_player_unsafe(id).used = true;
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.away_to_act());
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert!(!state.get_player_unsafe(id).used);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+    }
+    #[test]
     fn kickoff_after_td() {
         let start_pos = Position::new((2, 5));
         let mut state = GameStateBuilder::new()

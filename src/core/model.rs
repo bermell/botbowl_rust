@@ -478,7 +478,6 @@ pub enum ProcState {
     NeedAction(AvailableActions),
 }
 
-#[allow(unused_variables)]
 pub trait Procedure: std::fmt::Debug {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState;
 }

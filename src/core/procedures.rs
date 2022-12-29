@@ -130,10 +130,35 @@ impl Procedure for Half {
         info.blitz_available = true;
         info.foul_available = true;
         info.pass_available = true;
+        info.turnover = false;
 
-        //Todo: Turn stunned, clear used
+        game_state
+            .get_players_on_pitch_mut()
+            .filter(|p| p.stats.team == next_team && p.status != PlayerStatus::Stunned)
+            .for_each(|p| p.used = false);
 
-        ProcState::NotDoneNew(Turn::new(next_team))
+        ProcState::NotDoneNewProcs(vec![TurnStunned::new(), Turn::new(next_team)])
+    }
+}
+
+#[derive(Debug)]
+pub struct TurnStunned {}
+impl TurnStunned {
+    pub fn new() -> Box<TurnStunned> {
+        Box::new(TurnStunned {})
+    }
+}
+impl Procedure for TurnStunned {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        let team = game_state.info.team_turn;
+        let active_id = game_state.info.active_player.unwrap_or(999); // shall not turn active id, since they stunned themselves
+        game_state
+            .get_players_on_pitch_mut()
+            .filter(|p| {
+                p.stats.team == team && p.status == PlayerStatus::Stunned && p.id != active_id
+            })
+            .for_each(|p| p.status = PlayerStatus::Down);
+        ProcState::Done
     }
 }
 
@@ -193,7 +218,7 @@ impl Procedure for Turn {
             return ProcState::NotDoneNew(Touchdown::new(id));
         }
 
-        if game_state.info.kickoff_by_team.is_some() {
+        if game_state.info.kickoff_by_team.is_some() || game_state.info.turnover {
             return ProcState::Done;
         }
 
@@ -365,8 +390,8 @@ impl MoveAction {
 }
 impl Procedure for MoveAction {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        if game_state.info.handle_td_by.is_some() {
-            game_state.get_mut_player_unsafe(self.player_id).used = true;
+        if game_state.info.handle_td_by.is_some() || game_state.info.turnover {
+            // game_state.get_mut_player_unsafe(self.player_id).used = true;
             return ProcState::Done;
         }
 
@@ -414,7 +439,8 @@ impl SimpleProc for DodgeProc {
         Some(Skill::Dodge)
     }
 
-    fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        game_state.info.turnover = true;
         vec![KnockDown::new(self.id)]
     }
 
@@ -442,7 +468,8 @@ impl SimpleProc for GfiProc {
         Some(Skill::SureFeet)
     }
 
-    fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        game_state.info.turnover = true;
         vec![KnockDown::new(self.id)]
     }
 
@@ -481,6 +508,7 @@ impl SimpleProc for PickupProc {
 
     fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.get_mut_player(self.id).unwrap().used = true;
+        game_state.info.turnover = true;
         vec![Bounce::new()]
     }
 
@@ -1556,5 +1584,29 @@ impl Procedure for Touchback {
             aa.insert_positional(PosAT::SelectPosition, positions);
             ProcState::NeedAction(aa)
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct TurnoverIfPossessionLost {}
+impl TurnoverIfPossessionLost {
+    pub fn new() -> Box<TurnoverIfPossessionLost> {
+        Box::new(TurnoverIfPossessionLost {})
+    }
+}
+impl Procedure for TurnoverIfPossessionLost {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        match game_state.ball {
+            BallState::OnGround(_) | BallState::InAir(_) => {
+                game_state.info.turnover = true;
+            }
+            BallState::Carried(id)
+                if game_state.get_player_unsafe(id).stats.team != game_state.info.team_turn =>
+            {
+                game_state.info.turnover = true;
+            }
+            _ => unreachable!(),
+        }
+        ProcState::Done
     }
 }
