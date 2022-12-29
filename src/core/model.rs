@@ -480,12 +480,7 @@ pub enum ProcState {
 
 #[allow(unused_variables)]
 pub trait Procedure: std::fmt::Debug {
-    //fn start(&self, game_state: &GameState) {}
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState;
-    //fn end(&self, game_state: &mut GameState) {}
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        AvailableActions::new_empty()
-    }
 }
 
 #[derive(PartialEq, Eq)]

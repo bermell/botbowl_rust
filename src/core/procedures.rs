@@ -145,8 +145,6 @@ impl Turn {
     pub fn new(team: TeamType) -> Box<Turn> {
         Box::new(Turn { team })
     }
-}
-impl Procedure for Turn {
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
         let mut aa = AvailableActions::new(self.team);
 
@@ -186,7 +184,8 @@ impl Procedure for Turn {
         aa.insert_simple(SimpleAT::EndTurn);
         aa
     }
-
+}
+impl Procedure for Turn {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         if let Some(id) = game_state.info.handle_td_by {
             //todo, set internal state to kickoff next (or if it was the last turn return done )
@@ -352,8 +351,6 @@ impl MoveAction {
         }
         unreachable!();
     }
-}
-impl Procedure for MoveAction {
     fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
         let player = game_state.get_player_unsafe(self.player_id);
 
@@ -365,7 +362,8 @@ impl Procedure for MoveAction {
         aa.insert_simple(SimpleAT::EndPlayerTurn);
         aa
     }
-
+}
+impl Procedure for MoveAction {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         if game_state.info.handle_td_by.is_some() {
             game_state.get_mut_player_unsafe(self.player_id).used = true;
@@ -875,6 +873,23 @@ impl BlockAction {
     fn new() -> Box<BlockAction> {
         Box::new(BlockAction {})
     }
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+        let player = game_state.get_active_player().unwrap();
+        let mut aa = AvailableActions::new(player.stats.team);
+
+        let ac: Vec<BlockActionChoice> = game_state
+            .get_adj_players(player.position)
+            .filter(|adj_player| !adj_player.used && adj_player.stats.team != player.stats.team)
+            .map(|block_victim| BlockActionChoice {
+                num_dices: game_state.get_blockdices(player.id, block_victim.id),
+                position: block_victim.position,
+            })
+            .collect();
+
+        aa.insert_block(ac);
+        aa.insert_simple(SimpleAT::EndPlayerTurn);
+        aa
+    }
 }
 impl Procedure for BlockAction {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
@@ -892,24 +907,6 @@ impl Procedure for BlockAction {
             }
             _ => todo!(),
         }
-    }
-
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        let player = game_state.get_active_player().unwrap();
-        let mut aa = AvailableActions::new(player.stats.team);
-
-        let ac: Vec<BlockActionChoice> = game_state
-            .get_adj_players(player.position)
-            .filter(|adj_player| !adj_player.used && adj_player.stats.team != player.stats.team)
-            .map(|block_victim| BlockActionChoice {
-                num_dices: game_state.get_blockdices(player.id, block_victim.id),
-                position: block_victim.position,
-            })
-            .collect();
-
-        aa.insert_block(ac);
-        aa.insert_simple(SimpleAT::EndPlayerTurn);
-        aa
     }
 }
 
@@ -947,6 +944,32 @@ impl Block {
             .iter()
             .filter_map(|&r| r.map(SimpleAT::from))
             .for_each(|at| aa.insert_simple(at));
+    }
+    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+        let mut aa = AvailableActions::new_empty();
+        let team = game_state.get_active_player().unwrap().stats.team;
+        match self.state {
+            BlockProcState::SelectDice => {
+                aa.team = Some(if self.is_uphill {
+                    other_team(team)
+                } else {
+                    team
+                });
+                self.add_aa(&mut aa);
+            }
+            BlockProcState::SelectDiceOrReroll => {
+                aa.team = Some(team);
+                self.add_aa(&mut aa);
+                aa.insert_simple(SimpleAT::UseReroll);
+            }
+            BlockProcState::UphillSelectReroll => {
+                aa.team = Some(team);
+                aa.insert_simple(SimpleAT::UseReroll);
+                aa.insert_simple(SimpleAT::DontUseReroll);
+            }
+            BlockProcState::Init => panic!("should not happen!"),
+        }
+        aa
     }
 }
 impl Procedure for Block {
@@ -1040,32 +1063,6 @@ impl Procedure for Block {
             }
             _ => panic!("very wrong!"),
         }
-    }
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
-        let mut aa = AvailableActions::new_empty();
-        let team = game_state.get_active_player().unwrap().stats.team;
-        match self.state {
-            BlockProcState::SelectDice => {
-                aa.team = Some(if self.is_uphill {
-                    other_team(team)
-                } else {
-                    team
-                });
-                self.add_aa(&mut aa);
-            }
-            BlockProcState::SelectDiceOrReroll => {
-                aa.team = Some(team);
-                self.add_aa(&mut aa);
-                aa.insert_simple(SimpleAT::UseReroll);
-            }
-            BlockProcState::UphillSelectReroll => {
-                aa.team = Some(team);
-                aa.insert_simple(SimpleAT::UseReroll);
-                aa.insert_simple(SimpleAT::DontUseReroll);
-            }
-            BlockProcState::Init => panic!("should not happen!"),
-        }
-        aa
     }
 }
 
