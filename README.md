@@ -26,6 +26,11 @@ List of things to implement and write tests for in order to use as engine for fo
 - [ ] Useful setup
 - [x] Touchdown
 
+todo so I don't forget: 
+- handoff turnover if possession lost, needs test and implementation 
+- score on opponent's half needs test 
+
+
 **Other things**
 - [ ] Play in terminal
 - [ ] Gym Env 
