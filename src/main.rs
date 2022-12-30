@@ -78,6 +78,10 @@ mod tests {
 
         state.home.rerolls = 0;
         state.away.rerolls = 0;
+
+        state.step_positional(PosAT::StartMove, h2_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+
         state.step_positional(PosAT::StartMove, h1_pos);
         state.fixes.fix_d6(1); //dodge fail
         state.fixes.fix_d6(6); //armor
@@ -88,6 +92,14 @@ mod tests {
 
         assert!(state.away_to_act());
         assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+
+        state.step_simple(SimpleAT::EndTurn);
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Down);
     }
 
     #[test]
