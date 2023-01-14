@@ -1,11 +1,12 @@
-use crate::core::dices::D8;
 use crate::core::gamestate::GameStateBuilder;
 
 use crate::core::gamestate::GameState;
-use crate::core::model::Direction;
+use crate::core::model::PlayerStatus;
+use crate::core::model::Position;
+use crate::ui::Renderer;
 
 pub mod core;
-
+pub mod ui;
 // fn draw_board(game_state: &GameState) {
 //     :
 // }
@@ -20,18 +21,23 @@ pub fn standard_state() -> GameState {
 
 fn main() {
     println!("Hello world!");
-    let mut state = standard_state();
+    let mut state = GameStateBuilder::new()
+        .add_home_players(&[(1, 1), (2, 2), (3, 1)])
+        .add_away_players(&[(26, 15), (25, 14), (24, 15)])
+        .add_ball((3, 3))
+        .build();
 
-    for x in 1..=8 {
-        state.fixes.fix_d8(x);
-        let dice = state.get_d8_roll();
-        let direction_from_dice = Direction::from(dice);
-        let dice_from_dir = D8::from(direction_from_dice);
-        println!(
-            "{} -> {:?} -> {:?} -> {:?} ",
-            x, dice, direction_from_dice, dice_from_dir
-        )
-    }
+    state.step_positional(
+        core::table::PosAT::StartMove,
+        state.get_player_unsafe(1).position,
+    );
+    state.get_mut_player_unsafe(2).used = true;
+    state.get_mut_player_unsafe(4).status = PlayerStatus::Stunned;
+    state.get_mut_player_unsafe(5).status = PlayerStatus::Down;
+
+    let mut rend = Renderer::new();
+    rend.curser_pos = Some(Position::new((5, 5)));
+    rend.run_loop(&mut state);
 }
 
 #[cfg(test)]

@@ -1,7 +1,9 @@
+use itertools::Itertools;
+
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::error;
-use std::ops::{Add, Index, IndexMut, Mul, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
 
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
@@ -34,6 +36,17 @@ impl<T> FullPitch<T> {
     pub fn get(&self, x: usize, y: usize) -> &T {
         &self.data[x][y]
     }
+    pub fn get_pos(&self, pos: Position) -> &T {
+        let (x, y) = pos.to_usize().unwrap();
+        &self.data[x][y]
+    }
+    pub fn get_pos_mut(&mut self, pos: Position) -> &mut T {
+        let (x, y) = pos.to_usize().unwrap();
+        &mut self.data[x][y]
+    }
+    pub fn get_mut(&mut self, x: usize, y: usize) -> &mut T {
+        &mut self.data[x][y]
+    }
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.data.iter().flat_map(|r| r.iter())
     }
@@ -52,6 +65,9 @@ impl<T: Default> Default for FullPitch<T> {
 impl<T> FullPitch<Option<T>> {
     pub fn clear(&mut self) {
         *self = Default::default();
+    }
+    pub fn take_pos(&mut self, pos: Position) -> Option<T> {
+        self.data[pos.x as usize][pos.y as usize].take()
     }
 }
 
@@ -136,6 +152,9 @@ impl Position {
         let (x, y) = xy;
         Position { x, y }
     }
+    pub fn all_positions() -> impl Iterator<Item = Position> {
+        (0..WIDTH_).cartesian_product(0..HEIGHT_).map(Position::new)
+    }
     pub fn to_usize(&self) -> Result<(usize, usize)> {
         let x: usize = usize::try_from(self.x)?;
         let y: usize = usize::try_from(self.y)?;
@@ -173,6 +192,12 @@ impl From<Position> for (usize, usize) {
         (usize::try_from(p.x).unwrap(), usize::try_from(p.y).unwrap())
     }
 }
+impl From<Position> for (u16, u16) {
+    fn from(p: Position) -> Self {
+        (u16::try_from(p.x).unwrap(), u16::try_from(p.y).unwrap())
+    }
+}
+
 impl Add<Direction> for Position {
     type Output = Position;
 
@@ -185,6 +210,11 @@ impl Add<(Coord, Coord)> for Position {
 
     fn add(self, rhs: (Coord, Coord)) -> Self::Output {
         self + Direction::from(rhs)
+    }
+}
+impl AddAssign<(Coord, Coord)> for Position {
+    fn add_assign(&mut self, rhs: (Coord, Coord)) {
+        *self = *self + Direction::from(rhs);
     }
 }
 impl SubAssign<Direction> for Position {
@@ -220,6 +250,16 @@ impl Mul<i8> for Direction {
         Direction {
             dx: self.dx * rhs,
             dy: self.dy * rhs,
+        }
+    }
+}
+impl Mul<i8> for Position {
+    type Output = Position;
+
+    fn mul(self, rhs: i8) -> Self::Output {
+        Position {
+            x: self.x * rhs,
+            y: self.y * rhs,
         }
     }
 }
