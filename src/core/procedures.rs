@@ -170,7 +170,7 @@ impl Turn {
     pub fn new(team: TeamType) -> Box<Turn> {
         Box::new(Turn { team })
     }
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+    fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let mut aa = AvailableActions::new(self.team);
 
         let positions: Vec<Position> = game_state
@@ -269,7 +269,7 @@ fn proc_from_roll(roll: PathingEvent, move_action: &MoveAction) -> Box<dyn Proce
 enum MoveActionState {
     Init,
     ActivePath(Path),
-    SelectPath(FullPitch<Option<Path>>),
+    SelectPath,
 }
 impl std::fmt::Debug for MoveActionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -278,10 +278,7 @@ impl std::fmt::Debug for MoveActionState {
             MoveActionState::ActivePath(path) => {
                 f.debug_struct("ActivePath").field("", &path).finish()
             }
-            MoveActionState::SelectPath(paths) => f
-                .debug_struct("SelectPath")
-                .field("", &paths.iter().filter(|&path| path.is_some()).count())
-                .finish(),
+            MoveActionState::SelectPath => f.debug_struct("SelectPath").finish(),
         }
     }
 }
@@ -376,14 +373,13 @@ impl MoveAction {
         }
         unreachable!();
     }
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+    fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let player = game_state.get_player_unsafe(self.player_id);
 
         let mut aa = AvailableActions::new(player.stats.team);
-        let paths = PathFinder::player_paths(game_state, self.player_id).unwrap();
-        paths.iter().flatten().for_each(|path| aa.insert_path(path));
+        aa.insert_paths(PathFinder::player_paths(game_state, self.player_id).unwrap());
 
-        self.state = MoveActionState::SelectPath(paths);
+        self.state = MoveActionState::SelectPath;
         aa.insert_simple(SimpleAT::EndPlayerTurn);
         aa
     }
@@ -402,8 +398,9 @@ impl Procedure for MoveAction {
         }
 
         match (action, &mut self.state) {
-            (Some(Action::Positional(_, position)), MoveActionState::SelectPath(all_paths)) => {
-                self.state = MoveActionState::ActivePath(all_paths[position].take().unwrap());
+            (Some(Action::Positional(_, position)), MoveActionState::SelectPath) => {
+                let path = game_state.available_actions.take_path(position).unwrap();
+                self.state = MoveActionState::ActivePath(path);
                 self.continue_active_path(game_state)
             }
             (Some(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
@@ -901,20 +898,20 @@ impl BlockAction {
     fn new() -> Box<BlockAction> {
         Box::new(BlockAction {})
     }
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+    fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let player = game_state.get_active_player().unwrap();
         let mut aa = AvailableActions::new(player.stats.team);
 
-        let ac: Vec<BlockActionChoice> = game_state
+        game_state
             .get_adj_players(player.position)
             .filter(|adj_player| !adj_player.used && adj_player.stats.team != player.stats.team)
-            .map(|block_victim| BlockActionChoice {
-                num_dices: game_state.get_blockdices(player.id, block_victim.id),
-                position: block_victim.position,
-            })
-            .collect();
+            .for_each(|block_victim| {
+                aa.insert_block(
+                    block_victim.position,
+                    game_state.get_blockdices(player.id, block_victim.id),
+                )
+            });
 
-        aa.insert_block(ac);
         aa.insert_simple(SimpleAT::EndPlayerTurn);
         aa
     }
@@ -924,14 +921,10 @@ impl Procedure for BlockAction {
         match action {
             None => ProcState::NeedAction(self.available_actions(game_state)),
             Some(Action::Positional(PosAT::Block, position)) => {
-                let ac = game_state
-                    .get_available_actions()
-                    .blocks
-                    .iter()
-                    .find(|ac| ac.position == position)
-                    .unwrap();
+                let block_path = game_state.available_actions.take_path(position).unwrap();
+                let num_dice = block_path.block_dice.unwrap();
                 let defender_id = game_state.get_player_id_at(position).unwrap();
-                ProcState::DoneNew(Block::new(ac.num_dices, defender_id))
+                ProcState::DoneNew(Block::new(num_dice, defender_id))
             }
             _ => todo!(),
         }
@@ -973,7 +966,7 @@ impl Block {
             .filter_map(|&r| r.map(SimpleAT::from))
             .for_each(|at| aa.insert_simple(at));
     }
-    fn available_actions(&mut self, game_state: &GameState) -> AvailableActions {
+    fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let mut aa = AvailableActions::new_empty();
         let team = game_state.get_active_player().unwrap().stats.team;
         match self.state {

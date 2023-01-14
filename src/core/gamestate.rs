@@ -266,7 +266,7 @@ pub struct GameState {
     pub ball: BallState,
     proc_stack: Vec<Box<dyn Procedure>>,
     // new_procs: VecDeque<Box<dyn Procedure>>,
-    available_actions: AvailableActions,
+    pub available_actions: Box<AvailableActions>,
     pub rng_enabled: bool,
     pub fixes: FixedDice,
     rng: ChaCha8Rng,
@@ -789,12 +789,6 @@ impl GameState {
         north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
     }
 
-    pub fn get_legal_positions(&self, at: PosAT) -> Vec<Position> {
-        match self.available_actions.positional.get(&at) {
-            Some(positions) => positions.clone(),
-            None => Vec::new(),
-        }
-    }
     pub fn step_simple(&mut self, action: SimpleAT) {
         self.step(Action::Simple(action)).unwrap();
         self.fixes.assert_is_empty();

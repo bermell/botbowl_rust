@@ -236,7 +236,7 @@ pub enum ActionChoice {
     Simple,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PlayerStatus {
     Up,
     Down,
@@ -475,112 +475,113 @@ pub enum ProcState {
     DoneNew(Box<dyn Procedure>),
     Done,
     NotDone,
-    NeedAction(AvailableActions),
+    NeedAction(Box<AvailableActions>),
 }
 
 pub trait Procedure: std::fmt::Debug {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState;
 }
+use smallvec::SmallVec;
 
-#[derive(PartialEq, Eq)]
+type SmallVecPosAT = SmallVec<[PosAT; 4]>;
+
+#[derive(Default)]
 pub struct AvailableActions {
     pub team: Option<TeamType>,
-    pub simple: HashSet<SimpleAT>,
-    pub positional: HashMap<PosAT, Vec<Position>>,
-    pub blocks: Vec<BlockActionChoice>,
+    simple: HashSet<SimpleAT>,
+    positional: Option<FullPitch<SmallVecPosAT>>,
+    paths: Option<FullPitch<Option<Path>>>,
 }
 impl std::fmt::Debug for AvailableActions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut info = f.debug_struct("Point");
         if let Some(team) = self.team {
-            info.field("team:", &team);
+            info.field("team", &team);
         }
-        if !self.simple.is_empty() {
-            info.field("simple", &self.simple);
-        }
-        if !self.positional.is_empty() {
-            info.field("positional", &self.positional.keys());
-        }
-        if !self.blocks.is_empty() {
-            info.field("blocks", &self.blocks);
-        }
+        // if !self.simple.is_empty() {
+        //     info.field("simple", &self.simple);
+        // }
+        // if !self.positional.is_empty() {
+        //     info.field("positional", "TBD");
+        // }
 
         info.finish()
     }
 }
 impl AvailableActions {
-    pub fn new_empty() -> Self {
-        AvailableActions {
-            team: None,
-            simple: HashSet::new(),
-            positional: HashMap::new(),
-            blocks: Vec::new(),
-        }
+    pub fn new_empty() -> Box<Self> {
+        Box::default()
     }
-    pub fn new(team: TeamType) -> Self {
-        AvailableActions {
-            team: Some(team),
-            simple: HashSet::new(),
-            positional: HashMap::new(),
-            blocks: Vec::new(),
-        }
+    pub fn new(team: TeamType) -> Box<Self> {
+        let mut aa = AvailableActions::new_empty();
+        aa.team = Some(team);
+        aa
     }
     pub fn is_empty(&self) -> bool {
-        self.simple.is_empty()
-            && !self
-                .positional
-                .iter()
-                .any(|(_, positions)| !positions.is_empty())
+        self.simple.is_empty() && self.paths.is_none() && self.positional.is_none()
     }
     pub fn insert_simple(&mut self, action_type: SimpleAT) {
         assert!(self.team.is_some());
         self.simple.insert(action_type);
     }
-    pub fn insert_path(&mut self, path: &Path) {
-        assert!(self.team.is_some());
-        if let Some(num_dices) = path.block_dice {
-            self.blocks.push(BlockActionChoice {
-                num_dices,
-                position: path.target,
-            })
-        } else {
-            self.insert_single_positional(path.action_type, path.target);
+    pub fn insert_paths(&mut self, paths: FullPitch<Option<Path>>) {
+        self.paths = Some(paths);
+    }
+    pub fn take_path(&mut self, pos: Position) -> Option<Path> {
+        match &mut self.paths {
+            Some(paths) => paths[pos].take(),
+            None => None,
         }
     }
-
+    pub fn insert_path(&mut self, path: Path) {
+        if self.paths.is_none() {
+            self.paths = Some(Default::default());
+        }
+        let pos = path.target;
+        self.paths.as_mut().unwrap()[pos] = Some(path);
+    }
     pub fn insert_positional(&mut self, action_type: PosAT, positions: Vec<Position>) {
         assert!(self.team.is_some());
-        assert!(!self.positional.contains_key(&action_type));
-        self.positional.insert(action_type, positions);
-    }
-    pub fn insert_single_positional(&mut self, action_type: PosAT, position: Position) {
-        match self.positional.entry(action_type) {
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(vec![position]);
-            }
-            std::collections::hash_map::Entry::Occupied(mut e) => {
-                e.get_mut().push(position);
-            }
-        };
-    }
-    pub fn insert_block(&mut self, ac: Vec<BlockActionChoice>) {
-        if self.blocks.is_empty() {
-            self.blocks = ac;
-        } else {
-            self.blocks.extend(ac);
+        if self.positional.is_none() {
+            self.positional = Some(Default::default());
         }
+
+        let self_positional = self.positional.as_mut().unwrap();
+        positions.into_iter().for_each(|pos| {
+            self_positional[pos].push(action_type);
+        })
+    }
+    pub fn insert_block(&mut self, pos: Position, num_dice: NumBlockDices) {
+        if self.paths.is_none() {
+            self.paths = Some(Default::default());
+        }
+        self.paths.as_mut().unwrap()[pos] = Some(Path {
+            steps: Default::default(),
+            target: pos,
+            action_type: PosAT::Block,
+            block_dice: Some(num_dice),
+            prob: 1.0,
+        })
     }
 
     pub fn is_legal_action(&self, action: Action) -> bool {
         match action {
-            Action::Positional(PosAT::Block, position) => {
-                self.blocks.iter().any(|ac| ac.position == position)
-            }
-            Action::Positional(at, pos) => match self.positional.get(&at) {
-                Some(legal_positions) => legal_positions.contains(&pos),
-                None => false,
-            },
             Action::Simple(at) => self.simple.contains(&at),
+            Action::Positional(at, pos) => {
+                if let Some(allowed_at) = self
+                    .positional
+                    .as_ref()
+                    .map(|positions| positions[pos].clone())
+                {
+                    if allowed_at.contains(&at) {
+                        return true;
+                    }
+                }
+                if let Some(Some(path)) = self.paths.as_ref().map(|paths| paths[pos].as_ref()) {
+                    return path.action_type == at;
+                }
+                false
+            }
         }
     }
     pub fn get_team(&self) -> Option<TeamType> {
