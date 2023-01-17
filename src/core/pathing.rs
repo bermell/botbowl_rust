@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::{collections::HashMap, hash, iter::zip, rc::Rc};
 
 use crate::core::model;
+use itertools::Either;
 use model::*;
 
 use super::dices::{D6Target, RollTarget, Sum2D6Target};
@@ -81,6 +82,116 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
         vector.into_iter().for_each(|val| q.add(val));
         q
     }
+}
+
+pub struct NodeIterator {
+    current_node: Rc<Node>,
+    events: Option<FixedQueue<PathingEvent>>,
+}
+
+type NodeIteratorItem = Option<<NodeIterator as Iterator>::Item>;
+
+impl NodeIterator {
+    fn move_to_node_target(event: &PathingEvent) -> bool {
+        match event {
+            PathingEvent::Dodge(_) => true,
+            PathingEvent::GFI(_) => true,
+            PathingEvent::Block(_, _) => false,
+            PathingEvent::Handoff(_, _) => false,
+            PathingEvent::Foul(_, _) => false,
+            PathingEvent::Pickup(_) => true,
+            PathingEvent::Touchdown(_) => true,
+        }
+    }
+
+    fn traverse_to(&mut self, node: Rc<Node>) -> NodeIteratorItem {
+        debug_assert!(self.events.as_ref().unwrap().is_empty());
+        //at this point, we have yeilded self.current_node.position (and all events if there were any)
+        // or
+        // we are starting fresh and using this function to initalize self
+        // either way, we'll not be reading from self, only writing
+
+        if let Some(last_event) = node.events.last() {
+            //i.e. node.events is not empty
+            let move_to_node: bool = NodeIterator::move_to_node_target(last_event);
+            self.current_node = node;
+            self.events = Some(self.current_node.events.clone());
+            if move_to_node {
+                return Some(Either::Left(self.current_node.position));
+            } else {
+                return Some(Either::Right(self.events.as_mut().unwrap().pop().unwrap()));
+            }
+        }
+
+        if node.parent.is_none() {
+            self.current_node = node;
+            self.events = Some(Default::default());
+            return Some(Either::Left(self.current_node.position));
+        }
+
+        // at this point we know that:
+        debug_assert!(node.events.is_empty());
+        debug_assert!(node.parent.is_some());
+        // That means It is time to attempt FastTraverse!
+
+        let mut prev = node;
+
+        loop {
+            debug_assert!(prev.events.is_empty());
+            match prev.parent.as_ref() {
+                Some(next) if next.events.is_empty() => {
+                    prev = next.clone();
+                }
+                Some(next) => {
+                    self.current_node = next.clone();
+                    self.events = Some(next.events.clone());
+                    //safe unwrap because we check is_empty() above
+                    if NodeIterator::move_to_node_target(next.events.last().unwrap()) {
+                        return Some(Either::Left(next.position));
+                    } else {
+                        return Some(Either::Left(prev.position));
+                    }
+                }
+                None => {
+                    //prev is root node
+                    self.current_node = prev;
+                    self.events = Some(Default::default());
+                    return Some(Either::Left(self.current_node.position));
+                }
+            }
+        }
+    }
+}
+
+impl Iterator for NodeIterator {
+    type Item = Either<Position, PathingEvent>;
+
+    fn next(&mut self) -> NodeIteratorItem {
+        if let Some(events) = self.events.as_mut() {
+            if let Some(next_event) = events.pop() {
+                Some(Either::Right(next_event))
+            } else if let Some(parent) = self.current_node.parent.clone() {
+                self.traverse_to(parent)
+            } else {
+                None
+            }
+        } else {
+            // first time next() is called
+            self.traverse_to(self.current_node.clone()) //todo: refactor to make sense
+        }
+    }
+}
+
+impl CustomIntoIter for Rc<Node> {
+    fn iter(&self) -> NodeIterator {
+        NodeIterator {
+            current_node: self.clone(),
+            events: None,
+        }
+    }
+}
+pub trait CustomIntoIter {
+    fn iter(&self) -> NodeIterator;
 }
 
 #[derive(Debug)]
