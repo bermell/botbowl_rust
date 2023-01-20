@@ -10,9 +10,9 @@ List of things to implement and write tests for in order to use as engine for fo
 - Two Human team, only starting skills without Ogre
 
 **Refactor and optimizations** 
-- [ ] Available action require less heap allocation
-- [ ] Refactor away unnessary struct and enums: 
-          - Pathing::Path (Node is fine, also only traverse back when necessary),
+- [x] Available action require less heap allocation
+- [x] Refactor away unnessary struct and enums: 
+          - (DONE) Pathing::Path (Node is fine, also only traverse back when necessary),
           - (DONE) Pathing::PlayerActionType (it's fine to use PosAT::{StartMove, StartBlitz} etc.. )
 
 **Rules left to implement**

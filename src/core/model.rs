@@ -1,13 +1,14 @@
 use itertools::Itertools;
 
 use std::cmp::max;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error;
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
+use std::rc::Rc;
 
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
-use super::pathing::Path;
+use super::pathing::Node;
 use super::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 use crate::core::table;
 
@@ -530,20 +531,39 @@ pub struct AvailableActions {
     pub team: Option<TeamType>,
     simple: HashSet<SimpleAT>,
     positional: Option<FullPitch<SmallVecPosAT>>,
-    paths: Option<FullPitch<Option<Path>>>,
+    paths: Option<FullPitch<Option<Rc<Node>>>>,
 }
+
 impl std::fmt::Debug for AvailableActions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut info = f.debug_struct("Point");
+        let mut info = f.debug_struct("AvailableActions");
         if let Some(team) = self.team {
             info.field("team", &team);
         }
-        // if !self.simple.is_empty() {
-        //     info.field("simple", &self.simple);
-        // }
-        // if !self.positional.is_empty() {
-        //     info.field("positional", "TBD");
-        // }
+        if !self.simple.is_empty() {
+            info.field("simple", &self.simple);
+        }
+        let mut pos_at_count: HashMap<PosAT, u8> = HashMap::new();
+        if let Some(positional) = &self.positional {
+            for pos_at in positional.iter().flat_map(|pos_ats| pos_ats.iter()) {
+                pos_at_count
+                    .entry(*pos_at)
+                    .and_modify(|counter| *counter += 1)
+                    .or_insert(1);
+            }
+        }
+        if let Some(paths) = &self.paths {
+            for pos_at in paths.iter().flatten().map(|path| path.get_action_type()) {
+                pos_at_count
+                    .entry(pos_at)
+                    .and_modify(|counter| *counter += 1)
+                    .or_insert(1);
+            }
+        }
+        for (pos_at, count) in pos_at_count {
+            let field_name = format!("{:?}", pos_at);
+            info.field(&field_name, &count);
+        }
 
         info.finish()
     }
@@ -564,21 +584,21 @@ impl AvailableActions {
         assert!(self.team.is_some());
         self.simple.insert(action_type);
     }
-    pub fn insert_paths(&mut self, paths: FullPitch<Option<Path>>) {
+    pub fn insert_paths(&mut self, paths: FullPitch<Option<Rc<Node>>>) {
         self.paths = Some(paths);
     }
-    pub fn take_path(&mut self, pos: Position) -> Option<Path> {
+    pub fn take_path(&mut self, pos: Position) -> Option<Rc<Node>> {
         match &mut self.paths {
             Some(paths) => paths[pos].take(),
             None => None,
         }
     }
-    pub fn insert_path(&mut self, path: Path) {
+    pub fn insert_path(&mut self, node: Rc<Node>) {
         if self.paths.is_none() {
             self.paths = Some(Default::default());
         }
-        let pos = path.target;
-        self.paths.as_mut().unwrap()[pos] = Some(path);
+        let pos = node.position;
+        self.paths.as_mut().unwrap()[pos] = Some(node);
     }
     pub fn insert_positional(&mut self, action_type: PosAT, positions: Vec<Position>) {
         assert!(self.team.is_some());
@@ -595,13 +615,8 @@ impl AvailableActions {
         if self.paths.is_none() {
             self.paths = Some(Default::default());
         }
-        self.paths.as_mut().unwrap()[pos] = Some(Path {
-            steps: Default::default(),
-            target: pos,
-            action_type: PosAT::Block,
-            block_dice: Some(num_dice),
-            prob: 1.0,
-        })
+        self.paths.as_mut().unwrap()[pos] =
+            Some(Rc::new(Node::new_direct_block_node(num_dice, pos)));
     }
 
     pub fn is_legal_action(&self, action: Action) -> bool {
@@ -618,7 +633,7 @@ impl AvailableActions {
                     }
                 }
                 if let Some(Some(path)) = self.paths.as_ref().map(|paths| paths[pos].as_ref()) {
-                    return path.action_type == at;
+                    return path.get_action_type() == at;
                 }
                 false
             }

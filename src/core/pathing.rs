@@ -21,6 +21,19 @@ pub enum PathingEvent {
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
 }
+
+pub fn event_ends_player_action(event: &PathingEvent) -> bool {
+    match event {
+        PathingEvent::Handoff(_, _) => true,
+        PathingEvent::Foul(_, _) => true,
+        PathingEvent::Touchdown(_) => true,
+        PathingEvent::Dodge(_) => false,
+        PathingEvent::GFI(_) => false,
+        PathingEvent::Pickup(_) => false,
+        PathingEvent::Block(_, _) => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixedQueue<T> {
     data: [Option<T>; 6],
@@ -75,6 +88,12 @@ impl<T> FixedQueue<T> {
                 .next()
         }
     }
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.data.iter().filter_map(|item| item.as_ref())
+    }
+    pub fn iter_rev(&self) -> impl Iterator<Item = &T> {
+        self.data.iter().rev().filter_map(|item| item.as_ref())
+    }
 }
 impl<T> From<Vec<T>> for FixedQueue<T> {
     fn from(vector: Vec<T>) -> Self {
@@ -84,129 +103,108 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct NodeIterator {
-    current_node: Rc<Node>,
-    events: Option<FixedQueue<PathingEvent>>,
+    stack: Vec<NodeIteratorItem>,
 }
 
-type NodeIteratorItem = Option<<NodeIterator as Iterator>::Item>;
+pub type NodeIteratorItem = Either<Position, PathingEvent>;
 
 impl NodeIterator {
-    fn move_to_node_target(event: &PathingEvent) -> bool {
-        match event {
-            PathingEvent::Dodge(_) => true,
-            PathingEvent::GFI(_) => true,
-            PathingEvent::Block(_, _) => false,
-            PathingEvent::Handoff(_, _) => false,
-            PathingEvent::Foul(_, _) => false,
-            PathingEvent::Pickup(_) => true,
-            PathingEvent::Touchdown(_) => true,
+    fn new(node: &Rc<Node>) -> Self {
+        let mut queue = Vec::new();
+        let mut n = node.clone();
+
+        //this will ensure we ignore the root node
+        while let Some(parent) = &n.parent {
+            n.add_iter_items(&mut queue);
+            n = parent.clone();
         }
+        Self { stack: queue }
     }
-
-    fn traverse_to(&mut self, node: Rc<Node>) -> NodeIteratorItem {
-        debug_assert!(self.events.as_ref().unwrap().is_empty());
-        //at this point, we have yeilded self.current_node.position (and all events if there were any)
-        // or
-        // we are starting fresh and using this function to initalize self
-        // either way, we'll not be reading from self, only writing
-
-        if let Some(last_event) = node.events.last() {
-            //i.e. node.events is not empty
-            let move_to_node: bool = NodeIterator::move_to_node_target(last_event);
-            self.current_node = node;
-            self.events = Some(self.current_node.events.clone());
-            if move_to_node {
-                return Some(Either::Left(self.current_node.position));
-            } else {
-                return Some(Either::Right(self.events.as_mut().unwrap().pop().unwrap()));
-            }
-        }
-
-        if node.parent.is_none() {
-            self.current_node = node;
-            self.events = Some(Default::default());
-            return Some(Either::Left(self.current_node.position));
-        }
-
-        // at this point we know that:
-        debug_assert!(node.events.is_empty());
-        debug_assert!(node.parent.is_some());
-        // That means It is time to attempt FastTraverse!
-
-        let mut prev = node;
-
-        loop {
-            debug_assert!(prev.events.is_empty());
-            match prev.parent.as_ref() {
-                Some(next) if next.events.is_empty() => {
-                    prev = next.clone();
-                }
-                Some(next) => {
-                    self.current_node = next.clone();
-                    self.events = Some(next.events.clone());
-                    //safe unwrap because we check is_empty() above
-                    if NodeIterator::move_to_node_target(next.events.last().unwrap()) {
-                        return Some(Either::Left(next.position));
-                    } else {
-                        return Some(Either::Left(prev.position));
-                    }
-                }
-                None => {
-                    //prev is root node
-                    self.current_node = prev;
-                    self.events = Some(Default::default());
-                    return Some(Either::Left(self.current_node.position));
-                }
-            }
-        }
+    pub fn len(&self) -> usize {
+        self.stack.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.stack.is_empty()
     }
 }
 
 impl Iterator for NodeIterator {
-    type Item = Either<Position, PathingEvent>;
+    type Item = NodeIteratorItem;
 
-    fn next(&mut self) -> NodeIteratorItem {
-        if let Some(events) = self.events.as_mut() {
-            if let Some(next_event) = events.pop() {
-                Some(Either::Right(next_event))
-            } else if let Some(parent) = self.current_node.parent.clone() {
-                self.traverse_to(parent)
-            } else {
-                None
-            }
-        } else {
-            // first time next() is called
-            self.traverse_to(self.current_node.clone()) //todo: refactor to make sense
-        }
+    fn next(&mut self) -> Option<NodeIteratorItem> {
+        self.stack.pop()
     }
 }
 
-impl CustomIntoIter for Rc<Node> {
-    fn iter(&self) -> NodeIterator {
-        NodeIterator {
-            current_node: self.clone(),
-            events: None,
-        }
-    }
-}
 pub trait CustomIntoIter {
     fn iter(&self) -> NodeIterator;
+}
+impl CustomIntoIter for Rc<Node> {
+    fn iter(&self) -> NodeIterator {
+        NodeIterator::new(self)
+    }
 }
 
 #[derive(Debug)]
 pub struct Node {
     parent: OptRcNode,
-    position: Position,
+    pub position: Position,
     moves_left: u8,
     gfis_left: u8,
     block_dice: Option<NumBlockDices>,
     // foul_roll, handoff_roll, block_dice
     //euclidiean_distance: f32,
-    prob: f32,
+    pub prob: f32,
     events: FixedQueue<PathingEvent>,
 }
 impl Node {
+    pub fn get_block_dice(&self) -> Option<NumBlockDices> {
+        self.block_dice
+    }
+    fn add_iter_items(&self, items: &mut Vec<NodeIteratorItem>) {
+        for event in self.events.iter_rev() {
+            items.push(Either::Right(*event));
+        }
+        if self.move_to_position() {
+            items.push(Either::Left(self.position));
+        }
+    }
+    pub fn move_to_position(&self) -> bool {
+        !matches!(
+            self.events.last(),
+            Some(
+                PathingEvent::Block(_, _) | PathingEvent::Handoff(_, _) | PathingEvent::Foul(_, _),
+            )
+        )
+    }
+
+    pub fn new_direct_block_node(block_dice: NumBlockDices, position: Position) -> Node {
+        Node {
+            parent: None,
+            position,
+            moves_left: 0,
+            gfis_left: 0,
+            block_dice: Some(block_dice),
+            prob: 1.0,
+            events: Default::default(),
+        }
+    }
+
+    pub fn get_action_type(&self) -> PosAT {
+        if self.block_dice.is_some() {
+            PosAT::Block
+        } else {
+            match self.events.last() {
+                Some(PathingEvent::Block(_, _)) => PosAT::Block,
+                Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
+                Some(PathingEvent::Foul(_, _)) => PosAT::Foul,
+                _ => PosAT::Move,
+            }
+        }
+    }
+
     fn new(parent: OptRcNode, position: Position, moves_left: u8, gfis_left: u8) -> Node {
         Node {
             prob: parent.as_ref().map(|node| node.prob).unwrap_or(1.0),
@@ -295,61 +293,6 @@ impl Node {
     }
 }
 
-#[derive(Clone, PartialEq)]
-pub struct Path {
-    pub steps: Vec<(Position, FixedQueue<PathingEvent>)>,
-    pub target: Position,
-    pub action_type: PosAT,
-    pub block_dice: Option<NumBlockDices>,
-    pub prob: f32,
-}
-impl std::fmt::Debug for Path {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Path")
-            .field("target", &self.target)
-            .field("prob", &self.prob)
-            .field("action", &self.action_type)
-            .field("len", &self.steps.len())
-            .finish()
-    }
-}
-impl Path {
-    fn new(final_node: &Node) -> Path {
-        let action_type = {
-            if final_node.block_dice.is_some() {
-                PosAT::Block
-            } else {
-                match final_node.events.last() {
-                    Some(PathingEvent::Block(_, _)) => PosAT::Block,
-                    Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
-                    Some(PathingEvent::Foul(_, _)) => PosAT::Foul,
-                    _ => PosAT::Move,
-                }
-            }
-        };
-
-        let mut path = Path {
-            steps: vec![(final_node.position, final_node.events.clone())],
-            prob: final_node.prob,
-            target: final_node.position,
-            action_type,
-            block_dice: final_node.block_dice,
-        };
-
-        let mut node: &Node = final_node;
-        while let Some(parent) = &node.parent {
-            if parent.parent.is_none() {
-                //We don't want the root node here
-                break;
-            }
-            path.steps.push((parent.position, parent.events.clone()));
-            node = parent;
-        }
-        path
-    }
-}
-
-#[allow(dead_code)]
 pub struct PathFinder<'a> {
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
@@ -441,7 +384,6 @@ impl<'a> GameInfo<'a> {
         if node.remaining_movement() == 0
             && !matches!(self.player_action, PosAT::StartFoul | PosAT::StartHandoff)
         {
-            //todo: and can't handoff here.
             return false;
         }
         // todo: stop if block roll or handoff roll is set
@@ -672,7 +614,7 @@ impl<'a> PathFinder<'a> {
             info,
         }
     }
-    pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<Option<Path>>> {
+    pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<OptRcNode>> {
         let player = game_state.get_player_unsafe(id);
         let info = GameInfo::new(game_state, player);
         let root_node = Rc::new(Node::new(
@@ -713,13 +655,7 @@ impl<'a> PathFinder<'a> {
             };
         }
 
-        let mut paths: FullPitch<Option<Path>> = Default::default();
-        for (path, locked_node) in zip(paths.iter_mut(), pf.locked_nodes.iter()) {
-            if let Some(node) = locked_node {
-                *path = Some(Path::new(node));
-            }
-        }
-        Ok(paths)
+        Ok(pf.locked_nodes)
     }
 
     fn prepare_nodes(&mut self, new_nodes: Vec<Rc<Node>>) {
