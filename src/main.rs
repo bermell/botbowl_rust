@@ -49,7 +49,8 @@ mod tests {
     use crate::core::dices::D6;
     use crate::core::dices::D8;
     use crate::core::model::*;
-    use crate::core::pathing::FixedQueue;
+    use crate::core::pathing::CustomIntoIter;
+    use crate::core::pathing::NodeIteratorItem;
     use crate::core::table::*;
     use crate::core::{
         gamestate::{GameState, GameStateBuilder},
@@ -59,6 +60,7 @@ mod tests {
     };
     use crate::standard_state;
     use ansi_term::Colour::Red;
+    use itertools::Either;
     use std::{
         collections::{HashMap, HashSet},
         iter::{repeat_with, zip},
@@ -1406,40 +1408,27 @@ mod tests {
         let id = state.get_player_id_at(starting_pos).unwrap();
         let paths = PathFinder::player_paths(&state, id)?;
 
-        let expected_steps = vec![
-            (
-                Position::new((4, 6)),
-                FixedQueue::from(vec![
-                    PathingEvent::GFI(D6Target::TwoPlus),
-                    PathingEvent::Pickup(D6Target::ThreePlus),
-                ]),
-            ),
-            (
-                Position::new((4, 5)),
-                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::ThreePlus)]),
-            ),
-            (
-                Position::new((4, 4)),
-                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::FourPlus)]),
-            ),
-            (
-                Position::new((4, 3)),
-                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::FourPlus)]),
-            ),
-            (Position::new((3, 2)), FixedQueue::from(vec![])),
-            (
-                Position::new((3, 1)),
-                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::ThreePlus)]),
-            ),
-            (
-                Position::new((2, 1)),
-                FixedQueue::from(vec![PathingEvent::Dodge(D6Target::FourPlus)]),
-            ),
+        let expected_steps: Vec<NodeIteratorItem> = vec![
+            Either::Left(Position::new((2, 1))),
+            Either::Right(PathingEvent::Dodge(D6Target::FourPlus)),
+            Either::Left(Position::new((3, 1))),
+            Either::Right(PathingEvent::Dodge(D6Target::ThreePlus)),
+            Either::Left(Position::new((3, 2))),
+            Either::Left(Position::new((4, 3))),
+            Either::Right(PathingEvent::Dodge(D6Target::FourPlus)),
+            Either::Left(Position::new((4, 4))),
+            Either::Right(PathingEvent::Dodge(D6Target::FourPlus)),
+            Either::Left(Position::new((4, 5))),
+            Either::Right(PathingEvent::Dodge(D6Target::ThreePlus)),
+            Either::Left(Position::new((4, 6))),
+            Either::Right(PathingEvent::GFI(D6Target::TwoPlus)),
+            Either::Right(PathingEvent::Pickup(D6Target::ThreePlus)),
         ];
+
         let expected_prob = 0.03086;
         let path = paths.get(4, 6).clone().unwrap();
 
-        for (i, (expected, actual)) in zip(expected_steps, path.steps).enumerate() {
+        for (i, (expected, actual)) in zip(expected_steps, path.iter()).enumerate() {
             if expected != actual {
                 panic!("Step {}: {:?} != {:?}", i, expected, actual);
             }

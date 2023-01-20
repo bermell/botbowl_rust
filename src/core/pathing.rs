@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::{collections::HashMap, hash, iter::zip, rc::Rc};
 
 use crate::core::model;
+use itertools::Either;
 use model::*;
 
 use super::dices::{D6Target, RollTarget, Sum2D6Target};
@@ -20,6 +21,19 @@ pub enum PathingEvent {
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
 }
+
+pub fn event_ends_player_action(event: &PathingEvent) -> bool {
+    match event {
+        PathingEvent::Handoff(_, _) => true,
+        PathingEvent::Foul(_, _) => true,
+        PathingEvent::Touchdown(_) => true,
+        PathingEvent::Dodge(_) => false,
+        PathingEvent::GFI(_) => false,
+        PathingEvent::Pickup(_) => false,
+        PathingEvent::Block(_, _) => false,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixedQueue<T> {
     data: [Option<T>; 6],
@@ -74,6 +88,12 @@ impl<T> FixedQueue<T> {
                 .next()
         }
     }
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.data.iter().filter_map(|item| item.as_ref())
+    }
+    pub fn iter_rev(&self) -> impl Iterator<Item = &T> {
+        self.data.iter().rev().filter_map(|item| item.as_ref())
+    }
 }
 impl<T> From<Vec<T>> for FixedQueue<T> {
     fn from(vector: Vec<T>) -> Self {
@@ -84,18 +104,107 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
 }
 
 #[derive(Debug)]
+pub struct NodeIterator {
+    stack: Vec<NodeIteratorItem>,
+}
+
+pub type NodeIteratorItem = Either<Position, PathingEvent>;
+
+impl NodeIterator {
+    fn new(node: &Rc<Node>) -> Self {
+        let mut queue = Vec::new();
+        let mut n = node.clone();
+
+        //this will ensure we ignore the root node
+        while let Some(parent) = &n.parent {
+            n.add_iter_items(&mut queue);
+            n = parent.clone();
+        }
+        Self { stack: queue }
+    }
+    pub fn len(&self) -> usize {
+        self.stack.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.stack.is_empty()
+    }
+}
+
+impl Iterator for NodeIterator {
+    type Item = NodeIteratorItem;
+
+    fn next(&mut self) -> Option<NodeIteratorItem> {
+        self.stack.pop()
+    }
+}
+
+pub trait CustomIntoIter {
+    fn iter(&self) -> NodeIterator;
+}
+impl CustomIntoIter for Rc<Node> {
+    fn iter(&self) -> NodeIterator {
+        NodeIterator::new(self)
+    }
+}
+
+#[derive(Debug)]
 pub struct Node {
     parent: OptRcNode,
-    position: Position,
+    pub position: Position,
     moves_left: u8,
     gfis_left: u8,
     block_dice: Option<NumBlockDices>,
     // foul_roll, handoff_roll, block_dice
     //euclidiean_distance: f32,
-    prob: f32,
+    pub prob: f32,
     events: FixedQueue<PathingEvent>,
 }
 impl Node {
+    pub fn get_block_dice(&self) -> Option<NumBlockDices> {
+        self.block_dice
+    }
+    fn add_iter_items(&self, items: &mut Vec<NodeIteratorItem>) {
+        for event in self.events.iter_rev() {
+            items.push(Either::Right(*event));
+        }
+        if self.move_to_position() {
+            items.push(Either::Left(self.position));
+        }
+    }
+    pub fn move_to_position(&self) -> bool {
+        !matches!(
+            self.events.last(),
+            Some(
+                PathingEvent::Block(_, _) | PathingEvent::Handoff(_, _) | PathingEvent::Foul(_, _),
+            )
+        )
+    }
+
+    pub fn new_direct_block_node(block_dice: NumBlockDices, position: Position) -> Node {
+        Node {
+            parent: None,
+            position,
+            moves_left: 0,
+            gfis_left: 0,
+            block_dice: Some(block_dice),
+            prob: 1.0,
+            events: Default::default(),
+        }
+    }
+
+    pub fn get_action_type(&self) -> PosAT {
+        if self.block_dice.is_some() {
+            PosAT::Block
+        } else {
+            match self.events.last() {
+                Some(PathingEvent::Block(_, _)) => PosAT::Block,
+                Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
+                Some(PathingEvent::Foul(_, _)) => PosAT::Foul,
+                _ => PosAT::Move,
+            }
+        }
+    }
+
     fn new(parent: OptRcNode, position: Position, moves_left: u8, gfis_left: u8) -> Node {
         Node {
             prob: parent.as_ref().map(|node| node.prob).unwrap_or(1.0),
@@ -184,61 +293,6 @@ impl Node {
     }
 }
 
-#[derive(Clone, PartialEq)]
-pub struct Path {
-    pub steps: Vec<(Position, FixedQueue<PathingEvent>)>,
-    pub target: Position,
-    pub action_type: PosAT,
-    pub block_dice: Option<NumBlockDices>,
-    pub prob: f32,
-}
-impl std::fmt::Debug for Path {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Path")
-            .field("target", &self.target)
-            .field("prob", &self.prob)
-            .field("action", &self.action_type)
-            .field("len", &self.steps.len())
-            .finish()
-    }
-}
-impl Path {
-    fn new(final_node: &Node) -> Path {
-        let action_type = {
-            if final_node.block_dice.is_some() {
-                PosAT::Block
-            } else {
-                match final_node.events.last() {
-                    Some(PathingEvent::Block(_, _)) => PosAT::Block,
-                    Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
-                    Some(PathingEvent::Foul(_, _)) => PosAT::Foul,
-                    _ => PosAT::Move,
-                }
-            }
-        };
-
-        let mut path = Path {
-            steps: vec![(final_node.position, final_node.events.clone())],
-            prob: final_node.prob,
-            target: final_node.position,
-            action_type,
-            block_dice: final_node.block_dice,
-        };
-
-        let mut node: &Node = final_node;
-        while let Some(parent) = &node.parent {
-            if parent.parent.is_none() {
-                //We don't want the root node here
-                break;
-            }
-            path.steps.push((parent.position, parent.events.clone()));
-            node = parent;
-        }
-        path
-    }
-}
-
-#[allow(dead_code)]
 pub struct PathFinder<'a> {
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
@@ -330,7 +384,6 @@ impl<'a> GameInfo<'a> {
         if node.remaining_movement() == 0
             && !matches!(self.player_action, PosAT::StartFoul | PosAT::StartHandoff)
         {
-            //todo: and can't handoff here.
             return false;
         }
         // todo: stop if block roll or handoff roll is set
@@ -561,7 +614,7 @@ impl<'a> PathFinder<'a> {
             info,
         }
     }
-    pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<Option<Path>>> {
+    pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<OptRcNode>> {
         let player = game_state.get_player_unsafe(id);
         let info = GameInfo::new(game_state, player);
         let root_node = Rc::new(Node::new(
@@ -602,13 +655,7 @@ impl<'a> PathFinder<'a> {
             };
         }
 
-        let mut paths: FullPitch<Option<Path>> = Default::default();
-        for (path, locked_node) in zip(paths.iter_mut(), pf.locked_nodes.iter()) {
-            if let Some(node) = locked_node {
-                *path = Some(Path::new(node));
-            }
-        }
-        Ok(paths)
+        Ok(pf.locked_nodes)
     }
 
     fn prepare_nodes(&mut self, new_nodes: Vec<Rc<Node>>) {
