@@ -67,6 +67,37 @@ mod tests {
     };
 
     #[test]
+    fn standup_pathing() {
+        let start_pos = Position::new((5, 5));
+        let target = Position::new((8, 8));
+        let push_to = target + (1, 1);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(target)
+            .build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+
+        state.step_positional(PosAT::StartBlitz, start_pos);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+
+        state.fixes.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, target);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Up);
+        assert_eq!(
+            state.get_player_unsafe(id).moves_left(),
+            state.get_player_unsafe(id).stats.ma - 3 - 3
+        );
+
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, push_to);
+        state.step_positional(PosAT::FollowUp, target);
+
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Block, push_to)));
+    }
+
+    #[test]
     fn turnover() {
         let h1_pos = Position::new((5, 5));
         let h2_pos = Position::new((5, 6));

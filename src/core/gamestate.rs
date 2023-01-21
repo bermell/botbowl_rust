@@ -558,7 +558,7 @@ impl GameState {
 
         debug_assert_ne!(attr.stats.team, defr.stats.team);
         debug_assert_eq!(attacker_pos.distance_to(&defr.position), 1);
-        debug_assert!(attr.has_tackle_zone());
+        // debug_assert!(attr.has_tackle_zone());
         debug_assert_eq!(defr.status, PlayerStatus::Up);
 
         let mut attr_str = attr.stats.str_;

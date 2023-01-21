@@ -20,6 +20,7 @@ pub enum PathingEvent {
     Handoff(PlayerID, D6Target),
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
+    StandUp,
 }
 
 pub fn event_ends_player_action(event: &PathingEvent) -> bool {
@@ -31,6 +32,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::GFI(_) => false,
         PathingEvent::Pickup(_) => false,
         PathingEvent::Block(_, _) => false,
+        PathingEvent::StandUp => false,
     }
 }
 
@@ -120,6 +122,8 @@ impl NodeIterator {
             n.add_iter_items(&mut queue);
             n = parent.clone();
         }
+        n.add_iter_items(&mut queue); //root node
+
         Self { stack: queue }
     }
     pub fn len(&self) -> usize {
@@ -172,12 +176,23 @@ impl Node {
         }
     }
     pub fn move_to_position(&self) -> bool {
-        !matches!(
-            self.events.last(),
-            Some(
-                PathingEvent::Block(_, _) | PathingEvent::Handoff(_, _) | PathingEvent::Foul(_, _),
-            )
-        )
+        if self.parent.is_none() {
+            return false;
+        }
+        if let Some(event) = self.events.last() {
+            match event {
+                PathingEvent::Block(_, _) => false,
+                PathingEvent::Handoff(_, _) => false,
+                PathingEvent::Foul(_, _) => false,
+                PathingEvent::StandUp => false,
+                PathingEvent::Dodge(_) => true,
+                PathingEvent::GFI(_) => true,
+                PathingEvent::Pickup(_) => true,
+                PathingEvent::Touchdown(_) => true,
+            }
+        } else {
+            true
+        }
     }
 
     pub fn new_direct_block_node(block_dice: NumBlockDices, position: Position) -> Node {
@@ -246,6 +261,10 @@ impl Node {
     }
     fn apply_touchdown(&mut self, id: PlayerID) {
         self.events.push_back(PathingEvent::Touchdown(id));
+    }
+    fn apply_standup(&mut self) {
+        self.events.push_back(PathingEvent::StandUp);
+        self.moves_left -= 3;
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -617,12 +636,17 @@ impl<'a> PathFinder<'a> {
     pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<OptRcNode>> {
         let player = game_state.get_player_unsafe(id);
         let info = GameInfo::new(game_state, player);
-        let root_node = Rc::new(Node::new(
+        let mut root_node = Node::new(
             None,
             info.start_pos,
             player.moves_left(),
             player.gfis_left(),
-        ));
+        );
+        if player.status != PlayerStatus::Up {
+            root_node.apply_standup();
+        }
+
+        let root_node = Rc::new(root_node);
 
         if !info.can_continue_expanding(&root_node) {
             return Ok(Default::default());

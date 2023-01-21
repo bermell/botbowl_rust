@@ -260,6 +260,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Proced
         PathingEvent::Handoff(id, target) => Catch::new(id, target),
         PathingEvent::Touchdown(id) => Touchdown::new(id),
         PathingEvent::Foul(victim, target) => Armor::new_foul(victim, target, active_player),
+        PathingEvent::StandUp => StandUp::new(active_player),
     }
 }
 
@@ -889,8 +890,6 @@ struct Block {
     state: BlockProcState,
     roll: [Option<BlockDice>; 3],
     is_uphill: bool,
-    //attacker is game_state.active_player()
-    //is_blitz: bool //prepare for Horns, Juggernaught, etc..
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockProcState {
@@ -911,6 +910,7 @@ impl Block {
             is_uphill: matches!(dices, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill),
         })
     }
+
     fn add_aa(&self, aa: &mut AvailableActions) {
         self.roll
             .iter()
@@ -948,6 +948,10 @@ impl Procedure for Block {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
         match action {
             None => {
+                if game_state.info.player_action_type.unwrap() == PosAT::StartBlitz {
+                    game_state.info.player_action_type = Some(PosAT::StartMove); //to preven the player from blitzing again
+                    game_state.get_active_player_mut().unwrap().add_move(1);
+                }
                 for i in 0..u8::from(self.dices) {
                     self.roll[i as usize] = Some(game_state.get_block_dice_roll());
                 }
@@ -1033,7 +1037,7 @@ impl Procedure for Block {
                 }
                 ProcState::from(procs)
             }
-            _ => panic!("very wrong!"),
+            _ => unreachable!(),
         }
     }
 }
@@ -1551,6 +1555,28 @@ impl Procedure for TurnoverIfPossessionLost {
             }
             _ => unreachable!(),
         }
+        ProcState::Done
+    }
+}
+
+#[derive(Debug)]
+pub struct StandUp {
+    id: PlayerID,
+}
+impl StandUp {
+    pub fn new(id: PlayerID) -> Box<StandUp> {
+        Box::new(StandUp { id })
+    }
+}
+impl Procedure for StandUp {
+    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+        debug_assert_eq!(
+            game_state.get_player_unsafe(self.id).status,
+            PlayerStatus::Down
+        );
+        game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Up;
+        game_state.get_mut_player_unsafe(self.id).add_move(3);
+
         ProcState::Done
     }
 }
