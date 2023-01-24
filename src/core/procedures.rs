@@ -270,17 +270,6 @@ enum MoveActionState {
     ActivePath(NodeIterator),
     SelectPath,
 }
-impl std::fmt::Debug for MoveActionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self {
-            MoveActionState::Init => f.write_str("Init"),
-            MoveActionState::ActivePath(path) => {
-                f.debug_struct("ActivePath").field("", &path).finish()
-            }
-            MoveActionState::SelectPath => f.debug_struct("SelectPath").finish(),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct MoveAction {
