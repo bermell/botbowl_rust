@@ -264,7 +264,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Proced
     }
 }
 
-#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 enum MoveActionState {
     Init,
     ActivePath(NodeIterator),
