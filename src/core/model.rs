@@ -443,7 +443,7 @@ impl FieldedPlayer {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TeamState {
-    //bribes: u8,
+    pub bribes: u8,
     //babes: u8,
     //apothecaries: u8,
     //wizard_available: bool,
@@ -465,6 +465,7 @@ impl TeamState {
             rerolls: 3,
             reroll_used: false,
             score: 0,
+            bribes: 0,
         }
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
@@ -478,7 +479,7 @@ impl TeamState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TeamType {
     Home,
     Away,

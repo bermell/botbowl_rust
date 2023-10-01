@@ -21,6 +21,23 @@ pub struct GameStateBuilder {
 }
 
 impl GameStateBuilder {
+    /// creates a gamestate where away won the coin toss and choose to kick, and
+    /// both teams setup their line of scrimmage
+    pub fn new_at_kickoff() -> GameState {
+        let mut state: GameState = GameStateBuilder::new_start_of_game();
+
+        state.fixes.fix_coin(Coin::Heads);
+        state.step_simple(SimpleAT::Heads); //Away
+
+        state.step_simple(SimpleAT::Kick); //Away
+
+        state.step_simple(SimpleAT::SetupLine); //Away
+        state.step_simple(SimpleAT::EndSetup); //Away
+
+        state.step_simple(SimpleAT::SetupLine); //Home
+        state.step_simple(SimpleAT::EndSetup); //Home
+        state
+    }
     pub fn new_start_of_game() -> GameState {
         let mut state = GameStateBuilder::empty_state();
 
