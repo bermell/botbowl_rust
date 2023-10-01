@@ -4,9 +4,11 @@ Attempt to implement [botbowl](https://github.com/njustesen/botbowl) in rust. Wi
 
 ![Better rewrite in rust](https://i.redd.it/xx367w6kroz41.jpg)
 
+**I changed my mind, we're going with blood bowl 2020 rules**
+
 ## TODO
 List of things to implement and write tests for in order to use as engine for forward model in a botbowl competition: 
-- Botbowl 2016 rules 
+- Botbowl 2020 rules 
 - Two Human team, only starting skills without Ogre
 
 **Refactor and optimizations** 
