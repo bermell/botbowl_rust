@@ -173,7 +173,7 @@ mod tests {
         state.fixes.fix_d8_direction(Direction::up()); // scatter direction
         state.fixes.fix_d6(5); // scatter length
 
-        state.fixes.fix_d6(3); // fix changing whether kickoff result
+        state.fixes.fix_d6(4); // fix changing whether kickoff result
         state.fixes.fix_d6(4); // fix changing weather kickoff result
 
         state.fixes.fix_d6(2); // Nice weather
