@@ -3,9 +3,7 @@ use model::*;
 use rand::Rng;
 use std::{iter::repeat_with, ops::RangeInclusive};
 
-use crate::core::procedures::ball_procs::{
-    Bounce, Catch, PickupProc, ThrowIn, Touchback, Touchdown,
-};
+use crate::core::procedures::ball_procs;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::*;
 
@@ -199,7 +197,7 @@ impl Procedure for Turn {
         if let Some(id) = game_state.info.handle_td_by {
             //todo, set internal state to kickoff next (or if it was the last turn return done )
             game_state.info.handle_td_by = None;
-            return ProcState::NotDoneNew(Touchdown::new(id));
+            return ProcState::NotDoneNew(ball_procs::Touchdown::new(id));
         }
 
         if game_state.info.kickoff_by_team.is_some() || game_state.info.turnover {
@@ -239,10 +237,10 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Proced
     match roll {
         PathingEvent::Dodge(target) => DodgeProc::new(active_player, target),
         PathingEvent::GFI(target) => GfiProc::new(active_player, target),
-        PathingEvent::Pickup(target) => PickupProc::new(active_player, target),
+        PathingEvent::Pickup(target) => ball_procs::PickupProc::new(active_player, target),
         PathingEvent::Block(id, dices) => Block::new(dices, id),
-        PathingEvent::Handoff(id, target) => Catch::new(id, target),
-        PathingEvent::Touchdown(id) => Touchdown::new(id),
+        PathingEvent::Handoff(id, target) => ball_procs::Catch::new(id, target),
+        PathingEvent::Touchdown(id) => ball_procs::Touchdown::new(id),
         PathingEvent::Foul(victim, target) => Armor::new_foul(victim, target, active_player),
         PathingEvent::StandUp => StandUp::new(active_player),
     }
@@ -420,7 +418,7 @@ impl Procedure for KnockDown {
         player.used = true;
         let armor_proc = Armor::new(self.id);
         if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
-            ProcState::DoneNewProcs(vec![Bounce::new(), armor_proc])
+            ProcState::DoneNewProcs(vec![ball_procs::Bounce::new(), armor_proc])
         } else {
             ProcState::DoneNew(armor_proc)
         }
@@ -491,7 +489,7 @@ impl Procedure for Ejection {
 
         if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
             game_state.ball = BallState::InAir(position);
-            ProcState::DoneNew(Bounce::new())
+            ProcState::DoneNew(ball_procs::Bounce::new())
         } else {
             ProcState::Done
         }
@@ -818,7 +816,7 @@ impl Push {
             let id = game_state.get_player_id_at(last_push_to).unwrap();
             if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
                 game_state.ball = BallState::InAir(last_push_from);
-                procs.push(ThrowIn::new(last_push_from));
+                procs.push(ball_procs::ThrowIn::new(last_push_from));
             }
             procs.push(Injury::new_crowd(id));
             if self.moves_to_make.is_empty() {
@@ -1184,16 +1182,16 @@ impl Procedure for LandKickoff {
         if ball_position.is_out()
             || !ball_position.is_on_team_side(other_team(game_state.info.kicking_this_drive))
         {
-            return ProcState::DoneNew(Touchback::new());
+            return ProcState::DoneNew(ball_procs::Touchback::new());
         }
 
         match game_state.get_player_id_at(ball_position) {
-            Some(id) => ProcState::DoneNew(Catch::new_with_kick_arg(
+            Some(id) => ProcState::DoneNew(ball_procs::Catch::new_with_kick_arg(
                 id,
                 game_state.get_catch_target(id).unwrap(),
                 true,
             )),
-            None => ProcState::DoneNew(Bounce::new_with_kick_arg(true)),
+            None => ProcState::DoneNew(ball_procs::Bounce::new_with_kick_arg(true)),
         }
     }
 }
