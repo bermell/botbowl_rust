@@ -7,9 +7,6 @@ use crate::ui::Renderer;
 
 pub mod core;
 pub mod ui;
-// fn draw_board(game_state: &GameState) {
-//     :
-// }
 
 pub fn standard_state() -> GameState {
     GameStateBuilder::new()
@@ -19,7 +16,7 @@ pub fn standard_state() -> GameState {
         .build()
 }
 
-fn main() {
+fn maiarstn() {
     println!("Hello world!");
     let mut state = GameStateBuilder::new()
         .add_home_players(&[(1, 1), (2, 2), (3, 1)])
