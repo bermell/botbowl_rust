@@ -1278,10 +1278,10 @@ impl Procedure for Kickoff {
                 //get the ref
             }
             Sum2D6::Three => {
-                //Riot
+                //Timeout
             }
             Sum2D6::Four => {
-                //Perfect Defence
+                //solid defense
             }
             Sum2D6::Five => {
                 //High Kick
@@ -1290,10 +1290,10 @@ impl Procedure for Kickoff {
                 //Cheering fans
             }
             Sum2D6::Seven => {
-                self.changing_weather(game_state);
+                //Brilliant coaching
             }
             Sum2D6::Eight => {
-                //Brilliant coaching
+                self.changing_weather(game_state);
             }
             Sum2D6::Nine => {
                 //Quick snap
@@ -1302,7 +1302,7 @@ impl Procedure for Kickoff {
                 //Blitz!
             }
             Sum2D6::Eleven => {
-                //Throw a rock
+                //Officious ref
             }
             Sum2D6::Twelve => {
                 //Pitch invasion
