@@ -5,7 +5,7 @@ use std::{iter::repeat_with, ops::RangeInclusive};
 
 use crate::core::table::*;
 
-use super::{
+use crate::core::{
     dices::{BlockDice, D6Target, RollTarget, Sum2D6, Sum2D6Target},
     gamestate::GameState,
     pathing::{event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent},
