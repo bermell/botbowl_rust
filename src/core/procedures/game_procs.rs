@@ -1,8 +1,10 @@
 use std::iter::repeat_with;
 
-use crate::core::{dices::D6, model};
-use model::*;
-
+use crate::core::dices::D6;
+use crate::core::model::{
+    other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerID, PlayerStatus, Position,
+    ProcState, Procedure, TeamType,
+};
 use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs};
 use crate::core::table::*;
 
