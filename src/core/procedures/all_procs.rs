@@ -3,6 +3,10 @@ use model::*;
 use rand::Rng;
 use std::{iter::repeat_with, ops::RangeInclusive};
 
+use crate::core::procedures::ball_procs::{
+    Bounce, Catch, PickupProc, ThrowIn, Touchback, Touchdown,
+};
+use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::*;
 
 use crate::core::{
@@ -10,26 +14,6 @@ use crate::core::{
     gamestate::GameState,
     pathing::{event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent},
 };
-
-#[allow(unused_variables)]
-trait SimpleProc {
-    fn d6_target(&self) -> D6Target; //called immidiately before
-    fn reroll_skill(&self) -> Option<Skill>;
-    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
-        Vec::new()
-    }
-    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>>;
-    fn player_id(&self) -> PlayerID;
-}
-impl From<Vec<Box<dyn Procedure>>> for ProcState {
-    fn from(procs: Vec<Box<dyn Procedure>>) -> Self {
-        match procs.len() {
-            0 => ProcState::Done,
-            // 1 => ProcState::DoneNew(procs.pop().unwrap()),
-            _ => ProcState::DoneNewProcs(procs),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct Half {
@@ -417,120 +401,6 @@ impl SimpleProc for GfiProc {
 }
 
 #[derive(Debug)]
-struct PickupProc {
-    target: D6Target,
-    id: PlayerID,
-}
-impl PickupProc {
-    fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<PickupProc>> {
-        SimpleProcContainer::new(PickupProc { target, id })
-    }
-}
-impl SimpleProc for PickupProc {
-    fn d6_target(&self) -> D6Target {
-        self.target
-    }
-
-    fn reroll_skill(&self) -> Option<Skill> {
-        Some(Skill::SureHands)
-    }
-
-    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
-        game_state.ball = BallState::Carried(self.id);
-        let player = game_state.get_player_unsafe(self.id);
-        if player.position.x == game_state.get_endzone_x(player.stats.team) {
-            game_state.info.handle_td_by = Some(self.id);
-        }
-        Vec::new()
-    }
-
-    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
-        game_state.get_mut_player(self.id).unwrap().used = true;
-        game_state.info.turnover = true;
-        vec![Bounce::new()]
-    }
-
-    fn player_id(&self) -> PlayerID {
-        self.id
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum RollProcState {
-    Init,
-    RerollUsed,
-    //WaitingForSkillReroll,
-}
-#[derive(Debug)]
-struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug> {
-    proc: T,
-    state: RollProcState,
-}
-impl<T: SimpleProc + std::fmt::Debug> SimpleProcContainer<T> {
-    pub fn new(proc: T) -> Box<Self> {
-        Box::new(SimpleProcContainer {
-            proc,
-            state: RollProcState::Init,
-        })
-    }
-    pub fn id(&self) -> PlayerID {
-        self.proc.player_id()
-    }
-}
-
-impl<T> Procedure for SimpleProcContainer<T>
-where
-    T: SimpleProc + std::fmt::Debug,
-{
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        // if action is DON*T REROLL, apply failure, return true
-        match action {
-            Some(Action::Simple(SimpleAT::DontUseReroll)) => {
-                return ProcState::from(self.proc.apply_failure(game_state));
-            }
-            Some(Action::Simple(SimpleAT::UseReroll)) => {
-                game_state.get_active_team_mut().unwrap().use_reroll();
-                self.state = RollProcState::RerollUsed;
-            }
-            _ => (),
-        }
-
-        loop {
-            let roll = game_state.get_d6_roll();
-            if self.proc.d6_target().is_success(roll) {
-                return ProcState::from(self.proc.apply_success(game_state));
-            }
-            if self.state == RollProcState::RerollUsed {
-                break;
-            }
-            match self.proc.reroll_skill() {
-                Some(skill) if game_state.get_player_unsafe(self.id()).can_use_skill(skill) => {
-                    game_state.get_mut_player_unsafe(self.id()).use_skill(skill);
-                    self.state = RollProcState::RerollUsed;
-                    continue;
-                }
-                _ => (),
-            }
-
-            if game_state
-                .get_team_from_player(self.id())
-                .unwrap()
-                .can_use_reroll()
-            {
-                let team = game_state.get_player_unsafe(self.id()).stats.team;
-                let mut aa = AvailableActions::new(team);
-                aa.insert_simple(SimpleAT::UseReroll);
-                aa.insert_simple(SimpleAT::DontUseReroll);
-                return ProcState::NeedAction(aa);
-            } else {
-                break;
-            }
-        }
-        ProcState::from(self.proc.apply_failure(game_state))
-    }
-}
-
-#[derive(Debug)]
 struct KnockDown {
     id: PlayerID,
 }
@@ -680,155 +550,6 @@ impl Procedure for Injury {
             game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
         }
         ProcState::from(procs)
-    }
-}
-
-#[derive(Debug)]
-struct Bounce {
-    kick: bool,
-}
-impl Bounce {
-    pub fn new() -> Box<Bounce> {
-        Box::new(Bounce { kick: false })
-    }
-    pub fn new_with_kick_arg(kick: bool) -> Box<Bounce> {
-        Box::new(Bounce { kick })
-    }
-}
-impl Procedure for Bounce {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        let current_ball_pos = game_state.get_ball_position().unwrap();
-        let dice = game_state.get_d8_roll();
-        let dir = Direction::from(dice);
-        let new_pos = current_ball_pos + dir;
-
-        if self.kick
-            && (new_pos.is_out() || new_pos.is_on_team_side(game_state.info.kicking_this_drive))
-        {
-            return ProcState::DoneNew(Touchback::new());
-        }
-
-        if let Some(player) = game_state.get_player_at(new_pos) {
-            if player.can_catch() {
-                ProcState::DoneNew(Catch::new_with_kick_arg(
-                    player.id,
-                    game_state.get_catch_target(player.id).unwrap(),
-                    self.kick,
-                ))
-            } else {
-                //will run bounce again
-                game_state.ball = BallState::InAir(new_pos);
-                ProcState::NotDone
-            }
-        } else if new_pos.is_out() {
-            ProcState::DoneNew(ThrowIn::new(current_ball_pos))
-        } else {
-            game_state.ball = BallState::OnGround(new_pos);
-            ProcState::Done
-        }
-    }
-}
-#[derive(Debug)]
-struct ThrowIn {
-    from: Position,
-}
-impl ThrowIn {
-    pub fn new(from: Position) -> Box<ThrowIn> {
-        Box::new(ThrowIn { from })
-    }
-}
-impl Procedure for ThrowIn {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        const MAX_X: Coord = HEIGHT_ - 2;
-        const MAX_Y: Coord = WIDTH_ - 2;
-        let directions: [(Coord, Coord); 3] = match self.from {
-            Position { x: 1, y: 1 } => [(1, 0), (1, 1), (0, 1)],
-            Position { x: 1, y: MAX_Y } => [(1, 0), (1, -1), (0, -1)],
-            Position { x: MAX_X, y: 1 } => [(-1, 0), (-1, 1), (0, 1)],
-            Position { x: MAX_X, y: MAX_Y } => [(-1, 0), (-1, -1), (0, -1)],
-            Position { x: 1, .. } => [(1, 1), (1, 0), (1, -1)],
-            Position { x: MAX_X, .. } => [(-1, 1), (-1, 0), (-1, -1)],
-            Position { y: 1, .. } => [(1, 1), (0, 1), (-1, 1)],
-            Position { y: MAX_Y, .. } => [(1, -1), (0, -1), (-1, -1)],
-            _ => panic!("very wrong!"),
-        };
-        let direction = Direction::from(match game_state.get_d6_roll() {
-            D6::One | D6::Two => directions[0],
-            D6::Three | D6::Four => directions[1],
-            D6::Five | D6::Six => directions[2],
-        });
-
-        let length = game_state.get_2d6_roll() as i8;
-        let target: Position = self.from + direction * length;
-
-        if target.is_out() {
-            self.from = target - direction;
-
-            while self.from.is_out() {
-                self.from -= direction;
-            }
-
-            ProcState::NotDone
-        } else {
-            match game_state.get_player_at(target) {
-                Some(player) if player.can_catch() => ProcState::DoneNew(Catch::new(
-                    player.id,
-                    game_state.get_catch_target(player.id).unwrap(),
-                )),
-                _ => {
-                    game_state.ball = BallState::InAir(target);
-                    ProcState::DoneNew(Bounce::new())
-                }
-            }
-        }
-    }
-}
-#[derive(Debug)]
-struct Catch {
-    id: PlayerID,
-    target: D6Target,
-    kick: bool,
-}
-impl Catch {
-    pub fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<Catch>> {
-        SimpleProcContainer::new(Catch {
-            id,
-            target,
-            kick: false,
-        })
-    }
-    pub fn new_with_kick_arg(
-        id: PlayerID,
-        target: D6Target,
-        kick: bool,
-    ) -> Box<SimpleProcContainer<Catch>> {
-        SimpleProcContainer::new(Catch { id, target, kick })
-    }
-}
-impl SimpleProc for Catch {
-    fn d6_target(&self) -> D6Target {
-        self.target
-    }
-
-    fn reroll_skill(&self) -> Option<Skill> {
-        Some(Skill::Catch)
-    }
-
-    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
-        game_state.ball = BallState::Carried(self.id);
-        let player = game_state.get_player_unsafe(self.id);
-        if player.position.x == game_state.get_endzone_x(player.stats.team) {
-            game_state.info.handle_td_by = Some(self.id);
-        }
-        Vec::new()
-    }
-
-    fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
-        vec![Bounce::new_with_kick_arg(self.kick)]
-    }
-
-    fn player_id(&self) -> PlayerID {
-        self.id
     }
 }
 
@@ -1190,29 +911,6 @@ impl Procedure for FollowUp {
 }
 
 #[derive(Debug)]
-struct Touchdown {
-    id: PlayerID,
-}
-impl Touchdown {
-    fn new(id: PlayerID) -> Box<Touchdown> {
-        Box::new(Touchdown { id })
-    }
-}
-impl Procedure for Touchdown {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        if let BallState::Carried(carrier_id) = game_state.ball {
-            if carrier_id == self.id {
-                game_state.get_mut_team_from_player(self.id).unwrap().score += 1;
-                game_state.get_mut_player_unsafe(self.id).used = true;
-                game_state.info.kickoff_by_team =
-                    Some(other_team(game_state.get_player_unsafe(self.id).stats.team));
-            }
-        }
-
-        ProcState::Done
-    }
-}
-#[derive(Debug)]
 pub struct GameOver;
 impl GameOver {
     pub fn new() -> Box<GameOver> {
@@ -1496,30 +1194,6 @@ impl Procedure for LandKickoff {
                 true,
             )),
             None => ProcState::DoneNew(Bounce::new_with_kick_arg(true)),
-        }
-    }
-}
-#[derive(Debug)]
-pub struct Touchback {}
-impl Touchback {
-    pub fn new() -> Box<Touchback> {
-        Box::new(Touchback {})
-    }
-}
-impl Procedure for Touchback {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        if let Some(Action::Positional(_, position)) = action {
-            game_state.ball = BallState::Carried(game_state.get_player_id_at(position).unwrap());
-            ProcState::Done
-        } else {
-            let team = other_team(game_state.info.kicking_this_drive);
-            let mut aa = AvailableActions::new(team);
-            let positions: Vec<_> = game_state
-                .get_players_on_pitch_in_team(team)
-                .map(|p| p.position)
-                .collect();
-            aa.insert_positional(PosAT::SelectPosition, positions);
-            ProcState::NeedAction(aa)
         }
     }
 }
