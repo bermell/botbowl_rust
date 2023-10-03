@@ -299,7 +299,6 @@ pub struct GameState {
     pub rng_enabled: bool,
     pub fixes: FixedDice,
     rng: ChaCha8Rng,
-    //rerolled_procs: ???? //TODO!!!
 }
 
 impl GameState {
@@ -325,11 +324,11 @@ impl GameState {
             id,
         })
     }
-    pub fn get_dugout_player(&self, id: PlayerID) -> Option<&DugoutPlayer> {
+    pub fn get_dugout_player(&self, id: DugoutPlayerID) -> Option<&DugoutPlayer> {
         self.dugout_players[id].as_ref()
     }
 
-    pub fn field_dugout_player(&mut self, dugout_id: PlayerID, position: Position) {
+    pub fn field_dugout_player(&mut self, dugout_id: DugoutPlayerID, position: Position) {
         let DugoutPlayer { stats, place, .. } = self.dugout_players[dugout_id].take().unwrap();
         assert_eq!(place, DugoutPlace::Reserves, "Must field from reserves_box");
         self.add_new_player_to_field(stats, position).unwrap();

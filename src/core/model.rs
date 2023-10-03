@@ -13,6 +13,7 @@ use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
 use crate::core::table;
 
 pub type PlayerID = usize;
+pub type DugoutPlayerID = usize;
 pub type Coord = i8;
 
 pub struct FullPitch<T> {
@@ -359,7 +360,7 @@ pub enum DugoutPlace {
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
-    pub id: PlayerID,
+    pub id: DugoutPlayerID,
 }
 
 #[derive(Debug)]
