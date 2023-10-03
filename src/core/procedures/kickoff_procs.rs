@@ -4,8 +4,9 @@ use rand::Rng;
 
 use crate::core::dices::Sum2D6;
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerID, PlayerStatus,
-    Position, ProcState, Procedure, TeamType, Weather, LINE_OF_SCRIMMAGE_Y_RANGE,
+    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
+    PlayerStatus, Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_,
+    LINE_OF_SCRIMMAGE_Y_RANGE,
 };
 use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
@@ -177,6 +178,48 @@ impl Setup {
             game_state.field_dugout_player(id, p);
         }
     }
+    fn setup_line(&self, game_state: &mut GameState) -> Result<()> {
+        //unfield all players
+        let player_ids = game_state
+            .get_players_on_pitch_in_team(self.team)
+            .map(|p| p.id)
+            .collect::<Vec<_>>();
+        for id in player_ids {
+            game_state.unfield_player(id, DugoutPlace::Reserves)?;
+        }
+        let mut linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
+        let mut blitzer_pos = vec![(0, -2), (0, 2)];
+        let mut catcher_pos = vec![(2, 2), (2, -2)];
+        let mut thrower_pos = vec![(6, 3), (6, -3)];
+        #[allow(clippy::needless_collect)]
+        let players: Vec<PlayerID> = game_state
+            .get_dugout()
+            .filter(|dplayer| dplayer.stats.team == self.team)
+            .map(|p| p.id)
+            .collect();
+        let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
+        let middle_x = game_state.get_line_of_scrimage_x(self.team);
+        let middle_y = HEIGHT_ / 2;
+        for id in players {
+            let player = game_state.get_dugout_player(id).unwrap();
+            let (dx, dy) = {
+                match player.stats.role {
+                    PlayerRole::Blitzer if blitzer_pos.len() > 0 => blitzer_pos.pop().unwrap(),
+                    PlayerRole::Thrower if thrower_pos.len() > 0 => thrower_pos.pop().unwrap(),
+                    PlayerRole::Catcher if catcher_pos.len() > 0 => catcher_pos.pop().unwrap(),
+                    PlayerRole::Lineman if linemen_pos.len() > 0 => linemen_pos.pop().unwrap(),
+                    _ => continue,
+                }
+            };
+            let position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
+            println!(
+                "fielding {:?} {:?} at {:?}",
+                player.stats.role, player.stats.team, position
+            );
+            game_state.field_dugout_player(id, position)
+        }
+        Ok(())
+    }
 }
 impl Procedure for Setup {
     fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
@@ -188,7 +231,7 @@ impl Procedure for Setup {
 
         match action {
             Some(Action::Simple(SimpleAT::SetupLine)) => {
-                self.random_setup(game_state);
+                self.setup_line(game_state).unwrap();
                 aa.insert_simple(SimpleAT::EndSetup);
                 ProcState::NeedAction(aa)
             }

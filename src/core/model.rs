@@ -9,7 +9,7 @@ use std::rc::Rc;
 use super::dices::{D6Target, Sum2D6Target};
 use super::gamestate::GameState;
 use super::pathing::Node;
-use super::table::{NumBlockDices, PosAT, SimpleAT, Skill};
+use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
 use crate::core::table;
 
 pub type PlayerID = usize;
@@ -284,7 +284,7 @@ pub enum PlayerStatus {
     Stunned,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerStats {
     pub str_: u8,
     pub ma: u8,
@@ -292,6 +292,7 @@ pub struct PlayerStats {
     pub av: u8,
     pub team: TeamType,
     skills: HashSet<Skill>,
+    pub role: PlayerRole,
     //skills: [Option<table::Skill>; 3],
     //injuries
     //spp
@@ -305,6 +306,7 @@ impl PlayerStats {
             av: 8,
             team,
             skills: HashSet::new(),
+            role: PlayerRole::Lineman,
         }
     }
     pub fn new_blitzer(team: TeamType) -> PlayerStats {
@@ -315,6 +317,7 @@ impl PlayerStats {
             av: 9,
             team,
             skills: HashSet::from_iter([Skill::Block]),
+            role: PlayerRole::Blitzer,
         }
     }
     pub fn new_catcher(team: TeamType) -> PlayerStats {
@@ -325,6 +328,7 @@ impl PlayerStats {
             av: 8,
             team,
             skills: HashSet::from_iter([Skill::Dodge, Skill::Catch]),
+            role: PlayerRole::Catcher,
         }
     }
     pub fn new_thrower(team: TeamType) -> PlayerStats {
@@ -335,6 +339,7 @@ impl PlayerStats {
             av: 8,
             team,
             skills: HashSet::from_iter([Skill::SureHands, Skill::Throw]),
+            role: PlayerRole::Thrower,
         }
     }
     pub fn give_skill(&mut self, skill: Skill) {

@@ -21,6 +21,18 @@ pub struct GameStateBuilder {
 }
 
 impl GameStateBuilder {
+    /// creates a gamestate where away won the coin toss and choose to kick
+    /// next is setup for away as defence and home as offence
+    pub fn new_at_setup() -> GameState {
+        let mut state: GameState = GameStateBuilder::new_start_of_game();
+
+        state.fixes.fix_coin(Coin::Heads);
+        state.step_simple(SimpleAT::Heads); //Away
+
+        state.step_simple(SimpleAT::Kick); //Away
+        state
+    }
+
     /// creates a gamestate where away won the coin toss and choose to kick, and
     /// both teams setup their line of scrimmage
     pub fn new_at_kickoff() -> GameState {
@@ -313,6 +325,10 @@ impl GameState {
             id,
         })
     }
+    pub fn get_dugout_player(&self, id: PlayerID) -> Option<&DugoutPlayer> {
+        self.dugout_players[id].as_ref()
+    }
+
     pub fn field_dugout_player(&mut self, dugout_id: PlayerID, position: Position) {
         let DugoutPlayer { stats, place, .. } = self.dugout_players[dugout_id].take().unwrap();
         assert_eq!(place, DugoutPlace::Reserves, "Must field from reserves_box");

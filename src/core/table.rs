@@ -103,3 +103,11 @@ enum PrayerToNuffleEffect {
     UnderScrutiny(TeamType),
     IntensiveTraining(PlayerID, Skill),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlayerRole {
+    Lineman,
+    Blitzer,
+    Thrower,
+    Catcher,
+}

@@ -18,13 +18,10 @@ fn test_setup_preconfigured_formations() {
     state.step_simple(SimpleAT::EndSetup);
 
     for team in [TeamType::Home, TeamType::Away] {
-        let p_count = state.get_players_on_pitch_in_team(team).count();
-        assert_eq!(p_count, 11, "Team {:?} has {:?} players,", team, p_count);
-
         let middle_x = state.get_line_of_scrimage_x(team);
         let middle_y = HEIGHT_ / 2;
 
-        let linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3), (-1, 0)];
+        let linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
         let blitzer_pos = vec![(0, -2), (0, 2)];
         let catcher_pos = vec![(2, 2), (2, -2)];
         let thrower_pos = vec![(6, 3), (6, -3)];
@@ -35,6 +32,14 @@ fn test_setup_preconfigured_formations() {
             PlayerStats::new_thrower(team),
         ];
         let stats_positions = vec![linemen_pos, blitzer_pos, catcher_pos, thrower_pos];
+
+        let expected_count = stats_positions.iter().map(|x| x.len()).sum::<usize>();
+        let actual_count = state.get_players_on_pitch_in_team(team).count();
+        assert_eq!(
+            actual_count, expected_count,
+            "Team {:?} has {:?} players,",
+            team, actual_count
+        );
 
         let x_delta_sign = if team == TeamType::Home { 1 } else { -1 };
 
