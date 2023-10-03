@@ -1,11 +1,62 @@
-// extern crate rust_bb;
-// use rust_bb::core::model::*;
-// use rust_bb::core::table::*;
-// use rust_bb::core::{
-//     gamestate::{GameState, GameStateBuilder},
-//     model::{Action, Position},
-//     table::PosAT,
-// };
+extern crate rust_bb;
+use rust_bb::core::model::*;
+use rust_bb::core::table::*;
+use rust_bb::core::{
+    gamestate::{GameState, GameStateBuilder},
+    model::{Action, Position},
+    table::PosAT,
+};
+use std::iter::zip;
+#[test]
+fn test_setup_preconfigured_formations() {
+    let mut state: GameState = GameStateBuilder::new_at_setup();
+    //away as defense
+    state.step_simple(SimpleAT::SetupLine);
+    state.step_simple(SimpleAT::EndSetup);
+    //home as offense
+    state.step_simple(SimpleAT::SetupLine);
+    state.step_simple(SimpleAT::EndSetup);
+
+    for team in [TeamType::Home, TeamType::Away] {
+        let p_count = state.get_players_on_pitch_in_team(team).count();
+        assert_eq!(p_count, 11, "Team {:?} has {:?} players,", team, p_count);
+
+        let middle_x = state.get_line_of_scrimage_x(team);
+        let middle_y = HEIGHT_ / 2;
+
+        let linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3), (-1, 0)];
+        let blitzer_pos = vec![(0, -2), (0, 2)];
+        let catcher_pos = vec![(2, 2), (2, -2)];
+        let thrower_pos = vec![(6, 3), (6, -3)];
+        let stats_types = vec![
+            PlayerStats::new_lineman(team),
+            PlayerStats::new_blitzer(team),
+            PlayerStats::new_catcher(team),
+            PlayerStats::new_thrower(team),
+        ];
+        let stats_positions = vec![linemen_pos, blitzer_pos, catcher_pos, thrower_pos];
+
+        let x_delta_sign = if team == TeamType::Home { 1 } else { -1 };
+
+        for (stats, positions) in zip(stats_types, stats_positions) {
+            for (dx, dy) in positions {
+                let (x, y) = (middle_x + dx * x_delta_sign, middle_y + dy);
+                match state.get_player_at_coord(x, y) {
+                    Some(correct_player) if correct_player.stats == stats => (),
+                    Some(wrong_player) => panic!(
+                        "Wrong player at ({:?}, {:?}), found a {:?} ({:?}) but expected a {:?} ({:?})",
+                        x, y, wrong_player.stats.role, wrong_player.stats.team, stats.role, stats.team
+                    ),
+                    None => panic!(
+                        "No player at ({:?}, {:?}), expected a {:?} ({:?})",
+                        x, y, stats.role, stats.team
+                    ),
+                }
+            }
+        }
+    }
+}
+
 //
 // #[test]
 // fn kickoff_get_the_ref() {
