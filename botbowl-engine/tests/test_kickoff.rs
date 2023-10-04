@@ -1,7 +1,7 @@
-extern crate rust_bb;
-use rust_bb::core::model::*;
-use rust_bb::core::table::*;
-use rust_bb::core::{
+extern crate botbowl_engine;
+use botbowl_engine::core::model::*;
+use botbowl_engine::core::table::*;
+use botbowl_engine::core::{
     gamestate::{GameState, GameStateBuilder},
     model::{Action, Position},
     table::PosAT,

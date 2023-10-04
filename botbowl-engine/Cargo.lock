@@ -27,6 +27,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "botbowl-engine"
+version = "0.1.0"
+dependencies = [
+ "ansi_term",
+ "arraystring",
+ "itertools",
+ "rand",
+ "rand_chacha",
+ "smallvec",
+ "termion",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -122,19 +135,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8440d8acb4fd3d277125b4bd01a6f38aee8d814b3b5fc09b3f2b825d37d3fe8f"
 dependencies = [
  "redox_syscall",
-]
-
-[[package]]
-name = "rust_bb"
-version = "0.1.0"
-dependencies = [
- "ansi_term",
- "arraystring",
- "itertools",
- "rand",
- "rand_chacha",
- "smallvec",
- "termion",
 ]
 
 [[package]]

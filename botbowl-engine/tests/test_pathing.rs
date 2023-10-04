@@ -1,12 +1,12 @@
-extern crate rust_bb;
+extern crate botbowl_engine;
 use itertools::Either;
-use rust_bb::core::dices::BlockDice;
-use rust_bb::core::dices::D6Target;
-use rust_bb::core::model::*;
-use rust_bb::core::pathing::CustomIntoIter;
-use rust_bb::core::pathing::NodeIteratorItem;
-use rust_bb::core::table::*;
-use rust_bb::core::{
+use botbowl_engine::core::dices::BlockDice;
+use botbowl_engine::core::dices::D6Target;
+use botbowl_engine::core::model::*;
+use botbowl_engine::core::pathing::CustomIntoIter;
+use botbowl_engine::core::pathing::NodeIteratorItem;
+use botbowl_engine::core::table::*;
+use botbowl_engine::core::{
     gamestate::GameStateBuilder,
     model::{Action, Position, TeamType},
     pathing::{PathFinder, PathingEvent},
