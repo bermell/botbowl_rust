@@ -16,7 +16,7 @@ pub fn standard_state() -> GameState {
         .build()
 }
 
-fn maiarstn() {
+fn main() {
     println!("Hello world!");
     let mut state = GameStateBuilder::new()
         .add_home_players(&[(1, 1), (2, 2), (3, 1)])
