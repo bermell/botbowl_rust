@@ -1,12 +1,8 @@
 use crate::core::gamestate::GameStateBuilder;
 
 use crate::core::gamestate::GameState;
-use crate::core::model::PlayerStatus;
-use crate::core::model::Position;
-use crate::ui::Renderer;
 
 pub mod core;
-pub mod ui;
 
 pub fn standard_state() -> GameState {
     GameStateBuilder::new()
@@ -14,27 +10,6 @@ pub fn standard_state() -> GameState {
         .add_away_players(&[(5, 2), (5, 5), (2, 3)])
         .add_ball((3, 2))
         .build()
-}
-
-fn main() {
-    println!("Hello world!");
-    let mut state = GameStateBuilder::new()
-        .add_home_players(&[(1, 1), (2, 2), (3, 1)])
-        .add_away_players(&[(26, 15), (25, 14), (24, 15)])
-        .add_ball((3, 3))
-        .build();
-
-    state.step_positional(
-        core::table::PosAT::StartMove,
-        state.get_player_unsafe(1).position,
-    );
-    state.get_mut_player_unsafe(2).used = true;
-    state.get_mut_player_unsafe(4).status = PlayerStatus::Stunned;
-    state.get_mut_player_unsafe(5).status = PlayerStatus::Down;
-
-    let mut rend = Renderer::new();
-    rend.curser_pos = Some(Position::new((5, 5)));
-    rend.run_loop(&mut state);
 }
 
 #[cfg(test)]

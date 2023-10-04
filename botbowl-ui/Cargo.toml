@@ -6,3 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+termion = "2.0.1"
