@@ -58,23 +58,24 @@ fn test_setup_preconfigured_formations() {
     }
 }
 
-//
-// #[test]
-// fn kickoff_get_the_ref() {
-//     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-//     // ball fixes
-//     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-//     state.fixes.fix_d6(5); // scatter length
-//
-//     // kickoff event fix
-//     state.fixes.fix_d6(1);
-//     state.fixes.fix_d6(1);
-//     //
-//     state.step_simple(SimpleAT::KickoffAimMiddle);
-//
-//     assert_eq!(state.home.bribes, 1);
-//     assert_eq!(state.away.bribes, 1);
-// }
+#[test]
+fn kickoff_get_the_ref() {
+    let mut state: GameState = GameStateBuilder::new_at_kickoff();
+    // ball fixes
+    state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+    state.fixes.fix_d6(5); // scatter length
+
+    // kickoff event fix
+    state.fixes.fix_d6(1);
+    state.fixes.fix_d6(1);
+
+    state.fixes.fix_d8_direction(Direction::up()); // bounce dice
+
+    state.step_simple(SimpleAT::KickoffAimMiddle);
+
+    assert_eq!(state.home.bribes, 1);
+    assert_eq!(state.away.bribes, 1);
+}
 // #[test]
 // fn kickoff_timeout() {
 //     // TODO: add test in turns 6 7 8, should gain a turn

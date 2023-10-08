@@ -53,6 +53,8 @@ impl Procedure for Kickoff {
         match kickoff_roll {
             Sum2D6::Two => {
                 //get the ref
+                game_state.home.bribes += 1;
+                game_state.away.bribes += 1;
             }
             Sum2D6::Three => {
                 //Timeout
