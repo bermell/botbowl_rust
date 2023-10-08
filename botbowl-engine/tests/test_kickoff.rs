@@ -1,11 +1,7 @@
 extern crate botbowl_engine;
+use botbowl_engine::core::gamestate::{GameState, GameStateBuilder};
 use botbowl_engine::core::model::*;
 use botbowl_engine::core::table::*;
-use botbowl_engine::core::{
-    gamestate::{GameState, GameStateBuilder},
-    model::{Action, Position},
-    table::PosAT,
-};
 use std::iter::zip;
 #[test]
 fn test_setup_preconfigured_formations() {

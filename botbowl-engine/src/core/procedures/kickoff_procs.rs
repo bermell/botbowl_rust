@@ -5,17 +5,12 @@ use rand::Rng;
 use crate::core::dices::Sum2D6;
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
-    PlayerStatus, Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_,
-    LINE_OF_SCRIMMAGE_Y_RANGE,
+    Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE,
 };
-use crate::core::pathing::{
-    event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
-};
-use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
-use crate::core::procedures::{ball_procs, block_procs};
+use crate::core::procedures::ball_procs;
 use crate::core::table::*;
 
-use crate::core::{dices::D6Target, gamestate::GameState};
+use crate::core::gamestate::GameState;
 #[derive(Debug)]
 pub struct Kickoff {}
 impl Kickoff {
