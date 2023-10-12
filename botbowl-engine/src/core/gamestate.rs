@@ -50,6 +50,9 @@ impl GameStateBuilder {
         state.step_simple(SimpleAT::EndSetup); //Home
         state
     }
+    ///creates a gamestate with two human teams at very beginning of a gamestate
+    ///which right now is the coin toss. (but later should be pregame which does weather roll abd
+    ///such)
     pub fn new_start_of_game() -> GameState {
         let mut state = GameStateBuilder::empty_state();
 
@@ -166,7 +169,37 @@ impl GameStateBuilder {
         }
     }
     pub fn build(&mut self) -> GameState {
-        let mut state = GameStateBuilder::empty_state();
+        let mut state = GameStateBuilder::new_start_of_game();
+
+        state.fixes.fix_coin(Coin::Heads);
+        state.step_simple(SimpleAT::Heads); //Away
+
+        state.step_simple(SimpleAT::Kick); //Away
+
+        state.step_simple(SimpleAT::SetupLine); //Away
+        state.step_simple(SimpleAT::EndSetup); //Away
+
+        state.step_simple(SimpleAT::SetupLine); //Home
+        state.step_simple(SimpleAT::EndSetup); //Home
+
+        // ball fixes
+        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+        state.fixes.fix_d6(5); // scatter length
+
+        // kickoff event fix - changing Weather
+        state.fixes.fix_d6(4);
+        state.fixes.fix_d6(4);
+
+        //changing weather - fair
+        state.fixes.fix_d6(4);
+        state.fixes.fix_d6(4);
+
+        state.fixes.fix_d8_direction(Direction::down()); // gust of wind
+        state.fixes.fix_d8_direction(Direction::down()); // bounce
+
+        state.step_simple(SimpleAT::KickoffAimMiddle);
+        state.clear_all_players().unwrap();
+        state.ball = BallState::OffPitch;
 
         for position in self.home_players.iter() {
             let player_stats = PlayerStats::new_lineman(TeamType::Home);
@@ -185,12 +218,11 @@ impl GameStateBuilder {
                 _ => panic!(),
             }
         }
-        let mut half_proc = Half::new(1);
-        half_proc.started = true;
-        state.info.half = 1;
+        state.step_simple(SimpleAT::EndTurn);
+        state.step_simple(SimpleAT::EndTurn);
 
-        state.proc_stack.push(half_proc);
-        state.step(Action::Simple(SimpleAT::EndTurn)).unwrap();
+        state.info.home_turn -= 1;
+        state.info.away_turn -= 1;
 
         state
     }
@@ -227,11 +259,11 @@ impl GameInfo {
         GameInfo {
             half: 0,
             active_player: None,
-            team_turn: TeamType::Home,
+            team_turn: TeamType::Away,
             game_over: false,
             winner: None,
             weather: Weather::Nice,
-            kicking_first_half: TeamType::Home,
+            kicking_first_half: TeamType::Away,
             home_turn: 0,
             away_turn: 0,
             player_action_type: None,
@@ -241,7 +273,7 @@ impl GameInfo {
             blitz_available: true,
             handle_td_by: None,
             kickoff_by_team: None,
-            kicking_this_drive: TeamType::Home,
+            kicking_this_drive: TeamType::Away,
             turnover: false,
         }
     }
@@ -713,6 +745,24 @@ impl GameState {
         Ok(())
     }
 
+    pub fn unfield_all_players(&mut self) -> Result<()> {
+        #[allow(clippy::needless_collect)]
+        let player_id_on_pitch: Vec<PlayerID> = self
+            .get_players_on_pitch()
+            .map(|player| player.id)
+            .collect();
+
+        player_id_on_pitch
+            .into_iter()
+            .for_each(|id| self.unfield_player(id, DugoutPlace::Reserves).unwrap());
+        Ok(())
+    }
+    pub fn clear_all_players(&mut self) -> Result<()> {
+        self.unfield_all_players().unwrap();
+        self.dugout_players = Default::default();
+        Ok(())
+    }
+
     pub fn step(&mut self, action: Action) -> Result<()> {
         let opt_action: Option<Action> = {
             if self.available_actions.is_empty() {
@@ -849,5 +899,33 @@ mod gamestate_tests {
             state.get_best_kickoff_aim_for(crate::core::model::TeamType::Away),
             Position::new((21, 7))
         );
+    }
+
+    #[test]
+    fn test_unfield_all_players() {
+        let mut state = GameStateBuilder::new()
+            .add_home_players(&[(1, 2), (2, 2), (3, 1)])
+            .add_away_players(&[(5, 2), (5, 5), (2, 3)])
+            .add_ball((3, 2))
+            .build();
+        assert_eq!(state.get_players_on_pitch().count(), 6);
+        state.unfield_all_players().unwrap();
+
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+    }
+    #[test]
+    fn test_remove_dugout() {
+        let mut state = GameStateBuilder::new()
+            .add_home_players(&[(1, 2), (2, 2), (3, 1)])
+            .add_away_players(&[(5, 2), (5, 5), (2, 3)])
+            .add_ball((3, 2))
+            .build();
+        assert_eq!(state.get_dugout().count(), 0);
+        assert_eq!(state.get_players_on_pitch().count(), 6);
+
+        state.clear_all_players().unwrap();
+
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert_eq!(state.get_dugout().count(), 0);
     }
 }

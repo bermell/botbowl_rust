@@ -51,18 +51,8 @@ impl Half {
         ];
 
         game_state.ball = BallState::OffPitch;
+        game_state.unfield_all_players().unwrap();
 
-        #[allow(clippy::needless_collect)]
-        let player_id_on_pitch: Vec<PlayerID> = game_state
-            .get_players_on_pitch()
-            .map(|player| player.id)
-            .collect();
-
-        player_id_on_pitch.into_iter().for_each(|id| {
-            game_state
-                .unfield_player(id, DugoutPlace::Reserves)
-                .unwrap()
-        });
         ProcState::NotDoneNewProcs(procs)
     }
 }
@@ -97,9 +87,9 @@ impl Procedure for Half {
         }
 
         let next_team: TeamType = if info.home_turn == info.away_turn {
-            self.kicking_this_half
-        } else {
             other_team(self.kicking_this_half)
+        } else {
+            self.kicking_this_half
         };
 
         match next_team {

@@ -230,6 +230,7 @@ mod tests {
     #[test]
     fn turn_order() -> Result<()> {
         let mut state = standard_state();
+        assert!(state.home_to_act());
         assert_eq!(state.info.half, 1);
         assert_eq!(state.info.home_turn, 1);
         assert_eq!(state.info.away_turn, 0);
@@ -425,6 +426,7 @@ mod tests {
             .add_home_player(start_pos)
             .add_ball_pos(ball_pos)
             .build();
+        assert!(state.home_to_act());
 
         let id = state.get_player_id_at(start_pos).unwrap();
 
