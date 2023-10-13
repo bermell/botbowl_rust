@@ -58,8 +58,13 @@ impl Procedure for Kickoff {
             }
             Sum2D6::Three => {
                 //Timeout
-                game_state.info.away_turn += 1;
-                game_state.info.home_turn += 1;
+                if game_state.info.home_turn <= 5 {
+                    game_state.info.away_turn += 1;
+                    game_state.info.home_turn += 1;
+                } else {
+                    game_state.info.away_turn -= 1;
+                    game_state.info.home_turn -= 1;
+                }
             }
             Sum2D6::Four => {
                 //solid defense

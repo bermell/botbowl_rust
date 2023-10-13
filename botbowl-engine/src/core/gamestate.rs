@@ -14,11 +14,18 @@ use super::{
     table::{NumBlockDices, PosAT, SimpleAT},
 };
 
+pub enum BuilderState {
+    Turn { turn: u8 },
+    Setup { turn: u8 },
+    Kickoff { turn: u8 },
+    CoinToss,
+}
+
 pub struct GameStateBuilder {
     home_players: Vec<Position>,
     away_players: Vec<Position>,
     ball_pos: Option<Position>,
-    turn: u8,
+    state: BuilderState,
 }
 
 impl GameStateBuilder {
@@ -86,7 +93,7 @@ impl GameStateBuilder {
             home_players: Vec::new(),
             away_players: Vec::new(),
             ball_pos: None,
-            turn: 1,
+            state: BuilderState::Turn { turn: 1 },
         }
     }
     pub fn add_str(&mut self, start_pos: Position, s: &str) -> &mut GameStateBuilder {
@@ -123,8 +130,8 @@ impl GameStateBuilder {
         self.home_players.push(position);
         self
     }
-    pub fn set_turn(&mut self, turn: u8) -> &mut GameStateBuilder {
-        self.turn = turn;
+    pub fn set_state(&mut self, state: BuilderState) -> &mut GameStateBuilder {
+        self.state = state;
         self
     }
 
@@ -177,10 +184,24 @@ impl GameStateBuilder {
     pub fn build(&mut self) -> GameState {
         let mut state = GameStateBuilder::new_start_of_game();
 
+        let user_turn = match self.state {
+            BuilderState::CoinToss => return state,
+            BuilderState::Kickoff { turn } => turn,
+            BuilderState::Setup { turn } => turn,
+            BuilderState::Turn { turn } => turn,
+        };
+        assert!(user_turn > 0, "turn must be positive");
+        assert_eq!(state.info.home_turn, 0);
+        assert_eq!(state.info.away_turn, 0);
+
         state.fixes.fix_coin(Coin::Heads);
         state.step_simple(SimpleAT::Heads); //Away
 
         state.step_simple(SimpleAT::Kick); //Away
+
+        //increase turn counter according to user wish
+        state.info.home_turn += user_turn - 1;
+        state.info.away_turn += user_turn - 1;
 
         state.step_simple(SimpleAT::SetupLine); //Away
         state.step_simple(SimpleAT::EndSetup); //Away
@@ -188,6 +209,9 @@ impl GameStateBuilder {
         state.step_simple(SimpleAT::SetupLine); //Home
         state.step_simple(SimpleAT::EndSetup); //Home
 
+        if let BuilderState::Kickoff { .. } = self.state {
+            return state;
+        }
         // ball fixes
         state.fixes.fix_d8_direction(Direction::up()); // scatter direction
         state.fixes.fix_d6(5); // scatter length
@@ -224,16 +248,12 @@ impl GameStateBuilder {
                 _ => panic!(),
             }
         }
+        // decrease turn counter before calling endturn twice
+        // (need to call end turn here to refresh available actions)
         state.step_simple(SimpleAT::EndTurn);
         state.step_simple(SimpleAT::EndTurn);
-
-        // gets the turn counters back to 1
         state.info.home_turn -= 1;
         state.info.away_turn -= 1;
-
-        //increase turn counter according to user wish
-        state.info.home_turn += self.turn - 1;
-        state.info.away_turn += self.turn - 1;
 
         state
     }
@@ -895,7 +915,7 @@ impl GameState {
 
 #[cfg(test)]
 mod gamestate_tests {
-    use crate::core::model::Position;
+    use crate::core::{gamestate::BuilderState, model::Position};
 
     use super::GameStateBuilder;
 
@@ -941,8 +961,19 @@ mod gamestate_tests {
     }
     #[test]
     fn test_build_game_custom_turn() {
-        let mut state = GameStateBuilder::new().set_turn(3).build();
+        let state = GameStateBuilder::new()
+            .set_state(BuilderState::Turn { turn: 3 })
+            .build();
         assert_eq!(state.info.home_turn, 3);
         assert_eq!(state.info.away_turn, 2);
+    }
+
+    #[test]
+    fn test_kickoff_game_custom_turn() {
+        let state = GameStateBuilder::new()
+            .set_state(BuilderState::Kickoff { turn: 7 })
+            .build();
+        assert_eq!(state.info.home_turn, 6);
+        assert_eq!(state.info.away_turn, 6);
     }
 }

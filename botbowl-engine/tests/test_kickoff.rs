@@ -1,5 +1,5 @@
 extern crate botbowl_engine;
-use botbowl_engine::core::gamestate::{GameState, GameStateBuilder};
+use botbowl_engine::core::gamestate::{BuilderState, GameState, GameStateBuilder};
 use botbowl_engine::core::model::*;
 use botbowl_engine::core::table::*;
 use std::iter::zip;
@@ -75,6 +75,8 @@ fn kickoff_get_the_ref() {
 
     assert_eq!(state.home.bribes, 1);
     assert_eq!(state.away.bribes, 1);
+    assert_eq!(state.info.home_turn, 1);
+    assert_eq!(state.info.away_turn, 0);
 
     // todo: this assertion should be a in more general test
     //assert_eq!(state.info.home_turn, 1, "home turn counter should be 1");
@@ -87,7 +89,6 @@ fn kickoff_get_the_ref() {
 }
 #[test]
 fn kickoff_timeout_step_clock_forward() {
-    // TODO: add test in turns 6 7 8, should gain a turn
     let mut state: GameState = GameStateBuilder::new_at_kickoff();
     // ball fixes
     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
@@ -103,6 +104,29 @@ fn kickoff_timeout_step_clock_forward() {
     assert!(state.home_to_act());
     assert_eq!(state.info.home_turn, 2);
     assert_eq!(state.info.away_turn, 1);
+}
+
+#[test]
+fn kickoff_timeout_step_clock_backwards() {
+    let mut state: GameState = GameStateBuilder::new()
+        .set_state(BuilderState::Kickoff { turn: 7 })
+        .build();
+    assert_eq!(state.info.home_turn, 6);
+    assert_eq!(state.info.away_turn, 6);
+    // ball fixes
+    state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+    state.fixes.fix_d6(5); // scatter length
+
+    // kickoff event fix
+    state.fixes.fix_d6(1);
+    state.fixes.fix_d6(2);
+    state.fixes.fix_d8_direction(Direction::up()); // bounce dice
+
+    state.step_simple(SimpleAT::KickoffAimMiddle);
+    assert!(state.home_to_act());
+
+    assert_eq!(state.info.home_turn, 6);
+    assert_eq!(state.info.away_turn, 5);
 }
 // #[test]
 // fn kickoff_solid_defence() {
