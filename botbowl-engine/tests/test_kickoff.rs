@@ -86,7 +86,7 @@ fn kickoff_get_the_ref() {
     );
 }
 #[test]
-fn kickoff_timeout() {
+fn kickoff_timeout_step_clock_forward() {
     // TODO: add test in turns 6 7 8, should gain a turn
     let mut state: GameState = GameStateBuilder::new_at_kickoff();
     // ball fixes

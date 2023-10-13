@@ -18,6 +18,7 @@ pub struct GameStateBuilder {
     home_players: Vec<Position>,
     away_players: Vec<Position>,
     ball_pos: Option<Position>,
+    turn: u8,
 }
 
 impl GameStateBuilder {
@@ -85,6 +86,7 @@ impl GameStateBuilder {
             home_players: Vec::new(),
             away_players: Vec::new(),
             ball_pos: None,
+            turn: 1,
         }
     }
     pub fn add_str(&mut self, start_pos: Position, s: &str) -> &mut GameStateBuilder {
@@ -119,6 +121,10 @@ impl GameStateBuilder {
     }
     pub fn add_home_player(&mut self, position: Position) -> &mut GameStateBuilder {
         self.home_players.push(position);
+        self
+    }
+    pub fn set_turn(&mut self, turn: u8) -> &mut GameStateBuilder {
+        self.turn = turn;
         self
     }
 
@@ -221,8 +227,13 @@ impl GameStateBuilder {
         state.step_simple(SimpleAT::EndTurn);
         state.step_simple(SimpleAT::EndTurn);
 
+        // gets the turn counters back to 1
         state.info.home_turn -= 1;
         state.info.away_turn -= 1;
+
+        //increase turn counter according to user wish
+        state.info.home_turn += self.turn - 1;
+        state.info.away_turn += self.turn - 1;
 
         state
     }
@@ -914,7 +925,7 @@ mod gamestate_tests {
         assert_eq!(state.get_players_on_pitch().count(), 0);
     }
     #[test]
-    fn test_remove_dugout() {
+    fn test_clear_all_players() {
         let mut state = GameStateBuilder::new()
             .add_home_players(&[(1, 2), (2, 2), (3, 1)])
             .add_away_players(&[(5, 2), (5, 5), (2, 3)])
@@ -927,5 +938,11 @@ mod gamestate_tests {
 
         assert_eq!(state.get_players_on_pitch().count(), 0);
         assert_eq!(state.get_dugout().count(), 0);
+    }
+    #[test]
+    fn test_build_game_custom_turn() {
+        let mut state = GameStateBuilder::new().set_turn(3).build();
+        assert_eq!(state.info.home_turn, 3);
+        assert_eq!(state.info.away_turn, 2);
     }
 }
