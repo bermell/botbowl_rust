@@ -2,6 +2,7 @@ use crate::core::gamestate::GameStateBuilder;
 
 use crate::core::gamestate::GameState;
 
+pub mod bots;
 pub mod core;
 
 pub fn standard_state() -> GameState {

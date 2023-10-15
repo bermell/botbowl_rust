@@ -52,6 +52,9 @@ impl<T> FullPitch<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.data.iter().flat_map(|r| r.iter())
     }
+    pub fn iter_position(&self) -> impl Iterator<Item = (Position, &T)> {
+        Position::all_positions().map(|p| (p, &self[p]))
+    }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.data.iter_mut().flat_map(|r| r.iter_mut())
@@ -531,7 +534,7 @@ pub trait Procedure: std::fmt::Debug {
 }
 use smallvec::SmallVec;
 
-type SmallVecPosAT = SmallVec<[PosAT; 4]>;
+pub type SmallVecPosAT = SmallVec<[PosAT; 4]>;
 
 #[derive(Default)]
 pub struct AvailableActions {
@@ -576,6 +579,15 @@ impl std::fmt::Debug for AvailableActions {
     }
 }
 impl AvailableActions {
+    pub fn get_simple(&self) -> &HashSet<SimpleAT> {
+        &self.simple
+    }
+    pub fn get_positional(&self) -> &Option<FullPitch<SmallVecPosAT>> {
+        &self.positional
+    }
+    pub fn get_paths(&self) -> &Option<FullPitch<Option<Rc<Node>>>> {
+        &self.paths
+    }
     pub fn new_empty() -> Box<Self> {
         Box::default()
     }

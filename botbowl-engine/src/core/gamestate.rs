@@ -346,7 +346,6 @@ impl FixedDice {
     }
 }
 
-#[allow(dead_code)]
 pub struct GameState {
     pub info: GameInfo,
     pub home: TeamState,
@@ -357,7 +356,6 @@ pub struct GameState {
     board: FullPitch<Option<PlayerID>>,
     pub ball: BallState,
     proc_stack: Vec<Box<dyn Procedure>>,
-    // new_procs: VecDeque<Box<dyn Procedure>>,
     pub available_actions: Box<AvailableActions>,
     pub rng_enabled: bool,
     pub fixes: FixedDice,
