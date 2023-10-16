@@ -354,7 +354,8 @@ impl Procedure for BlockAction {
                 let defender_id = game_state.get_player_id_at(position).unwrap();
                 ProcState::DoneNew(Block::new(num_dice, defender_id))
             }
-            _ => todo!(),
+            Some(Action::Simple(SimpleAT::EndPlayerTurn)) => todo!("EndPlayerTurn not implemented"),
+            _ => panic!("Invalid action {:?}", action),
         }
     }
 }

@@ -173,9 +173,9 @@ impl Turn {
             aa.insert_positional(PosAT::StartFoul, positions.clone());
         }
 
-        if game_state.info.pass_available {
-            aa.insert_positional(PosAT::StartPass, positions.clone());
-        }
+        // if game_state.info.pass_available {
+        //     aa.insert_positional(PosAT::StartPass, positions.clone());
+        // }
 
         aa.insert_positional(PosAT::StartMove, positions);
         aa.insert_simple(SimpleAT::EndTurn);

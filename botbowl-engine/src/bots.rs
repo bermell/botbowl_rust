@@ -44,21 +44,26 @@ impl RandomBot {
 
         Action::Positional(action_type, pos)
     }
-    fn sample_path(&mut self, aa: &FullPitch<Option<Rc<Node>>>) -> Action {
+    fn sample_path(&mut self, aa: &FullPitch<Option<Rc<Node>>>) -> Option<Action> {
         let paths: Vec<Rc<Node>> = aa.iter().filter_map(|x| x.clone()).collect();
         let l = paths.len();
-        debug_assert!(l > 0);
+        if l == 0 {
+            return None;
+        }
         let choice = self.rng.gen_range(0..l) as usize;
         let path = &paths[choice];
-        Action::Positional(path.get_action_type(), path.position)
+        Some(Action::Positional(path.get_action_type(), path.position))
     }
 }
 
 impl Bot for RandomBot {
     fn get_action(&mut self, state: &GameState) -> Action {
         let aa = &state.available_actions;
-        let path_action: Option<Action> =
-            aa.get_paths().as_ref().map(|paths| self.sample_path(paths));
+        let path_action: Option<Action> = aa
+            .get_paths()
+            .as_ref()
+            .map(|paths| self.sample_path(paths))
+            .flatten();
 
         let pos_action: Option<Action> = aa
             .get_positional()
