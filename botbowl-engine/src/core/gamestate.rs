@@ -915,12 +915,15 @@ impl GameState {
 mod gamestate_tests {
     use crate::{
         core::{
-            gamestate::BuilderState,
-            model::{BallState, Position, Result, TeamType, HEIGHT_, WIDTH_},
+            dices::D6,
+            gamestate::{BuilderState, GameState},
+            model::{
+                BallState, DugoutPlace, PlayerStats, Position, Result, TeamType, HEIGHT_, WIDTH_,
+            },
         },
         standard_state,
     };
-    use std::collections::HashSet;
+    use std::{collections::HashSet, iter::repeat_with};
 
     use super::GameStateBuilder;
 
@@ -1060,6 +1063,48 @@ mod gamestate_tests {
         assert!(state.get_player_id_at(old_pos).is_none());
         assert_eq!(state.get_player_id_at(new_pos), Some(id));
         assert_eq!(state.get_player(id).unwrap().position, new_pos);
+        Ok(())
+    }
+    #[test]
+    fn field_a_player() -> Result<()> {
+        let mut state = standard_state();
+        let player_stats = PlayerStats::new_lineman(TeamType::Home);
+        let position = Position::new((10, 10));
+
+        assert!(state.get_player_id_at(position).is_none());
+
+        let id = state
+            .add_new_player_to_field(player_stats, position)
+            .unwrap();
+
+        assert_eq!(state.get_player_id_at(position), Some(id));
+        assert_eq!(state.get_player(id).unwrap().position, position);
+
+        state.unfield_player(id, DugoutPlace::Reserves)?;
+
+        assert!(state.get_player_id_at(position).is_none());
+        Ok(())
+    }
+    #[test]
+    fn rng_seed_in_gamestate() -> Result<()> {
+        let mut state = standard_state();
+        state.rng_enabled = true;
+        let seed = 5;
+        state.set_seed(seed);
+
+        fn get_random_rolls(state: &mut GameState) -> Vec<D6> {
+            repeat_with(|| state.get_d6_roll()).take(200).collect()
+        }
+
+        let numbers: Vec<D6> = get_random_rolls(&mut state);
+        let different_numbers = get_random_rolls(&mut state);
+        assert_ne!(numbers, different_numbers);
+
+        state.set_seed(seed);
+        let same_numbers = get_random_rolls(&mut state);
+
+        assert_eq!(numbers, same_numbers);
+
         Ok(())
     }
 }
