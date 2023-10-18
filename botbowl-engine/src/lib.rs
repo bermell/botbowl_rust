@@ -24,7 +24,7 @@ mod tests {
     use crate::core::table::*;
     use crate::core::{
         gamestate::{GameState, GameStateBuilder},
-        model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
+        model::{Action, DugoutPlace, PlayerStats, Position, TeamType},
         pathing::{PathFinder, PathingEvent},
         table::PosAT,
     };
@@ -32,7 +32,7 @@ mod tests {
     use ansi_term::Colour::Red;
     use itertools::Either;
     use std::{
-        collections::{HashMap, HashSet},
+        collections::HashMap,
         iter::{repeat_with, zip},
     };
 

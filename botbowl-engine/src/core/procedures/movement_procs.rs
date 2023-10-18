@@ -197,27 +197,14 @@ impl Procedure for MoveAction {
 #[cfg(test)]
 mod tests {
 
-    use crate::core::dices::BlockDice;
-    use crate::core::dices::D6Target;
-    use crate::core::dices::D6;
-    use crate::core::dices::D8;
     use crate::core::model::*;
-    use crate::core::pathing::CustomIntoIter;
-    use crate::core::pathing::NodeIteratorItem;
     use crate::core::table::*;
     use crate::core::{
-        gamestate::{GameState, GameStateBuilder},
-        model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
-        pathing::{PathFinder, PathingEvent},
+        gamestate::GameStateBuilder,
+        model::{Action, DugoutPlace, Position},
         table::PosAT,
     };
     use crate::standard_state;
-    use ansi_term::Colour::Red;
-    use itertools::Either;
-    use std::{
-        collections::{HashMap, HashSet},
-        iter::{repeat_with, zip},
-    };
     #[test]
     fn path_with_two_failures() -> Result<()> {
         let start_pos = Position::new((1, 1));
