@@ -85,3 +85,19 @@ impl Bot for RandomBot {
         action_list[choice]
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use crate::bots::RandomBot;
+//     use crate::core::game_runner::BotGameRunner;
+//
+//     #[test]
+//     fn random_bot_plays_game() {
+//         let away_bot = Box::new(RandomBot::new());
+//         let home_bot = Box::new(RandomBot::new());
+//         let mut bot_game = BotGameRunner { home_bot, away_bot };
+//
+//         let result = bot_game.run();
+//         println!("{:?}", result);
+//     }
+// }
