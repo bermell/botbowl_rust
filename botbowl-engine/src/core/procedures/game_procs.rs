@@ -350,3 +350,182 @@ impl Procedure for TurnoverIfPossessionLost {
         ProcState::Done
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use crate::core::dices::BlockDice;
+    use crate::core::dices::Coin;
+    use crate::core::dices::D6Target;
+    use crate::core::dices::D6;
+    use crate::core::dices::D8;
+    use crate::core::model::*;
+    use crate::core::pathing::CustomIntoIter;
+    use crate::core::pathing::NodeIteratorItem;
+    use crate::core::table::*;
+    use crate::core::{
+        gamestate::{GameState, GameStateBuilder},
+        model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
+        pathing::{PathFinder, PathingEvent},
+        table::PosAT,
+    };
+    use crate::standard_state;
+    use ansi_term::Colour::Red;
+    use itertools::Either;
+    use std::{
+        collections::{HashMap, HashSet},
+        iter::{repeat_with, zip},
+    };
+
+    #[test]
+    fn turnover() {
+        let h1_pos = Position::new((5, 5));
+        let h2_pos = Position::new((5, 6));
+        let a1_pos = Position::new((6, 5));
+        let a2_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(h1_pos)
+            .add_home_player(h2_pos)
+            .add_away_player(a1_pos)
+            .add_away_player(a2_pos)
+            .build();
+
+        let id_h1 = state.get_player_id_at(h1_pos).unwrap();
+        // let id_h2 = state.get_player_id_at(h2_pos).unwrap();
+        // let id_a1 = state.get_player_id_at(a1_pos).unwrap();
+        // let id_a2 = state.get_player_id_at(a2_pos).unwrap();
+
+        state.home.rerolls = 0;
+        state.away.rerolls = 0;
+
+        state.step_positional(PosAT::StartMove, h2_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+
+        state.step_positional(PosAT::StartMove, h1_pos);
+        state.fixes.fix_d6(1); //dodge fail
+        state.fixes.fix_d6(6); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d6(1); //injury
+        state.fixes.fix_d6(1); //injury
+        state.step_positional(PosAT::Move, h1_pos + (-1, -1));
+
+        assert!(state.away_to_act());
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+
+        state.step_simple(SimpleAT::EndTurn);
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Down);
+    }
+
+    #[test]
+    fn clear_used() {
+        let start_pos = Position::new((2, 5));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert!(state.home_to_act());
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        assert!(state.get_player_unsafe(id).used);
+
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert!(!state.get_player_unsafe(id).used);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+    }
+    #[test]
+    fn turn_stunned() {
+        let start_pos = Position::new((2, 5));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert!(state.home_to_act());
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Stunned;
+        state.get_mut_player_unsafe(id).used = true;
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.away_to_act());
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert!(!state.get_player_unsafe(id).used);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+    }
+    #[test]
+    fn start_of_game() {
+        let mut state: GameState = GameStateBuilder::new_start_of_game();
+
+        assert!(state.away_to_act());
+        state.fixes.fix_coin(Coin::Heads);
+        state.step_simple(SimpleAT::Heads);
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::Kick);
+
+        assert!(state.home_to_act());
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+
+        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+        state.fixes.fix_d6(5); // scatter length
+
+        state.fixes.fix_d6(4); // fix changing whether kickoff result
+        state.fixes.fix_d6(4); // fix changing weather kickoff result
+
+        state.fixes.fix_d6(2); // Nice weather
+        state.fixes.fix_d6(5); // nice weather
+
+        state.fixes.fix_d8_direction(Direction::right()); // gust of wind
+        state.fixes.fix_d8_direction(Direction::right()); // bounce
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::KickoffAimMiddle);
+
+        let ball_pos = state.get_ball_position().unwrap();
+        assert!(matches!(state.ball, BallState::OnGround(_)));
+        assert_eq!(ball_pos, Position::new((23, 2)));
+    }
+    #[test]
+    fn turn_order() -> Result<()> {
+        let mut state = standard_state();
+        assert!(state.home_to_act());
+        assert_eq!(state.info.half, 1);
+        assert_eq!(state.info.home_turn, 1);
+        assert_eq!(state.info.away_turn, 0);
+        assert_eq!(state.info.team_turn, TeamType::Home);
+
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert_eq!(state.info.half, 1);
+        assert_eq!(state.info.home_turn, 1);
+        assert_eq!(state.info.away_turn, 1);
+        assert_eq!(state.info.team_turn, TeamType::Away);
+
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert_eq!(state.info.half, 1);
+        assert_eq!(state.info.home_turn, 2);
+        assert_eq!(state.info.away_turn, 1);
+        assert_eq!(state.info.team_turn, TeamType::Home);
+
+        Ok(())
+    }
+}
