@@ -1,4 +1,4 @@
-use super::model::{PlayerID, TeamType};
+//use super::model::{PlayerID, TeamType};
 
 #[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
 pub enum PosAT {
@@ -84,25 +84,25 @@ impl From<NumBlockDices> for u8 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum PrayerToNuffleEffect {
-    TreachearousTrapdoor,
-    FriendsWithTheRef(TeamType),
-    Stiletto(PlayerID),
-    IronMan(PlayerID),
-    KnuckleDusters(PlayerID),
-    BadHabit(PlayerID),
-    GreasyCleats(PlayerID),
-    BlessedStatueOfNuffle(PlayerID),
-    MalesUnderThePitch,
-    PerfectPassing(TeamType),
-    FanInteraction(TeamType),
-    NecessaryViolence(TeamType),
-    FoulingFrenzy(TeamType),
-    ThrowARock(TeamType),
-    UnderScrutiny(TeamType),
-    IntensiveTraining(PlayerID, Skill),
-}
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// enum PrayerToNuffleEffect {
+//     TreachearousTrapdoor,
+//     FriendsWithTheRef(TeamType),
+//     Stiletto(PlayerID),
+//     IronMan(PlayerID),
+//     KnuckleDusters(PlayerID),
+//     BadHabit(PlayerID),
+//     GreasyCleats(PlayerID),
+//     BlessedStatueOfNuffle(PlayerID),
+//     MalesUnderThePitch,
+//     PerfectPassing(TeamType),
+//     FanInteraction(TeamType),
+//     NecessaryViolence(TeamType),
+//     FoulingFrenzy(TeamType),
+//     ThrowARock(TeamType),
+//     UnderScrutiny(TeamType),
+//     IntensiveTraining(PlayerID, Skill),
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerRole {
