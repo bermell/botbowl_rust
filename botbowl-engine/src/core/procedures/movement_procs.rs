@@ -8,6 +8,8 @@ use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
 
+use super::casualty_procs;
+
 #[derive(Debug)]
 pub struct GfiProc {
     target: D6Target,
@@ -94,7 +96,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Proced
         PathingEvent::Handoff(id, target) => ball_procs::Catch::new(id, target),
         PathingEvent::Touchdown(id) => ball_procs::Touchdown::new(id),
         PathingEvent::Foul(victim, target) => {
-            block_procs::Armor::new_foul(victim, target, active_player)
+            casualty_procs::Armor::new_foul(victim, target, active_player)
         }
         PathingEvent::StandUp => StandUp::new(active_player),
     }

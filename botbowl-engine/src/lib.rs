@@ -17,7 +17,6 @@ pub fn standard_state() -> GameState {
 mod tests {
 
     use crate::core::dices::BlockDice;
-    use crate::core::dices::Coin;
     use crate::core::dices::D6Target;
     use crate::core::dices::D6;
     use crate::core::dices::D8;
