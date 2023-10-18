@@ -16,6 +16,7 @@ pub type PlayerID = usize;
 pub type DugoutPlayerID = usize;
 pub type Coord = i8;
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct FullPitch<T> {
     data: [[T; HEIGHT]; WIDTH],
 }

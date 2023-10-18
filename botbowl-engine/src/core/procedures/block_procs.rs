@@ -226,9 +226,13 @@ impl Procedure for BlockAction {
                 let block_path = game_state.available_actions.take_path(position).unwrap();
                 let num_dice = block_path.get_block_dice().unwrap();
                 let defender_id = game_state.get_player_id_at(position).unwrap();
+                game_state.get_active_player_mut().unwrap().used = true;
                 ProcState::DoneNew(Block::new(num_dice, defender_id))
             }
-            Some(Action::Simple(SimpleAT::EndPlayerTurn)) => todo!("EndPlayerTurn not implemented"),
+            Some(Action::Simple(SimpleAT::EndPlayerTurn)) => {
+                game_state.get_active_player_mut().unwrap().used = true;
+                ProcState::Done
+            }
             _ => panic!("Invalid action {:?}", action),
         }
     }
@@ -519,7 +523,49 @@ mod tests {
             PlayerStatus::Down
         );
         assert!(state.fixes.is_empty());
+        assert!(state.get_player_at(away_pos).unwrap().used);
+
+        let aa = state.get_available_actions();
+        assert!(aa.get_paths().is_none());
+        assert!(
+            aa.get_positional().is_none()
+                || aa
+                    .get_positional()
+                    .clone()
+                    .unwrap()
+                    .iter()
+                    .all(|pa| { pa.is_empty() }),
+        );
+        assert_eq!(aa.get_simple().len(), 1);
+        assert!(aa.is_legal_action(Action::Simple(SimpleAT::EndTurn)));
 
         Ok(())
+    }
+    #[test]
+    fn end_player_turn_instead_of_block() {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+
+        assert!(state.get_player_at(home_pos).unwrap().used);
+        let aa = state.get_available_actions();
+        assert!(aa.get_paths().is_none());
+        assert!(
+            aa.get_positional().is_none()
+                || aa
+                    .get_positional()
+                    .clone()
+                    .unwrap()
+                    .iter()
+                    .all(|pa| { pa.is_empty() }),
+        );
+        assert_eq!(aa.get_simple().len(), 1);
+        assert!(aa.is_legal_action(Action::Simple(SimpleAT::EndTurn)));
     }
 }
