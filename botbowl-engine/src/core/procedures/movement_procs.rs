@@ -194,3 +194,161 @@ impl Procedure for MoveAction {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+
+    use crate::core::dices::BlockDice;
+    use crate::core::dices::D6Target;
+    use crate::core::dices::D6;
+    use crate::core::dices::D8;
+    use crate::core::model::*;
+    use crate::core::pathing::CustomIntoIter;
+    use crate::core::pathing::NodeIteratorItem;
+    use crate::core::table::*;
+    use crate::core::{
+        gamestate::{GameState, GameStateBuilder},
+        model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
+        pathing::{PathFinder, PathingEvent},
+        table::PosAT,
+    };
+    use crate::standard_state;
+    use ansi_term::Colour::Red;
+    use itertools::Either;
+    use std::{
+        collections::{HashMap, HashSet},
+        iter::{repeat_with, zip},
+    };
+    #[test]
+    fn path_with_two_failures() -> Result<()> {
+        let start_pos = Position::new((1, 1));
+        let target_pos = Position::new((3, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((1, 2)))
+            .build();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+
+        state.fixes.fix_d6(1);
+
+        state.step_positional(PosAT::Move, target_pos);
+
+        state.fixes.fix_d6(4); //succeed first reroll
+        state.fixes.fix_d6(1); //fail next dodge
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(1); //armor
+
+        state.step_simple(SimpleAT::UseReroll);
+
+        assert_eq!(
+            state.get_player_at(target_pos).unwrap().status,
+            PlayerStatus::Down
+        );
+
+        assert!(state.get_player_at(target_pos).unwrap().used);
+
+        Ok(())
+    }
+
+    #[test]
+    fn failed_dodge_ko() -> Result<()> {
+        let mut state = standard_state();
+        let id = state.get_player_id_at_coord(2, 2).unwrap();
+        assert!(state.get_dugout().next().is_none());
+
+        state.step_positional(PosAT::StartMove, Position::new((2, 2)));
+
+        state.fixes.fix_d6(2);
+        state.step_positional(PosAT::Move, Position::new((2, 1)));
+
+        state.fixes.fix_d6(4); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d6(4); //injury
+        state.fixes.fix_d6(5); //injury
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        assert!(state.get_player_id_at_coord(2, 1).is_none());
+        assert!(state.get_players_on_pitch().all(|player| player.id != id));
+
+        assert!(matches!(
+            state.get_dugout().next(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::KnockOut,
+                ..
+            })
+        ));
+
+        assert_eq!(state.get_dugout().count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn gfi_reroll() -> Result<()> {
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        state.step_positional(PosAT::StartMove, Position::new((1, 1)));
+
+        state.fixes.fix_d6(1); //fail first (2+)
+        state.step_positional(PosAT::Move, Position::new((9, 1)));
+
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge));
+
+        state.fixes.fix_d6(2); //succeed with team reroll
+        state.fixes.fix_d6(2); //succeed next gfi roll
+        state.step_simple(SimpleAT::UseReroll);
+
+        let state = state;
+        let player = state.get_player(id).unwrap();
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Move, Position::new((9, 2)))));
+        assert_eq!(state.get_player_id_at_coord(9, 1).unwrap(), id);
+        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll());
+        assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2);
+        // assert_eq!(state.get_legal_positions(PosAT::Move).len(), 0);
+        assert_eq!(player.total_movement_left(), 0);
+        assert_eq!(player.gfis_left(), 0);
+        assert_eq!(player.moves_left(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn dodge_reroll() -> Result<()> {
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((2, 1)))
+            .build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        state.get_mut_player(id)?.stats.give_skill(Skill::Dodge);
+        assert!(state.get_player(id).unwrap().has_skill(Skill::Dodge));
+
+        state.step_positional(PosAT::StartMove, Position::new((1, 1)));
+
+        state.fixes.fix_d6(3); //fail first (4+)
+        state.fixes.fix_d6(4); //Succeed on skill reroll
+        state.fixes.fix_d6(2); //fail second dodge  (3+)
+
+        state.step_positional(PosAT::Move, Position::new((3, 3)));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge));
+
+        state.fixes.fix_d6(3); //succeed with team reroll
+        state.step_simple(SimpleAT::UseReroll);
+
+        assert_eq!(state.get_player_id_at_coord(3, 3).unwrap(), id);
+        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll());
+        assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2);
+        assert_eq!(state.get_mut_player(id).unwrap().total_movement_left(), 6);
+        assert_eq!(state.get_mut_player(id).unwrap().gfis_left(), 2);
+        assert_eq!(state.get_mut_player(id).unwrap().moves_left(), 4);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+
+        Ok(())
+    }
+}

@@ -451,4 +451,75 @@ mod tests {
         state.fixes.fix_blockdice(BlockDice::Skull);
         state.step_positional(PosAT::Block, target_pos);
     }
+
+    #[test]
+    fn test_block_2d_bothdown_casualty() -> Result<()> {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_home_player(Position::new((5, 6)))
+            .add_away_player(away_pos)
+            .build();
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fixes.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, away_pos);
+        state.fixes.fix_d6(1); //away armor
+        state.fixes.fix_d6(1); //away armor
+        state.fixes.fix_d6(5); //home armor
+        state.fixes.fix_d6(6); //home armor
+        state.fixes.fix_d6(6); //home injury
+        state.fixes.fix_d6(6); //home injury
+        state.step_simple(SimpleAT::SelectBothDown);
+
+        assert!(state.get_player_at(home_pos).is_none());
+        assert!(matches!(
+            state.get_dugout().next(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Injuried,
+                stats: PlayerStats {
+                    team: TeamType::Home,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert_eq!(
+            state.get_player_at(away_pos).unwrap().status,
+            PlayerStatus::Down
+        );
+
+        assert!(state.fixes.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn single_dice_block() -> Result<()> {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let push_pos = Position::new((6, 7));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::Block, away_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, push_pos);
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(1);
+        state.step_positional(PosAT::FollowUp, away_pos);
+
+        assert_eq!(
+            state.get_player_at(push_pos).unwrap().status,
+            PlayerStatus::Down
+        );
+        assert!(state.fixes.is_empty());
+
+        Ok(())
+    }
 }

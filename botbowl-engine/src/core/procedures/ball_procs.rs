@@ -242,3 +242,95 @@ impl Procedure for Touchdown {
         ProcState::Done
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use crate::core::dices::BlockDice;
+    use crate::core::dices::D6Target;
+    use crate::core::dices::D6;
+    use crate::core::dices::D8;
+    use crate::core::model::*;
+    use crate::core::pathing::CustomIntoIter;
+    use crate::core::pathing::NodeIteratorItem;
+    use crate::core::table::*;
+    use crate::core::{
+        gamestate::{GameState, GameStateBuilder},
+        model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
+        pathing::{PathFinder, PathingEvent},
+        table::PosAT,
+    };
+    use crate::standard_state;
+    use ansi_term::Colour::Red;
+    use itertools::Either;
+    use std::{
+        collections::{HashMap, HashSet},
+        iter::{repeat_with, zip},
+    };
+
+    #[test]
+    fn pickup_fail_and_bounce() -> Result<()> {
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        let d8_fix = D8::One;
+        let direction = Direction::from(d8_fix);
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fixes.fix_d6(2); //fail pickup (3+)
+        state.step_positional(PosAT::Move, ball_pos);
+        state.fixes.fix_d8(d8_fix as u8);
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        let player = state.get_player(id).unwrap();
+        assert!(player.used);
+        assert!(matches!(state.ball, BallState::OnGround(pos) if pos == ball_pos + direction));
+
+        Ok(())
+    }
+
+    #[test]
+    fn pickup_success() -> Result<()> {
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+        assert!(state.home_to_act());
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert_eq!(state.ball, BallState::OnGround(ball_pos));
+
+        state
+            .get_mut_player(id)
+            .unwrap()
+            .stats
+            .give_skill(Skill::SureHands);
+
+        state.step_positional(PosAT::StartMove, Position::new((1, 1)));
+
+        state.fixes.fix_d6(2); //fail first (3+)
+        state.fixes.fix_d6(3); //succeed on reroll (3+)
+        state.step_positional(PosAT::Move, Position::new((5, 5)));
+
+        assert!(!state
+            .get_player(id)
+            .unwrap()
+            .can_use_skill(Skill::SureHands));
+
+        match state.ball {
+            BallState::Carried(id_carrier) if id_carrier == id => (),
+            _ => panic!("wrong ball carried"),
+        }
+
+        Ok(())
+    }
+}

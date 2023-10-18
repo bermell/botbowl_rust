@@ -129,3 +129,62 @@ impl Procedure for Injury {
         ProcState::from(procs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use crate::core::dices::BlockDice;
+    use crate::core::dices::D6Target;
+    use crate::core::dices::D6;
+    use crate::core::dices::D8;
+    use crate::core::model::*;
+    use crate::core::pathing::CustomIntoIter;
+    use crate::core::pathing::NodeIteratorItem;
+    use crate::core::table::*;
+    use crate::core::{
+        gamestate::{GameState, GameStateBuilder},
+        model::{Action, DugoutPlace, PlayerStats, Position, TeamType, HEIGHT_, WIDTH_},
+        pathing::{PathFinder, PathingEvent},
+        table::PosAT,
+    };
+    use crate::standard_state;
+    use ansi_term::Colour::Red;
+    use itertools::Either;
+    use std::{
+        collections::{HashMap, HashSet},
+        iter::{repeat_with, zip},
+    };
+    #[test]
+    fn bounce_on_knockdown() -> Result<()> {
+        let start_pos = Position::new((2, 2));
+        let move_to = Position::new((3, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((1, 1)))
+            .add_ball_pos(start_pos)
+            .build();
+
+        let d8_fix = D8::One;
+        let direction = Direction::from(d8_fix);
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        assert_eq!(state.ball, BallState::Carried(id));
+        state.step_positional(PosAT::StartMove, start_pos);
+
+        state.fixes.fix_d6(2);
+
+        state.step_positional(PosAT::Move, move_to);
+
+        state.fixes.fix_d6(1); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d8(d8_fix as u8);
+
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        let player = state.get_player_unsafe(id);
+        assert!(player.used);
+        assert_eq!(state.ball, BallState::OnGround(move_to + direction));
+
+        Ok(())
+    }
+}

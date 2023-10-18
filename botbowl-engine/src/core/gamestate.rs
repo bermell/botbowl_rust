@@ -913,7 +913,17 @@ impl GameState {
 
 #[cfg(test)]
 mod gamestate_tests {
-    use crate::core::{gamestate::BuilderState, model::Position};
+    use crate::{
+        core::{
+            gamestate::BuilderState,
+            model::{BallState, Position, Result, TeamType, HEIGHT_, WIDTH_},
+        },
+        standard_state,
+    };
+    use std::{
+        collections::{HashMap, HashSet},
+        iter::{repeat_with, zip},
+    };
 
     use super::GameStateBuilder;
 
@@ -973,5 +983,86 @@ mod gamestate_tests {
             .build();
         assert_eq!(state.info.home_turn, 6);
         assert_eq!(state.info.away_turn, 6);
+    }
+    #[test]
+    fn state_from_str() {
+        let mut field = "".to_string();
+        field += " aa\n";
+        field += " Aa\n";
+        field += "h  \n";
+        let first_pos = Position::new((5, 1));
+        let state = GameStateBuilder::new().add_str(first_pos, &field).build();
+        assert_eq!(
+            state
+                .get_player_at(Position::new((5, 3)))
+                .unwrap()
+                .stats
+                .team,
+            TeamType::Home
+        );
+
+        assert_eq!(
+            state
+                .get_player_at(Position::new((6, 2)))
+                .unwrap()
+                .stats
+                .team,
+            TeamType::Away
+        );
+
+        let id = state.get_player_id_at_coord(6, 2).unwrap();
+        assert_eq!(state.ball, BallState::Carried(id));
+    }
+
+    #[test]
+    fn player_unique_id_and_correct_positions() {
+        let state = standard_state();
+
+        let mut ids = HashSet::new();
+        for x in 0..WIDTH_ {
+            for y in 0..HEIGHT_ {
+                let pos = Position::new((x, y));
+                if let Some(player) = state.get_player_at(pos) {
+                    assert_eq!(player.position, pos);
+                    assert!(ids.insert(player.id));
+                }
+            }
+        }
+        assert_eq!(0, ids.into_iter().filter(|id| *id >= 22).count());
+    }
+
+    #[test]
+    fn adjescent() {
+        let state = standard_state();
+        let num_adj = state.get_adj_players(Position::new((2, 2))).count();
+        assert_eq!(num_adj, 3);
+    }
+
+    #[test]
+    fn mutate_player() {
+        let mut state = standard_state();
+
+        assert!(!(state.get_player(0).unwrap().used));
+        state.get_mut_player(0).unwrap().used = true;
+        assert!(state.get_player(0).unwrap().used);
+    }
+
+    #[test]
+    fn move_player() -> Result<()> {
+        let mut state = standard_state();
+        let id = 1;
+        let old_pos = Position::new((2, 2));
+        let new_pos = Position::new((10, 10));
+
+        assert_eq!(state.get_player_id_at(old_pos), Some(id));
+        assert_eq!(state.get_player(id).unwrap().position, old_pos);
+        assert!(state.get_player_id_at(new_pos).is_none());
+
+        state.move_player(id, new_pos)?;
+
+        assert!(state.get_player_id_at(old_pos).is_none());
+        assert_eq!(state.get_player_id_at(new_pos), Some(id));
+        assert_eq!(state.get_player(id).unwrap().position, new_pos);
+        Ok(())
     }
 }
