@@ -107,7 +107,7 @@ impl Procedure for Half {
         game_state
             .get_players_on_pitch_mut()
             .filter(|p| p.stats.team == next_team && p.status != PlayerStatus::Stunned)
-            .for_each(|p| p.used = false);
+            .for_each(|p| p.reset_skills_and_moves());
 
         ProcState::NotDoneNewProcs(vec![TurnStunned::new(), Turn::new(next_team)])
     }
@@ -297,7 +297,9 @@ impl Procedure for CoinToss {
             return ProcState::NeedAction(aa);
         }
 
-        let Some(Action::Simple(simple_action)) = action else {unreachable!()};
+        let Some(Action::Simple(simple_action)) = action else {
+            unreachable!()
+        };
 
         match simple_action {
             SimpleAT::Heads | SimpleAT::Tails => {

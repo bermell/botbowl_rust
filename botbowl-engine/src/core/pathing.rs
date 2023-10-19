@@ -643,6 +643,7 @@ impl<'a> PathFinder<'a> {
             player.gfis_left(),
         );
         if player.status != PlayerStatus::Up {
+            assert!(player.moves_left() == player.stats.ma);
             root_node.apply_standup();
         }
 

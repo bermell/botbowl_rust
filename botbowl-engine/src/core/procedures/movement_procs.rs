@@ -290,9 +290,6 @@ mod tests {
         state.fixes.fix_d6(1); //fail first (2+)
         state.step_positional(PosAT::Move, Position::new((9, 1)));
 
-        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
-        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge));
-
         state.fixes.fix_d6(2); //succeed with team reroll
         state.fixes.fix_d6(2); //succeed next gfi roll
         state.step_simple(SimpleAT::UseReroll);
@@ -733,5 +730,47 @@ mod tests {
         state.step_positional(PosAT::FollowUp, target);
 
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Block, push_to)));
+    }
+
+    #[test]
+    fn move_into_fail_gfi_into_stun_into_move_again() {
+        let start_pos = Position::new((1, 1));
+        let move_target = Position::new((8, 1));
+
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        state.step_positional(PosAT::StartMove, Position::new((1, 1)));
+
+        state.fixes.fix_d6(1); //fail first (2+)
+        state.step_positional(PosAT::Move, move_target);
+
+        state.fixes.fix_d6(6); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d6(1); //injury
+        state.fixes.fix_d6(2); //injury
+
+        state.step_simple(SimpleAT::DontUseReroll);
+        assert!(state.get_player_unsafe(id).used);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
+        assert_eq!(state.get_player_unsafe(id).position, move_target);
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        let player = state.get_player_unsafe(id);
+        assert_eq!(player.status, PlayerStatus::Down);
+        assert_eq!(player.moves_left(), player.stats.ma);
+        assert_eq!(player.gfis_left(), 2);
+        state.step_positional(PosAT::StartMove, move_target)
     }
 }

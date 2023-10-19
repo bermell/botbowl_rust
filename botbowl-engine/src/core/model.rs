@@ -412,6 +412,8 @@ impl FieldedPlayer {
             PlayerStatus::Stunned => false,
         }
     }
+    /// Returns how many normal moves the player has left. Before activating the player this is
+    /// equal to MA (movement allowence)
     pub fn moves_left(&self) -> u8 {
         if self.moves <= self.stats.ma {
             self.stats.ma - self.moves
@@ -419,6 +421,8 @@ impl FieldedPlayer {
             0
         }
     }
+    /// Returns how many gfis the player has left. Before exhausting the normal moves,
+    /// it's equal to 2
     pub fn gfis_left(&self) -> u8 {
         if self.moves <= self.stats.ma {
             2
@@ -426,6 +430,8 @@ impl FieldedPlayer {
             2 + self.stats.ma - self.moves
         }
     }
+    /// Ruturns the total number of mover the player has left, normal moves + gfis. Before
+    /// activating the player, it's equal to MA + 2
     pub fn total_movement_left(&self) -> u8 {
         debug_assert!(self.moves <= self.stats.ma + 2);
         self.stats.ma + 2 - self.moves
@@ -554,7 +560,7 @@ impl std::fmt::Debug for AvailableActions {
         if !self.simple.is_empty() {
             info.field("simple", &self.simple);
         }
-        let mut pos_at_count: HashMap<PosAT, u8> = HashMap::new();
+        let mut pos_at_count: HashMap<PosAT, u16> = HashMap::new();
         if let Some(positional) = &self.positional {
             for pos_at in positional.iter().flat_map(|pos_ats| pos_ats.iter()) {
                 pos_at_count
