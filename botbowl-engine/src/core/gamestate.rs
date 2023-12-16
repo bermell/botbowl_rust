@@ -808,14 +808,18 @@ impl GameState {
             .pop()
             .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
-        println!("STEPPING: {:?} with action={:?}", top_proc, opt_action);
+        match opt_action {
+            Some(action) => println!("STEPPING: {:?}\n  action={:?}", top_proc, action),
+            None => println!("STEPPING: {:?}", top_proc),
+        };
+
         let mut top_proc_state: ProcState = top_proc.step(self, opt_action);
 
         loop {
             if self.info.game_over {
                 break;
             }
-            println!("{:?} reported: {:?}", top_proc, top_proc_state);
+            println!("  result:   {:?}", top_proc_state);
             match top_proc_state {
                 ProcState::NotDoneNewProcs(mut new_procs) => {
                     self.proc_stack.push(top_proc);
@@ -847,7 +851,7 @@ impl GameState {
                 }
             };
 
-            println!("STEPPING: {:?} with action=None", top_proc);
+            println!("STEPPING: {:?}", top_proc);
 
             top_proc_state = top_proc.step(self, None);
         }
