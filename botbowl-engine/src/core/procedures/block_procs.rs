@@ -596,4 +596,30 @@ mod tests {
 
         assert!(block_aa.get_pos(away_pos_down).is_none());
     }
+    #[test]
+    fn prune_players_cant_startblock_but_can_startblitz() {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+        state
+            .get_mut_player_unsafe(state.get_player_id_at(away_pos).unwrap())
+            .status = PlayerStatus::Down;
+        state.step_simple(SimpleAT::EndTurn);
+        let aa = state.get_available_actions();
+        assert!(aa.team.unwrap() == TeamType::Away);
+        let aa_pos = aa
+            .get_positional()
+            .clone()
+            .unwrap()
+            .get_pos(away_pos)
+            .clone();
+        println!("{:?}", aa_pos);
+        assert!(!aa_pos.contains(&PosAT::StartBlock));
+        state.step_positional(PosAT::StartBlitz, away_pos);
+        state.fixes.fix_blockdice(BlockDice::Skull);
+        state.step_positional(PosAT::Block, home_pos);
+    }
 }

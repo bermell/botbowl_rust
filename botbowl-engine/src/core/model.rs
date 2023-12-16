@@ -636,6 +636,9 @@ impl AvailableActions {
     }
     pub fn insert_positional(&mut self, action_type: PosAT, positions: Vec<Position>) {
         assert!(self.team.is_some());
+        if positions.is_empty() {
+            return;
+        }
         if self.positional.is_none() {
             self.positional = Some(Default::default());
         }

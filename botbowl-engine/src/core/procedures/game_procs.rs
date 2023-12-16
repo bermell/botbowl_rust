@@ -151,33 +151,38 @@ impl Turn {
             .map(|p| p.position)
             .collect();
 
-        let block_positions: Vec<Position> = positions
-            .iter()
-            .filter(|&&pos| {
-                game_state.get_adj_players(pos).any(|adj_player| {
-                    adj_player.status == PlayerStatus::Up && adj_player.stats.team != self.team
+        if !positions.is_empty() {
+            let block_positions: Vec<Position> = positions
+                .iter()
+                .filter(|&&pos| game_state.get_player_at(pos).unwrap().status == PlayerStatus::Up)
+                .filter(|&&pos| {
+                    game_state.get_adj_players(pos).any(|adj_player| {
+                        adj_player.status == PlayerStatus::Up && adj_player.stats.team != self.team
+                    })
                 })
-            })
-            .copied()
-            .collect();
-        aa.insert_positional(PosAT::StartBlock, block_positions);
-        if game_state.info.handoff_available {
-            aa.insert_positional(PosAT::StartHandoff, positions.clone());
+                .copied()
+                .collect();
+            if !block_positions.is_empty() {
+                aa.insert_positional(PosAT::StartBlock, block_positions);
+            }
+            if game_state.info.handoff_available {
+                aa.insert_positional(PosAT::StartHandoff, positions.clone());
+            }
+
+            if game_state.info.blitz_available {
+                aa.insert_positional(PosAT::StartBlitz, positions.clone());
+            }
+
+            if game_state.info.foul_available {
+                aa.insert_positional(PosAT::StartFoul, positions.clone());
+            }
+
+            // if game_state.info.pass_available {
+            //     aa.insert_positional(PosAT::StartPass, positions.clone());
+            // }
+
+            aa.insert_positional(PosAT::StartMove, positions);
         }
-
-        if game_state.info.blitz_available {
-            aa.insert_positional(PosAT::StartBlitz, positions.clone());
-        }
-
-        if game_state.info.foul_available {
-            aa.insert_positional(PosAT::StartFoul, positions.clone());
-        }
-
-        // if game_state.info.pass_available {
-        //     aa.insert_positional(PosAT::StartPass, positions.clone());
-        // }
-
-        aa.insert_positional(PosAT::StartMove, positions);
         aa.insert_simple(SimpleAT::EndTurn);
         aa
     }
