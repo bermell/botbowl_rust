@@ -741,4 +741,31 @@ mod tests {
         assert_eq!(state.get_players_on_pitch().count(), 0);
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
     }
+
+    #[test]
+    fn ball_carrier_casualty() {
+        color_backtrace::install();
+        let push_pos = Position::new((4, 4));
+        let away_pos = Position::new((5, 5));
+        let home_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .add_ball_pos(away_pos)
+            .build();
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::Block, away_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, push_pos);
+        state.fixes.fix_d6(6); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d6(6); //injury
+        state.fixes.fix_d6(5); //injury
+        let d8_fix = D8::Two;
+        state.fixes.fix_d8(d8_fix as u8);
+        state.step_positional(PosAT::FollowUp, away_pos);
+
+        // let direction = Direction::from(d8_fix);
+    }
 }

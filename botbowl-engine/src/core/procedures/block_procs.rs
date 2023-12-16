@@ -184,8 +184,11 @@ impl Procedure for KnockDown {
         debug_assert!(matches!(player.status, PlayerStatus::Up));
         player.status = PlayerStatus::Down;
         player.used = true;
+        let player_position = player.position;
         let armor_proc = casualty_procs::Armor::new(self.id);
+
         if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
+            game_state.ball = BallState::InAir(player_position);
             ProcState::DoneNewProcs(vec![ball_procs::Bounce::new(), armor_proc])
         } else {
             ProcState::DoneNew(armor_proc)
@@ -206,7 +209,11 @@ impl BlockAction {
 
         game_state
             .get_adj_players(player.position)
-            .filter(|adj_player| !adj_player.used && adj_player.stats.team != player.stats.team)
+            .filter(|adj_player| {
+                !adj_player.used
+                    && adj_player.stats.team != player.stats.team
+                    && adj_player.status == PlayerStatus::Up
+            })
             .for_each(|block_victim| {
                 aa.insert_block(
                     block_victim.position,
@@ -567,5 +574,26 @@ mod tests {
         );
         assert_eq!(aa.get_simple().len(), 1);
         assert!(aa.is_legal_action(Action::Simple(SimpleAT::EndTurn)));
+    }
+
+    #[test]
+    fn available_block_action_adjescent_to_downed_player() {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let away_pos_down = Position::new((4, 4));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .add_away_player(away_pos_down)
+            .build();
+        let downed_id = state.get_player_id_at(away_pos_down).unwrap();
+        state.get_mut_player_unsafe(downed_id).status = PlayerStatus::Down;
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        let aa = state.get_available_actions();
+
+        let block_aa = aa.get_paths().clone().unwrap();
+
+        assert!(block_aa.get_pos(away_pos_down).is_none());
     }
 }
