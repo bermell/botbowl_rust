@@ -270,10 +270,18 @@ impl Mul<i8> for Position {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone)]
 pub enum Action {
     Positional(table::PosAT, Position),
     Simple(table::SimpleAT),
+}
+impl std::fmt::Debug for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Positional(at, pos) => write!(f, "{:?} ({:?},{:?})", at, pos.x, pos.y),
+            Action::Simple(at) => write!(f, "{:?}", at),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
