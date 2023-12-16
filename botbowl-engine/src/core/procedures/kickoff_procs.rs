@@ -201,6 +201,7 @@ impl Setup {
         let players: Vec<PlayerID> = game_state
             .get_dugout()
             .filter(|dplayer| dplayer.stats.team == self.team)
+            .filter(|dplayer| dplayer.place == DugoutPlace::Reserves)
             .map(|p| p.id)
             .collect();
         let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
