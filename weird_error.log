@@ -1,0 +1,85 @@
+STEPPING: MoveAction { player_id: 2, state: ActivePath(NodeIterator { stack: [Right(Pickup(ThreePlus))] }) }
+  result:   NotDoneNew(SimpleProcContainer { proc: PickupProc { target: ThreePlus, id: 2 }, state: Init })
+STEPPING: SimpleProcContainer { proc: PickupProc { target: ThreePlus, id: 2 }, state: Init }
+  result:   DoneNewProcs([Bounce { kick: false }])
+STEPPING: Bounce { kick: false }
+  result:   DoneNew(ThrowIn { from: Position { x: 21, y: 1 } })
+STEPPING: ThrowIn { from: Position { x: 21, y: 1 } }
+  result:   NotDone
+STEPPING: ThrowIn { from: Position { x: 26, y: 6 } }
+The application panicked (crashed).
+Message:  very wrong!
+Location: src/core/procedures/ball_procs.rs:116
+
+Run with COLORBT_SHOW_HIDDEN=1 environment variable to disable frame filtering.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ BACKTRACE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                              ⋮ 8 frames hidden ⋮
+ 9: <botbowl_engine::core::procedures::ball_procs::ThrowIn as botbowl_engine::core::model::Procedure>::step::h1b6a5b05b464714c
+    at /home/mattias/repos/botbowl_rust/botbowl-engine/src/core/procedures/ball_procs.rs:116
+     114 │             Position { y: 1, .. } => [(1, 1), (0, 1), (-1, 1)],
+     115 │             Position { y: MAX_Y, .. } => [(1, -1), (0, -1), (-1, -1)],
+     116 >             _ => panic!("very wrong!"),
+     117 │         };
+     118 │         let direction = Direction::from(match game_state.get_d6_roll() {
+10: botbowl_engine::core::gamestate::GameState::step::heea78c218559ce3f
+    at /home/mattias/repos/botbowl_rust/botbowl-engine/src/core/gamestate.rs:856
+     854 │             println!("STEPPING: {:?}", top_proc);
+     855 │
+     856 >             top_proc_state = top_proc.step(self, None);
+     857 │         }
+     858 │         debug_assert!(!self.available_actions.is_empty() || self.info.game_over);
+11: botbowl_engine::core::game_runner::BotGameRunner::run::h29be8d395eb316a6
+    at /home/mattias/repos/botbowl_rust/botbowl-engine/src/core/game_runner.rs:24
+      22 │                 None => todo!(),
+      23 │             };
+      24 >             state.step(action).unwrap();
+      25 │         }
+      26 │         "hey".to_string()
+12: botbowl_engine::bots::tests::random_bot_plays_game::h3b4933c3aa437348
+    at /home/mattias/repos/botbowl_rust/botbowl-engine/src/bots.rs:110
+     108 │             };
+     109 │
+     110 >             let result = bot_game.run();
+     111 │             println!("{:?}", result);
+     112 │         }
+13: botbowl_engine::bots::tests::random_bot_plays_game::{{closure}}::h99661093caba0813
+    at /home/mattias/repos/botbowl_rust/botbowl-engine/src/bots.rs:102
+     100 │
+     101 │     #[test]
+     102 >     fn random_bot_plays_game() {
+     103 │         color_backtrace::install();
+     104 │         for _ in 0..100 {
+14: core::ops::function::FnOnce::call_once::hde2c9fd393146109
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/core/src/ops/function.rs:250
+15: core::ops::function::FnOnce::call_once::he2e7294d6e0366fc
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/core/src/ops/function.rs:250
+16: test::__rust_begin_short_backtrace::h13549e99f98e3254
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/test/src/lib.rs:626
+17: test::run_test_in_process::{{closure}}::h9c2c3d1665ffe092
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/test/src/lib.rs:649
+18: <core::panic::unwind_safe::AssertUnwindSafe<F> as core::ops::function::FnOnce<()>>::call_once::hec1896877d3d50ca
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/core/src/panic/unwind_safe.rs:271
+19: std::panicking::try::do_call::hc7aed7412be3e0dc
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/std/src/panicking.rs:502
+20: std::panicking::try::h011fbc524cd7e3ba
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/std/src/panicking.rs:466
+21: std::panic::catch_unwind::hff05d0891bc5bb82
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/std/src/panic.rs:142
+22: test::run_test_in_process::h87f0657a1c0aaab4
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/test/src/lib.rs:649
+23: test::run_test::{{closure}}::hc4dd34f501797e16
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/test/src/lib.rs:572
+24: test::run_test::{{closure}}::h1201d47565297bcc
+    at /rustc/cc66ad468955717ab92600c770da8c1601a4ff33/library/test/src/lib.rs:600
+                              ⋮ 13 frames hidden ⋮
+test bots::tests::random_bot_plays_game ... FAILED
+
+failures:
+
+failures:
+    bots::tests::random_bot_plays_game
+
+test result: FAILED. 60 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
+
+error: test failed, to rerun pass `--lib`
+[N] (3.9.16) ~/r/b/botbowl-engine (master)[101] ❯
