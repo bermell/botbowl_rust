@@ -268,7 +268,7 @@ impl Procedure for KOWakeUp {
         game_state
             .get_dugout_mut()
             .filter(|player| player.place == DugoutPlace::KnockOut)
-            .zip(rolls.into_iter())
+            .zip(rolls)
             .filter(|(_, roll)| target.is_success(*roll))
             .for_each(|(player, _)| {
                 player.place = DugoutPlace::Reserves;

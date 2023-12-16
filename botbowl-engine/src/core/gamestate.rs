@@ -820,11 +820,11 @@ impl GameState {
                 ProcState::NotDoneNewProcs(mut new_procs) => {
                     self.proc_stack.push(top_proc);
                     top_proc = new_procs.pop().unwrap();
-                    self.proc_stack.extend(new_procs.into_iter());
+                    self.proc_stack.extend(new_procs);
                 }
                 ProcState::DoneNewProcs(mut new_procs) => {
                     top_proc = new_procs.pop().unwrap();
-                    self.proc_stack.extend(new_procs.into_iter());
+                    self.proc_stack.extend(new_procs);
                 }
                 ProcState::NotDoneNew(new_proc) => {
                     self.proc_stack.push(top_proc);

@@ -760,7 +760,7 @@ impl RiskySet {
     pub fn insert_node(&mut self, node: Rc<Node>) {
         assert!(0_f32 < node.prob && node.prob <= 1.0_f32);
         let prob = HashableFloat(node.prob);
-        self.set.entry(prob).or_insert_with(Vec::new).push(node);
+        self.set.entry(prob).or_default().push(node);
     }
     pub fn get_next_batch(&mut self) -> Option<Vec<Rc<Node>>> {
         match self.set.keys().map(|hf| hf.0).reduce(f32::max) {

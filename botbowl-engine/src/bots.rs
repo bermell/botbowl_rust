@@ -24,22 +24,24 @@ impl RandomBot {
         self.rng = rng;
     }
     fn sample_simple(&mut self, aa: &HashSet<SimpleAT>) -> Action {
-        let vec_sim: Vec<&SimpleAT> = aa.into_iter().collect();
+        let vec_sim: Vec<&SimpleAT> = aa.iter().collect();
         let l = vec_sim.len();
         debug_assert!(l > 0);
-        let choice = self.rng.gen_range(0..l) as usize;
+        let choice = self.rng.gen_range(0..l);
         Action::Simple(*vec_sim[choice])
     }
     fn sample_positional(&mut self, aa: &FullPitch<SmallVecPosAT>) -> Action {
-        let positions: Vec<(Position, &SmallVecPosAT)> =
-            aa.iter_position().filter(|(_, sv)| sv.len() > 0).collect();
+        let positions: Vec<(Position, &SmallVecPosAT)> = aa
+            .iter_position()
+            .filter(|(_, sv)| !sv.is_empty())
+            .collect();
         let l = positions.len();
         debug_assert!(l > 0);
-        let choice = self.rng.gen_range(0..l) as usize;
+        let choice = self.rng.gen_range(0..l);
         let (pos, sv) = positions[choice];
         let l = sv.len();
         debug_assert!(l > 0);
-        let choice = self.rng.gen_range(0..l) as usize;
+        let choice = self.rng.gen_range(0..l);
         let action_type = sv[choice];
 
         Action::Positional(action_type, pos)
@@ -50,9 +52,15 @@ impl RandomBot {
         if l == 0 {
             return None;
         }
-        let choice = self.rng.gen_range(0..l) as usize;
+        let choice = self.rng.gen_range(0..l);
         let path = &paths[choice];
         Some(Action::Positional(path.get_action_type(), path.position))
+    }
+}
+
+impl Default for RandomBot {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -62,8 +70,7 @@ impl Bot for RandomBot {
         let path_action: Option<Action> = aa
             .get_paths()
             .as_ref()
-            .map(|paths| self.sample_path(paths))
-            .flatten();
+            .and_then(|paths| self.sample_path(paths));
 
         let pos_action: Option<Action> = aa
             .get_positional()
@@ -77,27 +84,27 @@ impl Bot for RandomBot {
         };
         let action_list: Vec<Action> = [path_action, pos_action, simple_action]
             .iter()
-            .filter_map(|a| a.clone())
+            .filter_map(|a| *a)
             .collect();
         let l = action_list.len();
         debug_assert!(l > 0);
-        let choice = self.rng.gen_range(0..l) as usize;
+        let choice = self.rng.gen_range(0..l);
         action_list[choice]
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::bots::RandomBot;
-//     use crate::core::game_runner::BotGameRunner;
-//
-//     #[test]
-//     fn random_bot_plays_game() {
-//         let away_bot = Box::new(RandomBot::new());
-//         let home_bot = Box::new(RandomBot::new());
-//         let mut bot_game = BotGameRunner { home_bot, away_bot };
-//
-//         let result = bot_game.run();
-//         println!("{:?}", result);
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use crate::bots::RandomBot;
+    use crate::core::game_runner::BotGameRunner;
+
+    #[test]
+    fn random_bot_plays_game() {
+        let away_bot = Box::new(RandomBot::new());
+        let home_bot = Box::new(RandomBot::new());
+        let mut bot_game = BotGameRunner { home_bot, away_bot };
+
+        let result = bot_game.run();
+        println!("{:?}", result);
+    }
+}

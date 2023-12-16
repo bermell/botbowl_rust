@@ -107,7 +107,9 @@ impl LandKickoff {
 }
 impl Procedure for LandKickoff {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        let BallState::InAir(ball_position) = game_state.ball else { unreachable!() };
+        let BallState::InAir(ball_position) = game_state.ball else {
+            unreachable!()
+        };
 
         if ball_position.is_out()
             || !ball_position.is_on_team_side(other_team(game_state.info.kicking_this_drive))
@@ -208,10 +210,10 @@ impl Setup {
             let player = game_state.get_dugout_player(id).unwrap();
             let (dx, dy) = {
                 match player.stats.role {
-                    PlayerRole::Blitzer if blitzer_pos.len() > 0 => blitzer_pos.pop().unwrap(),
-                    PlayerRole::Thrower if thrower_pos.len() > 0 => thrower_pos.pop().unwrap(),
-                    PlayerRole::Catcher if catcher_pos.len() > 0 => catcher_pos.pop().unwrap(),
-                    PlayerRole::Lineman if linemen_pos.len() > 0 => linemen_pos.pop().unwrap(),
+                    PlayerRole::Blitzer if !blitzer_pos.is_empty() => blitzer_pos.pop().unwrap(),
+                    PlayerRole::Thrower if !thrower_pos.is_empty() => thrower_pos.pop().unwrap(),
+                    PlayerRole::Catcher if !catcher_pos.is_empty() => catcher_pos.pop().unwrap(),
+                    PlayerRole::Lineman if !linemen_pos.is_empty() => linemen_pos.pop().unwrap(),
                     _ => continue,
                 }
             };

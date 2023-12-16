@@ -177,7 +177,7 @@ impl KnockDown {
 }
 impl Procedure for KnockDown {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        let mut player = match game_state.get_mut_player(self.id) {
+        let player = match game_state.get_mut_player(self.id) {
             Ok(player_) => player_,
             Err(_) => return ProcState::Done, //Means the player is already off the pitch, most likely crowd push
         };
