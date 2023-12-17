@@ -6,7 +6,7 @@ use std::error;
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
 use std::rc::Rc;
 
-use super::dices::{D6Target, Sum2D6Target};
+use super::dices::{D6Target, RequestedRoll, Sum2D6Target};
 use super::gamestate::GameState;
 use super::pathing::Node;
 use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
@@ -541,6 +541,7 @@ pub enum ProcState {
     DoneNew(Box<dyn Procedure>),
     Done,
     NotDone,
+    NeedRoll(RequestedRoll),
     NeedAction(Box<AvailableActions>),
 }
 

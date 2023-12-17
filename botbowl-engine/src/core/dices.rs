@@ -309,3 +309,24 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
         PROBS[*self as usize]
     }
 }
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum RequestedRoll {
+    D6,
+    D6PassFail(D6Target),
+    D6ThreeOutcomes(D6Target, D6Target),
+    Sum2D6,
+    Sum2D6PassFail(Sum2D6Target),
+    Sum2D6ThreeOutcomes(Sum2D6Target, Sum2D6Target),
+}
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum RollResult {
+    Pass,
+    Fail,
+    MiddleOutcome,
+    D6(D6),
+    Sum2D6(Sum2D6),
+}

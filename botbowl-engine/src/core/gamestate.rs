@@ -9,7 +9,7 @@ use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
-    dices::{BlockDice, Coin, D6Target, RollTarget, Sum2D6, D6, D8},
+    dices::{BlockDice, Coin, D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6, D6, D8},
     procedures::{GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
 };
@@ -849,6 +849,9 @@ impl GameState {
                     self.proc_stack.push(top_proc);
                     break;
                 }
+                ProcState::NeedRoll(requested_roll) => {
+                    let result = self.get_roll_result(requested_roll);
+                }
             };
 
             println!("STEPPING: {:?}", top_proc);
@@ -857,6 +860,47 @@ impl GameState {
         }
         debug_assert!(!self.available_actions.is_empty() || self.info.game_over);
         Ok(())
+    }
+
+    fn get_roll_result(&mut self, requested_roll: RequestedRoll) -> RollResult {
+        match requested_roll {
+            RequestedRoll::D6 => RollResult::D6(self.get_d6_roll()),
+            RequestedRoll::D6PassFail(target) => {
+                if target.is_success(self.get_d6_roll()) {
+                    RollResult::Pass
+                } else {
+                    RollResult::Fail
+                }
+            }
+            RequestedRoll::D6ThreeOutcomes(low_target, high_target) => {
+                let roll = self.get_d6_roll();
+                if high_target.is_success(roll) {
+                    RollResult::Pass
+                } else if low_target.is_success(roll) {
+                    RollResult::MiddleOutcome
+                } else {
+                    RollResult::Fail
+                }
+            }
+            RequestedRoll::Sum2D6 => RollResult::Sum2D6(self.get_2d6_roll()),
+            RequestedRoll::Sum2D6PassFail(target) => {
+                if target.is_success(self.get_2d6_roll()) {
+                    RollResult::Pass
+                } else {
+                    RollResult::Fail
+                }
+            }
+            RequestedRoll::Sum2D6ThreeOutcomes(low_target, high_target) => {
+                let roll = self.get_2d6_roll();
+                if high_target.is_success(roll) {
+                    RollResult::Pass
+                } else if low_target.is_success(roll) {
+                    RollResult::MiddleOutcome
+                } else {
+                    RollResult::Fail
+                }
+            }
+        }
     }
 
     pub fn is_legal_action(&self, action: &Action) -> bool {
