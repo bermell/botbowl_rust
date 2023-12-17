@@ -1,4 +1,4 @@
-use crate::core::dices::{D6Target, RollTarget};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, ProcState, Procedure};
@@ -52,48 +52,47 @@ where
     T: SimpleProc + std::fmt::Debug,
 {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        // if action is DON*T REROLL, apply failure, return true
         match input {
+            ProcInput::Nothing => {
+                return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));
+            }
+            ProcInput::Roll(RollResult::Pass) => {
+                return ProcState::from(self.proc.apply_success(game_state))
+            }
+            ProcInput::Roll(RollResult::Fail) if self.state == RollProcState::RerollUsed => {
+                return ProcState::from(self.proc.apply_failure(game_state))
+            }
+            ProcInput::Roll(RollResult::Fail) => (/*figure out if reroll is available below*/),
             ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
                 return ProcState::from(self.proc.apply_failure(game_state));
             }
             ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
                 game_state.get_active_team_mut().unwrap().use_reroll();
                 self.state = RollProcState::RerollUsed;
+                return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));
+            }
+            _ => panic!("Unexpected input: {:?}", input),
+        };
+
+        match self.proc.reroll_skill() {
+            Some(skill) if game_state.get_player_unsafe(self.id()).can_use_skill(skill) => {
+                game_state.get_mut_player_unsafe(self.id()).use_skill(skill);
+                self.state = RollProcState::RerollUsed;
+                return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));
             }
             _ => (),
         }
 
-        loop {
-            let roll = game_state.get_d6_roll();
-            if self.proc.d6_target().is_success(roll) {
-                return ProcState::from(self.proc.apply_success(game_state));
-            }
-            if self.state == RollProcState::RerollUsed {
-                break;
-            }
-            match self.proc.reroll_skill() {
-                Some(skill) if game_state.get_player_unsafe(self.id()).can_use_skill(skill) => {
-                    game_state.get_mut_player_unsafe(self.id()).use_skill(skill);
-                    self.state = RollProcState::RerollUsed;
-                    continue;
-                }
-                _ => (),
-            }
-
-            if game_state
-                .get_team_from_player(self.id())
-                .unwrap()
-                .can_use_reroll()
-            {
-                let team = game_state.get_player_unsafe(self.id()).stats.team;
-                let mut aa = AvailableActions::new(team);
-                aa.insert_simple(SimpleAT::UseReroll);
-                aa.insert_simple(SimpleAT::DontUseReroll);
-                return ProcState::NeedAction(aa);
-            } else {
-                break;
-            }
+        if game_state
+            .get_team_from_player(self.id())
+            .unwrap()
+            .can_use_reroll()
+        {
+            let team = game_state.get_player_unsafe(self.id()).stats.team;
+            let mut aa = AvailableActions::new(team);
+            aa.insert_simple(SimpleAT::UseReroll);
+            aa.insert_simple(SimpleAT::DontUseReroll);
+            return ProcState::NeedAction(aa);
         }
         ProcState::from(self.proc.apply_failure(game_state))
     }
