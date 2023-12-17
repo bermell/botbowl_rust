@@ -1,4 +1,4 @@
-use crate::core::dices::{D6Target, D6};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult, D6};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{
@@ -60,11 +60,14 @@ impl Bounce {
     }
 }
 impl Procedure for Bounce {
-    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let dice = match input {
+            ProcInput::Nothing => return ProcState::NeedRoll(RequestedRoll::D8),
+            ProcInput::Roll(RollResult::D8(dice)) => dice,
+            _ => panic!("Unexpected input {:?} for Bounce", input),
+        };
         let current_ball_pos = game_state.get_ball_position().unwrap();
-        let dice = game_state.get_d8_roll();
-        let dir = Direction::from(dice);
-        let new_pos = current_ball_pos + dir;
+        let new_pos = current_ball_pos + Direction::from(dice);
 
         if self.kick
             && (new_pos.is_out() || new_pos.is_on_team_side(game_state.info.kicking_this_drive))

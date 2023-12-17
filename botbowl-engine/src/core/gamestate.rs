@@ -902,6 +902,7 @@ impl GameState {
                     RollResult::Fail
                 }
             }
+            RequestedRoll::D8 => RollResult::D8(self.get_d8_roll()),
         }
     }
 

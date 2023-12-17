@@ -316,6 +316,7 @@ pub enum RequestedRoll {
     D6,
     D6PassFail(D6Target),
     D6ThreeOutcomes(D6Target, D6Target),
+    D8,
     Sum2D6,
     Sum2D6PassFail(Sum2D6Target),
     Sum2D6ThreeOutcomes(Sum2D6Target, Sum2D6Target),
@@ -328,5 +329,6 @@ pub enum RollResult {
     Fail,
     MiddleOutcome,
     D6(D6),
+    D8(D8),
     Sum2D6(Sum2D6),
 }
