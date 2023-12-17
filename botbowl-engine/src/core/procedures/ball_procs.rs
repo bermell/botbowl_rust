@@ -102,8 +102,8 @@ impl ThrowIn {
 }
 impl Procedure for ThrowIn {
     fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
-        const MAX_X: Coord = HEIGHT_ - 2;
-        const MAX_Y: Coord = WIDTH_ - 2;
+        const MAX_X: Coord = WIDTH_ - 2;
+        const MAX_Y: Coord = HEIGHT_ - 2;
         let directions: [(Coord, Coord); 3] = match self.from {
             Position { x: 1, y: 1 } => [(1, 0), (1, 1), (0, 1)],
             Position { x: 1, y: MAX_Y } => [(1, 0), (1, -1), (0, -1)],
