@@ -388,6 +388,9 @@ impl GameState {
     pub fn get_dugout_player(&self, id: DugoutPlayerID) -> Option<&DugoutPlayer> {
         self.dugout_players[id].as_ref()
     }
+    pub fn get_dugout_player_mut(&mut self, id: DugoutPlayerID) -> Option<&mut DugoutPlayer> {
+        self.dugout_players[id].as_mut()
+    }
 
     pub fn field_dugout_player(&mut self, dugout_id: DugoutPlayerID, position: Position) {
         let DugoutPlayer { stats, place, .. } = self.dugout_players[dugout_id].take().unwrap();

@@ -1,7 +1,7 @@
-use crate::core::model::ProcInput;
+use crate::core::model::{DugoutPlayerID, ProcInput};
 use std::iter::repeat_with;
 
-use crate::core::dices::D6;
+use crate::core::dices::{RequestedRoll, RollResult, D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position,
     ProcState, Procedure, TeamType,
@@ -252,35 +252,42 @@ impl Procedure for GameOver {
     }
 }
 #[derive(Debug)]
-pub struct KOWakeUp {}
+pub struct KOWakeUp {
+    ids: Vec<DugoutPlayerID>,
+}
 impl KOWakeUp {
     pub fn new() -> Box<KOWakeUp> {
-        Box::new(KOWakeUp {})
+        Box::new(KOWakeUp { ids: Vec::new() })
     }
 }
 impl Procedure for KOWakeUp {
-    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
-        let target = D6Target::FourPlus;
-        let num_kos = game_state
-            .get_dugout()
-            .filter(|player| player.place == DugoutPlace::KnockOut)
-            .count();
-
-        #[allow(clippy::needless_collect)]
-        let rolls: Vec<D6> = repeat_with(|| game_state.get_d6_roll())
-            .take(num_kos)
-            .collect();
-
-        game_state
-            .get_dugout_mut()
-            .filter(|player| player.place == DugoutPlace::KnockOut)
-            .zip(rolls)
-            .filter(|(_, roll)| target.is_success(*roll))
-            .for_each(|(player, _)| {
-                player.place = DugoutPlace::Reserves;
-            });
-
-        ProcState::Done
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => {
+                debug_assert!(self.ids.is_empty());
+                self.ids = game_state
+                    .get_dugout()
+                    .filter(|player| player.place == DugoutPlace::KnockOut)
+                    .map(|player| player.id)
+                    .collect();
+                if self.ids.is_empty() {
+                    return ProcState::Done;
+                }
+            }
+            ProcInput::Roll(RollResult::Pass) => {
+                let id = self.ids.pop().unwrap();
+                game_state.get_dugout_player_mut(id).unwrap().place = DugoutPlace::Reserves;
+            }
+            ProcInput::Roll(RollResult::Fail) => {
+                let _ = self.ids.pop().unwrap();
+            }
+            _ => panic!("Unexpected input: {:?}", input),
+        }
+        if self.ids.is_empty() {
+            ProcState::Done
+        } else {
+            ProcState::NeedRoll(RequestedRoll::D6PassFail(D6Target::FourPlus))
+        }
     }
 }
 #[derive(Debug)]
