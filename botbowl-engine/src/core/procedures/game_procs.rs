@@ -1,7 +1,6 @@
 use crate::core::model::{DugoutPlayerID, ProcInput};
-use std::iter::repeat_with;
 
-use crate::core::dices::{RequestedRoll, RollResult, D6};
+use crate::core::dices::{RequestedRoll, RollResult};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position,
     ProcState, Procedure, TeamType,
@@ -9,10 +8,7 @@ use crate::core::model::{
 use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs};
 use crate::core::table::*;
 
-use crate::core::{
-    dices::{D6Target, RollTarget},
-    gamestate::GameState,
-};
+use crate::core::{dices::D6Target, gamestate::GameState};
 
 #[derive(Debug)]
 pub struct Half {
@@ -292,52 +288,71 @@ impl Procedure for KOWakeUp {
 }
 #[derive(Debug)]
 pub struct CoinToss {
-    coin_toss_winner: TeamType,
+    choosen_action: SimpleAT,
 }
 impl CoinToss {
     pub fn new() -> Box<CoinToss> {
         Box::new(CoinToss {
-            coin_toss_winner: TeamType::Home,
+            choosen_action: SimpleAT::Heads,
         })
     }
 }
 impl Procedure for CoinToss {
-    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        if input == ProcInput::Nothing {
-            let mut aa = AvailableActions::new(TeamType::Away);
-            aa.insert_simple(SimpleAT::Heads);
-            aa.insert_simple(SimpleAT::Tails);
-            return ProcState::NeedAction(aa);
+    fn step(&mut self, _game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => {
+                let mut aa = AvailableActions::new(TeamType::Away);
+                aa.insert_simple(SimpleAT::Heads);
+                aa.insert_simple(SimpleAT::Tails);
+                ProcState::NeedAction(aa)
+            }
+            ProcInput::Action(Action::Simple(simple_action)) => {
+                self.choosen_action = simple_action;
+                ProcState::NeedRoll(RequestedRoll::Coin)
+            }
+            ProcInput::Roll(RollResult::Coin(coin))
+                if self.choosen_action == SimpleAT::from(coin) =>
+            {
+                ProcState::DoneNew(ChooseKickReceive::new(TeamType::Away))
+            }
+            ProcInput::Roll(RollResult::Coin(_)) => {
+                ProcState::DoneNew(ChooseKickReceive::new(TeamType::Home))
+            }
+            _ => panic!("Unexpected input: {:?}", input),
         }
+    }
+}
 
-        let ProcInput::Action(Action::Simple(simple_action)) = input else {
-            unreachable!()
-        };
-
-        match simple_action {
-            SimpleAT::Heads | SimpleAT::Tails => {
-                let toss = game_state.get_coin_toss();
-                self.coin_toss_winner = if simple_action == SimpleAT::from(toss) {
-                    TeamType::Away
-                } else {
-                    TeamType::Home
-                };
-
+#[derive(Debug)]
+pub struct ChooseKickReceive {
+    coin_toss_winner: TeamType,
+}
+impl ChooseKickReceive {
+    pub fn new(coin_toss_winner: TeamType) -> Box<ChooseKickReceive> {
+        Box::new(ChooseKickReceive { coin_toss_winner })
+    }
+}
+impl Procedure for ChooseKickReceive {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => {
                 let mut aa = AvailableActions::new(self.coin_toss_winner);
                 aa.insert_simple(SimpleAT::Receive);
                 aa.insert_simple(SimpleAT::Kick);
                 ProcState::NeedAction(aa)
             }
-            SimpleAT::Receive => {
-                game_state.info.kicking_first_half = other_team(self.coin_toss_winner);
-                ProcState::Done
-            }
-            SimpleAT::Kick => {
-                game_state.info.kicking_first_half = self.coin_toss_winner;
-                ProcState::Done
-            }
-
-            _ => unreachable!(),
+            ProcInput::Action(Action::Simple(simple_action)) => match simple_action {
+                SimpleAT::Receive => {
+                    game_state.info.kicking_first_half = other_team(self.coin_toss_winner);
+                    ProcState::Done
+                }
+                SimpleAT::Kick => {
+                    game_state.info.kicking_first_half = self.coin_toss_winner;
+                    ProcState::Done
+                }
+                _ => panic!("Unexpected input: {:?}", input),
+            },
+            _ => panic!("Unexpected input: {:?}", input),
         }
     }
 }

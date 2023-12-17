@@ -906,6 +906,7 @@ impl GameState {
                 }
             }
             RequestedRoll::D8 => RollResult::D8(self.get_d8_roll()),
+            RequestedRoll::Coin => RollResult::Coin(self.get_coin_toss()),
         }
     }
 

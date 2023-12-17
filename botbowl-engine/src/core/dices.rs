@@ -313,6 +313,7 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RequestedRoll {
+    Coin,
     D6,
     D6PassFail(D6Target),
     D6ThreeOutcomes(D6Target, D6Target),
@@ -325,6 +326,7 @@ pub enum RequestedRoll {
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RollResult {
+    Coin(Coin),
     Pass,
     Fail,
     MiddleOutcome,
