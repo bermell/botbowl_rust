@@ -1,7 +1,8 @@
 use crate::core::dices::{RollTarget, Sum2D6Target};
 use crate::core::gamestate::GameState;
-use crate::core::model::{Action, DugoutPlace, PlayerStatus, ProcState, Procedure};
+use crate::core::model::ProcInput;
 use crate::core::model::{BallState, PlayerID};
+use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};
 use crate::core::procedures::ball_procs;
 
 #[derive(Debug)]
@@ -24,7 +25,7 @@ impl Armor {
     }
 }
 impl Procedure for Armor {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         let roll1 = game_state.get_d6_roll();
         let roll2 = game_state.get_d6_roll();
         let roll = roll1 + roll2;
@@ -60,7 +61,7 @@ impl Ejection {
     }
 }
 impl Procedure for Ejection {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         let position = game_state.get_player_unsafe(self.id).position;
         game_state
             .unfield_player(self.id, DugoutPlace::Ejected)
@@ -99,7 +100,7 @@ impl Injury {
     }
 }
 impl Procedure for Injury {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         let cas_target = Sum2D6Target::TenPlus;
         let ko_target = Sum2D6Target::EightPlus;
         let roll1 = game_state.get_d6_roll();

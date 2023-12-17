@@ -1,3 +1,4 @@
+use crate::core::model::ProcInput;
 use std::iter::repeat_with;
 
 use crate::core::dices::D6;
@@ -58,7 +59,7 @@ impl Half {
 }
 
 impl Procedure for Half {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         let info = &mut game_state.info;
         if !self.started {
             self.started = true;
@@ -121,7 +122,7 @@ impl TurnStunned {
     }
 }
 impl Procedure for TurnStunned {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         let team = game_state.info.team_turn;
         let active_id = game_state.info.active_player.unwrap_or(999); // shall not turn active id, since they stunned themselves
         game_state
@@ -188,7 +189,7 @@ impl Turn {
     }
 }
 impl Procedure for Turn {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         if let Some(id) = game_state.info.handle_td_by {
             //todo, set internal state to kickoff next (or if it was the last turn return done )
             game_state.info.handle_td_by = None;
@@ -201,11 +202,11 @@ impl Procedure for Turn {
 
         game_state.info.active_player = None;
         game_state.info.player_action_type = None;
-        if action.is_none() {
+        if input == ProcInput::Nothing {
             return ProcState::NeedAction(self.available_actions(game_state));
         }
 
-        if let Some(Action::Positional(at, position)) = action {
+        if let ProcInput::Action(Action::Positional(at, position)) = input {
             game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
             let info = &mut game_state.info;
             info.player_action_type = Some(at);
@@ -220,7 +221,7 @@ impl Procedure for Turn {
                 _ => unreachable!(),
             }
             ProcState::NotDoneNew(movement_procs::MoveAction::new(info.active_player.unwrap()))
-        } else if let Some(Action::Simple(SimpleAT::EndTurn)) = action {
+        } else if let ProcInput::Action(Action::Simple(SimpleAT::EndTurn)) = input {
             ProcState::Done
         } else {
             unreachable!()
@@ -236,7 +237,7 @@ impl GameOver {
     }
 }
 impl Procedure for GameOver {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         game_state.info.winner = match game_state.home.score.cmp(&game_state.away.score) {
             std::cmp::Ordering::Less => Some(TeamType::Away),
             std::cmp::Ordering::Equal => None,
@@ -258,7 +259,7 @@ impl KOWakeUp {
     }
 }
 impl Procedure for KOWakeUp {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         let target = D6Target::FourPlus;
         let num_kos = game_state
             .get_dugout()
@@ -294,15 +295,15 @@ impl CoinToss {
     }
 }
 impl Procedure for CoinToss {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        if action.is_none() {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        if input == ProcInput::Nothing {
             let mut aa = AvailableActions::new(TeamType::Away);
             aa.insert_simple(SimpleAT::Heads);
             aa.insert_simple(SimpleAT::Tails);
             return ProcState::NeedAction(aa);
         }
 
-        let Some(Action::Simple(simple_action)) = action else {
+        let ProcInput::Action(Action::Simple(simple_action)) = input else {
             unreachable!()
         };
 
@@ -342,7 +343,7 @@ impl TurnoverIfPossessionLost {
     }
 }
 impl Procedure for TurnoverIfPossessionLost {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         match game_state.ball {
             BallState::OnGround(_) | BallState::InAir(_) => {
                 game_state.info.turnover = true;

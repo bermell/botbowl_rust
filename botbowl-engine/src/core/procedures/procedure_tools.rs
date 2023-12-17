@@ -1,5 +1,6 @@
 use crate::core::dices::{D6Target, RollTarget};
 use crate::core::gamestate::GameState;
+use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, ProcState, Procedure};
 use crate::core::table::{SimpleAT, Skill};
 
@@ -50,13 +51,13 @@ impl<T> Procedure for SimpleProcContainer<T>
 where
     T: SimpleProc + std::fmt::Debug,
 {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         // if action is DON*T REROLL, apply failure, return true
-        match action {
-            Some(Action::Simple(SimpleAT::DontUseReroll)) => {
+        match input {
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
                 return ProcState::from(self.proc.apply_failure(game_state));
             }
-            Some(Action::Simple(SimpleAT::UseReroll)) => {
+            ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
                 game_state.get_active_team_mut().unwrap().use_reroll();
                 self.state = RollProcState::RerollUsed;
             }

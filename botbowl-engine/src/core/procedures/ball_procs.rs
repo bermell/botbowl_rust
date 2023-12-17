@@ -1,5 +1,6 @@
 use crate::core::dices::{D6Target, D6};
 use crate::core::gamestate::GameState;
+use crate::core::model::ProcInput;
 use crate::core::model::{
     other_team, Action, AvailableActions, Coord, Direction, Position, ProcState, Procedure,
     HEIGHT_, WIDTH_,
@@ -59,7 +60,7 @@ impl Bounce {
     }
 }
 impl Procedure for Bounce {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         let current_ball_pos = game_state.get_ball_position().unwrap();
         let dice = game_state.get_d8_roll();
         let dir = Direction::from(dice);
@@ -101,7 +102,7 @@ impl ThrowIn {
     }
 }
 impl Procedure for ThrowIn {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         const MAX_X: Coord = WIDTH_ - 2;
         const MAX_Y: Coord = HEIGHT_ - 2;
         let directions: [(Coord, Coord); 3] = match self.from {
@@ -202,8 +203,8 @@ impl Touchback {
     }
 }
 impl Procedure for Touchback {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        if let Some(Action::Positional(_, position)) = action {
+    fn step(&mut self, game_state: &mut GameState, action: ProcInput) -> ProcState {
+        if let ProcInput::Action(Action::Positional(_, position)) = action {
             game_state.ball = BallState::Carried(game_state.get_player_id_at(position).unwrap());
             ProcState::Done
         } else {
@@ -229,7 +230,7 @@ impl Touchdown {
     }
 }
 impl Procedure for Touchdown {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         if let BallState::Carried(carrier_id) = game_state.ball {
             if carrier_id == self.id {
                 game_state.get_mut_team_from_player(self.id).unwrap().score += 1;

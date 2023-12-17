@@ -1,3 +1,4 @@
+use crate::core::model::ProcInput;
 use std::ops::RangeInclusive;
 
 use rand::Rng;
@@ -29,15 +30,15 @@ impl Kickoff {
     }
 }
 impl Procedure for Kickoff {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let team = game_state.info.kicking_this_drive;
-        if action.is_none() {
+        if input == ProcInput::Nothing {
             let mut aa = AvailableActions::new(team);
             aa.insert_simple(SimpleAT::KickoffAimMiddle);
             return ProcState::NeedAction(aa);
         }
-        let mut ball_pos: Position = match action {
-            Some(Action::Simple(SimpleAT::KickoffAimMiddle)) => {
+        let mut ball_pos: Position = match input {
+            ProcInput::Action(Action::Simple(SimpleAT::KickoffAimMiddle)) => {
                 game_state.get_best_kickoff_aim_for(team)
             }
             _ => unreachable!(),
@@ -106,7 +107,7 @@ impl LandKickoff {
     }
 }
 impl Procedure for LandKickoff {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         let BallState::InAir(ball_position) = game_state.ball else {
             unreachable!()
         };
@@ -229,21 +230,21 @@ impl Setup {
     }
 }
 impl Procedure for Setup {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let mut aa = AvailableActions::new(self.team);
-        if action.is_none() {
+        if input == ProcInput::Nothing {
             aa.insert_simple(SimpleAT::SetupLine);
             return ProcState::NeedAction(aa);
         }
 
-        match action {
-            Some(Action::Simple(SimpleAT::SetupLine)) => {
+        match input {
+            ProcInput::Action(Action::Simple(SimpleAT::SetupLine)) => {
                 self.setup_line(game_state).unwrap();
                 aa.insert_simple(SimpleAT::EndSetup);
                 ProcState::NeedAction(aa)
             }
 
-            Some(Action::Simple(SimpleAT::EndSetup)) => ProcState::Done,
+            ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => ProcState::Done,
             _ => unreachable!(),
         }
     }

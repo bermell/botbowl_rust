@@ -793,33 +793,31 @@ impl GameState {
     }
 
     pub fn step(&mut self, action: Action) -> Result<()> {
-        let opt_action: Option<Action> = {
-            if self.available_actions.is_empty() {
-                None
-            } else if !self.is_legal_action(&action) {
-                return Err(Box::new(IllegalActionError { action }));
-            } else {
-                Some(action)
-            }
-        };
-
         let mut top_proc = self
             .proc_stack
             .pop()
             .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
-        match opt_action {
-            Some(action) => println!("STEPPING: {:?}\n  action={:?}", top_proc, action),
-            None => println!("STEPPING: {:?}", top_proc),
+        let mut proc_input: ProcInput = {
+            if self.available_actions.is_empty() {
+                println!("STEPPING: {:?}", top_proc);
+                ProcInput::Nothing
+            } else if !self.is_legal_action(&action) {
+                return Err(Box::new(IllegalActionError { action }));
+            } else {
+                println!("STEPPING: {:?}\n  action={:?}", top_proc, action);
+                ProcInput::Action(action)
+            }
         };
 
-        let mut top_proc_state: ProcState = top_proc.step(self, opt_action);
+        let mut top_proc_state: ProcState = top_proc.step(self, proc_input);
 
         loop {
             if self.info.game_over {
                 break;
             }
             println!("  result:   {:?}", top_proc_state);
+            proc_input = ProcInput::Nothing;
             match top_proc_state {
                 ProcState::NotDoneNewProcs(mut new_procs) => {
                     self.proc_stack.push(top_proc);
@@ -851,12 +849,16 @@ impl GameState {
                 }
                 ProcState::NeedRoll(requested_roll) => {
                     let result = self.get_roll_result(requested_roll);
+                    proc_input = ProcInput::Roll(result);
                 }
             };
 
             println!("STEPPING: {:?}", top_proc);
+            if matches!(proc_input, ProcInput::Roll(_)) {
+                println!("  input:    {:?}", proc_input);
+            }
 
-            top_proc_state = top_proc.step(self, None);
+            top_proc_state = top_proc.step(self, proc_input);
         }
         debug_assert!(!self.available_actions.is_empty() || self.info.game_over);
         Ok(())

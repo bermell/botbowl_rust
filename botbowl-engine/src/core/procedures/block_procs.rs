@@ -3,7 +3,7 @@ use crate::core::gamestate::GameState;
 use crate::core::model::{
     other_team, Action, AvailableActions, Direction, PlayerStatus, Position, ProcState, Procedure,
 };
-use crate::core::model::{BallState, PlayerID};
+use crate::core::model::{BallState, PlayerID, ProcInput};
 use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
@@ -105,11 +105,13 @@ impl Push {
 }
 
 impl Procedure for Push {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        match action {
-            None if self.moves_to_make.is_empty() => self.calculate_next_state(game_state),
-            None => self.handle_aftermath(game_state),
-            Some(Action::Positional(PosAT::Push, position_to))
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing if self.moves_to_make.is_empty() => {
+                self.calculate_next_state(game_state)
+            }
+            ProcInput::Nothing => self.handle_aftermath(game_state),
+            ProcInput::Action(Action::Positional(PosAT::Push, position_to))
                 if game_state.get_player_at(position_to).is_some() =>
             {
                 self.moves_to_make.push((self.on, position_to));
@@ -117,7 +119,7 @@ impl Procedure for Push {
                 self.on = position_to;
                 self.calculate_next_state(game_state)
             }
-            Some(Action::Positional(PosAT::Push, position)) => {
+            ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
                 self.moves_to_make.push((self.on, position));
                 self.do_moves(game_state);
                 ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
@@ -138,15 +140,15 @@ impl FollowUp {
     }
 }
 impl Procedure for FollowUp {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let player = game_state.get_active_player().unwrap();
-        match action {
-            None => {
+        match input {
+            ProcInput::Nothing => {
                 let mut aa = AvailableActions::new(player.stats.team);
                 aa.insert_positional(PosAT::FollowUp, vec![player.position, self.to]);
                 ProcState::NeedAction(aa)
             }
-            Some(Action::Positional(PosAT::FollowUp, position)) => {
+            ProcInput::Action(Action::Positional(PosAT::FollowUp, position)) => {
                 if player.position != position {
                     let id = player.id;
                     let team = player.stats.team;
@@ -176,7 +178,7 @@ impl KnockDown {
     }
 }
 impl Procedure for KnockDown {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         let player = match game_state.get_mut_player(self.id) {
             Ok(player_) => player_,
             Err(_) => return ProcState::Done, //Means the player is already off the pitch, most likely crowd push
@@ -226,21 +228,21 @@ impl BlockAction {
     }
 }
 impl Procedure for BlockAction {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        match action {
-            None => ProcState::NeedAction(self.available_actions(game_state)),
-            Some(Action::Positional(PosAT::Block, position)) => {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => ProcState::NeedAction(self.available_actions(game_state)),
+            ProcInput::Action(Action::Positional(PosAT::Block, position)) => {
                 let block_path = game_state.available_actions.take_path(position).unwrap();
                 let num_dice = block_path.get_block_dice().unwrap();
                 let defender_id = game_state.get_player_id_at(position).unwrap();
                 game_state.get_active_player_mut().unwrap().used = true;
                 ProcState::DoneNew(Block::new(num_dice, defender_id))
             }
-            Some(Action::Simple(SimpleAT::EndPlayerTurn)) => {
+            ProcInput::Action(Action::Simple(SimpleAT::EndPlayerTurn)) => {
                 game_state.get_active_player_mut().unwrap().used = true;
                 ProcState::Done
             }
-            _ => panic!("Invalid action {:?}", action),
+            _ => panic!("Invalid input {:?}", input),
         }
     }
 }
@@ -307,9 +309,9 @@ impl Block {
     }
 }
 impl Procedure for Block {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
-        match action {
-            None => {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => {
                 if game_state.info.player_action_type.unwrap() == PosAT::StartBlitz {
                     game_state.info.player_action_type = Some(PosAT::StartMove); //to preven the player from blitzing again
                     game_state.get_active_player_mut().unwrap().add_move(1);
@@ -328,18 +330,18 @@ impl Procedure for Block {
                 };
                 ProcState::NeedAction(self.available_actions(game_state))
             }
-            Some(Action::Simple(SimpleAT::UseReroll)) => {
+            ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
                 game_state
                     .get_active_players_team_mut()
                     .unwrap()
                     .use_reroll();
                 ProcState::NotDone
             }
-            Some(Action::Simple(SimpleAT::DontUseReroll)) => {
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
                 self.state = BlockProcState::SelectDice;
                 ProcState::NotDone
             }
-            Some(Action::Simple(dice_action_type)) => {
+            ProcInput::Action(Action::Simple(dice_action_type)) => {
                 let attacker_id = game_state.info.active_player.unwrap();
                 let mut knockdown_attacker = false;
                 let mut knockdown_defender = false;

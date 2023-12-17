@@ -1,3 +1,4 @@
+use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, PlayerStatus, ProcState, Procedure};
 use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
@@ -48,7 +49,7 @@ impl StandUp {
     }
 }
 impl Procedure for StandUp {
-    fn step(&mut self, game_state: &mut GameState, _action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         debug_assert_eq!(
             game_state.get_player_unsafe(self.id).status,
             PlayerStatus::Down
@@ -148,7 +149,7 @@ impl MoveAction {
     }
 }
 impl Procedure for MoveAction {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         if game_state.info.handle_td_by.is_some() || game_state.info.turnover {
             // game_state.get_mut_player_unsafe(self.player_id).used = true;
             return ProcState::Done;
@@ -160,19 +161,19 @@ impl Procedure for MoveAction {
             _ => (),
         }
 
-        match (action, &mut self.state) {
-            (None, MoveActionState::Init) => {
+        match (input, &mut self.state) {
+            (ProcInput::Nothing, MoveActionState::Init) => {
                 self.state = MoveActionState::SelectPath;
                 ProcState::NeedAction(self.available_actions(game_state))
             }
-            (None, MoveActionState::ActivePath(path)) => {
+            (ProcInput::Nothing, MoveActionState::ActivePath(path)) => {
                 let proc_state = MoveAction::continue_along_path(path, game_state);
                 if path.is_empty() {
                     self.state = MoveActionState::Init;
                 }
                 proc_state
             }
-            (Some(Action::Positional(_, position)), MoveActionState::SelectPath) => {
+            (ProcInput::Action(Action::Positional(_, position)), MoveActionState::SelectPath) => {
                 let mut path = game_state
                     .available_actions
                     .take_path(position)
@@ -186,7 +187,7 @@ impl Procedure for MoveAction {
                 }
                 proc_state
             }
-            (Some(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
+            (ProcInput::Action(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
                 ProcState::Done
             }

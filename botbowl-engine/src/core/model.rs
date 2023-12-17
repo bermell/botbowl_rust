@@ -6,7 +6,7 @@ use std::error;
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
 use std::rc::Rc;
 
-use super::dices::{D6Target, RequestedRoll, Sum2D6Target};
+use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
 use super::pathing::Node;
 use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
@@ -533,6 +533,12 @@ pub enum Weather {
     Sweltering,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProcInput {
+    Nothing,
+    Action(Action),
+    Roll(RollResult),
+}
 #[derive(Debug)]
 pub enum ProcState {
     DoneNewProcs(Vec<Box<dyn Procedure>>),
@@ -546,7 +552,7 @@ pub enum ProcState {
 }
 
 pub trait Procedure: std::fmt::Debug {
-    fn step(&mut self, game_state: &mut GameState, action: Option<Action>) -> ProcState;
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState;
 }
 use smallvec::SmallVec;
 
