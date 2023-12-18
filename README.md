@@ -1,40 +1,39 @@
 # botbowl_rust
 
-Attempt to implement [botbowl](https://github.com/njustesen/botbowl) in rust. With purpose of speeding up search algorithms and machine learning. But mostly because rust. 
+Attempt to implement [botbowl](https://github.com/njustesen/botbowl) in rust.
+With purpose of speeding up search algorithms and machine learning. But mostly
+because rust.
 
 ![Better rewrite in rust](https://i.redd.it/xx367w6kroz41.jpg)
 
-**I changed my mind, we're going with blood bowl 2020 rules**
-
 ## TODO
-List of things to implement and write tests for in order to use as engine for forward model in a botbowl competition: 
-- Botbowl 2020 rules 
+
+List of things to implement and write tests for in order to use as engine for
+forward model in a botbowl competition:
+
+- Botbowl 2020 rules
 - Two Human team, only starting skills without Ogre
 
-**Refactor and optimizations** 
-- [x] Available action require less heap allocation
-- [x] Refactor away unnessary struct and enums: 
-          - (DONE) Pathing::Path (Node is fine, also only traverse back when necessary),
-          - (DONE) Pathing::PlayerActionType (it's fine to use PosAT::{StartMove, StartBlitz} etc.. )
+### Rules left to implement
 
-**Rules left to implement**
-- [x] Fouling (in pathfinding, ejection) 
+- [x] Fouling (in pathfinding, ejection)
 - [x] Blocking (incl crowd surf and chain pushing)
-- [ ] Passing (in pathfinding) 
-- [x] Handing off (in pathfinding) 
-- [ ] (1/11) Kickoff table 
+- [ ] Passing (in pathfinding)
+- [x] Handing off (in pathfinding)
+- [ ] (1/11) Kickoff table
 - [x] kickoff touchback
-- [x] Very basic setup 
+- [x] Very basic setup
 - [ ] Useful setup
 - [x] Touchdown
 
-todo so I don't forget: 
-- handoff turnover if possession lost, needs test and implementation 
-- score on opponent's half needs test 
+### Tests to add
 
+- handoff turnover if possession lost, needs test and implementation
+- score on opponent's half needs test
 
-**Other things**
+## Other things
+
 - [ ] Play in terminal
-- [ ] Gym Env 
-- [ ] FFI to python 
+- [ ] Gym Env
+- [ ] FFI to python
 - [ ] MCTS example bot
