@@ -7,7 +7,7 @@ use rand::{distributions::Standard, prelude::Distribution};
 
 use super::{
     model::{Coord, Direction, InjuryOutcome, Weather},
-    table::SimpleAT,
+    table::{NumBlockDices, SimpleAT},
 };
 
 pub trait RollTarget<T> {
@@ -331,6 +331,7 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RequestedRoll {
+    BlockDice(NumBlockDices),
     Coin,
     D6,
     D6PassFail(D6Target),
@@ -347,6 +348,7 @@ pub enum RequestedRoll {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RollResult {
+    BlockDice([Option<BlockDice>; 3]),
     Coin(Coin),
     Pass,
     Fail,

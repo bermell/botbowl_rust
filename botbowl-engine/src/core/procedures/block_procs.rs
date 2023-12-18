@@ -1,4 +1,4 @@
-use crate::core::dices::BlockDice;
+use crate::core::dices::{BlockDice, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
 use crate::core::model::{
     other_team, Action, AvailableActions, Direction, PlayerStatus, Position, ProcState, Procedure,
@@ -310,15 +310,14 @@ impl Block {
 }
 impl Procedure for Block {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        if game_state.info.player_action_type.unwrap() == PosAT::StartBlitz {
+            game_state.info.player_action_type = Some(PosAT::StartMove); //to preven the player from blitzing again
+            game_state.get_active_player_mut().unwrap().add_move(1);
+        }
         match input {
-            ProcInput::Nothing => {
-                if game_state.info.player_action_type.unwrap() == PosAT::StartBlitz {
-                    game_state.info.player_action_type = Some(PosAT::StartMove); //to preven the player from blitzing again
-                    game_state.get_active_player_mut().unwrap().add_move(1);
-                }
-                for i in 0..u8::from(self.dices) {
-                    self.roll[i as usize] = Some(game_state.get_block_dice_roll());
-                }
+            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices)),
+            ProcInput::Roll(RollResult::BlockDice(rolls)) => {
+                self.roll = rolls;
                 let reroll_available = game_state
                     .get_active_players_team()
                     .unwrap()
@@ -335,11 +334,12 @@ impl Procedure for Block {
                     .get_active_players_team_mut()
                     .unwrap()
                     .use_reroll();
-                ProcState::NotDone
+                ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices))
             }
             ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
                 self.state = BlockProcState::SelectDice;
-                ProcState::NotDone
+                // ProcState::NotDone //I think it should be available_actions here...
+                ProcState::NeedAction(self.available_actions(game_state))
             }
             ProcInput::Action(Action::Simple(dice_action_type)) => {
                 let attacker_id = game_state.info.active_player.unwrap();

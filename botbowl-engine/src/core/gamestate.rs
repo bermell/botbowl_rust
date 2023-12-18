@@ -948,6 +948,13 @@ impl GameState {
                 direction: self.get_d3_roll(),
                 distance: self.get_2d6_roll(),
             },
+            RequestedRoll::BlockDice(num_dices) => {
+                let mut dices: [Option<BlockDice>; 3] = [None, None, None];
+                for dice in dices.iter_mut().take(u8::from(num_dices) as usize) {
+                    *dice = Some(self.get_block_dice_roll());
+                }
+                RollResult::BlockDice(dices)
+            }
         }
     }
 
