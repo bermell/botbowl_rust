@@ -50,16 +50,6 @@ impl KickoffTable {
     pub fn new() -> Box<KickoffTable> {
         Box::new(KickoffTable {})
     }
-    fn changing_weather(&self, game_state: &mut GameState) {
-        let roll = game_state.get_2d6_roll();
-        game_state.info.weather = Weather::from(roll);
-        let ball_pos = game_state.get_ball_position().unwrap();
-        if game_state.info.weather == Weather::Nice && !ball_pos.is_out() {
-            let d8 = game_state.get_d8_roll();
-            let gust_of_wind = Direction::from(d8);
-            game_state.ball = BallState::InAir(ball_pos + gust_of_wind);
-        }
-    }
 }
 impl Procedure for KickoffTable {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
@@ -70,8 +60,8 @@ impl Procedure for KickoffTable {
             ProcInput::Roll(RollResult::Sum2D6(kickoff_roll)) => kickoff_roll,
             _ => panic!("Unexpected input {:?}", input),
         };
-        let procs: Vec<Box<dyn Procedure>> = vec![LandKickoff::new()]; //TODO: this should be added
-                                                                       //by the kickoff procedure
+        let mut procs: Vec<Box<dyn Procedure>> = vec![LandKickoff::new()]; //TODO: this should be added
+                                                                           //by the kickoff procedure
         match kickoff_roll {
             Sum2D6::Two => {
                 //get the ref
@@ -101,7 +91,7 @@ impl Procedure for KickoffTable {
                 //Brilliant coaching
             }
             Sum2D6::Eight => {
-                self.changing_weather(game_state);
+                procs.push(ChangingWeather::new());
             }
             Sum2D6::Nine => {
                 //Quick snap
@@ -120,6 +110,37 @@ impl Procedure for KickoffTable {
         ProcState::from(procs)
     }
 }
+
+#[derive(Debug)]
+pub struct ChangingWeather {}
+impl ChangingWeather {
+    pub fn new() -> Box<ChangingWeather> {
+        Box::new(ChangingWeather {})
+    }
+}
+impl Procedure for ChangingWeather {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::Sum2D6),
+            ProcInput::Roll(RollResult::Sum2D6(roll)) => {
+                game_state.info.weather = Weather::from(roll);
+                let ball_pos = game_state.get_ball_position().unwrap();
+                if game_state.info.weather == Weather::Nice && !ball_pos.is_out() {
+                    ProcState::NeedRoll(RequestedRoll::D8)
+                } else {
+                    ProcState::Done
+                }
+            }
+            ProcInput::Roll(RollResult::D8(d8)) => {
+                game_state.ball =
+                    BallState::InAir(game_state.get_ball_position().unwrap() + Direction::from(d8));
+                ProcState::Done
+            }
+            _ => panic!("Unexpected input {:?}", input),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LandKickoff {}
 impl LandKickoff {
