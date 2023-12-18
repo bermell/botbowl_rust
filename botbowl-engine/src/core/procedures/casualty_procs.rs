@@ -1,4 +1,4 @@
-use crate::core::dices::{RequestedRoll, RollResult, RollTarget, Sum2D6Target};
+use crate::core::dices::{RequestedRoll, RollResult, Sum2D6Target};
 use crate::core::gamestate::GameState;
 use crate::core::model::{BallState, PlayerID};
 use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};

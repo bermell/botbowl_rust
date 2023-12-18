@@ -9,7 +9,7 @@ use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
-    dices::{BlockDice, Coin, D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6, D6, D8},
+    dices::{BlockDice, Coin, D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8},
     procedures::{GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
 };
@@ -311,6 +311,7 @@ impl GameInfo {
 }
 #[derive(Default)]
 pub struct FixedDice {
+    d3_fixes: VecDeque<D3>,
     d6_fixes: VecDeque<D6>,
     blockdice_fixes: VecDeque<BlockDice>,
     d8_fixes: VecDeque<D8>,
@@ -319,6 +320,9 @@ pub struct FixedDice {
 impl FixedDice {
     pub fn fix_coin(&mut self, value: Coin) {
         self.coin_fixes.push_back(value);
+    }
+    pub fn fix_d3(&mut self, value: u8) {
+        self.d3_fixes.push_back(D3::try_from(value).unwrap());
     }
     pub fn fix_d6(&mut self, value: u8) {
         self.d6_fixes.push_back(D6::try_from(value).unwrap());
@@ -438,7 +442,16 @@ impl GameState {
         self.rng = ChaCha8Rng::seed_from_u64(state);
     }
 
-    pub fn get_d6_roll(&mut self) -> D6 {
+    fn get_d3_roll(&mut self) -> D3 {
+        match self.fixes.d3_fixes.pop_front() {
+            Some(roll) => roll,
+            None => {
+                assert!(self.rng_enabled);
+                self.rng.gen()
+            }
+        }
+    }
+    fn get_d6_roll(&mut self) -> D6 {
         match self.fixes.d6_fixes.pop_front() {
             Some(roll) => roll,
             None => {
@@ -931,6 +944,10 @@ impl GameState {
                     ejected: roll1 == roll2,
                 }
             }
+            RequestedRoll::ThrowIn => RollResult::ThrowIn {
+                direction: self.get_d3_roll(),
+                distance: self.get_2d6_roll(),
+            },
         }
     }
 

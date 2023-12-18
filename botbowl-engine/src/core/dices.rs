@@ -183,6 +183,25 @@ impl Add<D6> for D6 {
 impl_enum_try_from! {
     #[repr(u8)]
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    pub enum D3 {
+        One = 1,
+        Two,
+        Three,
+    },
+    u8,
+    (),
+    ()
+}
+
+impl Distribution<D3> for Standard {
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> D3 {
+        D3::try_from(rng.gen_range(1..=3)).unwrap()
+    }
+}
+
+impl_enum_try_from! {
+    #[repr(u8)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
     pub enum D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -323,6 +342,7 @@ pub enum RequestedRoll {
     Sum2D6,
     Sum2D6PassFail(Sum2D6Target),
     Sum2D6ThreeOutcomes(Sum2D6Target, Sum2D6Target),
+    ThrowIn,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -343,4 +363,8 @@ pub enum RollResult {
     D8(D8),
     Kick(D6, D8),
     Sum2D6(Sum2D6),
+    ThrowIn {
+        direction: D3,
+        distance: Sum2D6,
+    },
 }

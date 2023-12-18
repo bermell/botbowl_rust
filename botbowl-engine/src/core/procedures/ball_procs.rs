@@ -1,4 +1,4 @@
-use crate::core::dices::{D6Target, RequestedRoll, RollResult, D6};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult, D3};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{
@@ -103,9 +103,7 @@ impl ThrowIn {
     pub fn new(from: Position) -> Box<ThrowIn> {
         Box::new(ThrowIn { from })
     }
-}
-impl Procedure for ThrowIn {
-    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
+    fn get_throw_in_direction(&self, dice: D3) -> Direction {
         const MAX_X: Coord = WIDTH_ - 2;
         const MAX_Y: Coord = HEIGHT_ - 2;
         let directions: [(Coord, Coord); 3] = match self.from {
@@ -119,13 +117,25 @@ impl Procedure for ThrowIn {
             Position { y: MAX_Y, .. } => [(1, -1), (0, -1), (-1, -1)],
             _ => panic!("very wrong!"),
         };
-        let direction = Direction::from(match game_state.get_d6_roll() {
-            D6::One | D6::Two => directions[0],
-            D6::Three | D6::Four => directions[1],
-            D6::Five | D6::Six => directions[2],
-        });
-
-        let length = game_state.get_2d6_roll() as i8;
+        Direction::from(match dice {
+            D3::One => directions[0],
+            D3::Two => directions[1],
+            D3::Three => directions[2],
+        })
+    }
+}
+impl Procedure for ThrowIn {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let (direction, length) = match input {
+            ProcInput::Nothing => {
+                return ProcState::NeedRoll(RequestedRoll::ThrowIn);
+            }
+            ProcInput::Roll(RollResult::ThrowIn {
+                direction,
+                distance,
+            }) => (self.get_throw_in_direction(direction), distance as i8),
+            _ => panic!("Unexpected input {:?} for ThrowIn", input),
+        };
         let target: Position = self.from + direction * length;
 
         if target.is_out() {
@@ -135,7 +145,7 @@ impl Procedure for ThrowIn {
                 self.from -= direction;
             }
 
-            ProcState::NotDone
+            ProcState::NeedRoll(RequestedRoll::ThrowIn)
         } else {
             match game_state.get_player_at(target) {
                 Some(player) if player.can_catch() => ProcState::DoneNew(Catch::new(
@@ -341,7 +351,7 @@ mod tests {
 
         state.fixes.fix_d6(1); //armor
         state.fixes.fix_d6(1); //armor
-        state.fixes.fix_d6(3); //throw in direction down
+        state.fixes.fix_d3(2); //throw in direction down
         state.fixes.fix_d6(1); //throw in length
         state.fixes.fix_d6(1); //throw in length
         state.fixes.fix_d8(2); //bounce direction down
