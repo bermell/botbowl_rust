@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 
 use rand::Rng;
 
-use crate::core::dices::Sum2D6;
+use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
     Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE,
@@ -13,10 +13,42 @@ use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
 #[derive(Debug)]
-pub struct Kickoff {}
+pub struct Kickoff {
+    aim: Position,
+}
 impl Kickoff {
     pub fn new() -> Box<Kickoff> {
-        Box::new(Kickoff {})
+        Box::new(Kickoff {
+            aim: Position::new((0, 0)),
+        })
+    }
+}
+impl Procedure for Kickoff {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let (len_roll, dir_roll) = match input {
+            ProcInput::Nothing => {
+                let mut aa = AvailableActions::new(game_state.info.kicking_this_drive);
+                aa.insert_simple(SimpleAT::KickoffAimMiddle);
+                return ProcState::NeedAction(aa);
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::KickoffAimMiddle)) => {
+                self.aim = game_state.get_best_kickoff_aim_for(game_state.info.kicking_this_drive);
+                return ProcState::NeedRoll(RequestedRoll::Kick);
+            }
+            ProcInput::Roll(RollResult::Kick(len_roll, dir_roll)) => (len_roll, dir_roll),
+            _ => panic!("Unexpected input {:?}", input),
+        };
+
+        let ball_pos = self.aim + Direction::from(dir_roll) * (len_roll as Coord);
+        game_state.ball = BallState::InAir(ball_pos);
+        ProcState::DoneNew(KickoffTable::new())
+    }
+}
+#[derive(Debug)]
+pub struct KickoffTable {}
+impl KickoffTable {
+    pub fn new() -> Box<KickoffTable> {
+        Box::new(KickoffTable {})
     }
     fn changing_weather(&self, game_state: &mut GameState) {
         let roll = game_state.get_2d6_roll();
@@ -29,28 +61,17 @@ impl Kickoff {
         }
     }
 }
-impl Procedure for Kickoff {
+impl Procedure for KickoffTable {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        let team = game_state.info.kicking_this_drive;
-        if input == ProcInput::Nothing {
-            let mut aa = AvailableActions::new(team);
-            aa.insert_simple(SimpleAT::KickoffAimMiddle);
-            return ProcState::NeedAction(aa);
-        }
-        let mut ball_pos: Position = match input {
-            ProcInput::Action(Action::Simple(SimpleAT::KickoffAimMiddle)) => {
-                game_state.get_best_kickoff_aim_for(team)
+        let kickoff_roll = match input {
+            ProcInput::Nothing => {
+                return ProcState::NeedRoll(RequestedRoll::Sum2D6);
             }
-            _ => unreachable!(),
+            ProcInput::Roll(RollResult::Sum2D6(kickoff_roll)) => kickoff_roll,
+            _ => panic!("Unexpected input {:?}", input),
         };
-
-        let dir_roll = game_state.get_d8_roll();
-        let len_roll = game_state.get_d6_roll();
-        ball_pos = ball_pos + Direction::from(dir_roll) * (len_roll as Coord);
-        game_state.ball = BallState::InAir(ball_pos);
-
-        let kickoff_roll = game_state.get_2d6_roll();
-        let procs: Vec<Box<dyn Procedure>> = vec![LandKickoff::new()];
+        let procs: Vec<Box<dyn Procedure>> = vec![LandKickoff::new()]; //TODO: this should be added
+                                                                       //by the kickoff procedure
         match kickoff_roll {
             Sum2D6::Two => {
                 //get the ref
