@@ -460,11 +460,11 @@ impl GameState {
             }
         }
     }
-    pub fn get_2d6_roll(&mut self) -> Sum2D6 {
+    fn get_2d6_roll(&mut self) -> Sum2D6 {
         self.get_d6_roll() + self.get_d6_roll()
     }
 
-    pub fn get_d8_roll(&mut self) -> D8 {
+    fn get_d8_roll(&mut self) -> D8 {
         match self.fixes.d8_fixes.pop_front() {
             Some(roll) => roll,
             None => {
@@ -474,7 +474,7 @@ impl GameState {
         }
     }
 
-    pub fn get_coin_toss(&mut self) -> Coin {
+    fn get_coin_toss(&mut self) -> Coin {
         match self.fixes.coin_fixes.pop_front() {
             Some(fixed_toss) => fixed_toss,
             None => {
@@ -490,7 +490,7 @@ impl GameState {
             TeamType::Away => Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2 - 1)),
         }
     }
-    pub fn get_block_dice_roll(&mut self) -> BlockDice {
+    fn get_block_dice_roll(&mut self) -> BlockDice {
         match self.fixes.blockdice_fixes.pop_front() {
             Some(roll) => roll,
             None => {
