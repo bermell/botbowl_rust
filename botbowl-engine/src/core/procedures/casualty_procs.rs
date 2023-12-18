@@ -1,8 +1,8 @@
-use crate::core::dices::{RollTarget, Sum2D6Target};
+use crate::core::dices::{RequestedRoll, RollResult, RollTarget, Sum2D6Target};
 use crate::core::gamestate::GameState;
-use crate::core::model::ProcInput;
 use crate::core::model::{BallState, PlayerID};
 use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};
+use crate::core::model::{InjuryOutcome, ProcInput};
 use crate::core::procedures::ball_procs;
 
 #[derive(Debug)]
@@ -25,25 +25,33 @@ impl Armor {
     }
 }
 impl Procedure for Armor {
-    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
-        let roll1 = game_state.get_d6_roll();
-        let roll2 = game_state.get_d6_roll();
-        let roll = roll1 + roll2;
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let mut procs: Vec<Box<dyn Procedure>> = Vec::new();
         let mut injury_proc = Injury::new(self.id);
-
-        let target = if let Some((fouler_id, foul_target)) = self.foul_target {
-            if roll1 == roll2 {
-                procs.push(Ejection::new(fouler_id));
-            } else {
-                injury_proc.fouler = Some(fouler_id);
+        let armor_broken = match input {
+            ProcInput::Nothing if self.foul_target.is_some() => {
+                return ProcState::NeedRoll(RequestedRoll::FoulArmor(self.foul_target.unwrap().1));
             }
-            foul_target
-        } else {
-            game_state.get_player_unsafe(self.id).armor_target()
+            ProcInput::Nothing => {
+                return ProcState::NeedRoll(RequestedRoll::Sum2D6PassFail(
+                    game_state.get_player_unsafe(self.id).armor_target(),
+                ));
+            }
+            ProcInput::Roll(RollResult::FoulArmor { broken, ejected }) => {
+                if ejected {
+                    procs.push(Ejection::new(self.foul_target.unwrap().0));
+                } else if broken {
+                    // injury proc shall also check of ejection
+                    injury_proc.fouler = Some(self.foul_target.unwrap().0);
+                }
+                broken
+            }
+            ProcInput::Roll(RollResult::Pass) => true,
+            ProcInput::Roll(RollResult::Fail) => false,
+            _ => panic!("Unexpected input"),
         };
 
-        if target.is_success(roll) {
+        if armor_broken {
             procs.push(injury_proc);
         }
 
@@ -100,32 +108,47 @@ impl Injury {
     }
 }
 impl Procedure for Injury {
-    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
-        let cas_target = Sum2D6Target::TenPlus;
-        let ko_target = Sum2D6Target::EightPlus;
-        let roll1 = game_state.get_d6_roll();
-        let roll2 = game_state.get_d6_roll();
-        let roll = roll1 + roll2;
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let mut procs: Vec<Box<dyn Procedure>> = Vec::new();
 
-        if self.fouler.is_some() && roll1 == roll2 {
-            procs.push(Ejection::new(self.fouler.unwrap()))
-        }
+        let injury_outcome = match input {
+            ProcInput::Nothing if self.fouler.is_some() => {
+                return ProcState::NeedRoll(RequestedRoll::FoulInjury(
+                    Sum2D6Target::EightPlus,
+                    Sum2D6Target::TenPlus,
+                ));
+            }
+            ProcInput::Nothing => {
+                return ProcState::NeedRoll(RequestedRoll::Sum2D6ThreeOutcomes(
+                    Sum2D6Target::EightPlus,
+                    Sum2D6Target::TenPlus,
+                ));
+            }
+            ProcInput::Roll(RollResult::FoulInjury { outcome, ejected }) => {
+                if ejected {
+                    procs.push(Ejection::new(self.fouler.unwrap()));
+                }
+                outcome
+            }
+            ProcInput::Roll(RollResult::Fail) => InjuryOutcome::Stunned,
+            ProcInput::Roll(RollResult::MiddleOutcome) => InjuryOutcome::KO,
+            ProcInput::Roll(RollResult::Pass) => InjuryOutcome::Casualty,
 
-        if cas_target.is_success(roll) {
-            game_state
-                .unfield_player(self.id, DugoutPlace::Injuried)
-                .unwrap();
-        } else if ko_target.is_success(roll) {
-            game_state
-                .unfield_player(self.id, DugoutPlace::KnockOut)
-                .unwrap();
-        } else if self.crowd {
-            game_state
-                .unfield_player(self.id, DugoutPlace::Reserves)
-                .unwrap();
-        } else {
-            game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
+            _ => panic!("Unexpected input"),
+        };
+
+        let dugout_place = match injury_outcome {
+            InjuryOutcome::Casualty => Some(DugoutPlace::Injuried),
+            InjuryOutcome::KO => Some(DugoutPlace::KnockOut),
+            InjuryOutcome::Stunned if self.crowd => Some(DugoutPlace::Reserves),
+            InjuryOutcome::Stunned => {
+                game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
+                None
+            }
+        };
+
+        if let Some(place) = dugout_place {
+            game_state.unfield_player(self.id, place).unwrap();
         }
         ProcState::from(procs)
     }

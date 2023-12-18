@@ -6,7 +6,7 @@ use std::{
 use rand::{distributions::Standard, prelude::Distribution};
 
 use super::{
-    model::{Coord, Direction, Weather},
+    model::{Coord, Direction, InjuryOutcome, Weather},
     table::SimpleAT,
 };
 
@@ -310,7 +310,6 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RequestedRoll {
     Coin,
@@ -318,18 +317,27 @@ pub enum RequestedRoll {
     D6PassFail(D6Target),
     D6ThreeOutcomes(D6Target, D6Target),
     D8,
+    FoulArmor(Sum2D6Target),
+    FoulInjury(Sum2D6Target, Sum2D6Target),
     Kick,
     Sum2D6,
     Sum2D6PassFail(Sum2D6Target),
     Sum2D6ThreeOutcomes(Sum2D6Target, Sum2D6Target),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RollResult {
     Coin(Coin),
     Pass,
     Fail,
+    FoulArmor {
+        broken: bool,
+        ejected: bool,
+    },
+    FoulInjury {
+        outcome: InjuryOutcome,
+        ejected: bool,
+    },
     MiddleOutcome,
     D6(D6),
     D8(D8),

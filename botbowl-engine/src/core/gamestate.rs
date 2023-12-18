@@ -908,6 +908,29 @@ impl GameState {
             RequestedRoll::D8 => RollResult::D8(self.get_d8_roll()),
             RequestedRoll::Coin => RollResult::Coin(self.get_coin_toss()),
             RequestedRoll::Kick => RollResult::Kick(self.get_d6_roll(), self.get_d8_roll()),
+            RequestedRoll::FoulArmor(target) => {
+                let roll1 = self.get_d6_roll();
+                let roll2 = self.get_d6_roll();
+                RollResult::FoulArmor {
+                    broken: target.is_success(roll1 + roll2),
+                    ejected: roll1 == roll2,
+                }
+            }
+            RequestedRoll::FoulInjury(ko_target, cas_target) => {
+                let roll1 = self.get_d6_roll();
+                let roll2 = self.get_d6_roll();
+                let outcome = if cas_target.is_success(roll1 + roll2) {
+                    InjuryOutcome::Casualty
+                } else if ko_target.is_success(roll1 + roll2) {
+                    InjuryOutcome::KO
+                } else {
+                    InjuryOutcome::Stunned
+                };
+                RollResult::FoulInjury {
+                    outcome,
+                    ejected: roll1 == roll2,
+                }
+            }
         }
     }
 
