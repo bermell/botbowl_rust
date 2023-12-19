@@ -31,8 +31,10 @@ forward model in a botbowl competition:
 - handoff turnover if possession lost, needs test and implementation
 - score on opponent's half needs test
 
-## Other things
+### Other things (in order of priority)
 
+- Record a game
+- Watch a recording
 - [ ] Play in terminal
 - [ ] Gym Env
 - [ ] FFI to python
