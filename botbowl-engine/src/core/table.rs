@@ -1,6 +1,7 @@
 //use super::model::{PlayerID, TeamType};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy, Deserialize, Serialize)]
 pub enum PosAT {
     StartMove,
     StartBlitz,
@@ -17,7 +18,7 @@ pub enum PosAT {
     Block,
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy)]
+#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy, Deserialize, Serialize)]
 pub enum SimpleAT {
     SelectBothDown,
     SelectPow,
@@ -37,7 +38,7 @@ pub enum SimpleAT {
     KickoffAimMiddle,
 }
 
-#[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
+#[derive(Eq, Hash, PartialEq, Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum AnyAT {
     Simple(SimpleAT),
     Postional(PosAT),
@@ -53,7 +54,7 @@ impl From<PosAT> for AnyAT {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Skill {
     Dodge,
     Throw,
@@ -63,7 +64,7 @@ pub enum Skill {
     SureFeet,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub enum NumBlockDices {
     ThreeUphill,
     TwoUphill,
@@ -84,7 +85,7 @@ impl From<NumBlockDices> for u8 {
     }
 }
 
-// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 // enum PrayerToNuffleEffect {
 //     TreachearousTrapdoor,
 //     FriendsWithTheRef(TeamType),
@@ -104,7 +105,7 @@ impl From<NumBlockDices> for u8 {
 //     IntensiveTraining(PlayerID, Skill),
 // }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum PlayerRole {
     Lineman,
     Blitzer,

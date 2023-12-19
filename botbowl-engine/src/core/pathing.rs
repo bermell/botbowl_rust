@@ -4,6 +4,7 @@ use std::{collections::HashMap, hash, iter::zip, rc::Rc};
 use crate::core::model;
 use itertools::Either;
 use model::*;
+use serde::{Deserialize, Serialize};
 
 use super::dices::{D6Target, RollTarget, Sum2D6Target};
 use super::gamestate::GameState;
@@ -11,7 +12,7 @@ use super::table::{NumBlockDices, PosAT};
 
 type OptRcNode = Option<Rc<Node>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PathingEvent {
     Dodge(D6Target),
     GFI(D6Target),
@@ -36,7 +37,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FixedQueue<T> {
     data: [Option<T>; 6],
 }
@@ -151,7 +152,7 @@ impl CustomIntoIter for Rc<Node> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
     parent: OptRcNode,
     pub position: Position,

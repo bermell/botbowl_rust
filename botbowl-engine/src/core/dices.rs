@@ -9,6 +9,7 @@ use super::{
     model::{Coord, Direction, InjuryOutcome, Weather},
     table::{NumBlockDices, SimpleAT},
 };
+use serde::{Deserialize, Serialize};
 
 pub trait RollTarget<T> {
     fn is_success(&self, roll: T) -> bool;
@@ -44,7 +45,7 @@ fn truncate_to<T: Ord>(lower_limit: T, upper_limit: T, value: T) -> T {
 }
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
 pub enum Coin {
     Heads,
     Tails,
@@ -71,7 +72,7 @@ impl Distribution<Coin> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum D8 {
         One = 1,
         Two,
@@ -116,7 +117,7 @@ impl From<(Coord, Coord)> for D8 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum BlockDice {
     Skull,
     BothDown,
@@ -152,7 +153,7 @@ impl Distribution<BlockDice> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum D6 {
         One = 1,
         Two,
@@ -182,7 +183,7 @@ impl Add<D6> for D6 {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum D3 {
         One = 1,
         Two,
@@ -201,7 +202,7 @@ impl Distribution<D3> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -240,7 +241,7 @@ impl RollTarget<D6> for D6Target {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum Sum2D6 {
         Two = 2,
         Three,
@@ -280,7 +281,7 @@ impl Distribution<Sum2D6> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum Sum2D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -329,7 +330,7 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
 pub enum RequestedRoll {
     BlockDice(NumBlockDices),
     Coin,
@@ -346,7 +347,7 @@ pub enum RequestedRoll {
     ThrowIn,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
 pub enum RollResult {
     BlockDice([Option<BlockDice>; 3]),
     Coin(Coin),

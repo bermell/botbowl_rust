@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
@@ -16,7 +17,7 @@ pub type PlayerID = usize;
 pub type DugoutPlayerID = usize;
 pub type Coord = i8;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FullPitch<T> {
     data: [[T; HEIGHT]; WIDTH],
 }
@@ -90,7 +91,7 @@ pub const SOUTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 12..=15;
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Direction {
     pub dx: Coord,
     pub dy: Coord,
@@ -147,7 +148,7 @@ impl Direction {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     pub x: Coord,
     pub y: Coord,
@@ -270,7 +271,7 @@ impl Mul<i8> for Position {
     }
 }
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
 pub enum Action {
     Positional(table::PosAT, Position),
     Simple(table::SimpleAT),
@@ -284,20 +285,20 @@ impl std::fmt::Debug for Action {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionChoice {
     Positional(Vec<Position>),
     Simple,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum PlayerStatus {
     Up,
     Down,
     Stunned,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerStats {
     pub str_: u8,
     pub ma: u8,
@@ -360,7 +361,7 @@ impl PlayerStats {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DugoutPlace {
     Reserves,
     Heated,
@@ -375,7 +376,7 @@ pub struct DugoutPlayer {
     pub id: DugoutPlayerID,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FieldedPlayer {
     pub id: PlayerID,
     pub stats: PlayerStats,
@@ -465,7 +466,7 @@ impl FieldedPlayer {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TeamState {
     pub bribes: u8,
     //babes: u8,
@@ -503,7 +504,7 @@ impl TeamState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TeamType {
     Home,
     Away,
@@ -516,7 +517,7 @@ pub fn other_team(team: TeamType) -> TeamType {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum BallState {
     OffPitch,
     OnGround(Position),
@@ -524,7 +525,7 @@ pub enum BallState {
     InAir(Position),
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Weather {
     Nice,
     Sunny,
@@ -533,7 +534,7 @@ pub enum Weather {
     Sweltering,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcInput {
     Nothing,
     Action(Action),
@@ -688,13 +689,13 @@ impl AvailableActions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockActionChoice {
     // This will have all things needed in the Block procedure. Might as well merge them. Slightly funny code but it's ok!
     pub num_dices: NumBlockDices,
     pub position: Position,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InjuryOutcome {
     Stunned,
     KO,
