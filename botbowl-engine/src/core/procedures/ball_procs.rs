@@ -257,6 +257,33 @@ impl Procedure for Touchdown {
     }
 }
 
+#[derive(Debug)]
+pub struct Pass {
+    id: PlayerID,
+    catch: D6Target,
+    pass: D6Target,
+    interceptors: Vec<(PlayerID, D6Target)>,
+}
+impl Pass {
+    pub fn new(
+        id: PlayerID,
+        catch: D6Target,
+        pass: D6Target,
+        interceptors: Vec<(PlayerID, D6Target)>,
+    ) -> Box<Pass> {
+        Box::new(Pass {
+            id,
+            catch,
+            pass,
+            interceptors,
+        })
+    }
+}
+impl Procedure for Pass {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        todo!()
+    }
+}
 #[cfg(test)]
 mod tests {
 

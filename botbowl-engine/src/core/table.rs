@@ -12,6 +12,7 @@ pub enum PosAT {
     FollowUp,
     StartHandoff,
     Handoff,
+    Pass,
     Move,
     Foul,
     StartBlock,

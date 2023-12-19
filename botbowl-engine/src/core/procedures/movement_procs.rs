@@ -1,5 +1,5 @@
-use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, PlayerStatus, ProcState, Procedure};
+use crate::core::model::{Position, ProcInput};
 use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
 };
@@ -100,6 +100,12 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Proced
             casualty_procs::Armor::new_foul(victim, target, active_player)
         }
         PathingEvent::StandUp => StandUp::new(active_player),
+        PathingEvent::Pass {
+            id,
+            catch,
+            pass,
+            intercept,
+        } => ball_procs::Pass::new(id, catch, pass, intercept),
     }
 }
 
@@ -632,6 +638,42 @@ mod tests {
                 .distance_to(&target_pos),
             1
         );
+    }
+    #[test]
+    fn pass_successful() {
+        let start_pos = Position::new((2, 2));
+        let target_pos = Position::new((15, 15));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        state.step_positional(PosAT::StartPass, start_pos);
+        state.fixes.fix_d6(6); //Pass
+        state.fixes.fix_d6(6); //Catch
+        state.step_positional(PosAT::Pass, target_pos);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+    }
+    #[test]
+    fn pass_avoid_intercepts() {
+        let mut field = "".to_string();
+        field += "H a h \n";
+        field += "  a   \n";
+        field += "      \n";
+        let first_pos = Position::new((2, 2));
+        let mut state = GameStateBuilder::new().add_str(first_pos, &field).build();
+        let start_pos = Position::new((2, 2));
+        let target_pos = Position::new((6, 2));
+        let pass_from_pos = Position::new((6, 4));
+        let passer_id = state.get_player_id_at(start_pos).unwrap();
+        state.step_positional(PosAT::StartPass, start_pos);
+        state.fixes.fix_d6(6); //Pass
+        state.fixes.fix_d6(6); //Catch
+        state.step_positional(PosAT::Pass, target_pos);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert_eq!(state.get_player_unsafe(passer_id).position, pass_from_pos);
     }
     #[test]
     fn double_gfi_blitz() {

@@ -12,13 +12,19 @@ use super::table::{NumBlockDices, PosAT};
 
 type OptRcNode = Option<Rc<Node>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PathingEvent {
     Dodge(D6Target),
     GFI(D6Target),
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
+    Pass {
+        id: PlayerID,
+        catch: D6Target,
+        pass: D6Target,
+        intercept: Vec<(PlayerID, D6Target)>,
+    },
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
@@ -34,6 +40,12 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::Pickup(_) => false,
         PathingEvent::Block(_, _) => false,
         PathingEvent::StandUp => false,
+        PathingEvent::Pass {
+            id: _,
+            catch: _,
+            pass: _,
+            intercept: _,
+        } => true,
     }
 }
 
@@ -170,7 +182,7 @@ impl Node {
     }
     fn add_iter_items(&self, items: &mut Vec<NodeIteratorItem>) {
         for event in self.events.iter_rev() {
-            items.push(Either::Right(*event));
+            items.push(Either::Right(event.clone()));
         }
         if self.move_to_position() {
             items.push(Either::Left(self.position));
@@ -190,6 +202,12 @@ impl Node {
                 PathingEvent::GFI(_) => true,
                 PathingEvent::Pickup(_) => true,
                 PathingEvent::Touchdown(_) => true,
+                PathingEvent::Pass {
+                    id: _,
+                    catch: _,
+                    pass: _,
+                    intercept: _,
+                } => false,
             }
         } else {
             true
@@ -249,8 +267,30 @@ impl Node {
     }
 
     fn apply_handoff(&mut self, id: PlayerID, target: D6Target) {
+        // TODO: concider catch (remember the intercep too!)
         self.prob *= target.success_prob();
         self.events.push_back(PathingEvent::Handoff(id, target));
+    }
+    fn apply_pass(
+        &mut self,
+        id: PlayerID,
+        catch_target: D6Target,
+        pass_target: D6Target,
+        intercept_target: Vec<(PlayerID, D6Target)>,
+    ) {
+        // TODO: concider catch and pass skill (remember the intercep too!)
+        self.prob *= catch_target.success_prob();
+        self.prob *= pass_target.success_prob();
+        if !intercept_target.is_empty() {
+            // TODO: find the best intercept here..
+            self.prob *= 1.0 - intercept_target[0].1.success_prob();
+        }
+        self.events.push_back(PathingEvent::Pass {
+            id,
+            catch: catch_target,
+            pass: pass_target,
+            intercept: intercept_target,
+        })
     }
     fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
         self.block_dice = Some(target);
@@ -339,11 +379,13 @@ struct GameInfo<'a> {
     player_action: PosAT,
     team: TeamType,
     tzones: FullPitch<i8>,
+    teammate_catch_mod: FullPitch<Option<D6Target>>,
     ball: PathingBallState,
     start_pos: Position,
     dodge_target: D6Target,
     gfi_target: D6Target,
     pickup_target: D6Target,
+
     id: PlayerID,
 }
 impl<'a> GameInfo<'a> {
@@ -382,9 +424,22 @@ impl<'a> GameInfo<'a> {
             .info
             .player_action_type
             .unwrap_or(PosAT::StartMove);
-        if player_action == PosAT::StartHandoff && !matches!(ball, PathingBallState::IsCarrier(_)) {
-            // Can't handoff if not ball carrier
-            player_action = PosAT::StartMove;
+        let mut catch_mods: FullPitch<Option<D6Target>> = Default::default();
+        if player_action == PosAT::StartHandoff || player_action == PosAT::StartPass {
+            if matches!(ball, PathingBallState::IsCarrier(_)) {
+                // player is ball carrier and can handoff or pass
+                game_state
+                    .get_players_on_pitch()
+                    .filter(|player| player.stats.team == team)
+                    .filter(|player| player.can_catch())
+                    .for_each(|player| {
+                        catch_mods[player.position] =
+                            Some(game_state.get_catch_target(player.id).unwrap())
+                    });
+            } else {
+                // If not ball carrier we don't care about handoff or pass
+                player_action = PosAT::StartMove;
+            }
         }
 
         GameInfo {
@@ -398,6 +453,7 @@ impl<'a> GameInfo<'a> {
             team: player.stats.team,
             player_action,
             id: player.id,
+            teammate_catch_mod: catch_mods,
         }
     }
     fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
@@ -426,12 +482,13 @@ impl<'a> GameInfo<'a> {
 
         // expand to move_node, block_node, handoff_mode
         let new_node: Option<Node> = match self.game_state.get_player_at(to) {
-            Some(player)
-                if self.player_action == PosAT::StartHandoff
-                    && player.stats.team == self.team
-                    && player.can_catch() =>
-            {
-                self.expand_handoff_to(to, player.id, parent_node, prev)
+            Some(player) if self.teammate_catch_mod[to].is_some() => {
+                // handoff or pass
+                match self.player_action {
+                    PosAT::StartPass => self.expand_pass_to(to, player.id, parent_node, prev),
+                    PosAT::StartHandoff => self.expand_handoff_to(to, player.id, parent_node, prev),
+                    _ => unreachable!("very wrong!"),
+                }
             }
             Some(player)
                 if self.player_action == PosAT::StartBlitz
@@ -568,8 +625,7 @@ impl<'a> GameInfo<'a> {
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
 
-        let target: D6Target = self.game_state.get_catch_target(id).unwrap();
-        next_node.apply_handoff(id, target);
+        next_node.apply_handoff(id, self.teammate_catch_mod[to].unwrap());
         // the Catch procedure will check fo touchdown
 
         if let Some(current_best) = prev {
@@ -582,6 +638,35 @@ impl<'a> GameInfo<'a> {
         Some(next_node)
     }
 
+    fn expand_pass_to(
+        &self,
+        to: Position,
+        id: PlayerID,
+        parent_node: &Rc<Node>,
+        prev: &OptRcNode,
+    ) -> Option<Node> {
+        let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
+
+        let catch_target = self.teammate_catch_mod[to].unwrap();
+        let pass_target = self
+            .game_state
+            .get_pass_target(id, parent_node.position, to)
+            .unwrap();
+        let interceptors =
+            self.game_state
+                .get_intercepters(other_team(self.team), parent_node.position, to);
+        next_node.apply_pass(id, catch_target, pass_target, interceptors);
+        // the Catch procedure will check fo touchdown
+
+        if let Some(current_best) = prev {
+            if current_best.is_better_than(&next_node) {
+                // todo: if there is a current_best, it will always have higher prob right?
+                //       that's just how it works with the risky batches. Oh well, optimize later..
+                return None;
+            }
+        }
+        Some(next_node)
+    }
     fn expand_move_to(
         &self,
         to: Position,
@@ -750,6 +835,36 @@ impl<'a> PathFinder<'a> {
                 }
                 NodeType::NoNode => (),
             });
+
+        //handle passing
+        if self.info.player_action == PosAT::StartPass
+            && matches!(self.info.ball, PathingBallState::IsCarrier(_))
+        {
+            self.info
+                .game_state
+                .get_players_on_pitch()
+                .filter(|player| player.stats.team == self.info.team)
+                .filter(|player| player.id != self.info.id)
+                .filter(|player| player.can_catch())
+                // TODO: check withing passing range
+                .map(|player| player.position)
+                .map(|to_pos| {
+                    self.info.expand_to(
+                        to_pos,
+                        &node,
+                        &mut self.nodes[to_pos],
+                        &self.locked_nodes[to_pos],
+                    )
+                })
+                .for_each(|node_type| match node_type {
+                    NodeType::Risky(node) => self.risky_sets.insert_node(node),
+                    NodeType::ContinueExpanding(node) => {
+                        debug_assert!(self.info.can_continue_expanding(&node));
+                        self.open_set.push(node);
+                    }
+                    NodeType::NoNode => (),
+                });
+        }
     }
 }
 

@@ -1,7 +1,10 @@
 use core::panic;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashSet, VecDeque},
+    usize,
+};
 
 use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
 
@@ -1011,6 +1014,45 @@ impl GameState {
     pub fn step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
         self.fixes.assert_is_empty();
+    }
+
+    pub fn get_intercepters(
+        &self,
+        intercepting_team: TeamType,
+        from: Position,
+        to: Position,
+    ) -> Vec<(PlayerID, D6Target)> {
+        todo!()
+    }
+
+    pub fn get_pass_target(&self, id: usize, position: Position, to: Position) -> Option<D6Target> {
+        const MATRIX: [[i8; 14]; 14] = [
+            [0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4],
+            [1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4],
+            [1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 5],
+            [1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5],
+            [2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5],
+            [2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5],
+            [2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 5, 5],
+            [3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5],
+            [3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5],
+            [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5, 5],
+            [3, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5],
+            [4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
+            [4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+            [4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+        ];
+        let Some(player) = self.get_player(id).ok() else {
+            //return None;
+            panic!("Player not found");
+        };
+        //TODO: this is probably wrong somehow
+        let delta = to - position;
+        let (dx, dy) = (delta.dx.abs() as usize, delta.dy.abs() as usize);
+        if dx > 14 || dy > 14 {
+            return None;
+        }
+        Some(*player.ag_target().add_modifer(MATRIX[dx][dy]))
     }
 }
 

@@ -174,9 +174,9 @@ impl Turn {
                 aa.insert_positional(PosAT::StartFoul, positions.clone());
             }
 
-            // if game_state.info.pass_available {
-            //     aa.insert_positional(PosAT::StartPass, positions.clone());
-            // }
+            if game_state.info.pass_available {
+                aa.insert_positional(PosAT::StartPass, positions.clone());
+            }
 
             aa.insert_positional(PosAT::StartMove, positions);
         }
@@ -209,6 +209,7 @@ impl Procedure for Turn {
             match at {
                 PosAT::StartMove => (),
                 PosAT::StartHandoff => info.handoff_available = false,
+                PosAT::StartPass => info.pass_available = false,
                 PosAT::StartFoul => info.foul_available = false,
                 PosAT::StartBlitz => info.blitz_available = false,
                 PosAT::StartBlock => {
