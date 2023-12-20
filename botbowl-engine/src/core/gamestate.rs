@@ -17,6 +17,51 @@ use super::{
     table::{NumBlockDices, PosAT, SimpleAT},
 };
 
+fn get_line(start: (i8, i8), end: (i8, i8)) -> Vec<(i8, i8)> {
+    let (mut x1, mut y1) = start;
+    let (mut x2, mut y2) = end;
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+
+    let is_steep = dy.abs() > dx.abs();
+
+    if is_steep {
+        std::mem::swap(&mut x1, &mut y1);
+        std::mem::swap(&mut (x2), &mut (y2));
+    }
+
+    let mut swapped = false;
+    if x1 > x2 {
+        std::mem::swap(&mut x1, &mut x2);
+        std::mem::swap(&mut y1, &mut y2);
+        swapped = true;
+    }
+
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+
+    let mut error = dx / 2;
+    let ystep = if y1 < y2 { 1 } else { -1 };
+
+    let mut y = y1;
+    let mut points = Vec::new();
+
+    for x in x1..=x2 {
+        let coord = if is_steep { (y, x) } else { (x, y) };
+        points.push(coord);
+        error -= dy.abs();
+        if error < 0 {
+            y += ystep;
+            error += dx;
+        }
+    }
+
+    if swapped {
+        points.reverse();
+    }
+
+    points
+}
 pub enum BuilderState {
     Turn { turn: u8 },
     Setup { turn: u8 },
@@ -182,6 +227,8 @@ impl GameStateBuilder {
             rng_enabled: false,
             info: GameInfo::new(),
             fixes: Default::default(),
+            log: Vec::new(),
+            print_log: false,
         }
     }
     pub fn build(&mut self) -> GameState {
@@ -258,6 +305,7 @@ impl GameStateBuilder {
         state.info.home_turn -= 1;
         state.info.away_turn -= 1;
 
+        state.set_logging_state(true);
         state
     }
 }
@@ -367,9 +415,23 @@ pub struct GameState {
     pub rng_enabled: bool,
     pub fixes: FixedDice,
     rng: ChaCha8Rng,
+    log: Vec<String>,
+    print_log: bool,
 }
 
 impl GameState {
+    pub fn log(&mut self, s: String) {
+        if self.print_log {
+            println!("{}", s);
+        }
+        self.log.push(s);
+    }
+    pub fn get_log(&self) -> &Vec<String> {
+        &self.log
+    }
+    pub fn set_logging_state(&mut self, state: bool) {
+        self.print_log = state;
+    }
     pub fn get_dugout(&self) -> impl Iterator<Item = &DugoutPlayer> {
         self.dugout_players.iter().flatten()
     }
@@ -819,12 +881,12 @@ impl GameState {
 
         let mut proc_input: ProcInput = {
             if self.available_actions.is_empty() {
-                println!("STEPPING: {:?}", top_proc);
+                self.log(format!("STEPPING: {:?}", top_proc));
                 ProcInput::Nothing
             } else if !self.is_legal_action(&action) {
                 return Err(Box::new(IllegalActionError { action }));
             } else {
-                println!("STEPPING: {:?}\n  action={:?}", top_proc, action);
+                self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, action));
                 ProcInput::Action(action)
             }
         };
@@ -835,7 +897,7 @@ impl GameState {
             if self.info.game_over {
                 break;
             }
-            println!("  result:   {:?}", top_proc_state);
+            self.log(format!("  result:   {:?}", top_proc_state));
             proc_input = ProcInput::Nothing;
             match top_proc_state {
                 ProcState::NotDoneNewProcs(mut new_procs) => {
@@ -872,9 +934,9 @@ impl GameState {
                 }
             };
 
-            println!("STEPPING: {:?}", top_proc);
+            self.log(format!("STEPPING: {:?}", top_proc));
             if matches!(proc_input, ProcInput::Roll(_)) {
-                println!("  input:    {:?}", proc_input);
+                self.log(format!("  input:    {:?}", proc_input));
             }
 
             top_proc_state = top_proc.step(self, proc_input);
@@ -1016,15 +1078,69 @@ impl GameState {
         self.fixes.assert_is_empty();
     }
 
-    #[allow(unused_variables)]
+    //     &self,
+    //     intercepting_team: TeamType,
+    //     from: Position,
+    //     to: Position,
+
     pub fn get_intercepters(
         &self,
-        intercepting_team: TeamType,
-        from: Position,
-        to: Position,
+        team: TeamType,
+        position_from: Position,
+        position_to: Position,
     ) -> Vec<(Position, D6Target)> {
-        //TODO: ...
-        Vec::new()
+        // 1) Find line x from a to b
+        let line_coords = get_line(
+            (position_from.x, position_from.y),
+            (position_to.x, position_to.y),
+        );
+
+        // 3) Find squares s where x intersects
+        let mut line_positions = Vec::new();
+        for (x, y) in line_coords {
+            line_positions.push(Position::new((x, y)));
+        }
+
+        let max_distance = position_from.distance_to(&position_to);
+        let mut n: HashSet<Position> = HashSet::new();
+
+        for square in line_positions {
+            let mut neighbors: Vec<Position> = Direction::all_directions_iter()
+                .map(|dir| square + *dir)
+                .filter(|pos| !n.contains(pos))
+                .filter(|pos| self.get_player_at(*pos).is_some())
+                .collect();
+            if self.get_player_at(square).is_some() && !n.contains(&square) {
+                neighbors.push(square); // Adding the square itself as its neighbor
+            }
+
+            for neighbor in neighbors {
+                if neighbor.distance_to(&position_from) > max_distance
+                    || neighbor.distance_to(&position_to) > max_distance
+                    || neighbor.x > std::cmp::max(position_from.x, position_to.x)
+                    || neighbor.x < std::cmp::min(position_from.x, position_to.x)
+                    || neighbor.y > std::cmp::max(position_from.y, position_to.y)
+                    || neighbor.y < std::cmp::min(position_from.y, position_to.y)
+                {
+                    continue;
+                }
+
+                if let Some(player_at) = self.get_player_at(neighbor) {
+                    if player_at.stats.team != team || !player_at.can_catch() {
+                        continue;
+                    }
+                    n.insert(neighbor);
+                }
+            }
+        }
+
+        n.remove(&position_from);
+        n.remove(&position_to);
+
+        n.iter()
+            .copied()
+            .map(|pos| (pos, D6Target::FivePlus))
+            .collect()
     }
 
     pub fn get_pass_target(&self, id: usize, position: Position, to: Position) -> Option<D6Target> {

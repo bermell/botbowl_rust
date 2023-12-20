@@ -148,7 +148,7 @@ impl Direction {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     pub x: Coord,
     pub y: Coord,

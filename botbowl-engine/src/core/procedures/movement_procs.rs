@@ -650,26 +650,26 @@ mod tests {
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
     }
-    // #[test]
-    // fn pass_avoid_intercepts() {
-    //     let mut field = "".to_string();
-    //     field += "H a h \n";
-    //     field += "  a   \n";
-    //     field += "      \n";
-    //     let first_pos = Position::new((2, 2));
-    //     let mut state = GameStateBuilder::new().add_str(first_pos, &field).build();
-    //     let start_pos = Position::new((2, 2));
-    //     let target_pos = Position::new((6, 2));
-    //     let pass_from_pos = Position::new((6, 4));
-    //     let passer_id = state.get_player_id_at(start_pos).unwrap();
-    //     state.step_positional(PosAT::StartPass, start_pos);
-    //     state.fixes.fix_d6(6); //Pass
-    //     state.fixes.fix_d6(6); //Catch
-    //     state.step_positional(PosAT::Pass, target_pos);
-    //     let carrier_id = state.get_player_id_at(target_pos).unwrap();
-    //     assert_eq!(state.ball, BallState::Carried(carrier_id));
-    //     assert_eq!(state.get_player_unsafe(passer_id).position, pass_from_pos);
-    // }
+    #[test]
+    fn pass_avoid_intercepts() {
+        let mut field = "".to_string();
+        field += "H a h \n";
+        field += "  a   \n";
+        field += "      \n";
+        let first_pos = Position::new((2, 2));
+        let mut state = GameStateBuilder::new().add_str(first_pos, &field).build();
+        let start_pos = Position::new((2, 2));
+        let target_pos = Position::new((6, 2));
+        let passer_id = state.get_player_id_at(start_pos).unwrap();
+        state.step_positional(PosAT::StartPass, start_pos);
+        state.fixes.fix_d6(6); //Pass
+        state.fixes.fix_d6(6); //Catch
+        state.step_positional(PosAT::Pass, target_pos);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert!(state.get_player_unsafe(passer_id).position.y > 3);
+        assert!(state.get_player_unsafe(passer_id).position.x > 4);
+    }
     #[test]
     fn double_gfi_blitz() {
         let start_pos = Position::new((10, 1));
