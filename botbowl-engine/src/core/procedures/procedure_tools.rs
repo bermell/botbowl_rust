@@ -11,7 +11,7 @@ pub trait SimpleProc {
     fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         Vec::new()
     }
-    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>>;
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>>;
     fn player_id(&self) -> PlayerID;
 }
 impl From<Vec<Box<dyn Procedure>>> for ProcState {

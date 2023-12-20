@@ -19,12 +19,7 @@ pub enum PathingEvent {
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
-    Pass {
-        id: PlayerID,
-        catch: D6Target,
-        pass: D6Target,
-        intercept: Vec<(PlayerID, D6Target)>,
-    },
+    Pass { pos: Position, pass: D6Target },
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
@@ -40,12 +35,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::Pickup(_) => false,
         PathingEvent::Block(_, _) => false,
         PathingEvent::StandUp => false,
-        PathingEvent::Pass {
-            id: _,
-            catch: _,
-            pass: _,
-            intercept: _,
-        } => true,
+        PathingEvent::Pass { .. } => true,
     }
 }
 
@@ -202,12 +192,7 @@ impl Node {
                 PathingEvent::GFI(_) => true,
                 PathingEvent::Pickup(_) => true,
                 PathingEvent::Touchdown(_) => true,
-                PathingEvent::Pass {
-                    id: _,
-                    catch: _,
-                    pass: _,
-                    intercept: _,
-                } => false,
+                PathingEvent::Pass { .. } => false,
             }
         } else {
             true
@@ -234,6 +219,7 @@ impl Node {
                 Some(PathingEvent::Block(_, _)) => PosAT::Block,
                 Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
                 Some(PathingEvent::Foul(_, _)) => PosAT::Foul,
+                Some(PathingEvent::Pass { .. }) => PosAT::Pass,
                 _ => PosAT::Move,
             }
         }
@@ -273,23 +259,21 @@ impl Node {
     }
     fn apply_pass(
         &mut self,
-        id: PlayerID,
+        pos: Position,
         catch_target: D6Target,
         pass_target: D6Target,
-        intercept_target: Vec<(PlayerID, D6Target)>,
+        intercept: Option<D6Target>,
     ) {
         // TODO: concider catch and pass skill (remember the intercep too!)
         self.prob *= catch_target.success_prob();
         self.prob *= pass_target.success_prob();
-        if !intercept_target.is_empty() {
+        if let Some(intercept_target) = intercept {
             // TODO: find the best intercept here..
-            self.prob *= 1.0 - intercept_target[0].1.success_prob();
+            self.prob *= 1.0 - intercept_target.success_prob();
         }
         self.events.push_back(PathingEvent::Pass {
-            id,
-            catch: catch_target,
+            pos,
             pass: pass_target,
-            intercept: intercept_target,
         })
     }
     fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
@@ -647,15 +631,27 @@ impl<'a> GameInfo<'a> {
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
 
-        let catch_target = self.teammate_catch_mod[to].unwrap();
-        let pass_target = self
+        let Some(pass_target) = self
             .game_state
             .get_pass_target(id, parent_node.position, to)
-            .unwrap();
-        let interceptors =
-            self.game_state
-                .get_intercepters(other_team(self.team), parent_node.position, to);
-        next_node.apply_pass(id, catch_target, pass_target, interceptors);
+        else {
+            return None;
+        };
+
+        let catch_target = self.teammate_catch_mod[to].unwrap();
+        let best_intercept = self
+            .game_state
+            .get_intercepters(other_team(self.team), parent_node.position, to)
+            .iter()
+            .map(|(_, target)| *target)
+            .max_by(|target_a, target_b| {
+                target_a
+                    .success_prob()
+                    .partial_cmp(&target_b.success_prob())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+        next_node.apply_pass(to, catch_target, pass_target, best_intercept);
         // the Catch procedure will check fo touchdown
 
         if let Some(current_best) = prev {

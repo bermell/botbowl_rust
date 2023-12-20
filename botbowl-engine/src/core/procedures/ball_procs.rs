@@ -1,4 +1,4 @@
-use crate::core::dices::{D6Target, RequestedRoll, RollResult, D3};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, D3, D6};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{
@@ -8,6 +8,8 @@ use crate::core::model::{
 use crate::core::model::{BallState, PlayerID};
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::{PosAT, Skill};
+
+use super::TurnoverIfPossessionLost;
 
 #[derive(Debug)]
 pub struct PickupProc {
@@ -37,7 +39,7 @@ impl SimpleProc for PickupProc {
         Vec::new()
     }
 
-    fn apply_failure(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         game_state.get_mut_player(self.id).unwrap().used = true;
         game_state.info.turnover = true;
         vec![Bounce::new()]
@@ -200,7 +202,7 @@ impl SimpleProc for Catch {
         Vec::new()
     }
 
-    fn apply_failure(&self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&mut self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
         vec![Bounce::new_with_kick_arg(self.kick)]
     }
 
@@ -258,30 +260,186 @@ impl Procedure for Touchdown {
 }
 
 #[derive(Debug)]
+pub enum PassResult {
+    Accurate,
+    Inaccurate,
+    WildlyInaccurate,
+    Fumble,
+}
+#[derive(Debug)]
 pub struct Pass {
-    id: PlayerID,
-    catch: D6Target,
+    pos: Position,
     pass: D6Target,
-    interceptors: Vec<(PlayerID, D6Target)>,
 }
 impl Pass {
-    pub fn new(
-        id: PlayerID,
-        catch: D6Target,
-        pass: D6Target,
-        interceptors: Vec<(PlayerID, D6Target)>,
-    ) -> Box<Pass> {
-        Box::new(Pass {
-            id,
-            catch,
-            pass,
-            interceptors,
-        })
+    pub fn new(pos: Position, pass: D6Target) -> Box<Pass> {
+        Box::new(Pass { pos, pass })
     }
 }
 impl Procedure for Pass {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        todo!()
+        let roll = match input {
+            ProcInput::Nothing => return ProcState::NeedRoll(RequestedRoll::D6),
+            ProcInput::Roll(RollResult::D6(dice)) => dice,
+            ProcInput::Action(_) => todo!(),
+            _ => panic!("Unexpected input {:?} for Pass", input),
+        };
+        //TODO: check for team and skill reroll
+        let (to, result) = if self.pass.is_success(roll) {
+            (self.pos, PassResult::Accurate)
+        } else if roll == D6::One {
+            todo!();
+            // Fumble and turnover
+            // No interceptor!
+        } else if roll == D6::Two {
+            todo!();
+            //INACCURATE PASSES
+            //If the Passing Ability test is failed, the pass is inaccurate and
+            //the ball will scatter from the target square before landing.
+            //turnover if possesiion lost
+            // interception
+        } else {
+            todo!();
+            // WILDLY INACCURATE PASSES
+            // If, when making the Passing Ability test, the dice roll is a 1 after
+            // modifiers have been applied, the ball will deviate from the square
+            // occupied by the player performing the Pass action before landing.
+            //turnover if possesiion lost
+            // interception
+        };
+        let from = game_state.get_ball_position().unwrap();
+        game_state.ball = BallState::InAir(to);
+        ProcState::DoneNewProcs(vec![
+            TurnoverIfPossessionLost::new(),
+            DeflectOrResolve::new(from, to, result),
+        ])
+    }
+}
+#[derive(Debug)]
+pub struct DeflectOrResolve {
+    from: Position,
+    to: Position,
+    result: PassResult,
+    intercepters: Vec<(Position, D6Target)>,
+}
+impl DeflectOrResolve {
+    pub fn new(from: Position, to: Position, result: PassResult) -> Box<DeflectOrResolve> {
+        Box::new(DeflectOrResolve {
+            from,
+            to,
+            result,
+            intercepters: Vec::new(),
+        })
+    }
+}
+impl Procedure for DeflectOrResolve {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let deflect_team = game_state.get_active_teamtype().unwrap();
+        let interceptor: Option<(Position, D6Target)> = match input {
+            ProcInput::Nothing => {
+                self.intercepters = game_state.get_intercepters(deflect_team, self.from, self.to);
+                if self.intercepters.is_empty() {
+                    None
+                } else if self.intercepters.len() == 1 {
+                    Some(self.intercepters[0])
+                } else {
+                    let mut aa = AvailableActions::new(deflect_team);
+                    aa.insert_positional(
+                        PosAT::SelectPosition,
+                        self.intercepters.iter().map(|(pos, _)| *pos).collect(),
+                    );
+                    return ProcState::NeedAction(aa);
+                }
+            }
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => self
+                .intercepters
+                .iter()
+                .find(|(p, _)| *p == pos)
+                .map(|(p, target)| (*p, *target)),
+            _ => panic!("Unexpected input {:?} for Interception", input),
+        };
+        let failed_deflect_proc: Box<dyn Procedure> = match game_state.get_player_at(self.to) {
+            Some(player) => {
+                let mut target = game_state.get_catch_target(player.id).unwrap();
+                target.add_modifer(match self.result {
+                    PassResult::Accurate => 0,
+                    PassResult::Inaccurate => -1,
+                    PassResult::WildlyInaccurate => -2,
+                    PassResult::Fumble => -3,
+                });
+                Catch::new(player.id, target)
+            }
+            None => Bounce::new(),
+        };
+        if let Some((pos, mut target)) = interceptor {
+            target.add_modifer(match self.result {
+                PassResult::Accurate => 0,
+                PassResult::Inaccurate => -1,
+                PassResult::WildlyInaccurate => -2,
+                PassResult::Fumble => -3,
+            });
+            let id = game_state.get_player_id_at(pos).unwrap();
+            ProcState::DoneNew(Deflect::new(id, target, failed_deflect_proc))
+        } else {
+            ProcState::DoneNew(failed_deflect_proc)
+        }
+        //PASSING INTERFERENCE
+        // If the pass was not fumbled, a single player from the opposing team may be able
+        // to attempt to interfere with the pass, hoping to 'Deflect' the pass or, in some
+        // rare cases, to 'Intercept' the pass. To determine if any opposition players are
+        // able to attempt passing interference, place the range ruler so that the circle
+        // at the end is over the centre of the square occupied by the player performing
+        // the Pass action. Position the other end so that the ruler covers the square in
+        // which the ball will land. Note that, depending upon the Passing Ability test,
+        // this may not be the target square!
+        //
+        // To attempt to interfere with a pass, an opposition player must be:
+        //
+        // A Standing player that has not lost their Tackle Zone (as described on page 26).
+        // Occupying a square that is between the square occupied by the player performing the Pass action and the square in which the ball will land.
+        // In a square that is at least partially beneath the range ruler when placed as described above.
+    }
+}
+#[derive(Debug)]
+pub struct Deflect {
+    id: PlayerID,
+    target: D6Target,
+    failed_deflect_proc: Option<Box<dyn Procedure>>,
+}
+
+impl Deflect {
+    pub fn new(
+        id: PlayerID,
+        target: D6Target,
+        failed_deflect_proc: Box<dyn Procedure>,
+    ) -> Box<SimpleProcContainer<Deflect>> {
+        SimpleProcContainer::new(Deflect {
+            id,
+            target,
+            failed_deflect_proc: Some(failed_deflect_proc),
+        })
+    }
+}
+impl SimpleProc for Deflect {
+    fn d6_target(&self) -> D6Target {
+        self.target
+    }
+
+    fn reroll_skill(&self) -> Option<Skill> {
+        None
+    }
+
+    fn apply_failure(&mut self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        vec![self.failed_deflect_proc.take().unwrap()]
+    }
+
+    fn player_id(&self) -> PlayerID {
+        self.id
+    }
+
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        let mut catch_target = game_state.get_catch_target(self.id).unwrap();
+        vec![Catch::new(self.id, *catch_target.add_modifer(-1))]
     }
 }
 #[cfg(test)]

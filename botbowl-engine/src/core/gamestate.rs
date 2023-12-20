@@ -1016,13 +1016,15 @@ impl GameState {
         self.fixes.assert_is_empty();
     }
 
+    #[allow(unused_variables)]
     pub fn get_intercepters(
         &self,
         intercepting_team: TeamType,
         from: Position,
         to: Position,
-    ) -> Vec<(PlayerID, D6Target)> {
-        todo!()
+    ) -> Vec<(Position, D6Target)> {
+        //TODO: ...
+        Vec::new()
     }
 
     pub fn get_pass_target(&self, id: usize, position: Position, to: Position) -> Option<D6Target> {
@@ -1048,8 +1050,11 @@ impl GameState {
         };
         //TODO: this is probably wrong somehow
         let delta = to - position;
-        let (dx, dy) = (delta.dx.abs() as usize, delta.dy.abs() as usize);
-        if dx > 14 || dy > 14 {
+        let (dx, dy) = (
+            delta.dx.unsigned_abs() as usize,
+            delta.dy.unsigned_abs() as usize,
+        );
+        if dx >= 14 || dy >= 14 {
             return None;
         }
         Some(*player.ag_target().add_modifer(MATRIX[dx][dy]))

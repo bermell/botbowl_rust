@@ -371,12 +371,15 @@ impl Procedure for TurnoverIfPossessionLost {
             BallState::OnGround(_) | BallState::InAir(_) => {
                 game_state.info.turnover = true;
             }
-            BallState::Carried(id)
-                if game_state.get_player_unsafe(id).stats.team != game_state.info.team_turn =>
-            {
-                game_state.info.turnover = true;
+            BallState::Carried(id) => {
+                if game_state.get_player_unsafe(id).stats.team != game_state.info.team_turn {
+                    game_state.info.turnover = true;
+                }
             }
-            _ => unreachable!(),
+            _ => panic!(
+                "Unexpected ball state, in proc TurnoverIfPossessionLost: {:?}",
+                game_state.ball
+            ),
         }
         ProcState::Done
     }
