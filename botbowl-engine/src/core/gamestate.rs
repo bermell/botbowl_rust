@@ -3,6 +3,7 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use std::{
     collections::{HashSet, VecDeque},
+    iter::once,
     usize,
 };
 
@@ -18,6 +19,17 @@ use super::{
 };
 
 fn get_line(start: (i8, i8), end: (i8, i8)) -> Vec<(i8, i8)> {
+    // Bresenham's Line Algorithm
+    // Produces a list of tuples from start and end
+    //
+    // >>> points1 = get_line((0, 0), (3, 4))
+    // >>> points2 = get_line((3, 4), (0, 0))
+    // >>> assert(set(points1) == set(points2))
+    // >>> print points1
+    // [(0, 0), (1, 1), (1, 3), (3, 3), (3, 4)]
+    // >>> print points2
+    // [(3, 4), (3, 3), (1, 3), (1, 1), (0, 0)]
+
     let (mut x1, mut y1) = start;
     let (mut x2, mut y2) = end;
     let dx = x2 - x1;
@@ -1078,68 +1090,52 @@ impl GameState {
         self.fixes.assert_is_empty();
     }
 
-    //     &self,
-    //     intercepting_team: TeamType,
-    //     from: Position,
-    //     to: Position,
-
     pub fn get_intercepters(
         &self,
         team: TeamType,
-        position_from: Position,
-        position_to: Position,
+        from: Position,
+        to: Position,
     ) -> Vec<(Position, D6Target)> {
-        // 1) Find line x from a to b
-        let line_coords = get_line(
-            (position_from.x, position_from.y),
-            (position_to.x, position_to.y),
-        );
-
-        // 3) Find squares s where x intersects
-        let mut line_positions = Vec::new();
-        for (x, y) in line_coords {
-            line_positions.push(Position::new((x, y)));
-        }
-
-        let max_distance = position_from.distance_to(&position_to);
+        let max_distance = from.distance_to(&to);
+        let max_x = std::cmp::max(from.x, to.x);
+        let min_x = std::cmp::min(from.x, to.x);
+        let max_y = std::cmp::max(from.y, to.y);
+        let min_y = std::cmp::min(from.y, to.y);
         let mut n: HashSet<Position> = HashSet::new();
-
-        for square in line_positions {
-            let mut neighbors: Vec<Position> = Direction::all_directions_iter()
+        for square in get_line((from.x, from.y), (to.x, to.y))
+            .iter()
+            .map(|(x, y)| Position::new((*x, *y)))
+        {
+            for neighbor in Direction::all_directions_iter()
                 .map(|dir| square + *dir)
+                .chain(once(square))
                 .filter(|pos| !n.contains(pos))
-                .filter(|pos| self.get_player_at(*pos).is_some())
-                .collect();
-            if self.get_player_at(square).is_some() && !n.contains(&square) {
-                neighbors.push(square); // Adding the square itself as its neighbor
-            }
-
-            for neighbor in neighbors {
-                if neighbor.distance_to(&position_from) > max_distance
-                    || neighbor.distance_to(&position_to) > max_distance
-                    || neighbor.x > std::cmp::max(position_from.x, position_to.x)
-                    || neighbor.x < std::cmp::min(position_from.x, position_to.x)
-                    || neighbor.y > std::cmp::max(position_from.y, position_to.y)
-                    || neighbor.y < std::cmp::min(position_from.y, position_to.y)
+                .filter(|pos| {
+                    self.get_player_at(*pos)
+                        .map(|p| p.stats.team == team && p.can_catch())
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<Position>>()
+            {
+                if neighbor.distance_to(&from) > max_distance
+                    || neighbor.distance_to(&to) > max_distance
+                    || neighbor.x > max_x
+                    || neighbor.x < min_x
+                    || neighbor.y > max_y
+                    || neighbor.y < min_y
                 {
                     continue;
                 }
-
-                if let Some(player_at) = self.get_player_at(neighbor) {
-                    if player_at.stats.team != team || !player_at.can_catch() {
-                        continue;
-                    }
-                    n.insert(neighbor);
-                }
+                n.insert(neighbor);
             }
         }
 
-        n.remove(&position_from);
-        n.remove(&position_to);
+        n.remove(&from);
+        n.remove(&to);
 
         n.iter()
             .copied()
-            .map(|pos| (pos, D6Target::FivePlus))
+            .map(|pos| (pos, D6Target::FivePlus)) //TODO: calculate this instead....
             .collect()
     }
 
