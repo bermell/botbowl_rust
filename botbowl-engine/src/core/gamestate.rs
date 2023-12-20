@@ -3,7 +3,6 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use std::{
     collections::{HashSet, VecDeque},
-    iter::once,
     usize,
 };
 
@@ -39,14 +38,12 @@ fn get_line(start: (i8, i8), end: (i8, i8)) -> Vec<(i8, i8)> {
 
     if is_steep {
         std::mem::swap(&mut x1, &mut y1);
-        std::mem::swap(&mut (x2), &mut (y2));
+        std::mem::swap(&mut x2, &mut y2);
     }
 
-    let mut swapped = false;
     if x1 > x2 {
         std::mem::swap(&mut x1, &mut x2);
         std::mem::swap(&mut y1, &mut y2);
-        swapped = true;
     }
 
     let dx = x2 - x1;
@@ -66,10 +63,6 @@ fn get_line(start: (i8, i8), end: (i8, i8)) -> Vec<(i8, i8)> {
             y += ystep;
             error += dx;
         }
-    }
-
-    if swapped {
-        points.reverse();
     }
 
     points
@@ -1101,42 +1094,28 @@ impl GameState {
         let min_x = std::cmp::min(from.x, to.x);
         let max_y = std::cmp::max(from.y, to.y);
         let min_y = std::cmp::min(from.y, to.y);
-        let mut n: HashSet<Position> = HashSet::new();
-        for square in get_line((from.x, from.y), (to.x, to.y))
+
+        let mut intercept_positions = get_line((from.x, from.y), (to.x, to.y))
             .iter()
             .map(|(x, y)| Position::new((*x, *y)))
-        {
-            for neighbor in Direction::all_directions_iter()
-                .map(|dir| square + *dir)
-                .chain(once(square))
-                .filter(|pos| !n.contains(pos))
-                .filter(|pos| {
-                    self.get_player_at(*pos)
-                        .map(|p| p.stats.team == team && p.can_catch())
-                        .unwrap_or(false)
-                })
-                .collect::<Vec<Position>>()
-            {
-                if neighbor.distance_to(&from) > max_distance
-                    || neighbor.distance_to(&to) > max_distance
-                    || neighbor.x > max_x
-                    || neighbor.x < min_x
-                    || neighbor.y > max_y
-                    || neighbor.y < min_y
-                {
-                    continue;
+            .flat_map(|pos| Direction::all_directions_iter().map(move |dir| pos + *dir))
+            .collect::<HashSet<Position>>();
+        intercept_positions.remove(&from);
+        intercept_positions.remove(&to);
+        intercept_positions
+            .iter()
+            .filter(|p| {
+                p.distance_to(&from) <= max_distance && p.distance_to(&to) <= max_distance && {
+                    p.x <= max_x && p.x >= min_x && p.y <= max_y && p.y >= min_y
                 }
-                n.insert(neighbor);
-            }
-        }
-
-        n.remove(&from);
-        n.remove(&to);
-
-        n.iter()
-            .copied()
-            .map(|pos| (pos, D6Target::FivePlus)) //TODO: calculate this instead....
-            .collect()
+            })
+            .filter_map(|pos| {
+                self.get_player_at(*pos)
+                    .filter(|p| p.stats.team == team && p.can_catch())
+                    .and_then(|p| self.get_catch_target(p.id).ok())
+                    .map(|target| (*pos, target))
+            })
+            .collect::<Vec<(Position, D6Target)>>()
     }
 
     pub fn get_pass_target(&self, id: usize, position: Position, to: Position) -> Option<D6Target> {
