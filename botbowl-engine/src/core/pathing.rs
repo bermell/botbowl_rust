@@ -154,7 +154,7 @@ impl CustomIntoIter for Rc<Node> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Node {
     parent: OptRcNode,
     pub position: Position,
@@ -165,6 +165,18 @@ pub struct Node {
     //euclidiean_distance: f32,
     pub prob: f32,
     events: FixedQueue<PathingEvent>,
+}
+impl Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node")
+            .field("position", &self.position)
+            .field("prob", &self.prob);
+        if let Some(parent) = &self.parent {
+            f.debug_struct("Node").field("parent_pos", &parent.position);
+        }
+
+        f.debug_struct("Node").finish()
+    }
 }
 impl Node {
     pub fn get_block_dice(&self) -> Option<NumBlockDices> {
@@ -804,6 +816,7 @@ impl<'a> PathFinder<'a> {
                 )
             });
 
+        //handle moving
         Direction::all_directions_iter()
             .map(|direction| node.position + *direction)
             .filter(|to_pos| !to_pos.is_out())

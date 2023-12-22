@@ -1148,7 +1148,7 @@ impl GameState {
         if dx >= 14 || dy >= 14 {
             return None;
         }
-        Some(*player.ag_target().add_modifer(MATRIX[dx][dy]))
+        Some(*player.ag_target().add_modifer(-MATRIX[dx][dy]))
     }
 }
 

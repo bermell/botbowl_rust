@@ -288,9 +288,8 @@ impl Procedure for Pass {
         let (to, result) = if self.pass.is_success(roll) {
             (self.pos, PassResult::Accurate)
         } else if roll == D6::One {
-            todo!();
-            // Fumble and turnover
-            // No interceptor!
+            game_state.info.turnover = true;
+            return ProcState::DoneNew(Bounce::new());
         } else if roll == D6::Two {
             todo!();
             //INACCURATE PASSES

@@ -1,9 +1,9 @@
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use std::{error, fmt};
 
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
-use std::error;
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
 use std::rc::Rc;
 
@@ -152,6 +152,11 @@ impl Direction {
 pub struct Position {
     pub x: Coord,
     pub y: Coord,
+}
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
 }
 
 impl Position {

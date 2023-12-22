@@ -129,6 +129,7 @@ impl MoveAction {
             match next_event {
                 itertools::Either::Left(position) => {
                     game_state.move_player(player_id, position).unwrap();
+                    game_state.log(format!("Moved to {:?}", position));
                     game_state.get_mut_player_unsafe(player_id).add_move(1);
                 }
                 itertools::Either::Right(roll) => {
@@ -199,6 +200,7 @@ impl Procedure for MoveAction {
 #[cfg(test)]
 mod tests {
 
+    use crate::core::gamestate::GameState;
     use crate::core::pathing::CustomIntoIter;
     use std::collections::HashMap;
     use std::iter::zip;
@@ -634,21 +636,47 @@ mod tests {
             1
         );
     }
-    #[test]
-    fn pass_successful() {
-        let start_pos = Position::new((2, 2));
-        let target_pos = Position::new((15, 15));
-        let mut state = GameStateBuilder::new()
+    fn setup_simple_pass(
+        interceptor: bool,
+        distance: i8,
+    ) -> (GameState, Position, Position, Position) {
+        assert!(distance > 1);
+        let start_pos = Position::new((7, 7));
+        let target_pos = Position::new((7 + distance, 7));
+        let away_player = Position::new((7 + distance / 2, 7));
+        let mut builder = GameStateBuilder::new();
+        builder
             .add_home_player(start_pos)
             .add_home_player(target_pos)
-            .add_ball_pos(start_pos)
-            .build();
+            .add_ball_pos(start_pos);
+        if interceptor {
+            builder.add_away_player(away_player);
+        }
+        let mut state = builder.build();
         state.step_positional(PosAT::StartPass, start_pos);
+        (state, start_pos, target_pos, away_player)
+    }
+    #[test]
+    fn pass_successful() {
+        let (mut state, _, target_pos, _) = setup_simple_pass(false, 2);
         state.fixes.fix_d6(6); //Pass
         state.fixes.fix_d6(6); //Catch
         state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
+    }
+    #[test]
+    fn pass_fumbled() {
+        let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 2);
+        let bounce_direction = Direction::up();
+        state.fixes.fix_d6(1); //Pass fumbled
+        state.fixes.fix_d8_direction(bounce_direction);
+        state.step_positional(PosAT::Pass, target_pos);
+        assert_eq!(
+            state.ball,
+            BallState::OnGround(start_pos + bounce_direction)
+        );
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_avoid_intercepts() {
