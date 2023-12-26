@@ -290,7 +290,7 @@ impl Procedure for Pass {
                 let from = game_state.get_ball_position().unwrap();
                 ProcState::DoneNewProcs(vec![
                     TurnoverIfPossessionLost::new(),
-                    DeflectOrResolve::new(from, self.pos, PassResult::Accurate),
+                    DeflectOrResolve::new(from, self.pos, PassResult::Accurate, None),
                 ])
             }
             ProcInput::Roll(RollResult::D6(D6::One)) => {
@@ -309,27 +309,39 @@ impl Procedure for Pass {
                 ProcState::NeedRoll(RequestedRoll::Scatter)
             }
             ProcInput::Roll(RollResult::Scatter(r1, r2, r3)) => {
-                let from = game_state.get_ball_position().unwrap();
-                let target =
-                    self.pos + Direction::from(r1) + Direction::from(r2) + Direction::from(r3);
-                if target.is_out() {
-                    panic!("out of bounds on scatter, left to implement")
+                let from = game_state.get_ball_position().unwrap(); //or just acive plater...
+                let mut target = self.pos;
+                let mut throwin_pos = None;
+                for d in [r1, r2, r3].iter().map(|r| Direction::from(*r)) {
+                    let new_target = target + d;
+                    if new_target.is_out() {
+                        throwin_pos = Some(target);
+                        break;
+                    }
+                    target = new_target;
                 }
                 ProcState::DoneNewProcs(vec![
                     TurnoverIfPossessionLost::new(),
-                    DeflectOrResolve::new(from, target, PassResult::Inaccurate),
+                    DeflectOrResolve::new(from, target, PassResult::Inaccurate, throwin_pos),
                 ])
             }
             ProcInput::Roll(RollResult::Deviate(distance, direction)) => {
                 let from = game_state.get_ball_position().unwrap();
-                let target = from + Direction::from(direction) * distance as i8;
-                if target.is_out() {
-                    panic!("out of bounds on deviate, left to implement")
+                let mut target = from; // + Direction::from(direction) * distance as i8;
+                let mut throwin_pos = None;
+                let dir = Direction::from(direction);
+                for _ in 0..(distance as i8) {
+                    let new_target = target + dir;
+                    if new_target.is_out() {
+                        throwin_pos = Some(target);
+                        break;
+                    }
+                    target = new_target;
                 }
 
                 ProcState::DoneNewProcs(vec![
                     TurnoverIfPossessionLost::new(),
-                    DeflectOrResolve::new(from, target, PassResult::WildlyInaccurate),
+                    DeflectOrResolve::new(from, target, PassResult::WildlyInaccurate, throwin_pos),
                 ])
             }
             ProcInput::Action(_) => todo!(),
@@ -341,14 +353,21 @@ impl Procedure for Pass {
 pub struct DeflectOrResolve {
     from: Position,
     to: Position,
+    throw_in_pos: Option<Position>,
     result: PassResult,
     intercepters: Vec<(Position, D6Target)>,
 }
 impl DeflectOrResolve {
-    pub fn new(from: Position, to: Position, result: PassResult) -> Box<DeflectOrResolve> {
+    pub fn new(
+        from: Position,
+        to: Position,
+        result: PassResult,
+        throw_in_pos: Option<Position>,
+    ) -> Box<DeflectOrResolve> {
         Box::new(DeflectOrResolve {
             from,
             to,
+            throw_in_pos,
             result,
             intercepters: Vec::new(),
         })
@@ -380,18 +399,25 @@ impl Procedure for DeflectOrResolve {
                 .map(|(p, target)| (*p, *target)),
             _ => panic!("Unexpected input {:?} for Interception", input),
         };
-        let failed_deflect_proc: Box<dyn Procedure> = match game_state.get_player_at(self.to) {
-            Some(player) => {
-                let mut target = game_state.get_catch_target(player.id).unwrap();
-                target.add_modifer(match self.result {
-                    PassResult::Accurate => 0,
-                    PassResult::Inaccurate => -1,
-                    PassResult::WildlyInaccurate => -2,
-                    PassResult::Fumble => -3,
-                });
-                Catch::new(player.id, target)
+        let failed_deflect_proc: Box<dyn Procedure> = {
+            if let Some(throw_in_pos) = self.throw_in_pos {
+                debug_assert!(!throw_in_pos.is_out());
+                ThrowIn::new(throw_in_pos)
+            } else {
+                match game_state.get_player_at(self.to) {
+                    Some(player) => {
+                        let mut target = game_state.get_catch_target(player.id).unwrap();
+                        target.add_modifer(match self.result {
+                            PassResult::Accurate => 0,
+                            PassResult::Inaccurate => -1,
+                            PassResult::WildlyInaccurate => -2,
+                            PassResult::Fumble => -3,
+                        });
+                        Catch::new(player.id, target)
+                    }
+                    None => Bounce::new(),
+                }
             }
-            None => Bounce::new(),
         };
         if let Some((pos, mut target)) = interceptor {
             target.add_modifer(match self.result {

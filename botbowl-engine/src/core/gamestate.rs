@@ -1102,6 +1102,7 @@ impl GameState {
             .iter()
             .map(|(x, y)| Position::new((*x, *y)))
             .flat_map(|pos| Direction::all_directions_iter().map(move |dir| pos + *dir))
+            .filter(|pos| !pos.is_out())
             .collect::<HashSet<Position>>();
         intercept_positions.remove(&from);
         intercept_positions.remove(&to);
@@ -1158,7 +1159,6 @@ impl GameState {
                 from, to
             );
         } else if *distance_modifier == 9 {
-            println!("Too long pass!");
             return None;
         }
 

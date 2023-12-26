@@ -722,18 +722,17 @@ mod tests {
         let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 10);
         let deviate_direction = Direction::up();
         let bounce_direction = Direction::right();
-        let passer_id = state.get_player_id_at(start_pos).unwrap();
+        let out_of_bounds_pos = Position::new((3, 1));
         let deviate_distance = 6;
         state.fixes.fix_d6(2); //Pass failed
         state.fixes.fix_d8_direction(deviate_direction);
-        state.fixes.fix_d8_direction(bounce_direction);
         state.fixes.fix_d6(deviate_distance as u8);
         state.fixes.fix_d6(3); //throw in length
         state.fixes.fix_d6(2); //throw in length
         state.fixes.fix_d3(2); //throw in direction: down
+        state.fixes.fix_d8_direction(bounce_direction);
         state.step_positional(PosAT::Pass, target_pos);
-        let mut expected_ball_pos = state.get_player_unsafe(passer_id).position;
-        expected_ball_pos.y = 5;
+        let expected_ball_pos = out_of_bounds_pos + Direction::down() * (3 + 2) + bounce_direction;
         assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
         assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
     }
