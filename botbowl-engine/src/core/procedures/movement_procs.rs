@@ -100,7 +100,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Proced
             casualty_procs::Armor::new_foul(victim, target, active_player)
         }
         PathingEvent::StandUp => StandUp::new(active_player),
-        PathingEvent::Pass { pos, pass } => ball_procs::Pass::new(pos, pass),
+        PathingEvent::Pass { to, pass, modifer } => ball_procs::Pass::new(to, pass, modifer),
     }
 }
 
@@ -641,9 +641,9 @@ mod tests {
         distance: i8,
     ) -> (GameState, Position, Position, Position) {
         assert!(distance > 1);
-        let start_pos = Position::new((7, 7));
-        let target_pos = Position::new((7 + distance, 7));
-        let away_player = Position::new((7 + distance / 2, 7));
+        let start_pos = Position::new((3, 3));
+        let target_pos = Position::new((3 + distance, 3));
+        let away_player = Position::new((3 + distance / 2, 3));
         let mut builder = GameStateBuilder::new();
         builder
             .add_home_player(start_pos)
@@ -653,6 +653,11 @@ mod tests {
             builder.add_away_player(away_player);
         }
         let mut state = builder.build();
+
+        //make sure player does not move
+        let id = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(id).moves = state.get_player_unsafe(id).total_movement_left();
+
         state.step_positional(PosAT::StartPass, start_pos);
         (state, start_pos, target_pos, away_player)
     }
@@ -678,6 +683,61 @@ mod tests {
         );
         assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
     }
+    #[test]
+    fn pass_inaccurate_turnover() {
+        let (mut state, _, target_pos, _) = setup_simple_pass(false, 7);
+        let bounce_direction = Direction::down();
+        state.fixes.fix_d6(4); //Pass failed
+        state.fixes.fix_d8_direction(bounce_direction); //Scatter
+        state.fixes.fix_d8_direction(bounce_direction); //Scatter
+        state.fixes.fix_d8_direction(bounce_direction); //Scatter
+        state.fixes.fix_d8_direction(bounce_direction); //Bounce
+        state.step_positional(PosAT::Pass, target_pos);
+        assert_eq!(
+            state.ball,
+            BallState::OnGround(target_pos + 4 * bounce_direction)
+        );
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+    }
+    #[test]
+    fn pass_wildly_inaccurate_turnover() {
+        let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 10);
+        let deviate_direction = Direction::down();
+        let bounce_direction = Direction::right();
+        let passer_id = state.get_player_id_at(start_pos).unwrap();
+        let deviate_distance = 3;
+        state.fixes.fix_d6(2); //Pass failed
+        state.fixes.fix_d8_direction(deviate_direction); //Scatter
+        state.fixes.fix_d8_direction(bounce_direction); //Scatter
+        state.fixes.fix_d6(deviate_distance as u8);
+        state.step_positional(PosAT::Pass, target_pos);
+        let expected_ball_pos = state.get_player_unsafe(passer_id).position
+            + deviate_distance * deviate_direction
+            + bounce_direction;
+        assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+    }
+    #[test]
+    fn pass_wildly_inaccurate_out_of_bounds() {
+        let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 10);
+        let deviate_direction = Direction::up();
+        let bounce_direction = Direction::right();
+        let passer_id = state.get_player_id_at(start_pos).unwrap();
+        let deviate_distance = 6;
+        state.fixes.fix_d6(2); //Pass failed
+        state.fixes.fix_d8_direction(deviate_direction);
+        state.fixes.fix_d8_direction(bounce_direction);
+        state.fixes.fix_d6(deviate_distance as u8);
+        state.fixes.fix_d6(3); //throw in length
+        state.fixes.fix_d6(2); //throw in length
+        state.fixes.fix_d3(2); //throw in direction: down
+        state.step_positional(PosAT::Pass, target_pos);
+        let mut expected_ball_pos = state.get_player_unsafe(passer_id).position;
+        expected_ball_pos.y = 5;
+        assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+    }
+
     #[test]
     fn pass_avoid_intercepts() {
         let mut field = "".to_string();

@@ -166,6 +166,13 @@ impl_enum_try_from! {
     (),
     ()
 }
+impl Add<i8> for D6 {
+    type Output = D6;
+
+    fn add(self, rhs: i8) -> Self::Output {
+        D6::try_from(truncate_to(1, 6, self as i8 + rhs) as u8).unwrap()
+    }
+}
 
 impl Distribution<D6> for Standard {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> D6 {
@@ -340,7 +347,8 @@ pub enum RequestedRoll {
     D8,
     FoulArmor(Sum2D6Target),
     FoulInjury(Sum2D6Target, Sum2D6Target),
-    Kick,
+    Deviate, // TODO: this should be called deviate
+    Scatter,
     Sum2D6,
     Sum2D6PassFail(Sum2D6Target),
     Sum2D6ThreeOutcomes(Sum2D6Target, Sum2D6Target),
@@ -364,7 +372,8 @@ pub enum RollResult {
     MiddleOutcome,
     D6(D6),
     D8(D8),
-    Kick(D6, D8),
+    Deviate(D6, D8),
+    Scatter(D8, D8, D8),
     Sum2D6(Sum2D6),
     ThrowIn {
         direction: D3,

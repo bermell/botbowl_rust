@@ -270,48 +270,71 @@ pub enum PassResult {
 pub struct Pass {
     pos: Position,
     pass: D6Target,
+    modifier: i8,
 }
 impl Pass {
-    pub fn new(pos: Position, pass: D6Target) -> Box<Pass> {
-        Box::new(Pass { pos, pass })
+    pub fn new(pos: Position, pass: D6Target, modifier: i8) -> Box<Pass> {
+        Box::new(Pass {
+            pos,
+            pass,
+            modifier,
+        })
     }
 }
 impl Procedure for Pass {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        let roll = match input {
-            ProcInput::Nothing => return ProcState::NeedRoll(RequestedRoll::D6),
-            ProcInput::Roll(RollResult::D6(dice)) => dice,
+        match input {
+            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+            ProcInput::Roll(RollResult::D6(roll)) if self.pass.is_success(roll) => {
+                // ACCURATE PASS
+                let from = game_state.get_ball_position().unwrap();
+                ProcState::DoneNewProcs(vec![
+                    TurnoverIfPossessionLost::new(),
+                    DeflectOrResolve::new(from, self.pos, PassResult::Accurate),
+                ])
+            }
+            ProcInput::Roll(RollResult::D6(D6::One)) => {
+                // FUMBLE
+                game_state.info.turnover = true;
+                ProcState::DoneNew(Bounce::new())
+            }
+            ProcInput::Roll(RollResult::D6(roll)) if roll + self.modifier == D6::One => {
+                // WILDLY INACCURATE PASSES
+                //  deviate (d8 * d6) from the square occupied by the player performing the Pass
+                ProcState::NeedRoll(RequestedRoll::Deviate)
+            }
+            ProcInput::Roll(RollResult::D6(_)) => {
+                //INACCURATE PASSES
+                // scatter (d8 + d8 + d8) from the target square before landing.
+                ProcState::NeedRoll(RequestedRoll::Scatter)
+            }
+            ProcInput::Roll(RollResult::Scatter(r1, r2, r3)) => {
+                let from = game_state.get_ball_position().unwrap();
+                let target =
+                    self.pos + Direction::from(r1) + Direction::from(r2) + Direction::from(r3);
+                if target.is_out() {
+                    panic!("out of bounds on scatter, left to implement")
+                }
+                ProcState::DoneNewProcs(vec![
+                    TurnoverIfPossessionLost::new(),
+                    DeflectOrResolve::new(from, target, PassResult::Inaccurate),
+                ])
+            }
+            ProcInput::Roll(RollResult::Deviate(distance, direction)) => {
+                let from = game_state.get_ball_position().unwrap();
+                let target = from + Direction::from(direction) * distance as i8;
+                if target.is_out() {
+                    panic!("out of bounds on deviate, left to implement")
+                }
+
+                ProcState::DoneNewProcs(vec![
+                    TurnoverIfPossessionLost::new(),
+                    DeflectOrResolve::new(from, target, PassResult::WildlyInaccurate),
+                ])
+            }
             ProcInput::Action(_) => todo!(),
             _ => panic!("Unexpected input {:?} for Pass", input),
-        };
-        //TODO: check for team and skill reroll
-        let (to, result) = if self.pass.is_success(roll) {
-            (self.pos, PassResult::Accurate)
-        } else if roll == D6::One {
-            game_state.info.turnover = true;
-            return ProcState::DoneNew(Bounce::new());
-        } else if roll == D6::Two {
-            todo!();
-            //INACCURATE PASSES
-            //If the Passing Ability test is failed, the pass is inaccurate and
-            //the ball will scatter from the target square before landing.
-            //turnover if possesiion lost
-            // interception
-        } else {
-            todo!();
-            // WILDLY INACCURATE PASSES
-            // If, when making the Passing Ability test, the dice roll is a 1 after
-            // modifiers have been applied, the ball will deviate from the square
-            // occupied by the player performing the Pass action before landing.
-            //turnover if possesiion lost
-            // interception
-        };
-        let from = game_state.get_ball_position().unwrap();
-        game_state.ball = BallState::InAir(to);
-        ProcState::DoneNewProcs(vec![
-            TurnoverIfPossessionLost::new(),
-            DeflectOrResolve::new(from, to, result),
-        ])
+        }
     }
 }
 #[derive(Debug)]
@@ -380,6 +403,7 @@ impl Procedure for DeflectOrResolve {
             let id = game_state.get_player_id_at(pos).unwrap();
             ProcState::DoneNew(Deflect::new(id, target, failed_deflect_proc))
         } else {
+            game_state.ball = BallState::InAir(self.to);
             ProcState::DoneNew(failed_deflect_proc)
         }
         //PASSING INTERFERENCE

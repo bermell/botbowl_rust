@@ -990,7 +990,7 @@ impl GameState {
             }
             RequestedRoll::D8 => RollResult::D8(self.get_d8_roll()),
             RequestedRoll::Coin => RollResult::Coin(self.get_coin_toss()),
-            RequestedRoll::Kick => RollResult::Kick(self.get_d6_roll(), self.get_d8_roll()),
+            RequestedRoll::Deviate => RollResult::Deviate(self.get_d6_roll(), self.get_d8_roll()),
             RequestedRoll::FoulArmor(target) => {
                 let roll1 = self.get_d6_roll();
                 let roll2 = self.get_d6_roll();
@@ -1024,6 +1024,9 @@ impl GameState {
                     *dice = Some(self.get_block_dice_roll());
                 }
                 RollResult::BlockDice(dices)
+            }
+            RequestedRoll::Scatter => {
+                RollResult::Scatter(self.get_d8_roll(), self.get_d8_roll(), self.get_d8_roll())
             }
         }
     }
@@ -1118,37 +1121,68 @@ impl GameState {
             .collect::<Vec<(Position, D6Target)>>()
     }
 
-    pub fn get_pass_target(&self, id: usize, position: Position, to: Position) -> Option<D6Target> {
+    pub fn get_pass_modifier(&self, id: usize, from: Position, to: Position) -> Option<i8> {
+        // TODO: move this whole function to pathing and cache it there.
         const MATRIX: [[i8; 14]; 14] = [
-            [0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4],
-            [1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4],
-            [1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 5],
-            [1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5],
-            [2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5],
-            [2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5],
-            [2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 5, 5],
-            [3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5],
-            [3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5],
-            [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5, 5],
-            [3, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5],
-            [4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
-            [4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5],
-            [4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+            [8, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3],
+            [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3],
+            [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 9],
+            [0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 9],
+            [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 9],
+            [1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 9, 9],
+            [1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 9, 9],
+            [2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 9, 9, 9],
+            [2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 9, 9, 9],
+            [2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 9, 9, 9, 9],
+            [2, 2, 2, 3, 3, 3, 3, 3, 3, 9, 9, 9, 9, 9],
+            [3, 3, 3, 3, 3, 3, 3, 9, 9, 9, 9, 9, 9, 9],
+            [3, 3, 3, 3, 3, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+            [3, 3, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
         ];
-        let Some(player) = self.get_player(id).ok() else {
-            //return None;
-            panic!("Player not found");
-        };
-        //TODO: this is probably wrong somehow
-        let delta = to - position;
+        // 8 - passing to oneself, not possible
+        // 9 - hail mary pass - skill not implemented
+        // 0 - quick pass
+        // 1 - short pass
+        // 2 - long pass
+        // 3 - long bomb
+
+        let delta = to - from;
         let (dx, dy) = (
             delta.dx.unsigned_abs() as usize,
             delta.dy.unsigned_abs() as usize,
         );
-        if dx >= 14 || dy >= 14 {
+        let distance_modifier = MATRIX.get(dx)?.get(dy)?;
+        if *distance_modifier == 8 {
+            panic!(
+                "Passing to oneself is not possible: from {} to {}",
+                from, to
+            );
+        } else if *distance_modifier == 9 {
+            println!("Too long pass!");
             return None;
         }
-        Some(*player.ag_target().add_modifer(-MATRIX[dx][dy]))
+
+        let Some(team) = self.get_player(id).ok().map(|p| p.stats.team) else {
+            //return None;
+            panic!("Player not found");
+        };
+        let tackle_zones = self
+            .get_adj_players(from)
+            .filter(|adj_p| adj_p.stats.team != team && adj_p.has_tackle_zone())
+            .count() as i8;
+        // TODO: weather effect
+        let sum_modifiers = -tackle_zones - *distance_modifier;
+        Some(sum_modifiers)
+    }
+    pub fn get_pass_target(&self, id: usize, from: Position, to: Position) -> Option<D6Target> {
+        let Some(player) = self.get_player(id).ok() else {
+            //return None;
+            panic!("Player not found");
+        };
+        let mut target = player.pass_target();
+        let modifiers = self.get_pass_modifier(id, from, to)?;
+        target.add_modifer(modifiers);
+        Some(target)
     }
 }
 

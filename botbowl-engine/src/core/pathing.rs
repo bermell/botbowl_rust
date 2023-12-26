@@ -19,7 +19,11 @@ pub enum PathingEvent {
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
-    Pass { pos: Position, pass: D6Target },
+    Pass {
+        to: Position,
+        pass: D6Target,
+        modifer: i8,
+    },
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
@@ -271,10 +275,11 @@ impl Node {
     }
     fn apply_pass(
         &mut self,
-        pos: Position,
+        to: Position,
         catch_target: D6Target,
         pass_target: D6Target,
         intercept: Option<D6Target>,
+        pass_modifer: i8,
     ) {
         // TODO: concider catch and pass skill (remember the intercep too!)
         self.prob *= catch_target.success_prob();
@@ -284,8 +289,9 @@ impl Node {
             self.prob *= 1.0 - intercept_target.success_prob();
         }
         self.events.push_back(PathingEvent::Pass {
-            pos,
+            to,
             pass: pass_target,
+            modifer: pass_modifer,
         })
     }
     fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
@@ -345,7 +351,20 @@ impl Node {
         if self.remaining_movement() > othr.remaining_movement() {
             return true;
         }
+        if self.manhattan_distance() < othr.manhattan_distance() {
+            return true;
+        }
         false
+    }
+
+    fn manhattan_distance(&self) -> i8 {
+        let mut node = self;
+        let mut distance = 0;
+        while let Some(parent) = &node.parent {
+            distance += parent.position.distance_to(&node.position);
+            node = parent;
+        }
+        distance
     }
 }
 
@@ -426,12 +445,12 @@ impl<'a> GameInfo<'a> {
                 // player is ball carrier and can handoff or pass
                 game_state
                     .get_players_on_pitch()
-                    .filter(|player| player.stats.team == team)
-                    .filter(|player| player.can_catch())
-                    .for_each(|player| {
-                        catch_mods[player.position] =
-                            Some(game_state.get_catch_target(player.id).unwrap())
+                    .filter(|p| p.stats.team == team)
+                    .filter(|p| p.can_catch())
+                    .for_each(|p| {
+                        catch_mods[p.position] = Some(game_state.get_catch_target(p.id).unwrap())
                     });
+                catch_mods[player.position] = None; // can't handoff or pass to self
             } else {
                 // If not ball carrier we don't care about handoff or pass
                 player_action = PosAT::StartMove;
@@ -454,9 +473,20 @@ impl<'a> GameInfo<'a> {
     }
     fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
         if node.remaining_movement() == 0
-            && !matches!(self.player_action, PosAT::StartFoul | PosAT::StartHandoff)
+            && !matches!(
+                self.player_action,
+                PosAT::StartFoul | PosAT::StartHandoff | PosAT::StartPass
+            )
         {
             return false;
+        }
+        match node.get_action_type() {
+            PosAT::Handoff => return false,
+            PosAT::Pass => return false,
+            PosAT::Foul => return false,
+            PosAT::Block => return false,
+            PosAT::Move => (),
+            _ => unreachable!("very wrong!"),
         }
         // todo: stop if block roll or handoff roll is set
 
@@ -642,6 +672,18 @@ impl<'a> GameInfo<'a> {
         prev: &OptRcNode,
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
+        if parent_node.position == to {
+            println!(
+                "very wrong.. {}, {:?}",
+                parent_node.position,
+                parent_node.get_action_type()
+            );
+            panic!(
+                "very wrong.. {}, {:?}",
+                parent_node.position,
+                parent_node.get_action_type()
+            );
+        }
 
         let Some(pass_target) = self
             .game_state
@@ -663,7 +705,11 @@ impl<'a> GameInfo<'a> {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 
-        next_node.apply_pass(to, catch_target, pass_target, best_intercept);
+        let modifier = self
+            .game_state
+            .get_pass_modifier(id, parent_node.position, to)
+            .unwrap();
+        next_node.apply_pass(to, catch_target, pass_target, best_intercept, modifier);
         // the Catch procedure will check fo touchdown
 
         if let Some(current_best) = prev {

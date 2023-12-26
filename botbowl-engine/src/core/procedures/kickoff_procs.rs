@@ -33,9 +33,9 @@ impl Procedure for Kickoff {
             }
             ProcInput::Action(Action::Simple(SimpleAT::KickoffAimMiddle)) => {
                 self.aim = game_state.get_best_kickoff_aim_for(game_state.info.kicking_this_drive);
-                return ProcState::NeedRoll(RequestedRoll::Kick);
+                return ProcState::NeedRoll(RequestedRoll::Deviate);
             }
-            ProcInput::Roll(RollResult::Kick(len_roll, dir_roll)) => (len_roll, dir_roll),
+            ProcInput::Roll(RollResult::Deviate(len_roll, dir_roll)) => (len_roll, dir_roll),
             _ => panic!("Unexpected input {:?}", input),
         };
 

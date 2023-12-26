@@ -265,6 +265,13 @@ impl Mul<i8> for Direction {
         }
     }
 }
+impl Mul<Direction> for i8 {
+    type Output = Direction;
+
+    fn mul(self, rhs: Direction) -> Self::Output {
+        rhs * self
+    }
+}
 impl Mul<i8> for Position {
     type Output = Position;
 
@@ -308,6 +315,7 @@ pub struct PlayerStats {
     pub str_: u8,
     pub ma: u8,
     pub ag: u8,
+    pass: D6Target,
     pub av: u8,
     pub team: TeamType,
     skills: HashSet<Skill>,
@@ -326,6 +334,7 @@ impl PlayerStats {
             team,
             skills: HashSet::new(),
             role: PlayerRole::Lineman,
+            pass: D6Target::FourPlus,
         }
     }
     pub fn new_blitzer(team: TeamType) -> PlayerStats {
@@ -337,6 +346,7 @@ impl PlayerStats {
             team,
             skills: HashSet::from_iter([Skill::Block]),
             role: PlayerRole::Blitzer,
+            pass: D6Target::FourPlus,
         }
     }
     pub fn new_catcher(team: TeamType) -> PlayerStats {
@@ -348,6 +358,7 @@ impl PlayerStats {
             team,
             skills: HashSet::from_iter([Skill::Dodge, Skill::Catch]),
             role: PlayerRole::Catcher,
+            pass: D6Target::FivePlus,
         }
     }
     pub fn new_thrower(team: TeamType) -> PlayerStats {
@@ -359,6 +370,7 @@ impl PlayerStats {
             team,
             skills: HashSet::from_iter([Skill::SureHands, Skill::Throw]),
             role: PlayerRole::Thrower,
+            pass: D6Target::TwoPlus,
         }
     }
     pub fn give_skill(&mut self, skill: Skill) {
@@ -390,18 +402,6 @@ pub struct FieldedPlayer {
     pub used: bool,
     pub moves: u8,
     pub used_skills: HashSet<Skill>,
-    //bone_headed: bool
-    //hypnotized: bool
-    //really_stupid: bool
-    //wild_animal: bool
-    //taken_root: bool
-    //blood_lust: bool
-    //picked_up: bool
-    //used_skills: Set[Skill]
-    //used_dodge: bool,
-    //used_catch: bool,
-    //squares_moved: List['Square'] //might need this
-    //has_blocked: bool
 }
 impl FieldedPlayer {
     pub fn armor_target(&self) -> Sum2D6Target {
@@ -410,6 +410,10 @@ impl FieldedPlayer {
 
     pub fn ag_target(&self) -> D6Target {
         D6Target::try_from(7 - self.stats.ag).unwrap()
+    }
+
+    pub fn pass_target(&self) -> D6Target {
+        self.stats.pass
     }
 
     pub fn can_catch(&self) -> bool {
