@@ -939,9 +939,10 @@ impl GameState {
                 }
             };
 
-            self.log(format!("STEPPING: {:?}", top_proc));
             if matches!(proc_input, ProcInput::Roll(_)) {
-                self.log(format!("  input:    {:?}", proc_input));
+                self.log(format!("STEPPING again with:   {:?}", proc_input));
+            } else {
+                self.log(format!("STEPPING: {:?}", top_proc));
             }
 
             top_proc_state = top_proc.step(self, proc_input);

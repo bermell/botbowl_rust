@@ -671,6 +671,18 @@ mod tests {
         assert_eq!(state.ball, BallState::Carried(carrier_id));
     }
     #[test]
+    fn pass_successful_intercepted() {
+        let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
+        assert_eq!(interceptor, Position::new((5, 3)));
+        let interceptor_id = state.get_player_id_at(interceptor).unwrap();
+        state.fixes.fix_d6(6); //Pass
+        state.fixes.fix_d6(6); //deflect
+        state.fixes.fix_d6(6); //Catch
+        state.step_positional(PosAT::Pass, target_pos);
+        assert_eq!(state.ball, BallState::Carried(interceptor_id));
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+    }
+    #[test]
     fn pass_fumbled() {
         let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 2);
         let bounce_direction = Direction::up();

@@ -375,7 +375,7 @@ impl DeflectOrResolve {
 }
 impl Procedure for DeflectOrResolve {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        let deflect_team = game_state.get_active_teamtype().unwrap();
+        let deflect_team = other_team(game_state.get_active_teamtype().unwrap());
         let interceptor: Option<(Position, D6Target)> = match input {
             ProcInput::Nothing => {
                 self.intercepters = game_state.get_intercepters(deflect_team, self.from, self.to);
