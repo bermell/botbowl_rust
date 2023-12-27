@@ -487,6 +487,7 @@ impl SimpleProc for Deflect {
     }
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+        game_state.ball = BallState::InAir(game_state.get_player_unsafe(self.id).position);
         let mut catch_target = game_state.get_catch_target(self.id).unwrap();
         vec![Catch::new(self.id, *catch_target.add_modifer(-1))]
     }

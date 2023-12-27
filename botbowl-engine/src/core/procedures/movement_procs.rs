@@ -683,6 +683,22 @@ mod tests {
         assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
     }
     #[test]
+    fn pass_successful_deflect_failed_catch() {
+        let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
+        assert_eq!(interceptor, Position::new((5, 3)));
+        state.fixes.fix_d6(6); //Pass
+        state.fixes.fix_d6(6); //deflect
+        state.fixes.fix_d6(1); //Catch
+        state.step_positional(PosAT::Pass, target_pos);
+        state.fixes.fix_d8_direction(Direction::up()); //Catch
+        state.step_simple(SimpleAT::DontUseReroll);
+        assert_eq!(
+            state.ball,
+            BallState::OnGround(interceptor + Direction::up())
+        );
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+    }
+    #[test]
     fn pass_fumbled() {
         let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 2);
         let bounce_direction = Direction::up();
