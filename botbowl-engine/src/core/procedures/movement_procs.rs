@@ -668,21 +668,20 @@ mod tests {
         field += "  a   a\n";
         let start_pos = Position::new((2, 1));
         let target_pos = start_pos + Direction::right() * 4;
+        let deflect_pos = start_pos + Direction::right() * 2;
         let mut state = GameStateBuilder::new().add_str(start_pos, &field).build();
         let id = state.get_player_id_at(start_pos).unwrap();
         state.get_mut_player_unsafe(id).moves = state.get_player_unsafe(id).total_movement_left();
         state.step_positional(PosAT::StartPass, start_pos);
         state.fixes.fix_d6(6); //Pass
         state.step_positional(PosAT::Pass, target_pos);
-        state.fixes.fix_d6(1); //deflect
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
-        state.step_positional(PosAT::SelectPosition, start_pos + Direction::right() * 2);
+        state.fixes.fix_d6(6); //deflect
         state.fixes.fix_d6(6); //Catch
         assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
-        state.step_simple(SimpleAT::DontUseReroll);
-        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        state.step_positional(PosAT::SelectPosition, deflect_pos);
+        let carrier_id = state.get_player_id_at(deflect_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Home);
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_successful() {
