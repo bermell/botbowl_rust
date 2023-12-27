@@ -669,6 +669,7 @@ mod tests {
         state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Home);
     }
     #[test]
     fn pass_successful_intercepted() {
@@ -697,6 +698,19 @@ mod tests {
             BallState::OnGround(interceptor + Direction::up())
         );
         assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+    }
+    #[test]
+    fn pass_failed_deflect() {
+        let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
+        assert_eq!(interceptor, Position::new((5, 3)));
+        state.fixes.fix_d6(6); //Pass
+        state.fixes.fix_d6(1); //deflect
+        state.step_positional(PosAT::Pass, target_pos);
+        state.fixes.fix_d6(6); //Catch
+        state.step_simple(SimpleAT::DontUseReroll);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Home);
     }
     #[test]
     fn pass_fumbled() {
