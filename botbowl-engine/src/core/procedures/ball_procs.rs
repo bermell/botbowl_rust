@@ -380,8 +380,10 @@ impl Procedure for DeflectOrResolve {
             ProcInput::Nothing => {
                 self.intercepters = game_state.get_intercepters(deflect_team, self.from, self.to);
                 if self.intercepters.is_empty() {
+                    println!("no intercepters");
                     None
                 } else if self.intercepters.len() == 1 {
+                    println!("only one intercepter");
                     Some(self.intercepters[0])
                 } else {
                     let mut aa = AvailableActions::new(deflect_team);

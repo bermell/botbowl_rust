@@ -662,6 +662,29 @@ mod tests {
         (state, start_pos, target_pos, away_player)
     }
     #[test]
+    fn pass_selecting_interceptor() {
+        let mut field = "".to_string();
+        field += "H aah  \n";
+        field += "  a   a\n";
+        let start_pos = Position::new((2, 1));
+        let target_pos = start_pos + Direction::right() * 4;
+        let mut state = GameStateBuilder::new().add_str(start_pos, &field).build();
+        let id = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(id).moves = state.get_player_unsafe(id).total_movement_left();
+        state.step_positional(PosAT::StartPass, start_pos);
+        state.fixes.fix_d6(6); //Pass
+        state.step_positional(PosAT::Pass, target_pos);
+        state.fixes.fix_d6(1); //deflect
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        state.step_positional(PosAT::SelectPosition, start_pos + Direction::right() * 2);
+        state.fixes.fix_d6(6); //Catch
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        state.step_simple(SimpleAT::DontUseReroll);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Home);
+    }
+    #[test]
     fn pass_successful() {
         let (mut state, _, target_pos, _) = setup_simple_pass(false, 2);
         state.fixes.fix_d6(6); //Pass

@@ -472,13 +472,16 @@ impl<'a> GameInfo<'a> {
         }
     }
     fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
-        if node.remaining_movement() == 0
-            && !matches!(
-                self.player_action,
-                PosAT::StartFoul | PosAT::StartHandoff | PosAT::StartPass
-            )
-        {
-            return false;
+        if node.remaining_movement() == 0 {
+            let is_foul = self.player_action == PosAT::StartFoul;
+            let can_do_ball_action = matches!(self.ball, PathingBallState::IsCarrier(_))
+                && matches!(self.player_action, PosAT::StartHandoff | PosAT::StartPass);
+
+            if is_foul || can_do_ball_action {
+                // do nothing, continue be checks below
+            } else {
+                return false;
+            }
         }
         match node.get_action_type() {
             PosAT::Handoff => return false,
@@ -486,9 +489,8 @@ impl<'a> GameInfo<'a> {
             PosAT::Foul => return false,
             PosAT::Block => return false,
             PosAT::Move => (),
-            _ => unreachable!("very wrong!"),
+            _ => panic!("very wrong!"),
         }
-        // todo: stop if block roll or handoff roll is set
 
         match self.ball {
             PathingBallState::IsCarrier(endzone_x) if endzone_x == node.position.x => false,
