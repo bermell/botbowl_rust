@@ -1043,25 +1043,25 @@ impl GameState {
         from: Position,
         to: Position,
     ) -> impl Iterator<Item = Position> {
-        let from_y = from.y as i16;
+        let fr_y = from.y as i16;
         let to_y = to.y as i16;
-        let from_x = from.x as i16;
+        let fr_x = from.x as i16;
         let to_x = to.x as i16;
-        let max_x = max(from_x, to_x) + 3;
-        let min_x = min(from_x, to_x) - 3;
-        let max_y = max(from_y, to_y) + 3;
-        let min_y = min(from_y, to_y) - 3;
+        let max_x = max(fr_x, to_x) + 3;
+        let min_x = min(fr_x, to_x) - 3;
+        let max_y = max(fr_y, to_y) + 3;
+        let min_y = min(fr_y, to_y) - 3;
         let dx = (to.x - from.x) as i16;
         let dy = (to.y - from.y) as i16;
         let distance_squared = dx * dx + dy * dy;
-        let distance_inv = (distance_squared as f32).sqrt();
+        let distance = (distance_squared as f32).sqrt();
 
         ((min_x)..=(max_x))
             .cartesian_product((min_y)..=(max_y))
-            .filter(move |(x, y)| ((*x - from_x).pow(2) + (*y - from_y).pow(2)) <= distance_squared)
+            .filter(move |(x, y)| ((*x - fr_x).pow(2) + (*y - fr_y).pow(2)) <= distance_squared)
             .filter(move |(x, y)| ((*x - to_x).pow(2) + (*y - to_y).pow(2)) <= distance_squared)
             .filter(move |(x, y)| {
-                1.0 >= (((from_x - x) * dy + (from_y - y) * dx).abs() as f32 / distance_inv)
+                1.5 >= ((to_x - x) * dy - (to_y - y) * dx).abs() as f32 / distance
             })
             .map(|(x, y)| Position::new((x as i8, y as i8)))
             .filter(|pos| !pos.is_out())
@@ -1168,68 +1168,82 @@ mod gamestate_tests {
 
     #[test]
     fn interception_positions() {
-        let s = [
-            ".......................",
-            ".......................",
-            ".....oo.................",
-            "....XooX...............",
-            ".....oo................",
-            ".......................",
+        let correct_thing = [
+            [
+                ".......................",
+                ".......................",
+                ".....oo.................",
+                "....XooX...............",
+                ".....oo................",
+                ".......................",
+            ],
+            [
+                ".......................",
+                "......o................",
+                "....oooX................",
+                "....Xooo..............",
+                ".....o...............",
+                ".......................",
+            ],
         ];
-        let mut to_from = Vec::new();
-        let mut correct_intercepters = HashSet::new();
-        for (y, line) in s.iter().enumerate() {
-            for (x, c) in line.chars().enumerate() {
-                let p = Position::new((x as i8 + 2, y as i8 + 2));
-                if c == 'X' {
-                    to_from.push(p);
-                } else if c == 'o' {
-                    correct_intercepters.insert(p);
+        for s in correct_thing {
+            let mut to_from = Vec::new();
+            let mut correct_intercepters = HashSet::new();
+            for (y, line) in s.iter().enumerate() {
+                for (x, c) in line.chars().enumerate() {
+                    let p = Position::new((x as i8 + 2, y as i8 + 2));
+                    if c == 'X' {
+                        to_from.push(p);
+                    } else if c == 'o' {
+                        correct_intercepters.insert(p);
+                    }
                 }
             }
-        }
 
-        assert!(to_from.len() == 2);
-        let to = to_from.pop().unwrap();
-        let from = to_from.pop().unwrap();
-        println!("from: {:?}, to: {:?}", from, to);
+            assert!(to_from.len() == 2);
+            let from = to_from.pop().unwrap();
+            let to = to_from.pop().unwrap();
 
-        let calc_intercepters =
-            GameState::get_interception_positions(from, to).collect::<HashSet<Position>>();
-        // assert_eq!(calc_intercepters, correct_intercepters);
-        if calc_intercepters != correct_intercepters {
-            // create ss, a clone of s.
-            println!("calc_intercepters: {:?}", calc_intercepters);
-            let mut ss: Vec<Vec<char>> = (0..HEIGHT_).map(|_| vec!['.'; WIDTH]).collect();
-            let correctly_addeds = correct_intercepters.intersection(&calc_intercepters);
-            println!("correctly_addeds: {:?}", correctly_addeds);
-            let wrongly_addeds = calc_intercepters.difference(&correct_intercepters);
-            println!("wrongly_addeds: {:?}", wrongly_addeds);
-            for wrongly_added in wrongly_addeds {
-                assert!(!wrongly_added.is_out());
-                let (x, y) = wrongly_added.to_usize().unwrap();
-                ss[y][x] = 'W';
+            let calc_intercepters =
+                GameState::get_interception_positions(from, to).collect::<HashSet<Position>>();
+            // assert_eq!(calc_intercepters, correct_intercepters);
+            if calc_intercepters != correct_intercepters {
+                // create ss, a clone of s.
+                println!("from: {:?}, to: {:?}", from, to);
+                println!("calc_intercepters: {:?}", calc_intercepters);
+                let mut ss: Vec<Vec<char>> = (0..HEIGHT_).map(|_| vec!['.'; WIDTH]).collect();
+                let correctly_addeds = correct_intercepters.intersection(&calc_intercepters);
+                println!("correctly_addeds: {:?}", correctly_addeds);
+                let wrongly_addeds = calc_intercepters.difference(&correct_intercepters);
+                println!("wrongly_addeds: {:?}", wrongly_addeds);
+                for wrongly_added in wrongly_addeds {
+                    assert!(!wrongly_added.is_out());
+                    let (x, y) = wrongly_added.to_usize().unwrap();
+                    ss[y][x] = 'a';
+                }
+                let wrongly_missings = correct_intercepters.difference(&calc_intercepters);
+                println!("wrongly_missings: {:?}", wrongly_missings);
+                for wrongly_missing in wrongly_missings {
+                    assert!(!wrongly_missing.is_out());
+                    let (x, y) = wrongly_missing.to_usize().unwrap();
+                    ss[y][x] = 'm';
+                }
+                let (x, y) = from.to_usize().unwrap();
+                ss[y][x] = 'X';
+                let (x, y) = to.to_usize().unwrap();
+                ss[y][x] = 'X';
+
+                let error_strs: Vec<String> = ss
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| {
+                        format!("{}: {}", i, line.iter().collect::<String>()).to_string()
+                    })
+                    .filter(|s| s.contains('a') || s.contains('m') || s.contains('X'))
+                    .collect();
+                let error_str: String = error_strs.join("\n");
+                assert_eq!(calc_intercepters, correct_intercepters, "\n{}\n", error_str);
             }
-            let wrongly_missings = correct_intercepters.difference(&calc_intercepters);
-            println!("wrongly_missings: {:?}", wrongly_missings);
-            for wrongly_missing in wrongly_missings {
-                assert!(!wrongly_missing.is_out());
-                let (x, y) = wrongly_missing.to_usize().unwrap();
-                ss[y][x] = 'M';
-            }
-            let (x, y) = from.to_usize().unwrap();
-            ss[y][x] = 'X';
-            let (x, y) = to.to_usize().unwrap();
-            ss[y][x] = 'X';
-
-            let error_strs: Vec<String> = ss
-                .iter()
-                .enumerate()
-                .map(|(i, line)| format!("{}: {}", i, line.iter().collect::<String>()).to_string())
-                .filter(|s| s.contains('W') || s.contains('M') || s.contains('X'))
-                .collect();
-            let error_str: String = error_strs.join("\n");
-            assert_eq!(calc_intercepters, correct_intercepters, "\n{}\n", error_str);
         }
     }
 
