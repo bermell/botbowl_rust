@@ -1,9 +1,11 @@
 use core::panic;
+use itertools::Itertools;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use std::{
+    cmp::{max, min},
     collections::{HashSet, VecDeque},
-    usize,
+    f32, usize,
 };
 
 use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
@@ -17,56 +19,6 @@ use super::{
     table::{NumBlockDices, PosAT, SimpleAT},
 };
 
-fn get_line(start: (i8, i8), end: (i8, i8)) -> Vec<(i8, i8)> {
-    // Bresenham's Line Algorithm
-    // Produces a list of tuples from start and end
-    //
-    // >>> points1 = get_line((0, 0), (3, 4))
-    // >>> points2 = get_line((3, 4), (0, 0))
-    // >>> assert(set(points1) == set(points2))
-    // >>> print points1
-    // [(0, 0), (1, 1), (1, 3), (3, 3), (3, 4)]
-    // >>> print points2
-    // [(3, 4), (3, 3), (1, 3), (1, 1), (0, 0)]
-
-    let (mut x1, mut y1) = start;
-    let (mut x2, mut y2) = end;
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-
-    let is_steep = dy.abs() > dx.abs();
-
-    if is_steep {
-        std::mem::swap(&mut x1, &mut y1);
-        std::mem::swap(&mut x2, &mut y2);
-    }
-
-    if x1 > x2 {
-        std::mem::swap(&mut x1, &mut x2);
-        std::mem::swap(&mut y1, &mut y2);
-    }
-
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-
-    let mut error = dx / 2;
-    let ystep = if y1 < y2 { 1 } else { -1 };
-
-    let mut y = y1;
-    let mut points = Vec::new();
-
-    for x in x1..=x2 {
-        let coord = if is_steep { (y, x) } else { (x, y) };
-        points.push(coord);
-        error -= dy.abs();
-        if error < 0 {
-            y += ystep;
-            error += dx;
-        }
-    }
-
-    points
-}
 pub enum BuilderState {
     Turn { turn: u8 },
     Setup { turn: u8 },
@@ -1087,38 +1039,48 @@ impl GameState {
         self.fixes.assert_is_empty();
     }
 
+    pub fn get_interception_positions(
+        from: Position,
+        to: Position,
+    ) -> impl Iterator<Item = Position> {
+        let from_y = from.y as i16;
+        let to_y = to.y as i16;
+        let from_x = from.x as i16;
+        let to_x = to.x as i16;
+        let max_x = max(from_x, to_x) + 3;
+        let min_x = min(from_x, to_x) - 3;
+        let max_y = max(from_y, to_y) + 3;
+        let min_y = min(from_y, to_y) - 3;
+        let dx = (to.x - from.x) as i16;
+        let dy = (to.y - from.y) as i16;
+        let distance_squared = dx * dx + dy * dy;
+        let distance_inv = (distance_squared as f32).sqrt();
+
+        ((min_x)..=(max_x))
+            .cartesian_product((min_y)..=(max_y))
+            .filter(move |(x, y)| ((*x - from_x).pow(2) + (*y - from_y).pow(2)) <= distance_squared)
+            .filter(move |(x, y)| ((*x - to_x).pow(2) + (*y - to_y).pow(2)) <= distance_squared)
+            .filter(move |(x, y)| {
+                1.0 >= (((from_x - x) * dy + (from_y - y) * dx).abs() as f32 / distance_inv)
+            })
+            .map(|(x, y)| Position::new((x as i8, y as i8)))
+            .filter(|pos| !pos.is_out())
+            .filter(move |pos| *pos != from && *pos != to)
+    }
+
     pub fn get_intercepters(
         &self,
         team: TeamType,
         from: Position,
         to: Position,
     ) -> Vec<(Position, D6Target)> {
-        let max_distance = from.distance_to(&to);
-        let max_x = std::cmp::max(from.x, to.x);
-        let min_x = std::cmp::min(from.x, to.x);
-        let max_y = std::cmp::max(from.y, to.y);
-        let min_y = std::cmp::min(from.y, to.y);
-
-        let mut intercept_positions = get_line((from.x, from.y), (to.x, to.y))
-            .iter()
-            .map(|(x, y)| Position::new((*x, *y)))
-            .flat_map(|pos| Direction::all_directions_iter().map(move |dir| pos + *dir))
-            .filter(|pos| !pos.is_out())
-            .collect::<HashSet<Position>>();
-        intercept_positions.remove(&from);
-        intercept_positions.remove(&to);
-        intercept_positions
-            .iter()
-            .filter(|p| {
-                p.distance_to(&from) <= max_distance && p.distance_to(&to) <= max_distance && {
-                    p.x <= max_x && p.x >= min_x && p.y <= max_y && p.y >= min_y
-                }
-            })
+        // TODO: thos function needs tests!!!
+        GameState::get_interception_positions(from, to)
             .filter_map(|pos| {
-                self.get_player_at(*pos)
+                self.get_player_at(pos)
                     .filter(|p| p.stats.team == team && p.can_catch())
                     .and_then(|p| self.get_catch_target(p.id).ok())
-                    .map(|target| (*pos, target))
+                    .map(|target| (pos, target))
             })
             .collect::<Vec<(Position, D6Target)>>()
     }
@@ -1194,7 +1156,8 @@ mod gamestate_tests {
             dices::D6,
             gamestate::{BuilderState, GameState},
             model::{
-                BallState, DugoutPlace, PlayerStats, Position, Result, TeamType, HEIGHT_, WIDTH_,
+                BallState, DugoutPlace, PlayerStats, Position, Result, TeamType, HEIGHT_, WIDTH,
+                WIDTH_,
             },
         },
         standard_state,
@@ -1202,6 +1165,73 @@ mod gamestate_tests {
     use std::{collections::HashSet, iter::repeat_with};
 
     use super::GameStateBuilder;
+
+    #[test]
+    fn interception_positions() {
+        let s = [
+            ".......................",
+            ".......................",
+            ".....oo.................",
+            "....XooX...............",
+            ".....oo................",
+            ".......................",
+        ];
+        let mut to_from = Vec::new();
+        let mut correct_intercepters = HashSet::new();
+        for (y, line) in s.iter().enumerate() {
+            for (x, c) in line.chars().enumerate() {
+                let p = Position::new((x as i8 + 2, y as i8 + 2));
+                if c == 'X' {
+                    to_from.push(p);
+                } else if c == 'o' {
+                    correct_intercepters.insert(p);
+                }
+            }
+        }
+
+        assert!(to_from.len() == 2);
+        let to = to_from.pop().unwrap();
+        let from = to_from.pop().unwrap();
+        println!("from: {:?}, to: {:?}", from, to);
+
+        let calc_intercepters =
+            GameState::get_interception_positions(from, to).collect::<HashSet<Position>>();
+        // assert_eq!(calc_intercepters, correct_intercepters);
+        if calc_intercepters != correct_intercepters {
+            // create ss, a clone of s.
+            println!("calc_intercepters: {:?}", calc_intercepters);
+            let mut ss: Vec<Vec<char>> = (0..HEIGHT_).map(|_| vec!['.'; WIDTH]).collect();
+            let correctly_addeds = correct_intercepters.intersection(&calc_intercepters);
+            println!("correctly_addeds: {:?}", correctly_addeds);
+            let wrongly_addeds = calc_intercepters.difference(&correct_intercepters);
+            println!("wrongly_addeds: {:?}", wrongly_addeds);
+            for wrongly_added in wrongly_addeds {
+                assert!(!wrongly_added.is_out());
+                let (x, y) = wrongly_added.to_usize().unwrap();
+                ss[y][x] = 'W';
+            }
+            let wrongly_missings = correct_intercepters.difference(&calc_intercepters);
+            println!("wrongly_missings: {:?}", wrongly_missings);
+            for wrongly_missing in wrongly_missings {
+                assert!(!wrongly_missing.is_out());
+                let (x, y) = wrongly_missing.to_usize().unwrap();
+                ss[y][x] = 'M';
+            }
+            let (x, y) = from.to_usize().unwrap();
+            ss[y][x] = 'X';
+            let (x, y) = to.to_usize().unwrap();
+            ss[y][x] = 'X';
+
+            let error_strs: Vec<String> = ss
+                .iter()
+                .enumerate()
+                .map(|(i, line)| format!("{}: {}", i, line.iter().collect::<String>()).to_string())
+                .filter(|s| s.contains('W') || s.contains('M') || s.contains('X'))
+                .collect();
+            let error_str: String = error_strs.join("\n");
+            assert_eq!(calc_intercepters, correct_intercepters, "\n{}\n", error_str);
+        }
+    }
 
     #[test]
     fn kickoff_position() {

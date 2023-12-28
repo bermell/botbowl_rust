@@ -148,12 +148,17 @@ impl Direction {
     }
 }
 
-#[derive(Debug, Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     pub x: Coord,
     pub y: Coord,
 }
 impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+impl fmt::Debug for Position {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "({}, {})", self.x, self.y)
     }
