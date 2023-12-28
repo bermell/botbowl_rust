@@ -1061,7 +1061,7 @@ impl GameState {
             .filter(move |(x, y)| ((*x - fr_x).pow(2) + (*y - fr_y).pow(2)) <= distance_squared)
             .filter(move |(x, y)| ((*x - to_x).pow(2) + (*y - to_y).pow(2)) <= distance_squared)
             .filter(move |(x, y)| {
-                1.5 >= ((to_x - x) * dy - (to_y - y) * dx).abs() as f32 / distance
+                1.2 >= ((to_x - x) * dy - (to_y - y) * dx).abs() as f32 / distance
             })
             .map(|(x, y)| Position::new((x as i8, y as i8)))
             .filter(|pos| !pos.is_out())
@@ -1151,6 +1151,8 @@ impl GameState {
 
 #[cfg(test)]
 mod gamestate_tests {
+    use itertools::Itertools;
+
     use crate::{
         core::{
             dices::D6,
@@ -1167,6 +1169,19 @@ mod gamestate_tests {
     use super::GameStateBuilder;
 
     #[test]
+    fn symmetric_interception_positions() {
+        for (dx, dy) in (0..14).cartesian_product(0..14) {
+            let from = Position::new((3, 3));
+            let to = from + (dx, dy);
+            let to_from = GameState::get_interception_positions(from, to);
+            let from_to = GameState::get_interception_positions(to, from);
+            assert_eq!(
+                to_from.collect::<HashSet<_>>(),
+                from_to.collect::<HashSet<_>>()
+            );
+        }
+    }
+    #[test]
     fn interception_positions() {
         let correct_thing = [
             [
@@ -1176,13 +1191,33 @@ mod gamestate_tests {
                 "....XooX...............",
                 ".....oo................",
                 ".......................",
+                ".......................",
             ],
             [
                 ".......................",
-                "......o................",
+                ".......................",
+                ".......................",
                 "....oooX................",
                 "....Xooo..............",
-                ".....o...............",
+                ".....................",
+                ".......................",
+            ],
+            [
+                ".......................",
+                ".......................",
+                ".....ooX...............",
+                "....oooo................",
+                "....Xoo...............",
+                ".....................",
+                ".......................",
+            ],
+            [
+                ".......................",
+                "......oX...............",
+                ".....ooo...............",
+                "....ooo.................",
+                "....Xo................",
+                ".....................",
                 ".......................",
             ],
         ];
@@ -1242,6 +1277,7 @@ mod gamestate_tests {
                     .filter(|s| s.contains('a') || s.contains('m') || s.contains('X'))
                     .collect();
                 let error_str: String = error_strs.join("\n");
+                println!("correct thing:\n{}\n", s.iter().join("\n"));
                 assert_eq!(calc_intercepters, correct_intercepters, "\n{}\n", error_str);
             }
         }
