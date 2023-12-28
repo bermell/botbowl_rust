@@ -1047,12 +1047,12 @@ impl GameState {
         let to_y = to.y as i16;
         let fr_x = from.x as i16;
         let to_x = to.x as i16;
-        let max_x = max(fr_x, to_x) + 3;
-        let min_x = min(fr_x, to_x) - 3;
-        let max_y = max(fr_y, to_y) + 3;
-        let min_y = min(fr_y, to_y) - 3;
-        let dx = (to.x - from.x) as i16;
-        let dy = (to.y - from.y) as i16;
+        let max_x = max(fr_x, to_x) + 1;
+        let min_x = min(fr_x, to_x) - 1;
+        let max_y = max(fr_y, to_y) + 1;
+        let min_y = min(fr_y, to_y) - 1;
+        let dx = to_x - fr_x;
+        let dy = to_y - fr_y;
         let distance_squared = dx * dx + dy * dy;
         let distance = (distance_squared as f32).sqrt();
 
