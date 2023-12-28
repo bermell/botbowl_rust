@@ -1231,6 +1231,8 @@ mod gamestate_tests {
                         to_from.push(p);
                     } else if c == 'o' {
                         correct_intercepters.insert(p);
+                    } else {
+                        assert_eq!(c, '.');
                     }
                 }
             }
@@ -1277,8 +1279,13 @@ mod gamestate_tests {
                     .filter(|s| s.contains('a') || s.contains('m') || s.contains('X'))
                     .collect();
                 let error_str: String = error_strs.join("\n");
-                println!("correct thing:\n{}\n", s.iter().join("\n"));
-                assert_eq!(calc_intercepters, correct_intercepters, "\n{}\n", error_str);
+                assert_eq!(
+                    calc_intercepters,
+                    correct_intercepters,
+                    "\n{}\n\nshould have been\n{}\n",
+                    error_str,
+                    s.iter().join("\n")
+                );
             }
         }
     }
