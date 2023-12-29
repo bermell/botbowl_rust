@@ -13,7 +13,7 @@ use crate::core::table::{PosAT, Skill};
 
 use super::{AnyProc, TurnoverIfPossessionLost};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PickupProc {
     target: D6Target,
     id: PlayerID,
@@ -51,7 +51,7 @@ impl SimpleProc for PickupProc {
         self.id
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Bounce {
     kick: bool,
 }
@@ -99,7 +99,7 @@ impl Procedure for Bounce {
         }
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ThrowIn {
     from: Position,
 }
@@ -164,7 +164,7 @@ impl Procedure for ThrowIn {
         }
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Catch {
     id: PlayerID,
     target: D6Target,
@@ -208,7 +208,7 @@ impl SimpleProc for Catch {
         self.id
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Touchback {}
 impl Touchback {
     pub fn new() -> AnyProc {
@@ -233,7 +233,7 @@ impl Procedure for Touchback {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Touchdown {
     id: PlayerID,
 }
@@ -257,7 +257,7 @@ impl Procedure for Touchdown {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub enum PassResult {
     Accurate,
     Inaccurate,
@@ -265,7 +265,7 @@ pub enum PassResult {
     Fumble,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pass {
     pos: Position,
     pass: D6Target,
@@ -348,7 +348,7 @@ impl Procedure for Pass {
         }
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DeflectOrResolve {
     from: Position,
     to: Position,
@@ -450,7 +450,7 @@ impl Procedure for DeflectOrResolve {
         // In a square that is at least partially beneath the range ruler when placed as described above.
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Deflect {
     id: PlayerID,
     target: D6Target,

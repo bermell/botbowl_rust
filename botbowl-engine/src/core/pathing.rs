@@ -111,13 +111,13 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
     }
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub enum PositionOrEvent {
     Position(Position),
     Event(PathingEvent),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct NodeIterator {
     stack: Vec<PositionOrEvent>,
 }

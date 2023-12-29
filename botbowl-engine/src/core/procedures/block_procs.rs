@@ -12,13 +12,13 @@ use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
 use super::AnyProc;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 enum PushSquares {
     Crowd(Position),
     ChainPush(Vec<Position>),
     FreeSquares(Vec<Position>),
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Push {
     from: Position,
     on: Position,
@@ -142,7 +142,7 @@ impl Procedure for Push {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct FollowUp {
     to: Position,
     //from is active player,
@@ -181,7 +181,7 @@ impl Procedure for FollowUp {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct KnockDown {
     id: PlayerID,
 }
@@ -214,7 +214,7 @@ impl Procedure for KnockDown {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct BlockAction {}
 
 impl BlockAction {
@@ -263,7 +263,7 @@ impl Procedure for BlockAction {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Block {
     dices: NumBlockDices,
     defender: PlayerID,

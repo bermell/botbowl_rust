@@ -393,14 +393,14 @@ pub enum DugoutPlace {
     Ejected,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
     pub id: DugoutPlayerID,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FieldedPlayer {
     pub id: PlayerID,
     pub stats: PlayerStats,

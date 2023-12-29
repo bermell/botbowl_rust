@@ -17,7 +17,7 @@ use crate::core::procedures::kickoff_procs::{
 use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp};
 
 use crate::core::procedures::procedure_tools::SimpleProcContainer;
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub enum AnyProc {
     Armor(Armor),
     Block(Block),

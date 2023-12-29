@@ -14,7 +14,7 @@ use crate::core::{dices::D6Target, gamestate::GameState};
 
 use super::AnyProc;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Half {
     pub half: u8,
     pub started: bool,
@@ -114,7 +114,7 @@ impl Procedure for Half {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TurnStunned {}
 impl TurnStunned {
     pub fn new() -> AnyProc {
@@ -135,7 +135,7 @@ impl Procedure for TurnStunned {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Turn {
     pub team: TeamType,
 }
@@ -230,7 +230,7 @@ impl Procedure for Turn {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct GameOver;
 impl GameOver {
     pub fn new() -> AnyProc {
@@ -252,7 +252,7 @@ impl Procedure for GameOver {
         ProcState::NeedAction(aa)
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct KOWakeUp {
     ids: Vec<DugoutPlayerID>,
 }
@@ -291,7 +291,7 @@ impl Procedure for KOWakeUp {
         }
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CoinToss {
     choosen_action: SimpleAT,
 }
@@ -328,7 +328,7 @@ impl Procedure for CoinToss {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ChooseKickReceive {
     coin_toss_winner: TeamType,
 }
@@ -362,7 +362,7 @@ impl Procedure for ChooseKickReceive {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TurnoverIfPossessionLost {}
 impl TurnoverIfPossessionLost {
     pub fn new() -> AnyProc {

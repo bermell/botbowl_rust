@@ -14,7 +14,7 @@ use crate::core::{dices::D6Target, gamestate::GameState};
 
 use super::{casualty_procs, AnyProc};
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct GfiProc {
     target: D6Target,
     id: PlayerID,
@@ -42,7 +42,7 @@ impl SimpleProc for GfiProc {
         self.id
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct StandUp {
     id: PlayerID,
 }
@@ -63,7 +63,7 @@ impl Procedure for StandUp {
         ProcState::Done
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DodgeProc {
     target: D6Target,
     id: PlayerID,
@@ -107,13 +107,13 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 enum MoveActionState {
     Init,
     ActivePath(NodeIterator),
     SelectPath,
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct MoveAction {
     player_id: PlayerID,
     state: MoveActionState,

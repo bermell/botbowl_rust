@@ -15,7 +15,7 @@ use crate::core::table::*;
 use crate::core::gamestate::GameState;
 
 use super::AnyProc;
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Kickoff {
     aim: Position,
 }
@@ -47,7 +47,7 @@ impl Procedure for Kickoff {
         ProcState::DoneNew(KickoffTable::new())
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct KickoffTable {}
 impl KickoffTable {
     pub fn new() -> AnyProc {
@@ -114,7 +114,7 @@ impl Procedure for KickoffTable {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ChangingWeather {}
 impl ChangingWeather {
     pub fn new() -> AnyProc {
@@ -144,7 +144,7 @@ impl Procedure for ChangingWeather {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct LandKickoff {}
 impl LandKickoff {
     pub fn new() -> AnyProc {
@@ -173,7 +173,7 @@ impl Procedure for LandKickoff {
         }
     }
 }
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Setup {
     team: TeamType,
 }

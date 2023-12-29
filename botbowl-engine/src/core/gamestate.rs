@@ -273,7 +273,7 @@ impl Default for GameStateBuilder {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct GameInfo {
     pub half: u8,
     pub home_turn: u8,
@@ -318,7 +318,7 @@ impl GameInfo {
         }
     }
 }
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub struct FixedDice {
     d3_fixes: VecDeque<D3>,
     d6_fixes: VecDeque<D6>,
@@ -359,7 +359,7 @@ impl FixedDice {
     }
 }
 
-// #[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct GameState {
     pub info: GameInfo,
     pub home: TeamState,
@@ -373,7 +373,7 @@ pub struct GameState {
     pub available_actions: Box<AvailableActions>,
     pub rng_enabled: bool,
     pub fixes: FixedDice,
-    //#[serde(skip)]
+    #[serde(skip_serializing, default = "ChaCha8Rng::from_entropy")]
     rng: ChaCha8Rng,
     log: Vec<String>,
     print_log: bool,
