@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::core::model::{DugoutPlayerID, ProcInput};
 
 use crate::core::dices::{RequestedRoll, RollResult};
@@ -10,7 +12,9 @@ use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
 
-#[derive(Debug)]
+use super::AnyProc;
+
+#[derive(Debug, Serialize)]
 pub struct Half {
     pub half: u8,
     pub started: bool,
@@ -18,9 +22,9 @@ pub struct Half {
     pub kickoff: Option<TeamType>,
 }
 impl Half {
-    pub fn new(half: u8) -> Box<Half> {
+    pub fn new(half: u8) -> AnyProc {
         debug_assert!(half == 1 || half == 2);
-        Box::new(Half {
+        AnyProc::Half(Half {
             half,
             started: false,
             kicking_this_half: TeamType::Home,
@@ -40,7 +44,7 @@ impl Half {
 
         game_state.info.kicking_this_drive = kicking_team;
 
-        let procs: Vec<Box<dyn Procedure>> = vec![
+        let procs: Vec<AnyProc> = vec![
             kickoff_procs::Kickoff::new(),
             kickoff_procs::Setup::new(kicking_team),
             kickoff_procs::Setup::new(other_team(kicking_team)),
@@ -110,11 +114,11 @@ impl Procedure for Half {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct TurnStunned {}
 impl TurnStunned {
-    pub fn new() -> Box<TurnStunned> {
-        Box::new(TurnStunned {})
+    pub fn new() -> AnyProc {
+        AnyProc::TurnStunned(TurnStunned {})
     }
 }
 impl Procedure for TurnStunned {
@@ -131,13 +135,13 @@ impl Procedure for TurnStunned {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Turn {
     pub team: TeamType,
 }
 impl Turn {
-    pub fn new(team: TeamType) -> Box<Turn> {
-        Box::new(Turn { team })
+    pub fn new(team: TeamType) -> AnyProc {
+        AnyProc::Turn(Turn { team })
     }
     fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let mut aa = AvailableActions::new(self.team);
@@ -226,11 +230,11 @@ impl Procedure for Turn {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct GameOver;
 impl GameOver {
-    pub fn new() -> Box<GameOver> {
-        Box::new(GameOver {})
+    pub fn new() -> AnyProc {
+        AnyProc::GameOver(GameOver {})
     }
 }
 impl Procedure for GameOver {
@@ -248,13 +252,13 @@ impl Procedure for GameOver {
         ProcState::NeedAction(aa)
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct KOWakeUp {
     ids: Vec<DugoutPlayerID>,
 }
 impl KOWakeUp {
-    pub fn new() -> Box<KOWakeUp> {
-        Box::new(KOWakeUp { ids: Vec::new() })
+    pub fn new() -> AnyProc {
+        AnyProc::KOWakeUp(KOWakeUp { ids: Vec::new() })
     }
 }
 impl Procedure for KOWakeUp {
@@ -287,13 +291,13 @@ impl Procedure for KOWakeUp {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct CoinToss {
     choosen_action: SimpleAT,
 }
 impl CoinToss {
-    pub fn new() -> Box<CoinToss> {
-        Box::new(CoinToss {
+    pub fn new() -> AnyProc {
+        AnyProc::CoinToss(CoinToss {
             choosen_action: SimpleAT::Heads,
         })
     }
@@ -324,13 +328,13 @@ impl Procedure for CoinToss {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ChooseKickReceive {
     coin_toss_winner: TeamType,
 }
 impl ChooseKickReceive {
-    pub fn new(coin_toss_winner: TeamType) -> Box<ChooseKickReceive> {
-        Box::new(ChooseKickReceive { coin_toss_winner })
+    pub fn new(coin_toss_winner: TeamType) -> AnyProc {
+        AnyProc::ChooseKickReceive(ChooseKickReceive { coin_toss_winner })
     }
 }
 impl Procedure for ChooseKickReceive {
@@ -358,11 +362,11 @@ impl Procedure for ChooseKickReceive {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct TurnoverIfPossessionLost {}
 impl TurnoverIfPossessionLost {
-    pub fn new() -> Box<TurnoverIfPossessionLost> {
-        Box::new(TurnoverIfPossessionLost {})
+    pub fn new() -> AnyProc {
+        AnyProc::TurnoverIfPossessionLost(TurnoverIfPossessionLost {})
     }
 }
 impl Procedure for TurnoverIfPossessionLost {

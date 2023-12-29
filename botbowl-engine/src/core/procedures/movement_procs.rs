@@ -1,7 +1,10 @@
+use serde::Serialize;
+
 use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, PlayerStatus, ProcState, Procedure};
 use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
+    PositionOrEvent,
 };
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs};
@@ -9,16 +12,16 @@ use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
 
-use super::casualty_procs;
+use super::{casualty_procs, AnyProc};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct GfiProc {
     target: D6Target,
     id: PlayerID,
 }
 impl GfiProc {
-    fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<GfiProc>> {
-        SimpleProcContainer::new(GfiProc { target, id })
+    fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        AnyProc::GfiProc(SimpleProcContainer::new(GfiProc { target, id }))
     }
 }
 impl SimpleProc for GfiProc {
@@ -30,7 +33,7 @@ impl SimpleProc for GfiProc {
         Some(Skill::SureFeet)
     }
 
-    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.info.turnover = true;
         vec![block_procs::KnockDown::new(self.id)]
     }
@@ -39,13 +42,13 @@ impl SimpleProc for GfiProc {
         self.id
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct StandUp {
     id: PlayerID,
 }
 impl StandUp {
-    pub fn new(id: PlayerID) -> Box<StandUp> {
-        Box::new(StandUp { id })
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::StandUp(StandUp { id })
     }
 }
 impl Procedure for StandUp {
@@ -60,14 +63,14 @@ impl Procedure for StandUp {
         ProcState::Done
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DodgeProc {
     target: D6Target,
     id: PlayerID,
 }
 impl DodgeProc {
-    fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<DodgeProc>> {
-        SimpleProcContainer::new(DodgeProc { target, id })
+    fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        AnyProc::DodgeProc(SimpleProcContainer::new(DodgeProc { target, id }))
     }
 }
 impl SimpleProc for DodgeProc {
@@ -79,7 +82,7 @@ impl SimpleProc for DodgeProc {
         Some(Skill::Dodge)
     }
 
-    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.info.turnover = true;
         vec![block_procs::KnockDown::new(self.id)]
     }
@@ -88,7 +91,7 @@ impl SimpleProc for DodgeProc {
         self.id
     }
 }
-fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Procedure> {
+fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
     match roll {
         PathingEvent::Dodge(target) => DodgeProc::new(active_player, target),
         PathingEvent::GFI(target) => GfiProc::new(active_player, target),
@@ -104,20 +107,20 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Box<dyn Proced
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum MoveActionState {
     Init,
     ActivePath(NodeIterator),
     SelectPath,
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct MoveAction {
     player_id: PlayerID,
     state: MoveActionState,
 }
 impl MoveAction {
-    pub fn new(id: PlayerID) -> Box<MoveAction> {
-        Box::new(MoveAction {
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::MoveAction(MoveAction {
             state: MoveActionState::Init,
             player_id: id,
         })
@@ -127,12 +130,12 @@ impl MoveAction {
 
         for next_event in path.by_ref() {
             match next_event {
-                itertools::Either::Left(position) => {
+                PositionOrEvent::Position(position) => {
                     game_state.move_player(player_id, position).unwrap();
                     game_state.log(format!("Moved to {:?}", position));
                     game_state.get_mut_player_unsafe(player_id).add_move(1);
                 }
-                itertools::Either::Right(roll) => {
+                PositionOrEvent::Event(roll) => {
                     if event_ends_player_action(&roll) {
                         game_state.get_mut_player_unsafe(player_id).used = true;
                     }
@@ -201,15 +204,13 @@ impl Procedure for MoveAction {
 mod tests {
 
     use crate::core::gamestate::GameState;
-    use crate::core::pathing::CustomIntoIter;
+    use crate::core::pathing::{CustomIntoIter, PositionOrEvent};
     use std::collections::HashMap;
     use std::iter::zip;
 
-    use itertools::Either;
-
     use crate::core::dices::{BlockDice, D6Target};
     use crate::core::model::*;
-    use crate::core::pathing::{NodeIteratorItem, PathFinder, PathingEvent};
+    use crate::core::pathing::{PathFinder, PathingEvent};
     use crate::core::table::*;
     use crate::core::{
         gamestate::GameStateBuilder,
@@ -500,21 +501,21 @@ mod tests {
         let id = state.get_player_id_at(starting_pos).unwrap();
         let paths = PathFinder::player_paths(&state, id)?;
 
-        let expected_steps: Vec<NodeIteratorItem> = vec![
-            Either::Left(Position::new((2, 1))),
-            Either::Right(PathingEvent::Dodge(D6Target::FourPlus)),
-            Either::Left(Position::new((3, 1))),
-            Either::Right(PathingEvent::Dodge(D6Target::ThreePlus)),
-            Either::Left(Position::new((3, 2))),
-            Either::Left(Position::new((4, 3))),
-            Either::Right(PathingEvent::Dodge(D6Target::FourPlus)),
-            Either::Left(Position::new((4, 4))),
-            Either::Right(PathingEvent::Dodge(D6Target::FourPlus)),
-            Either::Left(Position::new((4, 5))),
-            Either::Right(PathingEvent::Dodge(D6Target::ThreePlus)),
-            Either::Left(Position::new((4, 6))),
-            Either::Right(PathingEvent::GFI(D6Target::TwoPlus)),
-            Either::Right(PathingEvent::Pickup(D6Target::ThreePlus)),
+        let expected_steps: Vec<PositionOrEvent> = vec![
+            PositionOrEvent::Position(Position::new((2, 1))),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
+            PositionOrEvent::Position(Position::new((3, 1))),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+            PositionOrEvent::Position(Position::new((3, 2))),
+            PositionOrEvent::Position(Position::new((4, 3))),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
+            PositionOrEvent::Position(Position::new((4, 4))),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
+            PositionOrEvent::Position(Position::new((4, 5))),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+            PositionOrEvent::Position(Position::new((4, 6))),
+            PositionOrEvent::Event(PathingEvent::GFI(D6Target::TwoPlus)),
+            PositionOrEvent::Event(PathingEvent::Pickup(D6Target::ThreePlus)),
         ];
 
         let expected_prob = 0.03086;
@@ -783,7 +784,7 @@ mod tests {
     }
     #[test]
     fn pass_wildly_inaccurate_out_of_bounds() {
-        let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 10);
+        let (mut state, _start_pos, target_pos, _) = setup_simple_pass(false, 10);
         let deviate_direction = Direction::up();
         let bounce_direction = Direction::right();
         let out_of_bounds_pos = Position::new((3, 1));

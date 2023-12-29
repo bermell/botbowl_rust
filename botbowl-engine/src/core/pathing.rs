@@ -2,7 +2,6 @@ use std::fmt::Debug;
 use std::{collections::HashMap, hash, iter::zip, rc::Rc};
 
 use crate::core::model;
-use itertools::Either;
 use model::*;
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +11,7 @@ use super::table::{NumBlockDices, PosAT};
 
 type OptRcNode = Option<Rc<Node>>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PathingEvent {
     Dodge(D6Target),
     GFI(D6Target),
@@ -112,12 +111,16 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct NodeIterator {
-    stack: Vec<NodeIteratorItem>,
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub enum PositionOrEvent {
+    Position(Position),
+    Event(PathingEvent),
 }
 
-pub type NodeIteratorItem = Either<Position, PathingEvent>;
+#[derive(Debug, Serialize)]
+pub struct NodeIterator {
+    stack: Vec<PositionOrEvent>,
+}
 
 impl NodeIterator {
     fn new(node: &Rc<Node>) -> Self {
@@ -142,9 +145,9 @@ impl NodeIterator {
 }
 
 impl Iterator for NodeIterator {
-    type Item = NodeIteratorItem;
+    type Item = PositionOrEvent;
 
-    fn next(&mut self) -> Option<NodeIteratorItem> {
+    fn next(&mut self) -> Option<PositionOrEvent> {
         self.stack.pop()
     }
 }
@@ -158,9 +161,9 @@ impl CustomIntoIter for Rc<Node> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct Node {
-    parent: OptRcNode,
+    parent: Option<Rc<Node>>,
     pub position: Position,
     moves_left: u8,
     gfis_left: u8,
@@ -186,12 +189,12 @@ impl Node {
     pub fn get_block_dice(&self) -> Option<NumBlockDices> {
         self.block_dice
     }
-    fn add_iter_items(&self, items: &mut Vec<NodeIteratorItem>) {
+    fn add_iter_items(&self, items: &mut Vec<PositionOrEvent>) {
         for event in self.events.iter_rev() {
-            items.push(Either::Right(event.clone()));
+            items.push(PositionOrEvent::Event(event.clone()));
         }
         if self.move_to_position() {
-            items.push(Either::Left(self.position));
+            items.push(PositionOrEvent::Position(self.position));
         }
     }
     pub fn move_to_position(&self) -> bool {

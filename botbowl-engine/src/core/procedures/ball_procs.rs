@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, D3, D6};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
@@ -9,16 +11,16 @@ use crate::core::model::{BallState, PlayerID};
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::{PosAT, Skill};
 
-use super::TurnoverIfPossessionLost;
+use super::{AnyProc, TurnoverIfPossessionLost};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PickupProc {
     target: D6Target,
     id: PlayerID,
 }
 impl PickupProc {
-    pub fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<PickupProc>> {
-        SimpleProcContainer::new(PickupProc { target, id })
+    pub fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        AnyProc::PickupProc(SimpleProcContainer::new(PickupProc { target, id }))
     }
 }
 impl SimpleProc for PickupProc {
@@ -30,7 +32,7 @@ impl SimpleProc for PickupProc {
         Some(Skill::SureHands)
     }
 
-    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.ball = BallState::Carried(self.id);
         let player = game_state.get_player_unsafe(self.id);
         if player.position.x == game_state.get_endzone_x(player.stats.team) {
@@ -39,7 +41,7 @@ impl SimpleProc for PickupProc {
         Vec::new()
     }
 
-    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.get_mut_player(self.id).unwrap().used = true;
         game_state.info.turnover = true;
         vec![Bounce::new()]
@@ -49,16 +51,16 @@ impl SimpleProc for PickupProc {
         self.id
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Bounce {
     kick: bool,
 }
 impl Bounce {
-    pub fn new() -> Box<Bounce> {
-        Box::new(Bounce { kick: false })
+    pub fn new() -> AnyProc {
+        AnyProc::Bounce(Bounce { kick: false })
     }
-    pub fn new_with_kick_arg(kick: bool) -> Box<Bounce> {
-        Box::new(Bounce { kick })
+    pub fn new_with_kick_arg(kick: bool) -> AnyProc {
+        AnyProc::Bounce(Bounce { kick })
     }
 }
 impl Procedure for Bounce {
@@ -97,13 +99,13 @@ impl Procedure for Bounce {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ThrowIn {
     from: Position,
 }
 impl ThrowIn {
-    pub fn new(from: Position) -> Box<ThrowIn> {
-        Box::new(ThrowIn { from })
+    pub fn new(from: Position) -> AnyProc {
+        AnyProc::ThrowIn(ThrowIn { from })
     }
     fn get_throw_in_direction(&self, dice: D3) -> Direction {
         const MAX_X: Coord = WIDTH_ - 2;
@@ -162,26 +164,22 @@ impl Procedure for ThrowIn {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Catch {
     id: PlayerID,
     target: D6Target,
     kick: bool,
 }
 impl Catch {
-    pub fn new(id: PlayerID, target: D6Target) -> Box<SimpleProcContainer<Catch>> {
-        SimpleProcContainer::new(Catch {
+    pub fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        AnyProc::Catch(SimpleProcContainer::new(Catch {
             id,
             target,
             kick: false,
-        })
+        }))
     }
-    pub fn new_with_kick_arg(
-        id: PlayerID,
-        target: D6Target,
-        kick: bool,
-    ) -> Box<SimpleProcContainer<Catch>> {
-        SimpleProcContainer::new(Catch { id, target, kick })
+    pub fn new_with_kick_arg(id: PlayerID, target: D6Target, kick: bool) -> AnyProc {
+        AnyProc::Catch(SimpleProcContainer::new(Catch { id, target, kick }))
     }
 }
 impl SimpleProc for Catch {
@@ -193,7 +191,7 @@ impl SimpleProc for Catch {
         Some(Skill::Catch)
     }
 
-    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.ball = BallState::Carried(self.id);
         let player = game_state.get_player_unsafe(self.id);
         if player.position.x == game_state.get_endzone_x(player.stats.team) {
@@ -202,7 +200,7 @@ impl SimpleProc for Catch {
         Vec::new()
     }
 
-    fn apply_failure(&mut self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_failure(&mut self, _game_state: &mut GameState) -> Vec<AnyProc> {
         vec![Bounce::new_with_kick_arg(self.kick)]
     }
 
@@ -210,11 +208,11 @@ impl SimpleProc for Catch {
         self.id
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Touchback {}
 impl Touchback {
-    pub fn new() -> Box<Touchback> {
-        Box::new(Touchback {})
+    pub fn new() -> AnyProc {
+        AnyProc::Touchback(Touchback {})
     }
 }
 impl Procedure for Touchback {
@@ -235,13 +233,13 @@ impl Procedure for Touchback {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Touchdown {
     id: PlayerID,
 }
 impl Touchdown {
-    pub fn new(id: PlayerID) -> Box<Touchdown> {
-        Box::new(Touchdown { id })
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::Touchdown(Touchdown { id })
     }
 }
 impl Procedure for Touchdown {
@@ -259,22 +257,23 @@ impl Procedure for Touchdown {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum PassResult {
     Accurate,
     Inaccurate,
     WildlyInaccurate,
     Fumble,
 }
-#[derive(Debug)]
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Pass {
     pos: Position,
     pass: D6Target,
     modifier: i8,
 }
 impl Pass {
-    pub fn new(pos: Position, pass: D6Target, modifier: i8) -> Box<Pass> {
-        Box::new(Pass {
+    pub fn new(pos: Position, pass: D6Target, modifier: i8) -> AnyProc {
+        AnyProc::Pass(Pass {
             pos,
             pass,
             modifier,
@@ -349,7 +348,7 @@ impl Procedure for Pass {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct DeflectOrResolve {
     from: Position,
     to: Position,
@@ -363,8 +362,8 @@ impl DeflectOrResolve {
         to: Position,
         result: PassResult,
         throw_in_pos: Option<Position>,
-    ) -> Box<DeflectOrResolve> {
-        Box::new(DeflectOrResolve {
+    ) -> AnyProc {
+        AnyProc::DeflectOrResolve(DeflectOrResolve {
             from,
             to,
             throw_in_pos,
@@ -401,7 +400,7 @@ impl Procedure for DeflectOrResolve {
                 .map(|(p, target)| (*p, *target)),
             _ => panic!("Unexpected input {:?} for Interception", input),
         };
-        let failed_deflect_proc: Box<dyn Procedure> = {
+        let failed_deflect_proc: AnyProc = {
             if let Some(throw_in_pos) = self.throw_in_pos {
                 debug_assert!(!throw_in_pos.is_out());
                 ThrowIn::new(throw_in_pos)
@@ -451,24 +450,20 @@ impl Procedure for DeflectOrResolve {
         // In a square that is at least partially beneath the range ruler when placed as described above.
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Deflect {
     id: PlayerID,
     target: D6Target,
-    failed_deflect_proc: Option<Box<dyn Procedure>>,
+    failed_deflect_proc: Option<Box<AnyProc>>,
 }
 
 impl Deflect {
-    pub fn new(
-        id: PlayerID,
-        target: D6Target,
-        failed_deflect_proc: Box<dyn Procedure>,
-    ) -> Box<SimpleProcContainer<Deflect>> {
-        SimpleProcContainer::new(Deflect {
+    pub fn new(id: PlayerID, target: D6Target, failed_deflect_proc: AnyProc) -> AnyProc {
+        AnyProc::Deflect(SimpleProcContainer::new(Deflect {
             id,
             target,
-            failed_deflect_proc: Some(failed_deflect_proc),
-        })
+            failed_deflect_proc: Some(Box::new(failed_deflect_proc)),
+        }))
     }
 }
 impl SimpleProc for Deflect {
@@ -480,15 +475,15 @@ impl SimpleProc for Deflect {
         None
     }
 
-    fn apply_failure(&mut self, _game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
-        vec![self.failed_deflect_proc.take().unwrap()]
+    fn apply_failure(&mut self, _game_state: &mut GameState) -> Vec<AnyProc> {
+        vec![*self.failed_deflect_proc.take().unwrap()]
     }
 
     fn player_id(&self) -> PlayerID {
         self.id
     }
 
-    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.ball = BallState::InAir(game_state.get_player_unsafe(self.id).position);
         let mut catch_target = game_state.get_catch_target(self.id).unwrap();
         vec![Catch::new(self.id, *catch_target.add_modifer(-1))]

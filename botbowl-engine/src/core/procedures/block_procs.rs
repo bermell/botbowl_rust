@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::core::dices::{BlockDice, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
 use crate::core::model::{
@@ -8,30 +10,41 @@ use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
-#[derive(Debug)]
+use super::AnyProc;
+
+#[derive(Debug, Serialize)]
 enum PushSquares {
     Crowd(Position),
     ChainPush(Vec<Position>),
     FreeSquares(Vec<Position>),
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Push {
     from: Position,
     on: Position,
-    knockdown_proc: Option<Box<KnockDown>>,
+    knockdown_proc: Option<KnockDown>,
     moves_to_make: Vec<(Position, Position)>,
     follow_up_pos: Position,
 }
 
 impl Push {
-    pub fn new(from: Position, on: Position) -> Box<Push> {
-        Box::new(Push {
+    pub fn new(from: Position, on: Position) -> AnyProc {
+        AnyProc::Push(Push {
             from,
             on,
             moves_to_make: Vec::with_capacity(1),
             knockdown_proc: None,
             follow_up_pos: on,
         })
+    }
+    pub fn new_pure(from: Position, on: Position) -> Push {
+        Push {
+            from,
+            on,
+            moves_to_make: Vec::with_capacity(1),
+            knockdown_proc: None,
+            follow_up_pos: on,
+        }
     }
 
     fn get_push_squares(on: Position, from: Position, game_state: &GameState) -> PushSquares {
@@ -68,7 +81,7 @@ impl Push {
     }
 
     fn handle_aftermath(&mut self, game_state: &mut GameState) -> ProcState {
-        let mut procs: Vec<Box<dyn Procedure>> = Vec::with_capacity(2);
+        let mut procs: Vec<AnyProc> = Vec::with_capacity(2);
         let (last_push_from, last_push_to) = self.moves_to_make.pop().unwrap();
         if last_push_to.is_out() {
             let id = game_state.get_player_id_at(last_push_to).unwrap();
@@ -83,7 +96,7 @@ impl Push {
             }
         }
         if let Some(proc) = self.knockdown_proc.take() {
-            procs.push(proc);
+            procs.push(AnyProc::KnockDown(proc));
         }
         ProcState::from(procs)
     }
@@ -129,14 +142,14 @@ impl Procedure for Push {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct FollowUp {
     to: Position,
     //from is active player,
 }
 impl FollowUp {
-    pub fn new(to: Position) -> Box<FollowUp> {
-        Box::new(FollowUp { to })
+    pub fn new(to: Position) -> AnyProc {
+        AnyProc::FollowUp(FollowUp { to })
     }
 }
 impl Procedure for FollowUp {
@@ -168,13 +181,16 @@ impl Procedure for FollowUp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct KnockDown {
     id: PlayerID,
 }
 impl KnockDown {
-    pub fn new(id: PlayerID) -> Box<KnockDown> {
-        Box::new(KnockDown { id })
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::KnockDown(KnockDown { id })
+    }
+    pub fn new_pure(id: PlayerID) -> KnockDown {
+        KnockDown { id }
     }
 }
 impl Procedure for KnockDown {
@@ -198,12 +214,12 @@ impl Procedure for KnockDown {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct BlockAction {}
 
 impl BlockAction {
-    pub fn new() -> Box<BlockAction> {
-        Box::new(BlockAction {})
+    pub fn new() -> AnyProc {
+        AnyProc::BlockAction(BlockAction {})
     }
     fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let player = game_state.get_active_player().unwrap();
@@ -247,7 +263,7 @@ impl Procedure for BlockAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Block {
     dices: NumBlockDices,
     defender: PlayerID,
@@ -255,7 +271,7 @@ pub struct Block {
     roll: [Option<BlockDice>; 3],
     is_uphill: bool,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 enum BlockProcState {
     Init,               //step shall roll first dice
     SelectDice,         //attacker (or defender if uphill) to choose dice
@@ -264,9 +280,9 @@ enum BlockProcState {
 }
 
 impl Block {
-    pub fn new(dices: NumBlockDices, defender: PlayerID) -> Box<Block> {
+    pub fn new(dices: NumBlockDices, defender: PlayerID) -> AnyProc {
         // the point is that number of dices has already been calculated, so this proc doesn't need to redo it.
-        Box::new(Block {
+        AnyProc::Block(Block {
             dices,
             defender,
             state: BlockProcState::Init,
@@ -383,19 +399,19 @@ impl Procedure for Block {
                     SimpleAT::SelectSkull => knockdown_attacker = true,
                     _ => panic!("very wrong!"),
                 }
-                let mut procs: Vec<Box<dyn Procedure>> = Vec::with_capacity(3);
+                let mut procs: Vec<AnyProc> = Vec::with_capacity(3);
                 if knockdown_attacker {
                     procs.push(KnockDown::new(attacker_id));
                 }
                 if push {
-                    let mut push_proc = Push::new(
+                    let mut push_proc = Push::new_pure(
                         game_state.get_player_unsafe(attacker_id).position,
                         game_state.get_player_unsafe(self.defender).position,
                     );
                     if knockdown_defender {
-                        push_proc.knockdown_proc = Some(KnockDown::new(self.defender));
+                        push_proc.knockdown_proc = Some(KnockDown::new_pure(self.defender));
                     }
-                    procs.push(push_proc);
+                    procs.push(AnyProc::Push(push_proc));
                 } else if knockdown_defender {
                     procs.push(KnockDown::new(self.defender));
                 }

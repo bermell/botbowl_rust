@@ -2,10 +2,10 @@ use core::panic;
 use itertools::Itertools;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use serde::Serialize;
 use std::{
     cmp::{max, min},
     collections::{HashSet, VecDeque},
-    f32, usize,
 };
 
 use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
@@ -15,7 +15,7 @@ use model::*;
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
     dices::{BlockDice, Coin, D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8},
-    procedures::{GameOver, Half},
+    procedures::{AnyProc, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
 };
 
@@ -273,6 +273,7 @@ impl Default for GameStateBuilder {
     }
 }
 
+#[derive(Serialize)]
 pub struct GameInfo {
     pub half: u8,
     pub home_turn: u8,
@@ -317,7 +318,7 @@ impl GameInfo {
         }
     }
 }
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub struct FixedDice {
     d3_fixes: VecDeque<D3>,
     d6_fixes: VecDeque<D6>,
@@ -358,6 +359,7 @@ impl FixedDice {
     }
 }
 
+// #[derive(Serialize)]
 pub struct GameState {
     pub info: GameInfo,
     pub home: TeamState,
@@ -367,10 +369,11 @@ pub struct GameState {
     dugout_players: [Option<DugoutPlayer>; 32],
     board: FullPitch<Option<PlayerID>>,
     pub ball: BallState,
-    proc_stack: Vec<Box<dyn Procedure>>,
+    proc_stack: Vec<AnyProc>,
     pub available_actions: Box<AvailableActions>,
     pub rng_enabled: bool,
     pub fixes: FixedDice,
+    //#[serde(skip)]
     rng: ChaCha8Rng,
     log: Vec<String>,
     print_log: bool,

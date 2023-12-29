@@ -1,21 +1,25 @@
+use serde::Serialize;
+
 use crate::core::dices::{D6Target, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, ProcState, Procedure};
 use crate::core::table::{SimpleAT, Skill};
 
+use super::AnyProc;
+
 #[allow(unused_variables)]
 pub trait SimpleProc {
     fn d6_target(&self) -> D6Target; //called immidiately before
     fn reroll_skill(&self) -> Option<Skill>;
-    fn apply_success(&self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>> {
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         Vec::new()
     }
-    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<Box<dyn Procedure>>;
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc>;
     fn player_id(&self) -> PlayerID;
 }
-impl From<Vec<Box<dyn Procedure>>> for ProcState {
-    fn from(procs: Vec<Box<dyn Procedure>>) -> Self {
+impl From<Vec<AnyProc>> for ProcState {
+    fn from(procs: Vec<AnyProc>) -> Self {
         match procs.len() {
             0 => ProcState::Done,
             // 1 => ProcState::DoneNew(procs.pop().unwrap()),
@@ -24,23 +28,23 @@ impl From<Vec<Box<dyn Procedure>>> for ProcState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub enum RollProcState {
     Init,
     RerollUsed,
     //WaitingForSkillReroll,
 }
-#[derive(Debug)]
-pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug> {
+#[derive(Debug, Serialize)]
+pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug + Serialize> {
     proc: T,
     state: RollProcState,
 }
-impl<T: SimpleProc + std::fmt::Debug> SimpleProcContainer<T> {
-    pub fn new(proc: T) -> Box<Self> {
-        Box::new(SimpleProcContainer {
+impl<T: SimpleProc + std::fmt::Debug + Serialize> SimpleProcContainer<T> {
+    pub fn new(proc: T) -> Self {
+        SimpleProcContainer {
             proc,
             state: RollProcState::Init,
-        })
+        }
     }
     pub fn id(&self) -> PlayerID {
         self.proc.player_id()
@@ -49,7 +53,7 @@ impl<T: SimpleProc + std::fmt::Debug> SimpleProcContainer<T> {
 
 impl<T> Procedure for SimpleProcContainer<T>
 where
-    T: SimpleProc + std::fmt::Debug,
+    T: SimpleProc + std::fmt::Debug + Serialize,
 {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {

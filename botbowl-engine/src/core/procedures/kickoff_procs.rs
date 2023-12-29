@@ -2,6 +2,7 @@ use crate::core::model::ProcInput;
 use std::ops::RangeInclusive;
 
 use rand::Rng;
+use serde::Serialize;
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
@@ -12,13 +13,15 @@ use crate::core::procedures::ball_procs;
 use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
-#[derive(Debug)]
+
+use super::AnyProc;
+#[derive(Debug, Serialize)]
 pub struct Kickoff {
     aim: Position,
 }
 impl Kickoff {
-    pub fn new() -> Box<Kickoff> {
-        Box::new(Kickoff {
+    pub fn new() -> AnyProc {
+        AnyProc::Kickoff(Kickoff {
             aim: Position::new((0, 0)),
         })
     }
@@ -44,11 +47,11 @@ impl Procedure for Kickoff {
         ProcState::DoneNew(KickoffTable::new())
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct KickoffTable {}
 impl KickoffTable {
-    pub fn new() -> Box<KickoffTable> {
-        Box::new(KickoffTable {})
+    pub fn new() -> AnyProc {
+        AnyProc::KickoffTable(KickoffTable {})
     }
 }
 impl Procedure for KickoffTable {
@@ -60,8 +63,8 @@ impl Procedure for KickoffTable {
             ProcInput::Roll(RollResult::Sum2D6(kickoff_roll)) => kickoff_roll,
             _ => panic!("Unexpected input {:?}", input),
         };
-        let mut procs: Vec<Box<dyn Procedure>> = vec![LandKickoff::new()]; //TODO: this should be added
-                                                                           //by the kickoff procedure
+        let mut procs: Vec<AnyProc> = vec![LandKickoff::new()]; //TODO: this should be added
+                                                                //by the kickoff procedure
         match kickoff_roll {
             Sum2D6::Two => {
                 //get the ref
@@ -111,11 +114,11 @@ impl Procedure for KickoffTable {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ChangingWeather {}
 impl ChangingWeather {
-    pub fn new() -> Box<ChangingWeather> {
-        Box::new(ChangingWeather {})
+    pub fn new() -> AnyProc {
+        AnyProc::ChangingWeather(ChangingWeather {})
     }
 }
 impl Procedure for ChangingWeather {
@@ -141,11 +144,11 @@ impl Procedure for ChangingWeather {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct LandKickoff {}
 impl LandKickoff {
-    pub fn new() -> Box<LandKickoff> {
-        Box::new(LandKickoff {})
+    pub fn new() -> AnyProc {
+        AnyProc::LandKickoff(LandKickoff {})
     }
 }
 impl Procedure for LandKickoff {
@@ -170,13 +173,13 @@ impl Procedure for LandKickoff {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Setup {
     team: TeamType,
 }
 impl Setup {
-    pub fn new(team: TeamType) -> Box<Setup> {
-        Box::new(Setup { team })
+    pub fn new(team: TeamType) -> AnyProc {
+        AnyProc::Setup(Setup { team })
     }
     fn get_empty_pos_in_box(
         game_state: &GameState,

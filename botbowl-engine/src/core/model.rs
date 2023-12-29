@@ -10,6 +10,7 @@ use std::rc::Rc;
 use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
 use super::pathing::Node;
+use super::procedures::AnyProc;
 use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
 use crate::core::table;
 
@@ -392,6 +393,7 @@ pub enum DugoutPlace {
     Ejected,
 }
 
+#[derive(Serialize)]
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
@@ -554,12 +556,12 @@ pub enum ProcInput {
     Action(Action),
     Roll(RollResult),
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum ProcState {
-    DoneNewProcs(Vec<Box<dyn Procedure>>),
-    NotDoneNewProcs(Vec<Box<dyn Procedure>>),
-    NotDoneNew(Box<dyn Procedure>),
-    DoneNew(Box<dyn Procedure>),
+    DoneNewProcs(Vec<AnyProc>),
+    NotDoneNewProcs(Vec<AnyProc>),
+    NotDoneNew(AnyProc),
+    DoneNew(AnyProc),
     Done,
     NotDone,
     NeedRoll(RequestedRoll),
@@ -573,7 +575,7 @@ use smallvec::SmallVec;
 
 pub type SmallVecPosAT = SmallVec<[PosAT; 4]>;
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize)]
 pub struct AvailableActions {
     pub team: Option<TeamType>,
     simple: HashSet<SimpleAT>,

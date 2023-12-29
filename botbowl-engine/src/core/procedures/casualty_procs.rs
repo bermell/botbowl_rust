@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6Target};
 use crate::core::gamestate::GameState;
 use crate::core::model::{BallState, PlayerID};
@@ -5,20 +7,22 @@ use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};
 use crate::core::model::{InjuryOutcome, ProcInput};
 use crate::core::procedures::ball_procs;
 
-#[derive(Debug)]
+use super::AnyProc;
+
+#[derive(Debug, Serialize)]
 pub struct Armor {
     id: PlayerID,
     foul_target: Option<(PlayerID, Sum2D6Target)>,
 }
 impl Armor {
-    pub fn new(id: PlayerID) -> Box<Armor> {
-        Box::new(Armor {
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::Armor(Armor {
             id,
             foul_target: None,
         })
     }
-    pub fn new_foul(id: PlayerID, target: Sum2D6Target, fouler_id: PlayerID) -> Box<Armor> {
-        Box::new(Armor {
+    pub fn new_foul(id: PlayerID, target: Sum2D6Target, fouler_id: PlayerID) -> AnyProc {
+        AnyProc::Armor(Armor {
             id,
             foul_target: Some((fouler_id, target)),
         })
@@ -26,8 +30,8 @@ impl Armor {
 }
 impl Procedure for Armor {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        let mut procs: Vec<Box<dyn Procedure>> = Vec::new();
-        let mut injury_proc = Injury::new(self.id);
+        let mut procs: Vec<AnyProc> = Vec::new();
+        let mut injury_proc = Injury::new_pure(self.id);
         let armor_broken = match input {
             ProcInput::Nothing if self.foul_target.is_some() => {
                 return ProcState::NeedRoll(RequestedRoll::FoulArmor(self.foul_target.unwrap().1));
@@ -52,20 +56,20 @@ impl Procedure for Armor {
         };
 
         if armor_broken {
-            procs.push(injury_proc);
+            procs.push(AnyProc::Injury(injury_proc));
         }
 
         ProcState::from(procs)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Ejection {
     id: PlayerID,
 }
 impl Ejection {
-    pub fn new(id: PlayerID) -> Box<Ejection> {
-        Box::new(Ejection { id })
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::Ejection(Ejection { id })
     }
 }
 impl Procedure for Ejection {
@@ -85,32 +89,39 @@ impl Procedure for Ejection {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Injury {
     id: PlayerID,
     crowd: bool,
     fouler: Option<PlayerID>,
 }
 impl Injury {
-    pub fn new(id: PlayerID) -> Box<Injury> {
-        Box::new(Injury {
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::Injury(Injury {
             id,
             crowd: false,
             fouler: None,
         })
     }
 
-    pub fn new_crowd(id: PlayerID) -> Box<Injury> {
-        Box::new(Injury {
+    pub fn new_crowd(id: PlayerID) -> AnyProc {
+        AnyProc::Injury(Injury {
             id,
             crowd: true,
             fouler: None,
         })
     }
+    pub fn new_pure(id: PlayerID) -> Injury {
+        Injury {
+            id,
+            crowd: false,
+            fouler: None,
+        }
+    }
 }
 impl Procedure for Injury {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        let mut procs: Vec<Box<dyn Procedure>> = Vec::new();
+        let mut procs: Vec<AnyProc> = Vec::new();
 
         let injury_outcome = match input {
             ProcInput::Nothing if self.fouler.is_some() => {

@@ -1,3 +1,4 @@
+#![allow(clippy::new_ret_no_self)]
 use crate::core::gamestate::GameStateBuilder;
 
 use crate::core::gamestate::GameState;
