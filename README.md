@@ -16,15 +16,9 @@ forward model in a botbowl competition:
 
 ### Rules left to implement
 
-- [x] Fouling (in pathfinding, ejection)
-- [x] Blocking (incl crowd surf and chain pushing)
-- [ ] Passing (in pathfinding)
-- [x] Handing off (in pathfinding)
-- [ ] (1/11) Kickoff table
-- [x] kickoff touchback
-- [x] Very basic setup
-- [ ] Useful setup
-- [x] Touchdown
+- (1/11) Kickoff table
+- Useful setup
+- (Pathfinding) with leaping over prone players
 
 ### Tests to add
 
@@ -33,9 +27,25 @@ forward model in a botbowl competition:
 
 ### Other things (in order of priority)
 
-- Record a game
-- Watch a recording
-- [ ] Play in terminal
-- [ ] Gym Env
-- [ ] FFI to python
-- [ ] MCTS example bot
+- Record a game (rewind and forward state based on a diff)
+- Watch a recording in terminal
+- MCTS example bot (includes a gamestate hash)
+- Play in terminal
+- Bot benchmarking suite:
+  - scenarios with rigged dice
+  - Scenarios with expanded search tree for crazy thorough evaluation
+  - Evaluate against scripted and random bot.
+- Gym Env
+- FFI to python
+
+## Development
+
+- The engine uses TDD. If code can be removed without breaking tests,
+  it should be. With exception for error handling.
+
+### Code coverage
+
+Install tarpaulin into your machine `cargo install cargo-tarpaulin`
+Then run `cargo tarpaulin --out Html`
+
+Big thing:
