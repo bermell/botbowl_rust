@@ -9,7 +9,7 @@ use crate::core::procedures::ball_procs;
 
 use super::AnyProc;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Armor {
     id: PlayerID,
     foul_target: Option<(PlayerID, Sum2D6Target)>,
@@ -63,7 +63,7 @@ impl Procedure for Armor {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Ejection {
     id: PlayerID,
 }
@@ -89,7 +89,7 @@ impl Procedure for Ejection {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Injury {
     id: PlayerID,
     crowd: bool,

@@ -34,7 +34,7 @@ pub enum RollProcState {
     RerollUsed,
     //WaitingForSkillReroll,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug> {
     proc: T,
     state: RollProcState,

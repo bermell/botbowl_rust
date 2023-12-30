@@ -393,14 +393,14 @@ pub enum DugoutPlace {
     Ejected,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
     pub id: DugoutPlayerID,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FieldedPlayer {
     pub id: PlayerID,
     pub stats: PlayerStats,
@@ -482,7 +482,7 @@ impl FieldedPlayer {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TeamState {
     pub bribes: u8,
     //babes: u8,
@@ -575,7 +575,7 @@ use smallvec::SmallVec;
 
 pub type SmallVecPosAT = SmallVec<[PosAT; 4]>;
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AvailableActions {
     pub team: Option<TeamType>,
     simple: HashSet<SimpleAT>,

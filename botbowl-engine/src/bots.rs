@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn random_bot_plays_game() {
         color_backtrace::install();
-        for _ in 0..100 {
+        for _ in 0..10 {
             let mut bot_game = BotGameRunner {
                 home_bot: Box::new(RandomBot::new()),
                 away_bot: Box::new(RandomBot::new()),

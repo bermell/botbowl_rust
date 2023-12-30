@@ -117,7 +117,7 @@ pub enum PositionOrEvent {
     Event(PathingEvent),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeIterator {
     stack: Vec<PositionOrEvent>,
 }
@@ -173,6 +173,12 @@ pub struct Node {
     pub prob: f32,
     events: FixedQueue<PathingEvent>,
 }
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.position == other.position && self.parent == other.parent
+    }
+}
+impl Eq for Node {}
 impl Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Node")
