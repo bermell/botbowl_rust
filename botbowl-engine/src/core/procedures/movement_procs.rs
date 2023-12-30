@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, PlayerStatus, ProcState, Procedure};
@@ -14,7 +14,7 @@ use crate::core::{dices::D6Target, gamestate::GameState};
 
 use super::{casualty_procs, AnyProc};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GfiProc {
     target: D6Target,
     id: PlayerID,
@@ -42,7 +42,7 @@ impl SimpleProc for GfiProc {
         self.id
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StandUp {
     id: PlayerID,
 }
@@ -63,7 +63,7 @@ impl Procedure for StandUp {
         ProcState::Done
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DodgeProc {
     target: D6Target,
     id: PlayerID,
@@ -107,13 +107,13 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum MoveActionState {
     Init,
     ActivePath(NodeIterator),
     SelectPath,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MoveAction {
     player_id: PlayerID,
     state: MoveActionState,

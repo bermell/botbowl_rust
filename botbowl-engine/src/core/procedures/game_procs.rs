@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::model::{DugoutPlayerID, ProcInput};
 
@@ -14,7 +14,7 @@ use crate::core::{dices::D6Target, gamestate::GameState};
 
 use super::AnyProc;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Half {
     pub half: u8,
     pub started: bool,
@@ -114,7 +114,7 @@ impl Procedure for Half {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TurnStunned {}
 impl TurnStunned {
     pub fn new() -> AnyProc {
@@ -135,7 +135,7 @@ impl Procedure for TurnStunned {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Turn {
     pub team: TeamType,
 }
@@ -230,7 +230,7 @@ impl Procedure for Turn {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GameOver;
 impl GameOver {
     pub fn new() -> AnyProc {
@@ -252,7 +252,7 @@ impl Procedure for GameOver {
         ProcState::NeedAction(aa)
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KOWakeUp {
     ids: Vec<DugoutPlayerID>,
 }
@@ -291,7 +291,7 @@ impl Procedure for KOWakeUp {
         }
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoinToss {
     choosen_action: SimpleAT,
 }
@@ -328,7 +328,7 @@ impl Procedure for CoinToss {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChooseKickReceive {
     coin_toss_winner: TeamType,
 }
@@ -362,7 +362,7 @@ impl Procedure for ChooseKickReceive {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TurnoverIfPossessionLost {}
 impl TurnoverIfPossessionLost {
     pub fn new() -> AnyProc {

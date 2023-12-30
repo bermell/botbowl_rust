@@ -11,7 +11,7 @@ use super::table::{NumBlockDices, PosAT};
 
 type OptRcNode = Option<Rc<Node>>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PathingEvent {
     Dodge(D6Target),
     GFI(D6Target),
@@ -111,13 +111,13 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
     }
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PositionOrEvent {
     Position(Position),
     Event(PathingEvent),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeIterator {
     stack: Vec<PositionOrEvent>,
 }
@@ -161,7 +161,7 @@ impl CustomIntoIter for Rc<Node> {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Node {
     parent: Option<Rc<Node>>,
     pub position: Position,

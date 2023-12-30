@@ -2,7 +2,7 @@ use core::panic;
 use itertools::Itertools;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     cmp::{max, min},
     collections::{HashSet, VecDeque},
@@ -273,7 +273,7 @@ impl Default for GameStateBuilder {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GameInfo {
     pub half: u8,
     pub home_turn: u8,
@@ -318,7 +318,7 @@ impl GameInfo {
         }
     }
 }
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct FixedDice {
     d3_fixes: VecDeque<D3>,
     d6_fixes: VecDeque<D6>,
@@ -359,7 +359,7 @@ impl FixedDice {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct GameState {
     pub info: GameInfo,
     pub home: TeamState,
@@ -373,7 +373,7 @@ pub struct GameState {
     pub available_actions: Box<AvailableActions>,
     pub rng_enabled: bool,
     pub fixes: FixedDice,
-    #[serde(skip_serializing, default = "ChaCha8Rng::from_entropy")]
+    #[serde(skip, default = "ChaCha8Rng::from_entropy")]
     rng: ChaCha8Rng,
     log: Vec<String>,
     print_log: bool,
@@ -1155,6 +1155,7 @@ impl GameState {
 #[cfg(test)]
 mod gamestate_tests {
     use itertools::Itertools;
+    use serde_json;
 
     use crate::{
         core::{
@@ -1472,5 +1473,16 @@ mod gamestate_tests {
         assert_eq!(numbers, same_numbers);
 
         Ok(())
+    }
+    #[test]
+    fn gamestate_serialize() {
+        let mut state = standard_state();
+        state.rng_enabled = true;
+        let seed = 5;
+        state.set_seed(seed);
+
+        let serialized = serde_json::to_string(&state).unwrap();
+        println!("{}", serialized);
+        let _deserialized: GameState = serde_json::from_str(&serialized).unwrap();
     }
 }

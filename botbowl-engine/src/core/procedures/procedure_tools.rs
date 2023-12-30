@@ -1,4 +1,4 @@
-use serde::Serialize, Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{D6Target, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
@@ -35,11 +35,11 @@ pub enum RollProcState {
     //WaitingForSkillReroll,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug + Serialize, Deserialize> {
+pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug> {
     proc: T,
     state: RollProcState,
 }
-impl<T: SimpleProc + std::fmt::Debug + Serialize, Deserialize> SimpleProcContainer<T> {
+impl<T: SimpleProc + std::fmt::Debug> SimpleProcContainer<T> {
     pub fn new(proc: T) -> Self {
         SimpleProcContainer {
             proc,
@@ -53,7 +53,7 @@ impl<T: SimpleProc + std::fmt::Debug + Serialize, Deserialize> SimpleProcContain
 
 impl<T> Procedure for SimpleProcContainer<T>
 where
-    T: SimpleProc + std::fmt::Debug + Serialize, Deserialize,
+    T: SimpleProc + std::fmt::Debug,
 {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {

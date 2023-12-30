@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::model::Procedure;
 use crate::core::procedures::ball_procs::{
@@ -17,7 +17,7 @@ use crate::core::procedures::kickoff_procs::{
 use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp};
 
 use crate::core::procedures::procedure_tools::SimpleProcContainer;
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum AnyProc {
     Armor(Armor),
     Block(Block),

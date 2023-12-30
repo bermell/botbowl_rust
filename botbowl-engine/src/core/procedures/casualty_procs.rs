@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6Target};
 use crate::core::gamestate::GameState;
@@ -9,7 +9,7 @@ use crate::core::procedures::ball_procs;
 
 use super::AnyProc;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Armor {
     id: PlayerID,
     foul_target: Option<(PlayerID, Sum2D6Target)>,
@@ -63,7 +63,7 @@ impl Procedure for Armor {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ejection {
     id: PlayerID,
 }
@@ -89,7 +89,7 @@ impl Procedure for Ejection {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Injury {
     id: PlayerID,
     crowd: bool,

@@ -393,7 +393,7 @@ pub enum DugoutPlace {
     Ejected,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
@@ -556,7 +556,7 @@ pub enum ProcInput {
     Action(Action),
     Roll(RollResult),
 }
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ProcState {
     DoneNewProcs(Vec<AnyProc>),
     NotDoneNewProcs(Vec<AnyProc>),
@@ -575,7 +575,7 @@ use smallvec::SmallVec;
 
 pub type SmallVecPosAT = SmallVec<[PosAT; 4]>;
 
-#[derive(Default, Clone, Serialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct AvailableActions {
     pub team: Option<TeamType>,
     simple: HashSet<SimpleAT>,
