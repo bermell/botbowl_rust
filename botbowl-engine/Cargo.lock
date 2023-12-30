@@ -62,6 +62,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "serde",
+ "serde_json",
  "smallvec",
 ]
 
