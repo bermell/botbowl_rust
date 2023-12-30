@@ -8,12 +8,14 @@ use crate::core::model::{
     HEIGHT_, WIDTH_,
 };
 use crate::core::model::{BallState, PlayerID};
-use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::{PosAT, Skill};
 
-use super::{AnyProc, TurnoverIfPossessionLost};
+use crate::core::procedures::any_proc::AnyProc;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+use super::procedure_tools::{SimpleProc, SimpleProcContainer};
+use super::TurnoverIfPossessionLost;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PickupProc {
     target: D6Target,
     id: PlayerID,
@@ -51,7 +53,7 @@ impl SimpleProc for PickupProc {
         self.id
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Bounce {
     kick: bool,
 }
@@ -99,7 +101,7 @@ impl Procedure for Bounce {
         }
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThrowIn {
     from: Position,
 }
@@ -164,7 +166,7 @@ impl Procedure for ThrowIn {
         }
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Catch {
     id: PlayerID,
     target: D6Target,
@@ -208,7 +210,7 @@ impl SimpleProc for Catch {
         self.id
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Touchback {}
 impl Touchback {
     pub fn new() -> AnyProc {
@@ -233,7 +235,7 @@ impl Procedure for Touchback {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Touchdown {
     id: PlayerID,
 }
@@ -257,7 +259,7 @@ impl Procedure for Touchdown {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PassResult {
     Accurate,
     Inaccurate,
@@ -265,7 +267,7 @@ pub enum PassResult {
     Fumble,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Pass {
     pos: Position,
     pass: D6Target,
@@ -348,7 +350,7 @@ impl Procedure for Pass {
         }
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeflectOrResolve {
     from: Position,
     to: Position,
@@ -450,7 +452,7 @@ impl Procedure for DeflectOrResolve {
         // In a square that is at least partially beneath the range ruler when placed as described above.
     }
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Deflect {
     id: PlayerID,
     target: D6Target,

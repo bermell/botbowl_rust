@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{D6Target, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
@@ -28,18 +28,18 @@ impl From<Vec<AnyProc>> for ProcState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RollProcState {
     Init,
     RerollUsed,
     //WaitingForSkillReroll,
 }
-#[derive(Clone, Debug, Serialize)]
-pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug + Serialize> {
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug> {
     proc: T,
     state: RollProcState,
 }
-impl<T: SimpleProc + std::fmt::Debug + Serialize> SimpleProcContainer<T> {
+impl<T: SimpleProc + std::fmt::Debug> SimpleProcContainer<T> {
     pub fn new(proc: T) -> Self {
         SimpleProcContainer {
             proc,
@@ -53,7 +53,7 @@ impl<T: SimpleProc + std::fmt::Debug + Serialize> SimpleProcContainer<T> {
 
 impl<T> Procedure for SimpleProcContainer<T>
 where
-    T: SimpleProc + std::fmt::Debug + Serialize,
+    T: SimpleProc + std::fmt::Debug,
 {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {

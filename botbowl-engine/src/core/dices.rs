@@ -9,9 +9,9 @@ use super::{
     model::{Coord, Direction, InjuryOutcome, Weather},
     table::{NumBlockDices, SimpleAT},
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-pub trait RollTarget<T> {
+pub trait RollTarget<T: Serialize + DeserializeOwned> {
     fn is_success(&self, roll: T) -> bool;
     fn add_modifer(&mut self, modifer: i8) -> &mut Self;
     fn success_prob(&self) -> f32;
@@ -209,7 +209,7 @@ impl Distribution<D3> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
     pub enum D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -248,7 +248,7 @@ impl RollTarget<D6> for D6Target {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
     pub enum Sum2D6 {
         Two = 2,
         Three,
@@ -288,7 +288,7 @@ impl Distribution<Sum2D6> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
     pub enum Sum2D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -337,7 +337,7 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum RequestedRoll {
     BlockDice(NumBlockDices),
     Coin,
@@ -355,7 +355,7 @@ pub enum RequestedRoll {
     ThrowIn,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum RollResult {
     BlockDice([Option<BlockDice>; 3]),
     Coin(Coin),
