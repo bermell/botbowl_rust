@@ -1173,7 +1173,7 @@ mod gamestate_tests {
         },
         standard_state,
     };
-    use std::{collections::HashSet, iter::repeat_with};
+    use std::{collections::HashSet, io::Write, iter::repeat_with};
 
     use super::GameStateBuilder;
 
@@ -1481,14 +1481,15 @@ mod gamestate_tests {
     }
     #[test]
     fn serialize_gamestate() {
-        let mut state = standard_state();
-        state.rng_enabled = true;
-        let seed = 5;
-        state.set_seed(seed);
+        let state = standard_state();
 
         let serialized = serde_json::to_string(&state).unwrap();
-        println!("{}", serialized);
-        let deserialized: GameState = serde_json::from_str(&serialized).unwrap();
+        let mut file = std::fs::File::create("serialized_test.json").unwrap();
+        file.write_all(serialized.as_bytes()).unwrap();
+
+        let json_str = std::fs::read_to_string("serialized_test.json").unwrap();
+        let deserialized: GameState = serde_json::from_str(&json_str).unwrap();
         assert_eq!(state, deserialized);
+        std::fs::remove_file("serialized_test.json").unwrap();
     }
 }

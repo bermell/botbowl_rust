@@ -96,16 +96,16 @@ impl Bot for RandomBot {
 #[cfg(test)]
 mod tests {
     use crate::bots::RandomBot;
-    use crate::core::game_runner::BotGameRunner;
+    use crate::core::game_runner::BotGameRunnerBuilder;
 
     #[test]
     fn random_bot_plays_game() {
         color_backtrace::install();
         for _ in 0..10 {
-            let mut bot_game = BotGameRunner {
-                home_bot: Box::new(RandomBot::new()),
-                away_bot: Box::new(RandomBot::new()),
-            };
+            let mut bot_game = BotGameRunnerBuilder::new()
+                .set_home_bot(Box::new(RandomBot::new()))
+                .set_away_bot(Box::new(RandomBot::new()))
+                .build();
 
             let result = bot_game.run();
             println!("{:?}", result);
