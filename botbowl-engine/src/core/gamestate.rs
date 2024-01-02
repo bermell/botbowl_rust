@@ -465,7 +465,7 @@ impl GameState {
     pub fn get_endzone_x(&self, team: TeamType) -> Coord {
         match team {
             TeamType::Home => 1,
-            TeamType::Away => WIDTH_ - 1,
+            TeamType::Away => WIDTH_ - 2,
         }
     }
     pub fn set_seed(&mut self, state: u64) {
