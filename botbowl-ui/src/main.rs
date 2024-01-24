@@ -17,7 +17,7 @@ use crossterm::{
 use ratatui::{
     prelude::*,
     widgets::{
-        canvas::{Line, *},
+        canvas::{Canvas, Circle, Context},
         *,
     },
 };
@@ -89,6 +89,8 @@ impl App {
             ])
             .split(frame.size());
 
+        frame.render_widget(self.info_widget(), pitch_intermediate[0]);
+
         let pitch = Layout::default()
             .direction(Direction::Horizontal)
             .margin(0)
@@ -139,6 +141,14 @@ impl App {
             }
         }
     }
+
+    fn info_widget(&self) -> impl Widget + '_ {
+        let info = &self.game.get_state().info;
+        let line = vec![Span::from("  "), Span::from("hej hej")];
+        let text = Line::from(line);
+        Paragraph::new(text.clone()).style(Style::default().fg(Color::Gray))
+    }
+
     fn td_square_canvas(&self, bg_color: Color, fg_color: Color, y: usize) -> impl Widget + '_ {
         let td_chars = "    TOUCHDOWN     ".chars().collect::<Vec<_>>();
 
@@ -224,7 +234,7 @@ fn draw_player(ctx: &mut Context, fg_color: Color) {
         color: fg_color,
     });
     //Body
-    ctx.draw(&Line {
+    ctx.draw(&canvas::Line {
         x1: 50.0,
         y1: 60.0,
         x2: 50.0,
@@ -232,7 +242,7 @@ fn draw_player(ctx: &mut Context, fg_color: Color) {
         color: fg_color,
     });
     //Arms
-    ctx.draw(&Line {
+    ctx.draw(&canvas::Line {
         x1: 10.0,
         y1: 50.0,
         x2: 90.0,
@@ -240,7 +250,7 @@ fn draw_player(ctx: &mut Context, fg_color: Color) {
         color: fg_color,
     });
     //Righ leg
-    ctx.draw(&Line {
+    ctx.draw(&canvas::Line {
         x1: 50.0,
         y1: 30.0,
         x2: 70.0,
@@ -248,7 +258,7 @@ fn draw_player(ctx: &mut Context, fg_color: Color) {
         color: fg_color,
     });
     //Left leg
-    ctx.draw(&Line {
+    ctx.draw(&canvas::Line {
         x1: 50.0,
         y1: 30.0,
         x2: 30.0,
