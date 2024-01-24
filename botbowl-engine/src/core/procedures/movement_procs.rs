@@ -196,7 +196,7 @@ impl Procedure for MoveAction {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
                 ProcState::Done
             }
-            _ => unreachable!(),
+            (input, _) => panic!("Illegal input for MoveAction: {:?}", input),
         }
     }
 }

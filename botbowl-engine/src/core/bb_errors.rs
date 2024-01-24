@@ -50,3 +50,13 @@ impl fmt::Display for IllegalActionError {
         write!(f, "Action is not allowed: {:?}", self.action)
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct MissingActionError {}
+
+impl error::Error for MissingActionError {}
+impl fmt::Display for MissingActionError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Action is missing")
+    }
+}

@@ -14,7 +14,7 @@ use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
 use model::*;
 
 use super::{
-    bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId},
+    bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId, MissingActionError},
     dices::{BlockDice, Coin, D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8},
     procedures::{AnyProc, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
@@ -187,6 +187,7 @@ impl GameStateBuilder {
             fixes: Default::default(),
             log: Vec::new(),
             print_log: false,
+            next_input: None,
         }
     }
     pub fn build(&mut self) -> GameState {
@@ -375,6 +376,10 @@ pub struct GameState {
     pub available_actions: Box<AvailableActions>,
     pub rng_enabled: bool,
     pub fixes: FixedDice,
+
+    #[serde(skip)]
+    #[derivative(PartialEq = "ignore")]
+    next_input: Option<ProcInput>,
 
     #[serde(skip, default = "ChaCha8Rng::from_entropy")]
     #[derivative(PartialEq = "ignore")]
@@ -835,6 +840,66 @@ impl GameState {
     pub fn clear_all_players(&mut self) -> Result<()> {
         self.unfield_all_players().unwrap();
         self.dugout_players = Default::default();
+        Ok(())
+    }
+    pub fn micro_step(&mut self, action: Option<Action>) -> Result<()> {
+        let proc_input: ProcInput = {
+            if self.available_actions.is_empty() {
+                debug_assert!(action.is_none());
+                self.next_input.take().unwrap_or(ProcInput::Nothing)
+            } else {
+                match action {
+                    None => return Err(Box::new(MissingActionError {})),
+                    Some(action) if !self.is_legal_action(&action) => {
+                        return Err(Box::new(IllegalActionError { action }))
+                    }
+                    Some(action) => ProcInput::Action(action),
+                }
+            }
+        };
+        let mut top_proc = self
+            .proc_stack
+            .pop()
+            .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
+
+        let proc_return = top_proc.step(self, proc_input);
+        self.available_actions = Default::default();
+        self.next_input = match proc_return {
+            ProcState::NotDoneNewProcs(new_procs) => {
+                self.proc_stack.push(top_proc);
+                self.proc_stack.extend(new_procs);
+                Some(ProcInput::Nothing)
+            }
+            ProcState::DoneNewProcs(new_procs) => {
+                self.proc_stack.extend(new_procs);
+                Some(ProcInput::Nothing)
+            }
+            ProcState::NotDoneNew(new_proc) => {
+                self.proc_stack.push(top_proc);
+                self.proc_stack.push(new_proc);
+                Some(ProcInput::Nothing)
+            }
+            ProcState::DoneNew(new_proc) => {
+                self.proc_stack.push(new_proc);
+                Some(ProcInput::Nothing)
+            }
+            ProcState::NotDone => {
+                self.proc_stack.push(top_proc);
+                Some(ProcInput::Nothing)
+            }
+            ProcState::Done => Some(ProcInput::Nothing),
+            ProcState::NeedAction(aa) => {
+                self.available_actions = aa;
+                self.proc_stack.push(top_proc);
+                None
+            }
+            ProcState::NeedRoll(requested_roll) => {
+                self.proc_stack.push(top_proc);
+                let result = self.get_roll_result(requested_roll);
+                Some(ProcInput::Roll(result))
+            }
+        };
+
         Ok(())
     }
 

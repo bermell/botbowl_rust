@@ -56,11 +56,11 @@ impl BotGameRunner {
     }
     fn step_state(&mut self) {
         let action = match self.state.available_actions.team {
-            Some(TeamType::Home) => self.home_bot.get_action(&self.state),
-            Some(TeamType::Away) => self.away_bot.get_action(&self.state),
-            None => todo!(),
+            Some(TeamType::Home) => Some(self.home_bot.get_action(&self.state)),
+            Some(TeamType::Away) => Some(self.away_bot.get_action(&self.state)),
+            None => None,
         };
-        self.state.step(action).unwrap();
+        self.state.micro_step(action).unwrap();
     }
     pub fn save_to_file(&self) {
         let Some(file) = &self.save_file else {

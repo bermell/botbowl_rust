@@ -550,7 +550,7 @@ pub enum Weather {
     Sweltering,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcInput {
     Nothing,
     Action(Action),
