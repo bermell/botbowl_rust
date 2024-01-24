@@ -41,7 +41,7 @@ impl App {
         let mut terminal = init_terminal()?;
         let mut app = App::new();
         let mut last_tick = Instant::now();
-        let tick_rate = Duration::from_millis(100);
+        let tick_rate = Duration::from_millis(40);
         loop {
             let _ = terminal.draw(|frame| app.ui(frame));
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
@@ -144,9 +144,29 @@ impl App {
 
     fn info_widget(&self) -> impl Widget + '_ {
         let info = &self.game.get_state().info;
-        let line = vec![Span::from("  "), Span::from("hej hej")];
+        let home_turn = format!("Home: {}", info.home_turn);
+        let away_turn = format!("Away: {}", info.away_turn);
+        let line = match info.team_turn {
+            TeamType::Home => {
+                vec![
+                    Span::styled(away_turn, Style::default()),
+                    Span::from(" "),
+                    Span::styled(home_turn, Style::default().underlined()),
+                ]
+            }
+            TeamType::Away => {
+                vec![
+                    Span::styled(away_turn, Style::default().underlined()),
+                    Span::from(" "),
+                    Span::styled(home_turn, Style::default()),
+                ]
+            }
+        };
+
         let text = Line::from(line);
-        Paragraph::new(text.clone()).style(Style::default().fg(Color::Gray))
+        Paragraph::new(text.clone())
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Gray))
     }
 
     fn td_square_canvas(&self, bg_color: Color, fg_color: Color, y: usize) -> impl Widget + '_ {
