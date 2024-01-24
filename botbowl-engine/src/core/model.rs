@@ -638,6 +638,30 @@ impl AvailableActions {
     pub fn is_empty(&self) -> bool {
         self.simple.is_empty() && self.paths.is_none() && self.positional.is_none()
     }
+    pub fn get_all(&self) -> Vec<Action> {
+        let mut positions: Vec<Action> = self
+            .positional
+            .as_ref()
+            .unwrap_or(&Default::default())
+            .iter_position()
+            .flat_map(|(pos, sv)| sv.iter().map(move |at| Action::Positional(*at, pos)))
+            .collect();
+        let simple: Vec<Action> = self.simple.iter().map(|at| Action::Simple(*at)).collect();
+        // concat the vectors
+        let paths: Vec<Action> = self
+            .paths
+            .as_ref()
+            .unwrap_or(&Default::default())
+            .iter_position()
+            .flat_map(|(pos, node)| {
+                node.as_ref()
+                    .map(|node| Action::Positional(node.get_action_type(), pos))
+            })
+            .collect();
+        positions.extend(simple);
+        positions.extend(paths);
+        positions
+    }
     pub fn insert_simple(&mut self, action_type: SimpleAT) {
         assert!(self.team.is_some());
         self.simple.insert(action_type);
