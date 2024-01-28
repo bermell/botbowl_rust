@@ -7,7 +7,7 @@ use std::{
 
 use botbowl_engine::core::{
     game_runner::{BotGameRunner, BotGameRunnerBuilder, GameRunner},
-    model::{BallState, FieldedPlayer, Position, TeamType},
+    model::{BallState, FieldedPlayer, PlayerStatus, Position, TeamType},
 };
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -205,16 +205,29 @@ impl App {
             .x_bounds([0.0, 100.0])
             .y_bounds([0.0, 100.0])
     }
-    fn player_canvas(&self, player: &FieldedPlayer, bg_color: Color) -> impl Widget + '_ {
+    fn player_canvas(
+        &self,
+        player: &FieldedPlayer,
+        bg_color: Color,
+    ) -> Canvas<'_, Box<dyn Fn(&mut Context) + '_>> {
         let fg_color = match player.stats.team {
             TeamType::Home => Color::Red,
             TeamType::Away => Color::LightBlue,
         };
 
+        let painter =
+            if player.status == PlayerStatus::Down || player.status == PlayerStatus::Stunned {
+                Box::new(move |ctx: &mut Context| draw_downed_player(ctx, fg_color))
+                    as Box<dyn Fn(&mut Context) + '_>
+            } else {
+                Box::new(move |ctx: &mut Context| draw_player(ctx, fg_color))
+                    as Box<dyn Fn(&mut Context) + '_>
+            };
+
         Canvas::default()
             .background_color(bg_color)
             .marker(Marker::Braille)
-            .paint(move |ctx| draw_player(ctx, fg_color))
+            .paint(painter)
             .x_bounds([0.0, 100.0])
             .y_bounds([0.0, 100.0])
     }
@@ -283,6 +296,16 @@ fn draw_player(ctx: &mut Context, fg_color: Color) {
         y1: 30.0,
         x2: 30.0,
         y2: 0.0,
+        color: fg_color,
+    });
+}
+fn draw_downed_player(ctx: &mut Context, fg_color: Color) {
+    //ctx.print(0.0, 0.0, format!("{},{}", x, y));
+    //Head
+    ctx.draw(&Circle {
+        x: 25.0,
+        y: 25.0,
+        radius: 15.0,
         color: fg_color,
     });
 }
