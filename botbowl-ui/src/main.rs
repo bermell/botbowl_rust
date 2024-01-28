@@ -5,6 +5,8 @@ use std::{
     u16,
 };
 
+type CanvasPainter<'a> = Box<dyn Fn(&mut Context) + 'a>;
+
 use botbowl_engine::core::{
     game_runner::{BotGameRunner, BotGameRunnerBuilder, GameRunner},
     model::{BallState, FieldedPlayer, PlayerStatus, Position, TeamType},
@@ -205,11 +207,11 @@ impl App {
             .x_bounds([0.0, 100.0])
             .y_bounds([0.0, 100.0])
     }
-    fn player_canvas(
-        &self,
+    fn player_canvas<'a>(
+        &'a self,
         player: &FieldedPlayer,
         bg_color: Color,
-    ) -> Canvas<'_, Box<dyn Fn(&mut Context) + '_>> {
+    ) -> Canvas<'a, CanvasPainter> {
         let fg_color = match player.stats.team {
             TeamType::Home => Color::Red,
             TeamType::Away => Color::LightBlue,
