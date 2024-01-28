@@ -217,13 +217,11 @@ impl App {
             TeamType::Away => Color::LightBlue,
         };
 
-        let painter =
+        let painter: CanvasPainter<'a> =
             if player.status == PlayerStatus::Down || player.status == PlayerStatus::Stunned {
                 Box::new(move |ctx: &mut Context| draw_downed_player(ctx, fg_color))
-                    as Box<dyn Fn(&mut Context) + '_>
             } else {
                 Box::new(move |ctx: &mut Context| draw_player(ctx, fg_color))
-                    as Box<dyn Fn(&mut Context) + '_>
             };
 
         Canvas::default()
