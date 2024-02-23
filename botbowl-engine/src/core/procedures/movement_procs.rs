@@ -678,11 +678,11 @@ mod tests {
         state.step_positional(PosAT::Pass, target_pos);
         state.fixes.fix_d6(6); //deflect
         state.fixes.fix_d6(6); //Catch
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
         state.step_positional(PosAT::SelectPosition, deflect_pos);
         let carrier_id = state.get_player_id_at(deflect_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_successful() {
@@ -692,7 +692,7 @@ mod tests {
         state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Home);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Home);
     }
     #[test]
     fn pass_successful_intercepted() {
@@ -704,7 +704,7 @@ mod tests {
         state.fixes.fix_d6(6); //Catch
         state.step_positional(PosAT::Pass, target_pos);
         assert_eq!(state.ball, BallState::Carried(interceptor_id));
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_successful_deflect_failed_catch() {
@@ -720,7 +720,7 @@ mod tests {
             state.ball,
             BallState::OnGround(interceptor + Direction::up())
         );
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_failed_deflect() {
@@ -733,7 +733,7 @@ mod tests {
         state.step_simple(SimpleAT::DontUseReroll);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Home);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Home);
     }
     #[test]
     fn pass_fumbled() {
@@ -746,7 +746,7 @@ mod tests {
             state.ball,
             BallState::OnGround(start_pos + bounce_direction)
         );
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_inaccurate_turnover() {
@@ -762,7 +762,7 @@ mod tests {
             state.ball,
             BallState::OnGround(target_pos + 4 * bounce_direction)
         );
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_wildly_inaccurate_turnover() {
@@ -780,7 +780,7 @@ mod tests {
             + deviate_distance * deviate_direction
             + bounce_direction;
         assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
     fn pass_wildly_inaccurate_out_of_bounds() {
@@ -799,7 +799,7 @@ mod tests {
         state.step_positional(PosAT::Pass, target_pos);
         let expected_ball_pos = out_of_bounds_pos + Direction::down() * (3 + 2) + bounce_direction;
         assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
-        assert_eq!(state.get_active_teamtype().unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
 
     #[test]

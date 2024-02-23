@@ -575,16 +575,6 @@ impl GameState {
         self.available_actions.get_team()
     }
 
-    pub fn get_active_team(&self) -> Option<&TeamState> {
-        self.get_active_teamtype()
-            .map(|team_type| self.get_team(team_type))
-    }
-
-    pub fn get_active_team_mut(&mut self) -> Option<&mut TeamState> {
-        self.get_active_teamtype()
-            .map(|team_type| self.get_mut_team(team_type))
-    }
-
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
         self.get_player_id_at_coord(p.x, p.y)
     }

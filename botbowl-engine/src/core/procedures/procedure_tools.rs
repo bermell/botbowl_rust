@@ -71,7 +71,9 @@ where
                 return ProcState::from(self.proc.apply_failure(game_state));
             }
             ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
-                game_state.get_active_team_mut().unwrap().use_reroll();
+                // since the proc input is an action, available actions is garanteed to be set. unwrap is safe
+                let team = game_state.available_actions.team.unwrap();
+                game_state.get_mut_team(team).use_reroll();
                 self.state = RollProcState::RerollUsed;
                 return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));
             }
