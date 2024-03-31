@@ -622,6 +622,10 @@ impl GameState {
             .filter_map(|adj_pos| self.get_player_at(adj_pos))
     }
 
+    pub fn get_mut_player_at_unsafe(&mut self, p: Position) -> &mut FieldedPlayer {
+        self.get_mut_player_unsafe(self.get_player_id_at(p).unwrap())
+    }
+
     pub fn get_mut_player(&mut self, id: PlayerID) -> Result<&mut FieldedPlayer> {
         match &mut self.fielded_players[id] {
             Some(player) => Ok(player),

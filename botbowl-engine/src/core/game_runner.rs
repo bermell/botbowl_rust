@@ -116,6 +116,7 @@ pub struct BotGameRunnerBuilder {
     home_bot: Option<Box<dyn Bot>>,
     away_bot: Option<Box<dyn Bot>>,
     replay_file: Option<String>,
+    state: Option<GameState>,
 }
 impl BotGameRunnerBuilder {
     pub fn new() -> Self {
@@ -129,15 +130,23 @@ impl BotGameRunnerBuilder {
         self.away_bot = Some(bot);
         self
     }
+    pub fn set_state(mut self, state: GameState) -> Self {
+        self.state = Some(state);
+        self
+    }
     pub fn set_replay_file(mut self, file: &str) -> Self {
         self.replay_file = Some(file.to_string());
         self
     }
-    pub fn build(self) -> BotGameRunner {
-        let mut state = GameStateBuilder::new()
+    fn default_state() -> GameState {
+        let mut s = GameStateBuilder::new()
             .set_state(BuilderState::CoinToss)
             .build();
-        state.rng_enabled = true;
+        s.rng_enabled = true;
+        s
+    }
+
+    pub fn build(self) -> BotGameRunner {
         BotGameRunner {
             home_bot: self
                 .home_bot
@@ -145,7 +154,7 @@ impl BotGameRunnerBuilder {
             away_bot: self
                 .away_bot
                 .unwrap_or(Box::new(crate::bots::RandomBot::new())),
-            state,
+            state: self.state.unwrap_or(BotGameRunnerBuilder::default_state()),
             save_file: self.replay_file,
             steps: vec![],
         }
@@ -155,9 +164,36 @@ impl BotGameRunnerBuilder {
 #[cfg(test)]
 mod gamestate_tests {
 
-    use crate::core::gamestate::GameState;
+    use std::collections::HashSet;
+
+    use crate::core::{
+        gamestate::{GameState, GameStateBuilder},
+        model::{Position, TeamType},
+    };
 
     use super::{BotGameRunnerBuilder, GameRunner, Recording};
+
+    #[test]
+    fn build_runner_with_custom_state() {
+        let expected_home_positions = &[(1, 2), (2, 2), (3, 1)];
+        let state = GameStateBuilder::new()
+            .add_home_players(expected_home_positions)
+            .build();
+        let runner = BotGameRunnerBuilder::new().set_state(state).build();
+
+        let actual_home_positions = runner
+            .get_state()
+            .get_players_on_pitch_in_team(TeamType::Home)
+            .map(|p| p.position)
+            .collect::<HashSet<_>>();
+
+        let expected_home_positions = expected_home_positions
+            .iter()
+            .map(|(x, y)| Position::new((*x, *y)))
+            .collect::<HashSet<_>>();
+
+        assert_eq!(actual_home_positions, expected_home_positions);
+    }
 
     #[test]
     fn save_and_replay_game() {

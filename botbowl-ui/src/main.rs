@@ -9,6 +9,7 @@ type CanvasPainter<'a> = Box<dyn Fn(&mut Context) + 'a>;
 
 use botbowl_engine::core::{
     game_runner::{BotGameRunner, BotGameRunnerBuilder, GameRunner},
+    gamestate::GameStateBuilder,
     model::{BallState, FieldedPlayer, PlayerStatus, Position, TeamType},
 };
 use crossterm::{
@@ -38,11 +39,29 @@ impl App {
         let runner = BotGameRunnerBuilder::new().build();
         App { game: runner }
     }
+    fn new_show_state() -> App {
+        let down_pos = Position::from((1, 1));
+        let stunned_pos = Position::from((2, 2));
+        let ball_pos = Position::from((3, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(down_pos)
+            .add_home_player(stunned_pos)
+            .add_home_player(ball_pos)
+            .add_ball((ball_pos.x, ball_pos.y))
+            .build();
+
+        state.get_mut_player_at_unsafe(down_pos).status = PlayerStatus::Down;
+        state.get_mut_player_at_unsafe(stunned_pos).status = PlayerStatus::Stunned;
+
+        let runner = BotGameRunnerBuilder::new().set_state(state).build();
+        App { game: runner }
+    }
 
     pub fn run() -> io::Result<()> {
         let mut terminal = init_terminal()?;
-        let mut app = App::new();
+        let mut app = App::new_show_state();
         let mut last_tick = Instant::now();
+        let mut do_step = false;
         let tick_rate = Duration::from_millis(40);
         loop {
             let _ = terminal.draw(|frame| app.ui(frame));
@@ -53,8 +72,16 @@ impl App {
                         break;
                     }
                 }
+                if let Event::Key(key) = event::read()? {
+                    if let KeyCode::Char('s') = key.code {
+                        do_step = true;
+                    }
+                }
             }
-            app.game.step();
+            if do_step {
+                app.game.step();
+                do_step = false;
+            }
             if app.game.game_over() {
                 break;
             }
