@@ -32,7 +32,7 @@ pub fn player_8x4(player: &FieldedPlayer, ball: BallState) -> Vec<Line> {
 
     match ball {
         BallState::Carried(_) => {
-            vec![l1, lb]
+            vec![l1, lb, l3, l4]
         }
         _ => {
             vec![l1, l2, l3, l4]
@@ -40,5 +40,29 @@ pub fn player_8x4(player: &FieldedPlayer, ball: BallState) -> Vec<Line> {
     }
 }
 pub fn player_6x3(player: &FieldedPlayer, ball: BallState) -> Vec<Line> {
-    Vec::new()
+    // A player made of 6x3 characters, outline:
+    // "  ▆▆  "
+    // " -▐▌- "
+    // "  /\  "
+    let style = player_style(player);
+    let l1 = Line::from(vec![Span::styled("  ▆▆  ", style)]);
+    let l2 = Line::from(vec![Span::styled(" -▐▌- ", style)]);
+    let l3 = Line::from(vec![Span::styled("  /\\  ", style)]);
+    vec![l1, l2, l3]
+}
+pub fn player_4x2(player: &FieldedPlayer, ball: BallState) -> Vec<Line> {
+    // A player made of 4x2 characters, outline:
+    // "-▝▘-"
+    // " /\ "
+    let style = player_style(player);
+    let l1 = Line::from(vec![Span::styled("-▝▘-", style)]);
+    let l2 = Line::from(vec![Span::styled(" /\\ ", style)]);
+    vec![l1, l2]
+}
+pub fn player_2x1(player: &FieldedPlayer, ball: BallState) -> Vec<Line> {
+    // A player made of 2x1 characters, outline:
+    // "☺-"
+    let style = player_style(player);
+    let l1 = Line::from(vec![Span::styled("☺-", style)]);
+    vec![l1]
 }
