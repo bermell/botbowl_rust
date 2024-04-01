@@ -1,11 +1,11 @@
+pub mod player_drawings;
+
 use std::{
     io::{self, stdout, Stdout},
     rc::Rc,
     time::{Duration, Instant},
     u16,
 };
-
-type CanvasPainter<'a> = Box<dyn Fn(&mut Context) + 'a>;
 
 use botbowl_engine::core::{
     game_runner::{BotGameRunner, BotGameRunnerBuilder, GameRunner},
@@ -17,10 +17,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use player_drawings::{player_2x1, player_4x2, player_6x3, player_8x4};
 use ratatui::{
     prelude::*,
     widgets::{
-        canvas::{Canvas, Circle, Context},
+        canvas::{Canvas, Circle},
         *,
     },
 };
@@ -152,7 +153,8 @@ impl App {
                     || self.game.get_state().get_endzone_x(TeamType::Away) == pos.x;
 
                 if let Some(player) = self.game.get_state().get_player_at(pos) {
-                    frame.render_widget(self.player_canvas(player, bg_color), *chunk);
+                    let paragraph = player_paragraph(player, bg_color, *chunk);
+                    frame.render_widget(paragraph, *chunk);
                 } else if ball {
                     frame.render_widget(self.ball_canvas(bg_color), *chunk);
                 } else if td {
@@ -234,30 +236,6 @@ impl App {
             .x_bounds([0.0, 100.0])
             .y_bounds([0.0, 100.0])
     }
-    fn player_canvas<'a>(
-        &'a self,
-        player: &FieldedPlayer,
-        bg_color: Color,
-    ) -> Canvas<'a, CanvasPainter> {
-        let fg_color = match player.stats.team {
-            TeamType::Home => Color::Red,
-            TeamType::Away => Color::LightBlue,
-        };
-
-        let painter: CanvasPainter<'a> =
-            if player.status == PlayerStatus::Down || player.status == PlayerStatus::Stunned {
-                Box::new(move |ctx: &mut Context| draw_downed_player(ctx, fg_color))
-            } else {
-                Box::new(move |ctx: &mut Context| draw_player(ctx, fg_color))
-            };
-
-        Canvas::default()
-            .background_color(bg_color)
-            .marker(Marker::Braille)
-            .paint(painter)
-            .x_bounds([0.0, 100.0])
-            .y_bounds([0.0, 100.0])
-    }
 }
 fn split_rows(area: &Rect, row_height: u16, num_rows: u16) -> Rc<[Rect]> {
     let list_layout = Layout::default()
@@ -284,58 +262,6 @@ fn split_cols(area: &Rect, col_width: u16, num_cols: u16) -> Rc<[Rect]> {
 
     list_layout.split(*area)
 }
-fn draw_player(ctx: &mut Context, fg_color: Color) {
-    //ctx.print(0.0, 0.0, format!("{},{}", x, y));
-    //Head
-    ctx.draw(&Circle {
-        x: 50.0,
-        y: 75.0,
-        radius: 15.0,
-        color: fg_color,
-    });
-    //Body
-    ctx.draw(&canvas::Line {
-        x1: 50.0,
-        y1: 60.0,
-        x2: 50.0,
-        y2: 30.0,
-        color: fg_color,
-    });
-    //Arms
-    ctx.draw(&canvas::Line {
-        x1: 10.0,
-        y1: 50.0,
-        x2: 90.0,
-        y2: 50.0,
-        color: fg_color,
-    });
-    //Righ leg
-    ctx.draw(&canvas::Line {
-        x1: 50.0,
-        y1: 30.0,
-        x2: 70.0,
-        y2: 0.0,
-        color: fg_color,
-    });
-    //Left leg
-    ctx.draw(&canvas::Line {
-        x1: 50.0,
-        y1: 30.0,
-        x2: 30.0,
-        y2: 0.0,
-        color: fg_color,
-    });
-}
-fn draw_downed_player(ctx: &mut Context, fg_color: Color) {
-    //ctx.print(0.0, 0.0, format!("{},{}", x, y));
-    //Head
-    ctx.draw(&Circle {
-        x: 25.0,
-        y: 25.0,
-        radius: 15.0,
-        color: fg_color,
-    });
-}
 fn init_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -346,4 +272,19 @@ fn restore_terminal() -> io::Result<()> {
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
     Ok(())
+}
+
+fn player_paragraph(player: &FieldedPlayer, bg_color: Color, rect: Rect) -> Paragraph {
+    let (h, w) = (rect.height, rect.width);
+    let ball = BallState::OffPitch;
+    let text = match (w, h) {
+        (8, 4) => player_8x4(player, ball),
+        (6, 3) => player_6x3(player, ball),
+        (4, 2) => player_4x2(player, ball),
+        (2, 1) => player_2x1(player, ball),
+        _ => panic!("Invalid Rectangle size {}, {}", h, w),
+    };
+    Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(bg_color))
 }
