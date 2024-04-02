@@ -21,16 +21,6 @@ fn ball_1x1() -> Span<'static> {
 }
 
 pub fn player_8x4(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    // A player made of 8x4 characters, outline:
-    // "   ██   "
-    // " --▐▌-- "
-    // "   ▐▌   "
-    // "  /  \  "
-    // if player is lying down:
-    // "        "
-    // "        "
-    // " ▄▄▁▃▃▬ "
-    // " ▀▀▔▀▀▬ "
     let style = player_style(player);
 
     if player.status != PlayerStatus::Up {
@@ -40,10 +30,8 @@ pub fn player_8x4(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
         let l4 = Line::from(vec![Span::styled(" ▀▀▔▀▀▬ ", style)]);
         if player.status == PlayerStatus::Down {
             return vec![empty.clone(), empty, l3, l4];
-        } else {
-            // Stunned
-            return vec![empty, star, l3, l4];
         }
+        return vec![empty, star, l3, l4];
     }
 
     let l1 = Line::from(vec![Span::styled("   ▆▆   ", style)]);
@@ -60,11 +48,19 @@ pub fn player_8x4(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
     }
 }
 pub fn player_6x3(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    // A player made of 6x3 characters, outline:
-    // "  ▆▆  "
-    // " -▐▌- "
-    // "  /\  "
     let style = player_style(player);
+
+    if player.status != PlayerStatus::Up {
+        let empty = Line::from(vec![Span::styled("      ", style)]);
+        let star = Line::from(vec![Span::styled(" ***  ", style)]);
+        let l2 = Line::from(vec![Span::styled(" ▄▁▃▬ ", style)]);
+        let l3 = Line::from(vec![Span::styled(" ▀▔▀▬ ", style)]);
+        if player.status == PlayerStatus::Down {
+            return vec![empty, l2, l3];
+        }
+        return vec![star, l2, l3];
+    }
+
     let l1 = Line::from(vec![Span::styled("  ▆▆  ", style)]);
     let l2 = Line::from(vec![Span::styled(" -▐▌- ", style)]);
     let l3 = Line::from(vec![Span::styled("  /\\  ", style)]);
@@ -77,10 +73,18 @@ pub fn player_6x3(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
     }
 }
 pub fn player_4x2(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    // A player made of 4x2 characters, outline:
-    // "-▝▘-"
-    // " /\ "
     let style = player_style(player);
+
+    if player.status != PlayerStatus::Up {
+        let empty = Line::from(vec![Span::styled("    ", style)]);
+        let star = Line::from(vec![Span::styled(" ** ", style)]);
+        let l2 = Line::from(vec![Span::styled(" o-<", style)]);
+        if player.status == PlayerStatus::Down {
+            return vec![empty, l2];
+        }
+        return vec![star, l2];
+    }
+
     if is_carrier {
         let l1_ball = Line::from(vec![Span::styled("-▝▘", style), ball_1x1()]);
         let l2 = Line::from(vec![Span::styled(" /\\ ", style)]);
@@ -92,14 +96,18 @@ pub fn player_4x2(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
     }
 }
 pub fn player_2x1(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    // A player made of 2x1 characters, outline:
-    // "☺-"
     let style = player_style(player);
+
+    if player.status != PlayerStatus::Up {
+        if player.status == PlayerStatus::Down {
+            return vec![Line::from(vec![Span::styled("--", style)])];
+        }
+        return vec![Line::from(vec![Span::styled("✧-", style)])];
+    }
+
     if is_carrier {
-        let l1_ball = Line::from(vec![Span::styled("☺", style), ball_1x1()]);
-        vec![l1_ball]
+        vec![Line::from(vec![Span::styled("☺", style), ball_1x1()])]
     } else {
-        let l1 = Line::from(vec![Span::styled("☺-", style)]);
-        vec![l1]
+        vec![Line::from(vec![Span::styled("☺-", style)])]
     }
 }
