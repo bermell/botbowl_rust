@@ -143,6 +143,7 @@ impl App {
                     0 => Color::Reset,
                     _ => Color::Black,
                 };
+                let ball_state = self.game.get_state().ball;
                 let ball: bool = match self.game.get_state().ball {
                     BallState::OffPitch => false,
                     BallState::OnGround(p) => p == pos,
@@ -153,7 +154,8 @@ impl App {
                     || self.game.get_state().get_endzone_x(TeamType::Away) == pos.x;
 
                 if let Some(player) = self.game.get_state().get_player_at(pos) {
-                    let paragraph = player_paragraph(player, bg_color, *chunk);
+                    let is_carrier = matches!(ball_state, BallState::Carried(p) if p == player.id);
+                    let paragraph = player_paragraph(player, is_carrier, bg_color, *chunk);
                     frame.render_widget(paragraph, *chunk);
                 } else if ball {
                     frame.render_widget(self.ball_canvas(bg_color), *chunk);
@@ -274,14 +276,18 @@ fn restore_terminal() -> io::Result<()> {
     Ok(())
 }
 
-fn player_paragraph(player: &FieldedPlayer, bg_color: Color, rect: Rect) -> Paragraph {
+fn player_paragraph(
+    player: &FieldedPlayer,
+    is_carrier: bool,
+    bg_color: Color,
+    rect: Rect,
+) -> Paragraph {
     let (h, w) = (rect.height, rect.width);
-    let ball = BallState::OffPitch;
     let text = match (w, h) {
-        (8, 4) => player_8x4(player, ball),
-        (6, 3) => player_6x3(player, ball),
-        (4, 2) => player_4x2(player, ball),
-        (2, 1) => player_2x1(player, ball),
+        (8, 4) => player_8x4(player, is_carrier),
+        (6, 3) => player_6x3(player, is_carrier),
+        (4, 2) => player_4x2(player, is_carrier),
+        (2, 1) => player_2x1(player, is_carrier),
         _ => panic!("Invalid Rectangle size {}, {}", h, w),
     };
     Paragraph::new(text)
