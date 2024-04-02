@@ -1,4 +1,4 @@
-use botbowl_engine::core::model::{FieldedPlayer, TeamType};
+use botbowl_engine::core::model::{FieldedPlayer, PlayerStatus, TeamType};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -26,7 +26,26 @@ pub fn player_8x4(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
     // " --▐▌-- "
     // "   ▐▌   "
     // "  /  \  "
+    // if player is lying down:
+    // "        "
+    // "        "
+    // " ▄▄▁▃▃▬ "
+    // " ▀▀▔▀▀▬ "
     let style = player_style(player);
+
+    if player.status != PlayerStatus::Up {
+        let empty = Line::from(vec![Span::styled("        ", style)]);
+        let star = Line::from(vec![Span::styled(" ***    ", style)]);
+        let l3 = Line::from(vec![Span::styled(" ▄▄▁▃▃▬ ", style)]);
+        let l4 = Line::from(vec![Span::styled(" ▀▀▔▀▀▬ ", style)]);
+        if player.status == PlayerStatus::Down {
+            return vec![empty.clone(), empty, l3, l4];
+        } else {
+            // Stunned
+            return vec![empty, star, l3, l4];
+        }
+    }
+
     let l1 = Line::from(vec![Span::styled("   ▆▆   ", style)]);
     let l2 = Line::from(vec![Span::styled(" --▐▌-- ", style)]);
     let l3 = Line::from(vec![Span::styled("   ▐▌   ", style)]);
