@@ -1,15 +1,25 @@
-use botbowl_engine::core::model::{FieldedPlayer, PlayerStatus, TeamType};
+use botbowl_engine::core::{
+    gamestate::GameState,
+    model::{BallState, FieldedPlayer, PlayerStatus, TeamType},
+};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
 
-fn player_style(player: &FieldedPlayer) -> Style {
+fn player_style(player: &FieldedPlayer, game_state: &GameState) -> Style {
     match player.stats.team {
         TeamType::Home => Style::default().fg(Color::Red),
         TeamType::Away => Style::default().fg(Color::LightBlue),
     }
 }
+fn is_carrier(player: &FieldedPlayer, game_state: &GameState) -> bool {
+    match game_state.ball {
+        BallState::Carried(id) => id == player.id,
+        _ => false,
+    }
+}
+
 fn ball_style() -> Style {
     Style::default().fg(Color::Yellow)
 }
@@ -20,8 +30,9 @@ fn ball_1x1() -> Span<'static> {
     Span::styled("●", ball_style())
 }
 
-pub fn player_8x4(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    let style = player_style(player);
+pub fn player_8x4<'a>(player: &FieldedPlayer, game_state: &GameState) -> Vec<Line<'a>> {
+    let style = player_style(player, game_state);
+    let is_carrier = is_carrier(player, game_state);
 
     if player.status != PlayerStatus::Up {
         let empty = Line::from(vec![Span::styled("        ", style)]);
@@ -47,8 +58,9 @@ pub fn player_8x4(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
         vec![l1, l2, l3, l4]
     }
 }
-pub fn player_6x3(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    let style = player_style(player);
+pub fn player_6x3<'a>(player: &FieldedPlayer, game_state: &GameState) -> Vec<Line<'a>> {
+    let style = player_style(player, game_state);
+    let is_carrier = is_carrier(player, game_state);
 
     if player.status != PlayerStatus::Up {
         let empty = Line::from(vec![Span::styled("      ", style)]);
@@ -72,8 +84,9 @@ pub fn player_6x3(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
         vec![l1, l2, l3]
     }
 }
-pub fn player_4x2(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    let style = player_style(player);
+pub fn player_4x2<'a>(player: &FieldedPlayer, game_state: &GameState) -> Vec<Line<'a>> {
+    let style = player_style(player, game_state);
+    let is_carrier = is_carrier(player, game_state);
 
     if player.status != PlayerStatus::Up {
         let empty = Line::from(vec![Span::styled("    ", style)]);
@@ -95,8 +108,9 @@ pub fn player_4x2(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
         vec![l1, l2]
     }
 }
-pub fn player_2x1(player: &FieldedPlayer, is_carrier: bool) -> Vec<Line> {
-    let style = player_style(player);
+pub fn player_2x1<'a>(player: &FieldedPlayer, game_state: &GameState) -> Vec<Line<'a>> {
+    let style = player_style(player, game_state);
+    let is_carrier = is_carrier(player, game_state);
 
     if player.status != PlayerStatus::Up {
         if player.status == PlayerStatus::Down {
