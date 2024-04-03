@@ -11,6 +11,7 @@ use botbowl_engine::core::{
     game_runner::{BotGameRunner, BotGameRunnerBuilder, GameRunner},
     gamestate::{GameState, GameStateBuilder},
     model::{BallState, FieldedPlayer, PlayerStatus, Position, TeamType},
+    table::{PosAT, SimpleAT},
 };
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -44,15 +45,25 @@ impl App {
         let down_pos = Position::from((1, 1));
         let stunned_pos = Position::from((2, 2));
         let ball_pos = Position::from((3, 3));
+        let away_1 = Position::from((5, 3));
+        let away_2 = Position::from((5, 2));
         let mut state = GameStateBuilder::new()
             .add_home_player(down_pos)
             .add_home_player(stunned_pos)
             .add_home_player(ball_pos)
+            .add_away_player(away_1)
+            .add_away_player(away_2)
             .add_ball((ball_pos.x, ball_pos.y))
             .build();
+        state.set_logging_state(false);
 
         state.get_mut_player_at_unsafe(down_pos).status = PlayerStatus::Down;
         state.get_mut_player_at_unsafe(stunned_pos).status = PlayerStatus::Stunned;
+
+        state.step_positional(PosAT::StartMove, ball_pos);
+        state.step_positional(PosAT::Move, ball_pos + (1, 1));
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        state.step_positional(PosAT::StartMove, down_pos);
 
         let runner = BotGameRunnerBuilder::new().set_state(state).build();
         App { game: runner }
