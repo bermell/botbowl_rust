@@ -71,7 +71,7 @@ impl App {
 
     pub fn run() -> io::Result<()> {
         let mut terminal = init_terminal()?;
-        let mut app = App::new_show_state();
+        let mut app = App::new();
         let mut last_tick = Instant::now();
         let mut do_step = false;
         let tick_rate = Duration::from_millis(40);
@@ -86,13 +86,12 @@ impl App {
                 }
                 if let Event::Key(key) = event::read()? {
                     if let KeyCode::Char('s') = key.code {
-                        do_step = true;
+                        do_step = !do_step;
                     }
                 }
             }
             if do_step {
                 app.game.step();
-                do_step = false;
             }
             if app.game.game_over() {
                 break;
