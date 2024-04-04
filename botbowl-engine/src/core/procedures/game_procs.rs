@@ -107,6 +107,10 @@ impl Procedure for Half {
 
         game_state
             .get_players_on_pitch_mut()
+            .for_each(|p| p.used = false);
+
+        game_state
+            .get_players_on_pitch_mut()
             .filter(|p| p.stats.team == next_team && p.status != PlayerStatus::Stunned)
             .for_each(|p| p.reset_skills_and_moves());
 
@@ -449,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_used() {
+    fn clear_used_at_endturn() {
         let start_pos = Position::new((2, 5));
         let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
 
@@ -461,6 +465,7 @@ mod tests {
         assert!(state.get_player_unsafe(id).used);
 
         state.step_simple(SimpleAT::EndTurn);
+        assert!(!state.get_player_unsafe(id).used);
 
         assert!(state.away_to_act());
         state.step_simple(SimpleAT::EndTurn);
@@ -470,6 +475,30 @@ mod tests {
         state.step_positional(PosAT::StartMove, start_pos);
         state.step_simple(SimpleAT::EndPlayerTurn);
     }
+
+    #[test]
+    fn clear_used_at_turnover() {
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((1, 2)))
+            .build();
+        state.get_mut_team(TeamType::Home).rerolls = 0;
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fixes.fix_d6(1); //dodge fail
+        state.fixes.fix_d6(6); //armor
+        state.fixes.fix_d6(5); //armor
+        state.fixes.fix_d6(1); //injury
+        state.fixes.fix_d6(1); //injury
+        state.step_positional(PosAT::Move, start_pos + (1, 1));
+
+        assert!(state.away_to_act());
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
+        assert!(!state.get_player_unsafe(id).used);
+    }
+
     #[test]
     fn turn_stunned() {
         let start_pos = Position::new((2, 5));
