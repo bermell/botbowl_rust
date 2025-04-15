@@ -28,7 +28,7 @@ impl<'a, I, T> RefIter<'a, I, T> {
 
 // Iterator extension trait
 pub trait RefIterator: Sized + Iterator {
-    fn ref_iter<'a>(self, item: &'a RefCell<Option<Self::Item>>) -> RefIter<'a, Self, Self::Item> {
+    fn ref_iter(self, item: &RefCell<Option<Self::Item>>) -> RefIter<'_, Self, Self::Item> {
         RefIter::new(self, item)
     }
 }

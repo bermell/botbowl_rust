@@ -112,13 +112,13 @@ mod test {
     fn test_heap_u8() {
         let mut h = UniqueHeap::new();
         assert_eq!(h.registry.len(), 0);
-        assert_eq!(h.push(5), true);
+        assert!(h.push(5));
         assert_eq!(h.registry.len(), 1);
-        assert_eq!(h.push(8), true);
+        assert!(h.push(8));
         assert_eq!(h.registry.len(), 2);
-        assert_eq!(h.push(1), true);
+        assert!(h.push(1));
         assert_eq!(h.registry.len(), 3);
-        assert_eq!(h.push(8), false);
+        assert!(!h.push(8));
         assert_eq!(h.registry.len(), 3);
         assert_eq!(h.pop(), Some(8));
         assert_eq!(h.pop(), Some(5));

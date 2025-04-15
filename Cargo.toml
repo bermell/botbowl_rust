@@ -12,7 +12,7 @@ default = ["stable"]
 stable = []
 test_internals = []
 # nightly = []
-# two_player = []
+two_player = []
 
 # Tests are in a separate workspace so they can be compiled with feature
 # `test_internals` by default.  Because the tests require a considerable amount
@@ -20,14 +20,8 @@ test_internals = []
 # the tests to have access to private functions (i.e. private when not compiled
 # with `test_internals`) but also be included in the `rustdoc` documentation.
 [workspace]
-members = [
-    ".",
-    "./tests/*",
-]
-default-members = [
-    ".",
-    "./tests/*",
-]
+members = [".", "./tests/*"]
+default-members = [".", "./tests/*"]
 
 [profile.bench]
 opt-level = 3

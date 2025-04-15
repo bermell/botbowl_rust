@@ -188,7 +188,7 @@ where
 
     #[inline(always)]
     fn best_action(&self) -> Status<<Self::GD as GameDynamics>::Action> {
-        Self::best_action(&self)
+        Self::best_action(self)
     }
 
     #[inline(always)]
@@ -727,7 +727,10 @@ where
 
         _r &= !self_arc
             .registered
-            .compare_and_swap(false, true, Ordering::Relaxed);
+            //    .compare_and_swap(false, true, Ordering::Relaxed);
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .unwrap();
+        // .compare_exchange_weak(false, true, Ordering::Relaxed, Ordering::Relaxed)
 
         debug_assert!(_r, "node already in registry");
     }
@@ -741,7 +744,7 @@ where
             .parents
             .write()
             .unwrap()
-            .insert((a.clone(), ArcNode::downgrade(&self_arc)));
+            .insert((a.clone(), ArcNode::downgrade(self_arc)));
 
         // connection from self (parent) to child
         let mut children_wlk = self_arc.children.write().unwrap();
@@ -773,7 +776,7 @@ where
                     .iter()
                     .next()
                     .expect("can't calculate state for node without parents");
-                let state = WeakNode::upgrade(&p).get_state();
+                let state = WeakNode::upgrade(p).get_state();
                 GD::apply_action(&*self.game_dynamics, state, a).unwrap()
             }
         }
@@ -847,9 +850,21 @@ where
                 // `Ordering` enforces ordering for the relevant non-atomic data as well.  See:
                 // https://en.cppreference.com/w/cpp/atomic/memory_order#Release-Acquire_ordering
                 // http://gcc.gnu.org/wiki/Atomic/GCCMM/AtomicSync
-                let scores = map.iter().map(|(_, c)| {
-                    lockref::Ref::new(c.score.read().unwrap(), |s| s.as_ref().expect("no score"))
+                //
+
+                // let scores_and_actions = map.iter().map(|(a, child)| {
+                //     // there's a clever comment about why this looks the way it does in the
+                //     // other place it's used...
+                //     let q = lockref::Ref::new(child.score.read().unwrap(), |q| &**q);
+                //     (q, a)
+                // });
+
+                let scores_and_actions = map.iter().map(|(a, child)| {
+                    // Unwrap the Option<Q> to get a reference to Q
+                    let q = lockref::Ref::new(child.score.read().unwrap(), |q| q.as_ref().unwrap());
+                    (q, a)
                 });
+
                 // `Ordering::Acquire` because `GD::backprop_scores` should not be reordered before
                 // loading `score_gen`
                 let gen = self.score_gen.load(Ordering::Acquire);
@@ -858,7 +873,7 @@ where
                     &*self.game_dynamics,
                     &self.player,
                     score_cur_rlk.as_ref(),
-                    scores,
+                    scores_and_actions,
                 );
                 drop(score_cur_rlk);
                 if let Some(score) = score_new {
@@ -867,7 +882,9 @@ where
                     // storing `score_gen`
                     let gen_prev = self
                         .score_gen
-                        .compare_and_swap(gen, gen + 1, Ordering::Release);
+                        .compare_exchange(gen, gen + 1, Ordering::Release, Ordering::Relaxed)
+                        .unwrap();
+                    // .compare_and_swap(gen, gen + 1, Ordering::Release);
                     if gen_prev == gen {
                         *score_wlk = Some(score);
                         break true;
@@ -905,7 +922,7 @@ where
                 n_updates += 1;
 
                 node.parents.read().unwrap().iter().for_each(|(_, p)| {
-                    let p = WeakWrap::upgrade(&p);
+                    let p = WeakWrap::upgrade(p);
                     let dp = p.depth.load(Ordering::Relaxed);
                     h.push((dp, p));
                 });
@@ -931,13 +948,12 @@ where
         let mut cur = base.load(order);
         let mut desired = f_desired(cur);
         while cur != desired {
-            let act = base.compare_and_swap(cur, desired, order);
+            let act = base.compare_exchange(cur, desired, order, order).unwrap();
             if act == cur {
                 return desired;
-            } else {
-                cur = act;
-                desired = f_desired(cur);
             }
+            cur = act;
+            desired = f_desired(cur);
         }
         desired
     }
@@ -954,7 +970,6 @@ where
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| {
                 Some(std::cmp::max(x, min_depth))
             })
-            .ok()
             .expect("method should always return a `Some`");
 
         Some(self.depth.load(Ordering::Relaxed))
@@ -981,7 +996,7 @@ where
             let children_rlk = node.children.read().unwrap();
             if let Some(map) = children_rlk.as_map() {
                 map.iter().for_each(|(_, c)| {
-                    let c = ArcNode::clone(&c);
+                    let c = ArcNode::clone(c);
                     let d = c.depth.load(Ordering::Relaxed);
                     h.push(Reverse((d, c)));
                 });
@@ -1003,7 +1018,7 @@ where
     ) {
         if visited.insert(self_arc.as_ptr()) {
             self_arc.parents.read().unwrap().iter().for_each(|(_, p)| {
-                Self::find_parents_sorted(&WeakNode::upgrade(&p), sorted, visited)
+                Self::find_parents_sorted(&WeakNode::upgrade(p), sorted, visited)
             });
             sorted.push(ArcNode::clone(self_arc));
         }
@@ -1023,16 +1038,16 @@ where
             Some(d) => *d,
             None => {
                 let mut inv_depth = 0;
-                if let Some(ref children) = self_arc.children.read().unwrap().as_map() {
+                if let Some(children) = self_arc.children.read().unwrap().as_map() {
                     inv_depth = 1 + children
                         .iter()
-                        .map(|(_, c)| Self::find_children_sorted_with_depth(&c, sorted, visited))
+                        .map(|(_, c)| Self::find_children_sorted_with_depth(c, sorted, visited))
                         .max()
                         .unwrap_or(0);
                 }
                 let _r = visited.insert(self_arc.as_ptr(), inv_depth);
                 debug_assert!(_r.is_none(), "not a DAG");
-                sorted.push((ArcNode::clone(&self_arc), inv_depth));
+                sorted.push((ArcNode::clone(self_arc), inv_depth));
                 inv_depth
             }
         }
@@ -1089,7 +1104,7 @@ where
     P: Hash + PartialEq<P>,
 {
     fn on_drop(self_arc: &ArcWrap<Self>) {
-        if let Some(ref children) = self_arc.children.read().unwrap().as_map() {
+        if let Some(children) = self_arc.children.read().unwrap().as_map() {
             if !children.is_empty() && self_arc.state.read().unwrap().is_none() {
                 // the orphan must have a state because it is needed when the orphan's children
                 // remove the orphan as a parent; `Node::get_state` checks the node's state, so we
@@ -1301,7 +1316,7 @@ impl<T: ?Sized + OnDrop> Drop for ArcWrap<T> {
 impl<T: ?Sized + OnDrop> Deref for ArcWrap<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
-        &*self.inner
+        &self.inner
     }
 }
 
@@ -1338,7 +1353,7 @@ where
     where
         H: Hasher,
     {
-        Self::upgrade(&self).hash(h);
+        Self::upgrade(self).hash(h);
     }
 }
 
@@ -1347,7 +1362,7 @@ where
     T: PartialEq,
 {
     fn eq(&self, rhs: &Self) -> bool {
-        Self::upgrade(&self) == Self::upgrade(&rhs)
+        Self::upgrade(self) == Self::upgrade(rhs)
     }
 }
 
@@ -1444,6 +1459,7 @@ where
             let children_rlk = node.children.read().unwrap();
             match *children_rlk {
                 Children::NewLeaf => {
+                    // encountered a leaf node, so create a new child node
                     drop(children_rlk);
                     self.make_branch_wip(&node_state, &node);
                     self.make_branch(&node_state, &node);
@@ -1451,6 +1467,8 @@ where
                     return Some(node_state);
                 }
                 Children::BranchWip(_) => {
+                    // encounnted a leaf node that is being converted to a branch by this and
+                    // possibly other threads.
                     drop(children_rlk);
                     // `make_branch` returns when `Children::BranchWip` is converted to
                     // `Children::Branch`; so loop again
@@ -1458,10 +1476,10 @@ where
                 }
                 Children::Branch(ref map) => {
                     let action =
-                        Self::select_node(&self, &node, &node_state, map, SelectNodeState::Explore);
+                        Self::select_node(self, &node, &node_state, map, SelectNodeState::Explore);
 
                     // get the selected child node, calculate its state, and keep recursing
-                    let next_node = ArcNode::clone(&map.get(&action).unwrap());
+                    let next_node = ArcNode::clone(map.get(&action).unwrap());
 
                     drop(children_rlk);
                     node = next_node;
@@ -1599,22 +1617,19 @@ where
                         children_wlk = parent_node.children.write().unwrap();
                         children_wlk.as_wip_mut().unwrap().decrease_scores_pending();
                     }
-                } else if branch_wip.finished() {
-                    // no player / action pairs and ready to convert to `Branch`
-                    let map = branch_wip.take_scored().unwrap();
-                    let notifier = branch_wip.get_notifier();
-                    // since `GD::apply_action` is allowed to return `None` we must check whether
-                    // the node is actually a terminal node
-                    if map.is_empty() {
-                        *children_wlk = Children::None;
-                    } else {
-                        *children_wlk = Children::Branch(map);
-                    }
-                    drop(children_wlk);
-                    notifier.notify_all();
-                    break;
                 } else {
-                    // no more player / action pairs but another thread is still processing a pair
+                    if branch_wip.finished() {
+                        let map = branch_wip.take_scored().unwrap();
+                        let notifier = branch_wip.get_notifier();
+                        if map.is_empty() {
+                            *children_wlk = Children::None;
+                        } else {
+                            *children_wlk = Children::Branch(map);
+                        }
+                        drop(children_wlk);
+                        notifier.notify_all();
+                        break;
+                    }
                     let notifier = branch_wip.get_notifier();
                     drop(children_wlk);
                     drop(notifier.wait().unwrap());
@@ -1634,6 +1649,9 @@ where
     }
 
     fn make_branch_wip(&self, parent_state: &S, parent_node: &ArcNode<GD, S, P, A, Q, I, M>) {
+        // checking again that it's still a `NewLeaf` node, although it was already checked before
+        // calling this function, that's because the node could have been converted to a
+        // `BranchWip` by another thread (though unlikely..). But now we are holding a write lock on the node.
         if let ref mut children @ Children::NewLeaf = *parent_node.children.write().unwrap() {
             let players_actions = self
                 .game_dynamics
@@ -1641,9 +1659,11 @@ where
 
             match players_actions {
                 Some(player_acts) => {
+                    // player actions from this state. Use exitsing code to handle this
                     let branch_wip = BranchWip::new(player_acts.into_iter());
                     *children = Children::BranchWip(branch_wip);
                 }
+
                 None => {
                     *children = Children::None;
                 }
@@ -1652,7 +1672,7 @@ where
     }
 
     fn best_action(&self) -> Status<A> {
-        Self::best_action_from(&self, &self.root.read().unwrap())
+        Self::best_action_from(self, &self.root.read().unwrap())
     }
 
     fn best_action_from(&self, node: &ArcNode<GD, S, P, A, Q, I, M>) -> Status<A>
@@ -1666,8 +1686,8 @@ where
             // `best_action_from` is only called from the root node, which always has a state (i.e.
             // the `expect` is only a problem if this method is not called on the root node)
             Tree::select_node(
-                &self,
-                &node,
+                self,
+                node,
                 node.state
                     .read()
                     .unwrap()
@@ -1813,7 +1833,7 @@ pub(crate) mod test {
         children.iter().for_each(|(c, d)| {
             assert_eq!(d, visited.get(&c.as_ptr()).unwrap());
             let mut sub_children = Vec::new();
-            Node::find_children_sorted_with_depth(&c, &mut sub_children, &mut HashMap::new());
+            Node::find_children_sorted_with_depth(c, &mut sub_children, &mut HashMap::new());
             sub_children
                 .iter()
                 .rev()

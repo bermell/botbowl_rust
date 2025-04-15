@@ -20,6 +20,10 @@
 
 use recon_mcts::prelude::*;
 
+//use the tfe.rs which is in the same folder as this file
+pub mod game_2048;
+pub mod test_mcts_2048;
+
 use std::cell::Ref;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -104,6 +108,7 @@ impl GameDynamics for Nim {
     type State = usize;
     type Action = usize;
     type Score = Score;
+
     // If the returned iterator contains a closure, it will need to be boxed until
     // `#![feature(type_alias_impl_trait)]` is implemented (currently available in nightly):
     // https://github.com/rust-lang/rust/issues/63066
@@ -155,7 +160,9 @@ impl GameDynamics for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().unwrap().player1;
                     let e = match purpose {
-                        SelectNodeState::Explore => self.rng.lock().unwrap().gen_range(-0.1, 0.1),
+                        SelectNodeState::Explore => {
+                            self.rng.lock().unwrap().random_range(-0.1..0.1)
+                        }
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q, a, qp + e)
@@ -171,7 +178,9 @@ impl GameDynamics for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().unwrap().player2;
                     let e = match purpose {
-                        SelectNodeState::Explore => self.rng.lock().unwrap().gen_range(-0.1, 0.1),
+                        SelectNodeState::Explore => {
+                            self.rng.lock().unwrap().random_range(-0.1..0.1)
+                        }
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q, a, qp + e)
@@ -186,30 +195,32 @@ impl GameDynamics for Nim {
         .to_owned()
     }
 
-    fn backprop_scores<II, Q>(
+    fn backprop_scores<II, Q, A>(
         &self,
         player: &Self::Player,
         score_current: Option<&Self::Score>,
-        child_scores: II,
+        child_scores_and_actions: II,
     ) -> Option<Self::Score>
     where
         Self: Sized,
-        II: IntoIterator<Item = Q>,
+        II: Clone + IntoIterator<Item = (Q, A)>,
+        A: Deref<Target = Self::Action>,
         Q: Deref<Target = Self::Score>,
     {
-        let iter = child_scores.into_iter();
+        let iter = child_scores_and_actions.into_iter();
         let score = match player {
-            Player::P1 => iter.max_by(|a, b| {
+            Player::P1 => iter.max_by(|(a, _), (b, _)| {
                 let Score { player1: ref a, .. } = **a;
                 let Score { player1: ref b, .. } = **b;
                 a.partial_cmp(b).unwrap()
             }),
-            Player::P2 => iter.max_by(|a, b| {
+            Player::P2 => iter.max_by(|(a, _), (b, _)| {
                 let Score { player2: ref a, .. } = **a;
                 let Score { player2: ref b, .. } = **b;
                 a.partial_cmp(b).unwrap()
             }),
         }?
+        .0
         .deref()
         .clone();
 
@@ -296,7 +307,9 @@ impl DynGD for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().unwrap().player1;
                     let e = match purpose {
-                        SelectNodeState::Explore => self.rng.lock().unwrap().gen_range(-0.1, 0.1),
+                        SelectNodeState::Explore => {
+                            self.rng.lock().unwrap().random_range(-0.1..0.1)
+                        }
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q.clone(), a.clone(), qp + e)
@@ -306,7 +319,9 @@ impl DynGD for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().unwrap().player2;
                     let e = match purpose {
-                        SelectNodeState::Explore => self.rng.lock().unwrap().gen_range(-0.1, 0.1),
+                        SelectNodeState::Explore => {
+                            self.rng.lock().unwrap().random_range(-0.1..0.1)
+                        }
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q.clone(), a.clone(), qp + e)

@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use std::cell::{Ref, RefCell};
 use std::ops::Deref;
 
@@ -128,15 +129,16 @@ pub trait GameDynamics {
     // `Self::State` may be large such that it is only stored for the root node; therefore,
     // `Self::State` is not available to `backprop_scores`.  However, `Self::Player` could be
     // useful for giving different player different backpropagation methodologies.
-    fn backprop_scores<II, Q>(
+    fn backprop_scores<II, Q, A>(
         &self,
         player: &Self::Player,
         score_current: Option<&Self::Score>,
-        child_scores: II,
+        child_scores_and_actions: II,
     ) -> Option<Self::Score>
     where
         Self: Sized,
-        II: Clone + IntoIterator<Item = Q>,
+        II: Clone + IntoIterator<Item = (Q, A)>,
+        A: Deref<Target = Self::Action>,
         Q: Deref<Target = Self::Score>;
 
     /// Take a leaf node's state and assign the node a score, whether via simulation or otherwise.
@@ -232,12 +234,12 @@ where
         player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::ActionIter> {
-        <T as GameDynamics>::available_actions(&self, player, state)
+        <T as GameDynamics>::available_actions(self, player, state)
     }
 
     #[inline(always)]
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
-        <T as GameDynamics>::apply_action(&self, state, action)
+        <T as GameDynamics>::apply_action(self, state, action)
     }
 
     #[inline(always)]
@@ -247,7 +249,7 @@ where
         parent_player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::Score> {
-        <T as GameDynamics>::score_leaf(&self, parent_score, parent_player, state)
+        <T as GameDynamics>::score_leaf(self, parent_score, parent_player, state)
     }
 }
 
@@ -365,24 +367,32 @@ where
         )
     }
 
-    fn backprop_scores<II, Q>(
+    fn backprop_scores<II, Q, A>(
         &self,
         player: &T::Player,
         score_current: Option<&T::Score>,
-        child_scores: II,
+        child_scores_and_actions: II,
     ) -> Option<T::Score>
     where
         Self: Sized,
-        II: Clone + IntoIterator<Item = Q>,
-        Q: Deref<Target = T::Score>,
+        II: Clone + IntoIterator<Item = (Q, A)>,
+        Q: Deref<Target = Self::Score>,
+        A: Deref<Target = Self::Action>,
     {
         let reserved_space = RefCell::new(None);
-        let mut child_scores = child_scores
+        let mut child_scores_and_actions_fixed = child_scores_and_actions
+            .clone()
             .into_iter()
+            .map(|qa| qa.0)
             .ref_iter(&reserved_space)
             .map(|q| Ref::map(q, Deref::deref));
 
-        <T as DynGD>::backprop_scores(self, player, score_current, &mut child_scores)
+        <T as DynGD>::backprop_scores(
+            self,
+            player,
+            score_current,
+            &mut child_scores_and_actions_fixed,
+        )
     }
 
     #[inline(always)]
@@ -396,154 +406,154 @@ where
     }
 }
 
-// An interface for two player games that wraps the generic `GameDynamics` interface above; Not yet
-// ready for prime time (i.e. untested and possibly stale)
-#[cfg(feature = "two_player")]
-mod untested {
-    use super::*;
-    use crate::map_maybe;
-
-    pub enum PlayerId {
-        Player1,
-        Player2,
-    }
-
-    pub trait GameDynamics2P {
-        type Player;
-        type State;
-        type Action;
-        type ScoreP1: 'static;
-        type ScoreP2: 'static;
-        type ActionIter: IntoIterator<Item = (Self::Player, Self::Action)>;
-
-        fn player_id(player: &Self::Player) -> PlayerId;
-
-        fn available_actions(
-            &self,
-            player: &Self::Player,
-            state: &Self::State,
-        ) -> Option<Self::ActionIter>;
-
-        fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State>;
-
-        fn select_node_player1<'a, II, Q, A>(
-            purpose: SelectNodeState,
-            scores_and_actions: II,
-        ) -> Option<Self::Action>
-        where
-            II: Clone + IntoIterator<Item = (Q, A)>,
-            Q: map_maybe::MapMaybe<'a, Target = Self::ScoreP1>,
-            A: Deref<Target = Self::Action>;
-
-        fn select_node_player2<'a, II, Q, A>(
-            purpose: SelectNodeState,
-            scores_and_actions: II,
-        ) -> Option<Self::Action>
-        where
-            II: Clone + IntoIterator<Item = (Q, A)>,
-            Q: map_maybe::MapMaybe<'a, Target = Self::ScoreP2>,
-            A: Deref<Target = Self::Action>;
-
-        fn backprop_scores<II, Q>(
-            &self,
-            player: &Self::Player,
-            child_scores: II,
-        ) -> Option<(Self::ScoreP1, Self::ScoreP2)>
-        where
-            II: Clone + IntoIterator<Item = Q>,
-            Q: Deref<Target = (Self::ScoreP1, Self::ScoreP2)>;
-
-        fn score_leaf_player1(&self, state: &Self::State) -> Self::ScoreP1;
-        fn score_leaf_player2(&self, state: &Self::State) -> Self::ScoreP2;
-    }
-
-    impl<T> GameDynamics for T
-    where
-        Self: GameDynamics2P,
-        // <Self as GameDynamics2P>::ScoreP1: 'static,
-        // <Self as GameDynamics2P>::ScoreP2: 'static,
-    {
-        type Player = <Self as GameDynamics2P>::Player;
-        type State = <Self as GameDynamics2P>::State;
-        type Action = <Self as GameDynamics2P>::Action;
-        type Score = (
-            <Self as GameDynamics2P>::ScoreP1,
-            <Self as GameDynamics2P>::ScoreP2,
-        );
-        type ActionIter = <Self as GameDynamics2P>::ActionIter;
-
-        fn available_actions(
-            &self,
-            player: &Self::Player,
-            state: &Self::State,
-        ) -> Option<Self::ActionIter> {
-            <Self as GameDynamics2P>::available_actions(self, player, state)
-        }
-
-        fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
-            <Self as GameDynamics2P>::apply_action(self, state, action)
-        }
-
-        fn select_node<II, Q, A>(
-            &self,
-            _parent_score: Option<&Self::Score>,
-            parent_player: &Self::Player,
-            _parent_node_state: &Self::State,
-            purpose: SelectNodeState,
-            scores_and_actions: II,
-        ) -> Option<Self::Action>
-        where
-            II: Clone + IntoIterator<Item = (Q, A)>,
-            Q: Deref<Target = Option<Self::Score>>,
-            A: Deref<Target = Self::Action>,
-        {
-            match <Self as GameDynamics2P>::player_id(parent_player) {
-                PlayerId::Player1 => <Self as GameDynamics2P>::select_node_player1(
-                    purpose,
-                    scores_and_actions.into_iter().map(|(q, a)| {
-                        let q = map_maybe::Ref::new(
-                            q,
-                            (|x| &x.0) as fn(&Self::Score) -> &<Self as GameDynamics2P>::ScoreP1,
-                        );
-                        (q, a)
-                    }),
-                ),
-                PlayerId::Player2 => <Self as GameDynamics2P>::select_node_player2(
-                    purpose,
-                    scores_and_actions.into_iter().map(|(q, a)| {
-                        let q = map_maybe::Ref::new(
-                            q,
-                            (|x| &x.1) as fn(&Self::Score) -> &<Self as GameDynamics2P>::ScoreP2,
-                        );
-                        (q, a)
-                    }),
-                ),
-            }
-        }
-
-        fn backprop_scores<II, Q>(
-            &self,
-            player: &Self::Player,
-            _score_current: Option<&Self::Score>,
-            child_scores: II,
-        ) -> Option<Self::Score>
-        where
-            II: Clone + IntoIterator<Item = Q>,
-            Q: Deref<Target = Self::Score>,
-        {
-            <Self as GameDynamics2P>::backprop_scores(self, player, child_scores)
-        }
-
-        fn score_leaf(
-            &self,
-            _parent_score: Option<&Self::Score>,
-            _parent_player: &Self::Player,
-            state: &Self::State,
-        ) -> Option<Self::Score> {
-            Some((
-                <Self as GameDynamics2P>::score_leaf_player1(self, state),
-                <Self as GameDynamics2P>::score_leaf_player2(self, state),
-            ))
-        }
-    }
-}
+// // An interface for two player games that wraps the generic `GameDynamics` interface above; Not yet
+// // ready for prime time (i.e. untested and possibly stale)
+// #[cfg(feature = "two_player")]
+// mod untested {
+//     use super::*;
+//     use crate::map_maybe;
+//
+//     pub enum PlayerId {
+//         Player1,
+//         Player2,
+//     }
+//
+//     pub trait GameDynamics2P {
+//         type Player;
+//         type State;
+//         type Action;
+//         type ScoreP1: 'static;
+//         type ScoreP2: 'static;
+//         type ActionIter: IntoIterator<Item = (Self::Player, Self::Action)>;
+//
+//         fn player_id(player: &Self::Player) -> PlayerId;
+//
+//         fn available_actions(
+//             &self,
+//             player: &Self::Player,
+//             state: &Self::State,
+//         ) -> Option<Self::ActionIter>;
+//
+//         fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State>;
+//
+//         fn select_node_player1<'a, II, Q, A>(
+//             purpose: SelectNodeState,
+//             scores_and_actions: II,
+//         ) -> Option<Self::Action>
+//         where
+//             II: Clone + IntoIterator<Item = (Q, A)>,
+//             Q: map_maybe::MapMaybe<'a, Target = Self::ScoreP1>,
+//             A: Deref<Target = Self::Action>;
+//
+//         fn select_node_player2<'a, II, Q, A>(
+//             purpose: SelectNodeState,
+//             scores_and_actions: II,
+//         ) -> Option<Self::Action>
+//         where
+//             II: Clone + IntoIterator<Item = (Q, A)>,
+//             Q: map_maybe::MapMaybe<'a, Target = Self::ScoreP2>,
+//             A: Deref<Target = Self::Action>;
+//
+//         fn backprop_scores<II, Q>(
+//             &self,
+//             player: &Self::Player,
+//             child_scores: II,
+//         ) -> Option<(Self::ScoreP1, Self::ScoreP2)>
+//         where
+//             II: Clone + IntoIterator<Item = Q>,
+//             Q: Deref<Target = (Self::ScoreP1, Self::ScoreP2)>;
+//
+//         fn score_leaf_player1(&self, state: &Self::State) -> Self::ScoreP1;
+//         fn score_leaf_player2(&self, state: &Self::State) -> Self::ScoreP2;
+//     }
+//
+//     impl<T> GameDynamics for T
+//     where
+//         Self: GameDynamics2P,
+//         // <Self as GameDynamics2P>::ScoreP1: 'static,
+//         // <Self as GameDynamics2P>::ScoreP2: 'static,
+//     {
+//         type Player = <Self as GameDynamics2P>::Player;
+//         type State = <Self as GameDynamics2P>::State;
+//         type Action = <Self as GameDynamics2P>::Action;
+//         type Score = (
+//             <Self as GameDynamics2P>::ScoreP1,
+//             <Self as GameDynamics2P>::ScoreP2,
+//         );
+//         type ActionIter = <Self as GameDynamics2P>::ActionIter;
+//
+//         fn available_actions(
+//             &self,
+//             player: &Self::Player,
+//             state: &Self::State,
+//         ) -> Option<Self::ActionIter> {
+//             <Self as GameDynamics2P>::available_actions(self, player, state)
+//         }
+//
+//         fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
+//             <Self as GameDynamics2P>::apply_action(self, state, action)
+//         }
+//
+//         fn select_node<II, Q, A>(
+//             &self,
+//             _parent_score: Option<&Self::Score>,
+//             parent_player: &Self::Player,
+//             _parent_node_state: &Self::State,
+//             purpose: SelectNodeState,
+//             scores_and_actions: II,
+//         ) -> Option<Self::Action>
+//         where
+//             II: Clone + IntoIterator<Item = (Q, A)>,
+//             Q: Deref<Target = Option<Self::Score>>,
+//             A: Deref<Target = Self::Action>,
+//         {
+//             match <Self as GameDynamics2P>::player_id(parent_player) {
+//                 PlayerId::Player1 => <Self as GameDynamics2P>::select_node_player1(
+//                     purpose,
+//                     scores_and_actions.into_iter().map(|(q, a)| {
+//                         let q = map_maybe::Ref::new(
+//                             q,
+//                             (|x| &x.0) as fn(&Self::Score) -> &<Self as GameDynamics2P>::ScoreP1,
+//                         );
+//                         (q, a)
+//                     }),
+//                 ),
+//                 PlayerId::Player2 => <Self as GameDynamics2P>::select_node_player2(
+//                     purpose,
+//                     scores_and_actions.into_iter().map(|(q, a)| {
+//                         let q = map_maybe::Ref::new(
+//                             q,
+//                             (|x| &x.1) as fn(&Self::Score) -> &<Self as GameDynamics2P>::ScoreP2,
+//                         );
+//                         (q, a)
+//                     }),
+//                 ),
+//             }
+//         }
+//
+//         fn backprop_scores<II, Q>(
+//             &self,
+//             player: &Self::Player,
+//             _score_current: Option<&Self::Score>,
+//             child_scores: II,
+//         ) -> Option<Self::Score>
+//         where
+//             II: Clone + IntoIterator<Item = Q>,
+//             Q: Deref<Target = Self::Score>,
+//         {
+//             <Self as GameDynamics2P>::backprop_scores(self, player, child_scores)
+//         }
+//
+//         fn score_leaf(
+//             &self,
+//             _parent_score: Option<&Self::Score>,
+//             _parent_player: &Self::Player,
+//             state: &Self::State,
+//         ) -> Option<Self::Score> {
+//             Some((
+//                 <Self as GameDynamics2P>::score_leaf_player1(self, state),
+//                 <Self as GameDynamics2P>::score_leaf_player2(self, state),
+//             ))
+//         }
+//     }
+// }
