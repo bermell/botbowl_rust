@@ -23,6 +23,7 @@ use recon_mcts::prelude::*;
 //use the tfe.rs which is in the same folder as this file
 pub mod game_2048;
 pub mod test_mcts_2048;
+pub mod visualize_2048;
 
 use std::cell::Ref;
 use std::fmt::Debug;

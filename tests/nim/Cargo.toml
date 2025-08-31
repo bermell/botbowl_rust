@@ -13,3 +13,7 @@ features = ["test_internals"]
 
 [lib]
 path = "lib.rs"
+
+[[bin]]
+name = "visualize_2048"
+path = "main.rs"
