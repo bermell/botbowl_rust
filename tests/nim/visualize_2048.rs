@@ -50,7 +50,7 @@ impl GameVisualizer {
         println!("State: {:?}", self.game.state);
         println!();
 
-        // Display the board
+        // Display the board with proper padding
         println!("┌─────┬─────┬─────┬─────┐");
         for row in 0..4 {
             print!("│");
@@ -59,7 +59,17 @@ impl GameVisualizer {
                 if value == 0 {
                     print!("     │");
                 } else {
-                    print!(" {:4} │", value);
+                    // Center the number in a 5-character space
+                    let value_str = value.to_string();
+                    let padding = 5 - value_str.len();
+                    let left_pad = padding / 2;
+                    let right_pad = padding - left_pad;
+                    print!(
+                        "{}{}{}│",
+                        " ".repeat(left_pad),
+                        value_str,
+                        " ".repeat(right_pad)
+                    );
                 }
             }
             println!();
@@ -83,16 +93,8 @@ impl GameVisualizer {
             for action in &actions {
                 println!("  • {:?}", action);
             }
-        } else if self.game.state == GameState::WaitingForRandom {
-            let chances = self.game.available_chance();
-            println!("🎲 Available Chance Events:");
-            for (coord, value, prob) in &chances {
-                println!(
-                    "  • Spawn {} at ({}, {}) - Probability: {:.2}",
-                    value, coord.row, coord.col, prob
-                );
-            }
         }
+        // Removed chance node display - just show actions
         println!();
     }
 
@@ -266,7 +268,8 @@ impl GameVisualizer {
                 value, coord.row, coord.col
             );
             self.game.step_random(coord, value);
-            thread::sleep(Duration::from_millis(500)); // Brief pause to show the spawn
+            // Brief pause to show the spawn
+            thread::sleep(Duration::from_millis(200));
         }
     }
 }
