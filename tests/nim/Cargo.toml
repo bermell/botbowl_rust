@@ -3,6 +3,7 @@ name = "recon_mcts-test_nim"
 version = "0.1.0"
 authors = ["trtsl@github.com"]
 edition = "2018"
+autotests = false
 
 [dependencies]
 rand = "0.9.0"
@@ -17,3 +18,5 @@ path = "lib.rs"
 [[bin]]
 name = "visualize_2048"
 path = "main.rs"
+test = false
+doctest = false
