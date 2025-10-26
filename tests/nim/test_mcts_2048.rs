@@ -32,6 +32,16 @@ pub struct ScoreItem {
     action_node: GameState,
 }
 
+impl Clone for ScoreItem {
+    fn clone(&self) -> Self {
+        ScoreItem {
+            visits: AtomicU32::new(self.visits.load(std::sync::atomic::Ordering::Relaxed)),
+            score: self.score,
+            action_node: self.action_node,
+        }
+    }
+}
+
 impl GameDynamics for Game2048 {
     type Player = ();
 
@@ -234,13 +244,87 @@ mod test {
 
     use recon_mcts::{GetState, SearchTree, Tree};
 
+    use super::ActionChance;
     use crate::game_2048::{Coord, Game2048};
     #[test]
     fn test_tree() {
         let game = Game2048::new_game(Coord { row: 2, col: 1 }, 2);
         let tree = Tree::new(game, GetState, (), game);
+
+        // Run MCTS iterations to build the tree
         for _ in 0..1000 {
             tree.step();
+        }
+
+        // Get information about all possible moves and their visit counts
+        if let Some(move_info) = tree.get_next_move_info() {
+            // Find the action with the highest number of visits
+            let best_move = move_info.iter().max_by_key(|(_, node_info)| {
+                // Extract visit count from the score
+                if let Some(score) = &node_info.score {
+                    score.visits.load(std::sync::atomic::Ordering::Relaxed)
+                } else {
+                    0
+                }
+            });
+
+            if let Some((best_action, best_node_info)) = best_move {
+                // Verify that we found a valid action
+                match best_action {
+                    ActionChance::Action(direction) => {
+                        println!("Best action selected: {:?}", direction);
+
+                        // Verify the action has been visited
+                        if let Some(score) = &best_node_info.score {
+                            let visits = score.visits.load(std::sync::atomic::Ordering::Relaxed);
+                            assert!(
+                                visits > 0,
+                                "Best action should have been visited at least once"
+                            );
+                            println!("Action {:?} has {} visits", direction, visits);
+                        }
+                    }
+                    ActionChance::Chance(coord, value, prob) => {
+                        println!(
+                            "Best chance action selected: coord={:?}, value={}, prob={}",
+                            coord, value, prob
+                        );
+
+                        // Verify the chance action has been visited
+                        if let Some(score) = &best_node_info.score {
+                            let visits = score.visits.load(std::sync::atomic::Ordering::Relaxed);
+                            assert!(
+                                visits > 0,
+                                "Best chance action should have been visited at least once"
+                            );
+                            println!("Chance action has {} visits", visits);
+                        }
+                    }
+                }
+
+                // Print all available moves and their visit counts for debugging
+                println!("All available moves and their visit counts:");
+                for (action, node_info) in &move_info {
+                    if let Some(score) = &node_info.score {
+                        let visits = score.visits.load(std::sync::atomic::Ordering::Relaxed);
+                        match action {
+                            ActionChance::Action(dir) => {
+                                println!("  Action {:?}: {} visits", dir, visits)
+                            }
+                            ActionChance::Chance(coord, value, prob) => {
+                                println!(
+                                    "  Chance ({:?}, {}, {}): {} visits",
+                                    coord, value, prob, visits
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                panic!("No moves available from the root node");
+            }
+        } else {
+            panic!("Tree should have move information available after running MCTS");
         }
     }
 }
