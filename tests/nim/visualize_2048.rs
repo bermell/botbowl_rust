@@ -40,45 +40,193 @@ impl GameVisualizer {
     }
 
     pub fn display_board(&self) {
-        println!("\n╔══════════════════════════════════════════════════════════════╗");
-        println!("║                          2048 GAME                          ║");
-        println!("╚══════════════════════════════════════════════════════════════╝");
-        println!();
+        self.display_board_with_action_table(None, None);
+    }
 
-        // Display score and state
-        println!("Score: {}", self.game.score);
-        println!("State: {:?}", self.game.state);
-        println!();
+    fn generate_board_lines(&self) -> Vec<String> {
+        let mut board_lines = Vec::new();
+        board_lines.push(format!("Score: {}", self.game.score));
+        board_lines.push(String::new());
+        board_lines.push(" ┌─────┬─────┬─────┬─────┐".to_string());
 
-        // Display the board with proper padding
-        println!("┌─────┬─────┬─────┬─────┐");
         for row in 0..4 {
-            print!("│");
+            let mut line = String::new();
+            line.push('│');
             for col in 0..4 {
                 let value = self.game.board[row][col];
                 if value == 0 {
-                    print!("     │");
+                    line.push_str("     │");
                 } else {
-                    // Center the number in a 5-character space
                     let value_str = value.to_string();
                     let padding = 5 - value_str.len();
                     let left_pad = padding / 2;
                     let right_pad = padding - left_pad;
-                    print!(
+                    line.push_str(&format!(
                         "{}{}{}│",
                         " ".repeat(left_pad),
                         value_str,
                         " ".repeat(right_pad)
-                    );
+                    ));
                 }
             }
-            println!();
+            board_lines.push(line);
+
             if row < 3 {
-                println!("├─────┼─────┼─────┼─────┤");
+                board_lines.push("├─────┼─────┼─────┼─────┤".to_string());
             }
         }
-        println!("└─────┴─────┴─────┴─────┘");
-        println!();
+        board_lines.push("└─────┴─────┴─────┴─────┘".to_string());
+
+        board_lines
+    }
+
+    fn generate_action_table_lines(
+        &mut self,
+        action_scores: &[(Direction, f64, usize)],
+        best_action: Option<Direction>,
+    ) -> Vec<String> {
+        let mut table_lines = Vec::new();
+
+        table_lines.push(format!(
+            "🧠 Running MCTS ({} iterations)...",
+            self.mcts_iterations
+        ));
+        table_lines.push("┌──────────────┬──────────┬─────────┬─────────┐".to_string());
+        table_lines.push("│    Action    │   Score  │  Visits │ Selected│".to_string());
+        table_lines.push("├──────────────┼──────────┼─────────┼─────────┤".to_string());
+
+        for (action, score, visits) in action_scores {
+            let marker = if Some(*action) == best_action {
+                "        ✓"
+            } else {
+                "         "
+            };
+            let action_str = format!("{:?}", action);
+            table_lines.push(format!(
+                "│ {:<12} │ {:>8.2} │ {:>7} │{}│",
+                action_str, score, visits, marker
+            ));
+        }
+
+        table_lines.push("└──────────────┴──────────┴─────────┴─────────┘".to_string());
+        table_lines.push(String::new());
+
+        table_lines
+    }
+
+    fn print_combined(
+        &self,
+        board_lines: Vec<String>,
+        table_lines: Option<Vec<String>>,
+        chosen_action: Option<Direction>,
+    ) {
+        println!("══════════════════════════════════════════════════════════════");
+
+        if let Some(table_lines) = table_lines {
+            let mut empty_line = String::new();
+            for _ in 0..47 {
+                empty_line.push(' ');
+            }
+
+            // Print lines side-by-side
+            for i in 0..board_lines.len() {
+                let board_line = board_lines.get(i).unwrap_or(&empty_line);
+
+                if i < 2 {
+                    // For score and blank line, just print the board line
+                    println!("{}", board_line);
+                } else {
+                    let table_line = table_lines.get(i - 2).unwrap_or(&empty_line);
+                    println!("{:<45} {}", table_line, board_line);
+
+                    // If this is the last board line and we have a chosen action, print it with an arrow
+                    if i == board_lines.len() - 1 {
+                        if let Some(action) = chosen_action {
+                            let arrow = match action {
+                                Direction::Up => "↑",
+                                Direction::Down => "↓",
+                                Direction::Left => "←",
+                                Direction::Right => "→",
+                            };
+                            println!("{:<45}  {} {:?}", "", arrow, action);
+                            println!();
+                        }
+                    }
+                }
+            }
+        } else {
+            // No action table, just print the board
+            for (i, line) in board_lines.iter().enumerate() {
+                println!("{}", line);
+
+                if i == board_lines.len() - 1 {
+                    if let Some(action) = chosen_action {
+                        let arrow = match action {
+                            Direction::Up => "↑",
+                            Direction::Down => "↓",
+                            Direction::Left => "←",
+                            Direction::Right => "→",
+                        };
+                        println!("  {} {:?}", arrow, action);
+                        println!();
+                    }
+                }
+            }
+        }
+    }
+
+    fn display_board_with_action_table(
+        &self,
+        action_table: Option<String>,
+        chosen_action: Option<Direction>,
+    ) {
+        let board_lines = self.generate_board_lines();
+
+        if let Some(table) = action_table {
+            let table_lines: Vec<String> = table.lines().map(|s| s.to_string()).collect();
+            self.print_combined(board_lines, Some(table_lines), chosen_action);
+        } else {
+            self.print_combined(board_lines, None, chosen_action);
+        }
+    }
+
+    pub fn build_actions_table(&mut self) -> (String, Option<Direction>) {
+        if self.game.state != GameState::WaitingForAction {
+            return (String::new(), None);
+        }
+
+        let actions = self.game.available_action();
+        if actions.is_empty() {
+            return ("❌ No available actions - Game Over!\n".to_string(), None);
+        }
+
+        // Run MCTS to get action scores
+        for _ in 0..self.mcts_iterations {
+            self.tree.step();
+        }
+
+        // Collect action scores and find the best one
+        let mut action_scores: Vec<(Direction, f64, usize)> = Vec::new();
+        let mut best_action = None;
+        let mut best_score = f64::NEG_INFINITY;
+
+        for action in &actions {
+            let score = self.get_action_score_from_tree(action);
+            action_scores.push((*action, score.0, score.1));
+            if score.0 > best_score {
+                best_score = score.0;
+                best_action = Some(*action);
+            }
+        }
+
+        // Sort actions by name for consistent ordering
+        action_scores.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
+
+        // Generate action table lines and convert to string
+        let table_lines = self.generate_action_table_lines(&action_scores, best_action);
+        let output = table_lines.join("\n");
+
+        (output, best_action)
     }
 
     pub fn display_available_actions(&self) {
@@ -95,35 +243,6 @@ impl GameVisualizer {
             }
         }
         // Removed chance node display - just show actions
-        println!();
-    }
-
-    pub fn display_mcts_scores(&mut self) {
-        if self.game.state != GameState::WaitingForAction {
-            return;
-        }
-
-        println!("🧠 Running MCTS ({} iterations)...", self.mcts_iterations);
-
-        // Run MCTS to get action scores
-        for _ in 0..self.mcts_iterations {
-            self.tree.step();
-        }
-
-        println!("🧠 MCTS Action Scores:");
-
-        let actions = self.game.available_action();
-        for action in &actions {
-            // Simulate the action to see what the resulting state would be
-            let mut temp_game = self.game.clone();
-            temp_game.step_action(*action);
-            // Get the score for this action by looking at the tree
-            let score = self.get_action_score_from_tree(action);
-            println!(
-                "  • {:?}: Score = {:.2}, Visits = {}",
-                action, score.0, score.1
-            );
-        }
         println!();
     }
 
@@ -196,16 +315,15 @@ impl GameVisualizer {
         let mut auto_play = false;
 
         loop {
-            self.display_board();
-            self.display_available_actions();
-
             if self.game.state == GameState::Done {
+                self.display_board();
                 println!("🏁 Game Over! Final Score: {}", self.game.score);
                 break;
             }
 
             if self.game.state == GameState::WaitingForAction {
-                self.display_mcts_scores();
+                let (action_table, chosen_action) = self.build_actions_table();
+                self.display_board_with_action_table(Some(action_table), chosen_action);
 
                 if !auto_play {
                     print!("Press Enter to continue, 'a' for auto-play, 'q' to quit: ");
@@ -223,38 +341,17 @@ impl GameVisualizer {
                         _ => {}
                     }
                 } else {
-                    thread::sleep(Duration::from_millis(1000));
+                    thread::sleep(Duration::from_millis(100));
                 }
 
                 // Make the best move based on MCTS
-                self.make_best_move();
+                if let Some(action) = chosen_action {
+                    self.game.step_action(action);
+                }
             } else if self.game.state == GameState::WaitingForRandom {
                 // Handle random tile spawn
                 self.handle_random_spawn();
             }
-        }
-    }
-
-    fn make_best_move(&mut self) {
-        // Get available actions and their scores
-        let actions = self.game.available_action();
-        let mut best_action = None;
-        let mut best_score = f64::NEG_INFINITY;
-
-        for action in &actions {
-            let score = self.get_action_score_from_tree(action).0;
-            if score > best_score {
-                best_score = score;
-                best_action = Some(*action);
-            }
-        }
-
-        if let Some(action) = best_action {
-            println!(
-                "🤖 MCTS chose: {:?} (heuristic score: {:.2})",
-                action, best_score
-            );
-            self.game.step_action(action);
         }
     }
 
@@ -268,8 +365,6 @@ impl GameVisualizer {
                 value, coord.row, coord.col
             );
             self.game.step_random(coord, value);
-            // Brief pause to show the spawn
-            thread::sleep(Duration::from_millis(200));
         }
     }
 }
