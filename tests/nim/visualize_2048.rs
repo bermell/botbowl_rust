@@ -27,7 +27,7 @@ pub struct GameVisualizer {
 impl GameVisualizer {
     pub fn new(initial_coord: Coord, initial_value: u32) -> Self {
         let game = Game2048::new_game(initial_coord, initial_value);
-        let tree = Tree::new(game.clone(), GetState, (), game.clone());
+        let tree = Tree::new(game, GetState, (), game);
 
         Self {
             game,
@@ -38,10 +38,6 @@ impl GameVisualizer {
 
     pub fn set_mcts_iterations(&mut self, iterations: usize) {
         self.mcts_iterations = iterations;
-    }
-
-    pub fn display_board(&self) {
-        self.display_board_with_action_table(None, None);
     }
 
     fn generate_board_lines(&self) -> Vec<String> {
@@ -202,7 +198,9 @@ impl GameVisualizer {
             return ("❌ No available actions - Game Over!\n".to_string(), None);
         }
 
-        // Run MCTS to get action scores
+        // Run MCTS to get action scores. Though first we need to reset the tree
+
+        self.tree = Tree::new(self.game, GetState, (), self.game);
         for _ in 0..self.mcts_iterations {
             self.tree.step();
         }
@@ -230,23 +228,6 @@ impl GameVisualizer {
         (output, best_action)
     }
 
-    pub fn display_available_actions(&self) {
-        if self.game.state == GameState::WaitingForAction {
-            let actions = self.game.available_action();
-            if actions.is_empty() {
-                println!("❌ No available actions - Game Over!");
-                return;
-            }
-
-            println!("🎮 Available Actions:");
-            for action in &actions {
-                println!("  • {:?}", action);
-            }
-        }
-        // Removed chance node display - just show actions
-        println!();
-    }
-
     pub fn step_through_game(&mut self) {
         println!("🚀 Starting 2048 Game with MCTS AI!");
         println!("Press Enter to continue to next move, 'q' to quit, or 'a' for auto-play");
@@ -255,7 +236,7 @@ impl GameVisualizer {
 
         loop {
             if self.game.state == GameState::Done {
-                self.display_board();
+                self.display_board_with_action_table(None, None);
                 println!("🏁 Game Over! Final Score: {}", self.game.score);
                 break;
             }
