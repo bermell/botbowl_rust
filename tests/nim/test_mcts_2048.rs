@@ -27,9 +27,9 @@ impl Eq for ActionChance {}
 
 #[derive(Debug)]
 pub struct ScoreItem {
-    visits: AtomicU32,
-    score: i32,
-    action_node: GameState,
+    pub visits: AtomicU32,
+    pub score: i32,
+    pub action_node: GameState,
 }
 
 impl Clone for ScoreItem {

@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -82,7 +83,7 @@ impl GameVisualizer {
 
     fn generate_action_table_lines(
         &mut self,
-        action_scores: &[(Direction, f64, usize)],
+        action_scores: &[(Direction, i32, AtomicU32)],
         best_action: Option<Direction>,
     ) -> Vec<String> {
         let mut table_lines = Vec::new();
@@ -101,10 +102,11 @@ impl GameVisualizer {
             } else {
                 "         "
             };
+            let visits_converted = visits.load(Ordering::Relaxed);
             let action_str = format!("{:?}", action);
             table_lines.push(format!(
                 "│ {:<12} │ {:>8.2} │ {:>7} │{}│",
-                action_str, score, visits, marker
+                action_str, score, visits_converted, marker
             ));
         }
 
@@ -205,19 +207,18 @@ impl GameVisualizer {
             self.tree.step();
         }
 
-        // Collect action scores and find the best one
-        let mut action_scores: Vec<(Direction, f64, usize)> = Vec::new();
-        let mut best_action = None;
-        let mut best_score = f64::NEG_INFINITY;
+        let mut action_scores: Vec<(Direction, i32, AtomicU32)> = Vec::new();
 
-        for action in &actions {
-            let score = self.get_action_score_from_tree(action);
-            action_scores.push((*action, score.0, score.1));
-            if score.0 > best_score {
-                best_score = score.0;
-                best_action = Some(*action);
+        for (ac, move_info) in self.tree.get_next_move_info().unwrap() {
+            if let crate::test_mcts_2048::ActionChance::Action(action) = ac {
+                let score_item = move_info.score.unwrap();
+                action_scores.push((action, score_item.score, score_item.visits));
             }
         }
+        let best_action = action_scores
+            .iter()
+            .max_by(|a, b| a.1.cmp(&b.1))
+            .map(|(action, _, _)| *action);
 
         // Sort actions by name for consistent ordering
         action_scores.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
@@ -244,68 +245,6 @@ impl GameVisualizer {
         }
         // Removed chance node display - just show actions
         println!();
-    }
-
-    fn get_action_score_from_tree(&self, action: &Direction) -> (f64, usize) {
-        // This is a simplified approach - we'll use the game state to estimate scores
-        // In a real implementation, you'd traverse the tree to find the specific action node
-
-        let mut temp_game = self.game.clone();
-        temp_game.step_action(*action);
-        // Simple heuristic: prefer moves that keep high values in corners
-        // and avoid moves that create isolated tiles
-        let heuristic_score = self.evaluate_board_heuristic(&temp_game);
-        return (heuristic_score, 1); // Placeholder visit count
-    }
-
-    fn evaluate_board_heuristic(&self, game: &Game2048) -> f64 {
-        let mut score = 0.0;
-
-        // Prefer boards with high values in corners
-        let corners = [
-            Coord { row: 0, col: 0 },
-            Coord { row: 0, col: 3 },
-            Coord { row: 3, col: 0 },
-            Coord { row: 3, col: 3 },
-        ];
-
-        for corner in &corners {
-            let value = game[*corner] as f64;
-            if value > 0.0 {
-                score += value * 2.0; // Bonus for corner tiles
-            }
-        }
-
-        // Penalty for isolated tiles (tiles with no adjacent tiles of same value)
-        for row in 0..4 {
-            for col in 0..4 {
-                let coord = Coord { row, col };
-                let value = game[coord];
-                if value > 0 {
-                    let mut isolated = true;
-                    let directions = [
-                        Direction::Up,
-                        Direction::Down,
-                        Direction::Left,
-                        Direction::Right,
-                    ];
-
-                    for dir in &directions {
-                        let neighbor = coord + *dir;
-                        if game.in_bounds(neighbor) && game[neighbor] == value {
-                            isolated = false;
-                            break;
-                        }
-                    }
-
-                    if isolated {
-                        score -= value as f64 * 0.5; // Penalty for isolated tiles
-                    }
-                }
-            }
-        }
-
-        score
     }
 
     pub fn step_through_game(&mut self) {
