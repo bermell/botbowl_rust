@@ -133,17 +133,23 @@ impl GameDynamics for Game2048 {
 
             return min_ii_item.1.to_owned();
         } else if parent_node_state.state == GameState::WaitingForAction {
-            // pick the one with highest score. We know for sure here that all the scores are
-            // Score types. We need to get that score, increment the visits and return the action
+            // We know for sure here that all the scores are ActionTypes.
+            // We need select according to UCT formula which is
+            // score + c * sqrt(ln(N) / n) where c is exploration constant (we can use 1.4 here),
+            //
             let max_ii_item = scores_and_actions
                 .clone()
                 .into_iter()
                 .max_by(|a, b| {
                     let a = a.0.as_ref().unwrap();
                     let b = b.0.as_ref().unwrap();
-                    a.visits
-                        .load(Ordering::Relaxed)
-                        .cmp(&b.visits.load(Ordering::Relaxed))
+                    let c: f32 = 1.4;
+                    let parent_visits = parent_score.unwrap().visits.load(Ordering::Relaxed) as f32;
+                    let a_visits = a.visits.load(Ordering::Relaxed) as f32;
+                    let b_visits = b.visits.load(Ordering::Relaxed) as f32;
+                    let uct_a = a.score as f32 + c * (parent_visits.ln() / a_visits).sqrt();
+                    let uct_b = b.score as f32 + c * (parent_visits.ln() / b_visits).sqrt();
+                    uct_a.partial_cmp(&uct_b).unwrap()
                 })
                 .unwrap();
 

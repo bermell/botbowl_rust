@@ -278,13 +278,8 @@ impl GameVisualizer {
     fn handle_random_spawn(&mut self) {
         let chances = self.game.available_chance();
         assert!(!chances.is_empty());
-        // select randomly among the available chances
         let rand_idx = rand::random::<u16>() % (chances.len() as u16);
         let (coord, value, _) = &chances[rand_idx as usize];
-        println!(
-            "🎲 Random spawn: {} at ({}, {})",
-            value, coord.row, coord.col
-        );
         self.game.step_random(*coord, *value);
     }
 }
