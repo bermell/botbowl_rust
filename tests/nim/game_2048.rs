@@ -119,7 +119,7 @@ impl Game2048 {
                 chance_actions.push((coord, value));
             }
         }
-        if chance_actions.len() == 0 {
+        if chance_actions.is_empty() {
             return vec![];
         }
         let len_chance = chance_actions.len();
@@ -133,6 +133,7 @@ impl Game2048 {
     }
 
     pub fn available_action(&self) -> HashSet<Direction> {
+        // TODO: cache this?
         debug_assert!(self.state == GameState::WaitingForAction);
         let mut aa: HashSet<Direction> = HashSet::new();
         let all_dirs = [
@@ -178,11 +179,14 @@ impl Game2048 {
         coord.row < SIZE && coord.col < SIZE
     }
     pub fn step_random(&mut self, coord: Coord, value: u32) {
+        debug_assert!(self.state == GameState::WaitingForRandom);
+        debug_assert!(self[coord] == 0);
         self[coord] = value;
-        if self.empty_squares().is_empty() {
+
+        self.state = GameState::WaitingForAction;
+
+        if self.available_action().is_empty() {
             self.state = GameState::Done;
-        } else {
-            self.state = GameState::WaitingForAction;
         }
     }
     pub fn step_action(&mut self, direction: Direction) {
@@ -387,6 +391,34 @@ mod test {
             [0, 0, 0, 0],
         ];
         assert_eq!(game.board, expected);
+    }
+
+    #[test]
+    fn game_done_when_no_available_actions() {
+        let mut game = Game2048::new_custom([
+            //comment
+            [1, 1, 3, 0],
+            [4, 5, 6, 7],
+            [1, 2, 3, 4],
+            [4, 5, 6, 7],
+        ]);
+        game.step_action(Direction::Up);
+        assert_eq!(game.state, GameState::WaitingForRandom);
+        assert!(!game.available_chance().is_empty());
+
+        game.step_random(Coord { row: 3, col: 3 }, 1);
+        assert_eq!(game.state, GameState::WaitingForAction);
+
+        let aa = game.available_action();
+        assert_eq!(aa.len(), 2);
+        assert!(aa.contains(&Direction::Left));
+        assert!(aa.contains(&Direction::Right));
+
+        game.step_action(Direction::Left);
+        assert_eq!(game.state, GameState::WaitingForRandom);
+
+        game.step_random(Coord { row: 0, col: 3 }, 1);
+        assert_eq!(game.state, GameState::Done);
     }
     #[test]
     fn play_to_finish() {
