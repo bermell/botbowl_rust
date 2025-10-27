@@ -112,13 +112,14 @@ impl GameVisualizer {
         table_lines
     }
 
-    fn print_combined(
+    fn generate_combined_lines(
         &self,
         board_lines: Vec<String>,
         table_lines: Option<Vec<String>>,
         chosen_action: Option<Direction>,
-    ) {
-        println!("══════════════════════════════════════════════════════════════");
+    ) -> Vec<String> {
+        let mut output = Vec::new();
+        output.push("══════════════════════════════════════════════════════════════".to_string());
 
         if let Some(table_lines) = table_lines {
             let mut empty_line = String::new();
@@ -126,18 +127,18 @@ impl GameVisualizer {
                 empty_line.push(' ');
             }
 
-            // Print lines side-by-side
+            // Combine lines side-by-side
             for i in 0..board_lines.len() {
                 let board_line = board_lines.get(i).unwrap_or(&empty_line);
 
                 if i < 2 {
-                    // For score and blank line, just print the board line
-                    println!("{}", board_line);
+                    // For score and blank line, just use the board line
+                    output.push(board_line.clone());
                 } else {
                     let table_line = table_lines.get(i - 2).unwrap_or(&empty_line);
-                    println!("{:<45} {}", table_line, board_line);
+                    output.push(format!("{:<45} {}", table_line, board_line));
 
-                    // If this is the last board line and we have a chosen action, print it with an arrow
+                    // If this is the last board line and we have a chosen action, add it with an arrow
                     if i == board_lines.len() - 1 {
                         if let Some(action) = chosen_action {
                             let arrow = match action {
@@ -146,16 +147,16 @@ impl GameVisualizer {
                                 Direction::Left => "←",
                                 Direction::Right => "→",
                             };
-                            println!("{:<45}  {} {:?}", "", arrow, action);
-                            println!();
+                            output.push(format!("{:<45}  {} {:?}", "", arrow, action));
+                            output.push(String::new());
                         }
                     }
                 }
             }
         } else {
-            // No action table, just print the board
+            // No action table, just use the board
             for (i, line) in board_lines.iter().enumerate() {
-                println!("{}", line);
+                output.push(line.clone());
 
                 if i == board_lines.len() - 1 {
                     if let Some(action) = chosen_action {
@@ -165,26 +166,28 @@ impl GameVisualizer {
                             Direction::Left => "←",
                             Direction::Right => "→",
                         };
-                        println!("  {} {:?}", arrow, action);
-                        println!();
+                        output.push(format!("  {} {:?}", arrow, action));
+                        output.push(String::new());
                     }
                 }
             }
         }
+
+        output
     }
 
-    fn display_board_with_action_table(
+    fn generate_display_lines(
         &self,
         action_table: Option<String>,
         chosen_action: Option<Direction>,
-    ) {
+    ) -> Vec<String> {
         let board_lines = self.generate_board_lines();
 
         if let Some(table) = action_table {
             let table_lines: Vec<String> = table.lines().map(|s| s.to_string()).collect();
-            self.print_combined(board_lines, Some(table_lines), chosen_action);
+            self.generate_combined_lines(board_lines, Some(table_lines), chosen_action)
         } else {
-            self.print_combined(board_lines, None, chosen_action);
+            self.generate_combined_lines(board_lines, None, chosen_action)
         }
     }
 
@@ -236,17 +239,27 @@ impl GameVisualizer {
 
         loop {
             if self.game.state == GameState::Done {
-                self.display_board_with_action_table(None, None);
-                println!("🏁 Game Over! Final Score: {}", self.game.score);
+                let display_lines = self.generate_display_lines(None, None);
+                let game_over = format!("🏁 Game Over! Final Score: {}", self.game.score);
+
+                let mut final_output = display_lines.join("\n");
+                final_output.push('\n');
+                final_output.push_str(&game_over);
+                println!("{}", final_output);
                 break;
             }
 
             if self.game.state == GameState::WaitingForAction {
                 let (action_table, chosen_action) = self.build_actions_table();
-                self.display_board_with_action_table(Some(action_table), chosen_action);
+                let display_lines = self.generate_display_lines(Some(action_table), chosen_action);
+
+                let mut output = display_lines.join("\n");
+                output.push('\n');
 
                 if !auto_play {
-                    print!("Press Enter to continue, 'a' for auto-play, 'q' to quit: ");
+                    output.push_str("Press Enter to continue, 'a' for auto-play, 'q' to quit: ");
+
+                    println!("{}", output);
                     io::stdout().flush().unwrap();
 
                     let mut input = String::new();
@@ -261,6 +274,7 @@ impl GameVisualizer {
                         _ => {}
                     }
                 } else {
+                    println!("{}", output);
                     thread::sleep(Duration::from_millis(100));
                 }
 
@@ -286,6 +300,6 @@ impl GameVisualizer {
 
 pub fn run_visualization() {
     let mut visualizer = GameVisualizer::new(Coord { row: 2, col: 1 }, 2);
-    visualizer.set_mcts_iterations(500);
+    visualizer.set_mcts_iterations(5000);
     visualizer.step_through_game();
 }
