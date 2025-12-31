@@ -114,7 +114,7 @@ impl Procedure for Half {
             .filter(|p| p.stats.team == next_team && p.status != PlayerStatus::Stunned)
             .for_each(|p| p.reset_skills_and_moves());
 
-        ProcState::NotDoneNewProcs(vec![TurnStunned::new(), Turn::new(next_team)])
+        ProcState::NotDoneNewProcs(vec![Turn::new(next_team), TurnStunned::new()])
     }
 }
 
@@ -134,7 +134,10 @@ impl Procedure for TurnStunned {
             .filter(|p| {
                 p.stats.team == team && p.status == PlayerStatus::Stunned && p.id != active_id
             })
-            .for_each(|p| p.status = PlayerStatus::Down);
+            .for_each(|p| {
+                p.status = PlayerStatus::Down;
+                p.reset_skills_and_moves();
+            });
         ProcState::Done
     }
 }
@@ -446,7 +449,7 @@ mod tests {
         state.step_simple(SimpleAT::EndTurn);
 
         assert!(state.home_to_act());
-        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Down);
 
         state.step_simple(SimpleAT::EndTurn);
         assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Down);
@@ -512,7 +515,7 @@ mod tests {
         state.step_simple(SimpleAT::EndTurn);
 
         assert!(state.away_to_act());
-        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
         state.step_simple(SimpleAT::EndTurn);
 
         assert!(state.home_to_act());

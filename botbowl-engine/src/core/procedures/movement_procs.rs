@@ -246,7 +246,7 @@ mod tests {
             PlayerStatus::Down
         );
 
-        assert!(state.get_player_at(target_pos).unwrap().used);
+        assert!(!state.get_player_at(target_pos).unwrap().used);
 
         Ok(())
     }
@@ -942,15 +942,16 @@ mod tests {
         state.fixes.fix_d6(2); //injury
 
         state.step_simple(SimpleAT::DontUseReroll);
-        assert!(state.get_player_unsafe(id).used);
+        assert!(!state.get_player_unsafe(id).used); // used cleared after turnover
         assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
         assert_eq!(state.get_player_unsafe(id).position, move_target);
 
         assert!(state.away_to_act());
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
         state.step_simple(SimpleAT::EndTurn);
 
         assert!(state.home_to_act());
-        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
         state.step_simple(SimpleAT::EndTurn);
 
         assert!(state.away_to_act());

@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(state.ball, BallState::Carried(id));
         state.step_positional(PosAT::StartMove, start_pos);
 
-        state.fixes.fix_d6(2);
+        state.fixes.fix_d6(2); //fail dodge
 
         state.step_positional(PosAT::Move, move_to);
 
@@ -200,8 +200,9 @@ mod tests {
 
         state.step_simple(SimpleAT::DontUseReroll);
 
+        assert!(state.away_to_act());
         let player = state.get_player_unsafe(id);
-        assert!(player.used);
+        assert!(!player.used);
         assert_eq!(state.ball, BallState::OnGround(move_to + direction));
 
         Ok(())
