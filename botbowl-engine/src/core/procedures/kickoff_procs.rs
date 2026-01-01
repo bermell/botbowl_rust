@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
-    Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE,
+    PlayerStatus, Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_,
+    LINE_OF_SCRIMMAGE_Y_RANGE,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -85,6 +86,7 @@ impl Procedure for KickoffTable {
             }
             Sum2D6::Five => {
                 //High Kick
+                procs.push(HighKick::new());
             }
             Sum2D6::Six => {
                 //Cheering fans
@@ -136,6 +138,54 @@ impl Procedure for ChangingWeather {
             ProcInput::Roll(RollResult::D8(d8)) => {
                 game_state.ball =
                     BallState::InAir(game_state.get_ball_position().unwrap() + Direction::from(d8));
+                ProcState::Done
+            }
+            _ => panic!("Unexpected input {:?}", input),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HighKick {}
+impl HighKick {
+    pub fn new() -> AnyProc {
+        AnyProc::HighKick(HighKick {})
+    }
+}
+impl Procedure for HighKick {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let BallState::InAir(ball_position) = game_state.ball else {
+            return ProcState::Done;
+        };
+        let receiving_team = other_team(game_state.info.kicking_this_drive);
+
+        if ball_position.is_out()
+            || !ball_position.is_on_team_side(receiving_team)
+            || game_state.get_player_id_at(ball_position).is_some()
+        {
+            return ProcState::Done;
+        }
+
+        match input {
+            ProcInput::Nothing => {
+                let positions: Vec<Position> = game_state
+                    .get_players_on_pitch_in_team(receiving_team)
+                    .filter(|p| p.status == PlayerStatus::Up)
+                    .filter(|p| game_state.get_tz_on(p.id) == 0)
+                    .map(|p| p.position)
+                    .collect();
+
+                if positions.is_empty() {
+                    return ProcState::Done;
+                }
+
+                let mut aa = AvailableActions::new(receiving_team);
+                aa.insert_positional(PosAT::SelectPosition, positions);
+                ProcState::NeedAction(aa)
+            }
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
+                let player_id = game_state.get_player_id_at(pos).unwrap();
+                game_state.move_player(player_id, ball_position).unwrap();
                 ProcState::Done
             }
             _ => panic!("Unexpected input {:?}", input),
@@ -463,47 +513,54 @@ mod tests {
     //     // TODO: haven't implemented the setup yet
     // }
     //
-    // #[test]
-    // fn kickoff_high_kick() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(4);
-    //
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    //
-    //     let ball_pos = state.get_ball_position().unwrap();
-    //     assert!(matches!(state.ball, BallState::InAir(_)));
-    //
-    //     assert!(state.home_to_act());
-    //     let legal_positions = [(2, 9), (7, 9)]; //Open players
-    //     for pos in legal_positions {
-    //         let action = Action::Positional(PosAT::SelectPosition, Position::new(pos));
-    //         assert!(state.available_actions.is_legal_action(action));
-    //     }
-    //
-    //     let catcher_start_pos = Position::new(legal_positions[0]);
-    //     let catcher_id = state.get_player_id_at(catcher_start_pos).unwrap();
-    //
-    //     state.fixes.fix_d6(6); // fix the roll for the catch
-    //     state.step_positional(PosAT::SelectPosition, Position::new(legal_positions[0]));
-    //
-    //     assert_eq!(state.get_player_id_at(ball_pos).unwrap(), catcher_id);
-    //     assert_eq!(state.get_player_id_at(catcher_start_pos), None);
-    //
-    //     match state.ball {
-    //         BallState::Carried(id) => {
-    //             assert_eq!(id, catcher_id);
-    //         }
-    //         _ => panic!("ball should be carried"),
-    //     }
-    //
-    //     assert!(state.home_to_act());
-    // }
+    #[test]
+    fn kickoff_high_kick() {
+         let mut state: GameState = GameStateBuilder::new_at_kickoff();
+         // ball fixes
+         state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+         state.fixes.fix_d6(5); // scatter length
+    
+         // kickoff event fix
+         state.fixes.fix_d6(1);
+         state.fixes.fix_d6(4);
+    
+         state.step_simple(SimpleAT::KickoffAimMiddle);
+    
+         let ball_pos = state.get_ball_position().unwrap();
+         assert!(matches!(state.ball, BallState::InAir(_)));
+    
+         assert!(state.home_to_act());
+        let receiving_team = other_team(state.info.kicking_this_drive);
+        let legal_positions: Vec<Position> = state
+            .get_players_on_pitch_in_team(receiving_team)
+            .filter(|p| p.status == PlayerStatus::Up)
+            .filter(|p| state.get_tz_on(p.id) == 0)
+            .map(|p| p.position)
+            .collect();
+        assert!(!legal_positions.is_empty());
+        for pos in &legal_positions {
+            let action = Action::Positional(PosAT::SelectPosition, *pos);
+            assert!(state.available_actions.is_legal_action(action));
+        }
+
+        let catcher_start_pos = legal_positions[0];
+         let catcher_id = state.get_player_id_at(catcher_start_pos).unwrap();
+    
+         state.fixes.fix_d6(6); // fix the roll for the catch
+        state.step_positional(PosAT::SelectPosition, legal_positions[0]);
+    
+         assert_eq!(state.get_player_id_at(ball_pos).unwrap(), catcher_id);
+         assert_eq!(state.get_player_id_at(catcher_start_pos), None);
+    
+         match state.ball {
+             BallState::Carried(id) => {
+                 assert_eq!(id, catcher_id);
+             }
+             _ => panic!("ball should be carried"),
+         }
+    
+         assert!(state.home_to_act());
+    }
     //
     // #[test]
     // fn kickoff_cheering_fans() {

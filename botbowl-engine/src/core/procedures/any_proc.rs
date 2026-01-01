@@ -12,7 +12,7 @@ use crate::core::procedures::game_procs::{
     TurnoverIfPossessionLost,
 };
 use crate::core::procedures::kickoff_procs::{
-    ChangingWeather, Kickoff, KickoffTable, LandKickoff, Setup,
+    ChangingWeather, HighKick, Kickoff, KickoffTable, LandKickoff, Setup,
 };
 use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp};
 
@@ -35,6 +35,7 @@ pub enum AnyProc {
     GameOver(GameOver),
     GfiProc(SimpleProcContainer<GfiProc>),
     Half(Half),
+    HighKick(HighKick),
     Injury(Injury),
     KOWakeUp(KOWakeUp),
     Kickoff(Kickoff),
@@ -76,6 +77,7 @@ impl std::fmt::Debug for AnyProc {
             Self::GameOver(arg0) => f.debug_tuple("GameOver").field(arg0).finish(),
             Self::GfiProc(arg0) => f.debug_tuple("GfiProc").field(arg0).finish(),
             Self::Half(arg0) => f.debug_tuple("Half").field(arg0).finish(),
+            Self::HighKick(arg0) => f.debug_tuple("HighKick").field(arg0).finish(),
             Self::Injury(arg0) => f.debug_tuple("Injury").field(arg0).finish(),
             Self::KOWakeUp(arg0) => f.debug_tuple("KOWakeUp").field(arg0).finish(),
             Self::Kickoff(arg0) => f.debug_tuple("Kickoff").field(arg0).finish(),
@@ -124,6 +126,7 @@ impl Procedure for AnyProc {
             AnyProc::GameOver(arg) => arg.step(game_state, input),
             AnyProc::GfiProc(arg) => arg.step(game_state, input),
             AnyProc::Half(arg) => arg.step(game_state, input),
+            AnyProc::HighKick(arg) => arg.step(game_state, input),
             AnyProc::Injury(arg) => arg.step(game_state, input),
             AnyProc::KOWakeUp(arg) => arg.step(game_state, input),
             AnyProc::Kickoff(arg) => arg.step(game_state, input),
