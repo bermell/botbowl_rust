@@ -44,7 +44,7 @@ impl Procedure for Kickoff {
 
         let ball_pos = self.aim + Direction::from(dir_roll) * (len_roll as Coord);
         game_state.ball = BallState::InAir(ball_pos);
-        ProcState::DoneNew(KickoffTable::new())
+        ProcState::DoneNewProcs(vec![LandKickoff::new(), KickoffTable::new()])
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,8 +63,7 @@ impl Procedure for KickoffTable {
             ProcInput::Roll(RollResult::Sum2D6(kickoff_roll)) => kickoff_roll,
             _ => panic!("Unexpected input {:?}", input),
         };
-        let mut procs: Vec<AnyProc> = vec![LandKickoff::new()]; //TODO: this should be added
-                                                                //by the kickoff procedure
+        let mut procs: Vec<AnyProc> = Vec::new();
         match kickoff_roll {
             Sum2D6::Two => {
                 //get the ref
@@ -426,6 +425,26 @@ mod tests {
 
         assert_eq!(state.info.home_turn, 6);
         assert_eq!(state.info.away_turn, 5);
+    }
+
+    #[test]
+    fn kickoff_changing_weather_lands_after_gust() {
+        let mut state: GameState = GameStateBuilder::new_at_kickoff();
+        state.fixes.fix_d6(1); // scatter length
+        state.fixes.fix_d8_direction(Direction::down()); // scatter direction
+
+        state.fixes.fix_d6(4);
+        state.fixes.fix_d6(4); // kickoff table: changing weather
+
+        state.fixes.fix_d6(4);
+        state.fixes.fix_d6(4); // weather: nice
+
+        state.fixes.fix_d8_direction(Direction::right()); // gust of wind
+        state.fixes.fix_d8_direction(Direction::right()); // bounce
+
+        state.step_simple(SimpleAT::KickoffAimMiddle);
+
+        assert_eq!(state.ball, BallState::OnGround(Position::new((23, 8))));
     }
     // #[test]
     // fn kickoff_solid_defence() {
