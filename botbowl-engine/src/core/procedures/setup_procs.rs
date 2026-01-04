@@ -1,10 +1,10 @@
 use crate::core::model::ProcInput;
 use crate::core::model::{
-    Action, AvailableActions, Coord, DugoutPlace, PlayerID, PlayerStats,
+    Action, AvailableActions, Coord, DugoutPlace, PlayerID,
     Position, ProcState, Procedure, Result, TeamType, HEIGHT_,
     LINE_OF_SCRIMMAGE_Y_RANGE, NORTH_WING_Y_RANGE, SOUTH_WING_Y_RANGE
 };
-use crate::core::table::{SimpleAT, PlayerRole};
+use crate::core::table::{SimpleAT, PlayerRole, PosAT};
 use crate::core::gamestate::GameState;
 use super::AnyProc;
 
@@ -147,6 +147,21 @@ impl Setup {
         candidates
     }
 
+    fn build_available_actions(&self, game_state: &GameState) -> ProcState {
+        let mut aa = AvailableActions::new(self.team);
+        let legal_positions = self.get_legal_setup_positions(game_state);
+        if !legal_positions.is_empty() {
+            aa.insert_positional(PosAT::SelectPosition, legal_positions);
+        }
+        if game_state.is_setup_legal(self.team) {
+            aa.insert_simple(SimpleAT::EndSetup);
+        }
+        if game_state.get_players_on_pitch_in_team(self.team).next().is_none() {
+            aa.insert_simple(SimpleAT::SetupLine);
+        }
+        ProcState::NeedAction(aa)
+    }
+
     pub fn random_setup(&self, game_state: &mut GameState) {
         #[allow(clippy::needless_collect)]
         let players: Vec<PlayerID> = game_state
@@ -229,35 +244,55 @@ impl Setup {
 
 impl Procedure for Setup {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        let mut aa = AvailableActions::new(self.team);
         if input == ProcInput::Nothing {
-            aa.insert_simple(SimpleAT::SetupLine);
-            return ProcState::NeedAction(aa);
+            return self.build_available_actions(game_state);
         }
 
         match input {
             ProcInput::Action(Action::Simple(SimpleAT::SetupLine)) => {
                 self.setup_line(game_state).unwrap();
-                aa.insert_simple(SimpleAT::EndSetup);
-                ProcState::NeedAction(aa)
+                self.build_available_actions(game_state)
             }
 
             ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => ProcState::Done,
+
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
+                let player_id = game_state
+                    .get_dugout()
+                    .filter(|player| {
+                        player.stats.team == self.team && player.place == DugoutPlace::Reserves
+                    })
+                    .map(|player| player.id)
+                    .next();
+                if let Some(id) = player_id {
+                    game_state.field_dugout_player(id, pos);
+                }
+                self.build_available_actions(game_state)
+            }
             _ => unreachable!(),
         }
     }
 }
 
 #[cfg(test)]
-use std::iter::zip;
 mod tests {
+    use std::iter::zip;
     use super::*;
-    use crate::core::{gamestate::GameStateBuilder};
+    use crate::core::{gamestate::GameStateBuilder, model::PlayerStats};
 
     fn add_reserves(state: &mut GameState, team: TeamType, count: usize) {
         for _ in 0..count {
             state.dugout_add_new_player(PlayerStats::new_lineman(team), DugoutPlace::Reserves);
         }
+    }
+
+    fn positions_for_action(aa: &AvailableActions, action: PosAT) -> Vec<Position> {
+        let Some(positions) = aa.get_positional() else {
+            return Vec::new();
+        };
+        Position::all_positions()
+            .filter(|pos| positions[*pos].contains(&action))
+            .collect()
     }
 
     #[test]
@@ -431,5 +466,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn manual_setup_places_players_until_done() {
+        let mut state = GameStateBuilder::empty_state();
+        add_reserves(&mut state, TeamType::Home, 3);
+
+        let mut setup = Setup { team: TeamType::Home };
+
+        let ProcState::NeedAction(aa) = setup.step(&mut state, ProcInput::Nothing) else {
+            panic!("Expected NeedAction on initial setup prompt.");
+        };
+
+        let positions = positions_for_action(&aa, PosAT::SelectPosition);
+        assert!(!positions.is_empty());
+        assert!(aa.get_simple().contains(&SimpleAT::SetupLine));
+        assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
+
+        let ProcState::NeedAction(aa) = setup.step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, positions[0])),
+        ) else {
+            panic!("Expected NeedAction after placing first player.");
+        };
+
+        assert_eq!(state.get_players_on_pitch_in_team(TeamType::Home).count(), 1);
+        assert!(!aa.get_simple().contains(&SimpleAT::SetupLine));
+        assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
+
+        let positions = positions_for_action(&aa, PosAT::SelectPosition);
+        let ProcState::NeedAction(aa) = setup.step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, positions[0])),
+        ) else {
+            panic!("Expected NeedAction after placing second player.");
+        };
+
+        assert_eq!(state.get_players_on_pitch_in_team(TeamType::Home).count(), 2);
+        assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
+
+        let positions = positions_for_action(&aa, PosAT::SelectPosition);
+        let ProcState::NeedAction(aa) = setup.step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, positions[0])),
+        ) else {
+            panic!("Expected NeedAction after placing third player.");
+        };
+
+        assert_eq!(state.get_players_on_pitch_in_team(TeamType::Home).count(), 3);
+        assert!(aa.get_simple().contains(&SimpleAT::EndSetup));
+        assert!(positions_for_action(&aa, PosAT::SelectPosition).is_empty());
+
+        let reserves_left = state
+            .get_dugout()
+            .filter(|player| player.stats.team == TeamType::Home)
+            .filter(|player| player.place == DugoutPlace::Reserves)
+            .count();
+        assert_eq!(reserves_left, 0);
     }
 }
