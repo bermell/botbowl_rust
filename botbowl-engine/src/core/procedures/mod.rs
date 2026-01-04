@@ -6,7 +6,7 @@ pub mod game_procs;
 pub mod kickoff_procs;
 pub mod movement_procs;
 pub mod procedure_tools;
-
+pub mod setup_procs;
 pub use any_proc::*;
 pub use ball_procs::*;
 pub use block_procs::*;

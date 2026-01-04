@@ -7,7 +7,7 @@ use crate::core::model::{
     other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position,
     ProcState, Procedure, TeamType,
 };
-use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs};
+use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs, setup_procs};
 use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
@@ -46,8 +46,8 @@ impl Half {
 
         let procs: Vec<AnyProc> = vec![
             kickoff_procs::Kickoff::new(),
-            kickoff_procs::Setup::new(kicking_team),
-            kickoff_procs::Setup::new(other_team(kicking_team)),
+            setup_procs::Setup::new(kicking_team),
+            setup_procs::Setup::new(other_team(kicking_team)),
             KOWakeUp::new(),
         ];
 

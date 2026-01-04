@@ -12,8 +12,9 @@ use crate::core::procedures::game_procs::{
     TurnoverIfPossessionLost,
 };
 use crate::core::procedures::kickoff_procs::{
-    ChangingWeather, HighKick, Kickoff, KickoffTable, LandKickoff, Setup,
+    ChangingWeather, HighKick, Kickoff, KickoffTable, LandKickoff
 };
+use crate::core::procedures::setup_procs::Setup;
 use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp};
 
 use crate::core::procedures::procedure_tools::SimpleProcContainer;

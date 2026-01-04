@@ -1,0 +1,435 @@
+use crate::core::model::ProcInput;
+use crate::core::model::{
+    Action, AvailableActions, Coord, DugoutPlace, PlayerID, PlayerStats,
+    Position, ProcState, Procedure, Result, TeamType, HEIGHT_,
+    LINE_OF_SCRIMMAGE_Y_RANGE, NORTH_WING_Y_RANGE, SOUTH_WING_Y_RANGE
+};
+use crate::core::table::{SimpleAT, PlayerRole};
+use crate::core::gamestate::GameState;
+use super::AnyProc;
+
+use serde::{Deserialize, Serialize};
+
+use rand::Rng;
+use std::ops::RangeInclusive;
+
+struct SetupCounts {
+    on_pitch: usize,
+    los: usize,
+    north: usize,
+    south: usize,
+}
+
+fn is_los_position(pos: Position, line_x: Coord) -> bool {
+    pos.x == line_x && LINE_OF_SCRIMMAGE_Y_RANGE.contains(&pos.y)
+}
+
+fn is_north_wing_position(pos: Position) -> bool {
+    NORTH_WING_Y_RANGE.contains(&pos.y)
+}
+
+fn is_south_wing_position(pos: Position) -> bool {
+    SOUTH_WING_Y_RANGE.contains(&pos.y)
+}
+
+fn is_on_team_half(pos: Position, team: TeamType, line_x: Coord) -> bool {
+    match team {
+        TeamType::Home => pos.x >= line_x,
+        TeamType::Away => pos.x <= line_x,
+    }
+}
+
+fn count_setup_positions(state: &GameState, team: TeamType, line_x: Coord) -> SetupCounts {
+    let mut counts = SetupCounts {
+        on_pitch: 0,
+        los: 0,
+        north: 0,
+        south: 0,
+    };
+
+    for pos in state.get_players_on_pitch_in_team(team).map(|p| p.position) {
+        counts.on_pitch += 1;
+        if is_los_position(pos, line_x) {
+            counts.los += 1;
+        } else if is_north_wing_position(pos) {
+            counts.north += 1;
+        } else if is_south_wing_position(pos) {
+            counts.south += 1;
+        }
+    }
+
+    counts
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Setup {
+    team: TeamType,
+}
+impl Setup {
+    pub fn new(team: TeamType) -> AnyProc {
+        AnyProc::Setup(Setup { team })
+    }
+    fn get_empty_pos_in_box(
+        game_state: &GameState,
+        x_range: RangeInclusive<Coord>,
+        y_range: RangeInclusive<Coord>,
+    ) -> Position {
+        let mut rng = rand::thread_rng();
+        loop {
+            let x = rng.gen_range(x_range.clone());
+            let y = rng.gen_range(y_range.clone());
+            if game_state.get_player_id_at_coord(x, y).is_none() {
+                return Position { x, y };
+            }
+        }
+    }
+    
+    fn get_legal_setup_positions(&self, game_state: &GameState) -> Vec<Position> {
+        let line_x = game_state.get_line_of_scrimage_x(self.team);
+        let counts = count_setup_positions(game_state, self.team, line_x);
+        let num_players_on_bench = game_state
+            .get_dugout()
+            .filter(|player| player.stats.team == self.team && player.place == DugoutPlace::Reserves)
+            .count();
+
+        let num_available_players = counts.on_pitch + num_players_on_bench;
+        let min_on_pitch = 11.min(num_available_players);
+        let min_los = 3.min(num_available_players);
+        let remaining_to_place = min_on_pitch.saturating_sub(counts.on_pitch);
+
+        if remaining_to_place == 0 {
+            return Vec::new();
+        }
+
+        let empty_los_squares = LINE_OF_SCRIMMAGE_Y_RANGE
+            .clone()
+            .filter(|&y| {
+                let pos = Position::new((line_x, y));
+                !pos.is_out() && game_state.get_player_id_at(pos).is_none()
+            })
+            .count();
+
+        let mut candidates = Vec::new();
+        for pos in Position::all_positions() {
+            if pos.is_out()
+                || !is_on_team_half(pos, self.team, line_x)
+                || game_state.get_player_id_at(pos).is_some()
+            {
+                continue;
+            }
+
+            let is_los = is_los_position(pos, line_x);
+            let new_los = counts.los + usize::from(is_los);
+            let new_north = counts.north + usize::from(is_north_wing_position(pos));
+            let new_south = counts.south + usize::from(is_south_wing_position(pos));
+
+            if new_north > 2 || new_south > 2 {
+                continue;
+            }
+
+            let remaining_players_after = remaining_to_place.saturating_sub(1);
+            let remaining_los_needed = min_los.saturating_sub(new_los);
+            let remaining_los_squares = if is_los {
+                empty_los_squares.saturating_sub(1)
+            } else {
+                empty_los_squares
+            };
+
+            if remaining_players_after < remaining_los_needed
+                || remaining_los_squares < remaining_los_needed
+            {
+                continue;
+            }
+
+            candidates.push(pos);
+        }
+
+        candidates
+    }
+
+    pub fn random_setup(&self, game_state: &mut GameState) {
+        #[allow(clippy::needless_collect)]
+        let players: Vec<PlayerID> = game_state
+            .get_dugout()
+            .take(11)
+            .filter(|dplayer| dplayer.stats.team == self.team)
+            .map(|p| p.id)
+            .collect();
+
+        let mut ids = players.into_iter();
+        let los_x = game_state.get_line_of_scrimage_x(self.team);
+        let los_x_range = los_x..=los_x;
+        let x_range = match self.team {
+            TeamType::Home => los_x..=crate::core::model::WIDTH_ - 2,
+            TeamType::Away => 1..=los_x,
+        };
+        for _ in 0..3 {
+            if let Some(id) = ids.next() {
+                let p = Setup::get_empty_pos_in_box(
+                    game_state,
+                    los_x_range.clone(),
+                    LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
+                );
+                game_state.field_dugout_player(id, p);
+            }
+        }
+        for id in ids {
+            let p = Setup::get_empty_pos_in_box(
+                game_state,
+                x_range.clone(),
+                LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
+            );
+            game_state.field_dugout_player(id, p);
+        }
+    }
+    fn setup_line(&self, game_state: &mut GameState) -> Result<()> {
+        //unfield all players
+        let player_ids = game_state
+            .get_players_on_pitch_in_team(self.team)
+            .map(|p| p.id)
+            .collect::<Vec<_>>();
+        for id in player_ids {
+            game_state.unfield_player(id, DugoutPlace::Reserves)?;
+        }
+        let mut linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
+        let mut blitzer_pos = vec![(0, -2), (0, 2)];
+        let mut catcher_pos = vec![(2, 2), (2, -2)];
+        let mut thrower_pos = vec![(6, 3), (6, -3)];
+        #[allow(clippy::needless_collect)]
+        let players: Vec<PlayerID> = game_state
+            .get_dugout()
+            .filter(|dplayer| dplayer.stats.team == self.team)
+            .filter(|dplayer| dplayer.place == DugoutPlace::Reserves)
+            .map(|p| p.id)
+            .collect();
+        let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
+        let middle_x = game_state.get_line_of_scrimage_x(self.team);
+        let middle_y = HEIGHT_ / 2;
+        for id in players {
+            let player = game_state.get_dugout_player(id).unwrap();
+            let (dx, dy) = {
+                match player.stats.role {
+                    PlayerRole::Blitzer if !blitzer_pos.is_empty() => blitzer_pos.pop().unwrap(),
+                    PlayerRole::Thrower if !thrower_pos.is_empty() => thrower_pos.pop().unwrap(),
+                    PlayerRole::Catcher if !catcher_pos.is_empty() => catcher_pos.pop().unwrap(),
+                    PlayerRole::Lineman if !linemen_pos.is_empty() => linemen_pos.pop().unwrap(),
+                    _ => continue,
+                }
+            };
+            let position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
+            game_state.log(format!(
+                "fielding {:?} {:?} at {:?}",
+                player.stats.role, player.stats.team, position
+            ));
+            game_state.field_dugout_player(id, position)
+        }
+        Ok(())
+    }
+}
+
+impl Procedure for Setup {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let mut aa = AvailableActions::new(self.team);
+        if input == ProcInput::Nothing {
+            aa.insert_simple(SimpleAT::SetupLine);
+            return ProcState::NeedAction(aa);
+        }
+
+        match input {
+            ProcInput::Action(Action::Simple(SimpleAT::SetupLine)) => {
+                self.setup_line(game_state).unwrap();
+                aa.insert_simple(SimpleAT::EndSetup);
+                ProcState::NeedAction(aa)
+            }
+
+            ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => ProcState::Done,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[cfg(test)]
+use std::iter::zip;
+mod tests {
+    use super::*;
+    use crate::core::{gamestate::GameStateBuilder};
+
+    fn add_reserves(state: &mut GameState, team: TeamType, count: usize) {
+        for _ in 0..count {
+            state.dugout_add_new_player(PlayerStats::new_lineman(team), DugoutPlace::Reserves);
+        }
+    }
+
+    #[test]
+    fn half_constraint_for_both_teams() {
+        let mut state = GameStateBuilder::empty_state();
+        add_reserves(&mut state, TeamType::Home, 11);
+        add_reserves(&mut state, TeamType::Away, 11);
+
+        for team in [TeamType::Home, TeamType::Away] {
+            let setup = Setup{team};
+            let positions = setup.get_legal_setup_positions(&state);
+            assert!(!positions.is_empty());
+            let line_x = state.get_line_of_scrimage_x(team);
+            for pos in positions {
+                assert!(!pos.is_out());
+                match team {
+                    TeamType::Home => assert!(pos.x >= line_x),
+                    TeamType::Away => assert!(pos.x <= line_x),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wing_cap_blocks_north_wing_positions() {
+        let mut state = GameStateBuilder::empty_state();
+        add_reserves(&mut state, TeamType::Home, 11);
+        let line_x = state.get_line_of_scrimage_x(TeamType::Home);
+        let north_y = *NORTH_WING_Y_RANGE.start();
+
+        state
+            .add_new_player_to_field(
+                PlayerStats::new_lineman(TeamType::Home),
+                Position::new((line_x + 1, north_y)),
+            )
+            .unwrap();
+        state
+            .add_new_player_to_field(
+                PlayerStats::new_lineman(TeamType::Home),
+                Position::new((line_x + 1, north_y + 1)),
+            )
+            .unwrap();
+
+        let los_y = *LINE_OF_SCRIMMAGE_Y_RANGE.start();
+        for offset in 0..3 {
+            let offset = offset as Coord;
+            state
+                .add_new_player_to_field(
+                    PlayerStats::new_lineman(TeamType::Home),
+                    Position::new((line_x, los_y + offset)),
+                )
+                .unwrap();
+        }
+
+        let setup = Setup { team: TeamType::Home };
+        let positions = setup.get_legal_setup_positions(&state);
+        assert!(positions.iter().all(|pos| !NORTH_WING_Y_RANGE.contains(&pos.y)));
+    }
+
+    #[test]
+    fn los_feasibility_requires_los_squares() {
+        let mut state = GameStateBuilder::empty_state();
+        add_reserves(&mut state, TeamType::Home, 2);
+        let line_x = state.get_line_of_scrimage_x(TeamType::Home);
+        let los_y = *LINE_OF_SCRIMMAGE_Y_RANGE.start();
+
+        state
+            .add_new_player_to_field(
+                PlayerStats::new_lineman(TeamType::Home),
+                Position::new((line_x, los_y)),
+            )
+            .unwrap();
+
+        let setup = Setup { team: TeamType::Home };
+        let positions = setup.get_legal_setup_positions(&state);
+        assert!(!positions.is_empty());
+        assert!(positions.iter().all(|pos| is_los_position(*pos, line_x)));
+    }
+
+    #[test]
+    fn los_requirement_satisfied_allows_non_los_positions() {
+        let mut state = GameStateBuilder::empty_state();
+        add_reserves(&mut state, TeamType::Home, 1);
+        let line_x = state.get_line_of_scrimage_x(TeamType::Home);
+        let los_y = *LINE_OF_SCRIMMAGE_Y_RANGE.start();
+
+        for offset in 0..3 {
+            let offset = offset as Coord;
+            state
+                .add_new_player_to_field(
+                    PlayerStats::new_lineman(TeamType::Home),
+                    Position::new((line_x, los_y + offset)),
+                )
+                .unwrap();
+        }
+
+        let setup = Setup { team: TeamType::Home };
+        let positions = setup.get_legal_setup_positions(&state);
+        assert!(positions.iter().any(|pos| !is_los_position(*pos, line_x)));
+    }
+
+    #[test]
+    fn occupied_positions_are_excluded() {
+        let mut state = GameStateBuilder::empty_state();
+        add_reserves(&mut state, TeamType::Home, 11);
+        let line_x = state.get_line_of_scrimage_x(TeamType::Home);
+        let occupied_pos = Position::new((line_x + 1, *LINE_OF_SCRIMMAGE_Y_RANGE.start()));
+
+        state
+            .add_new_player_to_field(
+                PlayerStats::new_lineman(TeamType::Home),
+                occupied_pos,
+            )
+            .unwrap();
+
+        let setup = Setup { team: TeamType::Home };
+        let positions = setup.get_legal_setup_positions(&state);
+        assert!(!positions.contains(&occupied_pos));
+    }
+
+    #[test]
+    fn test_setup_preconfigured_formations() {
+        let mut state: GameState = GameStateBuilder::new_at_setup();
+        //away as defense
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+        //home as offense
+        state.step_simple(SimpleAT::SetupLine);
+        state.step_simple(SimpleAT::EndSetup);
+
+        for team in [TeamType::Home, TeamType::Away] {
+            let middle_x = state.get_line_of_scrimage_x(team);
+            let middle_y = HEIGHT_ / 2;
+
+            let linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
+            let blitzer_pos = vec![(0, -2), (0, 2)];
+            let catcher_pos = vec![(2, 2), (2, -2)];
+            let thrower_pos = vec![(6, 3), (6, -3)];
+            let stats_types = vec![
+                PlayerStats::new_lineman(team),
+                PlayerStats::new_blitzer(team),
+                PlayerStats::new_catcher(team),
+                PlayerStats::new_thrower(team),
+            ];
+            let stats_positions = vec![linemen_pos, blitzer_pos, catcher_pos, thrower_pos];
+
+            let expected_count = stats_positions.iter().map(|x| x.len()).sum::<usize>();
+            let actual_count = state.get_players_on_pitch_in_team(team).count();
+            assert_eq!(
+                actual_count, expected_count,
+                "Team {:?} has {:?} players,",
+                team, actual_count
+            );
+
+            let x_delta_sign = if team == TeamType::Home { 1 } else { -1 };
+
+            for (stats, positions) in zip(stats_types, stats_positions) {
+                for (dx, dy) in positions {
+                    let (x, y) = (middle_x + dx * x_delta_sign, middle_y + dy);
+                    match state.get_player_at_coord(x, y) {
+                    Some(correct_player) if correct_player.stats == stats => (),
+                    Some(wrong_player) => panic!(
+                        "Wrong player at ({:?}, {:?}), found a {:?} ({:?}) but expected a {:?} ({:?})",
+                        x, y, wrong_player.stats.role, wrong_player.stats.team, stats.role, stats.team
+                    ),
+                    None => panic!(
+                        "No player at ({:?}, {:?}), expected a {:?} ({:?})",
+                        x, y, stats.role, stats.team
+                    ),
+                }
+                }
+            }
+        }
+    }
+}

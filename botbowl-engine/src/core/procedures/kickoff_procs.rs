@@ -1,14 +1,10 @@
 use crate::core::model::ProcInput;
-use std::ops::RangeInclusive;
-
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
-    PlayerStatus, Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_,
-    LINE_OF_SCRIMMAGE_Y_RANGE,
+    other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerStatus, 
+    Position, ProcState, Procedure, Weather
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -85,7 +81,6 @@ impl Procedure for KickoffTable {
                 //solid defense
             }
             Sum2D6::Five => {
-                //High Kick
                 procs.push(HighKick::new());
             }
             Sum2D6::Six => {
@@ -222,189 +217,12 @@ impl Procedure for LandKickoff {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Setup {
-    team: TeamType,
-}
-impl Setup {
-    pub fn new(team: TeamType) -> AnyProc {
-        AnyProc::Setup(Setup { team })
-    }
-    fn get_empty_pos_in_box(
-        game_state: &GameState,
-        x_range: RangeInclusive<Coord>,
-        y_range: RangeInclusive<Coord>,
-    ) -> Position {
-        let mut rng = rand::thread_rng();
-        loop {
-            let x = rng.gen_range(x_range.clone());
-            let y = rng.gen_range(y_range.clone());
-            if game_state.get_player_id_at_coord(x, y).is_none() {
-                return Position { x, y };
-            }
-        }
-    }
-    pub fn random_setup(&self, game_state: &mut GameState) {
-        #[allow(clippy::needless_collect)]
-        let players: Vec<PlayerID> = game_state
-            .get_dugout()
-            .take(11)
-            .filter(|dplayer| dplayer.stats.team == self.team)
-            .map(|p| p.id)
-            .collect();
-
-        let mut ids = players.into_iter();
-        let los_x = game_state.get_line_of_scrimage_x(self.team);
-        let los_x_range = los_x..=los_x;
-        let x_range = match self.team {
-            TeamType::Home => los_x..=crate::core::model::WIDTH_ - 2,
-            TeamType::Away => 1..=los_x,
-        };
-        for _ in 0..3 {
-            if let Some(id) = ids.next() {
-                let p = Setup::get_empty_pos_in_box(
-                    game_state,
-                    los_x_range.clone(),
-                    LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
-                );
-                game_state.field_dugout_player(id, p);
-            }
-        }
-        for id in ids {
-            let p = Setup::get_empty_pos_in_box(
-                game_state,
-                x_range.clone(),
-                LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
-            );
-            game_state.field_dugout_player(id, p);
-        }
-    }
-    fn setup_line(&self, game_state: &mut GameState) -> Result<()> {
-        //unfield all players
-        let player_ids = game_state
-            .get_players_on_pitch_in_team(self.team)
-            .map(|p| p.id)
-            .collect::<Vec<_>>();
-        for id in player_ids {
-            game_state.unfield_player(id, DugoutPlace::Reserves)?;
-        }
-        let mut linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
-        let mut blitzer_pos = vec![(0, -2), (0, 2)];
-        let mut catcher_pos = vec![(2, 2), (2, -2)];
-        let mut thrower_pos = vec![(6, 3), (6, -3)];
-        #[allow(clippy::needless_collect)]
-        let players: Vec<PlayerID> = game_state
-            .get_dugout()
-            .filter(|dplayer| dplayer.stats.team == self.team)
-            .filter(|dplayer| dplayer.place == DugoutPlace::Reserves)
-            .map(|p| p.id)
-            .collect();
-        let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
-        let middle_x = game_state.get_line_of_scrimage_x(self.team);
-        let middle_y = HEIGHT_ / 2;
-        for id in players {
-            let player = game_state.get_dugout_player(id).unwrap();
-            let (dx, dy) = {
-                match player.stats.role {
-                    PlayerRole::Blitzer if !blitzer_pos.is_empty() => blitzer_pos.pop().unwrap(),
-                    PlayerRole::Thrower if !thrower_pos.is_empty() => thrower_pos.pop().unwrap(),
-                    PlayerRole::Catcher if !catcher_pos.is_empty() => catcher_pos.pop().unwrap(),
-                    PlayerRole::Lineman if !linemen_pos.is_empty() => linemen_pos.pop().unwrap(),
-                    _ => continue,
-                }
-            };
-            let position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
-            game_state.log(format!(
-                "fielding {:?} {:?} at {:?}",
-                player.stats.role, player.stats.team, position
-            ));
-            game_state.field_dugout_player(id, position)
-        }
-        Ok(())
-    }
-}
-impl Procedure for Setup {
-    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        let mut aa = AvailableActions::new(self.team);
-        if input == ProcInput::Nothing {
-            aa.insert_simple(SimpleAT::SetupLine);
-            return ProcState::NeedAction(aa);
-        }
-
-        match input {
-            ProcInput::Action(Action::Simple(SimpleAT::SetupLine)) => {
-                self.setup_line(game_state).unwrap();
-                aa.insert_simple(SimpleAT::EndSetup);
-                ProcState::NeedAction(aa)
-            }
-
-            ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => ProcState::Done,
-            _ => unreachable!(),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use crate::core::gamestate::{BuilderState, GameState, GameStateBuilder};
     use crate::core::model::*;
     use crate::core::table::*;
-    use std::iter::zip;
-
-    #[test]
-    fn test_setup_preconfigured_formations() {
-        let mut state: GameState = GameStateBuilder::new_at_setup();
-        //away as defense
-        state.step_simple(SimpleAT::SetupLine);
-        state.step_simple(SimpleAT::EndSetup);
-        //home as offense
-        state.step_simple(SimpleAT::SetupLine);
-        state.step_simple(SimpleAT::EndSetup);
-
-        for team in [TeamType::Home, TeamType::Away] {
-            let middle_x = state.get_line_of_scrimage_x(team);
-            let middle_y = HEIGHT_ / 2;
-
-            let linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
-            let blitzer_pos = vec![(0, -2), (0, 2)];
-            let catcher_pos = vec![(2, 2), (2, -2)];
-            let thrower_pos = vec![(6, 3), (6, -3)];
-            let stats_types = vec![
-                PlayerStats::new_lineman(team),
-                PlayerStats::new_blitzer(team),
-                PlayerStats::new_catcher(team),
-                PlayerStats::new_thrower(team),
-            ];
-            let stats_positions = vec![linemen_pos, blitzer_pos, catcher_pos, thrower_pos];
-
-            let expected_count = stats_positions.iter().map(|x| x.len()).sum::<usize>();
-            let actual_count = state.get_players_on_pitch_in_team(team).count();
-            assert_eq!(
-                actual_count, expected_count,
-                "Team {:?} has {:?} players,",
-                team, actual_count
-            );
-
-            let x_delta_sign = if team == TeamType::Home { 1 } else { -1 };
-
-            for (stats, positions) in zip(stats_types, stats_positions) {
-                for (dx, dy) in positions {
-                    let (x, y) = (middle_x + dx * x_delta_sign, middle_y + dy);
-                    match state.get_player_at_coord(x, y) {
-                    Some(correct_player) if correct_player.stats == stats => (),
-                    Some(wrong_player) => panic!(
-                        "Wrong player at ({:?}, {:?}), found a {:?} ({:?}) but expected a {:?} ({:?})",
-                        x, y, wrong_player.stats.role, wrong_player.stats.team, stats.role, stats.team
-                    ),
-                    None => panic!(
-                        "No player at ({:?}, {:?}), expected a {:?} ({:?})",
-                        x, y, stats.role, stats.team
-                    ),
-                }
-                }
-            }
-        }
-    }
 
     #[test]
     fn kickoff_get_the_ref() {
@@ -630,5 +448,10 @@ mod tests {
     //     assert!(state.away_to_act());
     //     state.step_simple(SimpleAT::SetupLine);
     //     state.step_simple(SimpleAT::EndSetup);
+
+    #[test]
+    fn manual_setup() {
+
+    }
     // }
 }
