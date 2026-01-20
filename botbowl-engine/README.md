@@ -6,6 +6,19 @@ Heavily inspired by [botbowl](https://github.com/njustesen/botbowl) but re-writt
 in Rust to improve the execution speed for tree searching and machine learning.
 But mostly because rust.
 
+## Engine summary
+
+This engine is a stack-driven rules machine built around a single `GameState`.
+Each rule is a `Procedure` that consumes input, mutates the state, and returns
+a `ProcState` that tells the engine whether it needs more input, a roll, or
+should push more procedures onto the stack. Available actions are generated
+per procedure and exposed to bots or UI clients. Movement uses a pathing
+module that precomputes probabilistic paths, including dodge/GFI/pickup/pass
+events, which the movement procedure replays as the player advances. Bots
+plug in through a simple trait and the game runner can record full state
+timelines for replay.
+
+
 ## TODO
 
 List of things to implement and write tests for in order to use as engine for
