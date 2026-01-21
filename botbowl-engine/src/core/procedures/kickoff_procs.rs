@@ -3,15 +3,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerStatus, 
-    Position, ProcState, Procedure, Weather
+    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
+    PlayerStatus, Position, ProcState, Procedure, Weather
 };
 use crate::core::procedures::ball_procs;
+use crate::core::procedures::setup_procs;
 use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
 
 use super::AnyProc;
+use std::collections::HashSet;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Kickoff {
     aim: Position,
@@ -78,7 +80,7 @@ impl Procedure for KickoffTable {
                 }
             }
             Sum2D6::Four => {
-                //solid defense
+                procs.push(SolidDefence::new());
             }
             Sum2D6::Five => {
                 procs.push(HighKick::new());
@@ -189,6 +191,18 @@ impl Procedure for HighKick {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SolidDefence {}
+impl SolidDefence {
+    pub fn new() -> AnyProc {
+        AnyProc::SolidDefence(SolidDefence {})
+    }
+}
+impl Procedure for SolidDefence {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LandKickoff {}
 impl LandKickoff {
     pub fn new() -> AnyProc {
@@ -223,6 +237,7 @@ mod tests {
     use crate::core::gamestate::{BuilderState, GameState, GameStateBuilder};
     use crate::core::model::*;
     use crate::core::table::*;
+    use std::collections::HashSet;
 
     #[test]
     fn kickoff_get_the_ref() {
@@ -314,23 +329,33 @@ mod tests {
 
         assert_eq!(state.ball, BallState::OnGround(Position::new((23, 8))));
     }
-    // #[test]
-    // fn kickoff_solid_defence() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(3);
-    //
-    //     state.fixes.fix_d6(6); //fix number of re-arranged players (d3+3)
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    //
-    //     // TODO: haven't implemented the setup yet
-    // }
-    //
+    #[test]
+    fn kickoff_solid_defence() {
+        let mut state: GameState = GameStateBuilder::new_at_kickoff();
+        let kicking_team = state.info.kicking_this_drive;
+        let open_before: Vec<PlayerID> = state
+            .get_players_on_pitch_in_team(kicking_team)
+            .filter(|p| p.status == PlayerStatus::Up)
+            .filter(|p| state.get_tz_on(p.id) == 0)
+            .map(|p| p.id)
+            .collect();
+        let initial_positions: HashSet<Position> = state
+            .get_players_on_pitch_in_team(kicking_team)
+            .map(|p| p.position)
+            .collect();
+
+        // ball fixes
+        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+        state.fixes.fix_d6(5); // scatter length
+    
+         // kickoff event fix solid defence
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(3); 
+
+        state.fixes.fix_d6(6); //fix number of re-arranged players (d3+3)
+        state.step_simple(SimpleAT::KickoffAimMiddle);
+    }
+    
     #[test]
     fn kickoff_high_kick() {
          let mut state: GameState = GameStateBuilder::new_at_kickoff();
@@ -448,10 +473,6 @@ mod tests {
     //     assert!(state.away_to_act());
     //     state.step_simple(SimpleAT::SetupLine);
     //     state.step_simple(SimpleAT::EndSetup);
+//}
 
-    #[test]
-    fn manual_setup() {
-
-    }
-    // }
 }

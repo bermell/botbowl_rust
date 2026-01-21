@@ -12,7 +12,7 @@ use crate::core::procedures::game_procs::{
     TurnoverIfPossessionLost,
 };
 use crate::core::procedures::kickoff_procs::{
-    ChangingWeather, HighKick, Kickoff, KickoffTable, LandKickoff
+    ChangingWeather, HighKick, Kickoff, KickoffTable, LandKickoff, SolidDefence
 };
 use crate::core::procedures::setup_procs::Setup;
 use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp};
@@ -26,6 +26,7 @@ pub enum AnyProc {
     Bounce(Bounce),
     Catch(SimpleProcContainer<Catch>),
     ChangingWeather(ChangingWeather),
+    SolidDefence(SolidDefence),
     ChooseKickReceive(ChooseKickReceive),
     CoinToss(CoinToss),
     Deflect(SimpleProcContainer<Deflect>),
@@ -66,6 +67,7 @@ impl std::fmt::Debug for AnyProc {
             Self::Bounce(arg0) => f.debug_tuple("Bounce").field(arg0).finish(),
             Self::Catch(arg0) => f.debug_tuple("Catch").field(arg0).finish(),
             Self::ChangingWeather(arg0) => f.debug_tuple("ChangingWeather").field(arg0).finish(),
+            Self::SolidDefence(arg0) => f.debug_tuple("SolidDefence").field(arg0).finish(),
             Self::ChooseKickReceive(arg0) => {
                 f.debug_tuple("ChooseKickReceive").field(arg0).finish()
             }
@@ -117,6 +119,7 @@ impl Procedure for AnyProc {
             AnyProc::Bounce(arg) => arg.step(game_state, input),
             AnyProc::Catch(arg) => arg.step(game_state, input),
             AnyProc::ChangingWeather(arg) => arg.step(game_state, input),
+            AnyProc::SolidDefence(arg) => arg.step(game_state, input),
             AnyProc::ChooseKickReceive(arg) => arg.step(game_state, input),
             AnyProc::CoinToss(arg) => arg.step(game_state, input),
             AnyProc::Deflect(arg) => arg.step(game_state, input),
