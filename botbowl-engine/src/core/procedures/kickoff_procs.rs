@@ -199,6 +199,7 @@ impl SolidDefence {
 }
 impl Procedure for SolidDefence {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        return ProcState::Done;
     }
 }
 
@@ -329,6 +330,7 @@ mod tests {
 
         assert_eq!(state.ball, BallState::OnGround(Position::new((23, 8))));
     }
+
     #[test]
     fn kickoff_solid_defence() {
         let mut state: GameState = GameStateBuilder::new_at_kickoff();

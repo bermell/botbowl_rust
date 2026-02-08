@@ -163,6 +163,7 @@ impl Setup {
     }
 
     pub fn random_setup(&self, game_state: &mut GameState) {
+
         #[allow(clippy::needless_collect)]
         let players: Vec<PlayerID> = game_state
             .get_dugout()
@@ -197,6 +198,7 @@ impl Setup {
             game_state.field_dugout_player(id, p);
         }
     }
+
     fn setup_line(&self, game_state: &mut GameState) -> Result<()> {
         //unfield all players
         let player_ids = game_state
@@ -370,6 +372,32 @@ mod tests {
         let positions = setup.get_legal_setup_positions(&state);
         assert!(!positions.is_empty());
         assert!(positions.iter().all(|pos| is_los_position(*pos, line_x)));
+    }
+
+    #[test]
+    fn placed_player_can_be_chosen_to_be_placed_elsewhere_while_keeping_the_same_player_id() {
+        let mut state: GameState = GameStateBuilder::new_at_setup();
+        let team: TeamType = TeamType::Away;
+        let mut setup: Setup = Setup { team };
+
+        //place player
+        let middle_x = state.get_line_of_scrimage_x(team);
+        let middle_y = HEIGHT_ / 2;
+        let pos: Position = Position { x: middle_x, y: middle_y };
+        let player_id: PlayerID = state.add_new_player_to_field(PlayerStats::new_lineman(team), pos).unwrap();
+
+        // setup step, choose fielded player to replace it, should keep same id
+        let ProcState::NeedAction(aa) = setup.step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)),
+        ) else {
+            panic!("Expected NeedAction after placing first player.");
+        };
+        assert!(state.get_players_on_pitch_in_team(team).count() == 1);
+        let should_be_same_id: Option<PlayerID> = state.get_player_id_at(pos);
+        assert!(should_be_same_id.is_some());
+        // Test driven development - assert that the code is currently not working as it should
+        assert!(should_be_same_id.unwrap() != player_id);
     }
 
     #[test]
