@@ -278,9 +278,9 @@ impl Procedure for Setup {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::zip;
+    use std::{iter::zip, panic::{catch_unwind, AssertUnwindSafe}};
     use super::*;
-    use crate::core::{gamestate::GameStateBuilder, model::PlayerStats};
+    use crate::core::{gamestate::GameStateBuilder, model::{DugoutPlayer, PlayerStats}};
 
     fn add_reserves(state: &mut GameState, team: TeamType, count: usize) {
         for _ in 0..count {
@@ -316,6 +316,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn setup_specific_player_from_dugout_reserve() {
+        let mut state: GameState = GameStateBuilder::new_at_setup();
+        let team: TeamType = TeamType::Away;
+        let mut setup: Setup = Setup { team };
+
+        let middle_x = state.get_line_of_scrimage_x(team);
+        let middle_y = HEIGHT_ / 2;
+        let pitch_pos: Position = Position { x: middle_x, y: middle_y };
+
+        let player_id = 2;
+
+        // build legal action squares
+        let _ = setup.step(&mut state,ProcInput::Nothing);
+
+        // should be able to select select_player to place at pitch_pos
+        let _ = setup.step(
+            &mut state, 
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, pitch_pos))
+        );
+
+        assert!(player_id == state.get_player_at(pitch_pos).unwrap().id);
+    }
+
+    #[test]
+    fn change_setup_square_for_already_fielded_player() {
+
+    }
+
+    #[test]
+    fn during_setup_swap_position_of_dugout_reserve_player_with_fielded_player() {
+
+    }
+
+    #[test]
+    fn during_setup_swap_positions_of_already_fielded_players() {
+
     }
 
     #[test]
@@ -375,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn placed_player_can_be_chosen_to_be_placed_elsewhere_while_keeping_the_same_player_id() {
+    fn placed_player_who_change_position_during_setup_keeps_same_id() {
         let mut state: GameState = GameStateBuilder::new_at_setup();
         let team: TeamType = TeamType::Away;
         let mut setup: Setup = Setup { team };
@@ -387,17 +426,16 @@ mod tests {
         let player_id: PlayerID = state.add_new_player_to_field(PlayerStats::new_lineman(team), pos).unwrap();
 
         // setup step, choose fielded player to replace it, should keep same id
-        let ProcState::NeedAction(aa) = setup.step(
+        let ProcState::NeedAction(_aa) = setup.step(
             &mut state,
             ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)),
         ) else {
-            panic!("Expected NeedAction after placing first player.");
+            panic!("Expected NeedAction after building available actions.");
         };
         assert!(state.get_players_on_pitch_in_team(team).count() == 1);
         let should_be_same_id: Option<PlayerID> = state.get_player_id_at(pos);
         assert!(should_be_same_id.is_some());
-        // Test driven development - assert that the code is currently not working as it should
-        assert!(should_be_same_id.unwrap() != player_id);
+        assert!(should_be_same_id.unwrap() == player_id);
     }
 
     #[test]
