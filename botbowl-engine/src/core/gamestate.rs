@@ -756,6 +756,18 @@ impl GameState {
         self.board[new_pos] = Some(id);
         Ok(())
     }
+
+    pub fn swap_players_positions(&mut self, first_id: PlayerID, second_id: PlayerID) -> Result<()> {
+        let first_pos = self.get_player(first_id)?.position;
+        let second_pos = self.get_player(second_id)?.position;
+
+        self.board[first_pos] = Some(second_id);
+        self.board[second_pos] = Some(first_id);
+        self.get_mut_player(first_id)?.position = second_pos;
+        self.get_mut_player(second_id)?.position = first_pos;
+        Ok(())
+    }
+
     pub fn get_players_on_pitch(&self) -> impl Iterator<Item = &FieldedPlayer> {
         self.fielded_players.iter().filter_map(|x| x.as_ref())
     }

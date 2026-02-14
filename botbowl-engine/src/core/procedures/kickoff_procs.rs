@@ -3,17 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
+    other_team, Action, AvailableActions, BallState, Coord, Direction,
     PlayerStatus, Position, ProcState, Procedure, Weather
 };
 use crate::core::procedures::ball_procs;
-use crate::core::procedures::setup_procs;
 use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
 
 use super::AnyProc;
-use std::collections::HashSet;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Kickoff {
     aim: Position,
