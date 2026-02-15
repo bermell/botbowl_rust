@@ -553,8 +553,7 @@ mod tests {
         }
 
         #[test]
-        fn kickoff_solid_defence() {
-            // Scenario A: cap can be reached and no marked player is selectable.
+        fn cap_can_be_reached_and_no_marked_player_selectable() {
             let mut state: GameState = GameStateBuilder::new_at_kickoff();
             let kicking_team = state.info.kicking_this_drive;
             let receiving_team = other_team(kicking_team);
@@ -575,6 +574,7 @@ mod tests {
 
             let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
             assert!(selectable.len() > 4);
+
             let marked_positions: Vec<Position> = state
                 .get_players_on_pitch_in_team(kicking_team)
                 .filter(|player| player.status == PlayerStatus::Up)
@@ -607,8 +607,57 @@ mod tests {
                     "cannot keep choosing more than the fixed number"
                 );
             }
+        }
 
-            // Scenario B: fewer than the fixed number, reserve-first, legal setup squares, and swapping.
+        #[test]
+        fn should_be_possible_to_select_less_than_rolled_nr_of_players() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let kicking_team = state.info.kicking_this_drive;
+            let down_id = state
+                .get_players_on_pitch_in_team(kicking_team)
+                .filter(|player| player.status == PlayerStatus::Up)
+                .filter(|player| state.get_tz_on(player.id) == 0)
+                .map(|player| player.id)
+                .next()
+                .unwrap();
+            state.get_mut_player_unsafe(down_id).status = PlayerStatus::Down;
+
+            state.fixes.fix_d8_direction(Direction::up());
+            state.fixes.fix_d6(5);
+            state.fixes.fix_d6(1);
+            state.fixes.fix_d6(3);
+            state.fixes.fix_d6(1); // D3+3 => 4
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+
+            let selected: Vec<Position> = selectable.into_iter().take(2).collect();
+            let reserves_before = reserve_count(&state, kicking_team);
+            let pitch_before = state.get_players_on_pitch_in_team(kicking_team).count();
+            for pos in selected {
+                state.step_positional(PosAT::SelectPosition, pos);
+            }
+            assert!(
+                state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)),
+                "should be possible to choose fewer players than the fixed number"
+            );
+
+            state.step_simple(SimpleAT::EndSetup);
+
+            assert_eq!(
+                reserve_count(&state, kicking_team),
+                reserves_before + 2,
+                "all selected players must be in reserves before any placement"
+            );
+
+            assert_eq!(
+                state.get_players_on_pitch_in_team(kicking_team).count(),
+                pitch_before - 2
+            );
+        }
+
+        #[test]
+        fn downed_player_unselectable() {
             let mut state: GameState = GameStateBuilder::new_at_kickoff();
             let kicking_team = state.info.kicking_this_drive;
             let down_id = state
@@ -633,28 +682,35 @@ mod tests {
                 !selectable.contains(&down_pos),
                 "open player must be standing and not marked"
             );
+        }
 
-            let selected: Vec<Position> = selectable.into_iter().take(2).collect();
-            let reserves_before = reserve_count(&state, kicking_team);
-            let pitch_before = state.get_players_on_pitch_in_team(kicking_team).count();
+        #[test]
+        fn occupied_positions_are_excluded_from_legal_setup_positions() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let kicking_team = state.info.kicking_this_drive;
+            let down_id = state
+                .get_players_on_pitch_in_team(kicking_team)
+                .filter(|player| player.status == PlayerStatus::Up)
+                .filter(|player| state.get_tz_on(player.id) == 0)
+                .map(|player| player.id)
+                .next()
+                .unwrap();
+            state.get_mut_player_unsafe(down_id).status = PlayerStatus::Down;
+
+            state.fixes.fix_d8_direction(Direction::up());
+            state.fixes.fix_d6(5);
+            state.fixes.fix_d6(1);
+            state.fixes.fix_d6(3);
+            state.fixes.fix_d6(1); // D3+3 => 4
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+
+            let selected: Vec<Position> = selectable.into_iter().take(4).collect();
             for pos in selected {
                 state.step_positional(PosAT::SelectPosition, pos);
             }
-            assert!(
-                state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)),
-                "should be possible to choose fewer players than the fixed number"
-            );
             state.step_simple(SimpleAT::EndSetup);
-
-            assert_eq!(
-                reserve_count(&state, kicking_team),
-                reserves_before + 2,
-                "all selected players must be in reserves before any placement"
-            );
-            assert_eq!(
-                state.get_players_on_pitch_in_team(kicking_team).count(),
-                pitch_before - 2
-            );
 
             let anchored_positions: HashSet<Position> = state
                 .get_players_on_pitch_in_team(kicking_team)
@@ -662,13 +718,46 @@ mod tests {
                 .collect();
             let legal_placements =
                 positions_for_action(&state.available_actions, PosAT::SelectPosition);
-            assert!(!legal_placements.is_empty());
             for pos in &anchored_positions {
                 assert!(
                     !legal_placements.contains(pos),
                     "anchored players should make their occupied squares illegal setup positions"
                 );
             }
+        }
+
+        #[test]
+        fn swapping_only_allowed_between_chosen_players() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let kicking_team = state.info.kicking_this_drive;
+            let down_id = state
+                .get_players_on_pitch_in_team(kicking_team)
+                .filter(|player| player.status == PlayerStatus::Up)
+                .filter(|player| state.get_tz_on(player.id) == 0)
+                .map(|player| player.id)
+                .next()
+                .unwrap();
+            state.get_mut_player_unsafe(down_id).status = PlayerStatus::Down;
+
+            state.fixes.fix_d8_direction(Direction::up());
+            state.fixes.fix_d6(5);
+            state.fixes.fix_d6(1);
+            state.fixes.fix_d6(3);
+            state.fixes.fix_d6(1); // D3+3 => 4
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+
+            let selected: Vec<Position> = selectable.into_iter().take(4).collect();
+            for pos in selected {
+                state.step_positional(PosAT::SelectPosition, pos);
+            }
+            state.step_simple(SimpleAT::EndSetup);
+
+            let legal_placements =
+                positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            assert!(!legal_placements.is_empty());
+
             for pos in &legal_placements {
                 assert!(state.get_player_id_at(*pos).is_none());
             }
