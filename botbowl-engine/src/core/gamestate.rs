@@ -757,7 +757,11 @@ impl GameState {
         Ok(())
     }
 
-    pub fn swap_players_positions(&mut self, first_id: PlayerID, second_id: PlayerID) -> Result<()> {
+    pub fn swap_players_positions(
+        &mut self,
+        first_id: PlayerID,
+        second_id: PlayerID,
+    ) -> Result<()> {
         let first_pos = self.get_player(first_id)?.position;
         let second_pos = self.get_player(second_id)?.position;
 
@@ -1071,42 +1075,6 @@ impl GameState {
         self.available_actions.is_legal_action(*action)
     }
 
-    pub fn is_setup_legal(&self, team: TeamType) -> bool {
-        let mut north_wing = 0;
-        let mut south_wing = 0;
-        let mut line_of_scrimage = 0;
-        let num_players_on_pitch = self.get_players_on_pitch_in_team(team).count();
-        let num_players_on_bench = self
-            .get_dugout()
-            .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
-            .count();
-        let num_available_players = num_players_on_bench + num_players_on_pitch;
-        let min_people_on_pitch = 11.min(num_available_players);
-        let min_people_on_scrimage = 3.min(num_available_players);
-
-        if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > 11 {
-            return false;
-        }
-        let line_of_scrimage_x = self.get_line_of_scrimage_x(team);
-
-        for pos in self.get_players_on_pitch_in_team(team).map(|p| p.position) {
-            if pos.is_out()
-                || (team == TeamType::Home && pos.x < line_of_scrimage_x)
-                || (team == TeamType::Away && pos.x > line_of_scrimage_x)
-            {
-                return false;
-            }
-
-            if pos.x == line_of_scrimage_x && LINE_OF_SCRIMMAGE_Y_RANGE.contains(&pos.y) {
-                line_of_scrimage += 1;
-            } else if SOUTH_WING_Y_RANGE.contains(&pos.y) {
-                south_wing += 1;
-            } else if NORTH_WING_Y_RANGE.contains(&pos.y) {
-                north_wing += 1;
-            }
-        }
-        north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
-    }
 
     pub fn step_simple(&mut self, action: SimpleAT) {
         self.step(Action::Simple(action)).unwrap();

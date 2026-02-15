@@ -4,15 +4,15 @@ use std::collections::HashSet;
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction,
-    DugoutPlace, PlayerID, PlayerStatus, Position, ProcState, Procedure,
-    TeamType, Weather, LINE_OF_SCRIMMAGE_Y_RANGE, NORTH_WING_Y_RANGE, SOUTH_WING_Y_RANGE
+    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
+    PlayerStatus, Position, ProcState, Procedure, TeamType, Weather,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
 
+use super::setup_procs::{is_setup_legal, legal_setup_positions_with_removed, SetupLegalConfig};
 use super::AnyProc;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Kickoff {
@@ -209,15 +209,6 @@ pub struct SolidDefence {
     controlled_fielded_ids: HashSet<PlayerID>,
 }
 
-#[derive(Clone, Copy)]
-struct SetupCounts {
-    on_pitch: usize,
-    los: usize,
-    north: usize,
-    south: usize,
-}
-
-
 impl SolidDefence {
     pub fn new() -> AnyProc {
         AnyProc::SolidDefence(SolidDefence {
@@ -252,109 +243,26 @@ impl SolidDefence {
     fn build_selection_actions(&self, game_state: &GameState) -> ProcState {
         let mut aa = AvailableActions::new(self.team);
         aa.insert_simple(SimpleAT::EndSetup);
-        aa.insert_positional(PosAT::SelectPosition, self.open_selectable_positions(game_state));
+        aa.insert_positional(
+            PosAT::SelectPosition,
+            self.open_selectable_positions(game_state),
+        );
         ProcState::NeedAction(aa)
     }
 
-    fn count_setup_positions(
-        &self,
-        game_state: &GameState,
-        removed_pos: Option<Position>,
-    ) -> SetupCounts {
-        let line_x = game_state.get_line_of_scrimage_x(self.team);
-        let mut counts = SetupCounts {
-            on_pitch: 0,
-            los: 0,
-            north: 0,
-            south: 0,
+    fn build_rearrange_actions(&self, game_state: &GameState) -> ProcState {
+        let cfg = SetupLegalConfig {
+            team: self.team,
+            line_x: game_state.get_line_of_scrimage_x(self.team),
+            target_on_pitch: self.target_on_pitch,
+            min_los: 3.min(self.target_on_pitch),
         };
 
-        for pos in game_state
-            .get_players_on_pitch_in_team(self.team)
-            .map(|player| player.position)
-        {
-            counts.on_pitch += 1;
-            if pos.is_los_position(line_x) {
-                counts.los += 1;
-            } else if pos.is_north_wing_position() {
-                counts.north += 1;
-            } else if pos.is_south_wing_position() {
-                counts.south += 1;
-            }
-        }
-        if let Some(pos) = removed_pos {
-            counts.on_pitch = counts.on_pitch.saturating_sub(1);
-            if pos.is_los_position(line_x) {
-                counts.los = counts.los.saturating_sub(1);
-            } else if pos.is_north_wing_position() {
-                counts.north = counts.north.saturating_sub(1);
-            } else if pos.is_south_wing_position() {
-                counts.south = counts.south.saturating_sub(1);
-            }
-        }
-        counts
-    }
-
-    fn legal_rearrange_positions(
-        &self,
-        game_state: &GameState,
-        removed_pos: Option<Position>,
-    ) -> Vec<Position> {
-        let line_x = game_state.get_line_of_scrimage_x(self.team);
-        let counts = self.count_setup_positions(game_state, removed_pos);
-        let remaining_to_place = self.target_on_pitch.saturating_sub(counts.on_pitch);
-        if remaining_to_place == 0 {
-            return Vec::new();
-        }
-
-        let min_los = 3.min(self.target_on_pitch);
-        let empty_los_squares = LINE_OF_SCRIMMAGE_Y_RANGE
-            .clone()
-            .filter(|&y| {
-                let pos = Position::new((line_x, y));
-                !pos.is_out() && (game_state.get_player_id_at(pos).is_none() || removed_pos == Some(pos))
-            })
-            .count();
-
-        let mut candidates = Vec::new();
-        for pos in Position::all_positions() {
-            if pos.is_out()
-                || !pos.is_on_team_side(self.team)
-                || (game_state.get_player_id_at(pos).is_some() && removed_pos != Some(pos))
-            {
-                continue;
-            }
-
-            let is_los = pos.is_los_position(line_x);
-            let new_los = counts.los + usize::from(is_los);
-            let new_north = counts.north + usize::from(pos.is_north_wing_position());
-            let new_south = counts.south + usize::from(pos.is_south_wing_position());
-            if new_north > 2 || new_south > 2 {
-                continue;
-            }
-
-            let remaining_players_after = remaining_to_place.saturating_sub(1);
-            let remaining_los_needed = min_los.saturating_sub(new_los);
-            let remaining_los_squares = if is_los {
-                empty_los_squares.saturating_sub(1)
-            } else {
-                empty_los_squares
-            };
-            if remaining_players_after < remaining_los_needed
-                || remaining_los_squares < remaining_los_needed
-            {
-                continue;
-            }
-            candidates.push(pos);
-        }
-        candidates
-    }
-
-    fn build_rearrange_actions(&self, game_state: &GameState) -> ProcState {
         let mut aa = AvailableActions::new(self.team);
         if let Some(source_id) = self.selected_fielded_player {
             let source_pos = game_state.get_player_unsafe(source_id).position;
-            let mut positions = self.legal_rearrange_positions(game_state, Some(source_pos));
+            let mut positions =
+                legal_setup_positions_with_removed(game_state, cfg, Some(source_pos));
             positions.extend(
                 self.controlled_fielded_ids
                     .iter()
@@ -369,11 +277,11 @@ impl SolidDefence {
         }
 
         if !self.selected_reserve_ids.is_empty() {
-            let positions: Vec<Position> = self
-                .legal_rearrange_positions(game_state, None)
-                .into_iter()
-                .filter(|pos| game_state.get_player_id_at(*pos).is_none())
-                .collect();
+            let positions: Vec<Position> =
+                legal_setup_positions_with_removed(game_state, cfg, None)
+                    .into_iter()
+                    .filter(|pos| game_state.get_player_id_at(*pos).is_none())
+                    .collect();
             aa.insert_positional(PosAT::SelectPosition, positions);
             return ProcState::NeedAction(aa);
         }
@@ -387,7 +295,7 @@ impl SolidDefence {
         aa.insert_positional(PosAT::SelectPosition, positions);
 
         if game_state.get_players_on_pitch_in_team(self.team).count() == self.target_on_pitch
-            && game_state.is_setup_legal(self.team)
+            && is_setup_legal(game_state, self.team)
         {
             aa.insert_simple(SimpleAT::EndSetup);
         }
@@ -398,15 +306,21 @@ impl SolidDefence {
         self.target_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
         let reserves_before: HashSet<usize> = game_state
             .get_dugout()
-            .filter(|player| player.stats.team == self.team && player.place == DugoutPlace::Reserves)
+            .filter(|player| {
+                player.stats.team == self.team && player.place == DugoutPlace::Reserves
+            })
             .map(|player| player.id)
             .collect();
         for id in self.selected_fielded_ids.iter().copied() {
-            game_state.unfield_player(id, DugoutPlace::Reserves).unwrap();
+            game_state
+                .unfield_player(id, DugoutPlace::Reserves)
+                .unwrap();
         }
         self.selected_reserve_ids = game_state
             .get_dugout()
-            .filter(|player| player.stats.team == self.team && player.place == DugoutPlace::Reserves)
+            .filter(|player| {
+                player.stats.team == self.team && player.place == DugoutPlace::Reserves
+            })
             .map(|player| player.id)
             .filter(|id| !reserves_before.contains(id))
             .collect();
@@ -466,7 +380,9 @@ impl Procedure for SolidDefence {
                         if let Some(target_id) = game_state.get_player_id_at(pos) {
                             assert!(self.controlled_fielded_ids.contains(&target_id));
                             if source_id != target_id {
-                                game_state.swap_players_positions(source_id, target_id).unwrap();
+                                game_state
+                                    .swap_players_positions(source_id, target_id)
+                                    .unwrap();
                             }
                         } else {
                             game_state.move_player(source_id, pos).unwrap();
@@ -681,7 +597,10 @@ mod tests {
                 reserves_before_cap + 4,
                 "at most fixed number of re-arranged players can be chosen"
             );
-            assert_eq!(state.get_players_on_pitch_in_team(kicking_team).count(), pitch_before_cap - 4);
+            assert_eq!(
+                state.get_players_on_pitch_in_team(kicking_team).count(),
+                pitch_before_cap - 4
+            );
             for pos in unselected_open {
                 assert!(
                     !state.is_legal_action(&Action::Positional(PosAT::SelectPosition, pos)),
@@ -732,13 +651,17 @@ mod tests {
                 reserves_before + 2,
                 "all selected players must be in reserves before any placement"
             );
-            assert_eq!(state.get_players_on_pitch_in_team(kicking_team).count(), pitch_before - 2);
+            assert_eq!(
+                state.get_players_on_pitch_in_team(kicking_team).count(),
+                pitch_before - 2
+            );
 
             let anchored_positions: HashSet<Position> = state
                 .get_players_on_pitch_in_team(kicking_team)
                 .map(|player| player.position)
                 .collect();
-            let legal_placements = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let legal_placements =
+                positions_for_action(&state.available_actions, PosAT::SelectPosition);
             assert!(!legal_placements.is_empty());
             for pos in &anchored_positions {
                 assert!(
@@ -780,25 +703,25 @@ mod tests {
             assert_eq!(state.get_player_id_at(first_pos), Some(second_id));
             assert_eq!(state.get_player_id_at(second_pos), Some(first_id));
         }
-}
-    
+    }
+
     #[test]
     fn kickoff_high_kick() {
-         let mut state: GameState = GameStateBuilder::new_at_kickoff();
-         // ball fixes
-         state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-         state.fixes.fix_d6(5); // scatter length
-    
-         // kickoff event fix
-         state.fixes.fix_d6(1);
-         state.fixes.fix_d6(4);
-    
-         state.step_simple(SimpleAT::KickoffAimMiddle);
-    
-         let ball_pos = state.get_ball_position().unwrap();
-         assert!(matches!(state.ball, BallState::InAir(_)));
-    
-         assert!(state.home_to_act());
+        let mut state: GameState = GameStateBuilder::new_at_kickoff();
+        // ball fixes
+        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+        state.fixes.fix_d6(5); // scatter length
+
+        // kickoff event fix
+        state.fixes.fix_d6(1);
+        state.fixes.fix_d6(4);
+
+        state.step_simple(SimpleAT::KickoffAimMiddle);
+
+        let ball_pos = state.get_ball_position().unwrap();
+        assert!(matches!(state.ball, BallState::InAir(_)));
+
+        assert!(state.home_to_act());
         let receiving_team = other_team(state.info.kicking_this_drive);
         let legal_positions: Vec<Position> = state
             .get_players_on_pitch_in_team(receiving_team)
@@ -813,22 +736,22 @@ mod tests {
         }
 
         let catcher_start_pos = legal_positions[0];
-         let catcher_id = state.get_player_id_at(catcher_start_pos).unwrap();
-    
-         state.fixes.fix_d6(6); // fix the roll for the catch
+        let catcher_id = state.get_player_id_at(catcher_start_pos).unwrap();
+
+        state.fixes.fix_d6(6); // fix the roll for the catch
         state.step_positional(PosAT::SelectPosition, legal_positions[0]);
-    
-         assert_eq!(state.get_player_id_at(ball_pos).unwrap(), catcher_id);
-         assert_eq!(state.get_player_id_at(catcher_start_pos), None);
-    
-         match state.ball {
-             BallState::Carried(id) => {
-                 assert_eq!(id, catcher_id);
-             }
-             _ => panic!("ball should be carried"),
-         }
-    
-         assert!(state.home_to_act());
+
+        assert_eq!(state.get_player_id_at(ball_pos).unwrap(), catcher_id);
+        assert_eq!(state.get_player_id_at(catcher_start_pos), None);
+
+        match state.ball {
+            BallState::Carried(id) => {
+                assert_eq!(id, catcher_id);
+            }
+            _ => panic!("ball should be carried"),
+        }
+
+        assert!(state.home_to_act());
     }
     //
     // #[test]
@@ -899,6 +822,5 @@ mod tests {
     //     assert!(state.away_to_act());
     //     state.step_simple(SimpleAT::SetupLine);
     //     state.step_simple(SimpleAT::EndSetup);
-//}
-
+    //}
 }

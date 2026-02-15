@@ -1,45 +1,38 @@
+use super::AnyProc;
+use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{
-    Action, AvailableActions, Coord, DugoutPlace, PlayerID,
-    Position, ProcState, Procedure, Result, TeamType, HEIGHT_,
-    LINE_OF_SCRIMMAGE_Y_RANGE, NORTH_WING_Y_RANGE, SOUTH_WING_Y_RANGE
+    Action, AvailableActions, Coord, DugoutPlace, PlayerID, Position, ProcState, Procedure, Result,
+    TeamType, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE,
 };
-use crate::core::table::{SimpleAT, PlayerRole, PosAT};
-use crate::core::gamestate::GameState;
-use super::AnyProc;
+use crate::core::table::{PlayerRole, PosAT, SimpleAT};
 
 use serde::{Deserialize, Serialize};
 
 use rand::Rng;
 use std::ops::RangeInclusive;
 
-struct SetupCounts {
-    on_pitch: usize,
-    los: usize,
-    north: usize,
-    south: usize,
+#[derive(Clone, Copy)]
+pub(super) struct SetupLegalConfig {
+    pub(super) team: TeamType,
+    pub(super) line_x: Coord,
+    pub(super) target_on_pitch: usize,
+    pub(super) min_los: usize,
 }
 
-fn is_los_position(pos: Position, line_x: Coord) -> bool {
-    pos.x == line_x && LINE_OF_SCRIMMAGE_Y_RANGE.contains(&pos.y)
+#[derive(Clone, Copy)]
+pub(super) struct SetupCounts {
+    pub(super) on_pitch: usize,
+    pub(super) los: usize,
+    pub(super) north: usize,
+    pub(super) south: usize,
 }
 
-fn is_north_wing_position(pos: Position) -> bool {
-    NORTH_WING_Y_RANGE.contains(&pos.y)
-}
-
-fn is_south_wing_position(pos: Position) -> bool {
-    SOUTH_WING_Y_RANGE.contains(&pos.y)
-}
-
-fn is_on_team_half(pos: Position, team: TeamType, line_x: Coord) -> bool {
-    match team {
-        TeamType::Home => pos.x >= line_x,
-        TeamType::Away => pos.x <= line_x,
-    }
-}
-
-fn count_setup_positions(state: &GameState, team: TeamType, line_x: Coord) -> SetupCounts {
+pub(super) fn count_setup_positions_with_removed(
+    state: &GameState,
+    cfg: SetupLegalConfig,
+    removed_pos: Option<Position>,
+) -> SetupCounts {
     let mut counts = SetupCounts {
         on_pitch: 0,
         los: 0,
@@ -47,18 +40,128 @@ fn count_setup_positions(state: &GameState, team: TeamType, line_x: Coord) -> Se
         south: 0,
     };
 
-    for pos in state.get_players_on_pitch_in_team(team).map(|p| p.position) {
+    for pos in state
+        .get_players_on_pitch_in_team(cfg.team)
+        .map(|p| p.position)
+    {
         counts.on_pitch += 1;
-        if is_los_position(pos, line_x) {
+        if pos.is_los_position(cfg.line_x) {
             counts.los += 1;
-        } else if is_north_wing_position(pos) {
+        } else if pos.is_north_wing_position() {
             counts.north += 1;
-        } else if is_south_wing_position(pos) {
+        } else if pos.is_south_wing_position() {
             counts.south += 1;
         }
     }
 
+    if let Some(pos) = removed_pos {
+        counts.on_pitch = counts.on_pitch.saturating_sub(1);
+        if pos.is_los_position(cfg.line_x) {
+            counts.los = counts.los.saturating_sub(1);
+        } else if pos.is_north_wing_position() {
+            counts.north = counts.north.saturating_sub(1);
+        } else if pos.is_south_wing_position() {
+            counts.south = counts.south.saturating_sub(1);
+        }
+    }
+
     counts
+}
+
+pub(super) fn legal_setup_positions_with_removed(
+    game_state: &GameState,
+    cfg: SetupLegalConfig,
+    removed_pos: Option<Position>,
+) -> Vec<Position> {
+    let counts = count_setup_positions_with_removed(game_state, cfg, removed_pos);
+    let remaining_to_place = cfg.target_on_pitch.saturating_sub(counts.on_pitch);
+
+    if remaining_to_place == 0 {
+        return Vec::new();
+    }
+
+    let empty_los_squares = LINE_OF_SCRIMMAGE_Y_RANGE
+        .clone()
+        .filter(|&y| {
+            let pos = Position::new((cfg.line_x, y));
+            !pos.is_out()
+                && (game_state.get_player_id_at(pos).is_none() || removed_pos == Some(pos))
+        })
+        .count();
+
+    let mut candidates = Vec::new();
+    for pos in Position::all_positions() {
+        if pos.is_out()
+            || !pos.is_on_team_half(cfg.team, cfg.line_x)
+            || (game_state.get_player_id_at(pos).is_some() && removed_pos != Some(pos))
+        {
+            continue;
+        }
+
+        let is_los = pos.is_los_position(cfg.line_x);
+        let new_los = counts.los + usize::from(is_los);
+        let new_north = counts.north + usize::from(pos.is_north_wing_position());
+        let new_south = counts.south + usize::from(pos.is_south_wing_position());
+
+        if new_north > 2 || new_south > 2 {
+            continue;
+        }
+
+        let remaining_players_after = remaining_to_place.saturating_sub(1);
+        let remaining_los_needed = cfg.min_los.saturating_sub(new_los);
+        let remaining_los_squares = if is_los {
+            empty_los_squares.saturating_sub(1)
+        } else {
+            empty_los_squares
+        };
+
+        if remaining_players_after < remaining_los_needed
+            || remaining_los_squares < remaining_los_needed
+        {
+            continue;
+        }
+
+        candidates.push(pos);
+    }
+
+    candidates
+}
+
+pub(super) fn is_setup_legal(game_state: &GameState, team: TeamType) -> bool {
+    let mut north_wing = 0;
+    let mut south_wing = 0;
+    let mut line_of_scrimage = 0;
+    let num_players_on_pitch = game_state.get_players_on_pitch_in_team(team).count();
+    let num_players_on_bench = game_state
+        .get_dugout()
+        .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
+        .count();
+    let num_available_players = num_players_on_bench + num_players_on_pitch;
+    let min_people_on_pitch = 11.min(num_available_players);
+    let min_people_on_scrimage = 3.min(num_available_players);
+
+    if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > 11 {
+        return false;
+    }
+    let line_of_scrimage_x = game_state.get_line_of_scrimage_x(team);
+
+    for pos in game_state.get_players_on_pitch_in_team(team).map(|p| p.position) {
+        if pos.is_out()
+            || (team == TeamType::Home && pos.x < line_of_scrimage_x)
+            || (team == TeamType::Away && pos.x > line_of_scrimage_x)
+        {
+            return false;
+        }
+
+        if pos.is_los_position(line_of_scrimage_x) {
+            line_of_scrimage += 1;
+        } else if pos.is_south_wing_position() {
+            south_wing += 1;
+        } else if pos.is_north_wing_position() {
+            north_wing += 1;
+        }
+    }
+    north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,84 +190,30 @@ impl Setup {
             }
         }
     }
-    
+
     fn get_legal_setup_positions_with_removed(
         &self,
         game_state: &GameState,
         removed_pos: Option<Position>,
     ) -> Vec<Position> {
         let line_x = game_state.get_line_of_scrimage_x(self.team);
-        let mut counts = count_setup_positions(game_state, self.team, line_x);
-        let total_on_pitch = counts.on_pitch;
-        if let Some(pos) = removed_pos {
-            counts.on_pitch = counts.on_pitch.saturating_sub(1);
-            if is_los_position(pos, line_x) {
-                counts.los = counts.los.saturating_sub(1);
-            } else if is_north_wing_position(pos) {
-                counts.north = counts.north.saturating_sub(1);
-            } else if is_south_wing_position(pos) {
-                counts.south = counts.south.saturating_sub(1);
-            }
-        }
+        let total_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
         let num_players_on_bench = game_state
             .get_dugout()
-            .filter(|player| player.stats.team == self.team && player.place == DugoutPlace::Reserves)
-            .count();
-
-        let num_available_players = total_on_pitch + num_players_on_bench;
-        let min_on_pitch = 11.min(num_available_players);
-        let min_los = 3.min(num_available_players);
-        let remaining_to_place = min_on_pitch.saturating_sub(counts.on_pitch);
-
-        if remaining_to_place == 0 {
-            return Vec::new();
-        }
-
-        let empty_los_squares = LINE_OF_SCRIMMAGE_Y_RANGE
-            .clone()
-            .filter(|&y| {
-                let pos = Position::new((line_x, y));
-                !pos.is_out()
-                    && (game_state.get_player_id_at(pos).is_none() || removed_pos == Some(pos))
+            .filter(|player| {
+                player.stats.team == self.team && player.place == DugoutPlace::Reserves
             })
             .count();
 
-        let mut candidates = Vec::new();
-        for pos in Position::all_positions() {
-            if pos.is_out()
-                || !is_on_team_half(pos, self.team, line_x)
-                || (game_state.get_player_id_at(pos).is_some() && removed_pos != Some(pos))
-            {
-                continue;
-            }
+        let num_available_players = total_on_pitch + num_players_on_bench;
+        let cfg = SetupLegalConfig {
+            team: self.team,
+            line_x,
+            target_on_pitch: 11.min(num_available_players),
+            min_los: 3.min(num_available_players),
+        };
 
-            let is_los = is_los_position(pos, line_x);
-            let new_los = counts.los + usize::from(is_los);
-            let new_north = counts.north + usize::from(is_north_wing_position(pos));
-            let new_south = counts.south + usize::from(is_south_wing_position(pos));
-
-            if new_north > 2 || new_south > 2 {
-                continue;
-            }
-
-            let remaining_players_after = remaining_to_place.saturating_sub(1);
-            let remaining_los_needed = min_los.saturating_sub(new_los);
-            let remaining_los_squares = if is_los {
-                empty_los_squares.saturating_sub(1)
-            } else {
-                empty_los_squares
-            };
-
-            if remaining_players_after < remaining_los_needed
-                || remaining_los_squares < remaining_los_needed
-            {
-                continue;
-            }
-
-            candidates.push(pos);
-        }
-
-        candidates
+        legal_setup_positions_with_removed(game_state, cfg, removed_pos)
     }
 
     fn get_legal_setup_positions(&self, game_state: &GameState) -> Vec<Position> {
@@ -207,17 +256,20 @@ impl Setup {
         if !legal_positions.is_empty() {
             aa.insert_positional(PosAT::SelectPosition, legal_positions);
         }
-        if game_state.is_setup_legal(self.team) {
+        if is_setup_legal(game_state, self.team) {
             aa.insert_simple(SimpleAT::EndSetup);
         }
-        if game_state.get_players_on_pitch_in_team(self.team).next().is_none() {
+        if game_state
+            .get_players_on_pitch_in_team(self.team)
+            .next()
+            .is_none()
+        {
             aa.insert_simple(SimpleAT::SetupLine);
         }
         ProcState::NeedAction(aa)
     }
 
     pub fn random_setup(&self, game_state: &mut GameState) {
-
         #[allow(clippy::needless_collect)]
         let players: Vec<PlayerID> = game_state
             .get_dugout()
@@ -346,9 +398,10 @@ impl Procedure for Setup {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::zip;
     use super::*;
     use crate::core::{gamestate::GameStateBuilder, model::PlayerStats};
+    use std::collections::HashSet;
+    use std::iter::zip;
 
     fn add_reserves(state: &mut GameState, team: TeamType, count: usize) {
         for _ in 0..count {
@@ -407,7 +460,10 @@ mod tests {
 
         let middle_x = state.get_line_of_scrimage_x(team);
         let middle_y = HEIGHT_ / 2;
-        let pitch_pos: Position = Position { x: middle_x, y: middle_y };
+        let pitch_pos: Position = Position {
+            x: middle_x,
+            y: middle_y,
+        };
 
         let reserves_before = state
             .get_dugout()
@@ -415,12 +471,12 @@ mod tests {
             .count();
 
         // build legal action squares
-        let _ = setup.step(&mut state,ProcInput::Nothing);
+        let _ = setup.step(&mut state, ProcInput::Nothing);
 
         // should be able to select select_player to place at pitch_pos
         let _ = setup.step(
-            &mut state, 
-            ProcInput::Action(Action::Positional(PosAT::SelectPosition, pitch_pos))
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, pitch_pos)),
         );
 
         let placed_player = state.get_player_at(pitch_pos).unwrap();
@@ -457,7 +513,8 @@ mod tests {
         ) else {
             panic!("Expected NeedAction after selecting source player.");
         };
-        let destination = first_empty_position(&positions_for_action(&aa, PosAT::SelectPosition), &state);
+        let destination =
+            first_empty_position(&positions_for_action(&aa, PosAT::SelectPosition), &state);
 
         let _ = setup.step(
             &mut state,
@@ -545,7 +602,7 @@ mod tests {
         let mut state = GameStateBuilder::empty_state();
         add_reserves(&mut state, TeamType::Home, 11);
         let line_x = state.get_line_of_scrimage_x(TeamType::Home);
-        let north_y = *NORTH_WING_Y_RANGE.start();
+        let north_y = *crate::core::model::NORTH_WING_Y_RANGE.start();
 
         state
             .add_new_player_to_field(
@@ -576,7 +633,7 @@ mod tests {
             selected_fielded_player: None,
         };
         let positions = setup.get_legal_setup_positions(&state);
-        assert!(positions.iter().all(|pos| !NORTH_WING_Y_RANGE.contains(&pos.y)));
+        assert!(positions.iter().all(|pos| !pos.is_north_wing_position()));
     }
 
     #[test]
@@ -599,7 +656,7 @@ mod tests {
         };
         let positions = setup.get_legal_setup_positions(&state);
         assert!(!positions.is_empty());
-        assert!(positions.iter().all(|pos| is_los_position(*pos, line_x)));
+        assert!(positions.iter().all(|pos| pos.is_los_position(line_x)));
     }
 
     #[test]
@@ -614,8 +671,13 @@ mod tests {
         //place player
         let middle_x = state.get_line_of_scrimage_x(team);
         let middle_y = HEIGHT_ / 2;
-        let pos: Position = Position { x: middle_x, y: middle_y };
-        let player_id: PlayerID = state.add_new_player_to_field(PlayerStats::new_lineman(team), pos).unwrap();
+        let pos: Position = Position {
+            x: middle_x,
+            y: middle_y,
+        };
+        let player_id: PlayerID = state
+            .add_new_player_to_field(PlayerStats::new_lineman(team), pos)
+            .unwrap();
 
         // First click selects source player.
         let ProcState::NeedAction(aa) = setup.step(
@@ -661,7 +723,56 @@ mod tests {
             selected_fielded_player: None,
         };
         let positions = setup.get_legal_setup_positions(&state);
-        assert!(positions.iter().any(|pos| !is_los_position(*pos, line_x)));
+        assert!(positions.iter().any(|pos| !pos.is_los_position(line_x)));
+    }
+
+    #[test]
+    fn shared_setup_helper_matches_setup_logic_for_moving_a_fielded_player() {
+        let mut state = GameStateBuilder::empty_state();
+        let team = TeamType::Home;
+        let line_x = state.get_line_of_scrimage_x(team);
+
+        let fielded_positions = [
+            Position::new((line_x, 5)),
+            Position::new((line_x, 6)),
+            Position::new((line_x, 7)),
+            Position::new((line_x + 1, 8)),
+            Position::new((line_x + 2, 9)),
+            Position::new((line_x + 3, 10)),
+            Position::new((line_x + 4, 11)),
+            Position::new((line_x + 5, 3)),
+            Position::new((line_x + 5, 13)),
+            Position::new((line_x + 2, 2)),
+            Position::new((line_x + 2, 14)),
+        ];
+        for pos in fielded_positions {
+            state
+                .add_new_player_to_field(PlayerStats::new_lineman(team), pos)
+                .unwrap();
+        }
+
+        let setup = Setup {
+            team,
+            selected_fielded_player: None,
+        };
+        let removed_pos = Position::new((line_x + 2, 9));
+        let from_setup: HashSet<Position> = setup
+            .get_legal_setup_positions_with_removed(&state, Some(removed_pos))
+            .into_iter()
+            .collect();
+
+        let cfg = SetupLegalConfig {
+            team,
+            line_x,
+            target_on_pitch: 11,
+            min_los: 3,
+        };
+        let from_shared: HashSet<Position> =
+            legal_setup_positions_with_removed(&state, cfg, Some(removed_pos))
+                .into_iter()
+                .collect();
+
+        assert_eq!(from_setup, from_shared);
     }
 
     #[test]
@@ -672,10 +783,7 @@ mod tests {
         let occupied_pos = Position::new((line_x + 1, *LINE_OF_SCRIMMAGE_Y_RANGE.start()));
 
         state
-            .add_new_player_to_field(
-                PlayerStats::new_lineman(TeamType::Home),
-                occupied_pos,
-            )
+            .add_new_player_to_field(PlayerStats::new_lineman(TeamType::Home), occupied_pos)
             .unwrap();
 
         let setup = Setup {
@@ -767,7 +875,10 @@ mod tests {
             panic!("Expected NeedAction after placing first player.");
         };
 
-        assert_eq!(state.get_players_on_pitch_in_team(TeamType::Home).count(), 1);
+        assert_eq!(
+            state.get_players_on_pitch_in_team(TeamType::Home).count(),
+            1
+        );
         assert!(!aa.get_simple().contains(&SimpleAT::SetupLine));
         assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
 
@@ -780,7 +891,10 @@ mod tests {
             panic!("Expected NeedAction after placing second player.");
         };
 
-        assert_eq!(state.get_players_on_pitch_in_team(TeamType::Home).count(), 2);
+        assert_eq!(
+            state.get_players_on_pitch_in_team(TeamType::Home).count(),
+            2
+        );
         assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
 
         let positions = positions_for_action(&aa, PosAT::SelectPosition);
@@ -792,7 +906,10 @@ mod tests {
             panic!("Expected NeedAction after placing third player.");
         };
 
-        assert_eq!(state.get_players_on_pitch_in_team(TeamType::Home).count(), 3);
+        assert_eq!(
+            state.get_players_on_pitch_in_team(TeamType::Home).count(),
+            3
+        );
         assert!(aa.get_simple().contains(&SimpleAT::EndSetup));
         assert!(positions_for_action(&aa, PosAT::SelectPosition)
             .iter()

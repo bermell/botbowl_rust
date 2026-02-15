@@ -7,7 +7,9 @@ use crate::core::model::{
     other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position,
     ProcState, Procedure, TeamType,
 };
-use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs, setup_procs};
+use crate::core::procedures::{
+    ball_procs, block_procs, kickoff_procs, movement_procs, setup_procs,
+};
 use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
