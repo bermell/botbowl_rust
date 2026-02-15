@@ -195,6 +195,21 @@ impl Position {
             TeamType::Away => self.x < WIDTH_ / 2,
         }
     }
+    pub fn is_on_team_half(&self, team: TeamType, line_x: Coord) -> bool {
+        match team {
+            TeamType::Home => self.x >= line_x,
+            TeamType::Away => self.x <= line_x,
+        }
+    }
+    pub fn is_los_position(&self, line_x: Coord) -> bool {
+        self.x == line_x && LINE_OF_SCRIMMAGE_Y_RANGE.contains(&self.y)
+    }
+    pub fn is_north_wing_position(&self) -> bool {
+        NORTH_WING_Y_RANGE.contains(&self.y)
+    }
+    pub fn is_south_wing_position(&self) -> bool {
+        SOUTH_WING_Y_RANGE.contains(&self.y)
+    }
 }
 impl From<(usize, usize)> for Position {
     fn from(xy: (usize, usize)) -> Self {
