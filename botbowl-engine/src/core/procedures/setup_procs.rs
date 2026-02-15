@@ -145,7 +145,10 @@ pub(super) fn is_setup_legal(game_state: &GameState, team: TeamType) -> bool {
     }
     let line_of_scrimage_x = game_state.get_line_of_scrimage_x(team);
 
-    for pos in game_state.get_players_on_pitch_in_team(team).map(|p| p.position) {
+    for pos in game_state
+        .get_players_on_pitch_in_team(team)
+        .map(|p| p.position)
+    {
         if pos.is_out()
             || (team == TeamType::Home && pos.x < line_of_scrimage_x)
             || (team == TeamType::Away && pos.x > line_of_scrimage_x)

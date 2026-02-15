@@ -1075,7 +1075,6 @@ impl GameState {
         self.available_actions.is_legal_action(*action)
     }
 
-
     pub fn step_simple(&mut self, action: SimpleAT) {
         self.step(Action::Simple(action)).unwrap();
         self.fixes.assert_is_empty();
