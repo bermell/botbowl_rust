@@ -10,9 +10,10 @@ use crate::core::table::{PlayerRole, PosAT, SimpleAT};
 use serde::{Deserialize, Serialize};
 
 use rand::Rng;
+use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct SetupLegalConfig {
     pub(super) team: TeamType,
     pub(super) line_x: Coord,
@@ -20,7 +21,7 @@ pub(super) struct SetupLegalConfig {
     pub(super) min_los: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct SetupCounts {
     pub(super) on_pitch: usize,
     pub(super) los: usize,
@@ -167,18 +168,272 @@ pub(super) fn is_setup_legal(game_state: &GameState, team: TeamType) -> bool {
     north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct SetupRearrangeConfig {
+    pub(super) team: TeamType,
+    pub(super) target_on_pitch: usize,
+    pub(super) min_los: usize,
+    pub(super) end_requires_pending_empty: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct SetupRearrangeState {
+    pub(super) selected_fielded_player: Option<PlayerID>,
+    pub(super) pending_reserve_ids: Vec<usize>,
+    pub(super) controlled_fielded_ids: HashSet<PlayerID>,
+}
+
+impl SetupRearrangeState {
+    fn empty() -> Self {
+        Self {
+            selected_fielded_player: None,
+            pending_reserve_ids: Vec::new(),
+            controlled_fielded_ids: HashSet::new(),
+        }
+    }
+}
+
+fn reserve_ids_for_team(game_state: &GameState, team: TeamType) -> HashSet<usize> {
+    game_state
+        .get_dugout()
+        .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
+        .map(|player| player.id)
+        .collect()
+}
+
+fn unfield_to_reserve_and_get_new_id(
+    game_state: &mut GameState,
+    team: TeamType,
+    player_id: PlayerID,
+) -> usize {
+    let reserves_before = reserve_ids_for_team(game_state, team);
+    game_state
+        .unfield_player(player_id, DugoutPlace::Reserves)
+        .unwrap();
+    let mut new_ids = reserve_ids_for_team(game_state, team)
+        .into_iter()
+        .filter(|id| !reserves_before.contains(id));
+    let new_id = new_ids
+        .next()
+        .expect("unfielding should create one reserve");
+    assert!(
+        new_ids.next().is_none(),
+        "unfielding should only create one reserve"
+    );
+    new_id
+}
+
+fn can_end_rearrange(
+    game_state: &GameState,
+    cfg: SetupRearrangeConfig,
+    state: &SetupRearrangeState,
+) -> bool {
+    if game_state.get_players_on_pitch_in_team(cfg.team).count() != cfg.target_on_pitch {
+        return false;
+    }
+    if cfg.end_requires_pending_empty && !state.pending_reserve_ids.is_empty() {
+        return false;
+    }
+    is_setup_legal(game_state, cfg.team)
+}
+
+pub(super) fn build_rearrange_actions(
+    game_state: &GameState,
+    cfg: SetupRearrangeConfig,
+    state: &SetupRearrangeState,
+) -> ProcState {
+    let legal_cfg = SetupLegalConfig {
+        team: cfg.team,
+        line_x: game_state.get_line_of_scrimage_x(cfg.team),
+        target_on_pitch: cfg.target_on_pitch,
+        min_los: cfg.min_los,
+    };
+    let mut aa = AvailableActions::new(cfg.team);
+
+    if let Some(source_id) = state.selected_fielded_player {
+        let source_pos = game_state.get_player_unsafe(source_id).position;
+        let mut positions =
+            legal_setup_positions_with_removed(game_state, legal_cfg, Some(source_pos));
+        positions.extend(
+            state
+                .controlled_fielded_ids
+                .iter()
+                .copied()
+                .filter(|id| *id != source_id)
+                .map(|id| game_state.get_player_unsafe(id).position),
+        );
+        positions.sort_unstable_by_key(|pos| (pos.x, pos.y));
+        positions.dedup();
+        aa.insert_positional(PosAT::SelectPosition, positions);
+        return ProcState::NeedAction(aa);
+    }
+
+    if !state.pending_reserve_ids.is_empty() {
+        let mut positions: Vec<Position> =
+            legal_setup_positions_with_removed(game_state, legal_cfg, None)
+                .into_iter()
+                .filter(|pos| game_state.get_player_id_at(*pos).is_none())
+                .collect();
+        positions.extend(
+            state
+                .controlled_fielded_ids
+                .iter()
+                .copied()
+                .map(|id| game_state.get_player_unsafe(id).position),
+        );
+        positions.sort_unstable_by_key(|pos| (pos.x, pos.y));
+        positions.dedup();
+        aa.insert_positional(PosAT::SelectPosition, positions);
+        if can_end_rearrange(game_state, cfg, state) {
+            aa.insert_simple(SimpleAT::EndSetup);
+        }
+        return ProcState::NeedAction(aa);
+    }
+
+    let positions: Vec<Position> = state
+        .controlled_fielded_ids
+        .iter()
+        .copied()
+        .map(|id| game_state.get_player_unsafe(id).position)
+        .collect();
+    if !positions.is_empty() {
+        aa.insert_positional(PosAT::SelectPosition, positions);
+    }
+    if can_end_rearrange(game_state, cfg, state) {
+        aa.insert_simple(SimpleAT::EndSetup);
+    }
+    ProcState::NeedAction(aa)
+}
+
+pub(super) fn step_rearrange_position(
+    game_state: &mut GameState,
+    cfg: SetupRearrangeConfig,
+    state: &mut SetupRearrangeState,
+    pos: Position,
+) -> ProcState {
+    if let Some(source_id) = state.selected_fielded_player.take() {
+        if let Some(target_id) = game_state.get_player_id_at(pos) {
+            assert!(state.controlled_fielded_ids.contains(&target_id));
+            if source_id != target_id {
+                game_state
+                    .swap_players_positions(source_id, target_id)
+                    .unwrap();
+            }
+        } else {
+            game_state.move_player(source_id, pos).unwrap();
+        }
+        return build_rearrange_actions(game_state, cfg, state);
+    }
+
+    if let Some(reserve_id) = state.pending_reserve_ids.pop() {
+        if let Some(displaced_id) = game_state.get_player_id_at(pos) {
+            assert!(state.controlled_fielded_ids.contains(&displaced_id));
+            let displaced_reserve_id =
+                unfield_to_reserve_and_get_new_id(game_state, cfg.team, displaced_id);
+            game_state.field_dugout_player(reserve_id, pos);
+            let placed_id = game_state.get_player_id_at(pos).unwrap();
+            state.pending_reserve_ids.push(displaced_reserve_id);
+            state.controlled_fielded_ids.remove(&displaced_id);
+            state.controlled_fielded_ids.insert(placed_id);
+        } else {
+            game_state.field_dugout_player(reserve_id, pos);
+            state
+                .controlled_fielded_ids
+                .insert(game_state.get_player_id_at(pos).unwrap());
+        }
+        return build_rearrange_actions(game_state, cfg, state);
+    }
+
+    if let Some(id) = game_state.get_player_id_at(pos) {
+        assert!(state.controlled_fielded_ids.contains(&id));
+        state.selected_fielded_player = Some(id);
+    }
+    build_rearrange_actions(game_state, cfg, state)
+}
+
+pub(super) fn step_rearrange_end_setup(
+    game_state: &GameState,
+    cfg: SetupRearrangeConfig,
+    state: &mut SetupRearrangeState,
+) -> ProcState {
+    state.selected_fielded_player = None;
+    assert!(can_end_rearrange(game_state, cfg, state));
+    ProcState::Done
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Setup {
     team: TeamType,
-    selected_fielded_player: Option<PlayerID>,
+    rearrange_state: SetupRearrangeState,
 }
 impl Setup {
     pub fn new(team: TeamType) -> AnyProc {
         AnyProc::Setup(Setup {
             team,
-            selected_fielded_player: None,
+            rearrange_state: SetupRearrangeState::empty(),
         })
     }
+
+    fn setup_legal_config(&self, game_state: &GameState) -> SetupLegalConfig {
+        let total_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
+        let num_players_on_bench = game_state
+            .get_dugout()
+            .filter(|player| {
+                player.stats.team == self.team && player.place == DugoutPlace::Reserves
+            })
+            .count();
+        let num_available_players = total_on_pitch + num_players_on_bench;
+        SetupLegalConfig {
+            team: self.team,
+            line_x: game_state.get_line_of_scrimage_x(self.team),
+            target_on_pitch: 11.min(num_available_players),
+            min_los: 3.min(num_available_players),
+        }
+    }
+
+    fn rearrange_config(&self, game_state: &GameState) -> SetupRearrangeConfig {
+        let legal_cfg = self.setup_legal_config(game_state);
+        SetupRearrangeConfig {
+            team: self.team,
+            target_on_pitch: legal_cfg.target_on_pitch,
+            min_los: legal_cfg.min_los,
+            end_requires_pending_empty: false,
+        }
+    }
+
+    fn reset_rearrange_state(&mut self, game_state: &GameState) {
+        let cfg = self.rearrange_config(game_state);
+        let controlled_fielded_ids: HashSet<PlayerID> = game_state
+            .get_players_on_pitch_in_team(self.team)
+            .map(|p| p.id)
+            .collect();
+        let pending_count = cfg
+            .target_on_pitch
+            .saturating_sub(controlled_fielded_ids.len());
+        let pending_reserve_ids = game_state
+            .get_dugout()
+            .filter(|player| {
+                player.stats.team == self.team && player.place == DugoutPlace::Reserves
+            })
+            .map(|player| player.id)
+            .take(pending_count)
+            .collect();
+        self.rearrange_state = SetupRearrangeState {
+            selected_fielded_player: None,
+            pending_reserve_ids,
+            controlled_fielded_ids,
+        };
+    }
+
+    fn ensure_rearrange_state_initialized(&mut self, game_state: &GameState) {
+        if self.rearrange_state.selected_fielded_player.is_none()
+            && self.rearrange_state.pending_reserve_ids.is_empty()
+            && self.rearrange_state.controlled_fielded_ids.is_empty()
+        {
+            self.reset_rearrange_state(game_state);
+        }
+    }
+
     fn get_empty_pos_in_box(
         game_state: &GameState,
         x_range: RangeInclusive<Coord>,
@@ -194,74 +449,32 @@ impl Setup {
         }
     }
 
+    #[cfg(test)]
     fn get_legal_setup_positions_with_removed(
         &self,
         game_state: &GameState,
         removed_pos: Option<Position>,
     ) -> Vec<Position> {
-        let line_x = game_state.get_line_of_scrimage_x(self.team);
-        let total_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
-        let num_players_on_bench = game_state
-            .get_dugout()
-            .filter(|player| {
-                player.stats.team == self.team && player.place == DugoutPlace::Reserves
-            })
-            .count();
-
-        let num_available_players = total_on_pitch + num_players_on_bench;
-        let cfg = SetupLegalConfig {
-            team: self.team,
-            line_x,
-            target_on_pitch: 11.min(num_available_players),
-            min_los: 3.min(num_available_players),
-        };
-
-        legal_setup_positions_with_removed(game_state, cfg, removed_pos)
+        legal_setup_positions_with_removed(
+            game_state,
+            self.setup_legal_config(game_state),
+            removed_pos,
+        )
     }
 
+    #[cfg(test)]
     fn get_legal_setup_positions(&self, game_state: &GameState) -> Vec<Position> {
         self.get_legal_setup_positions_with_removed(game_state, None)
     }
 
-    fn reserve_to_field_id(&self, game_state: &GameState) -> Option<PlayerID> {
-        game_state
-            .get_dugout()
-            .find(|player| player.stats.team == self.team && player.place == DugoutPlace::Reserves)
-            .map(|player| player.id)
-    }
-
-    fn swap_fielded_players(
-        &self,
-        game_state: &mut GameState,
-        first_id: PlayerID,
-        second_id: PlayerID,
-    ) {
-        game_state
-            .swap_players_positions(first_id, second_id)
-            .unwrap();
-    }
-
-    fn build_available_actions(&self, game_state: &GameState) -> ProcState {
-        let mut aa = AvailableActions::new(self.team);
-        let mut legal_positions = match self.selected_fielded_player {
-            Some(player_id) => self.get_legal_setup_positions_with_removed(
-                game_state,
-                Some(game_state.get_player(player_id).unwrap().position),
-            ),
-            None => self.get_legal_setup_positions(game_state),
+    fn build_available_actions(&mut self, game_state: &GameState) -> ProcState {
+        self.ensure_rearrange_state_initialized(game_state);
+        let cfg = self.rearrange_config(game_state);
+        let ProcState::NeedAction(mut aa) =
+            build_rearrange_actions(game_state, cfg, &self.rearrange_state)
+        else {
+            unreachable!();
         };
-        legal_positions.extend(
-            game_state
-                .get_players_on_pitch_in_team(self.team)
-                .map(|player| player.position),
-        );
-
-        if !legal_positions.is_empty() {
-            aa.insert_positional(PosAT::SelectPosition, legal_positions);
-        }
-        if is_setup_legal(game_state, self.team) {
-            aa.insert_simple(SimpleAT::EndSetup);
-        }
         if game_state
             .get_players_on_pitch_in_team(self.team)
             .next()
@@ -361,38 +574,24 @@ impl Procedure for Setup {
 
         match input {
             ProcInput::Action(Action::Simple(SimpleAT::SetupLine)) => {
-                self.selected_fielded_player = None;
                 self.setup_line(game_state).unwrap();
+                self.reset_rearrange_state(game_state);
                 self.build_available_actions(game_state)
             }
 
-            ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => {
-                self.selected_fielded_player = None;
-                ProcState::Done
-            }
-
+            ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => step_rearrange_end_setup(
+                game_state,
+                self.rearrange_config(game_state),
+                &mut self.rearrange_state,
+            ),
             ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
-                if let Some(source_id) = self.selected_fielded_player.take() {
-                    if let Some(target_id) = game_state.get_player_id_at(pos) {
-                        if source_id != target_id {
-                            self.swap_fielded_players(game_state, source_id, target_id);
-                        }
-                    } else {
-                        game_state.move_player(source_id, pos).unwrap();
-                    }
-                } else if let Some(occupying_id) = game_state.get_player_id_at(pos) {
-                    if let Some(reserve_id) = self.reserve_to_field_id(game_state) {
-                        game_state
-                            .unfield_player(occupying_id, DugoutPlace::Reserves)
-                            .unwrap();
-                        game_state.field_dugout_player(reserve_id, pos);
-                    } else {
-                        self.selected_fielded_player = Some(occupying_id);
-                    }
-                } else if let Some(reserve_id) = self.reserve_to_field_id(game_state) {
-                    game_state.field_dugout_player(reserve_id, pos);
-                }
-                self.build_available_actions(game_state)
+                self.ensure_rearrange_state_initialized(game_state);
+                step_rearrange_position(
+                    game_state,
+                    self.rearrange_config(game_state),
+                    &mut self.rearrange_state,
+                    pos,
+                )
             }
             _ => unreachable!(),
         }
@@ -412,6 +611,13 @@ mod tests {
         }
     }
 
+    fn reserve_count(state: &GameState, team: TeamType) -> usize {
+        state
+            .get_dugout()
+            .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
+            .count()
+    }
+
     fn positions_for_action(aa: &AvailableActions, action: PosAT) -> Vec<Position> {
         let Some(positions) = aa.get_positional() else {
             return Vec::new();
@@ -428,6 +634,13 @@ mod tests {
             .unwrap()
     }
 
+    fn setup_for(team: TeamType) -> Setup {
+        Setup {
+            team,
+            rearrange_state: SetupRearrangeState::empty(),
+        }
+    }
+
     #[test]
     fn half_constraint_for_both_teams() {
         let mut state = GameStateBuilder::empty_state();
@@ -435,10 +648,7 @@ mod tests {
         add_reserves(&mut state, TeamType::Away, 11);
 
         for team in [TeamType::Home, TeamType::Away] {
-            let setup = Setup {
-                team,
-                selected_fielded_player: None,
-            };
+            let setup = setup_for(team);
             let positions = setup.get_legal_setup_positions(&state);
             assert!(!positions.is_empty());
             let line_x = state.get_line_of_scrimage_x(team);
@@ -456,10 +666,7 @@ mod tests {
     fn setup_specific_player_from_dugout_reserve() {
         let mut state: GameState = GameStateBuilder::new_at_setup();
         let team: TeamType = TeamType::Away;
-        let mut setup: Setup = Setup {
-            team,
-            selected_fielded_player: None,
-        };
+        let mut setup: Setup = setup_for(team);
 
         let middle_x = state.get_line_of_scrimage_x(team);
         let middle_y = HEIGHT_ / 2;
@@ -495,10 +702,7 @@ mod tests {
     fn change_setup_square_for_already_fielded_player() {
         let mut state = GameStateBuilder::empty_state();
         let team = TeamType::Home;
-        let mut setup = Setup {
-            team,
-            selected_fielded_player: None,
-        };
+        let mut setup = setup_for(team);
         let line_x = state.get_line_of_scrimage_x(team);
         let source_pos = Position::new((line_x, *LINE_OF_SCRIMMAGE_Y_RANGE.start()));
         let player_id = state
@@ -533,10 +737,7 @@ mod tests {
     fn during_setup_swap_position_of_dugout_reserve_player_with_fielded_player() {
         let mut state = GameStateBuilder::empty_state();
         let team = TeamType::Home;
-        let mut setup = Setup {
-            team,
-            selected_fielded_player: None,
-        };
+        let mut setup = setup_for(team);
         add_reserves(&mut state, team, 1);
 
         let line_x = state.get_line_of_scrimage_x(team);
@@ -572,10 +773,7 @@ mod tests {
     fn during_setup_swap_positions_of_already_fielded_players() {
         let mut state = GameStateBuilder::empty_state();
         let team = TeamType::Home;
-        let mut setup = Setup {
-            team,
-            selected_fielded_player: None,
-        };
+        let mut setup = setup_for(team);
         let line_x = state.get_line_of_scrimage_x(team);
         let first_pos = Position::new((line_x + 1, *LINE_OF_SCRIMMAGE_Y_RANGE.start()));
         let second_pos = Position::new((line_x + 2, *LINE_OF_SCRIMMAGE_Y_RANGE.start()));
@@ -631,10 +829,7 @@ mod tests {
                 .unwrap();
         }
 
-        let setup = Setup {
-            team: TeamType::Home,
-            selected_fielded_player: None,
-        };
+        let setup = setup_for(TeamType::Home);
         let positions = setup.get_legal_setup_positions(&state);
         assert!(positions.iter().all(|pos| !pos.is_north_wing_position()));
     }
@@ -653,10 +848,7 @@ mod tests {
             )
             .unwrap();
 
-        let setup = Setup {
-            team: TeamType::Home,
-            selected_fielded_player: None,
-        };
+        let setup = setup_for(TeamType::Home);
         let positions = setup.get_legal_setup_positions(&state);
         assert!(!positions.is_empty());
         assert!(positions.iter().all(|pos| pos.is_los_position(line_x)));
@@ -666,10 +858,7 @@ mod tests {
     fn placed_player_who_change_position_during_setup_keeps_same_id() {
         let mut state: GameState = GameStateBuilder::empty_state();
         let team: TeamType = TeamType::Home;
-        let mut setup: Setup = Setup {
-            team,
-            selected_fielded_player: None,
-        };
+        let mut setup: Setup = setup_for(team);
 
         //place player
         let middle_x = state.get_line_of_scrimage_x(team);
@@ -721,10 +910,7 @@ mod tests {
                 .unwrap();
         }
 
-        let setup = Setup {
-            team: TeamType::Home,
-            selected_fielded_player: None,
-        };
+        let setup = setup_for(TeamType::Home);
         let positions = setup.get_legal_setup_positions(&state);
         assert!(positions.iter().any(|pos| !pos.is_los_position(line_x)));
     }
@@ -754,10 +940,7 @@ mod tests {
                 .unwrap();
         }
 
-        let setup = Setup {
-            team,
-            selected_fielded_player: None,
-        };
+        let setup = setup_for(team);
         let removed_pos = Position::new((line_x + 2, 9));
         let from_setup: HashSet<Position> = setup
             .get_legal_setup_positions_with_removed(&state, Some(removed_pos))
@@ -789,10 +972,7 @@ mod tests {
             .add_new_player_to_field(PlayerStats::new_lineman(TeamType::Home), occupied_pos)
             .unwrap();
 
-        let setup = Setup {
-            team: TeamType::Home,
-            selected_fielded_player: None,
-        };
+        let setup = setup_for(TeamType::Home);
         let positions = setup.get_legal_setup_positions(&state);
         assert!(!positions.contains(&occupied_pos));
     }
@@ -857,10 +1037,7 @@ mod tests {
         let mut state = GameStateBuilder::empty_state();
         add_reserves(&mut state, TeamType::Home, 3);
 
-        let mut setup = Setup {
-            team: TeamType::Home,
-            selected_fielded_player: None,
-        };
+        let mut setup = setup_for(TeamType::Home);
 
         let ProcState::NeedAction(aa) = setup.step(&mut state, ProcInput::Nothing) else {
             panic!("Expected NeedAction on initial setup prompt.");
@@ -924,5 +1101,77 @@ mod tests {
             .filter(|player| player.place == DugoutPlace::Reserves)
             .count();
         assert_eq!(reserves_left, 0);
+    }
+
+    #[test]
+    fn setup_pending_flow_can_swap_with_controlled_occupied_square() {
+        let mut state = GameStateBuilder::empty_state();
+        let team = TeamType::Home;
+        add_reserves(&mut state, team, 3);
+        let mut setup = setup_for(team);
+
+        let ProcState::NeedAction(aa) = setup.step(&mut state, ProcInput::Nothing) else {
+            panic!("Expected NeedAction on initial setup prompt.");
+        };
+        let first_target =
+            first_empty_position(&positions_for_action(&aa, PosAT::SelectPosition), &state);
+
+        let ProcState::NeedAction(aa) = setup.step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, first_target)),
+        ) else {
+            panic!("Expected NeedAction after first placement.");
+        };
+        let reserves_before_swap = reserve_count(&state, team);
+        assert!(
+            positions_for_action(&aa, PosAT::SelectPosition).contains(&first_target),
+            "already placed controlled square should remain legal for reserve swap"
+        );
+
+        let ProcState::NeedAction(_aa) = setup.step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, first_target)),
+        ) else {
+            panic!("Expected NeedAction after reserve swap.");
+        };
+        assert_eq!(
+            reserve_count(&state, team),
+            reserves_before_swap,
+            "swapping pending reserve with a controlled player should not change reserve count"
+        );
+        assert!(state.get_player_id_at(first_target).is_some());
+    }
+
+    #[test]
+    fn setup_can_end_with_extra_reserves_remaining() {
+        let mut state = GameStateBuilder::empty_state();
+        let team = TeamType::Home;
+        add_reserves(&mut state, team, 12);
+        let mut setup = setup_for(team);
+
+        let ProcState::NeedAction(mut aa) = setup.step(&mut state, ProcInput::Nothing) else {
+            panic!("Expected NeedAction on initial setup prompt.");
+        };
+
+        for _ in 0..11 {
+            let target =
+                first_empty_position(&positions_for_action(&aa, PosAT::SelectPosition), &state);
+            let ProcState::NeedAction(next_aa) = setup.step(
+                &mut state,
+                ProcInput::Action(Action::Positional(PosAT::SelectPosition, target)),
+            ) else {
+                panic!("Expected NeedAction while placing mandatory setup players.");
+            };
+            aa = next_aa;
+        }
+
+        assert!(aa.get_simple().contains(&SimpleAT::EndSetup));
+        assert_eq!(reserve_count(&state, team), 1);
+
+        let done = setup.step(
+            &mut state,
+            ProcInput::Action(Action::Simple(SimpleAT::EndSetup)),
+        );
+        assert!(matches!(done, ProcState::Done));
     }
 }

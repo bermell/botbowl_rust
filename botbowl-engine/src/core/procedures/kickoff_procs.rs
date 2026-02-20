@@ -12,7 +12,10 @@ use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
 
-use super::setup_procs::{is_setup_legal, legal_setup_positions_with_removed, SetupLegalConfig};
+use super::setup_procs::{
+    build_rearrange_actions, step_rearrange_end_setup, step_rearrange_position,
+    SetupRearrangeConfig, SetupRearrangeState,
+};
 use super::AnyProc;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Kickoff {
@@ -202,11 +205,9 @@ pub struct SolidDefence {
     state: SolidDefenceState,
     team: TeamType,
     max_rearrange: usize,
-    target_on_pitch: usize,
     selected_fielded_ids: Vec<PlayerID>,
-    selected_reserve_ids: Vec<usize>,
-    selected_fielded_player: Option<PlayerID>,
-    controlled_fielded_ids: HashSet<PlayerID>,
+    rearrange_cfg: SetupRearrangeConfig,
+    rearrange_state: SetupRearrangeState,
 }
 
 impl SolidDefence {
@@ -215,11 +216,18 @@ impl SolidDefence {
             state: SolidDefenceState::Init,
             team: TeamType::Away,
             max_rearrange: 0,
-            target_on_pitch: 0,
             selected_fielded_ids: Vec::new(),
-            selected_reserve_ids: Vec::new(),
-            selected_fielded_player: None,
-            controlled_fielded_ids: HashSet::new(),
+            rearrange_cfg: SetupRearrangeConfig {
+                team: TeamType::Away,
+                target_on_pitch: 0,
+                min_los: 0,
+                end_requires_pending_empty: true,
+            },
+            rearrange_state: SetupRearrangeState {
+                selected_fielded_player: None,
+                pending_reserve_ids: Vec::new(),
+                controlled_fielded_ids: HashSet::new(),
+            },
         })
     }
 
@@ -254,68 +262,8 @@ impl SolidDefence {
         ProcState::NeedAction(aa)
     }
 
-    fn build_rearrange_actions(&self, game_state: &GameState) -> ProcState {
-        let cfg = SetupLegalConfig {
-            team: self.team,
-            line_x: game_state.get_line_of_scrimage_x(self.team),
-            target_on_pitch: self.target_on_pitch,
-            min_los: 3.min(self.target_on_pitch),
-        };
-
-        let mut aa = AvailableActions::new(self.team);
-        if let Some(source_id) = self.selected_fielded_player {
-            let source_pos = game_state.get_player_unsafe(source_id).position;
-            let mut positions =
-                legal_setup_positions_with_removed(game_state, cfg, Some(source_pos));
-            positions.extend(
-                self.controlled_fielded_ids
-                    .iter()
-                    .copied()
-                    .filter(|id| *id != source_id)
-                    .map(|id| game_state.get_player_unsafe(id).position),
-            );
-            positions.sort_unstable_by_key(|pos| (pos.x, pos.y));
-            positions.dedup();
-            aa.insert_positional(PosAT::SelectPosition, positions);
-            return ProcState::NeedAction(aa);
-        }
-
-        if !self.selected_reserve_ids.is_empty() {
-            let mut positions: Vec<Position> =
-                legal_setup_positions_with_removed(game_state, cfg, None)
-                    .into_iter()
-                    .filter(|pos| game_state.get_player_id_at(*pos).is_none())
-                    .collect();
-            positions.extend(
-                self.controlled_fielded_ids
-                    .iter()
-                    .copied()
-                    .map(|id| game_state.get_player_unsafe(id).position),
-            );
-            positions.sort_unstable_by_key(|pos| (pos.x, pos.y));
-            positions.dedup();
-            aa.insert_positional(PosAT::SelectPosition, positions);
-            return ProcState::NeedAction(aa);
-        }
-
-        let positions: Vec<Position> = self
-            .controlled_fielded_ids
-            .iter()
-            .copied()
-            .map(|id| game_state.get_player_unsafe(id).position)
-            .collect();
-        aa.insert_positional(PosAT::SelectPosition, positions);
-
-        if game_state.get_players_on_pitch_in_team(self.team).count() == self.target_on_pitch
-            && is_setup_legal(game_state, self.team)
-        {
-            aa.insert_simple(SimpleAT::EndSetup);
-        }
-        ProcState::NeedAction(aa)
-    }
-
     fn start_rearrange_phase(&mut self, game_state: &mut GameState) {
-        self.target_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
+        let target_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
         let reserves_before: HashSet<usize> = game_state
             .get_dugout()
             .filter(|player| {
@@ -328,7 +276,7 @@ impl SolidDefence {
                 .unfield_player(id, DugoutPlace::Reserves)
                 .unwrap();
         }
-        self.selected_reserve_ids = game_state
+        let selected_reserve_ids = game_state
             .get_dugout()
             .filter(|player| {
                 player.stats.team == self.team && player.place == DugoutPlace::Reserves
@@ -336,42 +284,18 @@ impl SolidDefence {
             .map(|player| player.id)
             .filter(|id| !reserves_before.contains(id))
             .collect();
-        self.selected_fielded_player = None;
-        self.controlled_fielded_ids.clear();
+        self.rearrange_cfg = SetupRearrangeConfig {
+            team: self.team,
+            target_on_pitch,
+            min_los: 3.min(target_on_pitch),
+            end_requires_pending_empty: true,
+        };
+        self.rearrange_state = SetupRearrangeState {
+            selected_fielded_player: None,
+            pending_reserve_ids: selected_reserve_ids,
+            controlled_fielded_ids: HashSet::new(),
+        };
         self.state = SolidDefenceState::RearrangePlayers;
-    }
-
-    fn reserve_ids_for_team(&self, game_state: &GameState) -> HashSet<usize> {
-        game_state
-            .get_dugout()
-            .filter(|player| {
-                player.stats.team == self.team && player.place == DugoutPlace::Reserves
-            })
-            .map(|player| player.id)
-            .collect()
-    }
-
-    fn unfield_to_reserve_and_get_new_id(
-        &self,
-        game_state: &mut GameState,
-        player_id: PlayerID,
-    ) -> usize {
-        let reserves_before = self.reserve_ids_for_team(game_state);
-        game_state
-            .unfield_player(player_id, DugoutPlace::Reserves)
-            .unwrap();
-        let mut new_ids = self
-            .reserve_ids_for_team(game_state)
-            .into_iter()
-            .filter(|id| !reserves_before.contains(id));
-        let new_id = new_ids
-            .next()
-            .expect("unfielding should create one reserve");
-        assert!(
-            new_ids.next().is_none(),
-            "unfielding should only create one reserve"
-        );
-        new_id
     }
 
     fn max_rearrange_from_d6(roll: u8) -> usize {
@@ -387,9 +311,17 @@ impl Procedure for SolidDefence {
                     self.team = game_state.info.kicking_this_drive;
                     self.max_rearrange = Self::max_rearrange_from_d6(roll as u8);
                     self.selected_fielded_ids.clear();
-                    self.selected_reserve_ids.clear();
-                    self.selected_fielded_player = None;
-                    self.controlled_fielded_ids.clear();
+                    self.rearrange_cfg = SetupRearrangeConfig {
+                        team: self.team,
+                        target_on_pitch: 0,
+                        min_los: 0,
+                        end_requires_pending_empty: true,
+                    };
+                    self.rearrange_state = SetupRearrangeState {
+                        selected_fielded_player: None,
+                        pending_reserve_ids: Vec::new(),
+                        controlled_fielded_ids: HashSet::new(),
+                    };
                     self.state = SolidDefenceState::SelectPlayers;
                     self.build_selection_actions(game_state)
                 }
@@ -399,7 +331,7 @@ impl Procedure for SolidDefence {
                 ProcInput::Nothing => self.build_selection_actions(game_state),
                 ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => {
                     self.start_rearrange_phase(game_state);
-                    self.build_rearrange_actions(game_state)
+                    build_rearrange_actions(game_state, self.rearrange_cfg, &self.rearrange_state)
                 }
                 ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
                     let id = game_state.get_player_id_at(pos).unwrap();
@@ -417,48 +349,21 @@ impl Procedure for SolidDefence {
                 _ => panic!("Unexpected input {:?}", input),
             },
             SolidDefenceState::RearrangePlayers => match input {
-                ProcInput::Nothing => self.build_rearrange_actions(game_state),
-                ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => {
-                    assert_eq!(
-                        game_state.get_players_on_pitch_in_team(self.team).count(),
-                        self.target_on_pitch
-                    );
-                    assert!(is_setup_legal(game_state, self.team));
-                    ProcState::Done
+                ProcInput::Nothing => {
+                    build_rearrange_actions(game_state, self.rearrange_cfg, &self.rearrange_state)
                 }
+                ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => step_rearrange_end_setup(
+                    game_state,
+                    self.rearrange_cfg,
+                    &mut self.rearrange_state,
+                ),
                 ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
-                    if let Some(source_id) = self.selected_fielded_player.take() {
-                        if let Some(target_id) = game_state.get_player_id_at(pos) {
-                            assert!(self.controlled_fielded_ids.contains(&target_id));
-                            if source_id != target_id {
-                                game_state
-                                    .swap_players_positions(source_id, target_id)
-                                    .unwrap();
-                            }
-                        } else {
-                            game_state.move_player(source_id, pos).unwrap();
-                        }
-                    } else if !self.selected_reserve_ids.is_empty() {
-                        let reserve_id = self.selected_reserve_ids.pop().unwrap();
-                        if let Some(displaced_id) = game_state.get_player_id_at(pos) {
-                            assert!(self.controlled_fielded_ids.contains(&displaced_id));
-                            let displaced_reserve_id =
-                                self.unfield_to_reserve_and_get_new_id(game_state, displaced_id);
-                            game_state.field_dugout_player(reserve_id, pos);
-                            let placed_id = game_state.get_player_id_at(pos).unwrap();
-                            self.selected_reserve_ids.push(displaced_reserve_id);
-                            self.controlled_fielded_ids.remove(&displaced_id);
-                            self.controlled_fielded_ids.insert(placed_id);
-                        } else {
-                            game_state.field_dugout_player(reserve_id, pos);
-                            self.controlled_fielded_ids
-                                .insert(game_state.get_player_id_at(pos).unwrap());
-                        }
-                    } else if let Some(id) = game_state.get_player_id_at(pos) {
-                        assert!(self.controlled_fielded_ids.contains(&id));
-                        self.selected_fielded_player = Some(id);
-                    }
-                    self.build_rearrange_actions(game_state)
+                    step_rearrange_position(
+                        game_state,
+                        self.rearrange_cfg,
+                        &mut self.rearrange_state,
+                        pos,
+                    )
                 }
                 _ => panic!("Unexpected input {:?}", input),
             },
