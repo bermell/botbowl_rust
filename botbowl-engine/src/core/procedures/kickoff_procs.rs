@@ -281,11 +281,19 @@ impl SolidDefence {
         }
 
         if !self.selected_reserve_ids.is_empty() {
-            let positions: Vec<Position> =
+            let mut positions: Vec<Position> =
                 legal_setup_positions_with_removed(game_state, cfg, None)
                     .into_iter()
                     .filter(|pos| game_state.get_player_id_at(*pos).is_none())
                     .collect();
+            positions.extend(
+                self.controlled_fielded_ids
+                    .iter()
+                    .copied()
+                    .map(|id| game_state.get_player_unsafe(id).position),
+            );
+            positions.sort_unstable_by_key(|pos| (pos.x, pos.y));
+            positions.dedup();
             aa.insert_positional(PosAT::SelectPosition, positions);
             return ProcState::NeedAction(aa);
         }
@@ -333,6 +341,39 @@ impl SolidDefence {
         self.state = SolidDefenceState::RearrangePlayers;
     }
 
+    fn reserve_ids_for_team(&self, game_state: &GameState) -> HashSet<usize> {
+        game_state
+            .get_dugout()
+            .filter(|player| {
+                player.stats.team == self.team && player.place == DugoutPlace::Reserves
+            })
+            .map(|player| player.id)
+            .collect()
+    }
+
+    fn unfield_to_reserve_and_get_new_id(
+        &self,
+        game_state: &mut GameState,
+        player_id: PlayerID,
+    ) -> usize {
+        let reserves_before = self.reserve_ids_for_team(game_state);
+        game_state
+            .unfield_player(player_id, DugoutPlace::Reserves)
+            .unwrap();
+        let mut new_ids = self
+            .reserve_ids_for_team(game_state)
+            .into_iter()
+            .filter(|id| !reserves_before.contains(id));
+        let new_id = new_ids
+            .next()
+            .expect("unfielding should create one reserve");
+        assert!(
+            new_ids.next().is_none(),
+            "unfielding should only create one reserve"
+        );
+        new_id
+    }
+
     fn max_rearrange_from_d6(roll: u8) -> usize {
         usize::from((roll + 1) / 2 + 3)
     }
@@ -377,7 +418,14 @@ impl Procedure for SolidDefence {
             },
             SolidDefenceState::RearrangePlayers => match input {
                 ProcInput::Nothing => self.build_rearrange_actions(game_state),
-                ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => ProcState::Done,
+                ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => {
+                    assert_eq!(
+                        game_state.get_players_on_pitch_in_team(self.team).count(),
+                        self.target_on_pitch
+                    );
+                    assert!(is_setup_legal(game_state, self.team));
+                    ProcState::Done
+                }
                 ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
                     if let Some(source_id) = self.selected_fielded_player.take() {
                         if let Some(target_id) = game_state.get_player_id_at(pos) {
@@ -391,11 +439,21 @@ impl Procedure for SolidDefence {
                             game_state.move_player(source_id, pos).unwrap();
                         }
                     } else if !self.selected_reserve_ids.is_empty() {
-                        assert!(game_state.get_player_id_at(pos).is_none());
                         let reserve_id = self.selected_reserve_ids.pop().unwrap();
-                        game_state.field_dugout_player(reserve_id, pos);
-                        self.controlled_fielded_ids
-                            .insert(game_state.get_player_id_at(pos).unwrap());
+                        if let Some(displaced_id) = game_state.get_player_id_at(pos) {
+                            assert!(self.controlled_fielded_ids.contains(&displaced_id));
+                            let displaced_reserve_id =
+                                self.unfield_to_reserve_and_get_new_id(game_state, displaced_id);
+                            game_state.field_dugout_player(reserve_id, pos);
+                            let placed_id = game_state.get_player_id_at(pos).unwrap();
+                            self.selected_reserve_ids.push(displaced_reserve_id);
+                            self.controlled_fielded_ids.remove(&displaced_id);
+                            self.controlled_fielded_ids.insert(placed_id);
+                        } else {
+                            game_state.field_dugout_player(reserve_id, pos);
+                            self.controlled_fielded_ids
+                                .insert(game_state.get_player_id_at(pos).unwrap());
+                        }
                     } else if let Some(id) = game_state.get_player_id_at(pos) {
                         assert!(self.controlled_fielded_ids.contains(&id));
                         self.selected_fielded_player = Some(id);
@@ -853,6 +911,123 @@ mod tests {
                     "anchored players should make their occupied squares illegal setup positions"
                 );
             }
+        }
+
+        #[test]
+        fn selected_occupied_square_is_legal_during_rearrange_placement() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let kicking_team = state.info.kicking_this_drive;
+            let receiving_team = other_team(kicking_team);
+            let receiving_ids: Vec<PlayerID> = state
+                .get_players_on_pitch_in_team(receiving_team)
+                .map(|player| player.id)
+                .collect();
+            for id in receiving_ids {
+                state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+            }
+
+            state.fixes.fix_d8_direction(Direction::up());
+            state.fixes.fix_d6(5);
+            state.fixes.fix_d6(1);
+            state.fixes.fix_d6(3);
+            state.fixes.fix_d6(1); // D3+3 => 4
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let selected: Vec<Position> = selectable.into_iter().take(2).collect();
+            assert_eq!(selected.len(), 2);
+            for pos in selected {
+                state.step_positional(PosAT::SelectPosition, pos);
+            }
+            state.step_simple(SimpleAT::EndSetup);
+
+            let first_placements =
+                positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let first_target = *first_placements
+                .iter()
+                .find(|&&pos| state.get_player_id_at(pos).is_none())
+                .unwrap();
+            state.step_positional(PosAT::SelectPosition, first_target);
+
+            let second_placements =
+                positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            assert!(
+                second_placements.contains(&first_target),
+                "already placed selected player square should remain legal for swapping"
+            );
+
+            let anchored_pos = state
+                .get_players_on_pitch_in_team(kicking_team)
+                .map(|player| player.position)
+                .find(|&pos| pos != first_target)
+                .unwrap();
+            assert!(
+                !state.is_legal_action(&Action::Positional(PosAT::SelectPosition, anchored_pos)),
+                "occupied squares of non-selected players must stay illegal"
+            );
+        }
+
+        #[test]
+        fn reserve_placement_can_swap_with_controlled_player() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let kicking_team = state.info.kicking_this_drive;
+            let receiving_team = other_team(kicking_team);
+            let receiving_ids: Vec<PlayerID> = state
+                .get_players_on_pitch_in_team(receiving_team)
+                .map(|player| player.id)
+                .collect();
+            for id in receiving_ids {
+                state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+            }
+
+            state.fixes.fix_d8_direction(Direction::up());
+            state.fixes.fix_d6(5);
+            state.fixes.fix_d6(1);
+            state.fixes.fix_d6(3);
+            state.fixes.fix_d6(1); // D3+3 => 4
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            let selected: Vec<Position> =
+                positions_for_action(&state.available_actions, PosAT::SelectPosition)
+                    .into_iter()
+                    .take(2)
+                    .collect();
+            assert_eq!(selected.len(), 2);
+            for pos in selected {
+                state.step_positional(PosAT::SelectPosition, pos);
+            }
+            state.step_simple(SimpleAT::EndSetup);
+
+            let first_target =
+                *positions_for_action(&state.available_actions, PosAT::SelectPosition)
+                    .iter()
+                    .find(|&&pos| state.get_player_id_at(pos).is_none())
+                    .unwrap();
+            state.step_positional(PosAT::SelectPosition, first_target);
+
+            let reserves_before_swap = reserve_count(&state, kicking_team);
+            assert!(state.is_legal_action(&Action::Positional(PosAT::SelectPosition, first_target)));
+            state.step_positional(PosAT::SelectPosition, first_target);
+            assert_eq!(
+                reserve_count(&state, kicking_team),
+                reserves_before_swap,
+                "swapping placed selected players should keep reserves count unchanged"
+            );
+            assert!(
+                !state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)),
+                "cannot end rearrange while one selected player is still in reserves"
+            );
+
+            let last_target =
+                *positions_for_action(&state.available_actions, PosAT::SelectPosition)
+                    .iter()
+                    .find(|&&pos| state.get_player_id_at(pos).is_none())
+                    .unwrap();
+            state.step_positional(PosAT::SelectPosition, last_target);
+            assert!(
+                state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)),
+                "after placing the final selected player, setup should be endable"
+            );
         }
 
         #[test]
