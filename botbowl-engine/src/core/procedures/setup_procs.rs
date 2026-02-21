@@ -128,46 +128,6 @@ pub(super) fn legal_setup_positions_with_removed(
     candidates
 }
 
-pub(super) fn is_setup_legal(game_state: &GameState, team: TeamType) -> bool {
-    let mut north_wing = 0;
-    let mut south_wing = 0;
-    let mut line_of_scrimage = 0;
-    let num_players_on_pitch = game_state.get_players_on_pitch_in_team(team).count();
-    let num_players_on_bench = game_state
-        .get_dugout()
-        .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
-        .count();
-    let num_available_players = num_players_on_bench + num_players_on_pitch;
-    let min_people_on_pitch = 11.min(num_available_players);
-    let min_people_on_scrimage = 3.min(num_available_players);
-
-    if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > 11 {
-        return false;
-    }
-    let line_of_scrimage_x = game_state.get_line_of_scrimage_x(team);
-
-    for pos in game_state
-        .get_players_on_pitch_in_team(team)
-        .map(|p| p.position)
-    {
-        if pos.is_out()
-            || (team == TeamType::Home && pos.x < line_of_scrimage_x)
-            || (team == TeamType::Away && pos.x > line_of_scrimage_x)
-        {
-            return false;
-        }
-
-        if pos.is_los_position(line_of_scrimage_x) {
-            line_of_scrimage += 1;
-        } else if pos.is_south_wing_position() {
-            south_wing += 1;
-        } else if pos.is_north_wing_position() {
-            north_wing += 1;
-        }
-    }
-    north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
-}
-
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct SetupRearrangeConfig {
     pub(super) team: TeamType,
@@ -193,36 +153,6 @@ impl SetupRearrangeState {
     }
 }
 
-fn reserve_ids_for_team(game_state: &GameState, team: TeamType) -> HashSet<usize> {
-    game_state
-        .get_dugout()
-        .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
-        .map(|player| player.id)
-        .collect()
-}
-
-fn unfield_to_reserve_and_get_new_id(
-    game_state: &mut GameState,
-    team: TeamType,
-    player_id: PlayerID,
-) -> usize {
-    let reserves_before = reserve_ids_for_team(game_state, team);
-    game_state
-        .unfield_player(player_id, DugoutPlace::Reserves)
-        .unwrap();
-    let mut new_ids = reserve_ids_for_team(game_state, team)
-        .into_iter()
-        .filter(|id| !reserves_before.contains(id));
-    let new_id = new_ids
-        .next()
-        .expect("unfielding should create one reserve");
-    assert!(
-        new_ids.next().is_none(),
-        "unfielding should only create one reserve"
-    );
-    new_id
-}
-
 fn can_end_rearrange(
     game_state: &GameState,
     cfg: SetupRearrangeConfig,
@@ -234,7 +164,7 @@ fn can_end_rearrange(
     if cfg.end_requires_pending_empty && !state.pending_reserve_ids.is_empty() {
         return false;
     }
-    is_setup_legal(game_state, cfg.team)
+    game_state.is_setup_legal_for_team(cfg.team)
 }
 
 pub(super) fn build_rearrange_actions(
@@ -328,8 +258,9 @@ pub(super) fn step_rearrange_position(
     if let Some(reserve_id) = state.pending_reserve_ids.pop() {
         if let Some(displaced_id) = game_state.get_player_id_at(pos) {
             assert!(state.controlled_fielded_ids.contains(&displaced_id));
-            let displaced_reserve_id =
-                unfield_to_reserve_and_get_new_id(game_state, cfg.team, displaced_id);
+            let displaced_reserve_id = game_state
+                .unfield_player_to_reserves_and_get_dugout_id(displaced_id)
+                .unwrap();
             game_state.field_dugout_player(reserve_id, pos);
             let placed_id = game_state.get_player_id_at(pos).unwrap();
             state.pending_reserve_ids.push(displaced_reserve_id);
@@ -376,12 +307,7 @@ impl Setup {
 
     fn setup_legal_config(&self, game_state: &GameState) -> SetupLegalConfig {
         let total_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
-        let num_players_on_bench = game_state
-            .get_dugout()
-            .filter(|player| {
-                player.stats.team == self.team && player.place == DugoutPlace::Reserves
-            })
-            .count();
+        let num_players_on_bench = game_state.reserve_count_for_team(self.team);
         let num_available_players = total_on_pitch + num_players_on_bench;
         SetupLegalConfig {
             team: self.team,
@@ -411,11 +337,8 @@ impl Setup {
             .target_on_pitch
             .saturating_sub(controlled_fielded_ids.len());
         let pending_reserve_ids = game_state
-            .get_dugout()
-            .filter(|player| {
-                player.stats.team == self.team && player.place == DugoutPlace::Reserves
-            })
-            .map(|player| player.id)
+            .reserve_ids_for_team(self.team)
+            .into_iter()
             .take(pending_count)
             .collect();
         self.rearrange_state = SetupRearrangeState {

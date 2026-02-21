@@ -431,6 +431,17 @@ impl GameState {
         self.dugout_players[id].as_mut()
     }
 
+    pub fn reserve_ids_for_team(&self, team: TeamType) -> Vec<DugoutPlayerID> {
+        self.get_dugout()
+            .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
+            .map(|player| player.id)
+            .collect()
+    }
+
+    pub fn reserve_count_for_team(&self, team: TeamType) -> usize {
+        self.reserve_ids_for_team(team).len()
+    }
+
     pub fn field_dugout_player(&mut self, dugout_id: DugoutPlayerID, position: Position) {
         let DugoutPlayer { stats, place, .. } = self.dugout_players[dugout_id].take().unwrap();
         assert_eq!(place, DugoutPlace::Reserves, "Must field from reserves_box");
@@ -680,6 +691,14 @@ impl GameState {
             .count() as u8
     }
 
+    pub fn get_open_player_ids_on_pitch(&self, team: TeamType) -> Vec<PlayerID> {
+        self.get_players_on_pitch_in_team(team)
+            .filter(|player| player.status == PlayerStatus::Up)
+            .filter(|player| self.get_tz_on(player.id) == 0)
+            .map(|player| player.id)
+            .collect()
+    }
+
     pub fn get_blockdices(&self, attacker: PlayerID, defender: PlayerID) -> NumBlockDices {
         let attacker_pos = self.get_player_unsafe(attacker).position;
         self.get_blockdices_from(attacker, attacker_pos, defender)
@@ -741,6 +760,39 @@ impl GameState {
             TeamType::Home => LINE_OF_SCRIMMAGE_HOME_X,
             TeamType::Away => LINE_OF_SCRIMMAGE_AWAY_X,
         }
+    }
+
+    pub fn is_setup_legal_for_team(&self, team: TeamType) -> bool {
+        let mut north_wing = 0;
+        let mut south_wing = 0;
+        let mut line_of_scrimage = 0;
+        let num_players_on_pitch = self.get_players_on_pitch_in_team(team).count();
+        let num_available_players = self.reserve_count_for_team(team) + num_players_on_pitch;
+        let min_people_on_pitch = 11.min(num_available_players);
+        let min_people_on_scrimage = 3.min(num_available_players);
+
+        if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > 11 {
+            return false;
+        }
+        let line_of_scrimage_x = self.get_line_of_scrimage_x(team);
+
+        for pos in self.get_players_on_pitch_in_team(team).map(|p| p.position) {
+            if pos.is_out()
+                || (team == TeamType::Home && pos.x < line_of_scrimage_x)
+                || (team == TeamType::Away && pos.x > line_of_scrimage_x)
+            {
+                return false;
+            }
+
+            if pos.is_los_position(line_of_scrimage_x) {
+                line_of_scrimage += 1;
+            } else if pos.is_south_wing_position() {
+                south_wing += 1;
+            } else if pos.is_north_wing_position() {
+                north_wing += 1;
+            }
+        }
+        north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
     }
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()> {
         let old_pos = self.get_player(id)?.position;
@@ -833,6 +885,28 @@ impl GameState {
 
         self.board[position] = None;
         Ok(())
+    }
+
+    pub fn unfield_player_to_reserves_and_get_dugout_id(
+        &mut self,
+        id: PlayerID,
+    ) -> Result<DugoutPlayerID> {
+        let team = self.get_player(id)?.stats.team;
+        let reserves_before: HashSet<DugoutPlayerID> =
+            self.reserve_ids_for_team(team).into_iter().collect();
+        self.unfield_player(id, DugoutPlace::Reserves)?;
+        let mut new_ids = self
+            .reserve_ids_for_team(team)
+            .into_iter()
+            .filter(|reserve_id| !reserves_before.contains(reserve_id));
+        let new_id = new_ids
+            .next()
+            .expect("unfielding should create one reserve");
+        assert!(
+            new_ids.next().is_none(),
+            "unfielding should only create one reserve"
+        );
+        Ok(new_id)
     }
 
     pub fn unfield_all_players(&mut self) -> Result<()> {
@@ -1205,8 +1279,8 @@ mod gamestate_tests {
             dices::D6,
             gamestate::{BuilderState, GameState},
             model::{
-                BallState, DugoutPlace, PlayerStats, Position, Result, TeamType, HEIGHT_, WIDTH,
-                WIDTH_,
+                BallState, DugoutPlace, PlayerStats, PlayerStatus, Position, Result, TeamType,
+                HEIGHT_, WIDTH, WIDTH_,
             },
         },
         standard_state,
@@ -1495,6 +1569,92 @@ mod gamestate_tests {
         assert!(state.get_player_id_at(position).is_none());
         Ok(())
     }
+
+    #[test]
+    fn reserve_ids_and_count_for_team() {
+        let mut state = GameStateBuilder::empty_state();
+        state.dugout_add_new_player(
+            PlayerStats::new_lineman(TeamType::Home),
+            DugoutPlace::Reserves,
+        );
+        state.dugout_add_new_player(
+            PlayerStats::new_lineman(TeamType::Home),
+            DugoutPlace::Reserves,
+        );
+        state.dugout_add_new_player(
+            PlayerStats::new_lineman(TeamType::Home),
+            DugoutPlace::KnockOut,
+        );
+        state.dugout_add_new_player(
+            PlayerStats::new_lineman(TeamType::Away),
+            DugoutPlace::Reserves,
+        );
+
+        let home_reserve_ids = state.reserve_ids_for_team(TeamType::Home);
+        let away_reserve_ids = state.reserve_ids_for_team(TeamType::Away);
+
+        assert_eq!(home_reserve_ids.len(), 2);
+        assert_eq!(away_reserve_ids.len(), 1);
+        assert_eq!(state.reserve_count_for_team(TeamType::Home), 2);
+        assert_eq!(state.reserve_count_for_team(TeamType::Away), 1);
+        assert!(home_reserve_ids
+            .iter()
+            .all(|id| state.get_dugout_player(*id).unwrap().place == DugoutPlace::Reserves));
+    }
+
+    #[test]
+    fn unfield_to_reserve_returns_new_dugout_id() -> Result<()> {
+        let mut state = GameStateBuilder::empty_state();
+        state.dugout_add_new_player(
+            PlayerStats::new_lineman(TeamType::Home),
+            DugoutPlace::Reserves,
+        );
+        let player_id = state.add_new_player_to_field(
+            PlayerStats::new_lineman(TeamType::Home),
+            Position::new((5, 5)),
+        )?;
+
+        let reserves_before: HashSet<usize> = state
+            .reserve_ids_for_team(TeamType::Home)
+            .into_iter()
+            .collect();
+        let new_reserve_id = state.unfield_player_to_reserves_and_get_dugout_id(player_id)?;
+
+        assert!(!reserves_before.contains(&new_reserve_id));
+        assert!(state.get_player(player_id).is_err());
+        let reserve_player = state.get_dugout_player(new_reserve_id).unwrap();
+        assert_eq!(reserve_player.stats.team, TeamType::Home);
+        assert_eq!(reserve_player.place, DugoutPlace::Reserves);
+        Ok(())
+    }
+
+    #[test]
+    fn open_player_ids_on_pitch_filters_downed_and_marked() -> Result<()> {
+        let mut state = GameStateBuilder::empty_state();
+        let open_home_id = state.add_new_player_to_field(
+            PlayerStats::new_lineman(TeamType::Home),
+            Position::new((5, 5)),
+        )?;
+        let marked_home_id = state.add_new_player_to_field(
+            PlayerStats::new_lineman(TeamType::Home),
+            Position::new((7, 7)),
+        )?;
+        state.add_new_player_to_field(
+            PlayerStats::new_lineman(TeamType::Away),
+            Position::new((8, 7)),
+        )?;
+
+        let open_ids = state.get_open_player_ids_on_pitch(TeamType::Home);
+        assert!(open_ids.contains(&open_home_id));
+        assert!(!open_ids.contains(&marked_home_id));
+
+        state.get_mut_player_unsafe(open_home_id).status = PlayerStatus::Down;
+        let open_ids_after_down = state.get_open_player_ids_on_pitch(TeamType::Home);
+        assert!(!open_ids_after_down.contains(&open_home_id));
+        assert!(!open_ids_after_down.contains(&marked_home_id));
+        Ok(())
+    }
+
     #[test]
     fn rng_seed_in_gamestate() -> Result<()> {
         let mut state = standard_state();

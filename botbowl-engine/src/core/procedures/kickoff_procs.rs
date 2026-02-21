@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
-    PlayerStatus, Position, ProcState, Procedure, TeamType, Weather,
+    other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerID, PlayerStatus,
+    Position, ProcState, Procedure, TeamType, Weather,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -169,10 +169,9 @@ impl Procedure for HighKick {
         match input {
             ProcInput::Nothing => {
                 let positions: Vec<Position> = game_state
-                    .get_players_on_pitch_in_team(receiving_team)
-                    .filter(|p| p.status == PlayerStatus::Up)
-                    .filter(|p| game_state.get_tz_on(p.id) == 0)
-                    .map(|p| p.position)
+                    .get_open_player_ids_on_pitch(receiving_team)
+                    .into_iter()
+                    .map(|id| game_state.get_player_unsafe(id).position)
                     .collect();
 
                 if positions.is_empty() {
@@ -232,12 +231,7 @@ impl SolidDefence {
     }
 
     fn open_player_ids(&self, game_state: &GameState) -> Vec<PlayerID> {
-        game_state
-            .get_players_on_pitch_in_team(self.team)
-            .filter(|player| player.status == PlayerStatus::Up)
-            .filter(|player| game_state.get_tz_on(player.id) == 0)
-            .map(|player| player.id)
-            .collect()
+        game_state.get_open_player_ids_on_pitch(self.team)
     }
 
     fn open_selectable_positions(&self, game_state: &GameState) -> Vec<Position> {
@@ -264,25 +258,15 @@ impl SolidDefence {
 
     fn start_rearrange_phase(&mut self, game_state: &mut GameState) {
         let target_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
-        let reserves_before: HashSet<usize> = game_state
-            .get_dugout()
-            .filter(|player| {
-                player.stats.team == self.team && player.place == DugoutPlace::Reserves
+        let selected_reserve_ids = self
+            .selected_fielded_ids
+            .iter()
+            .copied()
+            .map(|id| {
+                game_state
+                    .unfield_player_to_reserves_and_get_dugout_id(id)
+                    .unwrap()
             })
-            .map(|player| player.id)
-            .collect();
-        for id in self.selected_fielded_ids.iter().copied() {
-            game_state
-                .unfield_player(id, DugoutPlace::Reserves)
-                .unwrap();
-        }
-        let selected_reserve_ids = game_state
-            .get_dugout()
-            .filter(|player| {
-                player.stats.team == self.team && player.place == DugoutPlace::Reserves
-            })
-            .map(|player| player.id)
-            .filter(|id| !reserves_before.contains(id))
             .collect();
         self.rearrange_cfg = SetupRearrangeConfig {
             team: self.team,
