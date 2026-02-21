@@ -794,6 +794,7 @@ impl GameState {
         }
         north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
     }
+
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()> {
         let old_pos = self.get_player(id)?.position;
         if let Some(occupied_id) = self.board[new_pos] {

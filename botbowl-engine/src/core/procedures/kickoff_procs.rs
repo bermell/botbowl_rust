@@ -486,22 +486,6 @@ mod tests {
     mod kickoff_solid_defence {
         use super::*;
 
-        fn positions_for_action(aa: &AvailableActions, action: PosAT) -> Vec<Position> {
-            let Some(positions) = aa.get_positional() else {
-                return Vec::new();
-            };
-            Position::all_positions()
-                .filter(|pos| positions[*pos].contains(&action))
-                .collect()
-        }
-
-        fn reserve_count(state: &GameState, team: TeamType) -> usize {
-            state
-                .get_dugout()
-                .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
-                .count()
-        }
-
         #[test]
         fn cap_can_be_reached_and_no_marked_player_selectable() {
             let mut state: GameState = GameStateBuilder::new_at_kickoff();
@@ -522,7 +506,9 @@ mod tests {
             state.fixes.fix_d6(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
-            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let selectable = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             assert!(selectable.len() > 4);
 
             let marked_positions: Vec<Position> = state
@@ -535,7 +521,7 @@ mod tests {
                 assert!(!selectable.contains(&pos));
             }
 
-            let reserves_before_cap = reserve_count(&state, kicking_team);
+            let reserves_before_cap = state.reserve_count_for_team(kicking_team);
             let pitch_before_cap = state.get_players_on_pitch_in_team(kicking_team).count();
             let selected_for_cap: Vec<Position> = selectable.iter().copied().take(4).collect();
             let unselected_open: Vec<Position> = selectable.iter().copied().skip(4).collect();
@@ -543,7 +529,7 @@ mod tests {
                 state.step_positional(PosAT::SelectPosition, *pos);
             }
             assert_eq!(
-                reserve_count(&state, kicking_team),
+                state.reserve_count_for_team(kicking_team),
                 reserves_before_cap,
                 "selection should not move players before explicit confirmation"
             );
@@ -571,7 +557,7 @@ mod tests {
             state.step_simple(SimpleAT::EndSetup);
 
             assert_eq!(
-                reserve_count(&state, kicking_team),
+                state.reserve_count_for_team(kicking_team),
                 reserves_before_cap + 4,
                 "only confirmed selections are moved to reserves"
             );
@@ -600,9 +586,11 @@ mod tests {
             state.fixes.fix_d6(3);
             state.fixes.fix_d6(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
-            let reserves_before = reserve_count(&state, kicking_team);
+            let reserves_before = state.reserve_count_for_team(kicking_team);
 
-            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let selectable = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             assert!(selectable.len() > 4);
 
             let selected_for_cap: Vec<Position> = selectable.iter().copied().take(4).collect();
@@ -634,8 +622,9 @@ mod tests {
                 !state.is_legal_action(&Action::Positional(PosAT::SelectPosition, deselected_pos)),
                 "after replacement, deselected player should stay out of the capped selection"
             );
-            let final_selected_positions =
-                positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let final_selected_positions = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             assert_eq!(
                 final_selected_positions.len(),
                 4,
@@ -647,7 +636,7 @@ mod tests {
             state.step_simple(SimpleAT::EndSetup);
 
             assert_eq!(
-                reserve_count(&state, kicking_team),
+                state.reserve_count_for_team(kicking_team),
                 reserves_before + 4,
                 "exactly four players should move to reserves after confirming"
             );
@@ -664,7 +653,7 @@ mod tests {
         fn can_confirm_with_zero_selected() {
             let mut state: GameState = GameStateBuilder::new_at_kickoff();
             let kicking_team = state.info.kicking_this_drive;
-            let reserves_before = reserve_count(&state, kicking_team);
+            let reserves_before = state.reserve_count_for_team(kicking_team);
             let pitch_before = state.get_players_on_pitch_in_team(kicking_team).count();
 
             state.fixes.fix_d8_direction(Direction::up());
@@ -678,7 +667,7 @@ mod tests {
             state.step_simple(SimpleAT::EndSetup);
 
             assert_eq!(
-                reserve_count(&state, kicking_team),
+                state.reserve_count_for_team(kicking_team),
                 reserves_before,
                 "no players should move when nothing was selected"
             );
@@ -704,16 +693,18 @@ mod tests {
             state.fixes.fix_d6(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
-            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let selectable = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
 
             let selected: Vec<Position> = selectable.into_iter().take(2).collect();
-            let reserves_before = reserve_count(&state, kicking_team);
+            let reserves_before = state.reserve_count_for_team(kicking_team);
             let pitch_before = state.get_players_on_pitch_in_team(kicking_team).count();
             for pos in selected {
                 state.step_positional(PosAT::SelectPosition, pos);
             }
             assert_eq!(
-                reserve_count(&state, kicking_team),
+                state.reserve_count_for_team(kicking_team),
                 reserves_before,
                 "selection should not move players before explicit confirmation"
             );
@@ -729,7 +720,7 @@ mod tests {
             state.step_simple(SimpleAT::EndSetup);
 
             assert_eq!(
-                reserve_count(&state, kicking_team),
+                state.reserve_count_for_team(kicking_team),
                 reserves_before + 2,
                 "all selected players must be in reserves before any placement"
             );
@@ -761,7 +752,9 @@ mod tests {
             state.fixes.fix_d6(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
-            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let selectable = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             assert!(
                 !selectable.contains(&down_pos),
                 "open player must be standing and not marked"
@@ -780,7 +773,9 @@ mod tests {
             state.fixes.fix_d6(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
-            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let selectable = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
 
             let selected: Vec<Position> = selectable.into_iter().take(4).collect();
             for pos in selected {
@@ -792,8 +787,9 @@ mod tests {
                 .get_players_on_pitch_in_team(kicking_team)
                 .map(|player| player.position)
                 .collect();
-            let legal_placements =
-                positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let legal_placements = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             for pos in &anchored_positions {
                 assert!(
                     !legal_placements.contains(pos),
@@ -822,7 +818,9 @@ mod tests {
             state.fixes.fix_d6(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
-            let selectable = positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let selectable = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             let selected: Vec<Position> = selectable.into_iter().take(2).collect();
             assert_eq!(selected.len(), 2);
             for pos in selected {
@@ -830,16 +828,18 @@ mod tests {
             }
             state.step_simple(SimpleAT::EndSetup);
 
-            let first_placements =
-                positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let first_placements = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             let first_target = *first_placements
                 .iter()
                 .find(|&&pos| state.get_player_id_at(pos).is_none())
                 .unwrap();
             state.step_positional(PosAT::SelectPosition, first_target);
 
-            let second_placements =
-                positions_for_action(&state.available_actions, PosAT::SelectPosition);
+            let second_placements = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
             assert!(
                 second_placements.contains(&first_target),
                 "already placed selected player square should remain legal for swapping"
@@ -876,29 +876,31 @@ mod tests {
             state.fixes.fix_d6(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
-            let selected: Vec<Position> =
-                positions_for_action(&state.available_actions, PosAT::SelectPosition)
-                    .into_iter()
-                    .take(2)
-                    .collect();
+            let selected: Vec<Position> = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition)
+                .into_iter()
+                .take(2)
+                .collect();
             assert_eq!(selected.len(), 2);
             for pos in selected {
                 state.step_positional(PosAT::SelectPosition, pos);
             }
             state.step_simple(SimpleAT::EndSetup);
 
-            let first_target =
-                *positions_for_action(&state.available_actions, PosAT::SelectPosition)
-                    .iter()
-                    .find(|&&pos| state.get_player_id_at(pos).is_none())
-                    .unwrap();
+            let first_target = *state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition)
+                .iter()
+                .find(|&&pos| state.get_player_id_at(pos).is_none())
+                .unwrap();
             state.step_positional(PosAT::SelectPosition, first_target);
 
-            let reserves_before_swap = reserve_count(&state, kicking_team);
+            let reserves_before_swap = state.reserve_count_for_team(kicking_team);
             assert!(state.is_legal_action(&Action::Positional(PosAT::SelectPosition, first_target)));
             state.step_positional(PosAT::SelectPosition, first_target);
             assert_eq!(
-                reserve_count(&state, kicking_team),
+                state.reserve_count_for_team(kicking_team),
                 reserves_before_swap,
                 "swapping placed selected players should keep reserves count unchanged"
             );
@@ -907,11 +909,12 @@ mod tests {
                 "cannot end rearrange while one selected player is still in reserves"
             );
 
-            let last_target =
-                *positions_for_action(&state.available_actions, PosAT::SelectPosition)
-                    .iter()
-                    .find(|&&pos| state.get_player_id_at(pos).is_none())
-                    .unwrap();
+            let last_target = *state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition)
+                .iter()
+                .find(|&&pos| state.get_player_id_at(pos).is_none())
+                .unwrap();
             state.step_positional(PosAT::SelectPosition, last_target);
             assert!(
                 state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)),

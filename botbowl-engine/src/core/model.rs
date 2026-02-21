@@ -677,6 +677,11 @@ impl AvailableActions {
         positions.extend(paths);
         positions
     }
+    pub fn get_positions_for_action(&self, action_type: PosAT) -> Vec<Position> {
+        Position::all_positions()
+            .filter(|pos| self.is_legal_action(Action::Positional(action_type, *pos)))
+            .collect()
+    }
     pub fn insert_simple(&mut self, action_type: SimpleAT) {
         assert!(self.team.is_some());
         self.simple.insert(action_type);
