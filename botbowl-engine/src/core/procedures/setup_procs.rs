@@ -307,7 +307,7 @@ impl Setup {
 
     fn setup_legal_config(&self, game_state: &GameState) -> SetupLegalConfig {
         let total_on_pitch = game_state.get_players_on_pitch_in_team(self.team).count();
-        let num_players_on_bench = game_state.reserve_count_for_team(self.team);
+        let num_players_on_bench = game_state.get_reserve_count_for_team(self.team);
         let num_available_players = total_on_pitch + num_players_on_bench;
         SetupLegalConfig {
             team: self.team,
@@ -534,22 +534,6 @@ mod tests {
         }
     }
 
-    fn reserve_count(state: &GameState, team: TeamType) -> usize {
-        state
-            .get_dugout()
-            .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
-            .count()
-    }
-
-    fn positions_for_action(aa: &AvailableActions, action: PosAT) -> Vec<Position> {
-        let Some(positions) = aa.get_positional() else {
-            return Vec::new();
-        };
-        Position::all_positions()
-            .filter(|pos| positions[*pos].contains(&action))
-            .collect()
-    }
-
     fn first_empty_position(positions: &[Position], state: &GameState) -> Position {
         *positions
             .iter()
@@ -635,7 +619,7 @@ mod tests {
         let ProcState::NeedAction(aa) = setup.step(&mut state, ProcInput::Nothing) else {
             panic!("Expected NeedAction before selecting source player.");
         };
-        assert!(positions_for_action(&aa, PosAT::SelectPosition).contains(&source_pos));
+        assert!(aa.get_positions_for_action(PosAT::SelectPosition).contains(&source_pos));
 
         let ProcState::NeedAction(aa) = setup.step(
             &mut state,
@@ -644,7 +628,10 @@ mod tests {
             panic!("Expected NeedAction after selecting source player.");
         };
         let destination =
-            first_empty_position(&positions_for_action(&aa, PosAT::SelectPosition), &state);
+            first_empty_position(
+                &aa.get_positions_for_action(PosAT::SelectPosition),
+                &state
+            );
 
         let _ = setup.step(
             &mut state,
@@ -676,7 +663,7 @@ mod tests {
         let ProcState::NeedAction(aa) = setup.step(&mut state, ProcInput::Nothing) else {
             panic!("Expected NeedAction before reserve swap.");
         };
-        assert!(positions_for_action(&aa, PosAT::SelectPosition).contains(&occupied_pos));
+        assert!(aa.get_positions_for_action(PosAT::SelectPosition).contains(&occupied_pos));
 
         let _ = setup.step(
             &mut state,
@@ -801,7 +788,7 @@ mod tests {
         ) else {
             panic!("Expected NeedAction after selecting source player.");
         };
-        let destination = positions_for_action(&aa, PosAT::SelectPosition)
+        let destination = aa.get_positions_for_action(PosAT::SelectPosition)
             .into_iter()
             .find(|&candidate| candidate != pos && state.get_player_id_at(candidate).is_none())
             .unwrap();
@@ -966,7 +953,7 @@ mod tests {
             panic!("Expected NeedAction on initial setup prompt.");
         };
 
-        let positions = positions_for_action(&aa, PosAT::SelectPosition);
+        let positions = aa.get_positions_for_action( PosAT::SelectPosition);
         assert!(!positions.is_empty());
         assert!(aa.get_simple().contains(&SimpleAT::SetupLine));
         assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
@@ -985,7 +972,7 @@ mod tests {
         assert!(!aa.get_simple().contains(&SimpleAT::SetupLine));
         assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
 
-        let positions = positions_for_action(&aa, PosAT::SelectPosition);
+        let positions = aa.get_positions_for_action(PosAT::SelectPosition);
         let next_pos = first_empty_position(&positions, &state);
         let ProcState::NeedAction(aa) = setup.step(
             &mut state,
@@ -1000,7 +987,7 @@ mod tests {
         );
         assert!(!aa.get_simple().contains(&SimpleAT::EndSetup));
 
-        let positions = positions_for_action(&aa, PosAT::SelectPosition);
+        let positions = aa.get_positions_for_action(PosAT::SelectPosition);
         let next_pos = first_empty_position(&positions, &state);
         let ProcState::NeedAction(aa) = setup.step(
             &mut state,
@@ -1014,7 +1001,7 @@ mod tests {
             3
         );
         assert!(aa.get_simple().contains(&SimpleAT::EndSetup));
-        assert!(positions_for_action(&aa, PosAT::SelectPosition)
+        assert!(aa.get_positions_for_action(PosAT::SelectPosition)
             .iter()
             .all(|pos| state.get_player_id_at(*pos).is_some()));
 
@@ -1037,7 +1024,7 @@ mod tests {
             panic!("Expected NeedAction on initial setup prompt.");
         };
         let first_target =
-            first_empty_position(&positions_for_action(&aa, PosAT::SelectPosition), &state);
+            first_empty_position(&aa.get_positions_for_action(PosAT::SelectPosition), &state);
 
         let ProcState::NeedAction(aa) = setup.step(
             &mut state,
@@ -1045,9 +1032,9 @@ mod tests {
         ) else {
             panic!("Expected NeedAction after first placement.");
         };
-        let reserves_before_swap = reserve_count(&state, team);
+        let reserves_before_swap = state.get_reserve_count_for_team(team);
         assert!(
-            positions_for_action(&aa, PosAT::SelectPosition).contains(&first_target),
+            aa.get_positions_for_action(PosAT::SelectPosition).contains(&first_target),
             "already placed controlled square should remain legal for reserve swap"
         );
 
@@ -1058,7 +1045,7 @@ mod tests {
             panic!("Expected NeedAction after reserve swap.");
         };
         assert_eq!(
-            reserve_count(&state, team),
+            state.get_reserve_count_for_team(team),
             reserves_before_swap,
             "swapping pending reserve with a controlled player should not change reserve count"
         );
@@ -1078,7 +1065,7 @@ mod tests {
 
         for _ in 0..11 {
             let target =
-                first_empty_position(&positions_for_action(&aa, PosAT::SelectPosition), &state);
+                first_empty_position(&aa.get_positions_for_action(PosAT::SelectPosition), &state);
             let ProcState::NeedAction(next_aa) = setup.step(
                 &mut state,
                 ProcInput::Action(Action::Positional(PosAT::SelectPosition, target)),
@@ -1089,7 +1076,7 @@ mod tests {
         }
 
         assert!(aa.get_simple().contains(&SimpleAT::EndSetup));
-        assert_eq!(reserve_count(&state, team), 1);
+        assert_eq!(state.get_reserve_count_for_team(team), 1);
 
         let done = setup.step(
             &mut state,

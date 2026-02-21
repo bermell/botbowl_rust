@@ -438,7 +438,7 @@ impl GameState {
             .collect()
     }
 
-    pub fn reserve_count_for_team(&self, team: TeamType) -> usize {
+    pub fn get_reserve_count_for_team(&self, team: TeamType) -> usize {
         self.reserve_ids_for_team(team).len()
     }
 
@@ -767,7 +767,7 @@ impl GameState {
         let mut south_wing = 0;
         let mut line_of_scrimage = 0;
         let num_players_on_pitch = self.get_players_on_pitch_in_team(team).count();
-        let num_available_players = self.reserve_count_for_team(team) + num_players_on_pitch;
+        let num_available_players = self.get_reserve_count_for_team(team) + num_players_on_pitch;
         let min_people_on_pitch = 11.min(num_available_players);
         let min_people_on_scrimage = 3.min(num_available_players);
 
@@ -870,6 +870,7 @@ impl GameState {
         Ok(id)
     }
 
+    // Todo: Implement test for this function
     pub fn unfield_player(&mut self, id: PlayerID, place: DugoutPlace) -> Result<()> {
         if let BallState::Carried(carrier_id) = self.ball {
             assert_ne!(carrier_id, id);
@@ -1596,8 +1597,8 @@ mod gamestate_tests {
 
         assert_eq!(home_reserve_ids.len(), 2);
         assert_eq!(away_reserve_ids.len(), 1);
-        assert_eq!(state.reserve_count_for_team(TeamType::Home), 2);
-        assert_eq!(state.reserve_count_for_team(TeamType::Away), 1);
+        assert_eq!(state.get_reserve_count_for_team(TeamType::Home), 2);
+        assert_eq!(state.get_reserve_count_for_team(TeamType::Away), 1);
         assert!(home_reserve_ids
             .iter()
             .all(|id| state.get_dugout_player(*id).unwrap().place == DugoutPlace::Reserves));
