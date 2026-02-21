@@ -162,6 +162,7 @@ fn can_end_rearrange(
         return false;
     }
     if cfg.end_requires_pending_empty && !state.pending_reserve_ids.is_empty() {
+        // Todo: no test enters here. Investigate whether if condition can ever be true and cover with test in that case
         return false;
     }
     game_state.is_setup_legal_for_team(cfg.team)
@@ -1083,5 +1084,10 @@ mod tests {
             ProcInput::Action(Action::Simple(SimpleAT::EndSetup)),
         );
         assert!(matches!(done, ProcState::Done));
+    }
+
+    #[test]
+    fn random_setup() {
+        // Todo: implement random_setup happy path test
     }
 }

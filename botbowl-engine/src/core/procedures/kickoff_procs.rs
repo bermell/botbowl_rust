@@ -230,13 +230,9 @@ impl SolidDefence {
         })
     }
 
-    fn open_player_ids(&self, game_state: &GameState) -> Vec<PlayerID> {
-        game_state.get_open_player_ids_on_pitch(self.team)
-    }
-
     fn open_selectable_positions(&self, game_state: &GameState) -> Vec<Position> {
         let allow_new_selection = self.selected_fielded_ids.len() < self.max_rearrange;
-        self.open_player_ids(game_state)
+        game_state.get_open_player_ids_on_pitch(self.team)
             .into_iter()
             .filter(|id| {
                 self.selected_fielded_ids.contains(id)
@@ -312,7 +308,6 @@ impl Procedure for SolidDefence {
                 _ => panic!("Unexpected input {:?}", input),
             },
             SolidDefenceState::SelectPlayers => match input {
-                ProcInput::Nothing => self.build_selection_actions(game_state),
                 ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => {
                     self.start_rearrange_phase(game_state);
                     build_rearrange_actions(game_state, self.rearrange_cfg, &self.rearrange_state)
@@ -333,9 +328,6 @@ impl Procedure for SolidDefence {
                 _ => panic!("Unexpected input {:?}", input),
             },
             SolidDefenceState::RearrangePlayers => match input {
-                ProcInput::Nothing => {
-                    build_rearrange_actions(game_state, self.rearrange_cfg, &self.rearrange_state)
-                }
                 ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => step_rearrange_end_setup(
                     game_state,
                     self.rearrange_cfg,

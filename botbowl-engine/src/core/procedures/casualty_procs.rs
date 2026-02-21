@@ -171,6 +171,7 @@ mod tests {
 
     use crate::core::dices::D8;
     use crate::core::model::*;
+    use crate::core::procedures::AnyProc;
     use crate::core::table::*;
     use crate::core::{gamestate::GameStateBuilder, model::Position, table::PosAT};
     #[test]
@@ -262,6 +263,36 @@ mod tests {
 
         state.step_positional(PosAT::Foul, foul_pos);
 
+        assert!(matches!(
+            state.get_dugout().next(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Ejected,
+                stats: PlayerStats {
+                    team: TeamType::Home,
+                    ..
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ejection_of_ball_carrier_starts_bounce() {
+        let start_pos = Position::new((5, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(start_pos)
+            .build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(id));
+
+        let mut ejection = super::Ejection::new(id);
+        let proc_state = ejection.step(&mut state, ProcInput::Nothing);
+
+        assert!(matches!(proc_state, ProcState::DoneNew(AnyProc::Bounce(_))));
+        assert_eq!(state.ball, BallState::InAir(start_pos));
+        assert_eq!(state.get_player_id_at(start_pos), None);
         assert!(matches!(
             state.get_dugout().next(),
             Some(DugoutPlayer {

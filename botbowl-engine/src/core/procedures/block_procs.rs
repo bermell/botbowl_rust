@@ -28,15 +28,6 @@ pub struct Push {
 }
 
 impl Push {
-    pub fn new(from: Position, on: Position) -> AnyProc {
-        AnyProc::Push(Push {
-            from,
-            on,
-            moves_to_make: Vec::with_capacity(1),
-            knockdown_proc: None,
-            follow_up_pos: on,
-        })
-    }
     pub fn new_pure(from: Position, on: Position) -> Push {
         Push {
             from,
