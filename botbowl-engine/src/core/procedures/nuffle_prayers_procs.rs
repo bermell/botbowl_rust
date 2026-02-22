@@ -9,7 +9,6 @@ pub struct PrayersToNuffle {}
 impl PrayersToNuffle {
     pub fn new() -> AnyProc {
         AnyProc::PrayersToNuffle(PrayersToNuffle {})
-
     }
 }
 impl Procedure for PrayersToNuffle {
@@ -23,8 +22,12 @@ impl Procedure for PrayersToNuffle {
         };
         let mut procs: Vec<AnyProc> = Vec::new();
         match prayers_to_nuffles_roll {
-            D16::One => {},
-            D16::Two => {},
+            D16::One => {
+                game_state.info.trapdoors_active = true;
+            },
+            D16::Two => {
+
+            },
             D16::Three => {},
             D16::Four => {},
             D16::Five => {},

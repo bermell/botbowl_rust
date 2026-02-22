@@ -964,4 +964,33 @@ mod tests {
         assert_eq!(player.gfis_left(), 2);
         state.step_positional(PosAT::StartMove, move_target)
     }
+
+    mod trapdoor_tests {
+        use super::*;
+
+        #[test]
+        fn move_onto_active_trapdoor_cause_trapdoor_roll() {
+
+        }
+
+        #[test]
+        fn move_onto_inactive_trapdoor_dont_cause_trapdoor_roll() {
+
+        }
+
+        #[test]
+        fn failed_gfi_onto_active_trapdoor_cause_trapdoor_roll() {
+
+        }
+
+        #[test]
+        fn failed_dodge_onto_active_trapdoor_cause_trapdoor_roll() {
+            
+        }
+
+        #[test]
+        fn standup_on_active_trapdoor_dont_cause_trapdoor_roll() {
+
+        }
+    }
 }

@@ -606,7 +606,7 @@ mod tests {
         assert!(block_aa.get_pos(away_pos_down).is_none());
     }
     #[test]
-    fn prune_players_cant_startblock_but_can_startblitz() {
+    fn prone_players_cant_startblock_but_can_startblitz() {
         let home_pos = Position::new((5, 5));
         let away_pos = Position::new((6, 6));
         let mut state = GameStateBuilder::new()
@@ -630,5 +630,51 @@ mod tests {
         state.step_positional(PosAT::StartBlitz, away_pos);
         state.fixes.fix_blockdice(BlockDice::Skull);
         state.step_positional(PosAT::Block, home_pos);
+    }
+
+    mod trapdoor_block_tests {
+        use super::*;
+
+        #[test]
+        fn ball_carrier_pushed_into_active_trapdoor_roll_one_is_removed_from_play() {
+            // make sure to assert that ball bounces from trapdoor Position.
+        }
+
+        #[test]
+        fn player_pushed_into_active_trapdoor_rolls_not_one_is_unaffected() {
+
+        }
+
+        #[test]
+        fn ball_carrier_knocked_down_on_active_trapdoor_roll_one_is_removed_from_play() {
+            // make sure that bounce is according to knockdown rule
+        }
+
+        #[test]
+        fn player_chain_pushed_onto_active_trapdoor_roll_one_is_removed_from_play() {
+
+        }
+
+        #[test]
+        fn chain_push_resolved_before_trapdoor_outcome() {
+            // Todo: This should test the following scenario: 
+            // Player1 stands on a trapdoor. Player2 is pushed onto the trapdoor. 
+            // Player2 entering the Position with the trapdoor will then cause a chain push where player1 should be pushed away.
+            // Player2 rolls a 1 when entering the trapdoor and is removed from play.
+            // I want this test to assert that the chain push is resolved before player2 is removed from play in this case.
+
+        }
+
+        #[test]
+        fn player_pushed_into_inactive_trapdoor_causes_no_trapdoor_roll() {
+
+        }
+
+        #[test]
+        fn no_armor_roll_only_injury_roll() {
+            // Todo: This should assert that a player that gets knocked down onto an active trapdoor
+            // and then rolls a one on the trapdoor roll, rolls immediatley on the injury table as
+            // if getting pushed into the crowd.
+        }
     }
 }

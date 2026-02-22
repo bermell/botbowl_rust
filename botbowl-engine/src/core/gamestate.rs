@@ -295,6 +295,7 @@ pub struct GameInfo {
     pub pass_available: bool,
     pub blitz_available: bool,
     pub handle_td_by: Option<PlayerID>,
+    pub trapdoors_active: bool,
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -317,6 +318,7 @@ impl GameInfo {
             kickoff_by_team: None,
             kicking_this_drive: TeamType::Away,
             turnover: false,
+            trapdoors_active: false
         }
     }
 }

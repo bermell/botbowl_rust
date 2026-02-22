@@ -12,7 +12,6 @@ use super::gamestate::GameState;
 use super::pathing::Node;
 use super::procedures::AnyProc;
 use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
-use crate::core::dices::D16;
 use crate::core::table;
 
 pub type PlayerID = usize;
