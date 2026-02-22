@@ -117,6 +117,35 @@ impl From<(Coord, Coord)> for D8 {
     }
 }
 
+impl_enum_try_from! {
+    #[repr(u8)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
+    pub enum D16 {
+        One = 1,
+        Two,
+        Three,
+        Four,
+        Five,
+        Six,
+        Seven,
+        Eight,
+        Nine,
+        Ten,
+        Eleven,
+        Twelve,
+        Thirteen,
+    },
+    u8,
+    (),
+    ()
+}
+impl Distribution<D16> for Standard {
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> D16 {
+        D16::try_from(rng.gen_range(1..=16)).unwrap()
+    }
+    
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum BlockDice {
     Skull,
@@ -345,6 +374,7 @@ pub enum RequestedRoll {
     D6PassFail(D6Target),
     D6ThreeOutcomes(D6Target, D6Target),
     D8,
+    D16,
     FoulArmor(Sum2D6Target),
     FoulInjury(Sum2D6Target, Sum2D6Target),
     Deviate, // TODO: this should be called deviate
@@ -372,6 +402,7 @@ pub enum RollResult {
     MiddleOutcome,
     D6(D6),
     D8(D8),
+    D16(D16),
     Deviate(D6, D8),
     Scatter(D8, D8, D8),
     Sum2D6(Sum2D6),

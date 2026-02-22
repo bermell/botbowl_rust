@@ -4,6 +4,7 @@ pub mod block_procs;
 pub mod casualty_procs;
 pub mod game_procs;
 pub mod kickoff_procs;
+pub mod nuffle_prayers_procs;
 pub mod movement_procs;
 pub mod procedure_tools;
 pub mod setup_procs;
