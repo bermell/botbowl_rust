@@ -88,6 +88,8 @@ pub const LINE_OF_SCRIMMAGE_AWAY_X: Coord = 13;
 pub const LINE_OF_SCRIMMAGE_Y_RANGE: std::ops::RangeInclusive<Coord> = 5..=11;
 pub const NORTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 1..=4;
 pub const SOUTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 12..=15;
+pub const TRAPDOOR_ONE: Position = Position { x: 6, y: 13 };
+pub const TRAPDOOR_TWO: Position = Position { x: 20, y: 2 };
 
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
@@ -209,6 +211,9 @@ impl Position {
     }
     pub fn is_south_wing_position(&self) -> bool {
         SOUTH_WING_Y_RANGE.contains(&self.y)
+    }
+    pub fn is_trapdoor_position(&self) -> bool {
+        *self == TRAPDOOR_ONE || *self == TRAPDOOR_TWO
     }
 }
 impl From<(usize, usize)> for Position {
