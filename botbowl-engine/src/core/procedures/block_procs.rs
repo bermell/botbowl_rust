@@ -636,33 +636,34 @@ mod tests {
         use super::*;
 
         #[test]
+        fn player_knocked_down_onto_trapdoor_should_resolve_trapdoor_before_armor_roll() {
+
+        }
+
+        #[test]
         fn ball_carrier_pushed_into_active_trapdoor_roll_one_is_removed_from_play() {
             // make sure to assert that ball bounces from trapdoor Position.
         }
 
         #[test]
-        fn player_pushed_into_active_trapdoor_rolls_not_one_is_unaffected() {
+        fn player_pushed_onto_active_trapdoor_rolls_2_is_unaffected() {
 
         }
 
         #[test]
-        fn ball_carrier_knocked_down_on_active_trapdoor_roll_one_is_removed_from_play() {
-            // make sure that bounce is according to knockdown rule
-        }
-
-        #[test]
-        fn player_chain_pushed_onto_active_trapdoor_roll_one_is_removed_from_play() {
+        fn player_chain_pushed_onto_active_trapdoor_rolls_one_is_removed_from_play() {
 
         }
 
         #[test]
-        fn chain_push_resolved_before_trapdoor_outcome() {
+        fn trapdoor_resolved_before_chain_push_is_over() {
             // Todo: This should test the following scenario: 
-            // Player1 stands on a trapdoor. Player2 is pushed onto the trapdoor. 
+            // Player1 stands on a trapdoor. Player2 is knocked down onto the trapdoor where player 1 is standing. 
             // Player2 entering the Position with the trapdoor will then cause a chain push where player1 should be pushed away.
             // Player2 rolls a 1 when entering the trapdoor and is removed from play.
-            // I want this test to assert that the chain push is resolved before player2 is removed from play in this case.
-
+            // I want to assert that the trapdoor roll is made as soon as player 2 enters the trapdoor square,
+            // before any armor roll related to him being knocked down and before the chain push
+            // resolves. 
         }
 
         #[test]

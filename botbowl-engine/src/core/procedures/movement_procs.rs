@@ -979,18 +979,32 @@ mod tests {
         }
 
         #[test]
-        fn failed_gfi_onto_active_trapdoor_cause_trapdoor_roll() {
-
-        }
-
-        #[test]
-        fn failed_dodge_onto_active_trapdoor_cause_trapdoor_roll() {
-            
-        }
-
-        #[test]
         fn standup_on_active_trapdoor_dont_cause_trapdoor_roll() {
+        }
 
+        #[test]
+        fn gfi_onto_trapdoor_trapdoor_event_resolves_before_gfi() {
+
+        }
+
+        #[test]
+        fn failed_dodge_onto_trapdoor_trapdoor_resolves_before_armor_roll() {
+            //Todo: This should assert that:
+            // 1. a player tries to dodge to a square with a trapdoor
+            // 2. the dodge roll event is resolved first, player fails the event
+            // 3. the trapdoor roll is resolved as soon as player enters the quare of the trapdoor
+            // before any armmor rolls related to the failed dodge.
+            // trapdoor roll is not a one - so armor roll from failed dodge play out.
+        }
+
+        #[test]
+        fn failed_dodge_onto_trapdoor_trapdoor_roll_is_one_player_get_pushed_into_crows_event() {
+            //Todo: This should assert that:
+            // 1. a player tries to dodge to a square with a trapdoor
+            // 2. the dodge roll event is resolved first, player fails the event
+            // 3. the trapdoor roll is resolved as soon as player enters the quare of the trapdoor
+            // before any armmor rolls related to the failed dodge.
+            // trapdoor roll is a one - the pushed into crows event plays out and armor roll for failed dodge never occurs.
         }
     }
 }
