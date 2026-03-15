@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::{
     dices::{D6, D6Target, D16, RequestedRoll, RollResult, RollTarget},
     gamestate::GameState,
-    model::{BallState, FieldedPlayer, PlayerID, Position, ProcInput, ProcState, Procedure},
+    model::{BallState, PlayerID, ProcInput, ProcState, Procedure},
     procedures::{AnyProc, ball_procs, casualty_procs},
 };
 
@@ -75,6 +75,10 @@ impl TrapdoorCheck {
 
 impl Procedure for TrapdoorCheck {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        if !game_state.info.trapdoors_active {
+            return ProcState::Done;
+        }
+
         match input {
             ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
             ProcInput::Roll(RollResult::D6(roll)) if self.target.is_success(roll) => {
