@@ -6,6 +6,7 @@ use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
     PositionOrEvent,
 };
+use crate::core::procedures::nuffle_prayers_procs::{self, TrapdoorCheck};
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs};
 use crate::core::table::*;
@@ -91,6 +92,7 @@ impl SimpleProc for DodgeProc {
         self.id
     }
 }
+
 fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
     match roll {
         PathingEvent::Dodge(target) => DodgeProc::new(active_player, target),
@@ -104,6 +106,9 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
         }
         PathingEvent::StandUp => StandUp::new(active_player),
         PathingEvent::Pass { to, pass, modifer } => ball_procs::Pass::new(to, pass, modifer),
+        PathingEvent::TrapdoorCheck(target) => {
+            nuffle_prayers_procs::TrapdoorCheck::new(active_player, target)
+        },
     }
 }
 
@@ -970,12 +975,39 @@ mod tests {
 
         #[test]
         fn move_onto_active_trapdoor_cause_trapdoor_roll() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(2); 
+            state.step_positional(PosAT::Move, move_target);
+
+            state.fixes.assert_is_empty(); //roll should be consumed
 
         }
 
         #[test]
         fn move_onto_inactive_trapdoor_dont_cause_trapdoor_roll() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
 
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(1); //should not be consumed
+            state.step_positional(PosAT::Move, move_target);
+
+            assert!(!state.fixes.is_empty());
         }
 
         #[test]

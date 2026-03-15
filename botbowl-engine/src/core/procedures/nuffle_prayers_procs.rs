@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    dices::{D16, D6, RequestedRoll, RollResult},
+    dices::{D6, D6Target, D16, RequestedRoll, RollResult, RollTarget},
     gamestate::GameState,
-    model::{BallState, PlayerID, Position, ProcInput, ProcState, Procedure},
-    procedures::{ball_procs, casualty_procs, AnyProc},
+    model::{BallState, FieldedPlayer, PlayerID, Position, ProcInput, ProcState, Procedure},
+    procedures::{AnyProc, ball_procs, casualty_procs},
 };
 
 
@@ -51,23 +51,23 @@ impl Procedure for PrayersToNuffle {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrapdoorCheck {
     id: PlayerID,
-    expected_pos: Position,
+    target: D6Target,
     on_safe_procs: Vec<AnyProc>,
 }
 
 impl TrapdoorCheck {
-    pub fn new(id: PlayerID, expected_pos: Position) -> AnyProc {
+    pub fn new(id: PlayerID, target: D6Target) -> AnyProc {
         AnyProc::TrapdoorCheck(TrapdoorCheck {
             id,
-            expected_pos,
+            target,
             on_safe_procs: Vec::new(),
         })
     }
 
-    pub fn new_with_on_safe(id: PlayerID, expected_pos: Position, on_safe_procs: Vec<AnyProc>) -> AnyProc {
+    pub fn new_with_on_safe(id: PlayerID, on_safe_procs: Vec<AnyProc>, target: D6Target) -> AnyProc {
         AnyProc::TrapdoorCheck(TrapdoorCheck {
             id,
-            expected_pos,
+            target,
             on_safe_procs,
         })
     }
@@ -77,30 +77,23 @@ impl Procedure for TrapdoorCheck {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {
             ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
-            ProcInput::Roll(RollResult::D6(roll)) => {
-                let valid_target = game_state.info.trapdoors_active
-                    && self.expected_pos.is_trapdoor_position()
-                    && matches!(
-                        game_state.get_player(self.id),
-                        Ok(player) if player.position == self.expected_pos
-                    );
+            ProcInput::Roll(RollResult::D6(roll)) if self.target.is_success(roll) => {
+                ProcState::from(std::mem::take(&mut self.on_safe_procs))
+            }
+            ProcInput::Roll(RollResult::D6(D6::One)) => {
+                //FAIL
+                let mut procs: Vec<AnyProc> = Vec::new();
+                let player_position = match game_state.get_player(self.id) {
+                    Ok(player_) => player_.position,
+                    Err(_) => panic!("Player with id {:?} not found.", self.id),
+                }; 
 
-                if !valid_target {
-                    return ProcState::Done;
+                if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
+                    game_state.ball = BallState::InAir(player_position);
+                    procs.push(ball_procs::Bounce::new());
                 }
-
-                if roll == D6::One {
-                    let mut procs: Vec<AnyProc> = Vec::new();
-                    if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id)
-                    {
-                        game_state.ball = BallState::InAir(self.expected_pos);
-                        procs.push(ball_procs::Bounce::new());
-                    }
-                    procs.push(casualty_procs::Injury::new_crowd(self.id));
-                    ProcState::from(procs)
-                } else {
-                    ProcState::from(std::mem::take(&mut self.on_safe_procs))
-                }
+                procs.push(casualty_procs::Injury::new_crowd(self.id));
+                ProcState::from(procs)
             }
             _ => panic!("Unexpected input {:?}", input),
         }
