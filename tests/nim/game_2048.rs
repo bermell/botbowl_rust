@@ -313,10 +313,12 @@ impl Game2048 {
     }
 
     /// One-step greedy: pick the legal slide with highest [`static_eval_after_action`].
+    /// Directions are sorted so ties are resolved deterministically.
     pub fn best_direction_heuristic(&self) -> Direction {
         debug_assert_eq!(self.state, GameState::WaitingForAction);
-        self.available_action()
-            .into_iter()
+        let mut dirs: Vec<Direction> = self.available_action().into_iter().collect();
+        dirs.sort_unstable();
+        dirs.into_iter()
             .max_by_key(|&d| {
                 let mut g = self.clone();
                 g.step_action(d);

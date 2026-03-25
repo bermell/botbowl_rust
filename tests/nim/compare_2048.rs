@@ -1,10 +1,15 @@
-//! Compare final scores: heuristic vs MCTS at one or more iteration budgets per move.
+//! Compare final scores: random baseline, heuristic, and MCTS at one or more iteration budgets.
+//!
+//! Games are evaluated **in parallel** (one seed per Rayon task) with Rayon. Set `RAYON_NUM_THREADS`
+//! to cap threads (e.g. `RAYON_NUM_THREADS=4` for four games at a time).
 //!
 //! Usage: `compare_2048 [num_games] [base_seed] [iter1] [iter2] ...`
 //!
 //! - Defaults: **100** games, base seed **0**, MCTS iterations per move **500 1000 2000 4000 8000**.
-//! - Game `i` uses seed `base_seed + i`. The heuristic is evaluated once per game; each MCTS
-//!   budget is run on the same seed independently.
+//! - Game `i` uses seed `base_seed + i`. Each seed runs: random baseline, heuristic, and each MCTS
+//!   budget independently (same RNG seed for initial tile and spawns within each run).
+
+use rayon::prelude::*;
 
 use recon_mcts_test_nim::play_2048::{self, DEFAULT_WARMUP_STEPS};
 
@@ -141,47 +146,74 @@ fn main() {
     let (num_games, base_seed, mcts_iters) = parse_args();
 
     println!(
-        "2048 comparison: {} games, warmup {} steps/move before reading root; seeds {}..{}",
+        "2048 comparison: {} games (parallel), warmup {} steps/move before reading root; seeds {}..{}",
         num_games,
         DEFAULT_WARMUP_STEPS,
         base_seed,
         base_seed.saturating_add(num_games.saturating_sub(1) as u64)
     );
     println!("MCTS iteration budgets per action move: {:?}", mcts_iters);
+    println!(
+        "Rayon threads: {} (override with RAYON_NUM_THREADS)",
+        rayon::current_num_threads()
+    );
     println!();
 
+    let rows: Vec<(i32, i32, Vec<i32>)> = (0..num_games)
+        .into_par_iter()
+        .map(|i| {
+            let seed = base_seed.wrapping_add(i as u64);
+            let heuristic = play_2048::run_heuristic_game(seed);
+            let random = play_2048::run_random_baseline_game(seed);
+            let mcts: Vec<i32> = mcts_iters
+                .iter()
+                .map(|&it| play_2048::run_mcts_game(seed, it, DEFAULT_WARMUP_STEPS))
+                .collect();
+            (heuristic, random, mcts)
+        })
+        .collect();
+
     let mut heuristic_scores = vec![0i32; num_games];
+    let mut random_scores = vec![0i32; num_games];
     let mut mcts_by_iters: Vec<Vec<i32>> =
         mcts_iters.iter().map(|_| vec![0i32; num_games]).collect();
+
+    for (i, (h, r, m)) in rows.into_iter().enumerate() {
+        heuristic_scores[i] = h;
+        random_scores[i] = r;
+        for (j, score) in m.iter().enumerate() {
+            mcts_by_iters[j][i] = *score;
+        }
+    }
 
     const PER_GAME_ROWS_MAX: usize = 40;
     let print_each_game = num_games <= PER_GAME_ROWS_MAX;
 
-    for i in 0..num_games {
-        let seed = base_seed.wrapping_add(i as u64);
-        heuristic_scores[i] = play_2048::run_heuristic_game(seed);
-        for (j, &iters) in mcts_iters.iter().enumerate() {
-            mcts_by_iters[j][i] = play_2048::run_mcts_game(seed, iters, DEFAULT_WARMUP_STEPS);
-        }
-
-        if print_each_game {
-            print!("game {:>3}: heuristic {:>6}", i + 1, heuristic_scores[i]);
+    if print_each_game {
+        for i in 0..num_games {
+            print!(
+                "game {:>3}: random {:>6}  heuristic {:>6}",
+                i + 1,
+                random_scores[i],
+                heuristic_scores[i]
+            );
             for (j, &iters) in mcts_iters.iter().enumerate() {
                 print!("  mcts@{:>5}: {:>6}", iters, mcts_by_iters[j][i]);
             }
             println!();
-        } else if (i + 1) % 10 == 0 || i + 1 == num_games {
-            eprintln!("  ... finished {} / {} games", i + 1, num_games);
         }
-    }
-
-    if !print_each_game {
+    } else {
         println!(
             "(Omitted {} per-game lines; only summary below. Use num_games <= {} for full table.)\n",
             num_games, PER_GAME_ROWS_MAX
         );
     }
 
+    println!();
+    print_block(
+        "Random baseline (uniform legal move, sorted tie-break)",
+        &random_scores,
+    );
     println!();
     print_block(
         "Heuristic (one-step snake / empty / score)",
