@@ -1,11 +1,11 @@
-use recon_mcts_test_nim::play_2048::{self, DEFAULT_WARMUP_STEPS};
+use recon_mcts_test_nim::play_2048::{self, MctsMoveBudget, DEFAULT_WARMUP_STEPS};
 use recon_mcts_test_nim::test_mcts_2048::Game2048Dynamics;
 
 fn run_single_game(mcts_iterations: usize) -> i32 {
     let seed = rand::random::<u64>();
     play_2048::run_mcts_game(
         seed,
-        mcts_iterations,
+        MctsMoveBudget::Iterations(mcts_iterations),
         DEFAULT_WARMUP_STEPS,
         Game2048Dynamics::default(),
     )

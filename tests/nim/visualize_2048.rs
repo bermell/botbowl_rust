@@ -1,11 +1,12 @@
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use recon_mcts::{GetState, SearchTree, Tree};
 
 use crate::game_2048::{Coord, Direction, Game2048, GameState};
+use crate::play_2048::MctsMoveBudget;
 use crate::test_mcts_2048::Game2048Dynamics;
 
 type Game2048MctsTree = Tree<
@@ -25,7 +26,7 @@ pub struct GameVisualizer {
     game: Game2048,
     dynamics: Game2048Dynamics,
     tree: Game2048MctsTree,
-    mcts_iterations: usize,
+    mcts_budget: MctsMoveBudget,
 }
 
 impl GameVisualizer {
@@ -38,12 +39,17 @@ impl GameVisualizer {
             game,
             dynamics,
             tree,
-            mcts_iterations: 1000,
+            mcts_budget: MctsMoveBudget::Iterations(1000),
         }
     }
 
     pub fn set_mcts_iterations(&mut self, iterations: usize) {
-        self.mcts_iterations = iterations;
+        self.mcts_budget = MctsMoveBudget::Iterations(iterations);
+    }
+
+    /// Set a time budget per move (instead of iteration count).
+    pub fn set_mcts_time_ms(&mut self, ms: u64) {
+        self.mcts_budget = MctsMoveBudget::WallTime(Duration::from_millis(ms));
     }
 
     fn generate_board_lines(&self) -> Vec<String> {
@@ -90,10 +96,13 @@ impl GameVisualizer {
     ) -> Vec<String> {
         let mut table_lines = Vec::new();
 
-        table_lines.push(format!(
-            "🧠 Running MCTS ({} iterations)...",
-            self.mcts_iterations
-        ));
+        let mcts_line = match &self.mcts_budget {
+            MctsMoveBudget::Iterations(n) => format!("🧠 Running MCTS ({} iterations)...", n),
+            MctsMoveBudget::WallTime(d) => {
+                format!("🧠 Running MCTS ({:?} wall time per move)...", d)
+            }
+        };
+        table_lines.push(mcts_line);
         table_lines.push("┌──────────────┬──────────┬─────────┬─────────┐".to_string());
         table_lines.push("│    Action    │   Score  │  Visits │ Selected│".to_string());
         table_lines.push("├──────────────┼──────────┼─────────┼─────────┤".to_string());
@@ -210,8 +219,18 @@ impl GameVisualizer {
         // Run MCTS to get action scores. Though first we need to reset the tree
 
         self.tree = Tree::new(self.dynamics, GetState, (), self.game);
-        for _ in 0..self.mcts_iterations {
-            self.tree.step();
+        match &self.mcts_budget {
+            MctsMoveBudget::Iterations(n) => {
+                for _ in 0..*n {
+                    self.tree.step();
+                }
+            }
+            MctsMoveBudget::WallTime(d) => {
+                let deadline = Instant::now() + *d;
+                while Instant::now() < deadline {
+                    self.tree.step();
+                }
+            }
         }
 
         let mut action_scores: Vec<(Direction, i32, AtomicU32)> = Vec::new();

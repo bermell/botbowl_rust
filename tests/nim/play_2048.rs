@@ -1,5 +1,7 @@
 //! Shared full-game drivers for 2048: seeded RNG for the initial tile and uniform random spawns.
 
+use std::time::Instant;
+
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use recon_mcts::{GetState, SearchTree, Status, Tree};
@@ -23,6 +25,25 @@ fn cmp_action_chance(a: &ActionChance, b: &ActionChance) -> std::cmp::Ordering {
 
 /// Matches [`crate::benchmark_2048`] warm-up before reading the root children.
 pub const DEFAULT_WARMUP_STEPS: usize = 50;
+
+/// How long to grow the MCTS tree at each **action** node (after warmup), before calling
+/// [`SearchTree::best_action`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MctsMoveBudget {
+    /// Fixed number of `Tree::step()` calls.
+    Iterations(usize),
+    /// Run `step()` until wall-clock time since starting this action phase reaches this duration.
+    WallTime(std::time::Duration),
+}
+
+impl MctsMoveBudget {
+    pub fn label_short(&self) -> String {
+        match self {
+            MctsMoveBudget::Iterations(n) => format!("{}", n),
+            MctsMoveBudget::WallTime(d) => format!("{}ms", d.as_millis()),
+        }
+    }
+}
 
 pub fn new_game_with_rng<R: Rng>(rng: &mut R) -> Game2048 {
     let random_row = rng.random_range(0usize..4);
@@ -77,7 +98,7 @@ pub fn run_random_baseline_game(seed: u64) -> i32 {
 
 pub fn run_mcts_game(
     seed: u64,
-    mcts_iterations: usize,
+    move_budget: MctsMoveBudget,
     warmup_steps: usize,
     dynamics: Game2048Dynamics,
 ) -> i32 {
@@ -98,8 +119,18 @@ pub fn run_mcts_game(
 
         let is_action_node = matches!(root_actions[0].0, ActionChance::Action(_));
         let next_action = if is_action_node {
-            for _ in 0..mcts_iterations {
-                tree.step();
+            match &move_budget {
+                MctsMoveBudget::Iterations(n) => {
+                    for _ in 0..*n {
+                        tree.step();
+                    }
+                }
+                MctsMoveBudget::WallTime(d) => {
+                    let deadline = Instant::now() + *d;
+                    while Instant::now() < deadline {
+                        tree.step();
+                    }
+                }
             }
             match tree.best_action() {
                 Status::Action(best_action) => best_action,

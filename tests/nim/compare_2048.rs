@@ -1,23 +1,43 @@
-//! Compare final scores: random baseline, heuristic, and MCTS at one or more iteration budgets.
+//! Compare final scores: random baseline, heuristic, and MCTS at one or more move budgets.
 //!
 //! Games are evaluated **in parallel** (one seed per Rayon task) with Rayon. Set `RAYON_NUM_THREADS`
 //! to cap threads (e.g. `RAYON_NUM_THREADS=4` for four games at a time).
 //!
-//! Usage: `compare_2048 [--rollout] [num_games] [base_seed] [iter1] [iter2] ...`
+//! Usage:
+//! - **Iteration budgets (default):** `compare_2048 [--rollout] [num_games] [base_seed] [iter1] [iter2] ...`
+//! - **Wall-clock budgets:** `compare_2048 [--rollout] --time-ms <list> [num_games] [base_seed]`
+//!
+//! **`--time-ms`** must be followed immediately by **one** argument: comma-separated (`150,300,600`) or
+//! whitespace-separated inside quotes (`"150 300 600"`). Use **`default`** for the built-in ms list
+//! (`100 200 400 800 1600` ms). After that, only **`num_games`** and **`base_seed`** are read (defaults
+//! 100 and 0 if omitted).
 //!
 //! - **`--rollout`**: MCTS leaf values use a **random rollout** to game over (`LeafScoreMode::RandomRollout`);
 //!   default is current cumulative score only (`CurrentScore`).
-//! - Defaults: **100** games, base seed **0**, MCTS iterations per move **500 1000 2000 4000 8000**.
+//! - Without **`--time-ms`**, remaining numbers are **iteration** counts per action move.
+//! - Defaults: **100** games, base seed **0**, iteration budgets **500 1000 2000 4000 8000**.
 //! - Game `i` uses seed `base_seed + i`. Each seed runs: random baseline, heuristic, and each MCTS
 //!   budget independently (same RNG seed for initial tile and spawns within each run).
 
+use std::time::Duration;
+
 use rayon::prelude::*;
 
-use recon_mcts_test_nim::play_2048::{self, DEFAULT_WARMUP_STEPS};
+use recon_mcts_test_nim::play_2048::{self, MctsMoveBudget, DEFAULT_WARMUP_STEPS};
 use recon_mcts_test_nim::test_mcts_2048::{Game2048Dynamics, LeafScoreMode};
 
-fn default_mcts_iterations() -> Vec<usize> {
-    vec![500, 1000, 2000, 4000, 8000]
+fn default_mcts_iteration_budgets() -> Vec<MctsMoveBudget> {
+    [500usize, 1000, 2000, 4000, 8000]
+        .iter()
+        .map(|&n| MctsMoveBudget::Iterations(n))
+        .collect()
+}
+
+fn default_mcts_time_budgets() -> Vec<MctsMoveBudget> {
+    [100u64, 200, 400, 800, 1600]
+        .iter()
+        .map(|&ms| MctsMoveBudget::WallTime(Duration::from_millis(ms)))
+        .collect()
 }
 
 struct ScoreSummary {
@@ -117,44 +137,179 @@ fn print_block(label: &str, scores: &[i32]) {
     println!("  min / max:   {} / {}", s.min, s.max);
 }
 
-fn parse_args() -> (usize, u64, Vec<usize>, bool) {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let leaf_rollout = args.iter().any(|a| a == "--rollout");
-    args.retain(|a| a != "--rollout");
+fn mcts_block_title(budget: &MctsMoveBudget, leaf_rollout: bool) -> String {
+    let leaf = if leaf_rollout {
+        "random rollout"
+    } else {
+        "current score"
+    };
+    match budget {
+        MctsMoveBudget::Iterations(n) => format!(
+            "MCTS ({} iters/move, {} warmup; leaf: {})",
+            n, DEFAULT_WARMUP_STEPS, leaf
+        ),
+        MctsMoveBudget::WallTime(d) => format!(
+            "MCTS ({} ms wall time/move, {} warmup; leaf: {})",
+            d.as_millis(),
+            DEFAULT_WARMUP_STEPS,
+            leaf
+        ),
+    }
+}
+
+fn parse_time_ms_list_argument(spec: &str) -> Result<Vec<MctsMoveBudget>, String> {
+    let s = spec.trim();
+    if s.eq_ignore_ascii_case("default") {
+        return Ok(default_mcts_time_budgets());
+    }
+    let nums: Vec<u64> = if s.contains(',') {
+        s.split(',')
+            .map(|t| t.trim())
+            .filter_map(|t| t.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .collect()
+    } else {
+        s.split_whitespace()
+            .filter_map(|t| t.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .collect()
+    };
+    if nums.is_empty() {
+        return Err(
+            "--time-ms value must be \"default\", comma-separated ms (150,300,600), or one quoted token with spaces (\"150 300 600\")"
+                .into(),
+        );
+    }
+    Ok(nums
+        .into_iter()
+        .map(|ms| MctsMoveBudget::WallTime(Duration::from_millis(ms)))
+        .collect())
+}
+
+fn parse_iteration_positionals(
+    args: &[String],
+) -> Result<(usize, u64, Vec<MctsMoveBudget>), String> {
     match args.len() {
-        0 => (100, 0, default_mcts_iterations(), leaf_rollout),
-        1 => (
-            args[0].parse().unwrap_or(100),
+        0 => Ok((100, 0, default_mcts_iteration_budgets())),
+        1 => Ok((
+            args[0]
+                .parse()
+                .map_err(|_| "num_games must be a number".to_string())?,
             0,
-            default_mcts_iterations(),
-            leaf_rollout,
-        ),
-        2 => (
-            args[0].parse().unwrap_or(100),
-            args[1].parse().unwrap_or(0),
-            default_mcts_iterations(),
-            leaf_rollout,
-        ),
+            default_mcts_iteration_budgets(),
+        )),
+        2 => Ok((
+            args[0]
+                .parse()
+                .map_err(|_| "num_games must be a number".to_string())?,
+            args[1]
+                .parse()
+                .map_err(|_| "base_seed must be a number".to_string())?,
+            default_mcts_iteration_budgets(),
+        )),
         _ => {
-            let num_games = args[0].parse().unwrap_or(100);
-            let base_seed = args[1].parse().unwrap_or(0);
+            let num_games = args[0]
+                .parse()
+                .map_err(|_| "num_games must be a number".to_string())?;
+            let base_seed = args[1]
+                .parse()
+                .map_err(|_| "base_seed must be a number".to_string())?;
             let iters: Vec<usize> = args[2..]
                 .iter()
-                .filter_map(|s| s.parse::<usize>().ok())
+                .filter_map(|s| s.parse().ok())
                 .filter(|&n| n > 0)
                 .collect();
-            let iters = if iters.is_empty() {
-                default_mcts_iterations()
-            } else {
-                iters
-            };
-            (num_games, base_seed, iters, leaf_rollout)
+            if iters.is_empty() {
+                return Err(
+                    "no valid iteration budgets (positive integers) after base_seed".into(),
+                );
+            }
+            Ok((
+                num_games,
+                base_seed,
+                iters.into_iter().map(MctsMoveBudget::Iterations).collect(),
+            ))
         }
     }
 }
 
+/// Positionals after flags: only `num_games` and optionally `base_seed`.
+fn parse_time_mode_positionals(args: &[String]) -> Result<(usize, u64), String> {
+    match args.len() {
+        0 => Ok((100, 0)),
+        1 => Ok((
+            args[0]
+                .parse()
+                .map_err(|_| "num_games must be a number".to_string())?,
+            0,
+        )),
+        2 => Ok((
+            args[0]
+                .parse()
+                .map_err(|_| "num_games must be a number".to_string())?,
+            args[1]
+                .parse()
+                .map_err(|_| "base_seed must be a number".to_string())?,
+        )),
+        n => Err(format!(
+            "with --time-ms, use at most num_games and base_seed after the ms list (got {} extra argument(s))",
+            n - 2
+        )),
+    }
+}
+
+fn parse_args() -> Result<(usize, u64, Vec<MctsMoveBudget>, bool), String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut rollout = false;
+    let mut time_ms_spec: Option<String> = None;
+    let mut positionals: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--rollout" => {
+                rollout = true;
+                i += 1;
+            }
+            "--time-ms" => {
+                i += 1;
+                let spec = args.get(i).ok_or_else(|| {
+                    "--time-ms must be followed by a value (e.g. 150,300,600)".to_string()
+                })?;
+                if spec.starts_with('-') {
+                    return Err("--time-ms must be followed by a ms list, not another flag".into());
+                }
+                time_ms_spec = Some(spec.clone());
+                i += 1;
+            }
+            _ => {
+                positionals.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+
+    if let Some(spec) = time_ms_spec {
+        let budgets = parse_time_ms_list_argument(&spec)?;
+        let (num_games, base_seed) = parse_time_mode_positionals(&positionals)?;
+        Ok((num_games, base_seed, budgets, rollout))
+    } else {
+        let (num_games, base_seed, budgets) = parse_iteration_positionals(&positionals)?;
+        Ok((num_games, base_seed, budgets, rollout))
+    }
+}
+
 fn main() {
-    let (num_games, base_seed, mcts_iters, leaf_rollout) = parse_args();
+    let (num_games, base_seed, mcts_budgets, leaf_rollout) = match parse_args() {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("compare_2048: {}", e);
+            std::process::exit(2);
+        }
+    };
+    let time_ms_mode = mcts_budgets
+        .first()
+        .map(|b| matches!(b, MctsMoveBudget::WallTime(_)))
+        .unwrap_or(false);
     let mcts_dynamics = Game2048Dynamics {
         leaf: if leaf_rollout {
             LeafScoreMode::RandomRollout
@@ -170,7 +325,29 @@ fn main() {
         base_seed,
         base_seed.saturating_add(num_games.saturating_sub(1) as u64)
     );
-    println!("MCTS iteration budgets per action move: {:?}", mcts_iters);
+    if time_ms_mode {
+        println!(
+            "MCTS wall-time budgets per action move (ms): {:?}",
+            mcts_budgets
+                .iter()
+                .map(|b| match b {
+                    MctsMoveBudget::WallTime(d) => d.as_millis(),
+                    _ => 0,
+                })
+                .collect::<Vec<_>>()
+        );
+    } else {
+        println!(
+            "MCTS iteration budgets per action move: {:?}",
+            mcts_budgets
+                .iter()
+                .map(|b| match b {
+                    MctsMoveBudget::Iterations(n) => *n,
+                    _ => 0,
+                })
+                .collect::<Vec<_>>()
+        );
+    }
     println!(
         "MCTS leaf scoring: {}",
         if leaf_rollout {
@@ -191,9 +368,9 @@ fn main() {
             let seed = base_seed.wrapping_add(i as u64);
             let heuristic = play_2048::run_heuristic_game(seed);
             let random = play_2048::run_random_baseline_game(seed);
-            let mcts: Vec<i32> = mcts_iters
+            let mcts: Vec<i32> = mcts_budgets
                 .iter()
-                .map(|&it| play_2048::run_mcts_game(seed, it, DEFAULT_WARMUP_STEPS, mcts_dynamics))
+                .map(|b| play_2048::run_mcts_game(seed, *b, DEFAULT_WARMUP_STEPS, mcts_dynamics))
                 .collect();
             (heuristic, random, mcts)
         })
@@ -201,14 +378,14 @@ fn main() {
 
     let mut heuristic_scores = vec![0i32; num_games];
     let mut random_scores = vec![0i32; num_games];
-    let mut mcts_by_iters: Vec<Vec<i32>> =
-        mcts_iters.iter().map(|_| vec![0i32; num_games]).collect();
+    let mut mcts_by_budget: Vec<Vec<i32>> =
+        mcts_budgets.iter().map(|_| vec![0i32; num_games]).collect();
 
     for (i, (h, r, m)) in rows.into_iter().enumerate() {
         heuristic_scores[i] = h;
         random_scores[i] = r;
         for (j, score) in m.iter().enumerate() {
-            mcts_by_iters[j][i] = *score;
+            mcts_by_budget[j][i] = *score;
         }
     }
 
@@ -223,8 +400,12 @@ fn main() {
                 random_scores[i],
                 heuristic_scores[i]
             );
-            for (j, &iters) in mcts_iters.iter().enumerate() {
-                print!("  mcts@{:>5}: {:>6}", iters, mcts_by_iters[j][i]);
+            for (j, budget) in mcts_budgets.iter().enumerate() {
+                print!(
+                    "  mcts@{:>7}: {:>6}",
+                    budget.label_short(),
+                    mcts_by_budget[j][i]
+                );
             }
             println!();
         }
@@ -245,20 +426,8 @@ fn main() {
         "Heuristic (one-step snake / empty / score)",
         &heuristic_scores,
     );
-    for (j, &iters) in mcts_iters.iter().enumerate() {
+    for (j, budget) in mcts_budgets.iter().enumerate() {
         println!();
-        print_block(
-            &format!(
-                "MCTS ({} iters/move, {} warmup; leaf: {})",
-                iters,
-                DEFAULT_WARMUP_STEPS,
-                if leaf_rollout {
-                    "random rollout"
-                } else {
-                    "current score"
-                }
-            ),
-            &mcts_by_iters[j],
-        );
+        print_block(&mcts_block_title(budget, leaf_rollout), &mcts_by_budget[j]);
     }
 }
