@@ -416,6 +416,28 @@ mod test {
         game.step_random(Coord { row: 0, col: 3 }, 1);
         assert_eq!(game.state, GameState::Done);
     }
+    /// In standard 2048, each tile merges at most once per move. Four equal tiles
+    /// become two merged tiles (e.g. four 2s → two 4s), not one doubled merge.
+    #[test]
+    fn four_equal_tiles_do_not_chain_merge_in_one_move() {
+        let mut game =
+            Game2048::new_custom([[1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
+        game.step_action(Direction::Left);
+        let expected = [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+        assert_eq!(game.board, expected);
+    }
+
+    /// Score for a merge should equal the face value of the resulting tile (standard 2048).
+    /// Tile exponents are log2: two 2s (exp 1) merge to 4 (exp 2) → +4 points.
+    #[test]
+    fn merge_score_adds_value_of_resulting_tile() {
+        let mut game =
+            Game2048::new_custom([[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
+        game.step_action(Direction::Left);
+        assert_eq!(game.board[0][0], 2);
+        assert_eq!(game.score, 4);
+    }
+
     #[test]
     fn play_to_finish() {
         let mut game = Game2048::new_game(Coord { row: 0, col: 0 }, 2);
