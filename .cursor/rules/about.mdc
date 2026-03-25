@@ -3,3 +3,8 @@ description:
 globs:
 alwaysApply: true
 ---
+The project is a generic tree searcher written it Rust. we're developing it with test-driven development. 
+
+To run the test: `cargo test`. 
+
+After you've made changes run `cargo fmt` to adhere to code styles. 
