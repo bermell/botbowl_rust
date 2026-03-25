@@ -1,5 +1,9 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use recon_mcts::GameDynamics;
 
 use crate::game_2048::{Coord, Direction, Game2048, GameState};
@@ -25,6 +29,28 @@ impl std::hash::Hash for ActionChance {
 }
 impl Eq for ActionChance {}
 
+/// How leaf nodes are evaluated for MCTS backpropagation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LeafScoreMode {
+    /// Use the board's cumulative score at the leaf (fast; previous behaviour).
+    #[default]
+    CurrentScore,
+    /// Simulate random play to the end; use final cumulative score (Monte Carlo rollout).
+    RandomRollout,
+}
+
+/// Rule set and options for 2048 MCTS (distinct from [`Game2048`] board state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Game2048Dynamics {
+    pub leaf: LeafScoreMode,
+}
+
+fn hash_state_for_rollout_seed(s: &Game2048) -> u64 {
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
 #[derive(Debug)]
 pub struct ScoreItem {
     pub visits: AtomicU32,
@@ -42,7 +68,7 @@ impl Clone for ScoreItem {
     }
 }
 
-impl GameDynamics for Game2048 {
+impl GameDynamics for Game2048Dynamics {
     type Player = ();
 
     type State = Game2048;
@@ -237,9 +263,19 @@ impl GameDynamics for Game2048 {
         _parent_player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::Score> {
+        let score = match self.leaf {
+            LeafScoreMode::CurrentScore => state.score as i32,
+            LeafScoreMode::RandomRollout => {
+                let mut g = *state;
+                let seed = hash_state_for_rollout_seed(&g);
+                let mut rng = StdRng::seed_from_u64(seed);
+                g.random_rollout_to_end(&mut rng);
+                g.score as i32
+            }
+        };
         Some(ScoreItem {
             visits: AtomicU32::new(1),
-            score: state.score as i32,
+            score,
             action_node: state.state,
         })
     }
@@ -248,14 +284,17 @@ impl GameDynamics for Game2048 {
 #[cfg(test)]
 mod test {
 
+    use recon_mcts::GameDynamics;
     use recon_mcts::{GetState, SearchTree, Tree};
 
     use super::ActionChance;
     use crate::game_2048::{Coord, Game2048};
+
+    use super::{Game2048Dynamics, LeafScoreMode};
     #[test]
     fn test_tree() {
         let game = Game2048::new_game(Coord { row: 2, col: 1 }, 2);
-        let tree = Tree::new(game, GetState, (), game);
+        let tree = Tree::new(Game2048Dynamics::default(), GetState, (), game);
 
         // Run MCTS iterations to build the tree
         for _ in 0..1000 {
@@ -332,5 +371,26 @@ mod test {
         } else {
             panic!("Tree should have move information available after running MCTS");
         }
+    }
+
+    #[test]
+    fn score_leaf_rollout_is_deterministic_for_same_state() {
+        let g = Game2048::new_game(Coord { row: 0, col: 0 }, 2);
+        let d = Game2048Dynamics {
+            leaf: LeafScoreMode::RandomRollout,
+        };
+        let s1 = GameDynamics::score_leaf(&d, None, &(), &g).unwrap().score;
+        let s2 = GameDynamics::score_leaf(&d, None, &(), &g).unwrap().score;
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn score_leaf_current_score_matches_state() {
+        let g = Game2048::new_game(Coord { row: 1, col: 2 }, 2);
+        let d = Game2048Dynamics {
+            leaf: LeafScoreMode::CurrentScore,
+        };
+        let s = GameDynamics::score_leaf(&d, None, &(), &g).unwrap().score;
+        assert_eq!(s, g.score as i32);
     }
 }

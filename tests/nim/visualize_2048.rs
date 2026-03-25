@@ -6,10 +6,11 @@ use std::time::Duration;
 use recon_mcts::{GetState, SearchTree, Tree};
 
 use crate::game_2048::{Coord, Direction, Game2048, GameState};
+use crate::test_mcts_2048::Game2048Dynamics;
 
 type Game2048MctsTree = Tree<
     recon_mcts::Node<
-        Game2048,
+        Game2048Dynamics,
         Game2048,
         (),
         crate::test_mcts_2048::ActionChance,
@@ -17,11 +18,12 @@ type Game2048MctsTree = Tree<
         std::vec::IntoIter<((), crate::test_mcts_2048::ActionChance)>,
         GetState,
     >,
-    Game2048,
+    Game2048Dynamics,
 >;
 
 pub struct GameVisualizer {
     game: Game2048,
+    dynamics: Game2048Dynamics,
     tree: Game2048MctsTree,
     mcts_iterations: usize,
 }
@@ -29,10 +31,12 @@ pub struct GameVisualizer {
 impl GameVisualizer {
     pub fn new(initial_coord: Coord, initial_value: u32) -> Self {
         let game = Game2048::new_game(initial_coord, initial_value);
-        let tree = Tree::new(game, GetState, (), game);
+        let dynamics = Game2048Dynamics::default();
+        let tree = Tree::new(dynamics, GetState, (), game);
 
         Self {
             game,
+            dynamics,
             tree,
             mcts_iterations: 1000,
         }
@@ -205,7 +209,7 @@ impl GameVisualizer {
 
         // Run MCTS to get action scores. Though first we need to reset the tree
 
-        self.tree = Tree::new(self.game, GetState, (), self.game);
+        self.tree = Tree::new(self.dynamics, GetState, (), self.game);
         for _ in 0..self.mcts_iterations {
             self.tree.step();
         }

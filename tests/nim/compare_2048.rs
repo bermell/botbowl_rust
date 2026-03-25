@@ -3,8 +3,10 @@
 //! Games are evaluated **in parallel** (one seed per Rayon task) with Rayon. Set `RAYON_NUM_THREADS`
 //! to cap threads (e.g. `RAYON_NUM_THREADS=4` for four games at a time).
 //!
-//! Usage: `compare_2048 [num_games] [base_seed] [iter1] [iter2] ...`
+//! Usage: `compare_2048 [--rollout] [num_games] [base_seed] [iter1] [iter2] ...`
 //!
+//! - **`--rollout`**: MCTS leaf values use a **random rollout** to game over (`LeafScoreMode::RandomRollout`);
+//!   default is current cumulative score only (`CurrentScore`).
 //! - Defaults: **100** games, base seed **0**, MCTS iterations per move **500 1000 2000 4000 8000**.
 //! - Game `i` uses seed `base_seed + i`. Each seed runs: random baseline, heuristic, and each MCTS
 //!   budget independently (same RNG seed for initial tile and spawns within each run).
@@ -12,6 +14,7 @@
 use rayon::prelude::*;
 
 use recon_mcts_test_nim::play_2048::{self, DEFAULT_WARMUP_STEPS};
+use recon_mcts_test_nim::test_mcts_2048::{Game2048Dynamics, LeafScoreMode};
 
 fn default_mcts_iterations() -> Vec<usize> {
     vec![500, 1000, 2000, 4000, 8000]
@@ -114,15 +117,23 @@ fn print_block(label: &str, scores: &[i32]) {
     println!("  min / max:   {} / {}", s.min, s.max);
 }
 
-fn parse_args() -> (usize, u64, Vec<usize>) {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn parse_args() -> (usize, u64, Vec<usize>, bool) {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let leaf_rollout = args.iter().any(|a| a == "--rollout");
+    args.retain(|a| a != "--rollout");
     match args.len() {
-        0 => (100, 0, default_mcts_iterations()),
-        1 => (args[0].parse().unwrap_or(100), 0, default_mcts_iterations()),
+        0 => (100, 0, default_mcts_iterations(), leaf_rollout),
+        1 => (
+            args[0].parse().unwrap_or(100),
+            0,
+            default_mcts_iterations(),
+            leaf_rollout,
+        ),
         2 => (
             args[0].parse().unwrap_or(100),
             args[1].parse().unwrap_or(0),
             default_mcts_iterations(),
+            leaf_rollout,
         ),
         _ => {
             let num_games = args[0].parse().unwrap_or(100);
@@ -137,13 +148,20 @@ fn parse_args() -> (usize, u64, Vec<usize>) {
             } else {
                 iters
             };
-            (num_games, base_seed, iters)
+            (num_games, base_seed, iters, leaf_rollout)
         }
     }
 }
 
 fn main() {
-    let (num_games, base_seed, mcts_iters) = parse_args();
+    let (num_games, base_seed, mcts_iters, leaf_rollout) = parse_args();
+    let mcts_dynamics = Game2048Dynamics {
+        leaf: if leaf_rollout {
+            LeafScoreMode::RandomRollout
+        } else {
+            LeafScoreMode::CurrentScore
+        },
+    };
 
     println!(
         "2048 comparison: {} games (parallel), warmup {} steps/move before reading root; seeds {}..{}",
@@ -153,6 +171,14 @@ fn main() {
         base_seed.saturating_add(num_games.saturating_sub(1) as u64)
     );
     println!("MCTS iteration budgets per action move: {:?}", mcts_iters);
+    println!(
+        "MCTS leaf scoring: {}",
+        if leaf_rollout {
+            "random rollout to terminal"
+        } else {
+            "current cumulative score (no rollout)"
+        }
+    );
     println!(
         "Rayon threads: {} (override with RAYON_NUM_THREADS)",
         rayon::current_num_threads()
@@ -167,7 +193,7 @@ fn main() {
             let random = play_2048::run_random_baseline_game(seed);
             let mcts: Vec<i32> = mcts_iters
                 .iter()
-                .map(|&it| play_2048::run_mcts_game(seed, it, DEFAULT_WARMUP_STEPS))
+                .map(|&it| play_2048::run_mcts_game(seed, it, DEFAULT_WARMUP_STEPS, mcts_dynamics))
                 .collect();
             (heuristic, random, mcts)
         })
@@ -223,8 +249,14 @@ fn main() {
         println!();
         print_block(
             &format!(
-                "MCTS ({} iters/move, {} warmup)",
-                iters, DEFAULT_WARMUP_STEPS
+                "MCTS ({} iters/move, {} warmup; leaf: {})",
+                iters,
+                DEFAULT_WARMUP_STEPS,
+                if leaf_rollout {
+                    "random rollout"
+                } else {
+                    "current score"
+                }
             ),
             &mcts_by_iters[j],
         );

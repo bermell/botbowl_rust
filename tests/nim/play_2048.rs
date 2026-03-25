@@ -4,8 +4,8 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use recon_mcts::{GetState, SearchTree, Status, Tree};
 
-use crate::game_2048::{Coord, Direction, Game2048, GameState};
-use crate::test_mcts_2048::ActionChance;
+use crate::game_2048::{Coord, Game2048, GameState};
+use crate::test_mcts_2048::{ActionChance, Game2048Dynamics};
 
 fn cmp_action_chance(a: &ActionChance, b: &ActionChance) -> std::cmp::Ordering {
     use std::cmp::Ordering;
@@ -71,25 +71,19 @@ pub fn run_heuristic_game(seed: u64) -> i32 {
 pub fn run_random_baseline_game(seed: u64) -> i32 {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut game = new_game_with_rng(&mut rng);
-    while game.state != GameState::Done {
-        match game.state {
-            GameState::WaitingForAction => {
-                let mut dirs: Vec<Direction> = game.available_action().into_iter().collect();
-                dirs.sort_unstable();
-                let idx = rng.random_range(0..dirs.len());
-                game.step_action(dirs[idx]);
-            }
-            GameState::WaitingForRandom => apply_random_chance(&mut game, &mut rng),
-            GameState::Done => break,
-        }
-    }
+    game.random_rollout_to_end(&mut rng);
     game.score as i32
 }
 
-pub fn run_mcts_game(seed: u64, mcts_iterations: usize, warmup_steps: usize) -> i32 {
+pub fn run_mcts_game(
+    seed: u64,
+    mcts_iterations: usize,
+    warmup_steps: usize,
+    dynamics: Game2048Dynamics,
+) -> i32 {
     let mut rng = StdRng::seed_from_u64(seed);
     let game = new_game_with_rng(&mut rng);
-    let tree = Tree::new(game, GetState, (), game);
+    let tree = Tree::new(dynamics, GetState, (), game);
 
     loop {
         for _ in 0..warmup_steps {

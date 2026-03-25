@@ -3,6 +3,8 @@ use std::{
     ops::{Add, Index, IndexMut, Neg},
 };
 
+use rand::Rng;
+
 const SIZE: usize = 4;
 
 /// Serpentine preference: large tiles should sit toward bottom-left (highest weight at (3,0)).
@@ -325,6 +327,33 @@ impl Game2048 {
                 Self::static_eval_after_action(&g)
             })
             .expect("WaitingForAction implies at least one legal move")
+    }
+
+    /// Uniform random legal moves until the game ends (same policy as the random-play baseline).
+    pub fn random_rollout_to_end<R: Rng>(&mut self, rng: &mut R) {
+        while self.state != GameState::Done {
+            match self.state {
+                GameState::WaitingForAction => {
+                    let mut dirs: Vec<Direction> = self.available_action().into_iter().collect();
+                    dirs.sort_unstable();
+                    let idx = rng.random_range(0..dirs.len());
+                    self.step_action(dirs[idx]);
+                }
+                GameState::WaitingForRandom => {
+                    let mut chances = self.available_chance();
+                    chances.sort_by(|a, b| {
+                        a.0.row
+                            .cmp(&b.0.row)
+                            .then_with(|| a.0.col.cmp(&b.0.col))
+                            .then_with(|| a.1.cmp(&b.1))
+                    });
+                    let idx = rng.random_range(0..chances.len());
+                    let (c, v, _) = chances[idx];
+                    self.step_random(c, v);
+                }
+                GameState::Done => break,
+            }
+        }
     }
 }
 
