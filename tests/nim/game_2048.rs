@@ -198,68 +198,91 @@ impl Game2048 {
         self.state = GameState::WaitingForRandom;
     }
 
-    /// Only moves the tiles so they are "packed" together in the direction of the move
-    /// does not merge tiles
-    fn shift(&mut self, start: Coord, dir: Direction) {
-        loop {
-            let mut moved = false;
-            let mut current = start;
-            let mut next = current + dir;
-            while self.in_bounds(current) && self.in_bounds(next) {
-                if self[current] == 0 && self[next] != 0 {
-                    self[current] = self[next];
-                    self[next] = 0;
-                    moved = true;
-                }
-                current = next;
-                next = next + dir;
-            }
-            if !moved {
-                break;
+    /// One pass over adjacent equal tiles: each tile merges at most once (standard 2048).
+    fn merge_line(values: Vec<SqVal>) -> (Vec<SqVal>, u32) {
+        let mut score_add = 0u32;
+        let mut i = 0usize;
+        let mut out = Vec::new();
+        while i < values.len() {
+            if i + 1 < values.len() && values[i] == values[i + 1] {
+                let e = values[i];
+                out.push(e + 1);
+                score_add += 2u32.pow(e + 1);
+                i += 2;
+            } else {
+                out.push(values[i]);
+                i += 1;
             }
         }
+        (out, score_add)
     }
 
     fn step_generic(&mut self, direction: Direction) {
-        let range_ = 0..SIZE;
-        let m = SIZE - 1;
-        let start_squares: Vec<Coord> = match direction {
-            Direction::Up => range_.map(|i| Coord { row: 0, col: i }).collect(),
-            Direction::Down => range_.map(|i| Coord { row: m, col: i }).collect(),
-            Direction::Left => range_.map(|i| Coord { row: i, col: 0 }).collect(),
-            Direction::Right => range_.map(|i| Coord { row: i, col: m }).collect(),
-        };
-        let dir = -direction;
-
-        for start in start_squares {
-            self.shift(start, dir);
-            let mut current = start;
-            while self.in_bounds(current) {
-                if self[current] == 0 {
-                    current = current + dir;
-                    continue;
+        match direction {
+            Direction::Left => {
+                for row in 0..SIZE {
+                    let values: Vec<SqVal> = (0..SIZE)
+                        .map(|col| self.board[row][col])
+                        .filter(|&v| v != 0)
+                        .collect();
+                    let (merged, add) = Self::merge_line(values);
+                    self.score += add;
+                    for c in 0..SIZE {
+                        self.board[row][c] = 0;
+                    }
+                    for (i, &v) in merged.iter().enumerate() {
+                        self.board[row][i] = v;
+                    }
                 }
-
-                let next = current + dir;
-                if !self.in_bounds(next) {
-                    break;
+            }
+            Direction::Right => {
+                for row in 0..SIZE {
+                    let values: Vec<SqVal> = (0..SIZE)
+                        .rev()
+                        .map(|col| self.board[row][col])
+                        .filter(|&v| v != 0)
+                        .collect();
+                    let (merged, add) = Self::merge_line(values);
+                    self.score += add;
+                    for c in 0..SIZE {
+                        self.board[row][c] = 0;
+                    }
+                    for (i, &v) in merged.iter().enumerate() {
+                        self.board[row][SIZE - 1 - i] = v;
+                    }
                 }
-                if self[next] == 0 {
-                    current = next;
-                    continue;
+            }
+            Direction::Up => {
+                for col in 0..SIZE {
+                    let values: Vec<SqVal> = (0..SIZE)
+                        .map(|row| self.board[row][col])
+                        .filter(|&v| v != 0)
+                        .collect();
+                    let (merged, add) = Self::merge_line(values);
+                    self.score += add;
+                    for r in 0..SIZE {
+                        self.board[r][col] = 0;
+                    }
+                    for (i, &v) in merged.iter().enumerate() {
+                        self.board[i][col] = v;
+                    }
                 }
-                if self[current] == self[next] {
-                    // Merge the tiles!
-                    // increment score with 2 to the power for the value
-                    self.score += 2u32.pow(self[current]);
-                    self[current] += 1;
-                    self[next] = 0;
-                    // move other values
-                    self.shift(current, dir);
-                    // reset current to start
-                    current = start;
-                } else {
-                    current = next;
+            }
+            Direction::Down => {
+                for col in 0..SIZE {
+                    let values: Vec<SqVal> = (0..SIZE)
+                        .rev()
+                        .map(|row| self.board[row][col])
+                        .filter(|&v| v != 0)
+                        .collect();
+                    let (merged, add) = Self::merge_line(values);
+                    self.score += add;
+                    for r in 0..SIZE {
+                        self.board[r][col] = 0;
+                    }
+                    for (i, &v) in merged.iter().enumerate() {
+                        self.board[SIZE - 1 - i][col] = v;
+                    }
                 }
             }
         }
@@ -381,8 +404,8 @@ mod test {
         game.step_action(Direction::Left);
         let expected = [
             //comment
-            [3, 0, 0, 0],
-            [4, 0, 0, 0],
+            [2, 2, 0, 0],
+            [3, 3, 0, 0],
             [6, 0, 0, 0],
             [0, 0, 0, 0],
         ];
