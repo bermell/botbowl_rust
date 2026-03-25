@@ -96,19 +96,23 @@ pub fn run_random_baseline_game(seed: u64) -> i32 {
     game.score as i32
 }
 
+/// Full-game MCTS driver. Returns `(final_score, total_tree_steps)` where `total_tree_steps` is the
+/// number of [`SearchTree::step`] calls (warmup at every ply plus the search budget on action plies).
 pub fn run_mcts_game(
     seed: u64,
     move_budget: MctsMoveBudget,
     warmup_steps: usize,
     dynamics: Game2048Dynamics,
-) -> i32 {
+) -> (i32, u64) {
     let mut rng = StdRng::seed_from_u64(seed);
     let game = new_game_with_rng(&mut rng);
     let tree = Tree::new(dynamics, GetState, (), game);
+    let mut total_steps = 0u64;
 
     loop {
         for _ in 0..warmup_steps {
             tree.step();
+            total_steps += 1;
         }
         let Some(root_actions) = tree.get_next_move_info() else {
             break;
@@ -123,12 +127,14 @@ pub fn run_mcts_game(
                 MctsMoveBudget::Iterations(n) => {
                     for _ in 0..*n {
                         tree.step();
+                        total_steps += 1;
                     }
                 }
                 MctsMoveBudget::WallTime(d) => {
                     let deadline = Instant::now() + *d;
                     while Instant::now() < deadline {
                         tree.step();
+                        total_steps += 1;
                     }
                 }
             }
@@ -145,7 +151,7 @@ pub fn run_mcts_game(
         tree.apply_action(&next_action);
     }
 
-    tree.get_root_info().score.unwrap().score
+    (tree.get_root_info().score.unwrap().score, total_steps)
 }
 
 #[cfg(test)]

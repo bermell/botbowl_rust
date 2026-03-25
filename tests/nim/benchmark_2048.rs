@@ -9,6 +9,7 @@ fn run_single_game(mcts_iterations: usize) -> i32 {
         DEFAULT_WARMUP_STEPS,
         Game2048Dynamics::default(),
     )
+    .0
 }
 
 fn run_benchmark(num_games: usize, mcts_iterations: usize) {

@@ -18,6 +18,9 @@
 //! - Defaults: **100** games, base seed **0**, iteration budgets **500 1000 2000 4000 8000**.
 //! - Game `i` uses seed `base_seed + i`. Each seed runs: random baseline, heuristic, and each MCTS
 //!   budget independently (same RNG seed for initial tile and spawns within each run).
+//! - For each MCTS budget, the summary also reports **total `tree.step()` counts per game** (warmup
+//!   at every ply plus the search budget on action plies), so wall-time runs can be compared by
+//!   actual work done.
 
 use std::time::Duration;
 
@@ -124,6 +127,102 @@ fn quantile_linear(sorted: &[i32], q: f64) -> f64 {
 
 fn print_block(label: &str, scores: &[i32]) {
     let s = ScoreSummary::from_scores(scores);
+    println!("{}", label);
+    println!("  mean:        {:.1}", s.mean);
+    println!("  std dev:     {:.1}", s.std_dev);
+    println!("  median:      {:.1}", s.median);
+    println!(
+        "  quartiles:   p25 {:.1}  p75 {:.1}  (IQR {:.1})",
+        s.q25,
+        s.q75,
+        s.q75 - s.q25
+    );
+    println!("  min / max:   {} / {}", s.min, s.max);
+}
+
+struct U64Summary {
+    mean: f64,
+    std_dev: f64,
+    median: f64,
+    q25: f64,
+    q75: f64,
+    min: u64,
+    max: u64,
+}
+
+impl U64Summary {
+    fn from_values(values: &[u64]) -> Self {
+        let n = values.len();
+        if n == 0 {
+            return U64Summary {
+                mean: 0.0,
+                std_dev: 0.0,
+                median: 0.0,
+                q25: 0.0,
+                q75: 0.0,
+                min: 0,
+                max: 0,
+            };
+        }
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        let sum: u128 = values.iter().map(|&x| x as u128).sum();
+        let mean = sum as f64 / n as f64;
+        let variance = if n > 1 {
+            values
+                .iter()
+                .map(|&x| {
+                    let d = x as f64 - mean;
+                    d * d
+                })
+                .sum::<f64>()
+                / (n - 1) as f64
+        } else {
+            0.0
+        };
+        let std_dev = variance.sqrt();
+        U64Summary {
+            mean,
+            std_dev,
+            median: median_from_sorted_u64(&sorted),
+            q25: quantile_linear_u64(&sorted, 0.25),
+            q75: quantile_linear_u64(&sorted, 0.75),
+            min: sorted[0],
+            max: sorted[n - 1],
+        }
+    }
+}
+
+fn median_from_sorted_u64(sorted: &[u64]) -> f64 {
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2] as f64
+    } else {
+        (sorted[n / 2 - 1] as f64 + sorted[n / 2] as f64) / 2.0
+    }
+}
+
+fn quantile_linear_u64(sorted: &[u64], q: f64) -> f64 {
+    let n = sorted.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return sorted[0] as f64;
+    }
+    let pos = q * (n - 1) as f64;
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    if lo == hi {
+        sorted[lo] as f64
+    } else {
+        let w = pos - lo as f64;
+        sorted[lo] as f64 * (1.0 - w) + sorted[hi] as f64 * w
+    }
+}
+
+fn print_u64_block(label: &str, values: &[u64]) {
+    let s = U64Summary::from_values(values);
     println!("{}", label);
     println!("  mean:        {:.1}", s.mean);
     println!("  std dev:     {:.1}", s.std_dev);
@@ -362,13 +461,13 @@ fn main() {
     );
     println!();
 
-    let rows: Vec<(i32, i32, Vec<i32>)> = (0..num_games)
+    let rows: Vec<(i32, i32, Vec<(i32, u64)>)> = (0..num_games)
         .into_par_iter()
         .map(|i| {
             let seed = base_seed.wrapping_add(i as u64);
             let heuristic = play_2048::run_heuristic_game(seed);
             let random = play_2048::run_random_baseline_game(seed);
-            let mcts: Vec<i32> = mcts_budgets
+            let mcts: Vec<(i32, u64)> = mcts_budgets
                 .iter()
                 .map(|b| play_2048::run_mcts_game(seed, *b, DEFAULT_WARMUP_STEPS, mcts_dynamics))
                 .collect();
@@ -380,12 +479,15 @@ fn main() {
     let mut random_scores = vec![0i32; num_games];
     let mut mcts_by_budget: Vec<Vec<i32>> =
         mcts_budgets.iter().map(|_| vec![0i32; num_games]).collect();
+    let mut mcts_steps_by_budget: Vec<Vec<u64>> =
+        mcts_budgets.iter().map(|_| vec![0u64; num_games]).collect();
 
     for (i, (h, r, m)) in rows.into_iter().enumerate() {
         heuristic_scores[i] = h;
         random_scores[i] = r;
-        for (j, score) in m.iter().enumerate() {
+        for (j, (score, steps)) in m.iter().enumerate() {
             mcts_by_budget[j][i] = *score;
+            mcts_steps_by_budget[j][i] = *steps;
         }
     }
 
@@ -402,9 +504,10 @@ fn main() {
             );
             for (j, budget) in mcts_budgets.iter().enumerate() {
                 print!(
-                    "  mcts@{:>7}: {:>6}",
+                    "  mcts@{:>7}: {:>6}  steps {:>12}",
                     budget.label_short(),
-                    mcts_by_budget[j][i]
+                    mcts_by_budget[j][i],
+                    mcts_steps_by_budget[j][i]
                 );
             }
             println!();
@@ -429,5 +532,13 @@ fn main() {
     for (j, budget) in mcts_budgets.iter().enumerate() {
         println!();
         print_block(&mcts_block_title(budget, leaf_rollout), &mcts_by_budget[j]);
+        println!();
+        print_u64_block(
+            &format!(
+                "Tree step() total per game — {} (warmup + search; same column as above)",
+                budget.label_short()
+            ),
+            &mcts_steps_by_budget[j],
+        );
     }
 }
