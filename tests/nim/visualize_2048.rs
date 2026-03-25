@@ -7,20 +7,22 @@ use recon_mcts::{GetState, SearchTree, Tree};
 
 use crate::game_2048::{Coord, Direction, Game2048, GameState};
 
+type Game2048MctsTree = Tree<
+    recon_mcts::Node<
+        Game2048,
+        Game2048,
+        (),
+        crate::test_mcts_2048::ActionChance,
+        crate::test_mcts_2048::ScoreItem,
+        std::vec::IntoIter<((), crate::test_mcts_2048::ActionChance)>,
+        GetState,
+    >,
+    Game2048,
+>;
+
 pub struct GameVisualizer {
     game: Game2048,
-    tree: Tree<
-        recon_mcts::Node<
-            Game2048,
-            Game2048,
-            (),
-            crate::test_mcts_2048::ActionChance,
-            crate::test_mcts_2048::ScoreItem,
-            std::vec::IntoIter<((), crate::test_mcts_2048::ActionChance)>,
-            GetState,
-        >,
-        Game2048,
-    >,
+    tree: Game2048MctsTree,
     mcts_iterations: usize,
 }
 

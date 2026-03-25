@@ -1,11 +1,7 @@
 use std::{
     collections::HashSet,
     ops::{Add, Index, IndexMut, Neg},
-    usize,
 };
-
-use rand::seq::IteratorRandom;
-use rand::seq::SliceRandom;
 
 const SIZE: usize = 4;
 

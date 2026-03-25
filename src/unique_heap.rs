@@ -46,7 +46,7 @@ impl<T: HeapElem> Ord for OrdWrap<T> {
 
 impl<T: HeapElem> PartialOrd for OrdWrap<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.order().partial_cmp(&other.order())
+        Some(self.cmp(other))
     }
 }
 
@@ -139,7 +139,7 @@ mod test {
             &self[0]
         }
         fn unique_id(&self) -> Self::UID {
-            *&self[0]
+            self[0]
         }
     }
 

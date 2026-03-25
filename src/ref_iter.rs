@@ -111,7 +111,7 @@ mod test {
         // cloning prior to calling max_by or collecting everything into a `Vec`
         items
             .map(|x| x.clone())
-            .max_by(|a, b| a.partial_cmp(&*b).unwrap());
+            .max_by(|a, b| a.partial_cmp(b).unwrap());
     }
 
     #[test]

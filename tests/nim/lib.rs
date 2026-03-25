@@ -168,7 +168,7 @@ impl GameDynamics for Nim {
                     };
                     (q, a, qp + e)
                 })
-                .max_by(|(.., a), (.., b)| a.partial_cmp(&b).unwrap())
+                .max_by(|(.., a), (.., b)| a.partial_cmp(b).unwrap())
                 .map(|(q, a, _)| {
                     q.as_ref().unwrap().fetch_add_visits_direct(1);
                     a
@@ -186,7 +186,7 @@ impl GameDynamics for Nim {
                     };
                     (q, a, qp + e)
                 })
-                .max_by(|(.., a), (.., b)| a.partial_cmp(&b).unwrap())
+                .max_by(|(.., a), (.., b)| a.partial_cmp(b).unwrap())
                 .map(|(q, a, _)| {
                     q.as_ref().unwrap().fetch_add_visits_direct(1);
                     a
@@ -315,7 +315,7 @@ impl DynGD for Nim {
                     };
                     (q.clone(), a.clone(), qp + e)
                 })
-                .max_by(|(.., a), (.., b)| a.partial_cmp(&b).unwrap()),
+                .max_by(|(.., a), (.., b)| a.partial_cmp(b).unwrap()),
             Player::P2 => scores_and_actions
                 .map(|(q, a)| {
                     let qp = q.as_ref().unwrap().player2;
@@ -327,7 +327,7 @@ impl DynGD for Nim {
                     };
                     (q.clone(), a.clone(), qp + e)
                 })
-                .max_by(|(.., a), (.., b)| a.partial_cmp(&b).unwrap()),
+                .max_by(|(.., a), (.., b)| a.partial_cmp(b).unwrap()),
         }
         .map(|(q, a, _)| {
             q.as_ref().unwrap().fetch_add_visits_direct(1);

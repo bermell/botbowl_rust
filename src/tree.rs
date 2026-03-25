@@ -1040,8 +1040,8 @@ where
                 let mut inv_depth = 0;
                 if let Some(children) = self_arc.children.read().unwrap().as_map() {
                     inv_depth = 1 + children
-                        .iter()
-                        .map(|(_, c)| Self::find_children_sorted_with_depth(c, sorted, visited))
+                        .values()
+                        .map(|c| Self::find_children_sorted_with_depth(c, sorted, visited))
                         .max()
                         .unwrap_or(0);
                 }

@@ -171,7 +171,7 @@ You can browse the repo and make contributions on [GitHub][repo_url].
     rust_2018_idioms,
     missing_debug_implementations,
     missing_docs,
-    broken_intra_doc_links
+    rustdoc::broken_intra_doc_links
 )]
 
 mod game_dynamics;

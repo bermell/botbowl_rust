@@ -11,7 +11,7 @@ readme = "README.md"
 default = ["stable"]
 stable = []
 test_internals = []
-# nightly = []
+nightly = []
 two_player = []
 
 # Tests are in a separate workspace so they can be compiled with feature
