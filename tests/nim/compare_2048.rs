@@ -125,19 +125,112 @@ fn quantile_linear(sorted: &[i32], q: f64) -> f64 {
     }
 }
 
-fn print_block(label: &str, scores: &[i32]) {
-    let s = ScoreSummary::from_scores(scores);
-    println!("{}", label);
-    println!("  mean:        {:.1}", s.mean);
-    println!("  std dev:     {:.1}", s.std_dev);
-    println!("  median:      {:.1}", s.median);
-    println!(
-        "  quartiles:   p25 {:.1}  p75 {:.1}  (IQR {:.1})",
-        s.q25,
-        s.q75,
-        s.q75 - s.q25
+/// Top / inner / bottom border lines for tables whose first column has width `label_w`.
+fn stats_table_borders(label_w: usize) -> (String, String, String) {
+    let h = "─".repeat(label_w + 2);
+    let top = format!(
+        "┌{}┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┬────────────────┐",
+        h
     );
-    println!("  min / max:   {} / {}", s.min, s.max);
+    let mid = format!(
+        "├{}┼──────────┼──────────┼──────────┼──────────┼──────────┼──────────┼────────────────┤",
+        h
+    );
+    let bot = format!(
+        "└{}┴──────────┴──────────┴──────────┴──────────┴──────────┴──────────┴────────────────┘",
+        h
+    );
+    (top, mid, bot)
+}
+
+fn print_score_summary_table(title: &str, rows: &[(String, ScoreSummary)]) {
+    if rows.is_empty() {
+        return;
+    }
+    let label_w = rows
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .max()
+        .unwrap_or(10)
+        .clamp(18, 46);
+    let (top, mid, bot) = stats_table_borders(label_w);
+
+    println!("{}", title);
+    println!("{}", top);
+    println!(
+        "│ {:<lw$} │ {:>10} │ {:>10} │ {:>10} │ {:>10} │ {:>10} │ {:>10} │ {:>16} │",
+        "Method",
+        "mean",
+        "std",
+        "median",
+        "p25",
+        "p75",
+        "IQR",
+        "min / max",
+        lw = label_w
+    );
+    println!("{}", mid);
+    for (label, s) in rows {
+        println!(
+            "│ {:<lw$} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>7} / {:>7} │",
+            label,
+            s.mean,
+            s.std_dev,
+            s.median,
+            s.q25,
+            s.q75,
+            s.q75 - s.q25,
+            s.min,
+            s.max,
+            lw = label_w
+        );
+    }
+    println!("{}", bot);
+}
+
+fn print_steps_summary_table(title: &str, rows: &[(String, U64Summary)]) {
+    if rows.is_empty() {
+        return;
+    }
+    let label_w = rows
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .max()
+        .unwrap_or(10)
+        .clamp(18, 46);
+    let (top, mid, bot) = stats_table_borders(label_w);
+
+    println!("{}", title);
+    println!("{}", top);
+    println!(
+        "│ {:<lw$} │ {:>10} │ {:>10} │ {:>10} │ {:>10} │ {:>10} │ {:>10} │ {:>16} │",
+        "MCTS budget",
+        "mean",
+        "std",
+        "median",
+        "p25",
+        "p75",
+        "IQR",
+        "min / max",
+        lw = label_w
+    );
+    println!("{}", mid);
+    for (label, s) in rows {
+        println!(
+            "│ {:<lw$} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>10.1} │ {:>7} / {:>7} │",
+            label,
+            s.mean,
+            s.std_dev,
+            s.median,
+            s.q25,
+            s.q75,
+            s.q75 - s.q25,
+            s.min,
+            s.max,
+            lw = label_w
+        );
+    }
+    println!("{}", bot);
 }
 
 struct U64Summary {
@@ -218,41 +311,6 @@ fn quantile_linear_u64(sorted: &[u64], q: f64) -> f64 {
     } else {
         let w = pos - lo as f64;
         sorted[lo] as f64 * (1.0 - w) + sorted[hi] as f64 * w
-    }
-}
-
-fn print_u64_block(label: &str, values: &[u64]) {
-    let s = U64Summary::from_values(values);
-    println!("{}", label);
-    println!("  mean:        {:.1}", s.mean);
-    println!("  std dev:     {:.1}", s.std_dev);
-    println!("  median:      {:.1}", s.median);
-    println!(
-        "  quartiles:   p25 {:.1}  p75 {:.1}  (IQR {:.1})",
-        s.q25,
-        s.q75,
-        s.q75 - s.q25
-    );
-    println!("  min / max:   {} / {}", s.min, s.max);
-}
-
-fn mcts_block_title(budget: &MctsMoveBudget, leaf_rollout: bool) -> String {
-    let leaf = if leaf_rollout {
-        "random rollout"
-    } else {
-        "current score"
-    };
-    match budget {
-        MctsMoveBudget::Iterations(n) => format!(
-            "MCTS ({} iters/move, {} warmup; leaf: {})",
-            n, DEFAULT_WARMUP_STEPS, leaf
-        ),
-        MctsMoveBudget::WallTime(d) => format!(
-            "MCTS ({} ms wall time/move, {} warmup; leaf: {})",
-            d.as_millis(),
-            DEFAULT_WARMUP_STEPS,
-            leaf
-        ),
     }
 }
 
@@ -495,23 +553,15 @@ fn main() {
     let print_each_game = num_games <= PER_GAME_ROWS_MAX;
 
     if print_each_game {
-        for i in 0..num_games {
-            print!(
-                "game {:>3}: random {:>6}  heuristic {:>6}",
-                i + 1,
-                random_scores[i],
-                heuristic_scores[i]
-            );
-            for (j, budget) in mcts_budgets.iter().enumerate() {
-                print!(
-                    "  mcts@{:>7}: {:>6}  steps {:>12}",
-                    budget.label_short(),
-                    mcts_by_budget[j][i],
-                    mcts_steps_by_budget[j][i]
-                );
-            }
-            println!();
-        }
+        println!("─── Per-game results ───");
+        print_per_game_table(
+            &mcts_budgets,
+            num_games,
+            &random_scores,
+            &heuristic_scores,
+            &mcts_by_budget,
+            &mcts_steps_by_budget,
+        );
     } else {
         println!(
             "(Omitted {} per-game lines; only summary below. Use num_games <= {} for full table.)\n",
@@ -520,25 +570,66 @@ fn main() {
     }
 
     println!();
-    print_block(
-        "Random baseline (uniform legal move, sorted tie-break)",
-        &random_scores,
-    );
-    println!();
-    print_block(
-        "Heuristic (one-step snake / empty / score)",
-        &heuristic_scores,
-    );
-    for (j, budget) in mcts_budgets.iter().enumerate() {
-        println!();
-        print_block(&mcts_block_title(budget, leaf_rollout), &mcts_by_budget[j]);
-        println!();
-        print_u64_block(
-            &format!(
-                "Tree step() total per game — {} (warmup + search; same column as above)",
-                budget.label_short()
+
+    let score_rows: Vec<(String, ScoreSummary)> = {
+        let mut v = vec![
+            (
+                "Random baseline".to_string(),
+                ScoreSummary::from_scores(&random_scores),
             ),
-            &mcts_steps_by_budget[j],
-        );
+            (
+                "Heuristic".to_string(),
+                ScoreSummary::from_scores(&heuristic_scores),
+            ),
+        ];
+        for (j, budget) in mcts_budgets.iter().enumerate() {
+            v.push((
+                format!("MCTS {}", budget.label_short()),
+                ScoreSummary::from_scores(&mcts_by_budget[j]),
+            ));
+        }
+        v
+    };
+    print_score_summary_table("═══ Final score (per game) ═══", &score_rows);
+
+    let step_rows: Vec<(String, U64Summary)> = mcts_budgets
+        .iter()
+        .enumerate()
+        .map(|(j, budget)| {
+            (
+                format!("MCTS {}", budget.label_short()),
+                U64Summary::from_values(&mcts_steps_by_budget[j]),
+            )
+        })
+        .collect();
+    println!();
+    print_steps_summary_table(
+        "═══ Tree step() total per game (warmup + search) ═══",
+        &step_rows,
+    );
+}
+
+/// One row per game: baseline columns plus score and step count for each MCTS budget.
+fn print_per_game_table(
+    budgets: &[MctsMoveBudget],
+    num_games: usize,
+    random: &[i32],
+    heuristic: &[i32],
+    mcts_scores: &[Vec<i32>],
+    mcts_steps: &[Vec<u64>],
+) {
+    let mut header = format!("{:>5} │ {:>7} │ {:>7}", "#", "random", "heur");
+    for b in budgets {
+        let lab = b.label_short();
+        header.push_str(&format!(" │ {:>7} │ {:>10}", lab, format!("st{}", lab)));
+    }
+    println!("{}", header);
+    println!("{}", "─".repeat(header.chars().count()));
+    for i in 0..num_games {
+        print!("{:>5} │ {:>7} │ {:>7}", i + 1, random[i], heuristic[i]);
+        for j in 0..budgets.len() {
+            print!(" │ {:>7} │ {:>10}", mcts_scores[j][i], mcts_steps[j][i]);
+        }
+        println!();
     }
 }
