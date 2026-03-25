@@ -5,6 +5,14 @@ use std::{
 
 const SIZE: usize = 4;
 
+/// Serpentine preference: large tiles should sit toward bottom-left (highest weight at (3,0)).
+const SNAKE_WEIGHT: [[i64; SIZE]; SIZE] = [
+    [1, 2, 3, 4],
+    [8, 7, 6, 5],
+    [9, 10, 11, 12],
+    [16, 15, 14, 13],
+];
+
 pub type SqVal = u32;
 pub type Grid = [[SqVal; SIZE]; SIZE];
 
@@ -287,12 +295,42 @@ impl Game2048 {
             }
         }
     }
+
+    /// Static evaluation after a slide, before the random tile (`WaitingForRandom`).
+    /// Combines cumulative score, empty cells, and snake-shaped monotonicity (tile exponents).
+    pub fn static_eval_after_action(g: &Game2048) -> i64 {
+        debug_assert_eq!(g.state, GameState::WaitingForRandom);
+        const EMPTY_WEIGHT: i64 = 256;
+        let empty = g.empty_squares().len() as i64;
+        let mut snake = 0i64;
+        for row in 0..SIZE {
+            for col in 0..SIZE {
+                let v = g.board[row][col] as i64;
+                snake += v * SNAKE_WEIGHT[row][col];
+            }
+        }
+        g.score as i64 + empty * EMPTY_WEIGHT + snake
+    }
+
+    /// One-step greedy: pick the legal slide with highest [`static_eval_after_action`].
+    pub fn best_direction_heuristic(&self) -> Direction {
+        debug_assert_eq!(self.state, GameState::WaitingForAction);
+        self.available_action()
+            .into_iter()
+            .max_by_key(|&d| {
+                let mut g = self.clone();
+                g.step_action(d);
+                Self::static_eval_after_action(&g)
+            })
+            .expect("WaitingForAction implies at least one legal move")
+    }
 }
 
 #[cfg(test)]
 mod test {
 
     use rand::Rng;
+    use rand::SeedableRng;
 
     use crate::game_2048::Game2048;
 
@@ -459,6 +497,51 @@ mod test {
         game.step_action(Direction::Left);
         assert_eq!(game.board[0][0], 2);
         assert_eq!(game.score, 4);
+    }
+
+    #[test]
+    fn best_direction_heuristic_is_among_available() {
+        let game = Game2048::new_custom([[0, 0, 0, 0], [0, 0, 0, 1], [0, 0, 0, 2], [0, 0, 0, 1]]);
+        let aa = game.available_action();
+        let pick = game.best_direction_heuristic();
+        assert!(aa.contains(&pick));
+    }
+
+    #[test]
+    fn static_eval_prefers_slide_that_opens_more_space() {
+        // Two legal moves; one leaves more empty cells after the slide.
+        let base = Game2048::new_custom([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 2], [0, 0, 1, 1]]);
+        let mut left = base;
+        left.step_action(Direction::Left);
+        let mut up = base;
+        up.step_action(Direction::Up);
+        let score_left = Game2048::static_eval_after_action(&left);
+        let score_up = Game2048::static_eval_after_action(&up);
+        assert!(
+            score_left > score_up,
+            "left should score higher (more empty cells after merge)"
+        );
+    }
+
+    #[test]
+    fn heuristic_play_to_finish_seeded() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut game = Game2048::new_game(
+            Coord {
+                row: rng.random_range(0usize..4),
+                col: rng.random_range(0usize..4),
+            },
+            2,
+        );
+        while game.state != GameState::Done {
+            let dir = game.best_direction_heuristic();
+            game.step_action(dir);
+            let chances = game.available_chance();
+            assert!(!chances.is_empty());
+            let idx = rng.random_range(0..chances.len());
+            let (c, v, _) = chances[idx];
+            game.step_random(c, v);
+        }
     }
 
     #[test]
