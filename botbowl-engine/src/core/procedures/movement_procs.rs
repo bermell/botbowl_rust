@@ -971,6 +971,8 @@ mod tests {
     }
 
     mod trapdoor_tests {
+        use crate::core::procedures::StandUp;
+
         use super::*;
 
         #[test]
@@ -1004,19 +1006,64 @@ mod tests {
 
             state.step_positional(PosAT::StartMove, start_pos);
 
-            state.fixes.fix_d6(1); //should not be consumed
-            state.step_positional(PosAT::Move, move_target);
+            state.fixes.fix_d6(1); // this fail should not be triggered
+            state.micro_step(Some(Action::Positional(PosAT::Move, move_target))).unwrap();
 
-            assert!(!state.fixes.is_empty());
+            assert!(state.get_player_at(TRAPDOOR_TWO).unwrap().status == PlayerStatus::Up);
         }
 
         #[test]
         fn standup_on_active_trapdoor_dont_cause_trapdoor_roll() {
+            let start_pos = TRAPDOOR_ONE;
+
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            let player = state.get_mut_player_at_unsafe(start_pos);
+            let id = player.id;
+            
+            player.status = PlayerStatus::Down;
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fixes.fix_d6(1); // should not trigger failure
+
+            let mut stand_up = StandUp::new(id);
+
+            stand_up.step(&mut state, ProcInput::Nothing);
+
+            assert_eq!(state.get_player_at(start_pos).unwrap().status, PlayerStatus::Up);
         }
 
         #[test]
         fn gfi_onto_trapdoor_trapdoor_event_resolves_before_gfi() {
+            let start_pos = Position::new((13, 2)); // Lineman has movement 6, put 7 squares away
+            let move_target = TRAPDOOR_TWO;
 
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            let id = state.get_player_id_at(start_pos).unwrap();
+
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(1); // this should fail trapdoor rather than fail GFI.
+            state.fixes.fix_d6(3); 
+            state.fixes.fix_d6(1);
+
+            state.step_positional(PosAT::Move, move_target);
+
+            assert_eq!(state.get_player_id_at(move_target), None);
+            assert!(state.get_players_on_pitch().all(|player| player.id != id));
+
+            assert!(state.get_dugout().any(|player| {
+                player.place == DugoutPlace::Reserves && player.stats.team == TeamType::Home
+            }));
         }
 
         #[test]

@@ -63,14 +63,6 @@ impl TrapdoorCheck {
             on_safe_procs: Vec::new(),
         })
     }
-
-    pub fn new_with_on_safe(id: PlayerID, on_safe_procs: Vec<AnyProc>, target: D6Target) -> AnyProc {
-        AnyProc::TrapdoorCheck(TrapdoorCheck {
-            id,
-            target,
-            on_safe_procs,
-        })
-    }
 }
 
 impl Procedure for TrapdoorCheck {

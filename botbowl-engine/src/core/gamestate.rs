@@ -1173,7 +1173,7 @@ impl GameState {
         self.fixes.assert_is_empty();
     }
 
-    pub fn step_positional(&mut self, action: PosAT, position: Position) {
+    pub fn  step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
         self.fixes.assert_is_empty();
     }
