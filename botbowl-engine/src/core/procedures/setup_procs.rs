@@ -1088,6 +1088,16 @@ mod tests {
 
     #[test]
     fn random_setup() {
-        // Todo: implement random_setup happy path test
+        for team in [TeamType::Home, TeamType::Away] {
+            let mut state = GameStateBuilder::empty_state();
+            add_reserves(&mut state, team, 13);
+
+            let setup = setup_for(team);
+            setup.random_setup(&mut state);
+
+            assert_eq!(state.get_players_on_pitch_in_team(team).count(), 11);
+            assert_eq!(state.get_reserve_count_for_team(team), 2);
+            assert!(state.is_setup_legal_for_team(team));
+        }
     }
 }

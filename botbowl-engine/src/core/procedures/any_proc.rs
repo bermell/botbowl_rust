@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::model::Procedure;
+use crate::core::model::{Procedure};
+use crate::core::procedures::nuffle_prayers_procs::{PrayersToNuffle, TrapdoorCheck};
 use crate::core::procedures::ball_procs::{
     Bounce, Catch, Deflect, DeflectOrResolve, Pass, PickupProc, ThrowIn, Touchback, Touchdown,
 };
@@ -47,12 +48,14 @@ pub enum AnyProc {
     MoveAction(MoveAction),
     Pass(Pass),
     PickupProc(SimpleProcContainer<PickupProc>),
+    PrayersToNuffle(PrayersToNuffle),
     Push(Push),
     Setup(Setup),
     StandUp(StandUp),
     ThrowIn(ThrowIn),
     Touchback(Touchback),
     Touchdown(Touchdown),
+    TrapdoorCheck(TrapdoorCheck),
     Turn(Turn),
     TurnStunned(TurnStunned),
     TurnoverIfPossessionLost(TurnoverIfPossessionLost),
@@ -90,12 +93,14 @@ impl std::fmt::Debug for AnyProc {
             Self::MoveAction(arg0) => f.debug_tuple("MoveAction").field(arg0).finish(),
             Self::Pass(arg0) => f.debug_tuple("Pass").field(arg0).finish(),
             Self::PickupProc(arg0) => f.debug_tuple("PickupProc").field(arg0).finish(),
+            Self::PrayersToNuffle(arg0) => f.debug_tuple("PrayersToNuffle").field(arg0).finish(),
             Self::Push(arg0) => f.debug_tuple("Push").field(arg0).finish(),
             Self::Setup(arg0) => f.debug_tuple("Setup").field(arg0).finish(),
             Self::StandUp(arg0) => f.debug_tuple("StandUp").field(arg0).finish(),
             Self::ThrowIn(arg0) => f.debug_tuple("ThrowIn").field(arg0).finish(),
             Self::Touchback(arg0) => f.debug_tuple("Touchback").field(arg0).finish(),
             Self::Touchdown(arg0) => f.debug_tuple("Touchdown").field(arg0).finish(),
+            Self::TrapdoorCheck(arg0) => f.debug_tuple("TrapdoorCheck").field(arg0).finish(),
             Self::Turn(arg0) => f.debug_tuple("Turn").field(arg0).finish(),
             Self::TurnStunned(arg0) => f.debug_tuple("TurnStunned").field(arg0).finish(),
             Self::TurnoverIfPossessionLost(arg0) => f
@@ -140,12 +145,14 @@ impl Procedure for AnyProc {
             AnyProc::MoveAction(arg) => arg.step(game_state, input),
             AnyProc::Pass(arg) => arg.step(game_state, input),
             AnyProc::PickupProc(arg) => arg.step(game_state, input),
+            AnyProc::PrayersToNuffle(arg) => arg.step(game_state, input),
             AnyProc::Push(arg) => arg.step(game_state, input),
             AnyProc::Setup(arg) => arg.step(game_state, input),
             AnyProc::StandUp(arg) => arg.step(game_state, input),
             AnyProc::ThrowIn(arg) => arg.step(game_state, input),
             AnyProc::Touchback(arg) => arg.step(game_state, input),
             AnyProc::Touchdown(arg) => arg.step(game_state, input),
+            AnyProc::TrapdoorCheck(arg) => arg.step(game_state, input),
             AnyProc::Turn(arg) => arg.step(game_state, input),
             AnyProc::TurnStunned(arg) => arg.step(game_state, input),
             AnyProc::TurnoverIfPossessionLost(arg) => arg.step(game_state, input),

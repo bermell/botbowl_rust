@@ -642,4 +642,56 @@ mod tests {
         state.step_positional(PosAT::StartHandoff, start_pos);
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Handoff, target_pos)));
     }
+
+    #[test]
+    fn ball_carrier_fails_trapdoor_roll_ball_bounce_from_trapdoor_position() {
+        let blocker_pos = Position::new((18, 2));
+        let carrier_pos = Position::new((19, 2));
+        let trapdoor_pos = TRAPDOOR_TWO;
+        let bounce_direction = Direction::down();
+
+        let mut state = GameStateBuilder::new()
+            .add_home_player(blocker_pos)
+            .add_away_player(carrier_pos)
+            .add_ball_pos(carrier_pos)
+            .build();
+
+        let carrier_id = state.get_player_id_at(carrier_pos).unwrap();
+        let away_reserves_before = state.reserve_ids_for_team(TeamType::Away).len();
+
+        state.info.trapdoors_active = true;
+
+        state.step_positional(PosAT::StartBlock, blocker_pos);
+        state.fixes.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_simple(SimpleAT::SelectPush);
+
+        state.fixes.fix_d6(1); // trapdoor failure
+        state.fixes.fix_d6(1); // crowd injury
+        state.fixes.fix_d6(1); // crowd injury
+        state.fixes.fix_d8_direction(bounce_direction); // bounce from trapdoor square
+        state.step_positional(PosAT::Push, trapdoor_pos);
+        state.step_positional(PosAT::FollowUp, carrier_pos);
+
+        let log = state.get_log();
+
+        assert!(state.get_player_id_at(trapdoor_pos).is_none());
+        assert!(state.get_players_on_pitch().all(|player| player.id != carrier_id));
+        assert_eq!(
+            state.reserve_ids_for_team(TeamType::Away).len(),
+            away_reserves_before + 1
+        );
+        assert!(state.get_dugout().any(|player| {
+            player.place == DugoutPlace::Reserves && player.stats.team == TeamType::Away
+        }));
+        assert_eq!(
+            state.ball,
+            BallState::OnGround(trapdoor_pos + bounce_direction)
+        );
+        assert!(log
+            .iter()
+            .any(|entry| entry.contains("STEPPING: TrapdoorCheck(")));
+        assert!(!log.iter().any(|entry| entry.contains("STEPPING: Armor(")));
+        state.fixes.assert_is_empty();
+    }
 }

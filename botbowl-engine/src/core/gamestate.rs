@@ -9,7 +9,7 @@ use std::{
     collections::{HashSet, VecDeque},
 };
 
-use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
+use crate::core::{bb_errors::EmptyProcStackError, dices::D16, model, procedures::CoinToss};
 
 use model::*;
 
@@ -295,6 +295,7 @@ pub struct GameInfo {
     pub pass_available: bool,
     pub blitz_available: bool,
     pub handle_td_by: Option<PlayerID>,
+    pub trapdoors_active: bool,
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -317,6 +318,7 @@ impl GameInfo {
             kickoff_by_team: None,
             kicking_this_drive: TeamType::Away,
             turnover: false,
+            trapdoors_active: false
         }
     }
 }
@@ -326,6 +328,7 @@ pub struct FixedDice {
     d6_fixes: VecDeque<D6>,
     blockdice_fixes: VecDeque<BlockDice>,
     d8_fixes: VecDeque<D8>,
+    d16_fixes: VecDeque<D16>,
     coin_fixes: VecDeque<Coin>,
 }
 impl FixedDice {
@@ -340,6 +343,9 @@ impl FixedDice {
     }
     pub fn fix_d8(&mut self, value: u8) {
         self.d8_fixes.push_back(D8::try_from(value).unwrap());
+    }
+    pub fn fix_d16(&mut self, value: u8) {
+        self.d16_fixes.push_back(D16::try_from(value).unwrap());
     }
     pub fn fix_d8_direction(&mut self, direction: Direction) {
         self.d8_fixes.push_back(D8::from(direction));
@@ -512,6 +518,16 @@ impl GameState {
 
     fn get_d8_roll(&mut self) -> D8 {
         match self.fixes.d8_fixes.pop_front() {
+            Some(roll) => roll,
+            None => {
+                assert!(self.rng_enabled);
+                self.rng.gen()
+            }
+        }
+    }
+
+    fn get_d16_roll(&mut self) -> D16 {
+        match self.fixes.d16_fixes.pop_front() {
             Some(roll) => roll,
             None => {
                 assert!(self.rng_enabled);
@@ -1101,6 +1117,7 @@ impl GameState {
                 }
             }
             RequestedRoll::D8 => RollResult::D8(self.get_d8_roll()),
+            RequestedRoll::D16 => RollResult::D16(self.get_d16_roll()),
             RequestedRoll::Coin => RollResult::Coin(self.get_coin_toss()),
             RequestedRoll::Deviate => RollResult::Deviate(self.get_d6_roll(), self.get_d8_roll()),
             RequestedRoll::FoulArmor(target) => {
@@ -1156,7 +1173,7 @@ impl GameState {
         self.fixes.assert_is_empty();
     }
 
-    pub fn step_positional(&mut self, action: PosAT, position: Position) {
+    pub fn  step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
         self.fixes.assert_is_empty();
     }

@@ -17,6 +17,7 @@ use super::setup_procs::{
     SetupRearrangeConfig, SetupRearrangeState,
 };
 use super::AnyProc;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Kickoff {
     aim: Position,

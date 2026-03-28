@@ -6,6 +6,7 @@ use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
     PositionOrEvent,
 };
+use crate::core::procedures::nuffle_prayers_procs;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs};
 use crate::core::table::*;
@@ -91,6 +92,7 @@ impl SimpleProc for DodgeProc {
         self.id
     }
 }
+
 fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
     match roll {
         PathingEvent::Dodge(target) => DodgeProc::new(active_player, target),
@@ -104,6 +106,9 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
         }
         PathingEvent::StandUp => StandUp::new(active_player),
         PathingEvent::Pass { to, pass, modifer } => ball_procs::Pass::new(to, pass, modifer),
+        PathingEvent::TrapdoorCheck(target) => {
+            nuffle_prayers_procs::TrapdoorCheck::new(active_player, target)
+        },
     }
 }
 
@@ -963,5 +968,184 @@ mod tests {
         assert_eq!(player.moves_left(), player.stats.ma);
         assert_eq!(player.gfis_left(), 2);
         state.step_positional(PosAT::StartMove, move_target)
+    }
+
+    mod trapdoor_tests {
+        use crate::core::procedures::StandUp;
+
+        use super::*;
+
+        #[test]
+        fn move_onto_active_trapdoor_cause_trapdoor_roll() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(2); 
+            state.step_positional(PosAT::Move, move_target);
+
+            state.fixes.assert_is_empty(); //roll should be consumed
+
+        }
+
+        #[test]
+        fn move_onto_inactive_trapdoor_dont_cause_trapdoor_roll() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(1); // this fail should not be triggered
+            state.micro_step(Some(Action::Positional(PosAT::Move, move_target))).unwrap();
+
+            assert!(state.get_player_at(TRAPDOOR_TWO).unwrap().status == PlayerStatus::Up);
+        }
+
+        #[test]
+        fn standup_on_active_trapdoor_dont_cause_trapdoor_roll() {
+            let start_pos = TRAPDOOR_ONE;
+
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            let player = state.get_mut_player_at_unsafe(start_pos);
+            let id = player.id;
+            
+            player.status = PlayerStatus::Down;
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fixes.fix_d6(1); // should not trigger failure
+
+            let mut stand_up = StandUp::new(id);
+
+            stand_up.step(&mut state, ProcInput::Nothing);
+
+            assert_eq!(state.get_player_at(start_pos).unwrap().status, PlayerStatus::Up);
+        }
+
+        #[test]
+        fn gfi_onto_trapdoor_trapdoor_event_resolves_before_gfi() {
+            let start_pos = Position::new((13, 2)); // Lineman has movement 6, put 7 squares away
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .build();
+
+            let id = state.get_player_id_at(start_pos).unwrap();
+
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(1); // this should fail trapdoor rather than fail GFI.
+            state.fixes.fix_d6(3); 
+            state.fixes.fix_d6(1); // No injury, player places in reserves
+
+            state.step_positional(PosAT::Move, move_target);
+
+            assert_eq!(state.get_player_id_at(move_target), None);
+            assert!(state.get_players_on_pitch().all(|player| player.id != id));
+
+            assert!(state.get_dugout().any(|player| {
+                player.place == DugoutPlace::Reserves && player.stats.team == TeamType::Home
+            }));
+        }
+
+        #[test]
+        fn failed_dodge_resolves_after_trapdoor() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(Position::new((18, 2)))
+                .build();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(2); // Trapdoor check succeeds
+            state.fixes.fix_d6(2); // Dodge fails on 3+
+            state.step_positional(PosAT::Move, move_target);
+
+            assert!(state.is_legal_action(&Action::Simple(SimpleAT::DontUseReroll)));
+
+            state.fixes.fix_d6(1); // Armor does not break
+            state.fixes.fix_d6(1); // Armor does not break
+            state.step_simple(SimpleAT::DontUseReroll);
+
+            let log = state.get_log();
+            let trapdoor_log_idx = log
+                .iter()
+                .position(|entry| entry.contains("STEPPING: TrapdoorCheck("))
+                .unwrap();
+            let dodge_log_idx = log
+                .iter()
+                .position(|entry| entry.contains("STEPPING: DodgeProc("))
+                .unwrap();
+            let armor_log_idx = log
+                .iter()
+                .position(|entry| entry.contains("STEPPING: Armor("))
+                .unwrap();
+
+            assert!(trapdoor_log_idx < dodge_log_idx);
+            assert!(dodge_log_idx < armor_log_idx);
+            assert_eq!(state.get_player_at(move_target).unwrap().status, PlayerStatus::Down);
+            state.fixes.assert_is_empty();
+        }
+
+        #[test]
+        fn trapdoor_resolves_before_failed_dodge() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(Position::new((18, 2)))
+                .build();
+
+            let id = state.get_player_id_at(start_pos).unwrap();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(1); // Trapdoor check fails immediately
+            state.fixes.fix_d6(3); // Crowd injury roll does not KO/CAS
+            state.fixes.fix_d6(1); // Crowd injury roll does not KO/CAS
+            state.step_positional(PosAT::Move, move_target);
+
+            let log = state.get_log();
+
+            assert_eq!(state.get_player_id_at(move_target), None);
+            assert!(state.get_players_on_pitch().all(|player| player.id != id));
+            assert!(state.get_dugout().any(|player| {
+                player.id == id as usize
+                    && player.place == DugoutPlace::Reserves
+                    && player.stats.team == TeamType::Home
+            }));
+            assert!(log
+                .iter()
+                .any(|entry| entry.contains("STEPPING: TrapdoorCheck(")));
+            assert!(!log.iter().any(|entry| entry.contains("STEPPING: DodgeProc(")));
+            assert!(!log.iter().any(|entry| entry.contains("STEPPING: Armor(")));
+            state.fixes.assert_is_empty();
+        }
     }
 }

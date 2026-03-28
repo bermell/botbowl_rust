@@ -23,6 +23,7 @@ pub enum PathingEvent {
         pass: D6Target,
         modifer: i8,
     },
+    TrapdoorCheck(D6Target),
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
@@ -39,6 +40,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::Block(_, _) => false,
         PathingEvent::StandUp => false,
         PathingEvent::Pass { .. } => true,
+        PathingEvent::TrapdoorCheck(_) => false,
     }
 }
 
@@ -218,6 +220,7 @@ impl Node {
                 PathingEvent::Pickup(_) => true,
                 PathingEvent::Touchdown(_) => true,
                 PathingEvent::Pass { .. } => false,
+                PathingEvent::TrapdoorCheck(_) => true,
             }
         } else {
             true
@@ -318,6 +321,10 @@ impl Node {
         self.events.push_back(PathingEvent::StandUp);
         self.moves_left -= 3;
     }
+    fn apply_trapdoor_check(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
+        self.events.push_back(PathingEvent::TrapdoorCheck(target));
+    }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
         assert_eq!(self.position, othr.position);
@@ -409,6 +416,7 @@ struct GameInfo<'a> {
     dodge_target: D6Target,
     gfi_target: D6Target,
     pickup_target: D6Target,
+    trapdoor_target: D6Target,
 
     id: PlayerID,
 }
@@ -421,6 +429,7 @@ impl<'a> GameInfo<'a> {
         let dodge_target = *player.ag_target().add_modifer(1);
         let mut gfi_target = D6Target::TwoPlus;
         let mut pickup_target = *player.ag_target().add_modifer(1);
+        let trapdoor_target = D6Target::TwoPlus;
 
         if game_state.info.weather == Weather::Blizzard {
             gfi_target.add_modifer(-1);
@@ -476,6 +485,7 @@ impl<'a> GameInfo<'a> {
             game_state,
             team: player.stats.team,
             player_action,
+            trapdoor_target,
             id: player.id,
             teammate_catch_mod: catch_mods,
         }
@@ -739,6 +749,7 @@ impl<'a> GameInfo<'a> {
         prev: &OptRcNode,
     ) -> Option<Node> {
         let gfi = parent_node.moves_left == 0;
+        let trapdoor_check = to == TRAPDOOR_ONE || to == TRAPDOOR_TWO;
 
         if let Some(current_best) = &prev {
             if parent_node.remaining_movement() - 1 <= current_best.remaining_movement() {
@@ -753,6 +764,9 @@ impl<'a> GameInfo<'a> {
 
         let mut next_node = Node::new(Some(parent_node.clone()), to, moves_left, gfis_left);
 
+        if trapdoor_check {
+            next_node.apply_trapdoor_check(self.trapdoor_target);
+        }
         if gfi {
             next_node.apply_gfi(self.gfi_target);
         }
