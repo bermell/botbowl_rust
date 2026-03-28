@@ -10,13 +10,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  build-engine:
     runs-on: ubuntu-latest
-
+    defaults:
+      run:
+        working-directory: botbowl-engine
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+      - name: Build engine
+        run: cargo build --verbose
+      - name: Test engine
+        run: cargo test --verbose
+
+  build-ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: botbowl-ui
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ui
+        run: cargo build --verbose
+      - name: Test ui
+        run: cargo test --verbose
