@@ -57,10 +57,18 @@ pub struct TrapdoorCheck {
 
 impl TrapdoorCheck {
     pub fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        Self::new_with_on_safe_procs(id, target, Vec::new())
+    }
+
+    pub fn new_with_on_safe_procs(
+        id: PlayerID,
+        target: D6Target,
+        on_safe_procs: Vec<AnyProc>,
+    ) -> AnyProc {
         AnyProc::TrapdoorCheck(TrapdoorCheck {
             id,
             target,
-            on_safe_procs: Vec::new(),
+            on_safe_procs,
         })
     }
 }

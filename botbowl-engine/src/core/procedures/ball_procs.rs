@@ -642,4 +642,10 @@ mod tests {
         state.step_positional(PosAT::StartHandoff, start_pos);
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Handoff, target_pos)));
     }
+
+    #[test]
+    fn ball_carrier_fails_trapdoor_roll_ball_bounce_from_trapdoor_position() {
+        // todo: This should test that when the ball carrier is pushed onto an active trapdoor and fails the trapdoor roll,
+        // the ballcarrier is moved to the dugout and the ball bounces from the trapdoor Position.
+    }
 }

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::dices::{BlockDice, RequestedRoll, RollResult};
+use crate::core::dices::{BlockDice, D6Target, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
 use crate::core::model::{
     other_team, Action, AvailableActions, Direction, PlayerStatus, Position, ProcState, Procedure,
@@ -8,6 +8,7 @@ use crate::core::model::{
 use crate::core::model::{BallState, PlayerID, ProcInput};
 use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
+use crate::core::procedures::nuffle_prayers_procs;
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
 use super::AnyProc;
@@ -25,6 +26,15 @@ pub struct Push {
     knockdown_proc: Option<KnockDown>,
     moves_to_make: Vec<(Position, Position)>,
     follow_up_pos: Position,
+    state: PushState,
+    trapdoor_checked_before_follow_up: Option<PlayerID>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum PushState {
+    Init,
+    OfferFollowUp,
+    ResolveAfterFollowUp,
 }
 
 impl Push {
@@ -35,6 +45,8 @@ impl Push {
             moves_to_make: Vec::with_capacity(1),
             knockdown_proc: None,
             follow_up_pos: on,
+            state: PushState::Init,
+            trapdoor_checked_before_follow_up: None,
         }
     }
 
@@ -71,6 +83,34 @@ impl Push {
         });
     }
 
+    fn get_trapdoor_pushed_player(&self, game_state: &GameState) -> Option<PlayerID> {
+        if !game_state.info.trapdoors_active {
+            return None;
+        }
+
+        self.moves_to_make
+            .iter()
+            .find_map(|(_, to)| {
+                to.is_trapdoor_position()
+                    .then(|| game_state.get_player_id_at(*to))
+                    .flatten()
+            })
+    }
+
+    fn start_follow_up_sequence(&mut self, game_state: &mut GameState) -> ProcState {
+        if let Some(trapdoor_player_id) = self.get_trapdoor_pushed_player(game_state) {
+            self.trapdoor_checked_before_follow_up = Some(trapdoor_player_id);
+            self.state = PushState::OfferFollowUp;
+            ProcState::NotDoneNew(nuffle_prayers_procs::TrapdoorCheck::new(
+                trapdoor_player_id,
+                D6Target::TwoPlus,
+            ))
+        } else {
+            self.state = PushState::ResolveAfterFollowUp;
+            ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
+        }
+    }
+
     fn handle_aftermath(&mut self, game_state: &mut GameState) -> ProcState {
         let mut procs: Vec<AnyProc> = Vec::with_capacity(2);
         let (last_push_from, last_push_to) = self.moves_to_make.pop().unwrap();
@@ -87,7 +127,25 @@ impl Push {
             }
         }
         if let Some(proc) = self.knockdown_proc.take() {
-            procs.push(AnyProc::KnockDown(proc));
+            let id = proc.id;
+            let knockdown_proc = AnyProc::KnockDown(proc);
+            let knockdown_on_trapdoor = game_state
+                .get_player(id)
+                .map(|player| player.position.is_trapdoor_position())
+                .unwrap_or(false);
+
+            if knockdown_on_trapdoor
+                && game_state.info.trapdoors_active
+                && self.trapdoor_checked_before_follow_up != Some(id)
+            {
+                procs.push(nuffle_prayers_procs::TrapdoorCheck::new_with_on_safe_procs(
+                    id,
+                    D6Target::TwoPlus,
+                    vec![knockdown_proc],
+                ));
+            } else {
+                procs.push(knockdown_proc);
+            }
         }
         ProcState::from(procs)
     }
@@ -98,7 +156,7 @@ impl Push {
             PushSquares::Crowd(position_in_crowd) => {
                 self.moves_to_make.push((self.on, position_in_crowd));
                 self.do_moves(game_state);
-                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
+                self.start_follow_up_sequence(game_state)
             }
             PushSquares::ChainPush(positions) | PushSquares::FreeSquares(positions) => {
                 aa.insert_positional(PosAT::Push, positions);
@@ -111,10 +169,14 @@ impl Push {
 impl Procedure for Push {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {
-            ProcInput::Nothing if self.moves_to_make.is_empty() => {
-                self.calculate_next_state(game_state)
+            ProcInput::Nothing => match self.state {
+                PushState::Init => self.calculate_next_state(game_state),
+                PushState::OfferFollowUp => {
+                    self.state = PushState::ResolveAfterFollowUp;
+                    ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
+                }
+                PushState::ResolveAfterFollowUp => self.handle_aftermath(game_state),
             }
-            ProcInput::Nothing => self.handle_aftermath(game_state),
             ProcInput::Action(Action::Positional(PosAT::Push, position_to))
                 if game_state.get_player_at(position_to).is_some() =>
             {
@@ -126,7 +188,7 @@ impl Procedure for Push {
             ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
                 self.moves_to_make.push((self.on, position));
                 self.do_moves(game_state);
-                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
+                self.start_follow_up_sequence(game_state)
             }
             _ => panic!("very wrong!"),
         }
@@ -163,6 +225,13 @@ impl Procedure for FollowUp {
                         && game_state.get_endzone_x(team) == position.x
                     {
                         game_state.info.handle_td_by = Some(id)
+                    }
+
+                    if game_state.info.trapdoors_active && position.is_trapdoor_position() {
+                        return ProcState::DoneNew(nuffle_prayers_procs::TrapdoorCheck::new(
+                            id,
+                            D6Target::TwoPlus,
+                        ));
                     }
                 }
                 ProcState::Done
@@ -632,50 +701,258 @@ mod tests {
         state.step_positional(PosAT::Block, home_pos);
     }
 
+    #[test]
+    fn follow_up_after_chain_push_only_allows_current_or_defender_square() {
+        let attacker_pos = Position::new((10, 5));
+        let victim_pos = Position::new((11, 5));
+        let occupied_pos = Position::new((12, 5));
+        let chain_push_target = Position::new((13, 5));
+
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(victim_pos)
+            .add_away_player(occupied_pos)
+            .add_home_players(&[(12, 4), (12, 6), (13, 4), (13, 6)])
+            .build();
+
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fixes.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, victim_pos);
+        state.step_simple(SimpleAT::SelectPush);
+
+        state.step_positional(PosAT::Push, occupied_pos);
+        state.step_positional(PosAT::Push, chain_push_target);
+
+        let follow_up_positions = state
+            .get_available_actions()
+            .get_positions_for_action(PosAT::FollowUp);
+
+        assert_eq!(follow_up_positions.len(), 2);
+        assert!(follow_up_positions.contains(&attacker_pos));
+        assert!(follow_up_positions.contains(&victim_pos));
+        assert!(!follow_up_positions.contains(&occupied_pos));
+        assert!(state.is_legal_action(&Action::Positional(
+            PosAT::FollowUp,
+            victim_pos
+        )));
+        assert!(!state.is_legal_action(&Action::Positional(
+            PosAT::FollowUp,
+            occupied_pos
+        )));
+        state.fixes.assert_is_empty();
+    }
+
     mod trapdoor_block_tests {
         use super::*;
 
         #[test]
         fn player_knocked_down_onto_trapdoor_should_resolve_trapdoor_before_armor_roll() {
+            let home_pos = Position::new((18, 2));
+            let away_pos = Position::new((19, 2));
+            let trapdoor_pos = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+                .add_home_player(home_pos)
+                .add_away_player(away_pos)
+                .build();
+            let downed_id = state.get_player_id_at(away_pos).unwrap();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartBlock, home_pos);
+            state.fixes.fix_blockdice(BlockDice::Pow);
+            state.step_positional(PosAT::Block, away_pos);
+            state.step_simple(SimpleAT::SelectPow);
+            state.fixes.fix_d6(2); // trapdoor succeeds
+            state.step_positional(PosAT::Push, trapdoor_pos);
+            state.fixes.fix_d6(1); // armor
+            state.fixes.fix_d6(1); // armor
+            state.step_positional(PosAT::FollowUp, away_pos);
+
+            let trapdoor_log_idx = state
+                .get_log()
+                .iter()
+                .position(|entry| entry.contains("STEPPING: TrapdoorCheck("))
+                .unwrap();
+            let armor_log_idx = state
+                .get_log()
+                .iter()
+                .position(|entry| entry.contains("STEPPING: Armor("))
+                .unwrap();
+
+            assert!(trapdoor_log_idx < armor_log_idx);
+            assert_eq!(
+                state.get_player_at(trapdoor_pos).unwrap().status,
+                PlayerStatus::Down
+            );
+            assert_eq!(state.get_player_at(trapdoor_pos).unwrap().id, downed_id);
+            state.fixes.assert_is_empty();
 
         }
 
         #[test]
-        fn ball_carrier_pushed_into_active_trapdoor_roll_one_is_removed_from_play() {
-            // make sure to assert that ball bounces from trapdoor Position.
+        fn player_pushed_onto_active_trapdoor_starting_a_chain_push_has_chain_resolved_before_trapdoor_check() {
+            // Tests the following: a player being pushed onto already occupied trapdoor square
+            // should have trapdoor resolved after chain push has been resolved but before follow up is offered.
+            let attacker_pos = Position::new((18, 2));
+            let victim_pos = Position::new((19, 2));
+            let trapdoor_pos = TRAPDOOR_TWO;
+            let chain_push_target = Position::new((21, 2));
+
+            let mut state = GameStateBuilder::new()
+                .add_home_player(attacker_pos)
+                .add_away_player(victim_pos)
+                .add_away_player(trapdoor_pos)
+                .add_home_players(&[(20, 1), (20, 3), (21, 1), (21, 3)])
+                .build();
+
+            let attacker_id = state.get_player_id_at(attacker_pos).unwrap();
+            let victim_id = state.get_player_id_at(victim_pos).unwrap();
+            let trapdoor_occupant_id = state.get_player_id_at(trapdoor_pos).unwrap();
+            let away_reserves_before = state.reserve_ids_for_team(TeamType::Away).len();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartBlock, attacker_pos);
+            state.fixes.fix_blockdice(BlockDice::Push);
+            state.step_positional(PosAT::Block, victim_pos);
+            state.step_simple(SimpleAT::SelectPush);
+
+            state.step_positional(PosAT::Push, trapdoor_pos);
+            state.fixes.fix_d6(1); // pushed player fails trapdoor
+            state.fixes.fix_d6(1); // crowd injury
+            state.fixes.fix_d6(1); // crowd injury
+            state.step_positional(PosAT::Push, chain_push_target);
+
+            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
+            assert!(state.get_players_on_pitch().all(|player| player.id != victim_id));
+            assert_eq!(
+                state.reserve_ids_for_team(TeamType::Away).len(),
+                away_reserves_before + 1
+            );
+            assert!(state.is_legal_action(&Action::Positional(
+                PosAT::FollowUp,
+                victim_pos
+            )));
+            assert!(!state.is_legal_action(&Action::Positional(
+                PosAT::FollowUp,
+                trapdoor_pos
+            )));
+
+            state.step_positional(PosAT::FollowUp, victim_pos);
+
+            let trapdoor_log_idxs: Vec<usize> = state
+                .get_log()
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, entry)| {
+                    entry
+                        .contains("STEPPING: TrapdoorCheck(")
+                        .then_some(idx)
+                })
+                .collect();
+            let follow_up_log_idx = state
+                .get_log()
+                .iter()
+                .position(|entry| entry.contains("STEPPING: FollowUp("))
+                .unwrap();
+
+            assert_eq!(trapdoor_log_idxs.len(), 1);
+            assert!(trapdoor_log_idxs[0] < follow_up_log_idx);
+            assert!(!state
+                .get_log()
+                .iter()
+                .any(|entry| entry.contains("STEPPING: Armor(")));
+            assert_eq!(state.get_player_id_at(victim_pos), Some(attacker_id));
+            assert!(state.get_player_id_at(trapdoor_pos).is_none());
+            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
+            state.fixes.assert_is_empty();
         }
 
         #[test]
-        fn player_pushed_onto_active_trapdoor_rolls_2_is_unaffected() {
+        fn player_chained_into_active_trapdoor_has_trapdoor_check_resolved() {
+            // Tests same as above but with intermediate player being chain pushed onto a trapdoor
+            // rather than the originally pushed player.
+            let attacker_pos = Position::new((17, 2));
+            let victim_pos = Position::new((18, 2));
+            let chained_pos = Position::new((19, 2));
+            let trapdoor_pos = TRAPDOOR_TWO;
+            let chain_push_target = Position::new((21, 2));
 
-        }
+            let mut state = GameStateBuilder::new()
+                .add_home_player(attacker_pos)
+                .add_away_player(victim_pos)
+                .add_away_player(chained_pos)
+                .add_away_player(trapdoor_pos)
+                .add_home_players(&[(19, 1), (19, 3), (20, 1), (20, 3), (21, 1), (21, 3)])
+                .build();
 
-        #[test]
-        fn player_chain_pushed_onto_active_trapdoor_rolls_one_is_removed_from_play() {
+            let attacker_id = state.get_player_id_at(attacker_pos).unwrap();
+            let victim_id = state.get_player_id_at(victim_pos).unwrap();
+            let chained_id = state.get_player_id_at(chained_pos).unwrap();
+            let trapdoor_occupant_id = state.get_player_id_at(trapdoor_pos).unwrap();
+            let away_reserves_before = state.reserve_ids_for_team(TeamType::Away).len();
 
-        }
+            state.info.trapdoors_active = true;
 
-        #[test]
-        fn trapdoor_resolved_before_chain_push_is_over() {
-            // Todo: This should test the following scenario: 
-            // Player1 stands on a trapdoor. Player2 is knocked down onto the trapdoor where player 1 is standing. 
-            // Player2 entering the Position with the trapdoor will then cause a chain push where player1 should be pushed away.
-            // Player2 rolls a 1 when entering the trapdoor and is removed from play.
-            // I want to assert that the trapdoor roll is made as soon as player 2 enters the trapdoor square,
-            // before any armor roll related to him being knocked down and before the chain push
-            // resolves. 
-        }
+            state.step_positional(PosAT::StartBlock, attacker_pos);
+            state.fixes.fix_blockdice(BlockDice::Push);
+            state.step_positional(PosAT::Block, victim_pos);
+            state.step_simple(SimpleAT::SelectPush);
 
-        #[test]
-        fn player_pushed_into_inactive_trapdoor_causes_no_trapdoor_roll() {
+            state.step_positional(PosAT::Push, chained_pos);
+            state.step_positional(PosAT::Push, trapdoor_pos);
+            state.fixes.fix_d6(1); // chained player fails trapdoor
+            state.fixes.fix_d6(1); // crowd injury
+            state.fixes.fix_d6(1); // crowd injury
+            state.step_positional(PosAT::Push, chain_push_target);
 
-        }
+            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
+            assert!(state.get_players_on_pitch().all(|player| player.id != chained_id));
+            assert_eq!(
+                state.reserve_ids_for_team(TeamType::Away).len(),
+                away_reserves_before + 1
+            );
+            assert_eq!(state.get_player_id_at(chained_pos), Some(victim_id));
+            assert!(state.is_legal_action(&Action::Positional(
+                PosAT::FollowUp,
+                victim_pos
+            )));
+            assert!(!state.is_legal_action(&Action::Positional(
+                PosAT::FollowUp,
+                trapdoor_pos
+            )));
 
-        #[test]
-        fn no_armor_roll_only_injury_roll() {
-            // Todo: This should assert that a player that gets knocked down onto an active trapdoor
-            // and then rolls a one on the trapdoor roll, rolls immediatley on the injury table as
-            // if getting pushed into the crowd.
+            state.step_positional(PosAT::FollowUp, victim_pos);
+
+            let trapdoor_log_idxs: Vec<usize> = state
+                .get_log()
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, entry)| {
+                    entry
+                        .contains("STEPPING: TrapdoorCheck(")
+                        .then_some(idx)
+                })
+                .collect();
+            let trapdoor_log_entry = state.get_log()[trapdoor_log_idxs[0]].clone();
+            let follow_up_log_idx = state
+                .get_log()
+                .iter()
+                .position(|entry| entry.contains("STEPPING: FollowUp("))
+                .unwrap();
+
+            assert_eq!(trapdoor_log_idxs.len(), 1);
+            assert!(trapdoor_log_entry.contains(&format!("id: {}", chained_id)));
+            assert!(trapdoor_log_idxs[0] < follow_up_log_idx);
+            assert!(!state
+                .get_log()
+                .iter()
+                .any(|entry| entry.contains("STEPPING: Armor(")));
+            assert_eq!(state.get_player_id_at(victim_pos), Some(attacker_id));
+            assert!(state.get_player_id_at(trapdoor_pos).is_none());
+            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
+            state.fixes.assert_is_empty();
         }
     }
 }

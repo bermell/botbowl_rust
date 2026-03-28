@@ -6,7 +6,7 @@ use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
     PositionOrEvent,
 };
-use crate::core::procedures::nuffle_prayers_procs::{self, TrapdoorCheck};
+use crate::core::procedures::nuffle_prayers_procs;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs};
 use crate::core::table::*;
