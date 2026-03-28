@@ -1054,7 +1054,7 @@ mod tests {
 
             state.fixes.fix_d6(1); // this should fail trapdoor rather than fail GFI.
             state.fixes.fix_d6(3); 
-            state.fixes.fix_d6(1);
+            state.fixes.fix_d6(1); // No injury, player places in reserves
 
             state.step_positional(PosAT::Move, move_target);
 
@@ -1067,23 +1067,85 @@ mod tests {
         }
 
         #[test]
-        fn failed_dodge_onto_trapdoor_trapdoor_resolves_before_armor_roll() {
-            //Todo: This should assert that:
-            // 1. a player tries to dodge to a square with a trapdoor
-            // 2. the dodge roll event is resolved first, player fails the event
-            // 3. the trapdoor roll is resolved as soon as player enters the quare of the trapdoor
-            // before any armmor rolls related to the failed dodge.
-            // trapdoor roll is not a one - so armor roll from failed dodge play out.
+        fn failed_dodge_resolves_after_trapdoor() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(Position::new((18, 2)))
+                .build();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(2); // Trapdoor check succeeds
+            state.fixes.fix_d6(2); // Dodge fails on 3+
+            state.step_positional(PosAT::Move, move_target);
+
+            assert!(state.is_legal_action(&Action::Simple(SimpleAT::DontUseReroll)));
+
+            state.fixes.fix_d6(1); // Armor does not break
+            state.fixes.fix_d6(1); // Armor does not break
+            state.step_simple(SimpleAT::DontUseReroll);
+
+            let log = state.get_log();
+            let trapdoor_log_idx = log
+                .iter()
+                .position(|entry| entry.contains("STEPPING: TrapdoorCheck("))
+                .unwrap();
+            let dodge_log_idx = log
+                .iter()
+                .position(|entry| entry.contains("STEPPING: DodgeProc("))
+                .unwrap();
+            let armor_log_idx = log
+                .iter()
+                .position(|entry| entry.contains("STEPPING: Armor("))
+                .unwrap();
+
+            assert!(trapdoor_log_idx < dodge_log_idx);
+            assert!(dodge_log_idx < armor_log_idx);
+            assert_eq!(state.get_player_at(move_target).unwrap().status, PlayerStatus::Down);
+            state.fixes.assert_is_empty();
         }
 
         #[test]
-        fn failed_dodge_onto_trapdoor_trapdoor_roll_is_one_player_get_pushed_into_crows_event() {
-            //Todo: This should assert that:
-            // 1. a player tries to dodge to a square with a trapdoor
-            // 2. the dodge roll event is resolved first, player fails the event
-            // 3. the trapdoor roll is resolved as soon as player enters the quare of the trapdoor
-            // before any armmor rolls related to the failed dodge.
-            // trapdoor roll is a one - the pushed into crows event plays out and armor roll for failed dodge never occurs.
+        fn trapdoor_resolves_before_failed_dodge() {
+            let start_pos = Position::new((19, 2));
+            let move_target = TRAPDOOR_TWO;
+
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(Position::new((18, 2)))
+                .build();
+
+            let id = state.get_player_id_at(start_pos).unwrap();
+
+            state.info.trapdoors_active = true;
+
+            state.step_positional(PosAT::StartMove, start_pos);
+
+            state.fixes.fix_d6(1); // Trapdoor check fails immediately
+            state.fixes.fix_d6(3); // Crowd injury roll does not KO/CAS
+            state.fixes.fix_d6(1); // Crowd injury roll does not KO/CAS
+            state.step_positional(PosAT::Move, move_target);
+
+            let log = state.get_log();
+
+            assert_eq!(state.get_player_id_at(move_target), None);
+            assert!(state.get_players_on_pitch().all(|player| player.id != id));
+            assert!(state.get_dugout().any(|player| {
+                player.id == id as usize
+                    && player.place == DugoutPlace::Reserves
+                    && player.stats.team == TeamType::Home
+            }));
+            assert!(log
+                .iter()
+                .any(|entry| entry.contains("STEPPING: TrapdoorCheck(")));
+            assert!(!log.iter().any(|entry| entry.contains("STEPPING: DodgeProc(")));
+            assert!(!log.iter().any(|entry| entry.contains("STEPPING: Armor(")));
+            state.fixes.assert_is_empty();
         }
     }
 }
