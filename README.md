@@ -29,7 +29,7 @@ forward model in a botbowl competition:
 
 - (Pathfinding) with leaping over prone players
 
--prayers to nuffle:
+- Prayers to Nuffle:
 	- so far only trapdoor implemented
 
 ### Tests to add
