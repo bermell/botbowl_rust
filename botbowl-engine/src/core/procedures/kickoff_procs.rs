@@ -98,11 +98,7 @@ impl Procedure for KickoffTable {
                 // However,if you roll a result that has been rolled previously but has since expired, there is no need to re-roll
             }
             Sum2D6::Seven => {
-                // todo: Brilliant coaching implement. The rules for brilliant coaching are:
-                // Both coaches roll a D6 and add the number of assistant coaches on their Team Draft list. 
-                // The coach with the highest total gains one extra team re-roll for the drive ahead. 
-                // If this team re-roll is not used before the end of this drive, it is lost. 
-                // In the case of a tie, neither coach gains an extra team re-roll. 
+                procs.push(BrilliantCoaching::new());
             }
             Sum2D6::Eight => {
                 procs.push(ChangingWeather::new());
@@ -397,6 +393,56 @@ impl Procedure for LandKickoff {
                 true,
             )),
             None => ProcState::DoneNew(ball_procs::Bounce::new_with_kick_arg(true)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum BrilliantCoachingState {
+    Init,
+    AwaitAwayRoll { home_total: u8 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrilliantCoaching {
+    state: BrilliantCoachingState,
+}
+impl BrilliantCoaching {
+    pub fn new() -> AnyProc {
+        AnyProc::BrilliantCoaching(BrilliantCoaching {
+            state: BrilliantCoachingState::Init,
+        })
+    }
+}
+impl Procedure for BrilliantCoaching {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match self.state {
+            BrilliantCoachingState::Init => match input {
+                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+                ProcInput::Roll(RollResult::D6(roll)) => {
+                    self.state = BrilliantCoachingState::AwaitAwayRoll {
+                        home_total: roll as u8 + game_state.home.assistant_coaches(),
+                    };
+                    ProcState::NeedRoll(RequestedRoll::D6)
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+            BrilliantCoachingState::AwaitAwayRoll { home_total } => match input {
+                ProcInput::Roll(RollResult::D6(roll)) => {
+                    let away_total = roll as u8 + game_state.away.assistant_coaches();
+                    match home_total.cmp(&away_total) {
+                        std::cmp::Ordering::Greater => {
+                            game_state.home.grant_temporary_reroll();
+                        }
+                        std::cmp::Ordering::Less => {
+                            game_state.away.grant_temporary_reroll();
+                        }
+                        std::cmp::Ordering::Equal => {}
+                    }
+                    ProcState::Done
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
         }
     }
 }
@@ -1091,25 +1137,76 @@ mod tests {
     //     state.step_simple(SimpleAT::KickoffAimMiddle);
     // }
     //
-    // #[test]
-    // fn kickoff_brilliant_coaching() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(1);
-    //
-    //     state.fixes.fix_d6(5); //fix home brilliant coaching roll
-    //     state.fixes.fix_d6(6); //fix away brilliant coaching roll
-    //
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    //
-    //     assert_eq!(state.away.rerolls, 4);
-    //     assert_eq!(state.home.rerolls, 3);
-    // }
+
+    mod kickoff_brilliant_coaching {
+        use super::*;
+
+        fn fix_brilliant_coaching_kickoff_rolls(state: &mut GameState) {
+            state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+            state.fixes.fix_d6(5); // scatter length
+            state.fixes.fix_d6(1);
+            state.fixes.fix_d6(6); // kickoff table: brilliant coaching
+        }
+
+        #[test]
+        fn kickoff_brilliant_coaching() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            state.home.set_assistant_coaches(3);
+            state.away.set_assistant_coaches(0);
+            fix_brilliant_coaching_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(2); // home roll
+            state.fixes.fix_d6(4); // away roll
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(state.home.temporary_rerolls, 1);
+            assert_eq!(state.away.temporary_rerolls, 0);
+        }
+
+        #[test]
+        fn brilliant_coaching_teams_roll_equal_no_team_should_get_reroll() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            state.home.set_assistant_coaches(2);
+            state.away.set_assistant_coaches(0);
+            fix_brilliant_coaching_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(3); // home roll => 5 total
+            state.fixes.fix_d6(5); // away roll => 5 total
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(state.home.temporary_rerolls, 0);
+            assert_eq!(state.away.temporary_rerolls, 0);
+        }
+
+        #[test]
+        fn brilliant_coaching_reroll_not_used_at_end_of_half_should_be_lost() {
+            let mut state: GameState = GameStateBuilder::new()
+                .set_state(BuilderState::Kickoff { turn: 8 })
+                .build();
+            state.away.set_assistant_coaches(2);
+            fix_brilliant_coaching_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(3); // home roll
+            state.fixes.fix_d6(4); // away roll => away wins with coaches
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(state.home.temporary_rerolls, 0);
+            assert_eq!(state.away.temporary_rerolls, 1);
+
+            assert!(state.home_to_act());
+            state.step_simple(SimpleAT::EndTurn);
+            assert!(state.away_to_act());
+            state.step_simple(SimpleAT::EndTurn);
+
+            assert_eq!(state.info.half, 2);
+            assert_eq!(state.home.temporary_rerolls, 0);
+            assert_eq!(state.away.temporary_rerolls, 0);
+        }
+    }
+
     // #[test]
     // fn kickoff_changing_weather() {
     //     let mut state: GameState = GameStateBuilder::new_at_kickoff();

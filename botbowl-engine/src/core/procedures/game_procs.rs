@@ -44,6 +44,7 @@ impl Half {
         // the Turn track to represent the extra time the players spend
         // celebrating this unusual method of scoring!
 
+        Self::clear_temporary_rerolls(game_state);
         game_state.info.kicking_this_drive = kicking_team;
 
         let procs: Vec<AnyProc> = vec![
@@ -58,29 +59,34 @@ impl Half {
 
         ProcState::NotDoneNewProcs(procs)
     }
+
+    fn clear_temporary_rerolls(game_state: &mut GameState) {
+        game_state.home.clear_temporary_rerolls();
+        game_state.away.clear_temporary_rerolls();
+    }
 }
 
 impl Procedure for Half {
     fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
-        let info = &mut game_state.info;
         if !self.started {
             self.started = true;
-            info.half = self.half;
-            info.home_turn = 0;
-            info.away_turn = 0;
+            game_state.info.half = self.half;
+            game_state.info.home_turn = 0;
+            game_state.info.away_turn = 0;
             self.kicking_this_half = {
                 if self.half == 1 {
-                    info.kicking_first_half
+                    game_state.info.kicking_first_half
                 } else {
-                    other_team(info.kicking_first_half)
+                    other_team(game_state.info.kicking_first_half)
                 }
             };
             self.kickoff = Some(self.kicking_this_half);
         } else {
-            self.kickoff = info.kickoff_by_team.take();
+            self.kickoff = game_state.info.kickoff_by_team.take();
         }
 
-        if info.home_turn == 8 && info.away_turn == 8 {
+        if game_state.info.home_turn == 8 && game_state.info.away_turn == 8 {
+            Self::clear_temporary_rerolls(game_state);
             return ProcState::Done;
         }
 
@@ -89,6 +95,7 @@ impl Procedure for Half {
             return self.do_kickoff(team, game_state);
         }
 
+        let info = &mut game_state.info;
         let next_team: TeamType = if info.home_turn == info.away_turn {
             other_team(self.kicking_this_half)
         } else {

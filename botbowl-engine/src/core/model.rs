@@ -513,7 +513,8 @@ pub struct TeamState {
     //turn: u8,
     //rerolls_start: u8,
     pub rerolls: u8,
-    //ass_coaches: u8,
+    ass_coaches: u8,
+    pub temporary_rerolls: u8,
     //cheerleaders: u8,
     //fame: u8,
     reroll_used: bool,
@@ -528,17 +529,38 @@ impl TeamState {
             reroll_used: false,
             score: 0,
             bribes: 0,
-            ejected_coach: false
+            ejected_coach: false,
+            ass_coaches: 0,
+            temporary_rerolls: 0,
         }
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
+    pub(crate) fn assistant_coaches(&self) -> u8 {
+        self.ass_coaches
+    }
+    // todo: this function is only used in tests in kickoff_procs. 
+    // See if we can move it there or set assistant coaches in tests in some other way
+    pub(crate) fn set_assistant_coaches(&mut self, ass_coaches: u8) {
+        self.ass_coaches = ass_coaches;
+    }
+    pub(crate) fn grant_temporary_reroll(&mut self) {
+        self.temporary_rerolls += 1;
+    }
+    pub(crate) fn clear_temporary_rerolls(&mut self) {
+        self.temporary_rerolls = 0;
+    }
     pub fn can_use_reroll(&self) -> bool {
-        !self.reroll_used && self.rerolls > 0
+        !self.reroll_used && (self.temporary_rerolls > 0 || self.rerolls > 0)
     }
     pub fn use_reroll(&mut self) {
         assert!(self.can_use_reroll());
         self.reroll_used = true;
-        self.rerolls -= 1;
+
+        if self.temporary_rerolls > 0 {
+            self.temporary_rerolls -= 1;
+        } else {
+            self.rerolls -= 1;
+        }
     }
     pub fn can_argue_the_call(&self) -> bool {
         !self.ejected_coach
