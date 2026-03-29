@@ -469,6 +469,7 @@ mod tests {
 
     #[test]
     fn kickoff_get_the_ref() {
+    
         let mut state: GameState = GameStateBuilder::new_at_kickoff();
         // ball fixes
         state.fixes.fix_d8_direction(Direction::up()); // scatter direction
@@ -496,6 +497,7 @@ mod tests {
             "turn counter (home, away) is wrong!"
         );
     }
+
     #[test]
     fn kickoff_timeout_step_clock_forward() {
         let mut state: GameState = GameStateBuilder::new_at_kickoff();
@@ -556,6 +558,41 @@ mod tests {
         state.step_simple(SimpleAT::KickoffAimMiddle);
 
         assert_eq!(state.ball, BallState::OnGround(Position::new((23, 8))));
+    }
+
+    mod kickoff_quick_step {
+        use super::*;
+
+        #[test]
+        fn can_deselect_and_replace_before_confirm() {
+            // should test that during selection stage, it is possible to deselect a selected player and then select another one.
+        }
+
+        #[test]
+        fn can_confirm_with_zero_selected() {
+            // should test that during selection stage, it should be possible to select no player to be moved at all.
+        }
+
+        #[test]
+        fn should_be_possible_to_select_less_than_rolled_nr_of_players() {
+            // should test that during selection stage, it should be possible to select only some of the D3+3 open players.
+        }
+
+        #[test]
+        fn not_open_players_should_not_be_selectable() {
+            // Not open is defined as marked by an opposing player or not in PlayerStatus::Up or not on the pitch 
+        }
+
+        #[test]
+        fn quick_snap_moves_should_not_follow_setup_rules() {
+            // Should test that selected quick snap players should be able to move across los and into north and south wings even if
+            // there are already 2 players there.
+        }
+
+        #[test]
+        fn selected_player_is_only_allowed_one_square_of_movement() {
+            // A player selected for quick snap should not be able to move more than one square 
+        }
     }
 
     mod kickoff_solid_defence {
