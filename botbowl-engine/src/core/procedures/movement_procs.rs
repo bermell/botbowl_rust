@@ -1067,7 +1067,8 @@ mod tests {
         }
 
         #[test]
-        fn failed_dodge_resolves_after_trapdoor() {
+        fn failed_dodge_resolves_after_successful_trapdoor_check() {
+            // If the trapdoor check passes, movement continues and the failed dodge resolves normally.
             let start_pos = Position::new((19, 2));
             let move_target = TRAPDOOR_TWO;
 
@@ -1111,7 +1112,8 @@ mod tests {
         }
 
         #[test]
-        fn trapdoor_resolves_before_failed_dodge() {
+        fn failed_trapdoor_check_prevents_failed_dodge_from_resolving() {
+            // If the trapdoor check fails, the player is removed immediately and the dodge never resolves.
             let start_pos = Position::new((19, 2));
             let move_target = TRAPDOOR_TWO;
 
