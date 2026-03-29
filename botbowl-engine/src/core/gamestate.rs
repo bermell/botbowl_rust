@@ -1161,7 +1161,9 @@ impl GameState {
     }
 
     pub fn is_legal_action(&self, action: &Action) -> bool {
-        /*let mut top_proc = self.proc_stack.pop().unwrap(); //TODO: remove these three lines at some point!
+        // todo: remove these three lines at some point!
+        /*
+        let mut top_proc = self.proc_stack.pop().unwrap();         
         debug_assert_eq!(top_proc.available_actions(self), self.available_actions);
         self.proc_stack.push(top_proc);
          */

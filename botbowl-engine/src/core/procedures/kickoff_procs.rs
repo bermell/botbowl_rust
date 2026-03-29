@@ -90,25 +90,48 @@ impl Procedure for KickoffTable {
                 procs.push(HighKick::new());
             }
             Sum2D6::Six => {
-                //Cheering fans
+                // todo: Cheering fans implement. The rules for cheering fans are: 
+                // Both coaches roll a D6 and add the number ofcheerleaders on their Team Draft list. 
+                // The coach with the highest total may immediately roll once on the Prayers to Nuffle table. 
+                // In the case of a tie, neither coach rolls on the Prayers to Nuffle table. 
+                // Note that if you roll a result that is currently in effect, you must re-roll it. 
+                // However,if you roll a result that has been rolled previously but has since expired, there is no need to re-roll
             }
             Sum2D6::Seven => {
-                //Brilliant coaching
+                // todo: Brilliant coaching implement. The rules for brilliant coaching are:
+                // Both coaches roll a D6 and add the number of assistant coaches on their Team Draft list. 
+                // The coach with the highest total gains one extra team re-roll for the drive ahead. 
+                // If this team re-roll is not used before the end of this drive, it is lost. 
+                // In the case of a tie, neither coach gains an extra team re-roll. 
             }
             Sum2D6::Eight => {
                 procs.push(ChangingWeather::new());
             }
             Sum2D6::Nine => {
-                //Quick snap
+                // todo: Quick snap implementation. The rules for quick snap are:
+                // D3+3 Open players on the receiving team may immediately move one square in any direction. 
             }
             Sum2D6::Ten => {
-                //Blitz!
+                // todo: Blitz! implementation. The rules for Blitz! are:
+                // D3+3 Open players on the kicking team may immediately activate to perform a Move action. 
+                // One may perform a Blitz action and one may perform a Throw Team-mate action. 
+                // If a player Falls Over or is Knocked Down, no further players can be activated and the Blitz ends immediately 
             }
             Sum2D6::Eleven => {
-                //Officious ref
+                // todo: Officious ref implementation. The rules for officious ref are:
+                // Both coaches roll a D6 and add their Fan Factor to the result. 
+                // The coach that rolls the lowest randomly selects one of their players from among those on the pitch. 
+                // In the case of a tie, both coaches randomly select a player. 
+                // Roll a D6 for the selected player(s). 
+                // On a roll of 2+, the player and the referee argue and come to blows. 
+                // The player is Placed Prone and becomes Stunned. On a roll of 1 however, the player is immediately Sent-off.
             }
             Sum2D6::Twelve => {
-                //Pitch invasion
+                // todo: Pitch invasion implementation. The rules for pitch invasion are:
+                // Both coaches roll a D6 and add their Fan Factor to the result. 
+                // The coach that rolls the lowest randomly selects D3 of their players from among those on the pitch. 
+                // In the case of a tie, both coaches randomly select D3 of their players from among those on the pitch. 
+                // All of the randomly selected players are Placed Prone and become Stunned. 
             }
         }
 
