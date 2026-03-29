@@ -411,9 +411,6 @@ impl GameState {
     pub fn get_dugout(&self) -> impl Iterator<Item = &DugoutPlayer> {
         self.dugout_players.iter().flatten()
     }
-    pub fn get_dugout_mut(&mut self) -> impl Iterator<Item = &mut DugoutPlayer> {
-        self.dugout_players.iter_mut().flatten()
-    }
     pub fn dugout_add_new_player(&mut self, player_stats: PlayerStats, place: DugoutPlace) {
         let id = match self
             .dugout_players
@@ -886,7 +883,6 @@ impl GameState {
         Ok(id)
     }
 
-    // Todo: Implement test for this function
     pub fn unfield_player(&mut self, id: PlayerID, place: DugoutPlace) -> Result<()> {
         if let BallState::Carried(carrier_id) = self.ball {
             assert_ne!(carrier_id, id);
