@@ -14,13 +14,23 @@ List of things to implement and write tests for in order to use as engine for
 forward model in a botbowl competition:
 
 - Botbowl 2020 rules
+- Blood Bowl 2025 ruleset (third season edition)
 - Two Human team, only starting skills without Ogre
 
-### Rules left to implement
+### Rules left to implement (2020 ruleset)
 
-- (1/11) Kickoff table
-- Useful setup
+- kickoff table:
+	- cheering fans
+	- brilliant coaching
+	- quick snap
+	- blitz!
+	- officious ref
+	- pitch invasion
+
 - (Pathfinding) with leaping over prone players
+
+-prayers to nuffle:
+	- so far only trapdoor implemented
 
 ### Tests to add
 
@@ -38,6 +48,7 @@ forward model in a botbowl competition:
   - Evaluate against scripted and random bot.
 - Gym Env
 - FFI to python
+- Replay parser able to parse and run replays from fumbbl and BB3
 
 ## Development
 
