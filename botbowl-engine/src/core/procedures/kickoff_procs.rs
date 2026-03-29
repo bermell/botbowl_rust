@@ -400,7 +400,7 @@ impl Procedure for LandKickoff {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 enum BrilliantCoachingState {
     Init,
-    AwaitAwayRoll { home_total: u8 },
+    AwaitAwayRoll { home_total: i8 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -421,7 +421,7 @@ impl Procedure for BrilliantCoaching {
                 ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
                 ProcInput::Roll(RollResult::D6(roll)) => {
                     self.state = BrilliantCoachingState::AwaitAwayRoll {
-                        home_total: roll as u8 + game_state.home.assistant_coaches(),
+                        home_total: game_state.home.brilliant_coaching_total(roll),
                     };
                     ProcState::NeedRoll(RequestedRoll::D6)
                 }
@@ -429,7 +429,7 @@ impl Procedure for BrilliantCoaching {
             },
             BrilliantCoachingState::AwaitAwayRoll { home_total } => match input {
                 ProcInput::Roll(RollResult::D6(roll)) => {
-                    let away_total = roll as u8 + game_state.away.assistant_coaches();
+                    let away_total = game_state.away.brilliant_coaching_total(roll);
                     match home_total.cmp(&away_total) {
                         std::cmp::Ordering::Greater => {
                             game_state.home.grant_temporary_reroll();
@@ -1204,6 +1204,23 @@ mod tests {
             assert_eq!(state.info.half, 2);
             assert_eq!(state.home.temporary_rerolls, 0);
             assert_eq!(state.away.temporary_rerolls, 0);
+        }
+
+        #[test]
+        fn brilliant_coaching_applies_minus_one_for_ejected_coach() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            state.home.set_assistant_coaches(2);
+            state.away.set_assistant_coaches(2);
+            state.home.eject_coach();
+            fix_brilliant_coaching_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(4); // home total => 5 after modifier
+            state.fixes.fix_d6(5); // away total => 7
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(state.home.temporary_rerolls, 0);
+            assert_eq!(state.away.temporary_rerolls, 1);
         }
     }
 

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
 use std::rc::Rc;
 
-use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
+use super::dices::{D6, D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
 use super::pathing::Node;
 use super::procedures::AnyProc;
@@ -519,6 +519,7 @@ pub struct TeamState {
     //fame: u8,
     reroll_used: bool,
     //time_violation: u8,
+    ejected_coach: bool,
 }
 impl TeamState {
     #[allow(clippy::new_without_default)]
@@ -528,14 +529,17 @@ impl TeamState {
             reroll_used: false,
             score: 0,
             bribes: 0,
+            ejected_coach: false,
             ass_coaches: 0,
             temporary_rerolls: 0,
         }
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
-    pub(crate) fn assistant_coaches(&self) -> u8 {
-        self.ass_coaches
+    pub(crate) fn brilliant_coaching_total(&self, roll: D6) -> i8 {
+        roll as i8 + self.ass_coaches as i8 - i8::from(self.ejected_coach)
     }
+    // todo: this function is only used in tests in kickoff_procs. 
+    // See if we can move it there or set assistant coaches in tests in some other way
     pub(crate) fn set_assistant_coaches(&mut self, ass_coaches: u8) {
         self.ass_coaches = ass_coaches;
     }
@@ -557,6 +561,12 @@ impl TeamState {
         } else {
             self.rerolls -= 1;
         }
+    }
+    pub fn can_argue_the_call(&self) -> bool {
+        !self.ejected_coach
+    }
+    pub(crate) fn eject_coach(&mut self) {
+        self.ejected_coach = true;
     }
 }
 

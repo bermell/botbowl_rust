@@ -26,6 +26,8 @@ pub enum SimpleAT {
     SelectPush,
     SelectPowPush,
     SelectSkull,
+    ArgueTheCall,
+    DontArgueTheCall,
     UseReroll,
     DontUseReroll,
     EndPlayerTurn,
@@ -112,4 +114,11 @@ pub enum PlayerRole {
     Blitzer,
     Thrower,
     Catcher,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ArgueTheCall {
+    YoureOutaHere,
+    IDontCare,
+    WellWhenYouPutItLikeThat,
 }

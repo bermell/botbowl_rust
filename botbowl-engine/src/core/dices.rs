@@ -5,6 +5,8 @@ use std::{
 
 use rand::{distributions::Standard, prelude::Distribution};
 
+use crate::core::table::ArgueTheCall;
+
 use super::{
     model::{Coord, Direction, InjuryOutcome, Weather},
     table::{NumBlockDices, SimpleAT},
@@ -195,6 +197,16 @@ impl_enum_try_from! {
     (),
     ()
 }
+impl From<D6> for ArgueTheCall {
+    fn from(value: D6) -> Self {
+        match value {
+            D6::One => ArgueTheCall::YoureOutaHere,
+            D6::Six => ArgueTheCall::WellWhenYouPutItLikeThat,
+            _ => ArgueTheCall::IDontCare,
+        }
+    }
+}
+
 impl Add<i8> for D6 {
     type Output = D6;
 
