@@ -14,7 +14,6 @@ List of things to implement and write tests for in order to use as engine for
 forward model in a botbowl competition:
 
 - Botbowl 2020 rules
-- Blood Bowl 2025 ruleset (third season edition)
 - Two Human team, only starting skills without Ogre
 
 ### Rules left to implement (2020 ruleset)
@@ -29,8 +28,6 @@ forward model in a botbowl competition:
 
 - (Pathfinding) with leaping over prone players
 
-- Prayers to Nuffle:
-	- so far only trapdoor implemented
 
 ### Tests to add
 
@@ -38,6 +35,9 @@ forward model in a botbowl competition:
 - score on opponent's half needs test
 
 ### Other things (in order of priority)
+
+- Prayers to Nuffle:
+	- so far only trapdoor implemented
 
 - Watch a recording in terminal
 - MCTS example bot (includes a gamestate hash)
@@ -49,6 +49,7 @@ forward model in a botbowl competition:
 - Gym Env
 - FFI to python
 - Replay parser able to parse and run replays from fumbbl and BB3
+- Blood Bowl 2025 ruleset (third season edition)
 
 ## Development
 
