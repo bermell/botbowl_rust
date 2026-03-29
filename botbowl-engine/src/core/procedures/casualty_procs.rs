@@ -182,6 +182,7 @@ mod tests {
     use crate::core::procedures::AnyProc;
     use crate::core::table::*;
     use crate::core::{gamestate::GameStateBuilder, model::Position, table::PosAT};
+
     #[test]
     fn bounce_on_knockdown() -> Result<()> {
         let start_pos = Position::new((2, 2));
@@ -217,100 +218,125 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn foul_ejected_at_armor() {
-        let start_pos = Position::new((5, 5));
-        let foul_pos = start_pos + (2, 0);
-        let mut state = GameStateBuilder::new()
-            .add_home_player(start_pos)
-            .add_away_player(foul_pos)
-            .build();
+    mod ejection_tests {
+        use crate::core::procedures::Ejection;
 
-        let victim_id = state.get_player_id_at(foul_pos).unwrap();
-        state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+        use super::*;
 
-        state.step_positional(PosAT::StartFoul, start_pos);
+        #[test]
+        fn WellWhenYouPutItLikeThat_argue_the_call_result() {
+            // should result in player being allowed to stay on pitch but still turnover
 
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(2); //injury
-        state.fixes.fix_d6(1); //injury
+        }
 
-        state.step_positional(PosAT::Foul, foul_pos);
+        #[test]
+        fn YoureOutaHere_argue_the_call_result() {
+            // should result in coach being ejected (team should not be able to argue the call again and team will have persisting -1 on rolls for brilliant coaching)
 
-        assert!(matches!(
-            state.get_dugout().next(),
-            Some(DugoutPlayer {
-                place: DugoutPlace::Ejected,
-                stats: PlayerStats {
-                    team: TeamType::Home,
+        }
+
+        #[test]
+        fn IDontCare_argue_the_call_result() {
+            // Should result in player being sent off and turnover
+
+        }
+
+        #[test]
+        fn foul_ejected_at_armor() {
+            let start_pos = Position::new((5, 5));
+            let foul_pos = start_pos + (2, 0);
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(foul_pos)
+                .build();
+
+            let victim_id = state.get_player_id_at(foul_pos).unwrap();
+            state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+
+            state.step_positional(PosAT::StartFoul, start_pos);
+
+            state.fixes.fix_d6(5); //armor
+            state.fixes.fix_d6(5); //armor
+            state.fixes.fix_d6(2); //injury
+            state.fixes.fix_d6(1); //injury
+
+            state.step_positional(PosAT::Foul, foul_pos);
+
+            assert!(matches!(
+                state.get_dugout().next(),
+                Some(DugoutPlayer {
+                    place: DugoutPlace::Ejected,
+                    stats: PlayerStats {
+                        team: TeamType::Home,
+                        ..
+                    },
                     ..
-                },
-                ..
-            })
-        ));
-    }
-    #[test]
-    fn foul_ejected_at_injury() {
-        let start_pos = Position::new((5, 5));
-        let foul_pos = start_pos + (2, 0);
-        let mut state = GameStateBuilder::new()
-            .add_home_player(start_pos)
-            .add_away_player(foul_pos)
-            .build();
+                })
+            ));
+        }
 
-        let victim_id = state.get_player_id_at(foul_pos).unwrap();
-        state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+        #[test]
+        fn foul_ejected_at_injury() {
+            let start_pos = Position::new((5, 5));
+            let foul_pos = start_pos + (2, 0);
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(foul_pos)
+                .build();
 
-        state.step_positional(PosAT::StartFoul, start_pos);
+            let victim_id = state.get_player_id_at(foul_pos).unwrap();
+            state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
 
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(6); //armor
-        state.fixes.fix_d6(2); //injury
-        state.fixes.fix_d6(2); //injury
+            state.step_positional(PosAT::StartFoul, start_pos);
 
-        state.step_positional(PosAT::Foul, foul_pos);
+            state.fixes.fix_d6(5); //armor
+            state.fixes.fix_d6(6); //armor
+            state.fixes.fix_d6(2); //injury
+            state.fixes.fix_d6(2); //injury
 
-        assert!(matches!(
-            state.get_dugout().next(),
-            Some(DugoutPlayer {
-                place: DugoutPlace::Ejected,
-                stats: PlayerStats {
-                    team: TeamType::Home,
+            state.step_positional(PosAT::Foul, foul_pos);
+
+            assert!(matches!(
+                state.get_dugout().next(),
+                Some(DugoutPlayer {
+                    place: DugoutPlace::Ejected,
+                    stats: PlayerStats {
+                        team: TeamType::Home,
+                        ..
+                    },
                     ..
-                },
-                ..
-            })
-        ));
-    }
+                })
+            ));
+        }
 
-    #[test]
-    fn ejection_of_ball_carrier_starts_bounce() {
-        let start_pos = Position::new((5, 5));
-        let mut state = GameStateBuilder::new()
-            .add_home_player(start_pos)
-            .add_ball_pos(start_pos)
-            .build();
+        #[test]
+        fn ejection_of_ball_carrier_starts_bounce() {
+            let start_pos = Position::new((5, 5));
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_ball_pos(start_pos)
+                .build();
 
-        let id = state.get_player_id_at(start_pos).unwrap();
-        assert_eq!(state.ball, BallState::Carried(id));
+            let id = state.get_player_id_at(start_pos).unwrap();
+            assert_eq!(state.ball, BallState::Carried(id));
 
-        let mut ejection = super::Ejection::new(id);
-        let proc_state = ejection.step(&mut state, ProcInput::Nothing);
+            let mut ejection = Ejection::new(id);
+            let proc_state = ejection.step(&mut state, ProcInput::Nothing);
 
-        assert!(matches!(proc_state, ProcState::DoneNew(AnyProc::Bounce(_))));
-        assert_eq!(state.ball, BallState::InAir(start_pos));
-        assert_eq!(state.get_player_id_at(start_pos), None);
-        assert!(matches!(
-            state.get_dugout().next(),
-            Some(DugoutPlayer {
-                place: DugoutPlace::Ejected,
-                stats: PlayerStats {
-                    team: TeamType::Home,
+            assert!(matches!(proc_state, ProcState::DoneNew(AnyProc::Bounce(_))));
+            assert_eq!(state.ball, BallState::InAir(start_pos));
+            assert_eq!(state.get_player_id_at(start_pos), None);
+            assert!(matches!(
+                state.get_dugout().next(),
+                Some(DugoutPlayer {
+                    place: DugoutPlace::Ejected,
+                    stats: PlayerStats {
+                        team: TeamType::Home,
+                        ..
+                    },
                     ..
-                },
-                ..
-            })
-        ));
+                })
+            ));
+        }
     }
 }
