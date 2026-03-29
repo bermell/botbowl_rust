@@ -26,6 +26,8 @@ pub enum SimpleAT {
     SelectPush,
     SelectPowPush,
     SelectSkull,
+    ArgueTheCall,
+    DontArgueTheCall,
     UseReroll,
     DontUseReroll,
     EndPlayerTurn,

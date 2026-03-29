@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6Target};
 use crate::core::gamestate::GameState;
-use crate::core::model::{BallState, PlayerID};
+use crate::core::model::{Action, AvailableActions, BallState, PlayerID};
 use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};
 use crate::core::model::{InjuryOutcome, ProcInput};
 use crate::core::procedures::ball_procs;
+use crate::core::table::ArgueTheCall;
+use crate::core::table::SimpleAT;
 
 use super::AnyProc;
 
@@ -43,7 +45,7 @@ impl Procedure for Armor {
             }
             ProcInput::Roll(RollResult::FoulArmor { broken, ejected }) => {
                 if ejected {
-                    procs.push(Ejection::new(self.foul_target.unwrap().0));
+                    procs.push(Ejection::new_foul(self.foul_target.unwrap().0));
                 } else if broken {
                     // injury proc shall also check of ejection
                     injury_proc.fouler = Some(self.foul_target.unwrap().0);
@@ -64,27 +66,37 @@ impl Procedure for Armor {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum EjectionState {
+    Init,
+    AwaitArgument,
+    AwaitRoll,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Ejection {
     id: PlayerID,
+    foul: bool,
+    state: EjectionState,
 }
 impl Ejection {
     pub fn new(id: PlayerID) -> AnyProc {
-        AnyProc::Ejection(Ejection { id })
+        AnyProc::Ejection(Ejection {
+            id,
+            foul: false,
+            state: EjectionState::Init,
+        })
     }
-}
-impl Procedure for Ejection {
-    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
-        // todo: implement argue the call logic. The rules for argue the call are:
-        // When a player is ejected by the referee for committing a Foul, their coach may attempt to Argue the Call. 
-        // Roll a D6 and refer to the below:
-        // On a roll of one: “You’re Outta Here!” The referee is so enraged that the coach is ejected along with the player. 
-        // This means that for the remainder of this game, you may no longer Argue the Call and must apply a -1 modifier when rolling for Brilliant Coaching.
-        // On a roll of 2 to 5: “I Don’t Care!” The referee is not interested in your argument. The player is Sent-off and a Turnover caused.
-        // On a roll of 6: “Well, When You Put It Like That…” The referee is swayed by your argument. 
-        // A Turnover is still caused, but the player that committed the Foul is not ejected.
-
+    pub fn new_foul(id: PlayerID) -> AnyProc {
+        AnyProc::Ejection(Ejection {
+            id,
+            foul: true,
+            state: EjectionState::Init,
+        })
+    }
+    fn eject_player(&self, game_state: &mut GameState) -> ProcState {
         let position = game_state.get_player_unsafe(self.id).position;
-        let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
+        let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id)
+        {
             game_state.ball = BallState::InAir(position);
             ProcState::DoneNew(ball_procs::Bounce::new())
         } else {
@@ -94,6 +106,56 @@ impl Procedure for Ejection {
             .unfield_player(self.id, DugoutPlace::Ejected)
             .unwrap();
         ret
+    }
+    fn turnover_and_eject(&self, game_state: &mut GameState) -> ProcState {
+        game_state.info.turnover = true;
+        self.eject_player(game_state)
+    }
+}
+impl Procedure for Ejection {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match self.state {
+            EjectionState::Init if !self.foul => self.eject_player(game_state),
+            EjectionState::Init => {
+                if !game_state
+                    .get_team_from_player(self.id)
+                    .unwrap()
+                    .can_argue_the_call()
+                {
+                    return self.turnover_and_eject(game_state);
+                }
+
+                self.state = EjectionState::AwaitArgument;
+                let mut aa = AvailableActions::new(game_state.get_player_unsafe(self.id).stats.team);
+                aa.insert_simple(SimpleAT::ArgueTheCall);
+                aa.insert_simple(SimpleAT::DontArgueTheCall);
+                ProcState::NeedAction(aa)
+            }
+            EjectionState::AwaitArgument => match input {
+                ProcInput::Action(Action::Simple(SimpleAT::DontArgueTheCall)) => {
+                    self.turnover_and_eject(game_state)
+                }
+                ProcInput::Action(Action::Simple(SimpleAT::ArgueTheCall)) => {
+                    self.state = EjectionState::AwaitRoll;
+                    ProcState::NeedRoll(RequestedRoll::D6)
+                }
+                _ => panic!("Unexpected input"),
+            },
+            EjectionState::AwaitRoll => match input {
+                ProcInput::Roll(RollResult::D6(roll)) => match ArgueTheCall::from(roll) {
+                    ArgueTheCall::YoureOutaHere => {
+                        game_state.get_mut_team_from_player(self.id).unwrap().eject_coach();
+                        self.turnover_and_eject(game_state)
+                    }
+                    ArgueTheCall::IDontCare => self.turnover_and_eject(game_state),
+                    ArgueTheCall::WellWhenYouPutItLikeThat => {
+                        game_state.info.turnover = true;
+                        ProcState::Done
+                    }
+                },
+                _ => panic!("Unexpected input"),
+            },
+        }
     }
 }
 
@@ -146,7 +208,7 @@ impl Procedure for Injury {
             }
             ProcInput::Roll(RollResult::FoulInjury { outcome, ejected }) => {
                 if ejected {
-                    procs.push(Ejection::new(self.fouler.unwrap()));
+                    procs.push(Ejection::new_foul(self.fouler.unwrap()));
                 }
                 outcome
             }
@@ -177,7 +239,7 @@ impl Procedure for Injury {
 #[cfg(test)]
 mod tests {
 
-    use crate::core::dices::D8;
+    use crate::core::dices::{D6, D8, RequestedRoll, RollResult};
     use crate::core::model::*;
     use crate::core::procedures::AnyProc;
     use crate::core::table::*;
@@ -223,21 +285,126 @@ mod tests {
 
         use super::*;
 
+        fn new_foul_ejection(id: PlayerID) -> Ejection {
+            match Ejection::new_foul(id) {
+                AnyProc::Ejection(proc) => proc,
+                _ => unreachable!(),
+            }
+        }
+
         #[test]
-        fn WellWhenYouPutItLikeThat_argue_the_call_result() {
-            // should result in player being allowed to stay on pitch but still turnover
+        fn well_when_you_put_it_like_that_argue_the_call_result() {
+            //should result in player being allowed to stay on pitch but still turnover
+            let start_pos = Position::new((5, 5));
+            let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+            let id = state.get_player_id_at(start_pos).unwrap();
+            let mut ejection = new_foul_ejection(id);
+
+            let proc_state = ejection.step(&mut state, ProcInput::Nothing);
+            assert!(matches!(
+                proc_state,
+                ProcState::NeedAction(aa)
+                    if aa.is_legal_action(Action::Simple(SimpleAT::ArgueTheCall))
+                        && aa.is_legal_action(Action::Simple(SimpleAT::DontArgueTheCall))
+            ));
+
+            let proc_state = ejection.step(
+                &mut state,
+                ProcInput::Action(Action::Simple(SimpleAT::ArgueTheCall)),
+            );
+            assert!(matches!(proc_state, ProcState::NeedRoll(RequestedRoll::D6)));
+
+            let proc_state = ejection.step(&mut state, ProcInput::Roll(RollResult::D6(D6::Six)));
+            assert!(matches!(proc_state, ProcState::Done));
+            assert_eq!(state.get_player_id_at(start_pos), Some(id));
+            assert!(state.info.turnover);
+            assert!(state.home.can_argue_the_call());
+            assert!(state.get_dugout().next().is_none());
 
         }
 
         #[test]
-        fn YoureOutaHere_argue_the_call_result() {
-            // should result in coach being ejected (team should not be able to argue the call again and team will have persisting -1 on rolls for brilliant coaching)
+        fn youre_outa_here_argue_the_call_result() {
+            //should result in the player being ejected and the coach being ejected and then turnover
+            let start_pos = Position::new((5, 5));
+            let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+            let id = state.get_player_id_at(start_pos).unwrap();
+            let mut ejection = new_foul_ejection(id);
+
+            assert!(matches!(
+                ejection.step(&mut state, ProcInput::Nothing),
+                ProcState::NeedAction(_)
+            ));
+            assert!(matches!(
+                ejection.step(
+                    &mut state,
+                    ProcInput::Action(Action::Simple(SimpleAT::ArgueTheCall)),
+                ),
+                ProcState::NeedRoll(RequestedRoll::D6)
+            ));
+
+            assert!(matches!(
+                ejection.step(&mut state, ProcInput::Roll(RollResult::D6(D6::One))),
+                ProcState::Done
+            ));
+            assert_eq!(state.get_player_id_at(start_pos), None);
+            assert!(state.info.turnover);
+            assert!(!state.home.can_argue_the_call());
+            assert!(matches!(
+                state.get_dugout().next(),
+                Some(DugoutPlayer {
+                    place: DugoutPlace::Ejected,
+                    stats: PlayerStats {
+                        team: TeamType::Home,
+                        ..
+                    },
+                    ..
+                })
+            ));
 
         }
 
         #[test]
-        fn IDontCare_argue_the_call_result() {
-            // Should result in player being sent off and turnover
+        fn i_dont_care_argue_the_call_result() {
+            // should result in the player being ejected and then turnover
+            let start_pos = Position::new((5, 5));
+            let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+            let id = state.get_player_id_at(start_pos).unwrap();
+            let mut ejection = new_foul_ejection(id);
+
+            assert!(matches!(
+                ejection.step(&mut state, ProcInput::Nothing),
+                ProcState::NeedAction(_)
+            ));
+            assert!(matches!(
+                ejection.step(
+                    &mut state,
+                    ProcInput::Action(Action::Simple(SimpleAT::ArgueTheCall)),
+                ),
+                ProcState::NeedRoll(RequestedRoll::D6)
+            ));
+
+            assert!(matches!(
+                ejection.step(&mut state, ProcInput::Roll(RollResult::D6(D6::Two))),
+                ProcState::Done
+            ));
+            assert_eq!(state.get_player_id_at(start_pos), None);
+            assert!(state.info.turnover);
+            assert!(state.home.can_argue_the_call());
+            assert!(matches!(
+                state.get_dugout().next(),
+                Some(DugoutPlayer {
+                    place: DugoutPlace::Ejected,
+                    stats: PlayerStats {
+                        team: TeamType::Home,
+                        ..
+                    },
+                    ..
+                })
+            ));
 
         }
 
@@ -261,6 +428,7 @@ mod tests {
             state.fixes.fix_d6(1); //injury
 
             state.step_positional(PosAT::Foul, foul_pos);
+            state.step_simple(SimpleAT::DontArgueTheCall);
 
             assert!(matches!(
                 state.get_dugout().next(),
@@ -295,6 +463,7 @@ mod tests {
             state.fixes.fix_d6(2); //injury
 
             state.step_positional(PosAT::Foul, foul_pos);
+            state.step_simple(SimpleAT::DontArgueTheCall);
 
             assert!(matches!(
                 state.get_dugout().next(),
