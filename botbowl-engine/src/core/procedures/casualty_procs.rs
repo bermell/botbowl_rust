@@ -74,9 +74,17 @@ impl Ejection {
 }
 impl Procedure for Ejection {
     fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
+        // todo: implement argue the call logic. The rules for argue the call are:
+        // When a player is ejected by the referee for committing a Foul, their coach may attempt to Argue the Call. 
+        // Roll a D6 and refer to the below:
+        // On a roll of one: “You’re Outta Here!” The referee is so enraged that the coach is ejected along with the player. 
+        // This means that for the remainder of this game, you may no longer Argue the Call and must apply a -1 modifier when rolling for Brilliant Coaching.
+        // On a roll of 2 to 5: “I Don’t Care!” The referee is not interested in your argument. The player is Sent-off and a Turnover caused.
+        // On a roll of 6: “Well, When You Put It Like That…” The referee is swayed by your argument. 
+        // A Turnover is still caused, but the player that committed the Foul is not ejected.
+
         let position = game_state.get_player_unsafe(self.id).position;
-        let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id)
-        {
+        let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
             game_state.ball = BallState::InAir(position);
             ProcState::DoneNew(ball_procs::Bounce::new())
         } else {

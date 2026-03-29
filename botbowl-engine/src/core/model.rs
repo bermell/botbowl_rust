@@ -518,6 +518,7 @@ pub struct TeamState {
     //fame: u8,
     reroll_used: bool,
     //time_violation: u8,
+    ejected_coach: bool,
 }
 impl TeamState {
     #[allow(clippy::new_without_default)]
@@ -527,6 +528,7 @@ impl TeamState {
             reroll_used: false,
             score: 0,
             bribes: 0,
+            ejected_coach: false
         }
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
@@ -537,6 +539,9 @@ impl TeamState {
         assert!(self.can_use_reroll());
         self.reroll_used = true;
         self.rerolls -= 1;
+    }
+    pub fn can_argue_the_call(&self) -> bool {
+        !self.ejected_coach
     }
 }
 
