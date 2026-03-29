@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::model::{Procedure};
+use crate::core::procedures::BrilliantCoaching;
 use crate::core::procedures::nuffle_prayers_procs::{PrayersToNuffle, TrapdoorCheck};
 use crate::core::procedures::ball_procs::{
     Bounce, Catch, Deflect, DeflectOrResolve, Pass, PickupProc, ThrowIn, Touchback, Touchdown,
@@ -25,6 +26,7 @@ pub enum AnyProc {
     Block(Block),
     BlockAction(BlockAction),
     Bounce(Bounce),
+    BrilliantCoaching(BrilliantCoaching),
     Catch(SimpleProcContainer<Catch>),
     ChangingWeather(ChangingWeather),
     SolidDefence(SolidDefence),
@@ -68,6 +70,7 @@ impl std::fmt::Debug for AnyProc {
             Self::Block(arg0) => f.debug_tuple("Block").field(arg0).finish(),
             Self::BlockAction(arg0) => f.debug_tuple("BlockAction").field(arg0).finish(),
             Self::Bounce(arg0) => f.debug_tuple("Bounce").field(arg0).finish(),
+            Self::BrilliantCoaching(arg0) => f.debug_tuple("BrilliantCoaching").field(arg0).finish(),
             Self::Catch(arg0) => f.debug_tuple("Catch").field(arg0).finish(),
             Self::ChangingWeather(arg0) => f.debug_tuple("ChangingWeather").field(arg0).finish(),
             Self::SolidDefence(arg0) => f.debug_tuple("SolidDefence").field(arg0).finish(),
@@ -122,6 +125,7 @@ impl Procedure for AnyProc {
             AnyProc::Block(arg) => arg.step(game_state, input),
             AnyProc::BlockAction(arg) => arg.step(game_state, input),
             AnyProc::Bounce(arg) => arg.step(game_state, input),
+            AnyProc::BrilliantCoaching(arg) => arg.step(game_state, input),
             AnyProc::Catch(arg) => arg.step(game_state, input),
             AnyProc::ChangingWeather(arg) => arg.step(game_state, input),
             AnyProc::SolidDefence(arg) => arg.step(game_state, input),
