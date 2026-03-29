@@ -513,7 +513,7 @@ pub struct TeamState {
     //turn: u8,
     //rerolls_start: u8,
     pub rerolls: u8,
-    //ass_coaches: u8,
+    ass_coaches: u8,
     //cheerleaders: u8,
     //fame: u8,
     reroll_used: bool,
@@ -527,6 +527,7 @@ impl TeamState {
             reroll_used: false,
             score: 0,
             bribes: 0,
+            ass_coaches: 0,
         }
         //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }

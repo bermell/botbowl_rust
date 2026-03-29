@@ -2,7 +2,7 @@ use crate::core::model::ProcInput;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
+use crate::core::dices::{D6, D6Target, RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerID, PlayerStatus,
     Position, ProcState, Procedure, TeamType, Weather,
@@ -398,6 +398,19 @@ impl Procedure for LandKickoff {
             )),
             None => ProcState::DoneNew(ball_procs::Bounce::new_with_kick_arg(true)),
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrilliantCoaching {}
+impl BrilliantCoaching {
+    pub fn new() -> AnyProc {
+        AnyProc::BrilliantCoaching(BrilliantCoaching {})
+    }
+}
+impl Procedure for BrilliantCoaching {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        // todo: implement according to description starting on line 101.
     }
 }
 
