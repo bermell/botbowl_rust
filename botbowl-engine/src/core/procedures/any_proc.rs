@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::model::{Procedure};
-use crate::core::procedures::BrilliantCoaching;
+use crate::core::procedures::{BrilliantCoaching, QuickSnap};
 use crate::core::procedures::nuffle_prayers_procs::{PrayersToNuffle, TrapdoorCheck};
 use crate::core::procedures::ball_procs::{
     Bounce, Catch, Deflect, DeflectOrResolve, Pass, PickupProc, ThrowIn, Touchback, Touchdown,
@@ -52,6 +52,7 @@ pub enum AnyProc {
     PickupProc(SimpleProcContainer<PickupProc>),
     PrayersToNuffle(PrayersToNuffle),
     Push(Push),
+    QuickSnap(QuickSnap),
     Setup(Setup),
     StandUp(StandUp),
     ThrowIn(ThrowIn),
@@ -98,6 +99,7 @@ impl std::fmt::Debug for AnyProc {
             Self::PickupProc(arg0) => f.debug_tuple("PickupProc").field(arg0).finish(),
             Self::PrayersToNuffle(arg0) => f.debug_tuple("PrayersToNuffle").field(arg0).finish(),
             Self::Push(arg0) => f.debug_tuple("Push").field(arg0).finish(),
+            Self::QuickSnap(arg0) => f.debug_tuple("QuickSnap").field(arg0).finish(),
             Self::Setup(arg0) => f.debug_tuple("Setup").field(arg0).finish(),
             Self::StandUp(arg0) => f.debug_tuple("StandUp").field(arg0).finish(),
             Self::ThrowIn(arg0) => f.debug_tuple("ThrowIn").field(arg0).finish(),
@@ -151,6 +153,7 @@ impl Procedure for AnyProc {
             AnyProc::PickupProc(arg) => arg.step(game_state, input),
             AnyProc::PrayersToNuffle(arg) => arg.step(game_state, input),
             AnyProc::Push(arg) => arg.step(game_state, input),
+            AnyProc::QuickSnap(arg) => arg.step(game_state, input),
             AnyProc::Setup(arg) => arg.step(game_state, input),
             AnyProc::StandUp(arg) => arg.step(game_state, input),
             AnyProc::ThrowIn(arg) => arg.step(game_state, input),

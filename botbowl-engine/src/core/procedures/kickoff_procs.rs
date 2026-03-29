@@ -213,6 +213,19 @@ impl Procedure for HighKick {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuickSnap {}
+impl QuickSnap {
+    pub fn new() -> AnyProc {
+        AnyProc::QuickSnap(QuickSnap {})
+    }
+}
+impl Procedure for QuickSnap {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 enum SolidDefenceState {
     Init,
     SelectPlayers,
