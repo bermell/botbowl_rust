@@ -46,6 +46,10 @@ fn truncate_to<T: Ord>(lower_limit: T, upper_limit: T, value: T) -> T {
     max(lower_limit, min(upper_limit, value))
 }
 
+pub(crate) fn max_players_from_d6(roll: u8) -> usize {
+    usize::from((roll + 1) / 2 + 3)
+}
+
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
 pub enum Coin {
@@ -145,7 +149,6 @@ impl Distribution<D16> for Standard {
     fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> D16 {
         D16::try_from(rng.gen_range(1..=16)).unwrap()
     }
-    
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

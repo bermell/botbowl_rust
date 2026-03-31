@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
 use std::rc::Rc;
 
-use super::dices::{D6, D6Target, RequestedRoll, RollResult, Sum2D6Target};
+use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target, D6};
 use super::gamestate::GameState;
 use super::pathing::Node;
 use super::procedures::AnyProc;
@@ -538,7 +538,7 @@ impl TeamState {
     pub(crate) fn brilliant_coaching_total(&self, roll: D6) -> i8 {
         roll as i8 + self.ass_coaches as i8 - i8::from(self.ejected_coach)
     }
-    // todo: this function is only used in tests in kickoff_procs. 
+    // todo: this function is only used in tests in kickoff_procs.
     // See if we can move it there or set assistant coaches in tests in some other way
     pub(crate) fn set_assistant_coaches(&mut self, ass_coaches: u8) {
         self.ass_coaches = ass_coaches;

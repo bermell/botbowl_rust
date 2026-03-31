@@ -2,7 +2,7 @@ use crate::core::model::ProcInput;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
+use crate::core::dices::{max_players_from_d6, RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerID, PlayerStatus,
     Position, ProcState, Procedure, TeamType, Weather,
@@ -90,11 +90,11 @@ impl Procedure for KickoffTable {
                 procs.push(HighKick::new());
             }
             Sum2D6::Six => {
-                // todo: Cheering fans implement. The rules for cheering fans are: 
-                // Both coaches roll a D6 and add the number ofcheerleaders on their Team Draft list. 
-                // The coach with the highest total may immediately roll once on the Prayers to Nuffle table. 
-                // In the case of a tie, neither coach rolls on the Prayers to Nuffle table. 
-                // Note that if you roll a result that is currently in effect, you must re-roll it. 
+                // todo: Cheering fans implement. The rules for cheering fans are:
+                // Both coaches roll a D6 and add the number ofcheerleaders on their Team Draft list.
+                // The coach with the highest total may immediately roll once on the Prayers to Nuffle table.
+                // In the case of a tie, neither coach rolls on the Prayers to Nuffle table.
+                // Note that if you roll a result that is currently in effect, you must re-roll it.
                 // However,if you roll a result that has been rolled previously but has since expired, there is no need to re-roll
             }
             Sum2D6::Seven => {
@@ -104,30 +104,29 @@ impl Procedure for KickoffTable {
                 procs.push(ChangingWeather::new());
             }
             Sum2D6::Nine => {
-                // todo: Quick snap implementation. The rules for quick snap are:
-                // D3+3 Open players on the receiving team may immediately move one square in any direction. 
+                procs.push(QuickSnap::new());
             }
             Sum2D6::Ten => {
                 // todo: Blitz! implementation. The rules for Blitz! are:
-                // D3+3 Open players on the kicking team may immediately activate to perform a Move action. 
-                // One may perform a Blitz action and one may perform a Throw Team-mate action. 
-                // If a player Falls Over or is Knocked Down, no further players can be activated and the Blitz ends immediately 
+                // D3+3 Open players on the kicking team may immediately activate to perform a Move action.
+                // One may perform a Blitz action and one may perform a Throw Team-mate action.
+                // If a player Falls Over or is Knocked Down, no further players can be activated and the Blitz ends immediately
             }
             Sum2D6::Eleven => {
                 // todo: Officious ref implementation. The rules for officious ref are:
-                // Both coaches roll a D6 and add their Fan Factor to the result. 
-                // The coach that rolls the lowest randomly selects one of their players from among those on the pitch. 
-                // In the case of a tie, both coaches randomly select a player. 
-                // Roll a D6 for the selected player(s). 
-                // On a roll of 2+, the player and the referee argue and come to blows. 
+                // Both coaches roll a D6 and add their Fan Factor to the result.
+                // The coach that rolls the lowest randomly selects one of their players from among those on the pitch.
+                // In the case of a tie, both coaches randomly select a player.
+                // Roll a D6 for the selected player(s).
+                // On a roll of 2+, the player and the referee argue and come to blows.
                 // The player is Placed Prone and becomes Stunned. On a roll of 1 however, the player is immediately Sent-off.
             }
             Sum2D6::Twelve => {
                 // todo: Pitch invasion implementation. The rules for pitch invasion are:
-                // Both coaches roll a D6 and add their Fan Factor to the result. 
-                // The coach that rolls the lowest randomly selects D3 of their players from among those on the pitch. 
-                // In the case of a tie, both coaches randomly select D3 of their players from among those on the pitch. 
-                // All of the randomly selected players are Placed Prone and become Stunned. 
+                // Both coaches roll a D6 and add their Fan Factor to the result.
+                // The coach that rolls the lowest randomly selects D3 of their players from among those on the pitch.
+                // In the case of a tie, both coaches randomly select D3 of their players from among those on the pitch.
+                // All of the randomly selected players are Placed Prone and become Stunned.
             }
         }
 
@@ -213,15 +212,144 @@ impl Procedure for HighKick {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct QuickSnap {}
+enum QuickSnapState {
+    Init,
+    SelectPlayers,
+    SelectMoveTarget,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuickSnap {
+    state: QuickSnapState,
+    team: TeamType,
+    max_selected: usize,
+    selected_ids: Vec<PlayerID>,
+    active_player: Option<PlayerID>,
+}
 impl QuickSnap {
     pub fn new() -> AnyProc {
-        AnyProc::QuickSnap(QuickSnap {})
+        AnyProc::QuickSnap(QuickSnap {
+            state: QuickSnapState::Init,
+            team: TeamType::Home,
+            max_selected: 0,
+            selected_ids: Vec::new(),
+            active_player: None,
+        })
+    }
+
+    fn build_selection_actions(&self, game_state: &GameState) -> ProcState {
+        let allow_new_selection = self.selected_ids.len() < self.max_selected;
+        let positions = game_state
+            .get_open_player_ids_on_pitch(self.team)
+            .into_iter()
+            .filter(|id| self.selected_ids.contains(id) || allow_new_selection)
+            .map(|id| game_state.get_player_unsafe(id).position)
+            .collect();
+
+        let mut aa = AvailableActions::new(self.team);
+        aa.insert_simple(SimpleAT::EndSetup);
+        aa.insert_positional(PosAT::SelectPosition, positions);
+        ProcState::NeedAction(aa)
+    }
+
+    fn build_player_selection_actions(&self, game_state: &GameState) -> ProcState {
+        let positions = self
+            .selected_ids
+            .iter()
+            .copied()
+            .map(|id| game_state.get_player_unsafe(id).position)
+            .collect();
+
+        let mut aa = AvailableActions::new(self.team);
+        aa.insert_positional(PosAT::SelectPosition, positions);
+        ProcState::NeedAction(aa)
+    }
+
+    fn build_move_target_actions(&self, game_state: &GameState, player_id: PlayerID) -> ProcState {
+        let player_pos = game_state.get_player_unsafe(player_id).position;
+        let positions = Direction::all_directions_iter()
+            .map(|dir| player_pos + *dir)
+            .filter(|pos| !pos.is_out())
+            .filter(|&pos| game_state.get_player_id_at(pos).is_none())
+            .collect();
+
+        let mut aa = AvailableActions::new(self.team);
+        aa.insert_positional(PosAT::SelectPosition, positions);
+        ProcState::NeedAction(aa)
     }
 }
 impl Procedure for QuickSnap {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        
+        match self.state {
+            QuickSnapState::Init => match input {
+                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+                ProcInput::Roll(RollResult::D6(roll)) => {
+                    self.team = other_team(game_state.info.kicking_this_drive);
+                    self.max_selected = max_players_from_d6(roll as u8);
+                    self.selected_ids.clear();
+                    self.active_player = None;
+                    self.state = QuickSnapState::SelectPlayers;
+                    self.build_selection_actions(game_state)
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+            QuickSnapState::SelectPlayers => match input {
+                ProcInput::Action(Action::Simple(SimpleAT::EndSetup)) => {
+                    self.active_player = None;
+                    if self.selected_ids.is_empty() {
+                        ProcState::Done
+                    } else {
+                        self.state = QuickSnapState::SelectMoveTarget;
+                        self.build_player_selection_actions(game_state)
+                    }
+                }
+                ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
+                    let id = game_state.get_player_id_at(pos).unwrap();
+                    assert_eq!(game_state.get_player_unsafe(id).stats.team, self.team);
+                    assert_eq!(game_state.get_player_unsafe(id).status, PlayerStatus::Up);
+                    assert_eq!(game_state.get_tz_on(id), 0);
+
+                    if let Some(index) = self.selected_ids.iter().position(|&pid| pid == id) {
+                        self.selected_ids.swap_remove(index);
+                    } else if self.selected_ids.len() < self.max_selected {
+                        self.selected_ids.push(id);
+                    }
+                    self.build_selection_actions(game_state)
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+            QuickSnapState::SelectMoveTarget => {
+                let active_player = self.active_player;
+                match input {
+                    ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos))
+                        if active_player.is_none() =>
+                    {
+                        let id = game_state.get_player_id_at(pos).unwrap();
+                        assert!(self.selected_ids.contains(&id));
+                        self.active_player = Some(id);
+                        self.build_move_target_actions(game_state, id)
+                    }
+                    ProcInput::Action(Action::Positional(PosAT::SelectPosition, pos)) => {
+                        let id = active_player.unwrap();
+                        let current_pos = game_state.get_player_unsafe(id).position;
+                        assert_eq!(current_pos.distance_to(&pos), 1);
+                        assert!(!pos.is_out());
+                        assert!(game_state.get_player_id_at(pos).is_none());
+
+                        game_state.move_player(id, pos).unwrap();
+                        self.active_player = None;
+                        self.selected_ids.retain(|&selected_id| selected_id != id);
+
+                        if self.selected_ids.is_empty() {
+                            ProcState::Done
+                        } else {
+                            self.build_player_selection_actions(game_state)
+                        }
+                    }
+                    _ => panic!("Unexpected input {:?}", input),
+                }
+            }
+        }
     }
 }
 
@@ -265,7 +393,8 @@ impl SolidDefence {
 
     fn open_selectable_positions(&self, game_state: &GameState) -> Vec<Position> {
         let allow_new_selection = self.selected_fielded_ids.len() < self.max_rearrange;
-        game_state.get_open_player_ids_on_pitch(self.team)
+        game_state
+            .get_open_player_ids_on_pitch(self.team)
             .into_iter()
             .filter(|id| {
                 self.selected_fielded_ids.contains(id)
@@ -310,11 +439,8 @@ impl SolidDefence {
         };
         self.state = SolidDefenceState::RearrangePlayers;
     }
-
-    fn max_rearrange_from_d6(roll: u8) -> usize {
-        usize::from((roll + 1) / 2 + 3)
-    }
 }
+
 impl Procedure for SolidDefence {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match self.state {
@@ -322,7 +448,7 @@ impl Procedure for SolidDefence {
                 ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
                 ProcInput::Roll(RollResult::D6(roll)) => {
                     self.team = game_state.info.kicking_this_drive;
-                    self.max_rearrange = Self::max_rearrange_from_d6(roll as u8);
+                    self.max_rearrange = max_players_from_d6(roll as u8);
                     self.selected_fielded_ids.clear();
                     self.rearrange_cfg = SetupRearrangeConfig {
                         team: self.team,
@@ -469,7 +595,6 @@ mod tests {
 
     #[test]
     fn kickoff_get_the_ref() {
-    
         let mut state: GameState = GameStateBuilder::new_at_kickoff();
         // ball fixes
         state.fixes.fix_d8_direction(Direction::up()); // scatter direction
@@ -560,38 +685,259 @@ mod tests {
         assert_eq!(state.ball, BallState::OnGround(Position::new((23, 8))));
     }
 
-    mod kickoff_quick_step {
+    mod kickoff_quick_snap {
         use super::*;
+
+        fn quick_snap_state(home_players: &[Position], away_players: &[Position]) -> GameState {
+            let mut state: GameState = GameStateBuilder::new()
+                .set_state(BuilderState::Kickoff { turn: 1 })
+                .build();
+            state.clear_all_players().unwrap();
+
+            for position in home_players {
+                state
+                    .add_new_player_to_field(PlayerStats::new_lineman(TeamType::Home), *position)
+                    .unwrap();
+            }
+            for position in away_players {
+                state
+                    .add_new_player_to_field(PlayerStats::new_lineman(TeamType::Away), *position)
+                    .unwrap();
+            }
+
+            state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+            state.fixes.fix_d6(5); // scatter length
+            state.fixes.fix_d6(4);
+            state.fixes.fix_d6(5); // kickoff table: quick snap
+            state
+        }
+
+        fn advance_quick_snap_to_selection(state: &mut GameState, d6_roll: u8) {
+            state.fixes.fix_d6(d6_roll);
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+            assert_eq!(state.available_actions.team, Some(TeamType::Home));
+        }
 
         #[test]
         fn can_deselect_and_replace_before_confirm() {
-            // should test that during selection stage, it is possible to deselect a selected player and then select another one.
+            let mut state = quick_snap_state(
+                &[
+                    Position::new((10, 5)),
+                    Position::new((10, 7)),
+                    Position::new((10, 9)),
+                    Position::new((10, 11)),
+                    Position::new((12, 5)),
+                    Position::new((12, 7)),
+                ],
+                &[],
+            );
+            advance_quick_snap_to_selection(&mut state, 1); // D3+3 => 4
+
+            let selectable = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
+            assert!(selectable.len() > 4);
+
+            let selected_for_cap: Vec<Position> = selectable.iter().copied().take(4).collect();
+            let replacement_pos = selectable[4];
+            for pos in &selected_for_cap {
+                state.step_positional(PosAT::SelectPosition, *pos);
+            }
+
+            assert!(
+                !state.is_legal_action(&Action::Positional(PosAT::SelectPosition, replacement_pos)),
+                "unselected open players should be blocked when at cap"
+            );
+
+            let deselected_pos = selected_for_cap[0];
+            state.step_positional(PosAT::SelectPosition, deselected_pos);
+            assert!(
+                state.is_legal_action(&Action::Positional(PosAT::SelectPosition, replacement_pos)),
+                "after deselecting, another player can be selected"
+            );
+
+            state.step_positional(PosAT::SelectPosition, replacement_pos);
+            assert!(
+                !state.is_legal_action(&Action::Positional(PosAT::SelectPosition, deselected_pos)),
+                "after replacement, deselected player should stay out of the capped selection"
+            );
+
+            state.step_simple(SimpleAT::EndSetup);
+            let move_stage_positions = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
+            assert_eq!(move_stage_positions.len(), 4);
+            assert!(move_stage_positions.contains(&replacement_pos));
+            assert!(!move_stage_positions.contains(&deselected_pos));
         }
 
         #[test]
         fn can_confirm_with_zero_selected() {
-            // should test that during selection stage, it should be possible to select no player to be moved at all.
+            let mut state =
+                quick_snap_state(&[Position::new((10, 5)), Position::new((12, 5))], &[]);
+            let positions_before: HashSet<Position> = state
+                .get_players_on_pitch_in_team(TeamType::Home)
+                .map(|player| player.position)
+                .collect();
+
+            advance_quick_snap_to_selection(&mut state, 1);
+
+            assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)));
+            state.fixes.fix_d8_direction(Direction::up()); // bounce after quick snap resolves
+            state.step_simple(SimpleAT::EndSetup);
+
+            let positions_after: HashSet<Position> = state
+                .get_players_on_pitch_in_team(TeamType::Home)
+                .map(|player| player.position)
+                .collect();
+            assert_eq!(positions_after, positions_before);
+            assert_eq!(state.available_actions.team, Some(TeamType::Home));
         }
 
         #[test]
         fn should_be_possible_to_select_less_than_rolled_nr_of_players() {
-            // should test that during selection stage, it should be possible to select only some of the D3+3 open players.
+            let mut state = quick_snap_state(
+                &[
+                    Position::new((10, 5)),
+                    Position::new((10, 7)),
+                    Position::new((10, 9)),
+                    Position::new((10, 11)),
+                    Position::new((12, 5)),
+                ],
+                &[],
+            );
+            advance_quick_snap_to_selection(&mut state, 1); // D3+3 => 4
+
+            let selected: Vec<Position> = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition)
+                .into_iter()
+                .take(2)
+                .collect();
+            assert_eq!(selected.len(), 2);
+
+            for pos in &selected {
+                state.step_positional(PosAT::SelectPosition, *pos);
+            }
+
+            assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)));
+            state.step_simple(SimpleAT::EndSetup);
+
+            let move_stage_positions: HashSet<Position> = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition)
+                .into_iter()
+                .collect();
+            assert_eq!(
+                move_stage_positions,
+                selected.into_iter().collect(),
+                "only the confirmed subset should enter the move stage"
+            );
         }
 
         #[test]
         fn not_open_players_should_not_be_selectable() {
-            // Not open is defined as marked by an opposing player or not in PlayerStatus::Up or not on the pitch 
+            let marked_pos = Position::new((10, 10));
+            let down_pos = Position::new((16, 10));
+            let open_pos = Position::new((14, 10));
+            let mut state = quick_snap_state(
+                &[marked_pos, open_pos, down_pos],
+                &[Position::new((11, 10))],
+            );
+
+            let down_id = state.get_player_id_at(down_pos).unwrap();
+            state.get_mut_player_unsafe(down_id).status = PlayerStatus::Down;
+
+            advance_quick_snap_to_selection(&mut state, 1);
+
+            let selectable: HashSet<Position> = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition)
+                .into_iter()
+                .collect();
+            let expected_open: HashSet<Position> = state
+                .get_open_player_ids_on_pitch(TeamType::Home)
+                .into_iter()
+                .map(|id| state.get_player_unsafe(id).position)
+                .collect();
+
+            assert_eq!(selectable, expected_open);
+            assert!(!selectable.contains(&marked_pos));
+            assert!(!selectable.contains(&down_pos));
+            assert!(selectable.contains(&open_pos));
         }
 
         #[test]
         fn quick_snap_moves_should_not_follow_setup_rules() {
-            // Should test that selected quick snap players should be able to move across los and into north and south wings even if
-            // there are already 2 players there.
+            let cross_los_start = Position::new((14, 8));
+            let north_wing_start = Position::new((15, 5));
+            let mut state = quick_snap_state(
+                &[
+                    cross_los_start,
+                    north_wing_start,
+                    Position::new((16, 1)),
+                    Position::new((16, 2)),
+                ],
+                &[],
+            );
+            advance_quick_snap_to_selection(&mut state, 1);
+
+            state.step_positional(PosAT::SelectPosition, cross_los_start);
+            state.step_positional(PosAT::SelectPosition, north_wing_start);
+            state.step_simple(SimpleAT::EndSetup);
+
+            state.step_positional(PosAT::SelectPosition, cross_los_start);
+            let cross_los_target = Position::new((13, 8));
+            assert!(
+                state.is_legal_action(&Action::Positional(PosAT::SelectPosition, cross_los_target)),
+                "quick snap should allow movement across the line of scrimmage"
+            );
+            state.step_positional(PosAT::SelectPosition, cross_los_target);
+
+            state.step_positional(PosAT::SelectPosition, north_wing_start);
+            let north_wing_target = Position::new((15, 4));
+            assert!(
+                state.is_legal_action(&Action::Positional(
+                    PosAT::SelectPosition,
+                    north_wing_target
+                )),
+                "quick snap should ignore setup wing caps"
+            );
+            state.fixes.fix_d8_direction(Direction::up()); // bounce after final quick snap move
+            state.step_positional(PosAT::SelectPosition, north_wing_target);
         }
 
         #[test]
         fn selected_player_is_only_allowed_one_square_of_movement() {
-            // A player selected for quick snap should not be able to move more than one square 
+            let start = Position::new((10, 10));
+            let mut state = quick_snap_state(&[start], &[]);
+            advance_quick_snap_to_selection(&mut state, 1);
+
+            state.step_positional(PosAT::SelectPosition, start);
+            state.step_simple(SimpleAT::EndSetup);
+
+            state.step_positional(PosAT::SelectPosition, start);
+            let legal_targets = state
+                .available_actions
+                .get_positions_for_action(PosAT::SelectPosition);
+            assert!(!legal_targets.is_empty());
+            assert!(legal_targets
+                .iter()
+                .all(|target| target.distance_to(&start) == 1));
+            assert!(
+                state.is_legal_action(&Action::Positional(
+                    PosAT::SelectPosition,
+                    Position::new((11, 10))
+                )),
+                "an adjacent square should be legal"
+            );
+            assert!(
+                !state.is_legal_action(&Action::Positional(
+                    PosAT::SelectPosition,
+                    Position::new((12, 10))
+                )),
+                "quick snap should not allow moving more than one square"
+            );
         }
     }
 

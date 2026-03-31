@@ -88,13 +88,11 @@ impl Push {
             return None;
         }
 
-        self.moves_to_make
-            .iter()
-            .find_map(|(_, to)| {
-                to.is_trapdoor_position()
-                    .then(|| game_state.get_player_id_at(*to))
-                    .flatten()
-            })
+        self.moves_to_make.iter().find_map(|(_, to)| {
+            to.is_trapdoor_position()
+                .then(|| game_state.get_player_id_at(*to))
+                .flatten()
+        })
     }
 
     fn start_follow_up_sequence(&mut self, game_state: &mut GameState) -> ProcState {
@@ -731,14 +729,8 @@ mod tests {
         assert!(follow_up_positions.contains(&attacker_pos));
         assert!(follow_up_positions.contains(&victim_pos));
         assert!(!follow_up_positions.contains(&occupied_pos));
-        assert!(state.is_legal_action(&Action::Positional(
-            PosAT::FollowUp,
-            victim_pos
-        )));
-        assert!(!state.is_legal_action(&Action::Positional(
-            PosAT::FollowUp,
-            occupied_pos
-        )));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, victim_pos)));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::FollowUp, occupied_pos)));
         state.fixes.assert_is_empty();
     }
 
@@ -787,11 +779,11 @@ mod tests {
             );
             assert_eq!(state.get_player_at(trapdoor_pos).unwrap().id, downed_id);
             state.fixes.assert_is_empty();
-
         }
 
         #[test]
-        fn player_pushed_onto_active_trapdoor_starting_a_chain_push_has_chain_resolved_before_trapdoor_check() {
+        fn player_pushed_onto_active_trapdoor_starting_a_chain_push_has_chain_resolved_before_trapdoor_check(
+        ) {
             // Tests the following: a player being pushed onto already occupied trapdoor square
             // should have trapdoor resolved after chain push has been resolved but before follow up is offered.
             let attacker_pos = Position::new((18, 2));
@@ -824,20 +816,19 @@ mod tests {
             state.fixes.fix_d6(1); // crowd injury
             state.step_positional(PosAT::Push, chain_push_target);
 
-            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
-            assert!(state.get_players_on_pitch().all(|player| player.id != victim_id));
+            assert_eq!(
+                state.get_player_id_at(chain_push_target),
+                Some(trapdoor_occupant_id)
+            );
+            assert!(state
+                .get_players_on_pitch()
+                .all(|player| player.id != victim_id));
             assert_eq!(
                 state.reserve_ids_for_team(TeamType::Away).len(),
                 away_reserves_before + 1
             );
-            assert!(state.is_legal_action(&Action::Positional(
-                PosAT::FollowUp,
-                victim_pos
-            )));
-            assert!(!state.is_legal_action(&Action::Positional(
-                PosAT::FollowUp,
-                trapdoor_pos
-            )));
+            assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, victim_pos)));
+            assert!(!state.is_legal_action(&Action::Positional(PosAT::FollowUp, trapdoor_pos)));
 
             state.step_positional(PosAT::FollowUp, victim_pos);
 
@@ -846,9 +837,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, entry)| {
-                    entry
-                        .contains("STEPPING: TrapdoorCheck(")
-                        .then_some(idx)
+                    entry.contains("STEPPING: TrapdoorCheck(").then_some(idx)
                 })
                 .collect();
             let follow_up_log_idx = state
@@ -865,7 +854,10 @@ mod tests {
                 .any(|entry| entry.contains("STEPPING: Armor(")));
             assert_eq!(state.get_player_id_at(victim_pos), Some(attacker_id));
             assert!(state.get_player_id_at(trapdoor_pos).is_none());
-            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
+            assert_eq!(
+                state.get_player_id_at(chain_push_target),
+                Some(trapdoor_occupant_id)
+            );
             state.fixes.assert_is_empty();
         }
 
@@ -907,21 +899,20 @@ mod tests {
             state.fixes.fix_d6(1); // crowd injury
             state.step_positional(PosAT::Push, chain_push_target);
 
-            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
-            assert!(state.get_players_on_pitch().all(|player| player.id != chained_id));
+            assert_eq!(
+                state.get_player_id_at(chain_push_target),
+                Some(trapdoor_occupant_id)
+            );
+            assert!(state
+                .get_players_on_pitch()
+                .all(|player| player.id != chained_id));
             assert_eq!(
                 state.reserve_ids_for_team(TeamType::Away).len(),
                 away_reserves_before + 1
             );
             assert_eq!(state.get_player_id_at(chained_pos), Some(victim_id));
-            assert!(state.is_legal_action(&Action::Positional(
-                PosAT::FollowUp,
-                victim_pos
-            )));
-            assert!(!state.is_legal_action(&Action::Positional(
-                PosAT::FollowUp,
-                trapdoor_pos
-            )));
+            assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, victim_pos)));
+            assert!(!state.is_legal_action(&Action::Positional(PosAT::FollowUp, trapdoor_pos)));
 
             state.step_positional(PosAT::FollowUp, victim_pos);
 
@@ -930,9 +921,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, entry)| {
-                    entry
-                        .contains("STEPPING: TrapdoorCheck(")
-                        .then_some(idx)
+                    entry.contains("STEPPING: TrapdoorCheck(").then_some(idx)
                 })
                 .collect();
             let trapdoor_log_entry = state.get_log()[trapdoor_log_idxs[0]].clone();
@@ -951,7 +940,10 @@ mod tests {
                 .any(|entry| entry.contains("STEPPING: Armor(")));
             assert_eq!(state.get_player_id_at(victim_pos), Some(attacker_id));
             assert!(state.get_player_id_at(trapdoor_pos).is_none());
-            assert_eq!(state.get_player_id_at(chain_push_target), Some(trapdoor_occupant_id));
+            assert_eq!(
+                state.get_player_id_at(chain_push_target),
+                Some(trapdoor_occupant_id)
+            );
             state.fixes.assert_is_empty();
         }
     }

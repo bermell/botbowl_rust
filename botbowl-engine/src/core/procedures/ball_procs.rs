@@ -676,7 +676,9 @@ mod tests {
         let log = state.get_log();
 
         assert!(state.get_player_id_at(trapdoor_pos).is_none());
-        assert!(state.get_players_on_pitch().all(|player| player.id != carrier_id));
+        assert!(state
+            .get_players_on_pitch()
+            .all(|player| player.id != carrier_id));
         assert_eq!(
             state.reserve_ids_for_team(TeamType::Away).len(),
             away_reserves_before + 1
