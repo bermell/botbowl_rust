@@ -46,10 +46,6 @@ fn truncate_to<T: Ord>(lower_limit: T, upper_limit: T, value: T) -> T {
     max(lower_limit, min(upper_limit, value))
 }
 
-pub(crate) fn max_players_from_d6(roll: u8) -> usize {
-    usize::from((roll + 1) / 2 + 3)
-}
-
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
 pub enum Coin {
@@ -250,6 +246,13 @@ impl Distribution<D3> for Standard {
         D3::try_from(rng.gen_range(1..=3)).unwrap()
     }
 }
+impl Add<i8> for D3 {
+    type Output = usize;
+
+    fn add(self, rhs: i8) -> Self::Output {
+        truncate_to(1, 6, self as i8 + rhs) as usize
+    }
+}
 
 impl_enum_try_from! {
     #[repr(u8)]
@@ -385,6 +388,7 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
 pub enum RequestedRoll {
     BlockDice(NumBlockDices),
     Coin,
+    D3,
     D6,
     D6PassFail(D6Target),
     D6ThreeOutcomes(D6Target, D6Target),
@@ -415,6 +419,7 @@ pub enum RollResult {
         ejected: bool,
     },
     MiddleOutcome,
+    D3(D3),
     D6(D6),
     D8(D8),
     D16(D16),

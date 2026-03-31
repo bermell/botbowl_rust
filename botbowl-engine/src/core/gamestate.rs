@@ -1076,6 +1076,7 @@ impl GameState {
 
     fn get_roll_result(&mut self, requested_roll: RequestedRoll) -> RollResult {
         match requested_roll {
+            RequestedRoll::D3 => RollResult::D3(self.get_d3_roll()),
             RequestedRoll::D6 => RollResult::D6(self.get_d6_roll()),
             RequestedRoll::D6PassFail(target) => {
                 if target.is_success(self.get_d6_roll()) {

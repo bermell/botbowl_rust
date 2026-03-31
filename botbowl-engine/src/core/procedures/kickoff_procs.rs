@@ -2,7 +2,7 @@ use crate::core::model::ProcInput;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::core::dices::{max_players_from_d6, RequestedRoll, RollResult, Sum2D6};
+use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerID, PlayerStatus,
     Position, ProcState, Procedure, TeamType, Weather,
@@ -282,10 +282,10 @@ impl Procedure for QuickSnap {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match self.state {
             QuickSnapState::Init => match input {
-                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
-                ProcInput::Roll(RollResult::D6(roll)) => {
+                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D3),
+                ProcInput::Roll(RollResult::D3(roll)) => {
                     self.team = other_team(game_state.info.kicking_this_drive);
-                    self.max_selected = max_players_from_d6(roll as u8);
+                    self.max_selected = roll + 3;
                     self.selected_ids.clear();
                     self.active_player = None;
                     self.state = QuickSnapState::SelectPlayers;
@@ -443,10 +443,10 @@ impl Procedure for SolidDefence {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match self.state {
             SolidDefenceState::Init => match input {
-                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
-                ProcInput::Roll(RollResult::D6(roll)) => {
+                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D3),
+                ProcInput::Roll(RollResult::D3(roll)) => {
                     self.team = game_state.info.kicking_this_drive;
-                    self.max_rearrange = max_players_from_d6(roll as u8);
+                    self.max_rearrange = roll + 3;
                     self.selected_fielded_ids.clear();
                     self.rearrange_cfg = SetupRearrangeConfig {
                         team: self.team,
@@ -710,8 +710,8 @@ mod tests {
             state
         }
 
-        fn advance_quick_snap_to_selection(state: &mut GameState, d6_roll: u8) {
-            state.fixes.fix_d6(d6_roll);
+        fn advance_quick_snap_to_selection(state: &mut GameState, d3_roll: u8) {
+            state.fixes.fix_d3(d3_roll);
             state.step_simple(SimpleAT::KickoffAimMiddle);
             assert_eq!(state.available_actions.team, Some(TeamType::Home));
         }
@@ -959,7 +959,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             let selectable = state
@@ -1040,7 +1040,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
             let reserves_before = state.get_reserve_count_for_team(kicking_team);
 
@@ -1116,7 +1116,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndSetup)));
@@ -1146,7 +1146,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             let selectable = state
@@ -1205,7 +1205,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             let selectable = state
@@ -1226,7 +1226,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             let selectable = state
@@ -1271,7 +1271,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             let selectable = state
@@ -1329,7 +1329,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             let selected: Vec<Position> = state
@@ -1397,7 +1397,7 @@ mod tests {
             state.fixes.fix_d6(5);
             state.fixes.fix_d6(1);
             state.fixes.fix_d6(3);
-            state.fixes.fix_d6(1); // D3+3 => 4
+            state.fixes.fix_d3(1); // D3+3 => 4
             state.step_simple(SimpleAT::KickoffAimMiddle);
 
             let reserves_before = state.get_reserve_count_for_team(kicking_team);
