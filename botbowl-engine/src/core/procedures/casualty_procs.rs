@@ -126,7 +126,8 @@ impl Procedure for Ejection {
                 }
 
                 self.state = EjectionState::AwaitArgument;
-                let mut aa = AvailableActions::new(game_state.get_player_unsafe(self.id).stats.team);
+                let mut aa =
+                    AvailableActions::new(game_state.get_player_unsafe(self.id).stats.team);
                 aa.insert_simple(SimpleAT::ArgueTheCall);
                 aa.insert_simple(SimpleAT::DontArgueTheCall);
                 ProcState::NeedAction(aa)
@@ -144,7 +145,10 @@ impl Procedure for Ejection {
             EjectionState::AwaitRoll => match input {
                 ProcInput::Roll(RollResult::D6(roll)) => match ArgueTheCall::from(roll) {
                     ArgueTheCall::YoureOutaHere => {
-                        game_state.get_mut_team_from_player(self.id).unwrap().eject_coach();
+                        game_state
+                            .get_mut_team_from_player(self.id)
+                            .unwrap()
+                            .eject_coach();
                         self.turnover_and_eject(game_state)
                     }
                     ArgueTheCall::IDontCare => self.turnover_and_eject(game_state),
@@ -239,7 +243,7 @@ impl Procedure for Injury {
 #[cfg(test)]
 mod tests {
 
-    use crate::core::dices::{D6, D8, RequestedRoll, RollResult};
+    use crate::core::dices::{RequestedRoll, RollResult, D6, D8};
     use crate::core::model::*;
     use crate::core::procedures::AnyProc;
     use crate::core::table::*;
@@ -321,7 +325,6 @@ mod tests {
             assert!(state.info.turnover);
             assert!(state.home.can_argue_the_call());
             assert!(state.get_dugout().next().is_none());
-
         }
 
         #[test]
@@ -363,7 +366,6 @@ mod tests {
                     ..
                 })
             ));
-
         }
 
         #[test]
@@ -405,7 +407,6 @@ mod tests {
                     ..
                 })
             ));
-
         }
 
         #[test]

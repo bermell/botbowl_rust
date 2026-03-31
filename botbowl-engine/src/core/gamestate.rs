@@ -318,7 +318,7 @@ impl GameInfo {
             kickoff_by_team: None,
             kicking_this_drive: TeamType::Away,
             turnover: false,
-            trapdoors_active: false
+            trapdoors_active: false,
         }
     }
 }
@@ -1159,7 +1159,7 @@ impl GameState {
     pub fn is_legal_action(&self, action: &Action) -> bool {
         // todo: remove these three lines at some point!
         /*
-        let mut top_proc = self.proc_stack.pop().unwrap();         
+        let mut top_proc = self.proc_stack.pop().unwrap();
         debug_assert_eq!(top_proc.available_actions(self), self.available_actions);
         self.proc_stack.push(top_proc);
          */
@@ -1171,7 +1171,7 @@ impl GameState {
         self.fixes.assert_is_empty();
     }
 
-    pub fn  step_positional(&mut self, action: PosAT, position: Position) {
+    pub fn step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
         self.fixes.assert_is_empty();
     }

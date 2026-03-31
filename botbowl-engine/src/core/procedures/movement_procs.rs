@@ -108,7 +108,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
         PathingEvent::Pass { to, pass, modifer } => ball_procs::Pass::new(to, pass, modifer),
         PathingEvent::TrapdoorCheck(target) => {
             nuffle_prayers_procs::TrapdoorCheck::new(active_player, target)
-        },
+        }
     }
 }
 
@@ -980,19 +980,16 @@ mod tests {
             let start_pos = Position::new((19, 2));
             let move_target = TRAPDOOR_TWO;
 
-            let mut state = GameStateBuilder::new()
-            .add_home_player(start_pos)
-            .build();
+            let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
 
             state.info.trapdoors_active = true;
 
             state.step_positional(PosAT::StartMove, start_pos);
 
-            state.fixes.fix_d6(2); 
+            state.fixes.fix_d6(2);
             state.step_positional(PosAT::Move, move_target);
 
             state.fixes.assert_is_empty(); //roll should be consumed
-
         }
 
         #[test]
@@ -1000,14 +997,14 @@ mod tests {
             let start_pos = Position::new((19, 2));
             let move_target = TRAPDOOR_TWO;
 
-            let mut state = GameStateBuilder::new()
-            .add_home_player(start_pos)
-            .build();
+            let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
 
             state.step_positional(PosAT::StartMove, start_pos);
 
             state.fixes.fix_d6(1); // this fail should not be triggered
-            state.micro_step(Some(Action::Positional(PosAT::Move, move_target))).unwrap();
+            state
+                .micro_step(Some(Action::Positional(PosAT::Move, move_target)))
+                .unwrap();
 
             assert!(state.get_player_at(TRAPDOOR_TWO).unwrap().status == PlayerStatus::Up);
         }
@@ -1016,13 +1013,11 @@ mod tests {
         fn standup_on_active_trapdoor_dont_cause_trapdoor_roll() {
             let start_pos = TRAPDOOR_ONE;
 
-            let mut state = GameStateBuilder::new()
-            .add_home_player(start_pos)
-            .build();
+            let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
 
             let player = state.get_mut_player_at_unsafe(start_pos);
             let id = player.id;
-            
+
             player.status = PlayerStatus::Down;
             state.info.trapdoors_active = true;
 
@@ -1033,7 +1028,10 @@ mod tests {
 
             stand_up.step(&mut state, ProcInput::Nothing);
 
-            assert_eq!(state.get_player_at(start_pos).unwrap().status, PlayerStatus::Up);
+            assert_eq!(
+                state.get_player_at(start_pos).unwrap().status,
+                PlayerStatus::Up
+            );
         }
 
         #[test]
@@ -1041,19 +1039,16 @@ mod tests {
             let start_pos = Position::new((13, 2)); // Lineman has movement 6, put 7 squares away
             let move_target = TRAPDOOR_TWO;
 
-            let mut state = GameStateBuilder::new()
-            .add_home_player(start_pos)
-            .build();
+            let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
 
             let id = state.get_player_id_at(start_pos).unwrap();
-
 
             state.info.trapdoors_active = true;
 
             state.step_positional(PosAT::StartMove, start_pos);
 
             state.fixes.fix_d6(1); // this should fail trapdoor rather than fail GFI.
-            state.fixes.fix_d6(3); 
+            state.fixes.fix_d6(3);
             state.fixes.fix_d6(1); // No injury, player places in reserves
 
             state.step_positional(PosAT::Move, move_target);
@@ -1107,7 +1102,10 @@ mod tests {
 
             assert!(trapdoor_log_idx < dodge_log_idx);
             assert!(dodge_log_idx < armor_log_idx);
-            assert_eq!(state.get_player_at(move_target).unwrap().status, PlayerStatus::Down);
+            assert_eq!(
+                state.get_player_at(move_target).unwrap().status,
+                PlayerStatus::Down
+            );
             state.fixes.assert_is_empty();
         }
 
@@ -1145,7 +1143,9 @@ mod tests {
             assert!(log
                 .iter()
                 .any(|entry| entry.contains("STEPPING: TrapdoorCheck(")));
-            assert!(!log.iter().any(|entry| entry.contains("STEPPING: DodgeProc(")));
+            assert!(!log
+                .iter()
+                .any(|entry| entry.contains("STEPPING: DodgeProc(")));
             assert!(!log.iter().any(|entry| entry.contains("STEPPING: Armor(")));
             state.fixes.assert_is_empty();
         }

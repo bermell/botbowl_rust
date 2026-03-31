@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::{
-    dices::{D6, D6Target, D16, RequestedRoll, RollResult, RollTarget},
+    dices::{D6Target, RequestedRoll, RollResult, RollTarget, D16, D6},
     gamestate::GameState,
     model::{BallState, PlayerID, ProcInput, ProcState, Procedure},
-    procedures::{AnyProc, ball_procs, casualty_procs},
+    procedures::{ball_procs, casualty_procs, AnyProc},
 };
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrayersToNuffle {}
@@ -28,20 +27,18 @@ impl Procedure for PrayersToNuffle {
         match prayers_to_nuffles_roll {
             D16::One => {
                 game_state.info.trapdoors_active = true;
-            },
-            D16::Two => {
-
-            },
-            D16::Three => {},
-            D16::Four => {},
-            D16::Five => {},
-            D16::Six => {},
-            D16::Seven => {},
-            D16::Eight => {},
-            D16::Nine => {},
-            D16::Ten => {},
-            D16::Eleven => {},
-            D16::Twelve => {},
+            }
+            D16::Two => {}
+            D16::Three => {}
+            D16::Four => {}
+            D16::Five => {}
+            D16::Six => {}
+            D16::Seven => {}
+            D16::Eight => {}
+            D16::Nine => {}
+            D16::Ten => {}
+            D16::Eleven => {}
+            D16::Twelve => {}
             D16::Thirteen => {}
         }
         ProcState::from(procs)
@@ -90,9 +87,10 @@ impl Procedure for TrapdoorCheck {
                 let player_position = match game_state.get_player(self.id) {
                     Ok(player_) => player_.position,
                     Err(_) => panic!("Player with id {:?} not found.", self.id),
-                }; 
+                };
 
-                if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
+                if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id)
+                {
                     game_state.ball = BallState::InAir(player_position);
                     procs.push(ball_procs::Bounce::new());
                 }
