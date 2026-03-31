@@ -20,8 +20,6 @@ forward model in a botbowl competition:
 
 - kickoff table:
 	- cheering fans
-	- brilliant coaching
-	- quick snap
 	- blitz!
 	- officious ref
 	- pitch invasion

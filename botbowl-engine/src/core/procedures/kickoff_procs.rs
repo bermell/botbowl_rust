@@ -369,7 +369,6 @@ pub struct SolidDefence {
     rearrange_cfg: SetupRearrangeConfig,
     rearrange_state: SetupRearrangeState,
 }
-
 impl SolidDefence {
     pub fn new() -> AnyProc {
         AnyProc::SolidDefence(SolidDefence {
@@ -440,7 +439,6 @@ impl SolidDefence {
         self.state = SolidDefenceState::RearrangePlayers;
     }
 }
-
 impl Procedure for SolidDefence {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match self.state {
