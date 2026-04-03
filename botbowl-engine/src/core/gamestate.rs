@@ -733,6 +733,30 @@ impl GameState {
         }
     }
 
+    pub(crate) fn get_random_player_ids_on_pitch_in_team(
+        &mut self,
+        team: TeamType,
+        count: usize,
+    ) -> Vec<PlayerID> {
+        let mut player_ids: Vec<PlayerID> = self
+            .get_players_on_pitch_in_team(team)
+            .map(|player| player.id)
+            .collect();
+        let mut selected_ids = Vec::new();
+
+        while selected_ids.len() < count && !player_ids.is_empty() {
+            loop {
+                let index = self.get_d16_roll() as usize - 1;
+                if index < player_ids.len() {
+                    selected_ids.push(player_ids.swap_remove(index));
+                    break;
+                }
+            }
+        }
+
+        selected_ids
+    }
+
     pub fn get_blockdices(&self, attacker: PlayerID, defender: PlayerID) -> NumBlockDices {
         let attacker_pos = self.get_player_unsafe(attacker).position;
         self.get_blockdices_from(attacker, attacker_pos, defender)

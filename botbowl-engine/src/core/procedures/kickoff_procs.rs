@@ -116,11 +116,7 @@ impl Procedure for KickoffTable {
                 procs.push(OfficiousRef::new());
             }
             Sum2D6::Twelve => {
-                // todo: Pitch invasion implementation. The rules for pitch invasion are:
-                // Both coaches roll a D6 and add their Fan Factor to the result.
-                // The coach that rolls the lowest randomly selects D3 of their players from among those on the pitch.
-                // In the case of a tie, both coaches randomly select D3 of their players from among those on the pitch.
-                // All of the randomly selected players are Placed Prone and become Stunned.
+                procs.push(PitchInvasion::new());
             }
         }
 
@@ -680,17 +676,78 @@ impl Procedure for OfficiousRef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PitchInvasion {
+enum PitchInvasionState {
+    Init,
+    AwaitAwayRoll { home_total: i8 },
+    RollVictimCounts {
+        pending_teams: Vec<TeamType>,
+        selected_ids: Vec<PlayerID>,
+    },
+}
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PitchInvasion {
+    state: PitchInvasionState,
 }
 impl PitchInvasion {
     fn new() -> AnyProc {
-        AnyProc::PitchInvasion(PitchInvasion {})
+        AnyProc::PitchInvasion(PitchInvasion {
+            state: PitchInvasionState::Init,
+        })
     }
 }
 impl Procedure for PitchInvasion {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        
+        match &mut self.state {
+            PitchInvasionState::Init => match input {
+                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+                ProcInput::Roll(RollResult::D6(roll)) => {
+                    self.state = PitchInvasionState::AwaitAwayRoll {
+                        home_total: game_state.home.pitch_invasion_total(roll),
+                    };
+                    ProcState::NeedRoll(RequestedRoll::D6)
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+            PitchInvasionState::AwaitAwayRoll { home_total } => match input {
+                ProcInput::Roll(RollResult::D6(roll)) => {
+                    let away_total = game_state.away.pitch_invasion_total(roll);
+                    let pending_teams = match (*home_total).cmp(&away_total) {
+                        std::cmp::Ordering::Less => vec![TeamType::Home],
+                        std::cmp::Ordering::Greater => vec![TeamType::Away],
+                        std::cmp::Ordering::Equal => vec![TeamType::Home, TeamType::Away],
+                    };
+
+                    self.state = PitchInvasionState::RollVictimCounts {
+                        pending_teams,
+                        selected_ids: Vec::new(),
+                    };
+                    ProcState::NeedRoll(RequestedRoll::D3)
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+            PitchInvasionState::RollVictimCounts {
+                pending_teams,
+                selected_ids,
+            } => match input {
+                ProcInput::Roll(RollResult::D3(roll)) => {
+                    let team = pending_teams.remove(0);
+                    selected_ids.extend(
+                        game_state.get_random_player_ids_on_pitch_in_team(team, roll as usize),
+                    );
+
+                    if pending_teams.is_empty() {
+                        for &id in selected_ids.iter() {
+                            game_state.get_mut_player_unsafe(id).status = PlayerStatus::Stunned;
+                        }
+                        ProcState::Done
+                    } else {
+                        ProcState::NeedRoll(RequestedRoll::D3)
+                    }
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+        }
     }
 }
 
@@ -1892,14 +1949,92 @@ mod tests {
     mod kickoff_pitch_invasion {
         use super::*;
 
+        fn fix_pitch_invasion_kickoff_rolls(state: &mut GameState) {
+            state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+            state.fixes.fix_d6(5); // scatter length
+            state.fixes.fix_d6(6);
+            state.fixes.fix_d6(6); // kickoff table: pitch invasion
+        }
+
         #[test]
         fn both_coaches_randomly_select_players_in_case_of_a_tie() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let home_ids: Vec<PlayerID> = state
+                .get_players_on_pitch_in_team(TeamType::Home)
+                .map(|player| player.id)
+                .collect();
+            let away_ids: Vec<PlayerID> = state
+                .get_players_on_pitch_in_team(TeamType::Away)
+                .map(|player| player.id)
+                .collect();
+            let selected_home = vec![home_ids[0], *home_ids.last().unwrap()];
+            let selected_away = vec![away_ids[0], *away_ids.last().unwrap()];
 
+            fix_pitch_invasion_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(3); // home coach total => 4
+            state.fixes.fix_d6(3); // away coach total => 4
+            state.fixes.fix_d3(2); // home selected players
+            state.fixes.fix_d16(1);
+            state.fixes.fix_d16(1);
+            state.fixes.fix_d3(2); // away selected players
+            state.fixes.fix_d16(1);
+            state.fixes.fix_d16(1);
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            for id in selected_home {
+                assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
+            }
+            for id in selected_away {
+                assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
+            }
+            assert_eq!(
+                state
+                    .get_players_on_pitch_in_team(TeamType::Home)
+                    .filter(|player| player.status == PlayerStatus::Down)
+                    .count(),
+                2
+            );
+            assert_eq!(
+                state
+                    .get_players_on_pitch_in_team(TeamType::Away)
+                    .filter(|player| player.status == PlayerStatus::Stunned)
+                    .count(),
+                2
+            );
         }
 
         #[test]
         fn randomly_selected_player_must_be_on_the_pitch() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let home_ids: Vec<PlayerID> = state
+                .get_players_on_pitch_in_team(TeamType::Home)
+                .map(|player| player.id)
+                .collect();
+            let lone_home_id = home_ids[0];
+            for id in home_ids.iter().skip(1).copied() {
+                state.unfield_player(id, DugoutPlace::Reserves).unwrap();
+            }
 
+            fix_pitch_invasion_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(1); // home coach total => 2
+            state.fixes.fix_d6(6); // away coach total => 7
+            state.fixes.fix_d3(3); // capped to lone player on pitch
+            state.fixes.fix_d16(1); // only player on pitch must be selected
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(
+                state.get_players_on_pitch_in_team(TeamType::Home).count(),
+                1,
+                "no reserve player should be pulled onto the pitch"
+            );
+            assert_eq!(
+                state.get_player_unsafe(lone_home_id).status,
+                PlayerStatus::Down
+            );
         }
     }
     // #[test]

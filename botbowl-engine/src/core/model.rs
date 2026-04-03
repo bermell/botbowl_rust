@@ -542,6 +542,9 @@ impl TeamState {
     pub(crate) fn officious_ref_total(&self, roll: D6) -> i8 {
         roll as i8 + self.fan_factor as i8
     }
+    pub(crate) fn pitch_invasion_total(&self, roll: D6) -> i8 {
+        roll as i8 + self.fan_factor as i8
+    }
     // todo: these functions are only used in tests in kickoff_procs.
     // See if we can move them there or set them in tests in some other way
     #[cfg(test)]
