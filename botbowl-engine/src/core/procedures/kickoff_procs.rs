@@ -678,6 +678,22 @@ impl Procedure for OfficiousRef {
         }
     }
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PitchInvasion {
+
+}
+impl PitchInvasion {
+    fn new() -> AnyProc {
+        AnyProc::PitchInvasion(PitchInvasion {})
+    }
+}
+impl Procedure for PitchInvasion {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::core::gamestate::{BuilderState, GameState, GameStateBuilder};
@@ -1873,6 +1889,19 @@ mod tests {
         }
     }
 
+    mod kickoff_pitch_invasion {
+        use super::*;
+
+        #[test]
+        fn both_coaches_randomly_select_players_in_case_of_a_tie() {
+
+        }
+
+        #[test]
+        fn randomly_selected_player_must_be_on_the_pitch() {
+
+        }
+    }
     // #[test]
     // fn kickoff_changing_weather() {
     //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
