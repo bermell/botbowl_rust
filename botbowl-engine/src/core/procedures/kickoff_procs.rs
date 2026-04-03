@@ -584,6 +584,20 @@ impl Procedure for BrilliantCoaching {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficiousRef {
+
+}
+impl OfficiousRef {
+    fn new() -> AnyProc {
+        AnyProc::OfficiousRef(OfficiousRef {})
+    }
+}
+impl Procedure for OfficiousRef {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::core::gamestate::{BuilderState, GameState, GameStateBuilder};
@@ -1615,6 +1629,31 @@ mod tests {
 
             assert_eq!(state.home.temporary_rerolls, 0);
             assert_eq!(state.away.temporary_rerolls, 1);
+        }
+    }
+
+    mod kickoff_officious_ref {
+
+        use super::*;
+
+        #[test]
+        fn both_coaches_randomly_select_player_in_case_of_a_tie() {
+
+        }
+
+        #[test]
+        fn randomly_selected_player_must_be_on_the_pitch() {
+
+        }
+
+        #[test]
+        fn rolls_two_plus_should_place_prone_and_stun_selected_player() {
+
+        }
+
+        #[test]
+        fn rolls_one_should_send_selected_player_off() {
+
         }
     }
 

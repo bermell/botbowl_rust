@@ -516,7 +516,7 @@ pub struct TeamState {
     ass_coaches: u8,
     pub temporary_rerolls: u8,
     //cheerleaders: u8,
-    //fame: u8,
+    fan_factor: u8,
     reroll_used: bool,
     //time_violation: u8,
     ejected_coach: bool,
@@ -532,8 +532,9 @@ impl TeamState {
             ejected_coach: false,
             ass_coaches: 0,
             temporary_rerolls: 0,
+            fan_factor: 1
         }
-        //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
+        //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fanFactor: 3, reroll_used: false }
     }
     pub(crate) fn brilliant_coaching_total(&self, roll: D6) -> i8 {
         roll as i8 + self.ass_coaches as i8 - i8::from(self.ejected_coach)
