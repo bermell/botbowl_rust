@@ -612,30 +612,22 @@ impl Procedure for OfficiousRef {
 
                     match (*home_total).cmp(&away_total) {
                         std::cmp::Ordering::Less => {
-                            if let Some(id) =
-                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Home)
-                            {
-                                pending.push(id);
-                            }
+                            pending.extend(
+                                game_state.get_random_player_ids_on_pitch_in_team(TeamType::Home, 1),
+                            );
                         }
                         std::cmp::Ordering::Greater => {
-                            if let Some(id) =
-                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Away)
-                            {
-                                pending.push(id);
-                            }
+                            pending.extend(
+                                game_state.get_random_player_ids_on_pitch_in_team(TeamType::Away, 1),
+                            );
                         }
                         std::cmp::Ordering::Equal => {
-                            if let Some(id) =
-                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Home)
-                            {
-                                pending.push(id);
-                            }
-                            if let Some(id) =
-                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Away)
-                            {
-                                pending.push(id);
-                            }
+                            pending.extend(
+                                game_state.get_random_player_ids_on_pitch_in_team(TeamType::Home, 1),
+                            );
+                            pending.extend(
+                                game_state.get_random_player_ids_on_pitch_in_team(TeamType::Away, 1),
+                            );
                         }
                     }
 
