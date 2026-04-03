@@ -712,6 +712,27 @@ impl GameState {
             .collect()
     }
 
+    pub(crate) fn get_random_player_id_on_pitch_in_team(
+        &mut self,
+        team: TeamType,
+    ) -> Option<PlayerID> {
+        let player_ids: Vec<PlayerID> = self
+            .get_players_on_pitch_in_team(team)
+            .map(|player| player.id)
+            .collect();
+
+        if player_ids.is_empty() {
+            return None;
+        }
+
+        loop {
+            let index = self.get_d16_roll() as usize - 1;
+            if let Some(&id) = player_ids.get(index) {
+                return Some(id);
+            }
+        }
+    }
+
     pub fn get_blockdices(&self, attacker: PlayerID, defender: PlayerID) -> NumBlockDices {
         let attacker_pos = self.get_player_unsafe(attacker).position;
         self.get_blockdices_from(attacker, attacker_pos, defender)

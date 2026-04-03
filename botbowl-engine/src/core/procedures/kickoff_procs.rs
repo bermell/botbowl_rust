@@ -2,10 +2,10 @@ use crate::core::model::ProcInput;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, PlayerID, PlayerStatus,
-    Position, ProcState, Procedure, TeamType, Weather,
+    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
+    PlayerStatus, Position, ProcState, Procedure, TeamType, Weather,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -113,13 +113,7 @@ impl Procedure for KickoffTable {
                 // If a player Falls Over or is Knocked Down, no further players can be activated and the Blitz ends immediately
             }
             Sum2D6::Eleven => {
-                // todo: Officious ref implementation. The rules for officious ref are:
-                // Both coaches roll a D6 and add their Fan Factor to the result.
-                // The coach that rolls the lowest randomly selects one of their players from among those on the pitch.
-                // In the case of a tie, both coaches randomly select a player.
-                // Roll a D6 for the selected player(s).
-                // On a roll of 2+, the player and the referee argue and come to blows.
-                // The player is Placed Prone and becomes Stunned. On a roll of 1 however, the player is immediately Sent-off.
+                procs.push(OfficiousRef::new());
             }
             Sum2D6::Twelve => {
                 // todo: Pitch invasion implementation. The rules for pitch invasion are:
@@ -584,6 +578,106 @@ impl Procedure for BrilliantCoaching {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum OfficiousRefState {
+    Init,
+    AwaitAwayRoll { home_total: i8 },
+    ResolveSelectedPlayers { pending: Vec<PlayerID> },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OfficiousRef {
+    state: OfficiousRefState,
+}
+impl OfficiousRef {
+    fn new() -> AnyProc {
+        AnyProc::OfficiousRef(OfficiousRef {
+            state: OfficiousRefState::Init,
+        })
+    }
+}
+impl Procedure for OfficiousRef {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match &mut self.state {
+            OfficiousRefState::Init => match input {
+                ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+                ProcInput::Roll(RollResult::D6(roll)) => {
+                    self.state = OfficiousRefState::AwaitAwayRoll {
+                        home_total: game_state.home.officious_ref_total(roll),
+                    };
+                    ProcState::NeedRoll(RequestedRoll::D6)
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+            OfficiousRefState::AwaitAwayRoll { home_total } => match input {
+                ProcInput::Roll(RollResult::D6(roll)) => {
+                    let away_total = game_state.away.officious_ref_total(roll);
+                    let mut pending = Vec::new();
+
+                    match (*home_total).cmp(&away_total) {
+                        std::cmp::Ordering::Less => {
+                            if let Some(id) =
+                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Home)
+                            {
+                                pending.push(id);
+                            }
+                        }
+                        std::cmp::Ordering::Greater => {
+                            if let Some(id) =
+                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Away)
+                            {
+                                pending.push(id);
+                            }
+                        }
+                        std::cmp::Ordering::Equal => {
+                            if let Some(id) =
+                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Home)
+                            {
+                                pending.push(id);
+                            }
+                            if let Some(id) =
+                                game_state.get_random_player_id_on_pitch_in_team(TeamType::Away)
+                            {
+                                pending.push(id);
+                            }
+                        }
+                    }
+
+                    if pending.is_empty() {
+                        ProcState::Done
+                    } else {
+                        self.state = OfficiousRefState::ResolveSelectedPlayers { pending };
+                        ProcState::NeedRoll(RequestedRoll::D6PassFail(D6Target::TwoPlus))
+                    }
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+            OfficiousRefState::ResolveSelectedPlayers { pending } => match input {
+                ProcInput::Roll(RollResult::Pass) => {
+                    let id = pending.remove(0);
+                    game_state.get_mut_player_unsafe(id).status = PlayerStatus::Stunned;
+
+                    if pending.is_empty() {
+                        ProcState::Done
+                    } else {
+                        ProcState::NeedRoll(RequestedRoll::D6PassFail(D6Target::TwoPlus))
+                    }
+                }
+                ProcInput::Roll(RollResult::Fail) => {
+                    let id = pending.remove(0);
+                    game_state.unfield_player(id, DugoutPlace::Ejected).unwrap();
+
+                    if pending.is_empty() {
+                        ProcState::Done
+                    } else {
+                        ProcState::NeedRoll(RequestedRoll::D6PassFail(D6Target::TwoPlus))
+                    }
+                }
+                _ => panic!("Unexpected input {:?}", input),
+            },
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::core::gamestate::{BuilderState, GameState, GameStateBuilder};
@@ -1615,6 +1709,167 @@ mod tests {
 
             assert_eq!(state.home.temporary_rerolls, 0);
             assert_eq!(state.away.temporary_rerolls, 1);
+        }
+    }
+
+    mod kickoff_officious_ref {
+        use super::*;
+
+        fn fix_officious_ref_kickoff_rolls(state: &mut GameState) {
+            state.fixes.fix_d8_direction(Direction::up()); // scatter direction
+            state.fixes.fix_d6(5); // scatter length
+            state.fixes.fix_d6(5);
+            state.fixes.fix_d6(6); // kickoff table: officious ref
+        }
+
+        #[test]
+        fn both_coaches_randomly_select_player_in_case_of_a_tie() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let selected_home_id = state
+                .get_players_on_pitch_in_team(TeamType::Home)
+                .map(|player| player.id)
+                .next()
+                .unwrap();
+            let selected_away_id = state
+                .get_players_on_pitch_in_team(TeamType::Away)
+                .map(|player| player.id)
+                .next()
+                .unwrap();
+
+            fix_officious_ref_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(3); // home coach total => 4
+            state.fixes.fix_d6(3); // away coach total => 4
+            state.fixes.fix_d16(1); // home selected player
+            state.fixes.fix_d16(1); // away selected player
+            state.fixes.fix_d6(2); // home selected player stays
+            state.fixes.fix_d6(2); // away selected player stays
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(
+                state.get_player_unsafe(selected_home_id).status,
+                PlayerStatus::Down
+            );
+            assert_eq!(
+                state.get_player_unsafe(selected_away_id).status,
+                PlayerStatus::Stunned
+            );
+            assert_eq!(
+                state
+                    .get_players_on_pitch_in_team(TeamType::Home)
+                    .filter(|player| player.status == PlayerStatus::Down)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                state
+                    .get_players_on_pitch_in_team(TeamType::Away)
+                    .filter(|player| player.status == PlayerStatus::Stunned)
+                    .count(),
+                1
+            );
+            assert!(!state
+                .get_dugout()
+                .any(|player| player.place == DugoutPlace::Ejected));
+        }
+
+        #[test]
+        fn randomly_selected_player_must_be_on_the_pitch() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let home_ids: Vec<PlayerID> = state
+                .get_players_on_pitch_in_team(TeamType::Home)
+                .map(|player| player.id)
+                .collect();
+            let lone_home_id = home_ids[0];
+            for id in home_ids.iter().skip(1).copied() {
+                state.unfield_player(id, DugoutPlace::Reserves).unwrap();
+            }
+
+            fix_officious_ref_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(1); // home coach total => 2
+            state.fixes.fix_d6(6); // away coach total => 7
+            state.fixes.fix_d16(1); // only player on pitch must be selected
+            state.fixes.fix_d6(2); // selected player stays
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(
+                state.get_players_on_pitch_in_team(TeamType::Home).count(),
+                1,
+                "no reserve player should be pulled onto the pitch"
+            );
+            assert_eq!(
+                state.get_player_unsafe(lone_home_id).status,
+                PlayerStatus::Down
+            );
+            assert!(!state
+                .get_dugout()
+                .any(|player| player.place == DugoutPlace::Ejected));
+        }
+
+        #[test]
+        fn rolls_two_plus_should_place_prone_and_stun_selected_player() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            state.home.set_fan_factor(3);
+            state.away.set_fan_factor(1);
+            let selected_away = state
+                .get_players_on_pitch_in_team(TeamType::Away)
+                .next()
+                .unwrap()
+                .clone();
+
+            fix_officious_ref_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(2); // home raw roll lower, but fan factor wins
+            state.fixes.fix_d6(3); // away raw roll higher, but lower total after fan factor
+            state.fixes.fix_d16(1); // away selected player
+            state.fixes.fix_d6(2); // selected player stays
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(
+                state.get_player_id_at(selected_away.position),
+                Some(selected_away.id)
+            );
+            assert_eq!(
+                state.get_player_unsafe(selected_away.id).status,
+                PlayerStatus::Stunned
+            );
+            assert!(!state
+                .get_dugout()
+                .any(|player| player.place == DugoutPlace::Ejected));
+        }
+
+        #[test]
+        fn rolls_one_should_send_selected_player_off() {
+            let mut state: GameState = GameStateBuilder::new_at_kickoff();
+            let selected_home = state
+                .get_players_on_pitch_in_team(TeamType::Home)
+                .next()
+                .unwrap()
+                .clone();
+
+            fix_officious_ref_kickoff_rolls(&mut state);
+            state.fixes.fix_d6(1); // home coach total => 2
+            state.fixes.fix_d6(6); // away coach total => 7
+            state.fixes.fix_d16(1); // home selected player
+            state.fixes.fix_d6(1); // selected player is sent off
+            state.fixes.fix_d8_direction(Direction::up()); // bounce
+
+            state.step_simple(SimpleAT::KickoffAimMiddle);
+
+            assert_eq!(state.get_player_id_at(selected_home.position), None);
+            assert!(
+                state
+                    .get_players_on_pitch()
+                    .all(|player| player.id != selected_home.id),
+                "selected player should no longer be fielded"
+            );
+            assert!(state.get_dugout().any(|player| {
+                player.place == DugoutPlace::Ejected && player.stats.team == TeamType::Home
+            }));
         }
     }
 
