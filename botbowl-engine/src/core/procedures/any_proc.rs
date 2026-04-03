@@ -5,7 +5,7 @@ use crate::core::procedures::ball_procs::{
     Bounce, Catch, Deflect, DeflectOrResolve, Pass, PickupProc, ThrowIn, Touchback, Touchdown,
 };
 use crate::core::procedures::nuffle_prayers_procs::{PrayersToNuffle, TrapdoorCheck};
-use crate::core::procedures::{BrilliantCoaching, OfficiousRef, QuickSnap};
+use crate::core::procedures::{BrilliantCoaching, OfficiousRef, PitchInvasion, QuickSnap};
 
 use crate::core::procedures::block_procs::{Block, BlockAction, FollowUp, KnockDown, Push};
 use crate::core::procedures::casualty_procs::{Armor, Ejection, Injury};
@@ -51,6 +51,7 @@ pub enum AnyProc {
     OfficiousRef(OfficiousRef),
     Pass(Pass),
     PickupProc(SimpleProcContainer<PickupProc>),
+    PitchInvasion(PitchInvasion),
     PrayersToNuffle(PrayersToNuffle),
     Push(Push),
     QuickSnap(QuickSnap),
@@ -101,6 +102,7 @@ impl std::fmt::Debug for AnyProc {
             Self::OfficiousRef(arg0) => f.debug_tuple("OfficiousRef").field(arg0).finish(),
             Self::Pass(arg0) => f.debug_tuple("Pass").field(arg0).finish(),
             Self::PickupProc(arg0) => f.debug_tuple("PickupProc").field(arg0).finish(),
+            Self::PitchInvasion(arg0) => f.debug_tuple("PitchInvasion").field(arg0).finish(),
             Self::PrayersToNuffle(arg0) => f.debug_tuple("PrayersToNuffle").field(arg0).finish(),
             Self::Push(arg0) => f.debug_tuple("Push").field(arg0).finish(),
             Self::QuickSnap(arg0) => f.debug_tuple("QuickSnap").field(arg0).finish(),
@@ -156,6 +158,7 @@ impl Procedure for AnyProc {
             AnyProc::OfficiousRef(arg) => arg.step(game_state, input),
             AnyProc::Pass(arg) => arg.step(game_state, input),
             AnyProc::PickupProc(arg) => arg.step(game_state, input),
+            AnyProc::PitchInvasion(arg) => arg.step(game_state, input),
             AnyProc::PrayersToNuffle(arg) => arg.step(game_state, input),
             AnyProc::Push(arg) => arg.step(game_state, input),
             AnyProc::QuickSnap(arg) => arg.step(game_state, input),
