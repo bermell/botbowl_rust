@@ -174,7 +174,7 @@ impl Procedure for Push {
                     ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
                 }
                 PushState::ResolveAfterFollowUp => self.handle_aftermath(game_state),
-            }
+            },
             ProcInput::Action(Action::Positional(PosAT::Push, position_to))
                 if game_state.get_player_at(position_to).is_some() =>
             {
