@@ -440,11 +440,7 @@ impl FieldedPlayer {
     /// Returns how many normal moves the player has left. Before activating the player this is
     /// equal to MA (movement allowence)
     pub fn moves_left(&self) -> u8 {
-        if self.moves <= self.stats.ma {
-            self.stats.ma - self.moves
-        } else {
-            0
-        }
+        self.stats.ma.saturating_sub(self.moves)
     }
     /// Returns how many gfis the player has left. Before exhausting the normal moves,
     /// it's equal to 2

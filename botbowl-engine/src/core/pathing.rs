@@ -696,12 +696,9 @@ impl<'a> GameInfo<'a> {
             );
         }
 
-        let Some(pass_target) = self
+        let pass_target = self
             .game_state
-            .get_pass_target(id, parent_node.position, to)
-        else {
-            return None;
-        };
+            .get_pass_target(id, parent_node.position, to)?;
 
         let catch_target = self.teammate_catch_mod[to].unwrap();
         let best_intercept = self
@@ -795,6 +792,10 @@ impl<'a> PathFinder<'a> {
         );
         if player.status != PlayerStatus::Up {
             assert!(player.moves_left() == player.stats.ma);
+            debug_assert!(matches!(
+                player.status,
+                PlayerStatus::Down | PlayerStatus::Stunned
+            ));
             root_node.apply_standup();
         }
 

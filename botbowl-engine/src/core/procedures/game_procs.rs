@@ -111,7 +111,7 @@ impl Procedure for Half {
 
         game_state
             .get_players_on_pitch_mut()
-            .filter(|p| p.stats.team == next_team && p.status != PlayerStatus::Stunned)
+            .filter(|p| p.stats.team == next_team)
             .for_each(|p| p.reset_skills_and_moves());
 
         ProcState::NotDoneNewProcs(vec![TurnStunned::new(), Turn::new(next_team)])

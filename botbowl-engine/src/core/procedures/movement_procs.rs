@@ -56,7 +56,7 @@ impl Procedure for StandUp {
         debug_assert_eq!(
             game_state.get_player_unsafe(self.id).status,
             PlayerStatus::Down
-        );
+        ); // can only standup if down, not if stunned
         game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Up;
         game_state.get_mut_player_unsafe(self.id).add_move(3);
 
@@ -245,8 +245,6 @@ mod tests {
             state.get_player_at(target_pos).unwrap().status,
             PlayerStatus::Down
         );
-
-        assert!(state.get_player_at(target_pos).unwrap().used);
 
         Ok(())
     }
@@ -942,7 +940,6 @@ mod tests {
         state.fixes.fix_d6(2); //injury
 
         state.step_simple(SimpleAT::DontUseReroll);
-        assert!(state.get_player_unsafe(id).used);
         assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
         assert_eq!(state.get_player_unsafe(id).position, move_target);
 

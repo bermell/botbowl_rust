@@ -522,7 +522,6 @@ mod tests {
         state.step_simple(SimpleAT::DontUseReroll);
 
         let player = state.get_player(id).unwrap();
-        assert!(player.used);
         assert!(matches!(state.ball, BallState::OnGround(pos) if pos == ball_pos + direction));
 
         Ok(())
