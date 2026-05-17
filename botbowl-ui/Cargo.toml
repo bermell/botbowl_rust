@@ -7,6 +7,10 @@ edition = "2021"
 
 [dependencies]
 botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+clap = { version = "4", features = ["derive"] }
 crossterm = "0.27.0"
 rand = "0.8.5"
 ratatui = "0.25.0"
+
+[dev-dependencies]
+insta = "1"
