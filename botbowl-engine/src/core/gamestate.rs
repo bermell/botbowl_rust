@@ -383,7 +383,7 @@ pub struct GameState {
 
     #[serde(skip, default = "ChaCha8Rng::from_entropy")]
     #[derivative(PartialEq = "ignore")]
-    rng: ChaCha8Rng,
+    pub(crate) rng: ChaCha8Rng,
 
     log: Vec<String>,
     print_log: bool,
@@ -475,6 +475,10 @@ impl GameState {
     }
     pub fn set_seed(&mut self, state: u64) {
         self.rng = ChaCha8Rng::seed_from_u64(state);
+    }
+
+    pub fn proc_stack_top(&self) -> Option<&'static str> {
+        self.proc_stack.last().map(|p| p.name())
     }
 
     fn get_d3_roll(&mut self) -> D3 {

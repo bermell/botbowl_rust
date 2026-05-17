@@ -1,5 +1,7 @@
 use std::{fs, io::Write};
 
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 use crate::bots::Bot;
@@ -92,6 +94,17 @@ impl Recording {
         let json_str = std::fs::read_to_string(file).unwrap();
         serde_json::from_str(&json_str).unwrap()
     }
+    pub fn step_back(&mut self) {
+        if self.current_state > 0 {
+            self.current_state -= 1;
+        }
+    }
+    pub fn current_step(&self) -> usize {
+        self.current_state
+    }
+    pub fn total_steps(&self) -> usize {
+        self.states.len()
+    }
 }
 impl GameRunner for Recording {
     fn step(&mut self) {
@@ -117,6 +130,7 @@ pub struct BotGameRunnerBuilder {
     away_bot: Option<Box<dyn Bot>>,
     replay_file: Option<String>,
     state: Option<GameState>,
+    seed: Option<u64>,
 }
 impl BotGameRunnerBuilder {
     pub fn new() -> Self {
@@ -138,6 +152,10 @@ impl BotGameRunnerBuilder {
         self.replay_file = Some(file.to_string());
         self
     }
+    pub fn set_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
     fn default_state() -> GameState {
         let mut s = GameStateBuilder::new()
             .set_state(BuilderState::CoinToss)
@@ -147,14 +165,23 @@ impl BotGameRunnerBuilder {
     }
 
     pub fn build(self) -> BotGameRunner {
+        let mut home_bot = self
+            .home_bot
+            .unwrap_or_else(|| Box::new(crate::bots::RandomBot::new()));
+        let mut away_bot = self
+            .away_bot
+            .unwrap_or_else(|| Box::new(crate::bots::RandomBot::new()));
+        let mut state = self.state.unwrap_or_else(BotGameRunnerBuilder::default_state);
+        if let Some(seed) = self.seed {
+            state.set_seed(seed);
+            state.rng_enabled = true;
+            home_bot.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xA));
+            away_bot.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xB));
+        }
         BotGameRunner {
-            home_bot: self
-                .home_bot
-                .unwrap_or(Box::new(crate::bots::RandomBot::new())),
-            away_bot: self
-                .away_bot
-                .unwrap_or(Box::new(crate::bots::RandomBot::new())),
-            state: self.state.unwrap_or(BotGameRunnerBuilder::default_state()),
+            home_bot,
+            away_bot,
+            state,
             save_file: self.replay_file,
             steps: vec![],
         }

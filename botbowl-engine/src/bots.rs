@@ -5,6 +5,7 @@ use rand_chacha::ChaCha8Rng;
 
 pub trait Bot {
     fn get_action(&mut self, state: &GameState) -> Action;
+    fn set_seed(&mut self, _rng: ChaCha8Rng) {}
 }
 
 pub struct RandomBot {
@@ -15,9 +16,6 @@ impl RandomBot {
         Self {
             rng: ChaCha8Rng::from_entropy(),
         }
-    }
-    pub fn set_seed(&mut self, rng: ChaCha8Rng) {
-        self.rng = rng;
     }
 }
 
@@ -34,6 +32,9 @@ impl Bot for RandomBot {
         debug_assert!(l > 0);
         let choice = self.rng.gen_range(0..l);
         action_list[choice]
+    }
+    fn set_seed(&mut self, rng: ChaCha8Rng) {
+        self.rng = rng;
     }
 }
 

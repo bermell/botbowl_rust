@@ -101,6 +101,47 @@ impl std::fmt::Debug for AnyProc {
     }
 }
 
+impl AnyProc {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Armor(_) => "Armor",
+            Self::Block(_) => "Block",
+            Self::BlockAction(_) => "BlockAction",
+            Self::Bounce(_) => "Bounce",
+            Self::Catch(_) => "Catch",
+            Self::ChangingWeather(_) => "ChangingWeather",
+            Self::ChooseKickReceive(_) => "ChooseKickReceive",
+            Self::CoinToss(_) => "CoinToss",
+            Self::Deflect(_) => "Deflect",
+            Self::DeflectOrResolve(_) => "DeflectOrResolve",
+            Self::DodgeProc(_) => "DodgeProc",
+            Self::Ejection(_) => "Ejection",
+            Self::FollowUp(_) => "FollowUp",
+            Self::GameOver(_) => "GameOver",
+            Self::GfiProc(_) => "GfiProc",
+            Self::Half(_) => "Half",
+            Self::Injury(_) => "Injury",
+            Self::KOWakeUp(_) => "KOWakeUp",
+            Self::Kickoff(_) => "Kickoff",
+            Self::KickoffTable(_) => "KickoffTable",
+            Self::KnockDown(_) => "KnockDown",
+            Self::LandKickoff(_) => "LandKickoff",
+            Self::MoveAction(_) => "MoveAction",
+            Self::Pass(_) => "Pass",
+            Self::PickupProc(_) => "PickupProc",
+            Self::Push(_) => "Push",
+            Self::Setup(_) => "Setup",
+            Self::StandUp(_) => "StandUp",
+            Self::ThrowIn(_) => "ThrowIn",
+            Self::Touchback(_) => "Touchback",
+            Self::Touchdown(_) => "Touchdown",
+            Self::Turn(_) => "Turn",
+            Self::TurnStunned(_) => "TurnStunned",
+            Self::TurnoverIfPossessionLost(_) => "TurnoverIfPossessionLost",
+        }
+    }
+}
+
 impl Procedure for AnyProc {
     fn step(
         &mut self,

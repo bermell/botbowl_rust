@@ -182,14 +182,13 @@ impl Setup {
         AnyProc::Setup(Setup { team })
     }
     fn get_empty_pos_in_box(
-        game_state: &GameState,
+        game_state: &mut GameState,
         x_range: RangeInclusive<Coord>,
         y_range: RangeInclusive<Coord>,
     ) -> Position {
-        let mut rng = rand::thread_rng();
         loop {
-            let x = rng.gen_range(x_range.clone());
-            let y = rng.gen_range(y_range.clone());
+            let x = game_state.rng.gen_range(x_range.clone());
+            let y = game_state.rng.gen_range(y_range.clone());
             if game_state.get_player_id_at_coord(x, y).is_none() {
                 return Position { x, y };
             }

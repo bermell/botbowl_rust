@@ -149,7 +149,7 @@ impl Direction {
     }
 }
 
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Position {
     pub x: Coord,
     pub y: Coord,
@@ -289,7 +289,7 @@ impl Mul<i8> for Position {
     }
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Serialize, Deserialize)]
 pub enum Action {
     Positional(table::PosAT, Position),
     Simple(table::SimpleAT),
@@ -656,6 +656,7 @@ impl AvailableActions {
             .collect();
         positions.extend(simple);
         positions.extend(paths);
+        positions.sort();
         positions
     }
     pub fn insert_simple(&mut self, action_type: SimpleAT) {

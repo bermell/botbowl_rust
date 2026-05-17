@@ -1,7 +1,7 @@
 //use super::model::{PlayerID, TeamType};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
 pub enum PosAT {
     StartMove,
     StartBlitz,
@@ -19,7 +19,7 @@ pub enum PosAT {
     Block,
 }
 
-#[derive(Debug, Eq, Hash, PartialEq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
 pub enum SimpleAT {
     SelectBothDown,
     SelectPow,
