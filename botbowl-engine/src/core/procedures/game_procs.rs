@@ -153,6 +153,8 @@ impl Turn {
         let positions: Vec<Position> = game_state
             .get_players_on_pitch_in_team(self.team)
             .filter(|p| !p.used)
+            // Stunned players cannot act this turn — they go Prone at the *next* TurnStunned.
+            .filter(|p| p.status != PlayerStatus::Stunned)
             .map(|p| p.position)
             .collect();
 
@@ -497,6 +499,67 @@ mod tests {
         assert!(state.away_to_act());
         assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
         assert!(!state.get_player_unsafe(id).used);
+    }
+
+    /// Regression: a player who got stunned during their own action stays Stunned
+    /// through to the team's next Turn (TurnStunned skips the active_player). The Turn
+    /// procedure must NOT offer any positional action on a Stunned player — doing so
+    /// led to a downstream debug_assert in StandUp::step.
+    #[test]
+    fn turn_does_not_offer_actions_on_stunned_player() {
+        let h1_pos = Position::new((5, 5));
+        let h2_pos = Position::new((5, 6));
+        let a1_pos = Position::new((6, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(h1_pos)
+            .add_home_player(h2_pos)
+            .add_away_player(a1_pos)
+            .build();
+        state.home.rerolls = 0;
+        state.away.rerolls = 0;
+        let id_h1 = state.get_player_id_at(h1_pos).unwrap();
+
+        // Home plays. h1 attempts a dodge out of a1's TZ, fails, gets stunned,
+        // turnover. h1 is the active_player at the moment of the stun so TurnStunned
+        // will skip them.
+        state.step_positional(PosAT::StartMove, h2_pos);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        state.step_positional(PosAT::StartMove, h1_pos);
+        state.fixes.fix_d6(1); // dodge fail
+        state.fixes.fix_d6(6); // armor
+        state.fixes.fix_d6(5); // armor
+        state.fixes.fix_d6(1); // injury
+        state.fixes.fix_d6(1); // injury
+        state.step_positional(PosAT::Move, h1_pos + (-1, -1));
+
+        assert!(state.away_to_act());
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+        // After the failed dodge, h1 ended up at the destination square (4,4).
+        let h1_now = state.get_player_unsafe(id_h1).position;
+        assert_eq!(h1_now, h1_pos + (-1, -1));
+
+        // Away ends turn → Home's next Turn runs. h1 is still Stunned (TurnStunned
+        // skipped them because they were the active_player at stun time).
+        state.step_simple(SimpleAT::EndTurn);
+        assert!(state.home_to_act());
+        assert_eq!(state.get_player_unsafe(id_h1).status, PlayerStatus::Stunned);
+
+        // The bug under test: Turn::available_actions used to offer StartMove
+        // on the stunned player.
+        for at in [
+            PosAT::StartMove,
+            PosAT::StartBlock,
+            PosAT::StartBlitz,
+            PosAT::StartHandoff,
+            PosAT::StartPass,
+            PosAT::StartFoul,
+        ] {
+            assert!(
+                !state.is_legal_action(&Action::Positional(at, h1_now)),
+                "{:?} on a Stunned player must not be legal",
+                at
+            );
+        }
     }
 
     #[test]

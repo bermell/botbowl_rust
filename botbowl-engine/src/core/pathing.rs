@@ -783,6 +783,12 @@ impl<'a> PathFinder<'a> {
     }
     pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<OptRcNode>> {
         let player = game_state.get_player_unsafe(id);
+        // Stunned players cannot move or stand up this turn — they go Prone at the next
+        // TurnStunned. Returning empty paths matches that, and prevents callers from
+        // spawning a StandUp procedure that would trip its own assertion.
+        if player.status == PlayerStatus::Stunned {
+            return Ok(Default::default());
+        }
         let info = GameInfo::new(game_state, player);
         let mut root_node = Node::new(
             None,
@@ -792,10 +798,7 @@ impl<'a> PathFinder<'a> {
         );
         if player.status != PlayerStatus::Up {
             assert!(player.moves_left() == player.stats.ma);
-            debug_assert!(matches!(
-                player.status,
-                PlayerStatus::Down | PlayerStatus::Stunned
-            ));
+            debug_assert!(matches!(player.status, PlayerStatus::Down));
             root_node.apply_standup();
         }
 
@@ -1072,6 +1075,31 @@ mod tests {
             .expect("expected a path to adjacent empty square");
         assert!((path.prob - 1.0).abs() < 1e-6);
         assert_eq!(path.position, target);
+    }
+
+    #[test]
+    fn player_paths_returns_empty_for_stunned_player() {
+        // Stunned players cannot act this turn (TurnStunned converts them to Down
+        // at the start of *their next* team turn, not before). Pathing must reflect
+        // that — otherwise we generate standup paths whose execution trips
+        // StandUp::step's debug_assert.
+        let start = Position::new((10, 8));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start)
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(start).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Stunned;
+
+        let paths = PathFinder::player_paths(&state, id).unwrap();
+        let any_path = paths.iter().any(|n| n.is_some());
+        assert!(
+            !any_path,
+            "expected no paths for a stunned player, found at least one"
+        );
     }
 
     #[test]

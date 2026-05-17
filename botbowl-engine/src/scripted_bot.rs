@@ -523,8 +523,6 @@ mod tests {
     use crate::core::gamestate::{BuilderState, GameStateBuilder};
 
     /// Smoke test — the bot pair runs a game to completion without panicking.
-    /// Note: relies on the engine's release-only path; debug build has a known pre-existing
-    /// debug_assert flake in movement_procs.rs:56 (recorded in repo memory).
     #[test]
     fn scripted_vs_random_runs_to_completion() {
         for seed in 0..3u64 {
