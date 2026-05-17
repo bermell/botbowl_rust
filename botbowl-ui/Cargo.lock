@@ -154,10 +154,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "botbowl-mcts"
+version = "0.1.0"
+dependencies = [
+ "botbowl-engine",
+ "recon_mcts",
+]
+
+[[package]]
 name = "botbowl-ui"
 version = "0.1.0"
 dependencies = [
  "botbowl-engine",
+ "botbowl-mcts",
  "clap",
  "crossterm",
  "insta",
@@ -589,6 +598,10 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "recon_mcts"
+version = "0.1.0"
 
 [[package]]
 name = "redox_syscall"

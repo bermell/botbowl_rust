@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(name = "botbowl-ui", about = "Blood Bowl terminal UI")]
@@ -17,6 +17,14 @@ pub enum Command {
     Snapshot(SnapshotArgs),
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
+pub enum BotKind {
+    #[default]
+    Random,
+    Scripted,
+    Mcts,
+}
+
 #[derive(Args, Debug)]
 pub struct LiveArgs {
     /// RNG seed for both the game state and bot action selection. When omitted, entropy is used.
@@ -25,6 +33,15 @@ pub struct LiveArgs {
     /// If set, write the game's state-by-state recording to this path on exit.
     #[arg(long)]
     pub save: Option<String>,
+    /// Which bot controls the Home team.
+    #[arg(long, value_enum, default_value_t = BotKind::Random)]
+    pub home_bot: BotKind,
+    /// Which bot controls the Away team.
+    #[arg(long, value_enum, default_value_t = BotKind::Random)]
+    pub away_bot: BotKind,
+    /// Search iterations per move for any MCTS bot in play.
+    #[arg(long, default_value_t = 1000)]
+    pub mcts_iters: usize,
 }
 
 #[derive(Args, Debug)]
@@ -49,6 +66,15 @@ pub struct SnapshotArgs {
     /// Terminal size to render at, formatted "WxH". Defaults to 120x40.
     #[arg(long, default_value = "120x40", value_parser = parse_size)]
     pub size: (u16, u16),
+    /// Which bot controls the Home team for the seeded game.
+    #[arg(long, value_enum, default_value_t = BotKind::Random)]
+    pub home_bot: BotKind,
+    /// Which bot controls the Away team for the seeded game.
+    #[arg(long, value_enum, default_value_t = BotKind::Random)]
+    pub away_bot: BotKind,
+    /// Search iterations per move for any MCTS bot in play.
+    #[arg(long, default_value_t = 1000)]
+    pub mcts_iters: usize,
 }
 
 fn parse_size(s: &str) -> Result<(u16, u16), String> {

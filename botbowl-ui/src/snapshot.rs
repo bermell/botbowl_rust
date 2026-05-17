@@ -3,14 +3,22 @@ use std::io::{self, Write};
 use botbowl_engine::core::game_runner::{GameRunner, Recording};
 
 use crate::cli::SnapshotArgs;
-use crate::{render_seeded_snapshot, render_state};
+use crate::{render_seeded_snapshot_with_bots, render_state};
 
 pub fn run(args: SnapshotArgs) -> io::Result<()> {
     let (width, height) = args.size;
 
     let frame = match (&args.replay, args.seed) {
         (Some(path), _) => render_replay(path, args.step, width, height)?,
-        (None, Some(seed)) => render_seeded_snapshot(seed, args.step, width, height)?,
+        (None, Some(seed)) => render_seeded_snapshot_with_bots(
+            seed,
+            args.step,
+            width,
+            height,
+            args.home_bot,
+            args.away_bot,
+            args.mcts_iters,
+        )?,
         (None, None) => {
             eprintln!("snapshot requires either --replay PATH or --seed N");
             std::process::exit(2);

@@ -6,11 +6,14 @@ use std::{
 use botbowl_engine::core::game_runner::{BotGameRunnerBuilder, GameRunner};
 use crossterm::event::{self, Event, KeyCode};
 
+use botbowl_ui::bot_factory::make_bot;
 use botbowl_ui::cli::LiveArgs;
 use botbowl_ui::{render, tui};
 
 pub fn run(args: LiveArgs) -> io::Result<()> {
-    let mut builder = BotGameRunnerBuilder::new();
+    let mut builder = BotGameRunnerBuilder::new()
+        .set_home_bot(make_bot(args.home_bot, args.mcts_iters))
+        .set_away_bot(make_bot(args.away_bot, args.mcts_iters));
     if let Some(seed) = args.seed {
         builder = builder.set_seed(seed);
     }
