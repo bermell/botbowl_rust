@@ -118,6 +118,24 @@ impl Procedure for Half {
     }
 }
 
+/// Converts Stunned players on `team_turn` to Prone (Down). Intentionally runs at the
+/// END of the team's turn, not the start of their next turn — and intentionally skips
+/// the active_player at the moment it runs. Both choices are load-bearing:
+///
+/// * **End-of-turn (not start-of-next-turn) timing**: a player stunned during your turn
+///   must be left Prone *before* the opponent plays, so the opponent can foul them
+///   normally and potentially re-stun. If we converted at start-of-your-next-turn
+///   instead, opponent fouls during the intervening turn would land on a Stunned (not
+///   Prone) player, which has no meaningful interaction.
+///
+/// * **Skipping the `active_player`**: if a player stuns themselves on their own turn
+///   (turnover), they must NOT be converted to Prone in the same end-of-turn pass —
+///   otherwise self-stunning costs nothing beyond losing the action. The skip means a
+///   self-stun keeps them Stunned through the opponent's turn AND through their own
+///   next turn (`active_player` is cleared by `Turn::step` before the *next*
+///   end-of-turn TurnStunned, so they convert to Prone two turns later).
+///
+/// Don't "fix" this ordering without first re-reading the above.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnStunned {}
 impl TurnStunned {
@@ -128,7 +146,7 @@ impl TurnStunned {
 impl Procedure for TurnStunned {
     fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         let team = game_state.info.team_turn;
-        let active_id = game_state.info.active_player.unwrap_or(999); // shall not turn active id, since they stunned themselves
+        let active_id = game_state.info.active_player.unwrap_or(999);
         game_state
             .get_players_on_pitch_mut()
             .filter(|p| {
