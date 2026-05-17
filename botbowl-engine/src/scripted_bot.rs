@@ -200,7 +200,10 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
             }
         }
         if let Some(node) = best_td {
-            return Some((Action::Positional(node.get_action_type(), node.position), None));
+            return Some((
+                Action::Positional(node.get_action_type(), node.position),
+                None,
+            ));
         }
     }
 
@@ -223,7 +226,10 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
             }
         }
         if let Some((_, node)) = best {
-            return Some((Action::Positional(node.get_action_type(), node.position), None));
+            return Some((
+                Action::Positional(node.get_action_type(), node.position),
+                None,
+            ));
         }
     }
 
@@ -273,7 +279,10 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
             }
         }
         if let Some(node) = best {
-            return Some((Action::Positional(node.get_action_type(), node.position), None));
+            return Some((
+                Action::Positional(node.get_action_type(), node.position),
+                None,
+            ));
         }
     }
 
@@ -291,7 +300,10 @@ fn first_positional_for(aa: &AvailableActions, at: PosAT) -> Option<Action> {
     None
 }
 
-fn pick_block_die(state: &GameState, simple: &std::collections::HashSet<SimpleAT>) -> Option<Action> {
+fn pick_block_die(
+    state: &GameState,
+    simple: &std::collections::HashSet<SimpleAT>,
+) -> Option<Action> {
     let is_block_choice = simple.contains(&SimpleAT::SelectPow)
         || simple.contains(&SimpleAT::SelectPowPush)
         || simple.contains(&SimpleAT::SelectPush)
@@ -308,9 +320,7 @@ fn pick_block_die(state: &GameState, simple: &std::collections::HashSet<SimpleAT
     // Pow-push (defender stumbles / falls): take it unless defender has Dodge and we lack Tackle.
     if simple.contains(&SimpleAT::SelectPowPush) {
         let (attacker, defender) = active_block_attacker_defender(state);
-        let defender_dodges = defender
-            .map(|d| d.has_skill(Skill::Dodge))
-            .unwrap_or(false);
+        let defender_dodges = defender.map(|d| d.has_skill(Skill::Dodge)).unwrap_or(false);
         let attacker_has_tackle = attacker
             .map(|a| a.has_skill(Skill::Block /* TODO: Tackle when added */))
             .unwrap_or(false);
@@ -396,7 +406,10 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
         .find(|p| state.get_tz_on(p.id) > 0)
     {
         if state.is_legal_action(&Action::Positional(PosAT::StartMove, player.position)) {
-            return Some((Action::Positional(PosAT::StartMove, player.position), vec![]));
+            return Some((
+                Action::Positional(PosAT::StartMove, player.position),
+                vec![],
+            ));
         }
     }
 
@@ -408,13 +421,13 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
                 .flatten()
                 .map(|p| p.prob >= TD_ATTEMPT_PROB_THRESHOLD)
                 .unwrap_or(false);
-            if can_score {
-                if state.is_legal_action(&Action::Positional(PosAT::StartMove, carrier.position)) {
-                    return Some((
-                        Action::Positional(PosAT::StartMove, carrier.position),
-                        vec![],
-                    ));
-                }
+            if can_score
+                && state.is_legal_action(&Action::Positional(PosAT::StartMove, carrier.position))
+            {
+                return Some((
+                    Action::Positional(PosAT::StartMove, carrier.position),
+                    vec![],
+                ));
             }
 
             if state.get_tz_on(carrier.id) == 0 {
@@ -499,7 +512,11 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
     }
 
     // Step 5: nothing useful to do — end the turn.
-    if state.available_actions.get_simple().contains(&SimpleAT::EndTurn) {
+    if state
+        .available_actions
+        .get_simple()
+        .contains(&SimpleAT::EndTurn)
+    {
         return Some((Action::Simple(SimpleAT::EndTurn), vec![]));
     }
     None
