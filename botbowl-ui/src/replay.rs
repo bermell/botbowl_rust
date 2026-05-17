@@ -1,27 +1,23 @@
-use std::{
-    io::{self, stdout, Stdout},
-    time::Duration,
-};
+use std::{io, time::Duration};
 
 use botbowl_engine::core::game_runner::{GameRunner, Recording};
-use crossterm::{
-    event::{self, Event, KeyCode},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    ExecutableCommand,
-};
-use ratatui::prelude::*;
+use crossterm::event::{self, Event, KeyCode};
 
 use botbowl_ui::cli::ReplayArgs;
-use botbowl_ui::render;
+use botbowl_ui::{render, tui};
 
 pub fn run(args: ReplayArgs) -> io::Result<()> {
     let mut recording = Recording::from_file(&args.path);
 
-    let mut terminal = init_terminal()?;
+    let mut terminal = tui::init_terminal()?;
     let mut log: Vec<String> = Vec::new();
 
     let result: io::Result<()> = loop {
-        let footer = format!("step {}/{}", recording.current_step(), recording.total_steps().saturating_sub(1));
+        let footer = format!(
+            "step {}/{}",
+            recording.current_step(),
+            recording.total_steps().saturating_sub(1)
+        );
         log.clear();
         log.push(footer);
         log.push("← prev   → next   q quit".to_string());
@@ -48,18 +44,6 @@ pub fn run(args: ReplayArgs) -> io::Result<()> {
         }
     };
 
-    restore_terminal()?;
+    tui::restore_terminal()?;
     result
-}
-
-fn init_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
-    enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    Terminal::new(CrosstermBackend::new(stdout()))
-}
-
-fn restore_terminal() -> io::Result<()> {
-    disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
-    Ok(())
 }

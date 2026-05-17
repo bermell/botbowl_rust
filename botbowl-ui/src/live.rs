@@ -1,18 +1,13 @@
 use std::{
-    io::{self, stdout, Stdout},
+    io,
     time::{Duration, Instant},
 };
 
 use botbowl_engine::core::game_runner::{BotGameRunnerBuilder, GameRunner};
-use crossterm::{
-    event::{self, Event, KeyCode},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    ExecutableCommand,
-};
-use ratatui::prelude::*;
+use crossterm::event::{self, Event, KeyCode};
 
 use botbowl_ui::cli::LiveArgs;
-use botbowl_ui::render;
+use botbowl_ui::{render, tui};
 
 pub fn run(args: LiveArgs) -> io::Result<()> {
     let mut builder = BotGameRunnerBuilder::new();
@@ -24,7 +19,7 @@ pub fn run(args: LiveArgs) -> io::Result<()> {
     }
     let mut game = builder.build();
 
-    let mut terminal = init_terminal()?;
+    let mut terminal = tui::init_terminal()?;
     let mut last_tick = Instant::now();
     let tick_rate = Duration::from_millis(80);
     let mut do_step = false;
@@ -59,17 +54,14 @@ pub fn run(args: LiveArgs) -> io::Result<()> {
         }
     };
 
-    restore_terminal()?;
-    if args.save.is_some() {
+    tui::restore_terminal()?;
+    if result.is_ok() && args.save.is_some() {
         game.save_to_file();
     }
     result
 }
 
-fn push_log(
-    log: &mut Vec<String>,
-    state: &botbowl_engine::core::gamestate::GameState,
-) {
+fn push_log(log: &mut Vec<String>, state: &botbowl_engine::core::gamestate::GameState) {
     let team = state
         .available_actions
         .team
@@ -80,16 +72,4 @@ fn push_log(
     if log.len() > 200 {
         log.drain(0..(log.len() - 200));
     }
-}
-
-fn init_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
-    enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    Terminal::new(CrosstermBackend::new(stdout()))
-}
-
-fn restore_terminal() -> io::Result<()> {
-    disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
-    Ok(())
 }
