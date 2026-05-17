@@ -5,6 +5,7 @@ use crate::core::gamestate::GameState;
 
 pub mod bots;
 pub mod core;
+pub mod scripted_bot;
 
 //TODO: this shouldn't be here
 pub fn standard_state() -> GameState {

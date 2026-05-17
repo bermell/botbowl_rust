@@ -835,6 +835,41 @@ impl<'a> PathFinder<'a> {
         Ok(pf.locked_nodes)
     }
 
+    /// Returns the best path from `id`'s current position to `target`, or None if no path exists.
+    /// Safe to call for an unused fresh-turn player on the moving team — moves_left, gfis_left,
+    /// and `player_action_type` default to sensible values (MA, 2, StartMove respectively).
+    pub fn safest_path_to(
+        game_state: &GameState,
+        id: PlayerID,
+        target: Position,
+    ) -> Result<Option<Rc<Node>>> {
+        let paths = PathFinder::player_paths(game_state, id)?;
+        Ok(paths[target].clone())
+    }
+
+    /// Returns the highest-probability path that ends on the opponent endzone column.
+    /// None if no such path exists.
+    pub fn safest_path_to_endzone(
+        game_state: &GameState,
+        id: PlayerID,
+    ) -> Result<Option<Rc<Node>>> {
+        let paths = PathFinder::player_paths(game_state, id)?;
+        let team = game_state.get_player_unsafe(id).stats.team;
+        let endzone_x = game_state.get_endzone_x(team);
+        let best = paths
+            .iter_position()
+            .filter(|(pos, _)| pos.x == endzone_x)
+            .filter_map(|(_, n)| n.clone())
+            .max_by(|a, b| {
+                a.prob
+                    .partial_cmp(&b.prob)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        Ok(best)
+    }
+}
+
+impl<'a> PathFinder<'a> {
     fn prepare_nodes(&mut self, new_nodes: Vec<Rc<Node>>) {
         for new_node in new_nodes {
             if self.locked_nodes[new_node.position]
@@ -989,3 +1024,81 @@ impl PartialEq for HashableFloat {
 }
 
 impl Eq for HashableFloat {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::gamestate::{BuilderState, GameStateBuilder};
+    use crate::core::model::TeamType;
+    use crate::core::table::SimpleAT;
+
+    #[test]
+    fn safest_path_to_endzone_clear_lane() {
+        // Home ball carrier at (3,8) with no opponents in the way; endzone_x for Home is 1.
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((3, 8)))
+            .add_ball((3, 8))
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        // Make sure it's the home team's turn so a Home player's MoveAction is well-formed.
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(Position::new((3, 8))).unwrap();
+        let path = PathFinder::safest_path_to_endzone(&state, id)
+            .unwrap()
+            .expect("expected a path to the endzone");
+        assert!((path.prob - 1.0).abs() < 1e-6);
+        assert_eq!(path.position.x, state.get_endzone_x(TeamType::Home));
+    }
+
+    #[test]
+    fn safest_path_to_non_active_teammate() {
+        // Two home players, no opponents. Path from teammate (not yet activated) to a target.
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((10, 8)))
+            .add_home_player(Position::new((12, 8)))
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(Position::new((10, 8))).unwrap();
+        // No START_xxx action taken yet, so this player is not active.
+        assert!(state.info.active_player.is_none());
+        let target = Position::new((11, 8));
+        let path = PathFinder::safest_path_to(&state, id, target)
+            .unwrap()
+            .expect("expected a path to adjacent empty square");
+        assert!((path.prob - 1.0).abs() < 1e-6);
+        assert_eq!(path.position, target);
+    }
+
+    #[test]
+    fn safest_path_for_downed_teammate_includes_standup() {
+        let start = Position::new((10, 8));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start)
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(start).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+        // Adjacent square, reachable after 3-move standup + 1 move.
+        let target = Position::new((11, 8));
+        let path = PathFinder::safest_path_to(&state, id, target)
+            .unwrap()
+            .expect("expected a path that includes standup");
+        // The first event in the chain (root) should be StandUp.
+        let items: Vec<PositionOrEvent> = path.iter().collect();
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, PositionOrEvent::Event(PathingEvent::StandUp))),
+            "path must contain a StandUp event, got {:?}",
+            items
+        );
+    }
+}
