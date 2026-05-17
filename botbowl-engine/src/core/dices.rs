@@ -337,6 +337,91 @@ impl RollTarget<Sum2D6> for Sum2D6Target {
     }
 }
 
+/// Block-dice override for `DicePolicy`. The grand plan's curriculum
+/// recipe is "2 dice blocks are knockdowns, 1 die is a push or even a
+/// skull" — i.e., attacker-favored blocks succeed, anything else fails.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlockDicePolicy {
+    /// No override on block dice; fall through to FIFO/RNG.
+    #[default]
+    Default,
+    /// Attacker-favored counts (`Two`, `Three`) yield all `Pow` so the
+    /// attacker selects a knockdown. One-die and uphill rolls fall
+    /// through. This is the minimum needed to make a 2-dice block
+    /// deterministic for "Get the ball — Hard".
+    KnockdownAtAdvantage,
+}
+
+impl BlockDicePolicy {
+    fn resolve(&self, num_dices: NumBlockDices) -> Option<RollResult> {
+        match self {
+            BlockDicePolicy::Default => None,
+            BlockDicePolicy::KnockdownAtAdvantage => match num_dices {
+                NumBlockDices::Two | NumBlockDices::Three => {
+                    let n = u8::from(num_dices) as usize;
+                    let mut dices: [Option<BlockDice>; 3] = [None, None, None];
+                    for slot in dices.iter_mut().take(n) {
+                        *slot = Some(BlockDice::Pow);
+                    }
+                    Some(RollResult::BlockDice(dices))
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
+/// Target-aware override of dice resolution.
+///
+/// Curriculum lectures and other consumers can install a policy to pin
+/// pass/fail roll outcomes by *target*, independent of the FIFO fixes queue
+/// — implementing the grand plan's "3+ succeeds, 4+ fails" semantics. The
+/// default variant is a no-op and preserves the existing queue/RNG path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DicePolicy {
+    /// No override; fall through to the FIFO fixes queue and RNG.
+    #[default]
+    Default,
+    /// Pass/fail rolls succeed iff the request's target is no stricter
+    /// than the configured threshold. A request with a D6 target ≤ `d6`
+    /// returns `Pass`; otherwise `Fail`. 2D6 pass/fail rolls use `sum2d6`
+    /// analogously. Block-dice rolls consult `block_dice`. Non-pass/fail,
+    /// non-block-dice rolls (raw D6/D8/scatter/coin) always fall through.
+    SucceedAtOrEasier {
+        d6: D6Target,
+        sum2d6: Sum2D6Target,
+        block_dice: BlockDicePolicy,
+    },
+}
+
+impl DicePolicy {
+    pub fn resolve(&self, request: &RequestedRoll) -> Option<RollResult> {
+        match *self {
+            DicePolicy::Default => None,
+            DicePolicy::SucceedAtOrEasier {
+                d6,
+                sum2d6,
+                block_dice,
+            } => match *request {
+                RequestedRoll::D6PassFail(target) => Some(if (target as u8) <= (d6 as u8) {
+                    RollResult::Pass
+                } else {
+                    RollResult::Fail
+                }),
+                RequestedRoll::Sum2D6PassFail(target) => {
+                    Some(if (target as u8) <= (sum2d6 as u8) {
+                        RollResult::Pass
+                    } else {
+                        RollResult::Fail
+                    })
+                }
+                RequestedRoll::BlockDice(num_dices) => block_dice.resolve(num_dices),
+                _ => None,
+            },
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum RequestedRoll {
     BlockDice(NumBlockDices),

@@ -3,3 +3,5 @@ engine/target
 ui/target
 botbowl-engine/target
 botbowl-ui/target
+/botbowl-curriculum/target
+/botbowl-mcts/target

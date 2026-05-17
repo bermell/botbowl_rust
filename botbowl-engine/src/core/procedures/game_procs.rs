@@ -829,6 +829,55 @@ mod tests {
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
     }
     #[test]
+    fn dice_policy_forces_pickup_success() {
+        // With "succeed at 3+ or easier", the pickup roll (target 3+ for
+        // AG3, no marking opponent) is auto-success without any queued d6.
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
+        state.dice_policy = crate::core::dices::DicePolicy::SucceedAtOrEasier {
+            d6: crate::core::dices::D6Target::ThreePlus,
+            sum2d6: crate::core::dices::Sum2D6Target::SevenPlus,
+            block_dice: crate::core::dices::BlockDicePolicy::Default,
+        };
+        state.fixes.assert_is_empty();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, td_pos);
+
+        assert_eq!(state.home.score, 1, "policy should have made pickup succeed");
+    }
+
+    #[test]
+    fn dice_policy_forces_pickup_failure_when_target_too_strict() {
+        // Pickup target 3+ with policy "succeed only at 2+ or easier" →
+        // request 3+ > policy 2+ → Fail. The carrier doesn't score.
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
+        state.dice_policy = crate::core::dices::DicePolicy::SucceedAtOrEasier {
+            d6: crate::core::dices::D6Target::TwoPlus,
+            sum2d6: crate::core::dices::Sum2D6Target::TwoPlus,
+            block_dice: crate::core::dices::BlockDicePolicy::Default,
+        };
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, td_pos);
+
+        // Decline the reroll so the failed pickup stands.
+        state.fixes.fix_d8(4); // bounce direction for the dropped ball
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        assert_eq!(state.home.score, 0, "policy should have made pickup fail");
+    }
+
+    #[test]
     fn no_td_when_failed_pickup_in_endzone() {
         let start_pos = Position::new((2, 5));
         let td_pos = Position::new((1, 5));

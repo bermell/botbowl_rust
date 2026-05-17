@@ -11,11 +11,17 @@ use rand_chacha::ChaCha8Rng;
 use crate::bots::Bot;
 use crate::core::gamestate::GameState;
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, FieldedPlayer, PlayerStatus, Position,
-    TeamType,
+    other_team, Action, AvailableActions, BallState, FieldedPlayer, PlayerID, PlayerStatus,
+    Position, TeamType,
 };
 use crate::core::pathing::{Node, PathFinder};
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
+
+/// Minimum success probability for the bot to attempt a path that ends in a
+/// touchdown. Set low enough that we still take a 2-GFI run from MA-7 away
+/// when there's no safer alternative — drifting closer is worthless if the
+/// carrier won't get another turn (curriculum lectures, end of half, etc.).
+const TD_ATTEMPT_PROB_THRESHOLD: f32 = 0.5;
 
 pub struct ScriptedBot {
     actions: VecDeque<Action>,
@@ -177,7 +183,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
 
     let paths = state.available_actions.get_paths().as_ref()?;
 
-    // 1) If the carrier can score from here at p >= 0.7, do it.
+    // 1) If the carrier can score from here at p >= TD_ATTEMPT_PROB_THRESHOLD, do it.
     if is_carrier {
         let mut best_td: Option<std::rc::Rc<Node>> = None;
         for (pos, node_opt) in paths.iter_position() {
@@ -185,7 +191,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
                 continue;
             }
             let Some(node) = node_opt else { continue };
-            if node.prob < 0.7 {
+            if node.prob < TD_ATTEMPT_PROB_THRESHOLD {
                 continue;
             }
             match &best_td {
@@ -400,7 +406,7 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
             let can_score = PathFinder::safest_path_to_endzone(state, carrier.id)
                 .ok()
                 .flatten()
-                .map(|p| p.prob >= 0.7)
+                .map(|p| p.prob >= TD_ATTEMPT_PROB_THRESHOLD)
                 .unwrap_or(false);
             if can_score {
                 if state.is_legal_action(&Action::Positional(PosAT::StartMove, carrier.position)) {
@@ -441,6 +447,23 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
     if let Some((attacker_pos, _)) = best_safe_block(state, team) {
         if state.is_legal_action(&Action::Positional(PosAT::StartBlock, attacker_pos)) {
             return Some((Action::Positional(PosAT::StartBlock, attacker_pos), vec![]));
+        }
+    }
+
+    // Step 3.5: opponent holds the ball. If a 2-dice blitz onto the
+    // carrier is achievable by moving a still-fresh player adjacent to
+    // them (using existing adjacent friendlies as assists), start it.
+    // The follow-up moves and the block itself are handled by the
+    // in-blitz branch in `pick_destination`.
+    if let BallState::Carried(carrier_id) = state.ball {
+        if let Ok(carrier) = state.get_player(carrier_id) {
+            if carrier.stats.team != team {
+                if let Some(blitzer_pos) = plan_blitz_against_carrier(state, team, carrier_id) {
+                    if state.is_legal_action(&Action::Positional(PosAT::StartBlitz, blitzer_pos)) {
+                        return Some((Action::Positional(PosAT::StartBlitz, blitzer_pos), vec![]));
+                    }
+                }
+            }
         }
     }
 
@@ -487,6 +510,63 @@ fn ball_carrier(state: &GameState) -> Option<&FieldedPlayer> {
         BallState::Carried(id) => state.get_player(id).ok(),
         _ => None,
     }
+}
+
+/// Find a home player whose blitz onto the enemy carrier would deliver
+/// 2+ dice in our favour. Picks the player+square combination with the
+/// best (dice_count, path_prob) tuple; ties broken by path probability.
+///
+/// Returns the player's *current* position so the caller can issue
+/// `StartBlitz` on them.
+fn plan_blitz_against_carrier(
+    state: &GameState,
+    team: TeamType,
+    carrier_id: PlayerID,
+) -> Option<Position> {
+    let carrier_pos = state.get_player(carrier_id).ok()?.position;
+
+    let mut best: Option<(NumBlockDices, f32, Position)> = None;
+
+    for blitzer in state
+        .get_players_on_pitch_in_team(team)
+        .filter(|p| !p.used && p.status == PlayerStatus::Up)
+    {
+        let paths = match PathFinder::player_paths(state, blitzer.id) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        for (pos, node_opt) in paths.iter_position() {
+            // We need a square adjacent to the carrier — that's where the
+            // attacker must stand to deliver the block.
+            if pos.distance_to(&carrier_pos) != 1 {
+                continue;
+            }
+            // Don't try to "move" onto the carrier itself (occupied).
+            if state.get_player_at(pos).is_some() && pos != blitzer.position {
+                continue;
+            }
+            let Some(node) = node_opt else { continue };
+            // Path probability includes any dodges/GFI needed to reach the
+            // square. Keep the floor reasonably high so we don't trade a
+            // safe assist for a coin-flip blitz.
+            if node.prob < 0.66 {
+                continue;
+            }
+            let dice = state.get_blockdices_from(blitzer.id, pos, carrier_id);
+            if !matches!(dice, NumBlockDices::Two | NumBlockDices::Three) {
+                continue;
+            }
+            let candidate = (dice, node.prob, blitzer.position);
+            match &best {
+                Some((best_dice, best_prob, _))
+                    if (*best_dice, *best_prob) >= (candidate.0, candidate.1) => {}
+                _ => best = Some(candidate),
+            }
+        }
+    }
+
+    best.map(|(_, _, pos)| pos)
 }
 
 fn best_safe_block(state: &GameState, team: TeamType) -> Option<(Position, Position)> {

@@ -289,7 +289,7 @@ impl Mul<i8> for Position {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Hash, PartialOrd, Ord, Copy, Clone, Serialize, Deserialize)]
 pub enum Action {
     Positional(table::PosAT, Position),
     Simple(table::SimpleAT),

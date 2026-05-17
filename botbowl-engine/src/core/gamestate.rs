@@ -15,7 +15,10 @@ use model::*;
 
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId, MissingActionError},
-    dices::{BlockDice, Coin, D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8},
+    dices::{
+        BlockDice, Coin, D6Target, DicePolicy, RequestedRoll, RollResult, RollTarget, Sum2D6, D3,
+        D6, D8,
+    },
     procedures::{AnyProc, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
 };
@@ -185,6 +188,9 @@ impl GameStateBuilder {
             rng_enabled: false,
             info: GameInfo::new(),
             fixes: Default::default(),
+            dice_policy: DicePolicy::default(),
+            expose_rolls: false,
+            pending_roll: None,
             log: Vec::new(),
             print_log: false,
             next_input: None,
@@ -376,6 +382,25 @@ pub struct GameState {
     pub available_actions: Box<AvailableActions>,
     pub rng_enabled: bool,
     pub fixes: FixedDice,
+    /// Target-aware override consulted before the FIFO/RNG path in
+    /// `get_roll_result`. Defaults to `DicePolicy::Default` (no override).
+    #[serde(default)]
+    pub dice_policy: DicePolicy,
+    /// When true, `micro_step` stops as soon as a procedure requests a
+    /// roll, stashing the request in `pending_roll` instead of resolving
+    /// it inline. The caller is then expected to queue a fix (or set a
+    /// policy / RNG seed) and call `micro_step(None)` again to consume
+    /// it. This lets MCTS-style search enumerate chance-node outcomes
+    /// explicitly. Default false → existing inline-resolve behaviour.
+    #[serde(default)]
+    pub expose_rolls: bool,
+    /// The roll that the engine paused on when `expose_rolls = true`.
+    /// Consumed on the next `micro_step` call via the standard
+    /// `dice_policy → fixes → rng` path. Included in `PartialEq` because
+    /// "about to resolve a 3+ dodge" is a different situation than
+    /// "ready to act" — MCTS chance nodes hinge on this distinction.
+    #[serde(default, skip)]
+    pub pending_roll: Option<RequestedRoll>,
 
     #[serde(skip)]
     #[derivative(PartialEq = "ignore")]
@@ -385,8 +410,98 @@ pub struct GameState {
     #[derivative(PartialEq = "ignore")]
     pub(crate) rng: ChaCha8Rng,
 
+    // Log is a debug/audit accumulator only — two states that reached the
+    // same game situation via different histories should compare equal.
+    // Excluded from PartialEq so MCTS state recombination works.
+    #[derivative(PartialEq = "ignore")]
     log: Vec<String>,
+    #[derivative(PartialEq = "ignore")]
     print_log: bool,
+}
+
+impl Eq for GameState {}
+
+// Hand-rolled Hash that covers the canonical "situation" fields only.
+// Used by MCTS-style transposition tables. The hash is intentionally
+// conservative — collisions are corrected by PartialEq, so undercounting
+// fields is safe; overcounting (e.g. hashing the RNG state or the log)
+// would prevent useful recombination.
+impl std::hash::Hash for GameState {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        // GameInfo discriminators
+        self.info.half.hash(h);
+        self.info.home_turn.hash(h);
+        self.info.away_turn.hash(h);
+        (self.info.team_turn as u8).hash(h);
+        self.info.game_over.hash(h);
+        self.info.turnover.hash(h);
+        self.info.active_player.hash(h);
+        self.info.handle_td_by.hash(h);
+        (self.info.kicking_first_half as u8).hash(h);
+        (self.info.kicking_this_drive as u8).hash(h);
+        self.info.kickoff_by_team.map(|t| t as u8).hash(h);
+
+        // Scores
+        self.home.score.hash(h);
+        self.away.score.hash(h);
+
+        // Fielded players slot-by-slot
+        for slot in &self.fielded_players {
+            match slot {
+                None => 0u8.hash(h),
+                Some(p) => {
+                    1u8.hash(h);
+                    p.id.hash(h);
+                    p.position.x.hash(h);
+                    p.position.y.hash(h);
+                    (p.status as u8).hash(h);
+                    p.used.hash(h);
+                    p.moves.hash(h);
+                    (p.stats.team as u8).hash(h);
+                    p.stats.str_.hash(h);
+                    p.stats.ma.hash(h);
+                    p.stats.ag.hash(h);
+                    p.stats.av.hash(h);
+                }
+            }
+        }
+
+        // Ball
+        match &self.ball {
+            BallState::OffPitch => 0u8.hash(h),
+            BallState::OnGround(p) => {
+                1u8.hash(h);
+                p.x.hash(h);
+                p.y.hash(h);
+            }
+            BallState::Carried(id) => {
+                2u8.hash(h);
+                id.hash(h);
+            }
+            BallState::InAir(p) => {
+                3u8.hash(h);
+                p.x.hash(h);
+                p.y.hash(h);
+            }
+        }
+
+        // Dice policy + procedure-stack-top discriminator. The full
+        // proc_stack is heavy and changes shape often — using only the
+        // top procedure's name catches "what the engine is about to do
+        // next" without paying for a deep recursive hash.
+        std::mem::discriminant(&self.dice_policy).hash(h);
+        self.proc_stack.len().hash(h);
+        self.proc_stack_top().hash(h);
+        // pending_roll is part of "what happens next" — two states that
+        // differ only in whether they're paused on a roll are distinct.
+        match &self.pending_roll {
+            None => 0u8.hash(h),
+            Some(r) => {
+                1u8.hash(h);
+                std::mem::discriminant(r).hash(h);
+            }
+        }
+    }
 }
 
 impl GameState {
@@ -842,7 +957,12 @@ impl GameState {
     }
     pub fn micro_step(&mut self, action: Option<Action>) -> Result<()> {
         let proc_input: ProcInput = {
-            if self.available_actions.is_empty() {
+            if let Some(req) = self.pending_roll.take() {
+                debug_assert!(action.is_none());
+                // expose_rolls was set last time around; the caller has
+                // since queued a fix / set a policy. Resolve now.
+                ProcInput::Roll(self.get_roll_result(req))
+            } else if self.available_actions.is_empty() {
                 debug_assert!(action.is_none());
                 self.next_input.take().unwrap_or(ProcInput::Nothing)
             } else {
@@ -893,8 +1013,13 @@ impl GameState {
             }
             ProcState::NeedRoll(requested_roll) => {
                 self.proc_stack.push(top_proc);
-                let result = self.get_roll_result(requested_roll);
-                Some(ProcInput::Roll(result))
+                if self.expose_rolls {
+                    self.pending_roll = Some(requested_roll);
+                    None
+                } else {
+                    let result = self.get_roll_result(requested_roll);
+                    Some(ProcInput::Roll(result))
+                }
             }
         };
 
@@ -975,6 +1100,9 @@ impl GameState {
     }
 
     fn get_roll_result(&mut self, requested_roll: RequestedRoll) -> RollResult {
+        if let Some(result) = self.dice_policy.resolve(&requested_roll) {
+            return result;
+        }
         match requested_roll {
             RequestedRoll::D6 => RollResult::D6(self.get_d6_roll()),
             RequestedRoll::D6PassFail(target) => {

@@ -1,0 +1,13 @@
+[package]
+name = "botbowl-mcts"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+recon_mcts = { version = "0.1.0", path = "../../recon_mcts/" }
+
+[dev-dependencies]
+botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
+rand = "0.8"
+rand_chacha = "0.3"
