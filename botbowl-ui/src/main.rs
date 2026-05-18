@@ -1,3 +1,4 @@
+mod curriculum;
 mod live;
 mod replay;
 
@@ -12,5 +13,6 @@ fn main() -> io::Result<()> {
         cli::Command::Live(args) => live::run(args),
         cli::Command::Replay(args) => replay::run(args),
         cli::Command::Snapshot(args) => botbowl_ui::snapshot::run(args),
+        cli::Command::Curriculum(args) => curriculum::run(args),
     }
 }

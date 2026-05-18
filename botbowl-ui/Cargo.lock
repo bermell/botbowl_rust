@@ -137,6 +137,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
 
 [[package]]
+name = "botbowl-curriculum"
+version = "0.1.0"
+dependencies = [
+ "botbowl-engine",
+ "rand",
+ "rand_chacha",
+]
+
+[[package]]
 name = "botbowl-engine"
 version = "0.1.0"
 dependencies = [
@@ -165,6 +174,7 @@ dependencies = [
 name = "botbowl-ui"
 version = "0.1.0"
 dependencies = [
+ "botbowl-curriculum",
  "botbowl-engine",
  "botbowl-mcts",
  "clap",

@@ -15,6 +15,37 @@ pub enum Command {
     Replay(ReplayArgs),
     /// Render one frame to stdout as plain text (deterministic with --seed).
     Snapshot(SnapshotArgs),
+    /// Watch a bot play one trial of a curriculum lecture; the UI stops on
+    /// pass/fail and leaves the final state on screen.
+    Curriculum(CurriculumArgs),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum CliDifficulty {
+    Easy,
+    Medium,
+    Hard,
+}
+
+#[derive(Args, Debug)]
+pub struct CurriculumArgs {
+    /// Lecture name, e.g. "Score TD" or "Get the ball" (case-insensitive).
+    pub name: String,
+    /// Lecture difficulty.
+    #[arg(long, value_enum)]
+    pub difficulty: CliDifficulty,
+    /// Bot under test. The opponent (if the lecture has one) is always RandomBot.
+    #[arg(long, value_enum, default_value_t = BotKind::Scripted)]
+    pub bot: BotKind,
+    /// RNG seed for setup, opponent, and bot.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Maximum micro_steps before the trial is declared a timeout.
+    #[arg(long, default_value_t = 2000)]
+    pub max_steps: u32,
+    /// Search iterations per move if --bot mcts.
+    #[arg(long, default_value_t = 1000)]
+    pub mcts_iters: usize,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]

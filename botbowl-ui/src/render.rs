@@ -100,7 +100,7 @@ fn draw_pitch(frame: &mut Frame, state: &GameState, area: Rect) {
             let pos = Position::from((x + 1, y + 1));
             let bg_color = match (pos.x + pos.y) % 2 {
                 0 => Color::Reset,
-                _ => Color::Black,
+                _ => Color::DarkGray,
             };
             let ball = match state.ball {
                 BallState::OffPitch => false,
@@ -117,7 +117,7 @@ fn draw_pitch(frame: &mut Frame, state: &GameState, area: Rect) {
             } else if ball {
                 frame.render_widget(ball_canvas(bg_color), *chunk);
             } else if td {
-                frame.render_widget(td_square_canvas(bg_color, Color::DarkGray, pos.y as usize), *chunk);
+                frame.render_widget(td_square_canvas(bg_color, Color::Gray, pos.y as usize), *chunk);
             } else {
                 frame.render_widget(square_canvas(bg_color), *chunk);
             }
