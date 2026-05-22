@@ -506,9 +506,16 @@ impl std::hash::Hash for GameState {
 
 impl GameState {
     pub fn log(&mut self, s: String) {
-        if self.print_log {
-            println!("{}", s);
+        if !self.print_log {
+            // Logging disabled — also skip the Vec push. Without this,
+            // `state.log` grows on every `micro_step` even when nobody's
+            // reading it, and cloning the state (which MCTS does once
+            // per `apply_action`) becomes O(N) in turns played. That
+            // turns a 1s search into a multi-minute one once the game
+            // is a few moves in.
+            return;
         }
+        println!("{}", s);
         self.log.push(s);
     }
     pub fn get_log(&self) -> &Vec<String> {
@@ -516,6 +523,12 @@ impl GameState {
     }
     pub fn set_logging_state(&mut self, state: bool) {
         self.print_log = state;
+    }
+    /// Drop all log entries accumulated so far. Useful before starting
+    /// a workload that clones state many times (e.g. an MCTS search):
+    /// otherwise every clone copies the historical log Vec.
+    pub fn clear_log(&mut self) {
+        self.log.clear();
     }
     pub fn get_dugout(&self) -> impl Iterator<Item = &DugoutPlayer> {
         self.dugout_players.iter().flatten()

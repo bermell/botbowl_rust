@@ -2,11 +2,12 @@ use botbowl_curriculum::lectures::get_the_ball::GetTheBallMedium;
 use botbowl_curriculum::run_trials;
 use botbowl_mcts::MctsBot;
 
-/// Same v2 blocker as `get_the_ball_easy`: needs fast-forward through
-/// mid-Move-procedure states so the pickup chance node surfaces, plus
-/// broader `roll_outcomes` coverage for block dice / deviate rolls
-/// that follow the displacement of the marker.
-#[ignore = "v2: needs apply_action fast-forward + broader roll_outcomes coverage"]
+/// Same v3 blocker as `get_the_ball_easy`: the pickup chance node
+/// still doesn't surface without FF, which we've parked until we have
+/// a chance-modelling approach that doesn't blow up the search tree.
+/// v2 added scripted block-die selection (so the marker can be
+/// displaced cheaply once the search actually finds that branch).
+#[ignore = "v3: needs chance-node modelling rework (FF blows up the tree)"]
 #[test]
 fn mcts_solves_get_the_ball_medium() {
     let lecture = GetTheBallMedium::new();

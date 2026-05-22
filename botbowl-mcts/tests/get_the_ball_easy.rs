@@ -2,16 +2,16 @@ use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
 use botbowl_curriculum::run_trials;
 use botbowl_mcts::MctsBot;
 
-/// Pickup-driven lectures need the engine's mid-path procedure
-/// transitions to be fast-forwarded inside `apply_action` so that the
-/// pickup chance node actually surfaces — otherwise `score_leaf` sees
-/// a mid-Move-procedure terminal state, scores it 0, and the ×10
-/// pickup prior loses to the Q=200 adjacent-to-ball moves. v1 ships
-/// without that fast-forward (each attempt at it either timed out the
-/// search or hit unimplemented roll types like `Deviate`), so this
-/// lecture is parked as a v2 target. See `dynamics::apply_action`
-/// and `plans/003-idea--mcts-action-pruning.md`.
-#[ignore = "v2: needs apply_action fast-forward + broader roll_outcomes coverage"]
+/// Still parked. v2 added `ChanceOutcome::Advance` (no more panics on
+/// unsupported roll types) and scripted block-die selection, but
+/// reaching the pickup chance node also needs fast-forwarding through
+/// mid-Move procedure transitions inside `apply_action`. Naively
+/// adding that loop blew the search tree out by ~1000× — even tiny
+/// 50-iter trials wouldn't finish inside the cargo 60s slow-test
+/// budget. v3 needs a different chance-modelling approach (smarter
+/// state-equivalence hashing, or modelling each Move as a single
+/// atomic action that resolves pickup inside `apply_action`).
+#[ignore = "v3: needs chance-node modelling rework (FF blows up the tree)"]
 #[test]
 fn mcts_solves_get_the_ball_easy() {
     let lecture = GetTheBallEasy::new();

@@ -14,10 +14,14 @@ pub enum BbPlayer {
 /// A concrete roll outcome the dynamics can apply against a pending
 /// `RequestedRoll`.
 ///
-/// The MVP only needs Pass/Fail for D6PassFail and Sum2D6PassFail rolls,
-/// which cover the Score TD Easy and Get-the-ball Easy/Medium scenarios.
-/// Block dice / three-outcome / foul / scatter rolls will be added when
-/// a lecture demands them.
+/// Pass/Fail covers the two-outcome rolls we model probabilistically
+/// (D6PassFail, Sum2D6PassFail). `Advance` is the single-outcome
+/// catch-all for rolls we don't enumerate (D8, Deviate, Scatter,
+/// BlockDice, ThrowIn, ...): MCTS sees one chance child per such roll,
+/// and `apply_action` resolves it by stepping the engine, which uses
+/// the configured `DicePolicy` (or the RNG when no policy applies).
+/// This keeps the tree branching bounded while still letting MCTS see
+/// the post-roll state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChanceOutcome {
     /// The pending pass/fail roll passes. Applied by queuing a D6 of 6
@@ -26,6 +30,10 @@ pub enum ChanceOutcome {
     /// The pending pass/fail roll fails. Applied by queuing a D6 of 1
     /// (or sum-2D6 of 2) — low enough to miss any non-trivial target.
     Fail,
+    /// "Just let the engine resolve it." No dice fix is queued; the
+    /// engine consumes the `pending_roll` via its dice policy / RNG on
+    /// the next `micro_step(None)`. Used for non-pass/fail rolls.
+    Advance,
 }
 
 /// MCTS-level action: either a game choice from the engine's
@@ -54,10 +62,11 @@ impl BbAction {
     }
 }
 
-/// Which roll kinds the MVP knows how to enumerate and apply. Anything
-/// else triggers a `todo!` so we notice immediately if a lecture wanders
-/// into uncharted territory.
-pub fn is_supported(req: &RequestedRoll) -> bool {
+/// Whether the dynamics knows how to enumerate `req` as a probabilistic
+/// Pass/Fail chance node. Other roll types are handled via
+/// `ChanceOutcome::Advance` (a single deterministic child) — they're
+/// "supported" too, just not enumerated.
+pub fn is_pass_fail(req: &RequestedRoll) -> bool {
     matches!(
         req,
         RequestedRoll::D6PassFail(_) | RequestedRoll::Sum2D6PassFail(_)

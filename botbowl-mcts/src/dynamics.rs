@@ -22,6 +22,7 @@ use botbowl_engine::core::model::{Action as EngineAction, TeamType};
 use recon_mcts::{GameDynamics, HashOnly, SearchTree, SelectNodeState, Tree};
 
 use crate::action::{BbAction, BbPlayer};
+use crate::block_dice;
 use crate::priors::prior_for;
 use crate::pruning::should_prune;
 use crate::roll_outcomes;
@@ -105,6 +106,15 @@ impl GameDynamics for BloodBowlDynamics {
             TeamType::Home => BbPlayer::Home,
             TeamType::Away => BbPlayer::Away,
         };
+        // Scripted block-die selection: if the engine is asking the
+        // bot to pick which block die to apply, collapse the fan-out
+        // to a single scripted choice (`block_dice::scripted_pick`).
+        // MCTS never sees the other dice — they'd just burn search
+        // budget on a decision the rules resolve deterministically
+        // given attacker/defender skills.
+        if let Some(scripted) = block_dice::scripted_pick(state) {
+            return Some(vec![(mcts_player, BbAction::Player(scripted))]);
+        }
         let actions: Vec<(BbPlayer, BbAction)> = state
             .available_actions
             .get_all()
@@ -143,17 +153,18 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             }
         }
-        // NOTE: we deliberately do *not* fast-forward past intermediate
-        // engine states here. The engine resolves "Move(target)" one
-        // square per `micro_step`, so the returned state is often
-        // mid-path with empty `available_actions` and no
-        // `pending_roll`. MCTS treats those as terminal
-        // (`Children::None`), which means lectures requiring the
-        // pickup chance node to be reached (`Get the Ball *`) score
-        // 0 on the pickup move and the search prefers an inferior
-        // adjacent-to-ball move. v2 will add fast-forwarding plus
-        // broader `roll_outcomes` coverage (Deviate, Block dice, etc.)
-        // so chance nodes downstream of pickup are reachable.
+        // NOTE on fast-forwarding: tried in v2 development, abandoned.
+        // Walking past mid-procedure states exposes pickup chance nodes
+        // (good — that's what `GetTheBall*` needs) but also blows the
+        // tree out by orders of magnitude, presumably because the
+        // additional intermediate states fail to recombine via state
+        // hashing. With FF on, even 50 iterations × 30 steps would not
+        // finish a single trial inside the cargo 60s slow-test
+        // threshold; with FF off, the same workload finishes
+        // instantly. v3 needs a different approach — likely a smarter
+        // state-equivalence hash, or modelling moves as single-step
+        // atomic actions that compute the post-pickup outcome inside
+        // `apply_action` rather than letting the search reify it.
         Some(new_state)
     }
 
@@ -332,7 +343,11 @@ impl GameDynamics for BloodBowlDynamics {
 /// the bare board.
 fn expected_leaf_score(state: &GameState) -> Option<i64> {
     let req = state.pending_roll.as_ref()?;
-    if !crate::action::is_supported(req) {
+    // expected_leaf_score is only meaningful for pass/fail rolls — for
+    // single-`Advance` chance children there's only one outcome anyway,
+    // so the post-resolution leaf score is what we already get for
+    // free from the next iteration's descent.
+    if !crate::action::is_pass_fail(req) {
         return None;
     }
     let outcomes = roll_outcomes::enumerate(req);
@@ -412,6 +427,13 @@ impl Bot for MctsBot {
         // don't let them leak into MCTS rollouts.
         root_state.fixes = Default::default();
         root_state.rng_enabled = true;
+        // Disable logging on the search state and drop the existing
+        // log Vec. Each `apply_action` clones state, and the log Vec
+        // gets pushed to on every `micro_step` *and* copied on every
+        // clone — without these two calls MCTS pays an O(log-size) cost
+        // per clone that compounds catastrophically on deep searches.
+        root_state.set_logging_state(false);
+        root_state.clear_log();
 
         let root_player = player_for_state(&root_state);
         let tree = Tree::new(BloodBowlDynamics, HashOnly, root_player, root_state);

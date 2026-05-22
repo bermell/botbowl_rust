@@ -1,4 +1,5 @@
 pub mod action;
+pub mod block_dice;
 pub mod dynamics;
 pub mod priors;
 pub mod pruning;
