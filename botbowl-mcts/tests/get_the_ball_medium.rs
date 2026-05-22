@@ -8,6 +8,8 @@ use botbowl_mcts::MctsBot;
 /// v2 added scripted block-die selection (so the marker can be
 /// displaced cheaply once the search actually finds that branch).
 #[ignore = "v3: needs chance-node modelling rework (FF blows up the tree)"]
+/// Same v4 blocker as `get_the_ball_easy`.
+#[ignore = "v4: chance-node modelling still blocked (FF deep-tree perf + on_drop reconstruction panic)"]
 #[test]
 fn mcts_solves_get_the_ball_medium() {
     let lecture = GetTheBallMedium::new();

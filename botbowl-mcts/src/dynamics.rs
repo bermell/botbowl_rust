@@ -21,7 +21,7 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, TeamType};
 use recon_mcts::{GameDynamics, HashOnly, SearchTree, SelectNodeState, Tree};
 
-use crate::action::{BbAction, BbPlayer};
+use crate::action::{BbAction, BbPlayer, ChanceOutcome};
 use crate::block_dice;
 use crate::priors::prior_for;
 use crate::pruning::should_prune;
@@ -133,18 +133,12 @@ impl GameDynamics for BloodBowlDynamics {
         let mut new_state = state;
         match action {
             BbAction::Player(engine_action) => {
-                if new_state
-                    .micro_step(Some(*engine_action))
-                    .is_err()
-                {
+                if new_state.micro_step(Some(*engine_action)).is_err() {
                     return None;
                 }
             }
             BbAction::Chance { outcome, .. } => {
                 if new_state.pending_roll.is_none() {
-                    // Shouldn't happen if available_actions was honest;
-                    // returning None lets the library treat the edge as
-                    // invalid instead of panicking.
                     return None;
                 }
                 roll_outcomes::fix_for_outcome(&mut new_state, *outcome);
@@ -153,18 +147,13 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             }
         }
-        // NOTE on fast-forwarding: tried in v2 development, abandoned.
-        // Walking past mid-procedure states exposes pickup chance nodes
-        // (good — that's what `GetTheBall*` needs) but also blows the
-        // tree out by orders of magnitude, presumably because the
-        // additional intermediate states fail to recombine via state
-        // hashing. With FF on, even 50 iterations × 30 steps would not
-        // finish a single trial inside the cargo 60s slow-test
-        // threshold; with FF off, the same workload finishes
-        // instantly. v3 needs a different approach — likely a smarter
-        // state-equivalence hash, or modelling moves as single-step
-        // atomic actions that compute the post-pickup outcome inside
-        // `apply_action` rather than letting the search reify it.
+        // FF is intentionally NOT enabled here in v3 — see
+        // dynamics.rs PR notes. The combination of FF + chance-node
+        // modeling produces both deep-tree slowdowns (5-10 ms / iter
+        // vs 1 µs / iter at v1) and reconstruction panics during
+        // tree drop. Instead, v3 keeps the tree shallow and gives the
+        // pickup-move chance state a meaningful Q via the optimistic
+        // success-outcome `score_leaf` below.
         Some(new_state)
     }
 
@@ -186,7 +175,8 @@ impl GameDynamics for BloodBowlDynamics {
             .map(|s| s.visits.load(Ordering::Relaxed))
             .unwrap_or(1) as f32;
 
-        // Chance node: pick the child with the fewest visits.
+        // Chance node: temporarily reverted to plain min-visits (v1
+        // behaviour) while bisecting the v3 reconstruction panic.
         if parent_node_state.pending_roll.is_some() {
             let pick = scores_and_actions
                 .clone()
@@ -306,20 +296,20 @@ impl GameDynamics for BloodBowlDynamics {
         _parent_player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::Score> {
-        // For chance states (engine has a `pending_roll`) the bare
-        // `leaf_score` returns the *pre-roll* board, which is usually
-        // misleading — e.g. a Move that lands on a free ball produces a
-        // state where the player is on top of the ball but the ball is
-        // still `OnGround`, so `ball_control_value` sees no adjacency
-        // and returns 0. That makes the pickup look worse than just
-        // standing next to the ball, even though the actual outcome
-        // (after the pickup roll) is +500. To give MCTS a meaningful Q
-        // before it descends into the chance node, score chance states
-        // as the probability-weighted leaf score over their immediate
-        // outcomes. The chance node's own `backprop_scores` will refine
-        // this once both outcomes have been visited.
+        // For chance states (pending_roll set) the bare leaf score
+        // reflects the pre-roll board — which understates the value
+        // of a Move-onto-ball, because the ball is still `OnGround`
+        // until the pickup roll resolves. We optimistically score
+        // chance states by simulating the success outcome inline:
+        // fix the dice to a Pass result, micro_step, then score the
+        // post-success state. This is the "always assume success on
+        // first contact" heuristic — pessimistic outcomes still get
+        // discovered when MCTS budget allows the chance child to be
+        // expanded, but the initial Q is high enough that MCTS will
+        // actually choose the pickup move over a Q=200 adj-to-ball
+        // move.
         let score = if state.pending_roll.is_some() {
-            expected_leaf_score(state).unwrap_or_else(|| leaf_score(state))
+            optimistic_leaf_score(state).unwrap_or_else(|| leaf_score(state))
         } else {
             leaf_score(state)
         };
@@ -331,52 +321,26 @@ impl GameDynamics for BloodBowlDynamics {
     }
 }
 
-/// Score a chance state as the probability-weighted expected leaf score
-/// over its immediate outcomes. Returns `None` if any outcome can't be
-/// applied (e.g. roll type isn't yet supported by `roll_outcomes`).
+/// Optimistic chance-state scoring: simulate the success outcome
+/// (Pass for pass/fail rolls, Advance otherwise — both fixed to
+/// the same constants `roll_outcomes::fix_for_outcome` queues) and
+/// return the leaf score of the post-resolution state.
 ///
-/// This is a one-level lookahead, not a full rollout — if an outcome
-/// state is *also* a chance state, we just score it with the bare
-/// `leaf_score` (no further unrolling). The intent is to give MCTS a
-/// reasonable Q for chance leaves so it doesn't ignore the pickup move
-/// in favour of an inferior adjacent-to-ball move that scores higher on
-/// the bare board.
-fn expected_leaf_score(state: &GameState) -> Option<i64> {
+/// Returns None if the simulation fails (engine error). Caller falls
+/// back to the bare leaf score in that case.
+fn optimistic_leaf_score(state: &GameState) -> Option<i64> {
     let req = state.pending_roll.as_ref()?;
-    // expected_leaf_score is only meaningful for pass/fail rolls — for
-    // single-`Advance` chance children there's only one outcome anyway,
-    // so the post-resolution leaf score is what we already get for
-    // free from the next iteration's descent.
-    if !crate::action::is_pass_fail(req) {
+    let outcome = if crate::action::is_pass_fail(req) {
+        ChanceOutcome::Pass
+    } else {
+        ChanceOutcome::Advance
+    };
+    let mut sim = state.clone();
+    roll_outcomes::fix_for_outcome(&mut sim, outcome);
+    if sim.micro_step(None).is_err() {
         return None;
     }
-    let outcomes = roll_outcomes::enumerate(req);
-    let mut weighted_sum: f64 = 0.0;
-    let mut total_prob: f64 = 0.0;
-    for outcome_action in &outcomes {
-        let (outcome, prob) = match outcome_action {
-            BbAction::Chance { outcome, .. } => (
-                *outcome,
-                outcome_action.prob_f32().unwrap_or(0.0) as f64,
-            ),
-            BbAction::Player(_) => continue,
-        };
-        if prob <= 0.0 {
-            continue;
-        }
-        let mut sim = state.clone();
-        roll_outcomes::fix_for_outcome(&mut sim, outcome);
-        if sim.micro_step(None).is_err() {
-            continue;
-        }
-        weighted_sum += prob * leaf_score(&sim) as f64;
-        total_prob += prob;
-    }
-    if total_prob <= 0.0 {
-        None
-    } else {
-        Some((weighted_sum / total_prob) as i64)
-    }
+    Some(leaf_score(&sim))
 }
 
 /// PUCT(a) = Q(a) + c · P(a) · √N(parent) / (1 + N(a))

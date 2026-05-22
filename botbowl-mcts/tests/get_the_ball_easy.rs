@@ -2,16 +2,19 @@ use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
 use botbowl_curriculum::run_trials;
 use botbowl_mcts::MctsBot;
 
-/// Still parked. v2 added `ChanceOutcome::Advance` (no more panics on
-/// unsupported roll types) and scripted block-die selection, but
-/// reaching the pickup chance node also needs fast-forwarding through
-/// mid-Move procedure transitions inside `apply_action`. Naively
-/// adding that loop blew the search tree out by ~1000× — even tiny
-/// 50-iter trials wouldn't finish inside the cargo 60s slow-test
-/// budget. v3 needs a different chance-modelling approach (smarter
-/// state-equivalence hashing, or modelling each Move as a single
-/// atomic action that resolves pickup inside `apply_action`).
-#[ignore = "v3: needs chance-node modelling rework (FF blows up the tree)"]
+/// Still parked. v3 added deterministic dice fixes for non-pass/fail
+/// rolls (closing the RNG-non-determinism gap from v2's `Advance`) and
+/// an optimistic chance-state `score_leaf`, but the pickup chance node
+/// still doesn't surface because the engine processes a Move(target)
+/// path one square per `micro_step` and we don't fast-forward
+/// (FF+chance produced both deep-tree per-iter slowdowns of ~10000×
+/// and reconstruction panics during `Tree` drop — `apply_action`
+/// returns `None` for some recombined edge during `recon_mcts`
+/// `get_state` walks, source unknown). v4 candidates: a non-recursive
+/// `recon_mcts` `Drop`, or moving the FF inside `score_leaf` only
+/// (forward-looking value without reifying the chance state into the
+/// tree).
+#[ignore = "v4: chance-node modelling still blocked (FF deep-tree perf + on_drop reconstruction panic)"]
 #[test]
 fn mcts_solves_get_the_ball_easy() {
     let lecture = GetTheBallEasy::new();
