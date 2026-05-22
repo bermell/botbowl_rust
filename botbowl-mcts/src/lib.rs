@@ -1,5 +1,7 @@
 pub mod action;
 pub mod dynamics;
+pub mod priors;
+pub mod pruning;
 pub mod roll_outcomes;
 pub mod score;
 

@@ -22,10 +22,18 @@ use botbowl_engine::core::model::{Action as EngineAction, TeamType};
 use recon_mcts::{GameDynamics, HashOnly, SearchTree, SelectNodeState, Tree};
 
 use crate::action::{BbAction, BbPlayer};
+use crate::priors::prior_for;
+use crate::pruning::should_prune;
 use crate::roll_outcomes;
 use crate::score::leaf_score;
 
-const UCT_C: f32 = 1.4;
+/// PUCT exploration constant. Sized so that the `c · P · √N(parent) /
+/// (1 + N(a))` term is comparable to leaf-score magnitudes (game score
+/// ±1000, ball control ±50, carrier-distance ±26 — see `score.rs`).
+/// 10.0 keeps unexplored high-prior children competitive with explored
+/// children of moderate `Q` for at least the first few hundred parent
+/// visits — verified empirically against the existing UCT baseline test.
+const PUCT_C: f32 = 10.0;
 
 #[derive(Debug)]
 pub struct BbScore {
@@ -101,6 +109,7 @@ impl GameDynamics for BloodBowlDynamics {
             .available_actions
             .get_all()
             .into_iter()
+            .filter(|a| !should_prune(state, a))
             .map(|a| (mcts_player, BbAction::Player(a)))
             .collect();
         if actions.is_empty() {
@@ -134,6 +143,17 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             }
         }
+        // NOTE: we deliberately do *not* fast-forward past intermediate
+        // engine states here. The engine resolves "Move(target)" one
+        // square per `micro_step`, so the returned state is often
+        // mid-path with empty `available_actions` and no
+        // `pending_roll`. MCTS treats those as terminal
+        // (`Children::None`), which means lectures requiring the
+        // pickup chance node to be reached (`Get the Ball *`) score
+        // 0 on the pickup move and the search prefers an inferior
+        // adjacent-to-ball move. v2 will add fast-forwarding plus
+        // broader `roll_outcomes` coverage (Deviate, Block dice, etc.)
+        // so chance nodes downstream of pickup are reachable.
         Some(new_state)
     }
 
@@ -182,14 +202,20 @@ impl GameDynamics for BloodBowlDynamics {
             return pick.1.deref().clone();
         }
 
-        // Player node: standard UCT.
+        // Player node: PUCT with domain priors. We compute priors lazily
+        // here rather than caching them on `BbScore` — the cost is one
+        // `prior_for` call per child per descent, which is cheap (enum
+        // match + a few position comparisons) and avoids threading
+        // parent-state into `score_leaf`.
         let pick = scores_and_actions
             .clone()
             .into_iter()
             .max_by(|a, b| {
-                let ua = uct_value(a.0.as_ref(), parent_visits);
-                let ub = uct_value(b.0.as_ref(), parent_visits);
-                ua.partial_cmp(&ub).unwrap_or(std::cmp::Ordering::Equal)
+                let pa = prior_for(parent_node_state, &a.1);
+                let pb = prior_for(parent_node_state, &b.1);
+                let va = puct_value(a.0.as_ref(), parent_visits, pa);
+                let vb = puct_value(b.0.as_ref(), parent_visits, pb);
+                va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
             })
             .expect("player node must have at least one action");
         if let Some(s) = pick.0.as_ref() {
@@ -269,24 +295,91 @@ impl GameDynamics for BloodBowlDynamics {
         _parent_player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::Score> {
+        // For chance states (engine has a `pending_roll`) the bare
+        // `leaf_score` returns the *pre-roll* board, which is usually
+        // misleading — e.g. a Move that lands on a free ball produces a
+        // state where the player is on top of the ball but the ball is
+        // still `OnGround`, so `ball_control_value` sees no adjacency
+        // and returns 0. That makes the pickup look worse than just
+        // standing next to the ball, even though the actual outcome
+        // (after the pickup roll) is +500. To give MCTS a meaningful Q
+        // before it descends into the chance node, score chance states
+        // as the probability-weighted leaf score over their immediate
+        // outcomes. The chance node's own `backprop_scores` will refine
+        // this once both outcomes have been visited.
+        let score = if state.pending_roll.is_some() {
+            expected_leaf_score(state).unwrap_or_else(|| leaf_score(state))
+        } else {
+            leaf_score(state)
+        };
         Some(BbScore {
             visits: AtomicU32::new(1),
-            score: leaf_score(state),
+            score,
             node_kind: player_for_state(state),
         })
     }
 }
 
-fn uct_value(score: Option<&BbScore>, parent_visits: f32) -> f32 {
+/// Score a chance state as the probability-weighted expected leaf score
+/// over its immediate outcomes. Returns `None` if any outcome can't be
+/// applied (e.g. roll type isn't yet supported by `roll_outcomes`).
+///
+/// This is a one-level lookahead, not a full rollout — if an outcome
+/// state is *also* a chance state, we just score it with the bare
+/// `leaf_score` (no further unrolling). The intent is to give MCTS a
+/// reasonable Q for chance leaves so it doesn't ignore the pickup move
+/// in favour of an inferior adjacent-to-ball move that scores higher on
+/// the bare board.
+fn expected_leaf_score(state: &GameState) -> Option<i64> {
+    let req = state.pending_roll.as_ref()?;
+    if !crate::action::is_supported(req) {
+        return None;
+    }
+    let outcomes = roll_outcomes::enumerate(req);
+    let mut weighted_sum: f64 = 0.0;
+    let mut total_prob: f64 = 0.0;
+    for outcome_action in &outcomes {
+        let (outcome, prob) = match outcome_action {
+            BbAction::Chance { outcome, .. } => (
+                *outcome,
+                outcome_action.prob_f32().unwrap_or(0.0) as f64,
+            ),
+            BbAction::Player(_) => continue,
+        };
+        if prob <= 0.0 {
+            continue;
+        }
+        let mut sim = state.clone();
+        roll_outcomes::fix_for_outcome(&mut sim, outcome);
+        if sim.micro_step(None).is_err() {
+            continue;
+        }
+        weighted_sum += prob * leaf_score(&sim) as f64;
+        total_prob += prob;
+    }
+    if total_prob <= 0.0 {
+        None
+    } else {
+        Some((weighted_sum / total_prob) as i64)
+    }
+}
+
+/// PUCT(a) = Q(a) + c · P(a) · √N(parent) / (1 + N(a))
+///
+/// Unexplored children (`score == None`) have `Q = 0` and `N(a) = 0`, so
+/// their value collapses to `c · P · √N(parent)` — ranked purely by
+/// prior. This replaces the pure-UCT `f32::INFINITY` sentinel for
+/// unexplored children; high-prior unexplored children are still
+/// preferred, but low-prior unexplored children no longer crowd out
+/// well-scored explored siblings.
+fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32) -> f32 {
+    let parent_term = parent_visits.max(1.0).sqrt();
     match score {
-        None => f32::INFINITY, // unexplored — always prefer
+        None => PUCT_C * prior * parent_term,
         Some(s) => {
             let v = s.visits.load(Ordering::Relaxed) as f32;
-            if v == 0.0 {
-                f32::INFINITY
-            } else {
-                s.score as f32 + UCT_C * (parent_visits.max(1.0).ln() / v).sqrt()
-            }
+            let q = s.score as f32;
+            q + PUCT_C * prior * parent_term / (1.0 + v)
         }
     }
 }
@@ -305,7 +398,14 @@ impl MctsBot {
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
         // Clone the state and turn on roll-by-roll stepping for the
-        // search. The bot's caller still owns the live state.
+        // search. `expose_rolls = true` keeps `pending_roll` visible on
+        // post-action states, letting `score_leaf` invoke
+        // `expected_leaf_score` to give pickup / dodge / GFI chance
+        // nodes a probability-weighted Q instead of the misleading
+        // pre-roll value. (We tried `expose_rolls = false` to elide the
+        // chance-node modelling, but the engine's internal roll
+        // resolution per `micro_step` ran orders of magnitude slower
+        // for the same search budget.)
         let mut root_state = state.clone();
         root_state.expose_rolls = true;
         // The engine may have queued fixes for the caller's own use —
