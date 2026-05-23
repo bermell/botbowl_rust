@@ -36,6 +36,12 @@ use crate::score::leaf_score;
 /// visits — verified empirically against the existing UCT baseline test.
 const PUCT_C: f32 = 10.0;
 
+/// `recon_mcts` does not maintain its own per-node visit counter — the
+/// `Score` we give it is the *sole* source of truth. `visits` is therefore
+/// load-bearing for PUCT (read as `N(parent)` and `N(a)` in `puct_value`).
+/// It is incremented during descent (`select_node`'s `fetch_add` on the
+/// chosen child) and overwritten on backprop (`backprop_scores` returns a
+/// fresh `BbScore` whose `visits` is the sum of children's visits).
 #[derive(Debug)]
 pub struct BbScore {
     pub visits: AtomicU32,
@@ -160,7 +166,7 @@ impl GameDynamics for BloodBowlDynamics {
     fn select_node<II, Q, A>(
         &self,
         parent_score: Option<&Self::Score>,
-        _parent_player: &Self::Player,
+        parent_player: &Self::Player,
         parent_node_state: &Self::State,
         _purpose: SelectNodeState,
         scores_and_actions: II,
@@ -182,18 +188,16 @@ impl GameDynamics for BloodBowlDynamics {
                 .clone()
                 .into_iter()
                 .min_by(|a, b| {
-                    let va = a
-                        .0
-                        .as_ref()
-                        .as_ref()
-                        .map(|s| s.visits.load(Ordering::Relaxed))
-                        .unwrap_or(0);
-                    let vb = b
-                        .0
-                        .as_ref()
-                        .as_ref()
-                        .map(|s| s.visits.load(Ordering::Relaxed))
-                        .unwrap_or(0);
+                    let va =
+                        a.0.as_ref()
+                            .as_ref()
+                            .map(|s| s.visits.load(Ordering::Relaxed))
+                            .unwrap_or(0);
+                    let vb =
+                        b.0.as_ref()
+                            .as_ref()
+                            .map(|s| s.visits.load(Ordering::Relaxed))
+                            .unwrap_or(0);
                     va.cmp(&vb)
                 })
                 .expect("chance node must have at least one outcome");
@@ -208,14 +212,18 @@ impl GameDynamics for BloodBowlDynamics {
         // `prior_for` call per child per descent, which is cheap (enum
         // match + a few position comparisons) and avoids threading
         // parent-state into `score_leaf`.
+        //
+        // Scores are Home-centric. Home maximises PUCT; Away mirrors
+        // by negating Q before adding the exploration bonus.
+        let home_perspective = *parent_player == BbPlayer::Home;
         let pick = scores_and_actions
             .clone()
             .into_iter()
             .max_by(|a, b| {
                 let pa = prior_for(parent_node_state, &a.1);
                 let pb = prior_for(parent_node_state, &b.1);
-                let va = puct_value(a.0.as_ref(), parent_visits, pa);
-                let vb = puct_value(b.0.as_ref(), parent_visits, pb);
+                let va = puct_value(a.0.as_ref(), parent_visits, pa, home_perspective);
+                let vb = puct_value(b.0.as_ref(), parent_visits, pb, home_perspective);
                 va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
             })
             .expect("player node must have at least one action");
@@ -227,7 +235,7 @@ impl GameDynamics for BloodBowlDynamics {
 
     fn backprop_scores<II, Q, A>(
         &self,
-        _player: &Self::Player,
+        player: &Self::Player,
         score_current: Option<&Self::Score>,
         child_scores_and_actions: II,
     ) -> Option<Self::Score>
@@ -271,22 +279,26 @@ impl GameDynamics for BloodBowlDynamics {
             });
         }
 
-        // Player node: max over children. For the MVP we treat Away the
-        // same as Home (single-player optimisation view from Home's
-        // perspective) — opponent modelling lives in step-N follow-ups.
-        let mut best: Option<(u32, i64)> = None;
+        // Player node. Scores are Home-centric, so Home maximises and
+        // Away minimises. Visits sum across children so PUCT's
+        // √N(parent) reflects total descents (matching the Chance
+        // branch above).
+        let want_max = *player == BbPlayer::Home;
+        let mut best_score: Option<i64> = None;
+        let mut total_visits: u32 = 0;
         for (q, _) in child_scores_and_actions.into_iter() {
-            let s = (q.visits.load(Ordering::Relaxed), q.score);
-            best = match best {
+            total_visits += q.visits.load(Ordering::Relaxed);
+            let s = q.score;
+            best_score = match best_score {
                 None => Some(s),
-                Some(b) if s.1 > b.1 => Some(s),
+                Some(b) if (want_max && s > b) || (!want_max && s < b) => Some(s),
                 Some(b) => Some(b),
             };
         }
-        best.map(|(visits, score)| BbScore {
-            visits: AtomicU32::new(visits),
+        best_score.map(|score| BbScore {
+            visits: AtomicU32::new(total_visits),
             score,
-            node_kind: BbPlayer::Home,
+            node_kind: *player,
         })
     }
 
@@ -351,13 +363,22 @@ fn optimistic_leaf_score(state: &GameState) -> Option<i64> {
 /// unexplored children; high-prior unexplored children are still
 /// preferred, but low-prior unexplored children no longer crowd out
 /// well-scored explored siblings.
-fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32) -> f32 {
+fn puct_value(
+    score: Option<&BbScore>,
+    parent_visits: f32,
+    prior: f32,
+    home_perspective: bool,
+) -> f32 {
     let parent_term = parent_visits.max(1.0).sqrt();
     match score {
         None => PUCT_C * prior * parent_term,
         Some(s) => {
             let v = s.visits.load(Ordering::Relaxed) as f32;
-            let q = s.score as f32;
+            let q = if home_perspective {
+                s.score as f32
+            } else {
+                -(s.score as f32)
+            };
             q + PUCT_C * prior * parent_term / (1.0 + v)
         }
     }
@@ -370,7 +391,9 @@ pub struct MctsBot {
 
 impl MctsBot {
     pub fn new(iterations_per_move: usize) -> Self {
-        Self { iterations_per_move }
+        Self {
+            iterations_per_move,
+        }
     }
 }
 
@@ -424,5 +447,100 @@ impl Bot for MctsBot {
                 panic!("root selected a chance action — root must be a player turn");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::action::ChanceOutcome;
+
+    fn child(score: i64, visits: u32) -> BbScore {
+        BbScore {
+            visits: AtomicU32::new(visits),
+            score,
+            node_kind: BbPlayer::Home,
+        }
+    }
+
+    fn placeholder_action() -> BbAction {
+        BbAction::chance(ChanceOutcome::Pass, 1.0)
+    }
+
+    #[test]
+    fn backprop_player_home_maximises_and_sums_visits() {
+        let dynamics = BloodBowlDynamics;
+        let actions = [
+            placeholder_action(),
+            placeholder_action(),
+            placeholder_action(),
+        ];
+        let children = [child(-5, 2), child(10, 5), child(3, 1)];
+        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+        let result = dynamics
+            .backprop_scores(&BbPlayer::Home, None, pairs)
+            .expect("backprop should yield a score");
+        assert_eq!(result.score, 10, "Home should pick the max-Q child");
+        assert_eq!(
+            result.visits.load(Ordering::Relaxed),
+            8,
+            "visits should sum across children, not max"
+        );
+        assert_eq!(result.node_kind, BbPlayer::Home);
+    }
+
+    #[test]
+    fn backprop_player_away_minimises_and_sums_visits() {
+        let dynamics = BloodBowlDynamics;
+        let actions = [
+            placeholder_action(),
+            placeholder_action(),
+            placeholder_action(),
+        ];
+        let children = [child(-5, 2), child(10, 5), child(3, 1)];
+        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+        let result = dynamics
+            .backprop_scores(&BbPlayer::Away, None, pairs)
+            .expect("backprop should yield a score");
+        assert_eq!(
+            result.score, -5,
+            "Away should pick the min-Q child (Home-centric scoring)"
+        );
+        assert_eq!(result.visits.load(Ordering::Relaxed), 8);
+        assert_eq!(
+            result.node_kind,
+            BbPlayer::Away,
+            "node_kind should mirror the player owning the node"
+        );
+    }
+
+    #[test]
+    fn puct_mirrors_for_away_player() {
+        let a = BbScore {
+            visits: AtomicU32::new(10),
+            score: 50,
+            node_kind: BbPlayer::Home,
+        };
+        let b = BbScore {
+            visits: AtomicU32::new(10),
+            score: -50,
+            node_kind: BbPlayer::Home,
+        };
+        let parent_visits = 100.0;
+        let prior = 0.5;
+
+        let va_home = puct_value(Some(&a), parent_visits, prior, true);
+        let vb_home = puct_value(Some(&b), parent_visits, prior, true);
+        assert!(
+            va_home > vb_home,
+            "Home should rank +50 above -50 (va={va_home}, vb={vb_home})"
+        );
+
+        let va_away = puct_value(Some(&a), parent_visits, prior, false);
+        let vb_away = puct_value(Some(&b), parent_visits, prior, false);
+        assert!(
+            vb_away > va_away,
+            "Away should rank -50 above +50 (va={va_away}, vb={vb_away})"
+        );
     }
 }

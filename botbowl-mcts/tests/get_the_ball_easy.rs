@@ -14,7 +14,7 @@ use botbowl_mcts::MctsBot;
 /// `recon_mcts` `Drop`, or moving the FF inside `score_leaf` only
 /// (forward-looking value without reifying the chance state into the
 /// tree).
-#[ignore = "v4: chance-node modelling still blocked (FF deep-tree perf + on_drop reconstruction panic)"]
+#[ignore = "v5: adversarial backprop landed but rate stays 0% — bottleneck is the unaddressed FF/chance-node blocker, not opponent modelling"]
 #[test]
 fn mcts_solves_get_the_ball_easy() {
     let lecture = GetTheBallEasy::new();
