@@ -110,10 +110,10 @@ pub fn fix_for_outcome(
         // KnockdownAtAdvantage` semantics; the player-side die
         // selection that follows is collapsed by
         // `block_dice::scripted_pick` in the dynamics.
-        (RequestedRoll::BlockDice(_), ChanceOutcome::Advance) => {
-            state.fixes.fix_blockdice(BlockDice::Pow);
-            state.fixes.fix_blockdice(BlockDice::Pow);
-            state.fixes.fix_blockdice(BlockDice::Pow);
+        (RequestedRoll::BlockDice(n), ChanceOutcome::Advance) => {
+            for _ in 0..u8::from(*n) {
+                state.fixes.fix_blockdice(BlockDice::Pow);
+            }
         }
         // Raw value rolls — pick low constants.
         (RequestedRoll::D6, ChanceOutcome::Advance) => state.fixes.fix_d6(1),
@@ -234,6 +234,31 @@ mod tests {
             let outcomes = enumerate(&RequestedRoll::BlockDice(n));
             assert_eq!(outcomes.len(), 1, "expected single Advance for {:?}", n);
             assert!(is_advance(&outcomes[0]));
+        }
+    }
+
+    #[test]
+    fn fix_for_blockdice_advance_pushes_exactly_num_dices() {
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::Position;
+        for n in [
+            NumBlockDices::One,
+            NumBlockDices::Two,
+            NumBlockDices::Three,
+            NumBlockDices::TwoUphill,
+            NumBlockDices::ThreeUphill,
+        ] {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(Position::new((5, 5)))
+                .build();
+            state.pending_roll = Some(RequestedRoll::BlockDice(n));
+            fix_for_outcome(&mut state, ChanceOutcome::Advance);
+            assert_eq!(
+                state.fixes.blockdice_fixes_len(),
+                u8::from(n) as usize,
+                "wrong fix count for {:?}",
+                n,
+            );
         }
     }
 

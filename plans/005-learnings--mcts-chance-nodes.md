@@ -154,15 +154,17 @@ v3 closes this by giving every roll type a fixed dice value in
 | ThrowIn           | `fix_d3(1); fix_d6(1); fix_d6(1)`         |
 | FoulArmor         | `fix_d6(1); fix_d6(2)` — (1,2) not (1,1) so the doubles ejection rule doesn't trigger |
 | FoulInjury        | `fix_d6(1); fix_d6(2)` — Stunned, no ejection |
-| BlockDice         | three `fix_blockdice(Pow)` — `block_dice::scripted_pick` collapses the player-side selection that follows |
+| BlockDice         | `u8::from(num_dices)` × `fix_blockdice(Pow)` — `block_dice::scripted_pick` collapses the player-side selection that follows |
 | D6, Sum2D6, Coin, D6ThreeOutcomes, Sum2D6ThreeOutcomes | constant low/high pattern matching the outcome we want |
 
-Bonus: the BlockDice fix pushes 3 dice but the engine only pops
-`num_dices`-many (1–3). Stale fixes remain on the queue. **Open issue** —
-they'd be consumed by the next unrelated block roll. Cleanest fix is to
-match on `num_dices` and push exactly that many. Hasn't bitten us in
-ScoreTd lectures but worth tightening before relying on BlockDice
-deterministically in v4.
+Bonus: the BlockDice fix used to push 3 dice unconditionally but the
+engine only pops `num_dices`-many (1–3), leaving stale `Pow` fixes on
+the queue that an unrelated later block roll would consume — breaking
+`(state, action) → child_state` determinism. **Fixed in plan 009**: the
+match now binds `BlockDice(n)` and pushes `u8::from(*n)` fixes. Regression
+test in `roll_outcomes.rs` iterates all `NumBlockDices` variants and
+asserts `state.fixes.blockdice_fixes_len() == u8::from(n)` after a
+`fix_for_outcome(_, Advance)`.
 
 ## What v4 should look at first
 

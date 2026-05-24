@@ -356,6 +356,9 @@ impl FixedDice {
     pub fn is_empty(&self) -> bool {
         self.d6_fixes.is_empty() && self.d8_fixes.is_empty() && self.blockdice_fixes.is_empty()
     }
+    pub fn blockdice_fixes_len(&self) -> usize {
+        self.blockdice_fixes.len()
+    }
     pub fn assert_is_empty(&self) {
         assert!(
             self.is_empty(),
