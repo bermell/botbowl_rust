@@ -1,4 +1,4 @@
-use botbowl_engine::core::gamestate::{BuilderState, GameState, GameStateBuilder};
+use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::{Position, TeamType};
 use botbowl_engine::core::table::Skill;
 use rand::{Rng, RngCore};
@@ -77,7 +77,7 @@ impl Lecture for ScoreTdEasy {
         // (e.g. a GFI the agent decides to attempt). Seed it from the
         // lecture's own RNG so trials remain reproducible.
         state.set_seed(rng.next_u64());
-        state.rng_enabled = true;
+        state.set_dice_mode(DiceMode::RollDice);
 
         state
     }
@@ -145,7 +145,7 @@ impl Lecture for ScoreTdMedium {
             .build();
 
         state.set_seed(rng.next_u64());
-        state.rng_enabled = true;
+        state.set_dice_mode(DiceMode::RollDice);
 
         state
     }

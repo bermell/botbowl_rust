@@ -159,11 +159,11 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             }
             BbAction::Chance { outcome, .. } => {
-                if new_state.pending_roll.is_none() {
+                let Some(req) = new_state.pending_roll.as_ref().cloned() else {
                     return None;
-                }
-                roll_outcomes::fix_for_outcome(&mut new_state, *outcome);
-                if new_state.micro_step(None).is_err() {
+                };
+                let result = roll_outcomes::result_for_outcome(&req, *outcome);
+                if new_state.step_with_roll(result).is_err() {
                     return None;
                 }
             }
@@ -384,14 +384,14 @@ fn optimistic_leaf_score(state: &GameState, max_steps: u8) -> Option<i64> {
         if sim.info.game_over {
             break;
         }
-        if let Some(req) = sim.pending_roll.as_ref() {
-            let outcome = if crate::action::is_pass_fail(req) {
+        if let Some(req) = sim.pending_roll.as_ref().cloned() {
+            let outcome = if crate::action::is_pass_fail(&req) {
                 ChanceOutcome::Pass
             } else {
                 ChanceOutcome::Advance
             };
-            roll_outcomes::fix_for_outcome(&mut sim, outcome);
-            if sim.micro_step(None).is_err() {
+            let result = roll_outcomes::result_for_outcome(&req, outcome);
+            if sim.step_with_roll(result).is_err() {
                 return None;
             }
             continue;
@@ -477,20 +477,20 @@ impl MctsBot {
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
         // Clone the state and turn on roll-by-roll stepping for the
-        // search. `expose_rolls = true` keeps `pending_roll` visible on
-        // post-action states, letting `score_leaf` invoke
+        // search. `DiceMode::RegisterRolls` keeps `pending_roll` visible
+        // on post-action states, letting `score_leaf` invoke
         // `expected_leaf_score` to give pickup / dodge / GFI chance
         // nodes a probability-weighted Q instead of the misleading
-        // pre-roll value. (We tried `expose_rolls = false` to elide the
+        // pre-roll value. (We tried `DiceMode::RollDice` to elide the
         // chance-node modelling, but the engine's internal roll
         // resolution per `micro_step` ran orders of magnitude slower
         // for the same search budget.)
+        //
+        // `set_dice_mode` also drops any in-flight `registered_roll`
+        // and any fixed dice the caller queued — so test scaffolding
+        // can't leak into MCTS rollouts.
         let mut root_state = state.clone();
-        root_state.expose_rolls = true;
-        // The engine may have queued fixes for the caller's own use —
-        // don't let them leak into MCTS rollouts.
-        root_state.fixes = Default::default();
-        root_state.rng_enabled = true;
+        root_state.set_dice_mode(botbowl_engine::core::gamestate::DiceMode::RegisterRolls);
         // Disable logging on the search state and drop the existing
         // log Vec. Each `apply_action` clones state, and the log Vec
         // gets pushed to on every `micro_step` *and* copied on every

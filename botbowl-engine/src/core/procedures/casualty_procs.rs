@@ -190,13 +190,13 @@ mod tests {
         assert_eq!(state.ball, BallState::Carried(id));
         state.step_positional(PosAT::StartMove, start_pos);
 
-        state.fixes.fix_d6(2);
+        state.fix_d6(2);
 
         state.step_positional(PosAT::Move, move_to);
 
-        state.fixes.fix_d6(1); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d8(d8_fix as u8);
+        state.fix_d6(1); //armor
+        state.fix_d6(5); //armor
+        state.fix_d8(d8_fix as u8);
 
         state.step_simple(SimpleAT::DontUseReroll);
 
@@ -220,10 +220,10 @@ mod tests {
 
         state.step_positional(PosAT::StartFoul, start_pos);
 
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(2); //injury
-        state.fixes.fix_d6(1); //injury
+        state.fix_d6(5); //armor
+        state.fix_d6(5); //armor
+        state.fix_d6(2); //injury
+        state.fix_d6(1); //injury
 
         state.step_positional(PosAT::Foul, foul_pos);
 
@@ -253,10 +253,10 @@ mod tests {
 
         state.step_positional(PosAT::StartFoul, start_pos);
 
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(6); //armor
-        state.fixes.fix_d6(2); //injury
-        state.fixes.fix_d6(2); //injury
+        state.fix_d6(5); //armor
+        state.fix_d6(6); //armor
+        state.fix_d6(2); //injury
+        state.fix_d6(2); //injury
 
         state.step_positional(PosAT::Foul, foul_pos);
 

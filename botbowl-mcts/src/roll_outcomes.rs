@@ -1,4 +1,6 @@
-use botbowl_engine::core::dices::{BlockDice, RequestedRoll, RollTarget};
+use botbowl_engine::core::dices::{
+    BlockDice, Coin, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8,
+};
 use botbowl_engine::core::model::Direction;
 
 use crate::action::{BbAction, ChanceOutcome};
@@ -36,108 +38,87 @@ pub fn enumerate(req: &RequestedRoll) -> Vec<BbAction> {
     }
 }
 
-/// Pre-load `state.fixes` with the dice values that will yield `outcome`
-/// when the engine consumes its pending roll. The dynamics calls this
-/// just before stepping a Chance action through `state.micro_step(None)`.
+/// Compute the deterministic `RollResult` that yields `outcome` for
+/// `req`. The dynamics passes this to `state.step_with_roll(...)`
+/// to resume a paused `DiceMode::RegisterRolls` engine.
 ///
-/// Every `outcome` queues a deterministic dice pattern — including
-/// `Advance`. Letting the engine resolve via RNG (the v2 behaviour)
-/// made the same (parent, action) edge produce different child states
-/// on different descent paths, breaking state-hash recombination and
-/// fanning out the search tree.
-pub fn fix_for_outcome(
-    state: &mut botbowl_engine::core::gamestate::GameState,
-    outcome: ChanceOutcome,
-) {
-    let req = state
-        .pending_roll
-        .as_ref()
-        .expect("fix_for_outcome called with no pending roll");
+/// Every `outcome` is mapped to a single concrete `RollResult` —
+/// including `Advance`. Letting the engine resolve via RNG (the v2
+/// behaviour, before this design) made the same (parent, action)
+/// edge produce different child states on different descent paths,
+/// breaking state-hash recombination and fanning out the search tree.
+pub fn result_for_outcome(req: &RequestedRoll, outcome: ChanceOutcome) -> RollResult {
+    // Local helpers — the engine accepts a `D8` constructed from a
+    // `Direction`, so wrap that here to keep the match arms tight.
+    let d8_up = || D8::from(Direction::up());
     match (req, outcome) {
         // ----- Pass / Fail rolls: branch the search on the outcome -----
-        (RequestedRoll::D6PassFail(_), ChanceOutcome::Pass) => state.fixes.fix_d6(6),
-        (RequestedRoll::D6PassFail(_), ChanceOutcome::Fail) => state.fixes.fix_d6(1),
-        (RequestedRoll::Sum2D6PassFail(_), ChanceOutcome::Pass) => {
-            state.fixes.fix_d6(6);
-            state.fixes.fix_d6(6);
-        }
-        (RequestedRoll::Sum2D6PassFail(_), ChanceOutcome::Fail) => {
-            state.fixes.fix_d6(1);
-            state.fixes.fix_d6(1);
-        }
+        (RequestedRoll::D6PassFail(_), ChanceOutcome::Pass) => RollResult::Pass,
+        (RequestedRoll::D6PassFail(_), ChanceOutcome::Fail) => RollResult::Fail,
+        (RequestedRoll::Sum2D6PassFail(_), ChanceOutcome::Pass) => RollResult::Pass,
+        (RequestedRoll::Sum2D6PassFail(_), ChanceOutcome::Fail) => RollResult::Fail,
 
         // ----- Single-child Advance rolls: pick a deterministic value -----
-        // D8 is used for ball bounces and ball-scatter directions. Any
+        // D8 is used for ball bounces and scatter directions. Any
         // constant direction is fine; we just need *a* deterministic
         // outcome so two paths to the same logical position recombine.
-        (RequestedRoll::D8, ChanceOutcome::Advance) => {
-            state.fixes.fix_d8_direction(Direction::up());
-        }
+        (RequestedRoll::D8, ChanceOutcome::Advance) => RollResult::D8(d8_up()),
         // Deviate = D6 (distance) + D8 (direction). Minimum scatter +
         // up — the ball barely moves.
-        (RequestedRoll::Deviate, ChanceOutcome::Advance) => {
-            state.fixes.fix_d6(1);
-            state.fixes.fix_d8_direction(Direction::up());
-        }
+        (RequestedRoll::Deviate, ChanceOutcome::Advance) => RollResult::Deviate(D6::One, d8_up()),
         // Scatter = three D8 directions. Pick the same direction each
         // time; the engine treats the sequence as separate bounces.
         (RequestedRoll::Scatter, ChanceOutcome::Advance) => {
-            state.fixes.fix_d8_direction(Direction::up());
-            state.fixes.fix_d8_direction(Direction::up());
-            state.fixes.fix_d8_direction(Direction::up());
+            RollResult::Scatter(d8_up(), d8_up(), d8_up())
         }
         // ThrowIn = D3 direction + 2D6 distance. Pick low values for a
         // short throw-in.
-        (RequestedRoll::ThrowIn, ChanceOutcome::Advance) => {
-            state.fixes.fix_d3(1);
-            state.fixes.fix_d6(1);
-            state.fixes.fix_d6(1);
-        }
-        // FoulArmor: two D6s. (1, 2) means no break + no doubles —
-        // doubles would trigger the foul send-off rule, which we want
-        // to avoid until a foul scenario specifically calls for it.
-        (RequestedRoll::FoulArmor(_), ChanceOutcome::Advance) => {
-            state.fixes.fix_d6(1);
-            state.fixes.fix_d6(2);
-        }
-        // FoulInjury: same (1, 2) pattern — Stunned, no ejection.
-        (RequestedRoll::FoulInjury(_, _), ChanceOutcome::Advance) => {
-            state.fixes.fix_d6(1);
-            state.fixes.fix_d6(2);
-        }
-        // BlockDice: hand off to the engine's block-dice policy via a
-        // deterministic Pow per die. Matches `BlockDicePolicy::
-        // KnockdownAtAdvantage` semantics; the player-side die
-        // selection that follows is collapsed by
-        // `block_dice::scripted_pick` in the dynamics.
-        (RequestedRoll::BlockDice(n), ChanceOutcome::Advance) => {
-            for _ in 0..u8::from(*n) {
-                state.fixes.fix_blockdice(BlockDice::Pow);
+        (RequestedRoll::ThrowIn, ChanceOutcome::Advance) => RollResult::ThrowIn {
+            direction: D3::One,
+            distance: Sum2D6::Two,
+        },
+        // FoulArmor: two D6s. (1, 2) → roll sum 3, no doubles. With a
+        // target stricter than 3, armor is intact and no ejection.
+        (RequestedRoll::FoulArmor(target), ChanceOutcome::Advance) => RollResult::FoulArmor {
+            broken: target.is_success(Sum2D6::Three),
+            ejected: false,
+        },
+        // FoulInjury: (1, 2) → Stunned, no ejection.
+        (RequestedRoll::FoulInjury(ko_target, cas_target), ChanceOutcome::Advance) => {
+            let sum = Sum2D6::Three;
+            let injury_outcome = if cas_target.is_success(sum) {
+                botbowl_engine::core::model::InjuryOutcome::Casualty
+            } else if ko_target.is_success(sum) {
+                botbowl_engine::core::model::InjuryOutcome::KO
+            } else {
+                botbowl_engine::core::model::InjuryOutcome::Stunned
+            };
+            RollResult::FoulInjury {
+                outcome: injury_outcome,
+                ejected: false,
             }
         }
+        // BlockDice: a deterministic Pow per die. Matches
+        // `BlockDicePolicy::KnockdownAtAdvantage` semantics; the
+        // player-side die selection that follows is collapsed by
+        // `block_dice::scripted_pick` in the dynamics.
+        (RequestedRoll::BlockDice(n), ChanceOutcome::Advance) => {
+            let mut dices: [Option<BlockDice>; 3] = [None, None, None];
+            for slot in dices.iter_mut().take(u8::from(*n) as usize) {
+                *slot = Some(BlockDice::Pow);
+            }
+            RollResult::BlockDice(dices)
+        }
         // Raw value rolls — pick low constants.
-        (RequestedRoll::D6, ChanceOutcome::Advance) => state.fixes.fix_d6(1),
-        (RequestedRoll::Sum2D6, ChanceOutcome::Advance) => {
-            state.fixes.fix_d6(1);
-            state.fixes.fix_d6(1);
-        }
-        (RequestedRoll::D6ThreeOutcomes(_, _), ChanceOutcome::Advance) => {
-            // Pick a 6 so the highest target is met (= "Pass" outcome).
-            state.fixes.fix_d6(6);
-        }
-        (RequestedRoll::Sum2D6ThreeOutcomes(_, _), ChanceOutcome::Advance) => {
-            state.fixes.fix_d6(6);
-            state.fixes.fix_d6(6);
-        }
-        (RequestedRoll::Coin, ChanceOutcome::Advance) => {
-            state
-                .fixes
-                .fix_coin(botbowl_engine::core::dices::Coin::Heads);
-        }
+        (RequestedRoll::D6, ChanceOutcome::Advance) => RollResult::D6(D6::One),
+        (RequestedRoll::Sum2D6, ChanceOutcome::Advance) => RollResult::Sum2D6(Sum2D6::Two),
+        (RequestedRoll::D6ThreeOutcomes(_, _), ChanceOutcome::Advance) => RollResult::Pass,
+        (RequestedRoll::Sum2D6ThreeOutcomes(_, _), ChanceOutcome::Advance) => RollResult::Pass,
+        (RequestedRoll::Coin, ChanceOutcome::Advance) => RollResult::Coin(Coin::Heads),
 
         (other, outcome) => panic!(
-            "fix_for_outcome: unhandled (roll, outcome) = ({:?}, {:?}) — \
-             extend roll_outcomes::fix_for_outcome when a lecture surfaces it",
+            "result_for_outcome: unhandled (roll, outcome) = ({:?}, {:?}) — \
+             extend roll_outcomes::result_for_outcome when a lecture surfaces it",
             other, outcome
         ),
     }
@@ -238,9 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn fix_for_blockdice_advance_pushes_exactly_num_dices() {
-        use botbowl_engine::core::gamestate::GameStateBuilder;
-        use botbowl_engine::core::model::Position;
+    fn result_for_blockdice_advance_has_exactly_num_dices() {
         for n in [
             NumBlockDices::One,
             NumBlockDices::Two,
@@ -248,17 +227,12 @@ mod tests {
             NumBlockDices::TwoUphill,
             NumBlockDices::ThreeUphill,
         ] {
-            let mut state = GameStateBuilder::new()
-                .add_home_player(Position::new((5, 5)))
-                .build();
-            state.pending_roll = Some(RequestedRoll::BlockDice(n));
-            fix_for_outcome(&mut state, ChanceOutcome::Advance);
-            assert_eq!(
-                state.fixes.blockdice_fixes_len(),
-                u8::from(n) as usize,
-                "wrong fix count for {:?}",
-                n,
-            );
+            let result = result_for_outcome(&RequestedRoll::BlockDice(n), ChanceOutcome::Advance);
+            let RollResult::BlockDice(dices) = result else {
+                panic!("expected BlockDice result for {:?}, got {:?}", n, result);
+            };
+            let count = dices.iter().filter(|d| d.is_some()).count();
+            assert_eq!(count, u8::from(n) as usize, "wrong dice count for {:?}", n);
         }
     }
 

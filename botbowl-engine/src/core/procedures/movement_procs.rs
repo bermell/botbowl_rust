@@ -230,14 +230,14 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, start_pos);
 
-        state.fixes.fix_d6(1);
+        state.fix_d6(1);
 
         state.step_positional(PosAT::Move, target_pos);
 
-        state.fixes.fix_d6(4); //succeed first reroll
-        state.fixes.fix_d6(1); //fail next dodge
-        state.fixes.fix_d6(1); //armor
-        state.fixes.fix_d6(1); //armor
+        state.fix_d6(4); //succeed first reroll
+        state.fix_d6(1); //fail next dodge
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
 
         state.step_simple(SimpleAT::UseReroll);
 
@@ -257,13 +257,13 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, Position::new((2, 2)));
 
-        state.fixes.fix_d6(2);
+        state.fix_d6(2);
         state.step_positional(PosAT::Move, Position::new((2, 1)));
 
-        state.fixes.fix_d6(4); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(4); //injury
-        state.fixes.fix_d6(5); //injury
+        state.fix_d6(4); //armor
+        state.fix_d6(5); //armor
+        state.fix_d6(4); //injury
+        state.fix_d6(5); //injury
         state.step_simple(SimpleAT::DontUseReroll);
 
         assert!(state.get_player_id_at_coord(2, 1).is_none());
@@ -290,11 +290,11 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, Position::new((1, 1)));
 
-        state.fixes.fix_d6(1); //fail first (2+)
+        state.fix_d6(1); //fail first (2+)
         state.step_positional(PosAT::Move, Position::new((9, 1)));
 
-        state.fixes.fix_d6(2); //succeed with team reroll
-        state.fixes.fix_d6(2); //succeed next gfi roll
+        state.fix_d6(2); //succeed with team reroll
+        state.fix_d6(2); //succeed next gfi roll
         state.step_simple(SimpleAT::UseReroll);
 
         let state = state;
@@ -326,15 +326,15 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, Position::new((1, 1)));
 
-        state.fixes.fix_d6(3); //fail first (4+)
-        state.fixes.fix_d6(4); //Succeed on skill reroll
-        state.fixes.fix_d6(2); //fail second dodge  (3+)
+        state.fix_d6(3); //fail first (4+)
+        state.fix_d6(4); //Succeed on skill reroll
+        state.fix_d6(2); //fail second dodge  (3+)
 
         state.step_positional(PosAT::Move, Position::new((3, 3)));
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
         assert!(!state.get_player(id).unwrap().can_use_skill(Skill::Dodge));
 
-        state.fixes.fix_d6(3); //succeed with team reroll
+        state.fix_d6(3); //succeed with team reroll
         state.step_simple(SimpleAT::UseReroll);
 
         assert_eq!(state.get_player_id_at_coord(3, 3).unwrap(), id);
@@ -358,9 +358,9 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, starting_pos);
 
-        state.fixes.fix_d6(6);
-        state.fixes.fix_d6(6);
-        state.fixes.fix_d6(6);
+        state.fix_d6(6);
+        state.fix_d6(6);
+        state.fix_d6(6);
         state.step_positional(PosAT::Move, move_target);
 
         assert!(state.get_player_at(starting_pos).is_none());
@@ -546,15 +546,15 @@ mod tests {
         assert_eq!(state.get_player_unsafe(id).total_movement_left(), 2);
 
         state.step_positional(PosAT::StartFoul, start_pos);
-        state.fixes.fix_d6(2); //GFI
-        state.fixes.fix_d6(2); //GFI
+        state.fix_d6(2); //GFI
+        state.fix_d6(2); //GFI
 
         state.step_positional(PosAT::Move, target_pos + (-1, 0));
 
-        state.fixes.fix_d6(4);
-        state.fixes.fix_d6(5);
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(2);
+        state.fix_d6(4);
+        state.fix_d6(5);
+        state.fix_d6(1);
+        state.fix_d6(2);
         state.step_positional(PosAT::Foul, target_pos);
 
         assert_eq!(
@@ -585,12 +585,12 @@ mod tests {
         assert_eq!(state.get_player_unsafe(id).total_movement_left(), 2);
 
         state.step_positional(PosAT::StartHandoff, start_pos);
-        state.fixes.fix_d6(2); //GFI
-        state.fixes.fix_d6(2); //GFI
+        state.fix_d6(2); //GFI
+        state.fix_d6(2); //GFI
 
         state.step_positional(PosAT::Move, target_pos + (-1, 0));
 
-        state.fixes.fix_d6(4); //Catch
+        state.fix_d6(4); //Catch
         state.step_positional(PosAT::Handoff, target_pos);
 
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
@@ -619,9 +619,9 @@ mod tests {
         assert_eq!(state.get_player_unsafe(id).total_movement_left(), 2);
 
         state.step_positional(PosAT::StartHandoff, start_pos);
-        state.fixes.fix_d6(2); //GFI
-        state.fixes.fix_d6(2); //GFI
-        state.fixes.fix_d6(4); //Catch
+        state.fix_d6(2); //GFI
+        state.fix_d6(2); //GFI
+        state.fix_d6(4); //Catch
 
         state.step_positional(PosAT::Handoff, target_pos);
 
@@ -672,10 +672,10 @@ mod tests {
         let id = state.get_player_id_at(start_pos).unwrap();
         state.get_mut_player_unsafe(id).moves = state.get_player_unsafe(id).total_movement_left();
         state.step_positional(PosAT::StartPass, start_pos);
-        state.fixes.fix_d6(6); //Pass
+        state.fix_d6(6); //Pass
         state.step_positional(PosAT::Pass, target_pos);
-        state.fixes.fix_d6(6); //deflect
-        state.fixes.fix_d6(6); //Catch
+        state.fix_d6(6); //deflect
+        state.fix_d6(6); //Catch
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
         state.step_positional(PosAT::SelectPosition, deflect_pos);
         let carrier_id = state.get_player_id_at(deflect_pos).unwrap();
@@ -685,8 +685,8 @@ mod tests {
     #[test]
     fn pass_successful() {
         let (mut state, _, target_pos, _) = setup_simple_pass(false, 2);
-        state.fixes.fix_d6(6); //Pass
-        state.fixes.fix_d6(6); //Catch
+        state.fix_d6(6); //Pass
+        state.fix_d6(6); //Catch
         state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
@@ -697,9 +697,9 @@ mod tests {
         let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
         assert_eq!(interceptor, Position::new((5, 3)));
         let interceptor_id = state.get_player_id_at(interceptor).unwrap();
-        state.fixes.fix_d6(6); //Pass
-        state.fixes.fix_d6(6); //deflect
-        state.fixes.fix_d6(6); //Catch
+        state.fix_d6(6); //Pass
+        state.fix_d6(6); //deflect
+        state.fix_d6(6); //Catch
         state.step_positional(PosAT::Pass, target_pos);
         assert_eq!(state.ball, BallState::Carried(interceptor_id));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
@@ -708,11 +708,11 @@ mod tests {
     fn pass_successful_deflect_failed_catch() {
         let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
         assert_eq!(interceptor, Position::new((5, 3)));
-        state.fixes.fix_d6(6); //Pass
-        state.fixes.fix_d6(6); //deflect
-        state.fixes.fix_d6(1); //Catch
+        state.fix_d6(6); //Pass
+        state.fix_d6(6); //deflect
+        state.fix_d6(1); //Catch
         state.step_positional(PosAT::Pass, target_pos);
-        state.fixes.fix_d8_direction(Direction::up()); //Catch
+        state.fix_d8_direction(Direction::up()); //Catch
         state.step_simple(SimpleAT::DontUseReroll);
         assert_eq!(
             state.ball,
@@ -724,10 +724,10 @@ mod tests {
     fn pass_failed_deflect() {
         let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
         assert_eq!(interceptor, Position::new((5, 3)));
-        state.fixes.fix_d6(6); //Pass
-        state.fixes.fix_d6(1); //deflect
+        state.fix_d6(6); //Pass
+        state.fix_d6(1); //deflect
         state.step_positional(PosAT::Pass, target_pos);
-        state.fixes.fix_d6(6); //Catch
+        state.fix_d6(6); //Catch
         state.step_simple(SimpleAT::DontUseReroll);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
@@ -737,8 +737,8 @@ mod tests {
     fn pass_fumbled() {
         let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 2);
         let bounce_direction = Direction::up();
-        state.fixes.fix_d6(1); //Pass fumbled
-        state.fixes.fix_d8_direction(bounce_direction);
+        state.fix_d6(1); //Pass fumbled
+        state.fix_d8_direction(bounce_direction);
         state.step_positional(PosAT::Pass, target_pos);
         assert_eq!(
             state.ball,
@@ -750,11 +750,11 @@ mod tests {
     fn pass_inaccurate_turnover() {
         let (mut state, _, target_pos, _) = setup_simple_pass(false, 7);
         let bounce_direction = Direction::down();
-        state.fixes.fix_d6(4); //Pass failed
-        state.fixes.fix_d8_direction(bounce_direction); //Scatter
-        state.fixes.fix_d8_direction(bounce_direction); //Scatter
-        state.fixes.fix_d8_direction(bounce_direction); //Scatter
-        state.fixes.fix_d8_direction(bounce_direction); //Bounce
+        state.fix_d6(4); //Pass failed
+        state.fix_d8_direction(bounce_direction); //Scatter
+        state.fix_d8_direction(bounce_direction); //Scatter
+        state.fix_d8_direction(bounce_direction); //Scatter
+        state.fix_d8_direction(bounce_direction); //Bounce
         state.step_positional(PosAT::Pass, target_pos);
         assert_eq!(
             state.ball,
@@ -769,10 +769,10 @@ mod tests {
         let bounce_direction = Direction::right();
         let passer_id = state.get_player_id_at(start_pos).unwrap();
         let deviate_distance = 3;
-        state.fixes.fix_d6(2); //Pass failed
-        state.fixes.fix_d8_direction(deviate_direction); //Scatter
-        state.fixes.fix_d8_direction(bounce_direction); //Scatter
-        state.fixes.fix_d6(deviate_distance as u8);
+        state.fix_d6(2); //Pass failed
+        state.fix_d8_direction(deviate_direction); //Scatter
+        state.fix_d8_direction(bounce_direction); //Scatter
+        state.fix_d6(deviate_distance as u8);
         state.step_positional(PosAT::Pass, target_pos);
         let expected_ball_pos = state.get_player_unsafe(passer_id).position
             + deviate_distance * deviate_direction
@@ -787,13 +787,13 @@ mod tests {
         let bounce_direction = Direction::right();
         let out_of_bounds_pos = Position::new((3, 1));
         let deviate_distance = 6;
-        state.fixes.fix_d6(2); //Pass failed
-        state.fixes.fix_d8_direction(deviate_direction);
-        state.fixes.fix_d6(deviate_distance as u8);
-        state.fixes.fix_d6(3); //throw in length
-        state.fixes.fix_d6(2); //throw in length
-        state.fixes.fix_d3(2); //throw in direction: down
-        state.fixes.fix_d8_direction(bounce_direction);
+        state.fix_d6(2); //Pass failed
+        state.fix_d8_direction(deviate_direction);
+        state.fix_d6(deviate_distance as u8);
+        state.fix_d6(3); //throw in length
+        state.fix_d6(2); //throw in length
+        state.fix_d3(2); //throw in direction: down
+        state.fix_d8_direction(bounce_direction);
         state.step_positional(PosAT::Pass, target_pos);
         let expected_ball_pos = out_of_bounds_pos + Direction::down() * (3 + 2) + bounce_direction;
         assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
@@ -812,8 +812,8 @@ mod tests {
         let target_pos = Position::new((6, 2));
         let passer_id = state.get_player_id_at(start_pos).unwrap();
         state.step_positional(PosAT::StartPass, start_pos);
-        state.fixes.fix_d6(6); //Pass
-        state.fixes.fix_d6(6); //Catch
+        state.fix_d6(6); //Pass
+        state.fix_d6(6); //Catch
         state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
@@ -837,15 +837,15 @@ mod tests {
 
         state.step_positional(PosAT::StartBlitz, start_pos);
 
-        state.fixes.fix_d6(2); //GFI
-        state.fixes.fix_d6(2); //GFI
-        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fix_d6(2); //GFI
+        state.fix_d6(2); //GFI
+        state.fix_blockdice(BlockDice::Pow);
         state.step_positional(PosAT::Block, target_pos);
 
         state.step_simple(SimpleAT::SelectPow);
         state.step_positional(PosAT::Push, target_pos + (1, 0));
-        state.fixes.fix_d6(1); //armor
-        state.fixes.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
         state.step_positional(PosAT::FollowUp, target_pos);
 
         assert_eq!(
@@ -880,10 +880,10 @@ mod tests {
         let id = state.get_player_id_at(fouler_pos).unwrap();
         state.step_positional(PosAT::StartFoul, fouler_pos);
 
-        state.fixes.fix_d6(4); //armor
-        state.fixes.fix_d6(2); //armor
-        state.fixes.fix_d6(2); //injury
-        state.fixes.fix_d6(3); //injury
+        state.fix_d6(4); //armor
+        state.fix_d6(2); //armor
+        state.fix_d6(2); //injury
+        state.fix_d6(3); //injury
 
         state.step_positional(PosAT::Foul, foul_pos);
 
@@ -905,7 +905,7 @@ mod tests {
         state.step_positional(PosAT::StartBlitz, start_pos);
         assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Down);
 
-        state.fixes.fix_blockdice(BlockDice::Push);
+        state.fix_blockdice(BlockDice::Push);
         state.step_positional(PosAT::Block, target);
         assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Up);
         assert_eq!(
@@ -931,13 +931,13 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, Position::new((1, 1)));
 
-        state.fixes.fix_d6(1); //fail first (2+)
+        state.fix_d6(1); //fail first (2+)
         state.step_positional(PosAT::Move, move_target);
 
-        state.fixes.fix_d6(6); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(1); //injury
-        state.fixes.fix_d6(2); //injury
+        state.fix_d6(6); //armor
+        state.fix_d6(5); //armor
+        state.fix_d6(1); //injury
+        state.fix_d6(2); //injury
 
         state.step_simple(SimpleAT::DontUseReroll);
         assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);

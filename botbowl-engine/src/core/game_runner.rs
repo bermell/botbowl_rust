@@ -160,7 +160,7 @@ impl BotGameRunnerBuilder {
         let mut s = GameStateBuilder::new()
             .set_state(BuilderState::CoinToss)
             .build();
-        s.rng_enabled = true;
+        s.set_dice_mode(crate::core::gamestate::DiceMode::RollDice);
         s
     }
 
@@ -176,7 +176,7 @@ impl BotGameRunnerBuilder {
             .unwrap_or_else(BotGameRunnerBuilder::default_state);
         if let Some(seed) = self.seed {
             state.set_seed(seed);
-            state.rng_enabled = true;
+            state.set_dice_mode(crate::core::gamestate::DiceMode::RollDice);
             home_bot.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xA));
             away_bot.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xB));
         }

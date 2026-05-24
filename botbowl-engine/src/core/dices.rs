@@ -1,9 +1,11 @@
 use std::{
     cmp::{max, min},
+    collections::VecDeque,
     ops::Add,
 };
 
-use rand::{distributions::Standard, prelude::Distribution};
+use rand::{distributions::Standard, prelude::Distribution, Rng};
+use rand_chacha::ChaCha8Rng;
 
 use super::{
     model::{Coord, Direction, InjuryOutcome, Weather},
@@ -371,6 +373,267 @@ impl BlockDicePolicy {
     }
 }
 
+/// Resolve any `RequestedRoll` by sampling fresh values from `rng`.
+///
+/// Used by `DiceMode::RollDice` and by `DicePolicy::resolve` for roll
+/// types the policy doesn't override. Kept here rather than on
+/// `GameState` so the same routine drives both modes without
+/// duplicating the per-variant unpacking.
+pub fn resolve_with_rng(request: RequestedRoll, rng: &mut ChaCha8Rng) -> RollResult {
+    match request {
+        RequestedRoll::D6 => RollResult::D6(rng.gen()),
+        RequestedRoll::D6PassFail(target) => {
+            if target.is_success(rng.gen()) {
+                RollResult::Pass
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::D6ThreeOutcomes(low_target, high_target) => {
+            let roll: D6 = rng.gen();
+            if high_target.is_success(roll) {
+                RollResult::Pass
+            } else if low_target.is_success(roll) {
+                RollResult::MiddleOutcome
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::Sum2D6 => RollResult::Sum2D6(rng.gen::<D6>() + rng.gen::<D6>()),
+        RequestedRoll::Sum2D6PassFail(target) => {
+            if target.is_success(rng.gen::<D6>() + rng.gen::<D6>()) {
+                RollResult::Pass
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::Sum2D6ThreeOutcomes(low_target, high_target) => {
+            let roll: Sum2D6 = rng.gen::<D6>() + rng.gen::<D6>();
+            if high_target.is_success(roll) {
+                RollResult::Pass
+            } else if low_target.is_success(roll) {
+                RollResult::MiddleOutcome
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::D8 => RollResult::D8(rng.gen()),
+        RequestedRoll::Coin => RollResult::Coin(rng.gen()),
+        RequestedRoll::Deviate => RollResult::Deviate(rng.gen(), rng.gen()),
+        RequestedRoll::FoulArmor(target) => {
+            let roll1: D6 = rng.gen();
+            let roll2: D6 = rng.gen();
+            RollResult::FoulArmor {
+                broken: target.is_success(roll1 + roll2),
+                ejected: roll1 == roll2,
+            }
+        }
+        RequestedRoll::FoulInjury(ko_target, cas_target) => {
+            let roll1: D6 = rng.gen();
+            let roll2: D6 = rng.gen();
+            let outcome = if cas_target.is_success(roll1 + roll2) {
+                InjuryOutcome::Casualty
+            } else if ko_target.is_success(roll1 + roll2) {
+                InjuryOutcome::KO
+            } else {
+                InjuryOutcome::Stunned
+            };
+            RollResult::FoulInjury {
+                outcome,
+                ejected: roll1 == roll2,
+            }
+        }
+        RequestedRoll::ThrowIn => RollResult::ThrowIn {
+            direction: rng.gen(),
+            distance: rng.gen::<D6>() + rng.gen::<D6>(),
+        },
+        RequestedRoll::BlockDice(num_dices) => {
+            let mut dices: [Option<BlockDice>; 3] = [None, None, None];
+            for slot in dices.iter_mut().take(u8::from(num_dices) as usize) {
+                *slot = Some(rng.gen());
+            }
+            RollResult::BlockDice(dices)
+        }
+        RequestedRoll::Scatter => RollResult::Scatter(rng.gen(), rng.gen(), rng.gen()),
+    }
+}
+
+/// FIFO queue of pre-pinned dice values, used by `DiceMode::FixedDice`.
+///
+/// Tests and builders push concrete dice values; when the engine asks
+/// for a roll the corresponding queue is popped. The queue is strict:
+/// `resolve_from_fixes` panics with a diagnostic if the engine requests
+/// a roll the queue can't satisfy.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub struct FixedDice {
+    d3_fixes: VecDeque<D3>,
+    d6_fixes: VecDeque<D6>,
+    blockdice_fixes: VecDeque<BlockDice>,
+    d8_fixes: VecDeque<D8>,
+    coin_fixes: VecDeque<Coin>,
+}
+
+impl FixedDice {
+    pub fn fix_coin(&mut self, value: Coin) {
+        self.coin_fixes.push_back(value);
+    }
+    pub fn fix_d3(&mut self, value: u8) {
+        self.d3_fixes.push_back(D3::try_from(value).unwrap());
+    }
+    pub fn fix_d6(&mut self, value: u8) {
+        self.d6_fixes.push_back(D6::try_from(value).unwrap());
+    }
+    pub fn fix_d8(&mut self, value: u8) {
+        self.d8_fixes.push_back(D8::try_from(value).unwrap());
+    }
+    pub fn fix_d8_direction(&mut self, direction: Direction) {
+        self.d8_fixes.push_back(D8::from(direction));
+    }
+    pub fn fix_blockdice(&mut self, value: BlockDice) {
+        self.blockdice_fixes.push_back(value);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.d3_fixes.is_empty()
+            && self.d6_fixes.is_empty()
+            && self.d8_fixes.is_empty()
+            && self.blockdice_fixes.is_empty()
+            && self.coin_fixes.is_empty()
+    }
+    pub fn blockdice_fixes_len(&self) -> usize {
+        self.blockdice_fixes.len()
+    }
+    pub fn assert_is_empty(&self) {
+        assert!(
+            self.is_empty(),
+            "fixed dices are not empty: d3:{:?}, d6:{:?}, d8:{:?}, blockdice:{:?}, coin:{:?}",
+            self.d3_fixes,
+            self.d6_fixes,
+            self.d8_fixes,
+            self.blockdice_fixes,
+            self.coin_fixes,
+        );
+    }
+    fn pop_d3(&mut self, request: &RequestedRoll) -> D3 {
+        self.d3_fixes
+            .pop_front()
+            .unwrap_or_else(|| panic!("FixedDice queue empty for D3 (request: {:?})", request))
+    }
+    fn pop_d6(&mut self, request: &RequestedRoll) -> D6 {
+        self.d6_fixes
+            .pop_front()
+            .unwrap_or_else(|| panic!("FixedDice queue empty for D6 (request: {:?})", request))
+    }
+    fn pop_d8(&mut self, request: &RequestedRoll) -> D8 {
+        self.d8_fixes
+            .pop_front()
+            .unwrap_or_else(|| panic!("FixedDice queue empty for D8 (request: {:?})", request))
+    }
+    fn pop_coin(&mut self, request: &RequestedRoll) -> Coin {
+        self.coin_fixes
+            .pop_front()
+            .unwrap_or_else(|| panic!("FixedDice queue empty for Coin (request: {:?})", request))
+    }
+    fn pop_blockdice(&mut self, request: &RequestedRoll) -> BlockDice {
+        self.blockdice_fixes.pop_front().unwrap_or_else(|| {
+            panic!(
+                "FixedDice queue empty for BlockDice (request: {:?})",
+                request
+            )
+        })
+    }
+}
+
+/// Resolve any `RequestedRoll` by popping pinned values from `fixes`.
+///
+/// Used by `DiceMode::FixedDice`. Panics with a diagnostic naming the
+/// requested roll type if the relevant queue is empty.
+pub fn resolve_from_fixes(request: RequestedRoll, fixes: &mut FixedDice) -> RollResult {
+    match request {
+        RequestedRoll::D6 => RollResult::D6(fixes.pop_d6(&request)),
+        RequestedRoll::D6PassFail(target) => {
+            if target.is_success(fixes.pop_d6(&request)) {
+                RollResult::Pass
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::D6ThreeOutcomes(low_target, high_target) => {
+            let roll = fixes.pop_d6(&request);
+            if high_target.is_success(roll) {
+                RollResult::Pass
+            } else if low_target.is_success(roll) {
+                RollResult::MiddleOutcome
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::Sum2D6 => {
+            RollResult::Sum2D6(fixes.pop_d6(&request) + fixes.pop_d6(&request))
+        }
+        RequestedRoll::Sum2D6PassFail(target) => {
+            if target.is_success(fixes.pop_d6(&request) + fixes.pop_d6(&request)) {
+                RollResult::Pass
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::Sum2D6ThreeOutcomes(low_target, high_target) => {
+            let roll = fixes.pop_d6(&request) + fixes.pop_d6(&request);
+            if high_target.is_success(roll) {
+                RollResult::Pass
+            } else if low_target.is_success(roll) {
+                RollResult::MiddleOutcome
+            } else {
+                RollResult::Fail
+            }
+        }
+        RequestedRoll::D8 => RollResult::D8(fixes.pop_d8(&request)),
+        RequestedRoll::Coin => RollResult::Coin(fixes.pop_coin(&request)),
+        RequestedRoll::Deviate => {
+            RollResult::Deviate(fixes.pop_d6(&request), fixes.pop_d8(&request))
+        }
+        RequestedRoll::FoulArmor(target) => {
+            let roll1 = fixes.pop_d6(&request);
+            let roll2 = fixes.pop_d6(&request);
+            RollResult::FoulArmor {
+                broken: target.is_success(roll1 + roll2),
+                ejected: roll1 == roll2,
+            }
+        }
+        RequestedRoll::FoulInjury(ko_target, cas_target) => {
+            let roll1 = fixes.pop_d6(&request);
+            let roll2 = fixes.pop_d6(&request);
+            let outcome = if cas_target.is_success(roll1 + roll2) {
+                InjuryOutcome::Casualty
+            } else if ko_target.is_success(roll1 + roll2) {
+                InjuryOutcome::KO
+            } else {
+                InjuryOutcome::Stunned
+            };
+            RollResult::FoulInjury {
+                outcome,
+                ejected: roll1 == roll2,
+            }
+        }
+        RequestedRoll::ThrowIn => RollResult::ThrowIn {
+            direction: fixes.pop_d3(&request),
+            distance: fixes.pop_d6(&request) + fixes.pop_d6(&request),
+        },
+        RequestedRoll::BlockDice(num_dices) => {
+            let mut dices: [Option<BlockDice>; 3] = [None, None, None];
+            for slot in dices.iter_mut().take(u8::from(num_dices) as usize) {
+                *slot = Some(fixes.pop_blockdice(&request));
+            }
+            RollResult::BlockDice(dices)
+        }
+        RequestedRoll::Scatter => RollResult::Scatter(
+            fixes.pop_d8(&request),
+            fixes.pop_d8(&request),
+            fixes.pop_d8(&request),
+        ),
+    }
+}
+
 /// Target-aware override of dice resolution.
 ///
 /// Curriculum lectures and other consumers can install a policy to pin
@@ -395,28 +658,37 @@ pub enum DicePolicy {
 }
 
 impl DicePolicy {
-    pub fn resolve(&self, request: &RequestedRoll) -> Option<RollResult> {
+    /// Total resolution: the policy is required to return a `RollResult`
+    /// for every `RequestedRoll`. Variants that don't have a target-aware
+    /// override for a given roll type delegate to `resolve_with_rng`
+    /// — that way lectures can pin pickups/dodges to a fixed outcome while
+    /// scatter/bounce/coin remain stochastic.
+    pub fn resolve(&mut self, request: RequestedRoll, rng: &mut ChaCha8Rng) -> RollResult {
         match *self {
-            DicePolicy::Default => None,
+            DicePolicy::Default => resolve_with_rng(request, rng),
             DicePolicy::SucceedAtOrEasier {
                 d6,
                 sum2d6,
                 block_dice,
-            } => match *request {
-                RequestedRoll::D6PassFail(target) => Some(if (target as u8) <= (d6 as u8) {
-                    RollResult::Pass
-                } else {
-                    RollResult::Fail
-                }),
-                RequestedRoll::Sum2D6PassFail(target) => {
-                    Some(if (target as u8) <= (sum2d6 as u8) {
+            } => match request {
+                RequestedRoll::D6PassFail(target) => {
+                    if (target as u8) <= (d6 as u8) {
                         RollResult::Pass
                     } else {
                         RollResult::Fail
-                    })
+                    }
                 }
-                RequestedRoll::BlockDice(num_dices) => block_dice.resolve(num_dices),
-                _ => None,
+                RequestedRoll::Sum2D6PassFail(target) => {
+                    if (target as u8) <= (sum2d6 as u8) {
+                        RollResult::Pass
+                    } else {
+                        RollResult::Fail
+                    }
+                }
+                RequestedRoll::BlockDice(num_dices) => block_dice
+                    .resolve(num_dices)
+                    .unwrap_or_else(|| resolve_with_rng(request, rng)),
+                other => resolve_with_rng(other, rng),
             },
         }
     }

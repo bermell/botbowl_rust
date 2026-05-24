@@ -453,11 +453,11 @@ mod tests {
         state.step_simple(SimpleAT::EndPlayerTurn);
 
         state.step_positional(PosAT::StartMove, h1_pos);
-        state.fixes.fix_d6(1); //dodge fail
-        state.fixes.fix_d6(6); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(1); //injury
-        state.fixes.fix_d6(1); //injury
+        state.fix_d6(1); //dodge fail
+        state.fix_d6(6); //armor
+        state.fix_d6(5); //armor
+        state.fix_d6(1); //injury
+        state.fix_d6(1); //injury
         state.step_positional(PosAT::Move, h1_pos + (-1, -1));
 
         assert!(state.away_to_act());
@@ -507,11 +507,11 @@ mod tests {
         let id = state.get_player_id_at(start_pos).unwrap();
 
         state.step_positional(PosAT::StartMove, start_pos);
-        state.fixes.fix_d6(1); //dodge fail
-        state.fixes.fix_d6(6); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(1); //injury
-        state.fixes.fix_d6(1); //injury
+        state.fix_d6(1); //dodge fail
+        state.fix_d6(6); //armor
+        state.fix_d6(5); //armor
+        state.fix_d6(1); //injury
+        state.fix_d6(1); //injury
         state.step_positional(PosAT::Move, start_pos + (1, 1));
 
         assert!(state.away_to_act());
@@ -543,11 +543,11 @@ mod tests {
         state.step_positional(PosAT::StartMove, h2_pos);
         state.step_simple(SimpleAT::EndPlayerTurn);
         state.step_positional(PosAT::StartMove, h1_pos);
-        state.fixes.fix_d6(1); // dodge fail
-        state.fixes.fix_d6(6); // armor
-        state.fixes.fix_d6(5); // armor
-        state.fixes.fix_d6(1); // injury
-        state.fixes.fix_d6(1); // injury
+        state.fix_d6(1); // dodge fail
+        state.fix_d6(6); // armor
+        state.fix_d6(5); // armor
+        state.fix_d6(1); // injury
+        state.fix_d6(1); // injury
         state.step_positional(PosAT::Move, h1_pos + (-1, -1));
 
         assert!(state.away_to_act());
@@ -607,7 +607,7 @@ mod tests {
         let mut state: GameState = GameStateBuilder::new_start_of_game();
 
         assert!(state.away_to_act());
-        state.fixes.fix_coin(Coin::Heads);
+        state.fix_coin(Coin::Heads);
         state.step_simple(SimpleAT::Heads);
 
         assert!(state.away_to_act());
@@ -621,17 +621,17 @@ mod tests {
         state.step_simple(SimpleAT::SetupLine);
         state.step_simple(SimpleAT::EndSetup);
 
-        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-        state.fixes.fix_d6(5); // scatter length
+        state.fix_d8_direction(Direction::up()); // scatter direction
+        state.fix_d6(5); // scatter length
 
-        state.fixes.fix_d6(4); // fix changing whether kickoff result
-        state.fixes.fix_d6(4); // fix changing weather kickoff result
+        state.fix_d6(4); // fix changing whether kickoff result
+        state.fix_d6(4); // fix changing weather kickoff result
 
-        state.fixes.fix_d6(2); // Nice weather
-        state.fixes.fix_d6(5); // nice weather
+        state.fix_d6(2); // Nice weather
+        state.fix_d6(5); // nice weather
 
-        state.fixes.fix_d8_direction(Direction::right()); // gust of wind
-        state.fixes.fix_d8_direction(Direction::right()); // bounce
+        state.fix_d8_direction(Direction::right()); // gust of wind
+        state.fix_d8_direction(Direction::right()); // bounce
 
         assert!(state.away_to_act());
         state.step_simple(SimpleAT::KickoffAimMiddle);
@@ -706,12 +706,12 @@ mod tests {
         assert_eq!(state.away.score, 0);
 
         state.step_positional(PosAT::StartMove, start_pos);
-        state.fixes.fix_d6(1);
+        state.fix_d6(1);
         state.step_positional(PosAT::Move, td_pos);
 
-        state.fixes.fix_d8(4);
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(1);
+        state.fix_d8(4);
+        state.fix_d6(1);
+        state.fix_d6(1);
         state.step_simple(SimpleAT::DontUseReroll);
 
         assert_eq!(state.home.score, 0);
@@ -737,7 +737,7 @@ mod tests {
         assert_eq!(state.away.score, 0);
         state.step_simple(SimpleAT::EndTurn);
         state.step_positional(PosAT::StartBlock, blocker_pos);
-        state.fixes.fix_blockdice(BlockDice::Push);
+        state.fix_blockdice(BlockDice::Push);
         state.step_positional(PosAT::Block, carrier_pos);
         state.step_simple(SimpleAT::SelectPush);
         state.step_positional(PosAT::Push, td_pos);
@@ -764,13 +764,13 @@ mod tests {
         assert_eq!(state.away.score, 0);
         state.step_simple(SimpleAT::EndTurn);
         state.step_positional(PosAT::StartBlock, blocker_pos);
-        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fix_blockdice(BlockDice::Pow);
         state.step_positional(PosAT::Block, carrier_pos);
         state.step_simple(SimpleAT::SelectPow);
         state.step_positional(PosAT::Push, td_pos);
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d8(4);
+        state.fix_d6(1);
+        state.fix_d6(1);
+        state.fix_d8(4);
         state.step_positional(PosAT::FollowUp, blocker_pos);
         // state.step_simple(SimpleAT::EndPlayerTurn);
         state.step_simple(SimpleAT::EndTurn);
@@ -793,12 +793,12 @@ mod tests {
         assert_eq!(state.home.score, 0);
         assert_eq!(state.away.score, 0);
         state.step_positional(PosAT::StartBlock, carrier_pos);
-        state.fixes.fix_blockdice(BlockDice::Push);
+        state.fix_blockdice(BlockDice::Push);
         state.step_positional(PosAT::Block, victim_pos);
         state.step_simple(SimpleAT::SelectPush);
         //no need to select push position because crowd
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(1);
+        state.fix_d6(1);
+        state.fix_d6(1);
         state.step_positional(PosAT::FollowUp, victim_pos);
 
         assert_eq!(state.home.score, 1);
@@ -820,7 +820,7 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, start_pos);
 
-        state.fixes.fix_d6(3);
+        state.fix_d6(3);
         state.step_positional(PosAT::Move, td_pos);
 
         assert_eq!(state.home.score, 1);
@@ -838,12 +838,14 @@ mod tests {
             .add_home_player(start_pos)
             .add_ball_pos(td_pos)
             .build();
-        state.dice_policy = crate::core::dices::DicePolicy::SucceedAtOrEasier {
-            d6: crate::core::dices::D6Target::ThreePlus,
-            sum2d6: crate::core::dices::Sum2D6Target::SevenPlus,
-            block_dice: crate::core::dices::BlockDicePolicy::Default,
-        };
-        state.fixes.assert_is_empty();
+        state.set_dice_mode(crate::core::gamestate::DiceMode::DicePolicy(
+            crate::core::dices::DicePolicy::SucceedAtOrEasier {
+                d6: crate::core::dices::D6Target::ThreePlus,
+                sum2d6: crate::core::dices::Sum2D6Target::SevenPlus,
+                block_dice: crate::core::dices::BlockDicePolicy::Default,
+            },
+        ));
+        state.assert_fixes_empty();
 
         state.step_positional(PosAT::StartMove, start_pos);
         state.step_positional(PosAT::Move, td_pos);
@@ -864,17 +866,21 @@ mod tests {
             .add_home_player(start_pos)
             .add_ball_pos(td_pos)
             .build();
-        state.dice_policy = crate::core::dices::DicePolicy::SucceedAtOrEasier {
-            d6: crate::core::dices::D6Target::TwoPlus,
-            sum2d6: crate::core::dices::Sum2D6Target::TwoPlus,
-            block_dice: crate::core::dices::BlockDicePolicy::Default,
-        };
+        state.set_dice_mode(crate::core::gamestate::DiceMode::DicePolicy(
+            crate::core::dices::DicePolicy::SucceedAtOrEasier {
+                d6: crate::core::dices::D6Target::TwoPlus,
+                sum2d6: crate::core::dices::Sum2D6Target::TwoPlus,
+                block_dice: crate::core::dices::BlockDicePolicy::Default,
+            },
+        ));
 
         state.step_positional(PosAT::StartMove, start_pos);
         state.step_positional(PosAT::Move, td_pos);
 
-        // Decline the reroll so the failed pickup stands.
-        state.fixes.fix_d8(4); // bounce direction for the dropped ball
+        // Decline the reroll so the failed pickup stands. The bounce
+        // direction is resolved by the policy's RNG fallback — its
+        // value doesn't matter for this assertion (carrier no longer
+        // has the ball regardless of where it bounces).
         state.step_simple(SimpleAT::DontUseReroll);
 
         assert_eq!(state.home.score, 0, "policy should have made pickup fail");
@@ -893,10 +899,10 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, start_pos);
 
-        state.fixes.fix_d6(2);
+        state.fix_d6(2);
         state.step_positional(PosAT::Move, td_pos);
 
-        state.fixes.fix_d8(4);
+        state.fix_d8(4);
         state.step_simple(SimpleAT::DontUseReroll);
 
         assert_eq!(state.home.score, 0);
@@ -918,19 +924,17 @@ mod tests {
 
         state.step_positional(PosAT::StartBlock, blocker_pos);
 
-        state.fixes.fix_blockdice(BlockDice::Pow);
-        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fix_blockdice(BlockDice::Pow);
+        state.fix_blockdice(BlockDice::Pow);
 
         state.step_positional(PosAT::Block, carrier_pos);
         state.step_simple(SimpleAT::SelectPow);
         state.step_positional(PosAT::Push, push_pos);
 
-        state.fixes.fix_d6(1); //armor
-        state.fixes.fix_d6(2); //armor
-        state.fixes.fix_d6(4); //catch
-        state
-            .fixes
-            .fix_d8(D8::from(Direction { dx: 0, dy: -1 }) as u8); // bounce direction up
+        state.fix_d6(1); //armor
+        state.fix_d6(2); //armor
+        state.fix_d6(4); //catch
+        state.fix_d8(D8::from(Direction { dx: 0, dy: -1 }) as u8); // bounce direction up
         state.step_positional(PosAT::FollowUp, blocker_pos);
 
         assert_eq!(state.home.score, 1);
@@ -952,16 +956,16 @@ mod tests {
             .add_ball_pos(away_pos)
             .build();
         state.step_positional(PosAT::StartBlock, home_pos);
-        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fix_blockdice(BlockDice::Pow);
         state.step_positional(PosAT::Block, away_pos);
         state.step_simple(SimpleAT::SelectPow);
         state.step_positional(PosAT::Push, push_pos);
-        state.fixes.fix_d6(6); //armor
-        state.fixes.fix_d6(5); //armor
-        state.fixes.fix_d6(6); //injury
-        state.fixes.fix_d6(5); //injury
+        state.fix_d6(6); //armor
+        state.fix_d6(5); //armor
+        state.fix_d6(6); //injury
+        state.fix_d6(5); //injury
         let d8_fix = D8::Two;
-        state.fixes.fix_d8(d8_fix as u8);
+        state.fix_d8(d8_fix as u8);
         state.step_positional(PosAT::FollowUp, away_pos);
 
         // let direction = Direction::from(d8_fix);

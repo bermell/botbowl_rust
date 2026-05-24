@@ -360,14 +360,14 @@ mod tests {
     fn kickoff_get_the_ref() {
         let mut state: GameState = GameStateBuilder::new_at_kickoff();
         // ball fixes
-        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-        state.fixes.fix_d6(5); // scatter length
+        state.fix_d8_direction(Direction::up()); // scatter direction
+        state.fix_d6(5); // scatter length
 
         // kickoff event fix
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(1);
+        state.fix_d6(1);
+        state.fix_d6(1);
 
-        state.fixes.fix_d8_direction(Direction::up()); // bounce dice
+        state.fix_d8_direction(Direction::up()); // bounce dice
 
         state.step_simple(SimpleAT::KickoffAimMiddle);
 
@@ -389,13 +389,13 @@ mod tests {
     fn kickoff_timeout_step_clock_forward() {
         let mut state: GameState = GameStateBuilder::new_at_kickoff();
         // ball fixes
-        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-        state.fixes.fix_d6(5); // scatter length
+        state.fix_d8_direction(Direction::up()); // scatter direction
+        state.fix_d6(5); // scatter length
 
         // kickoff event fix
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(2);
-        state.fixes.fix_d8_direction(Direction::up()); // bounce dice
+        state.fix_d6(1);
+        state.fix_d6(2);
+        state.fix_d8_direction(Direction::up()); // bounce dice
 
         state.step_simple(SimpleAT::KickoffAimMiddle);
 
@@ -412,13 +412,13 @@ mod tests {
         assert_eq!(state.info.home_turn, 6);
         assert_eq!(state.info.away_turn, 6);
         // ball fixes
-        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-        state.fixes.fix_d6(5); // scatter length
+        state.fix_d8_direction(Direction::up()); // scatter direction
+        state.fix_d6(5); // scatter length
 
         // kickoff event fix
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(2);
-        state.fixes.fix_d8_direction(Direction::up()); // bounce dice
+        state.fix_d6(1);
+        state.fix_d6(2);
+        state.fix_d8_direction(Direction::up()); // bounce dice
 
         state.step_simple(SimpleAT::KickoffAimMiddle);
         assert!(state.home_to_act());
@@ -430,14 +430,14 @@ mod tests {
     // fn kickoff_solid_defence() {
     //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
     //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
+    //     state.fix_d8_direction(Direction::up()); // scatter direction
+    //     state.fix_d6(5); // scatter length
     //
     //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(3);
+    //     state.fix_d6(1);
+    //     state.fix_d6(3);
     //
-    //     state.fixes.fix_d6(6); //fix number of re-arranged players (d3+3)
+    //     state.fix_d6(6); //fix number of re-arranged players (d3+3)
     //     state.step_simple(SimpleAT::KickoffAimMiddle);
     //
     //     // TODO: haven't implemented the setup yet
@@ -447,12 +447,12 @@ mod tests {
     // fn kickoff_high_kick() {
     //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
     //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
+    //     state.fix_d8_direction(Direction::up()); // scatter direction
+    //     state.fix_d6(5); // scatter length
     //
     //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(4);
+    //     state.fix_d6(1);
+    //     state.fix_d6(4);
     //
     //     state.step_simple(SimpleAT::KickoffAimMiddle);
     //
@@ -469,7 +469,7 @@ mod tests {
     //     let catcher_start_pos = Position::new(legal_positions[0]);
     //     let catcher_id = state.get_player_id_at(catcher_start_pos).unwrap();
     //
-    //     state.fixes.fix_d6(6); // fix the roll for the catch
+    //     state.fix_d6(6); // fix the roll for the catch
     //     state.step_positional(PosAT::SelectPosition, Position::new(legal_positions[0]));
     //
     //     assert_eq!(state.get_player_id_at(ball_pos).unwrap(), catcher_id);
@@ -489,12 +489,12 @@ mod tests {
     // fn kickoff_cheering_fans() {
     //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
     //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
+    //     state.fix_d8_direction(Direction::up()); // scatter direction
+    //     state.fix_d6(5); // scatter length
     //
     //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(5);
+    //     state.fix_d6(1);
+    //     state.fix_d6(5);
     //     // TODO: Implement prayers to nuffle...
     //
     //     state.step_simple(SimpleAT::KickoffAimMiddle);
@@ -504,15 +504,15 @@ mod tests {
     // fn kickoff_brilliant_coaching() {
     //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
     //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
+    //     state.fix_d8_direction(Direction::up()); // scatter direction
+    //     state.fix_d6(5); // scatter length
     //
     //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(1);
+    //     state.fix_d6(1);
+    //     state.fix_d6(1);
     //
-    //     state.fixes.fix_d6(5); //fix home brilliant coaching roll
-    //     state.fixes.fix_d6(6); //fix away brilliant coaching roll
+    //     state.fix_d6(5); //fix home brilliant coaching roll
+    //     state.fix_d6(6); //fix away brilliant coaching roll
     //
     //     state.step_simple(SimpleAT::KickoffAimMiddle);
     //
@@ -523,12 +523,12 @@ mod tests {
     // fn kickoff_changing_weather() {
     //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
     //     // ball fixes
-    //     state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fixes.fix_d6(5); // scatter length
+    //     state.fix_d8_direction(Direction::up()); // scatter direction
+    //     state.fix_d6(5); // scatter length
     //
     //     // kickoff event fix
-    //     state.fixes.fix_d6(1);
-    //     state.fixes.fix_d6(1);
+    //     state.fix_d6(1);
+    //     state.fix_d6(1);
     //
     //     state.step_simple(SimpleAT::KickoffAimMiddle);
     // }

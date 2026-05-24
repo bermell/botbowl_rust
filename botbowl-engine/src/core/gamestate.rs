@@ -6,7 +6,7 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::{max, min},
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
 };
 
 use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
@@ -16,8 +16,8 @@ use model::*;
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId, MissingActionError},
     dices::{
-        BlockDice, Coin, D6Target, DicePolicy, RequestedRoll, RollResult, RollTarget, Sum2D6, D3,
-        D6, D8,
+        resolve_from_fixes, resolve_with_rng, BlockDice, Coin, D6Target, DicePolicy, FixedDice,
+        RequestedRoll, RollResult, RollTarget,
     },
     procedures::{AnyProc, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
@@ -43,7 +43,7 @@ impl GameStateBuilder {
     pub fn new_at_setup() -> GameState {
         let mut state: GameState = GameStateBuilder::new_start_of_game();
 
-        state.fixes.fix_coin(Coin::Heads);
+        state.fix_coin(Coin::Heads);
         state.step_simple(SimpleAT::Heads); //Away
 
         state.step_simple(SimpleAT::Kick); //Away
@@ -55,7 +55,7 @@ impl GameStateBuilder {
     pub fn new_at_kickoff() -> GameState {
         let mut state: GameState = GameStateBuilder::new_start_of_game();
 
-        state.fixes.fix_coin(Coin::Heads);
+        state.fix_coin(Coin::Heads);
         state.step_simple(SimpleAT::Heads); //Away
 
         state.step_simple(SimpleAT::Kick); //Away
@@ -185,12 +185,10 @@ impl GameStateBuilder {
             //new_procs: VecDeque::new(),
             available_actions: AvailableActions::new_empty(),
             rng: ChaCha8Rng::from_entropy(),
-            rng_enabled: false,
             info: GameInfo::new(),
-            fixes: Default::default(),
-            dice_policy: DicePolicy::default(),
-            expose_rolls: false,
+            dice_mode: DiceMode::default(),
             pending_roll: None,
+            registered_roll: None,
             log: Vec::new(),
             print_log: false,
             next_input: None,
@@ -209,7 +207,7 @@ impl GameStateBuilder {
         assert_eq!(state.info.home_turn, 0);
         assert_eq!(state.info.away_turn, 0);
 
-        state.fixes.fix_coin(Coin::Heads);
+        state.fix_coin(Coin::Heads);
         state.step_simple(SimpleAT::Heads); //Away
 
         state.step_simple(SimpleAT::Kick); //Away
@@ -228,19 +226,19 @@ impl GameStateBuilder {
             return state;
         }
         // ball fixes
-        state.fixes.fix_d8_direction(Direction::up()); // scatter direction
-        state.fixes.fix_d6(5); // scatter length
+        state.fix_d8_direction(Direction::up()); // scatter direction
+        state.fix_d6(5); // scatter length
 
         // kickoff event fix - changing Weather
-        state.fixes.fix_d6(4);
-        state.fixes.fix_d6(4);
+        state.fix_d6(4);
+        state.fix_d6(4);
 
         //changing weather - fair
-        state.fixes.fix_d6(4);
-        state.fixes.fix_d6(4);
+        state.fix_d6(4);
+        state.fix_d6(4);
 
-        state.fixes.fix_d8_direction(Direction::down()); // gust of wind
-        state.fixes.fix_d8_direction(Direction::down()); // bounce
+        state.fix_d8_direction(Direction::down()); // gust of wind
+        state.fix_d8_direction(Direction::down()); // bounce
 
         state.step_simple(SimpleAT::KickoffAimMiddle);
         state.clear_all_players().unwrap();
@@ -326,53 +324,38 @@ impl GameInfo {
         }
     }
 }
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
-pub struct FixedDice {
-    d3_fixes: VecDeque<D3>,
-    d6_fixes: VecDeque<D6>,
-    blockdice_fixes: VecDeque<BlockDice>,
-    d8_fixes: VecDeque<D8>,
-    coin_fixes: VecDeque<Coin>,
+/// Dice resolution strategy for a `GameState`.
+///
+/// Replaces the previous four-flag setup (`fixes` / `dice_policy` /
+/// `expose_rolls` / `rng_enabled`) with one explicit mode per caller
+/// intent. Modes are mutually exclusive and switched via
+/// `GameState::set_dice_mode`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiceMode {
+    /// Production play and search rollouts. All rolls drawn from
+    /// `GameState::rng`. `state.fix_*` and `state.step_with_roll`
+    /// panic in this mode.
+    RollDice,
+    /// Tests and `GameStateBuilder` setup. FIFO queue of pinned dice
+    /// values; `resolve_from_fixes` panics on empty for a requested
+    /// roll.
+    FixedDice(FixedDice),
+    /// MCTS bot / interactive search. `step()` is forbidden; callers
+    /// drive the engine via `micro_step` (which returns mid-procedure
+    /// with `pending_roll` set) and `step_with_roll(result)` to resume.
+    RegisterRolls,
+    /// Lectures / scripted scenarios. The policy is required to
+    /// resolve every requested roll — it may internally consult the
+    /// engine's RNG for roll types it doesn't override.
+    DicePolicy(DicePolicy),
 }
-impl FixedDice {
-    pub fn fix_coin(&mut self, value: Coin) {
-        self.coin_fixes.push_back(value);
-    }
-    pub fn fix_d3(&mut self, value: u8) {
-        self.d3_fixes.push_back(D3::try_from(value).unwrap());
-    }
-    pub fn fix_d6(&mut self, value: u8) {
-        self.d6_fixes.push_back(D6::try_from(value).unwrap());
-    }
-    pub fn fix_d8(&mut self, value: u8) {
-        self.d8_fixes.push_back(D8::try_from(value).unwrap());
-    }
-    pub fn fix_d8_direction(&mut self, direction: Direction) {
-        self.d8_fixes.push_back(D8::from(direction));
-    }
-    pub fn fix_blockdice(&mut self, value: BlockDice) {
-        self.blockdice_fixes.push_back(value);
-    }
-    pub fn is_empty(&self) -> bool {
-        self.d3_fixes.is_empty()
-            && self.d6_fixes.is_empty()
-            && self.d8_fixes.is_empty()
-            && self.blockdice_fixes.is_empty()
-            && self.coin_fixes.is_empty()
-    }
-    pub fn blockdice_fixes_len(&self) -> usize {
-        self.blockdice_fixes.len()
-    }
-    pub fn assert_is_empty(&self) {
-        assert!(
-            self.is_empty(),
-            "fixed dices are not empty: d3:{:?}, d6:{:?}, d8:{:?}, blockdice:{:?}, coin:{:?}",
-            self.d3_fixes,
-            self.d6_fixes,
-            self.d8_fixes,
-            self.blockdice_fixes,
-            self.coin_fixes,
-        );
+
+impl Default for DiceMode {
+    /// Defaults to `FixedDice` so tests and `GameStateBuilder` work
+    /// without ceremony. Production callers (`BotGameRunnerBuilder`,
+    /// MCTS, lectures) explicitly call `set_dice_mode` after construction.
+    fn default() -> Self {
+        DiceMode::FixedDice(FixedDice::default())
     }
 }
 #[derive(Derivative)]
@@ -389,27 +372,24 @@ pub struct GameState {
     pub ball: BallState,
     proc_stack: Vec<AnyProc>,
     pub available_actions: Box<AvailableActions>,
-    pub rng_enabled: bool,
-    pub fixes: FixedDice,
-    /// Target-aware override consulted before the FIFO/RNG path in
-    /// `get_roll_result`. Defaults to `DicePolicy::Default` (no override).
+    /// Single source of truth for how the engine resolves dice. See
+    /// `DiceMode` docs; switch via `set_dice_mode`.
     #[serde(default)]
-    pub dice_policy: DicePolicy,
-    /// When true, `micro_step` stops as soon as a procedure requests a
-    /// roll, stashing the request in `pending_roll` instead of resolving
-    /// it inline. The caller is then expected to queue a fix (or set a
-    /// policy / RNG seed) and call `micro_step(None)` again to consume
-    /// it. This lets MCTS-style search enumerate chance-node outcomes
-    /// explicitly. Default false → existing inline-resolve behaviour.
-    #[serde(default)]
-    pub expose_rolls: bool,
-    /// The roll that the engine paused on when `expose_rolls = true`.
-    /// Consumed on the next `micro_step` call via the standard
-    /// `dice_policy → fixes → rng` path. Included in `PartialEq` because
-    /// "about to resolve a 3+ dodge" is a different situation than
-    /// "ready to act" — MCTS chance nodes hinge on this distinction.
+    pub(crate) dice_mode: DiceMode,
+    /// In `DiceMode::RegisterRolls`, the roll the engine paused on
+    /// after a procedure returned `ProcState::NeedRoll`. The caller
+    /// observes this, calls `step_with_roll(result)` to resume.
+    /// Included in `PartialEq` because "about to resolve a 3+ dodge"
+    /// is a different situation than "ready to act" — MCTS chance
+    /// nodes hinge on this distinction.
     #[serde(default, skip)]
     pub pending_roll: Option<RequestedRoll>,
+    /// The roll provided by the most recent `step_with_roll` call,
+    /// consumed on the next `micro_step` to satisfy the `pending_roll`
+    /// the engine paused on. Only used in `DiceMode::RegisterRolls`.
+    #[serde(default, skip)]
+    #[derivative(PartialEq = "ignore")]
+    registered_roll: Option<RollResult>,
 
     #[serde(skip)]
     #[derivative(PartialEq = "ignore")]
@@ -494,11 +474,13 @@ impl std::hash::Hash for GameState {
             }
         }
 
-        // Dice policy + procedure-stack-top discriminator. The full
+        // Dice mode + procedure-stack-top discriminator. The full
         // proc_stack is heavy and changes shape often — using only the
         // top procedure's name catches "what the engine is about to do
-        // next" without paying for a deep recursive hash.
-        std::mem::discriminant(&self.dice_policy).hash(h);
+        // next" without paying for a deep recursive hash. Per-variant
+        // payloads (fixed-dice queue, policy parameters) are search-
+        // irrelevant — collisions are corrected by PartialEq.
+        std::mem::discriminant(&self.dice_mode).hash(h);
         self.proc_stack.len().hash(h);
         self.proc_stack_top().hash(h);
         // pending_roll is part of "what happens next" — two states that
@@ -618,45 +600,75 @@ impl GameState {
         self.proc_stack.last().map(|p| p.name())
     }
 
-    fn get_d3_roll(&mut self) -> D3 {
-        match self.fixes.d3_fixes.pop_front() {
-            Some(roll) => roll,
-            None => {
-                assert!(self.rng_enabled);
-                self.rng.gen()
-            }
-        }
-    }
-    fn get_d6_roll(&mut self) -> D6 {
-        match self.fixes.d6_fixes.pop_front() {
-            Some(roll) => roll,
-            None => {
-                assert!(self.rng_enabled);
-                self.rng.gen()
-            }
-        }
-    }
-    fn get_2d6_roll(&mut self) -> Sum2D6 {
-        self.get_d6_roll() + self.get_d6_roll()
+    pub fn dice_mode(&self) -> &DiceMode {
+        &self.dice_mode
     }
 
-    fn get_d8_roll(&mut self) -> D8 {
-        match self.fixes.d8_fixes.pop_front() {
-            Some(roll) => roll,
-            None => {
-                assert!(self.rng_enabled);
-                self.rng.gen()
-            }
+    /// Switch the dice resolution strategy. Asserts no `pending_roll`
+    /// is outstanding so a mode switch can't strand a paused
+    /// `RegisterRolls` engine in a mode that doesn't know how to
+    /// resume it.
+    pub fn set_dice_mode(&mut self, mode: DiceMode) {
+        debug_assert!(
+            self.pending_roll.is_none(),
+            "set_dice_mode called while pending_roll is set"
+        );
+        self.registered_roll = None;
+        self.dice_mode = mode;
+    }
+
+    fn fixes_mut(&mut self) -> &mut FixedDice {
+        match &mut self.dice_mode {
+            DiceMode::FixedDice(fixes) => fixes,
+            other => panic!(
+                "FixedDice access requires DiceMode::FixedDice, current mode is {:?}",
+                std::mem::discriminant(other)
+            ),
         }
     }
 
-    fn get_coin_toss(&mut self) -> Coin {
-        match self.fixes.coin_fixes.pop_front() {
-            Some(fixed_toss) => fixed_toss,
-            None => {
-                assert!(self.rng_enabled);
-                self.rng.gen()
-            }
+    /// Push a `Coin` value onto the fixed-dice queue. Panics if the
+    /// current mode is not `DiceMode::FixedDice`.
+    pub fn fix_coin(&mut self, value: Coin) {
+        self.fixes_mut().fix_coin(value);
+    }
+    /// Push a `D3` value onto the fixed-dice queue. Panics if the
+    /// current mode is not `DiceMode::FixedDice`.
+    pub fn fix_d3(&mut self, value: u8) {
+        self.fixes_mut().fix_d3(value);
+    }
+    /// Push a `D6` value onto the fixed-dice queue. Panics if the
+    /// current mode is not `DiceMode::FixedDice`.
+    pub fn fix_d6(&mut self, value: u8) {
+        self.fixes_mut().fix_d6(value);
+    }
+    /// Push a `D8` value onto the fixed-dice queue. Panics if the
+    /// current mode is not `DiceMode::FixedDice`.
+    pub fn fix_d8(&mut self, value: u8) {
+        self.fixes_mut().fix_d8(value);
+    }
+    /// Push a `D8` direction onto the fixed-dice queue. Panics if the
+    /// current mode is not `DiceMode::FixedDice`.
+    pub fn fix_d8_direction(&mut self, direction: Direction) {
+        self.fixes_mut().fix_d8_direction(direction);
+    }
+    /// Push a `BlockDice` value onto the fixed-dice queue. Panics if
+    /// the current mode is not `DiceMode::FixedDice`.
+    pub fn fix_blockdice(&mut self, value: BlockDice) {
+        self.fixes_mut().fix_blockdice(value);
+    }
+    /// True iff the current mode is `FixedDice` with an empty queue,
+    /// or any non-FixedDice mode (which has no queue at all).
+    pub fn fixes_is_empty(&self) -> bool {
+        match &self.dice_mode {
+            DiceMode::FixedDice(fixes) => fixes.is_empty(),
+            _ => true,
+        }
+    }
+    pub fn blockdice_fixes_len(&self) -> usize {
+        match &self.dice_mode {
+            DiceMode::FixedDice(fixes) => fixes.blockdice_fixes_len(),
+            _ => 0,
         }
     }
 
@@ -664,15 +676,6 @@ impl GameState {
         match team {
             TeamType::Home => Position::new((WIDTH_ / 4, HEIGHT_ / 2 - 1)),
             TeamType::Away => Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2 - 1)),
-        }
-    }
-    fn get_block_dice_roll(&mut self) -> BlockDice {
-        match self.fixes.blockdice_fixes.pop_front() {
-            Some(roll) => roll,
-            None => {
-                assert!(self.rng_enabled);
-                self.rng.gen()
-            }
         }
     }
 
@@ -979,11 +982,19 @@ impl GameState {
     }
     pub fn micro_step(&mut self, action: Option<Action>) -> Result<()> {
         let proc_input: ProcInput = {
-            if let Some(req) = self.pending_roll.take() {
+            if self.pending_roll.is_some() {
+                // RegisterRolls mode paused on a NeedRoll last time; the
+                // caller has since invoked `step_with_roll(result)` which
+                // stashed `registered_roll`. Consume both and feed the
+                // roll to the proc on top of the stack.
                 debug_assert!(action.is_none());
-                // expose_rolls was set last time around; the caller has
-                // since queued a fix / set a policy. Resolve now.
-                ProcInput::Roll(self.get_roll_result(req))
+                debug_assert!(matches!(self.dice_mode, DiceMode::RegisterRolls));
+                self.pending_roll = None;
+                let result = self.registered_roll.take().expect(
+                    "RegisterRolls: pending_roll set but no roll registered \
+                     — call step_with_roll(result) to resume",
+                );
+                ProcInput::Roll(result)
             } else if self.available_actions.is_empty() {
                 debug_assert!(action.is_none());
                 self.next_input.take().unwrap_or(ProcInput::Nothing)
@@ -1003,12 +1014,11 @@ impl GameState {
             .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
         match &proc_input {
-            ProcInput::Action(a) => {
-                self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, a))
-            }
-            ProcInput::Roll(_) => {
-                self.log(format!("STEPPING: {:?}\n  input={:?}", top_proc, proc_input))
-            }
+            ProcInput::Action(a) => self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, a)),
+            ProcInput::Roll(_) => self.log(format!(
+                "STEPPING: {:?}\n  input={:?}",
+                top_proc, proc_input
+            )),
             ProcInput::Nothing => self.log(format!("STEPPING: {:?}", top_proc)),
         }
 
@@ -1046,7 +1056,7 @@ impl GameState {
             }
             ProcState::NeedRoll(requested_roll) => {
                 self.proc_stack.push(top_proc);
-                if self.expose_rolls {
+                if matches!(self.dice_mode, DiceMode::RegisterRolls) {
                     self.pending_roll = Some(requested_roll);
                     None
                 } else {
@@ -1060,11 +1070,11 @@ impl GameState {
     }
 
     pub fn step(&mut self, action: Action) -> Result<()> {
-        // `step` is the resolve-everything-inline API. `expose_rolls` is for
-        // MCTS callers that drive `micro_step` directly and want chance nodes
-        // surfaced as `pending_roll`; mixing the two modes would make this
-        // loop spin on chance nodes.
-        debug_assert!(!self.expose_rolls);
+        // `step` is the resolve-everything-inline API. `RegisterRolls` is
+        // for MCTS callers that drive `micro_step` and `step_with_roll`
+        // directly and want chance nodes surfaced as `pending_roll`;
+        // mixing the two would make this loop spin on chance nodes.
+        debug_assert!(!matches!(self.dice_mode, DiceMode::RegisterRolls));
 
         // Match the legacy behavior of dropping the action when nothing
         // is asking for one — some callers feed in a placeholder action
@@ -1082,87 +1092,50 @@ impl GameState {
         Ok(())
     }
 
-    fn get_roll_result(&mut self, requested_roll: RequestedRoll) -> RollResult {
-        if let Some(result) = self.dice_policy.resolve(&requested_roll) {
-            return result;
+    /// Resume an engine that paused on a chance node (`DiceMode::RegisterRolls`).
+    ///
+    /// The caller observes `state.pending_roll.is_some()`, picks a roll
+    /// outcome, and passes the corresponding `RollResult` in. The engine
+    /// feeds the roll to the suspended procedure and continues stepping
+    /// until the next decision, the next chance node, or game-over.
+    ///
+    /// Panics if the current mode is not `RegisterRolls` or if no roll
+    /// is pending — the engine has no procedure expecting a roll.
+    pub fn step_with_roll(&mut self, roll: RollResult) -> Result<()> {
+        debug_assert!(
+            matches!(self.dice_mode, DiceMode::RegisterRolls),
+            "step_with_roll requires DiceMode::RegisterRolls"
+        );
+        assert!(
+            self.pending_roll.is_some(),
+            "step_with_roll called with no pending_roll"
+        );
+        self.registered_roll = Some(roll);
+        self.micro_step(None)?;
+        while !self.info.game_over
+            && self.available_actions.is_empty()
+            && self.pending_roll.is_none()
+        {
+            self.micro_step(None)?;
         }
-        match requested_roll {
-            RequestedRoll::D6 => RollResult::D6(self.get_d6_roll()),
-            RequestedRoll::D6PassFail(target) => {
-                if target.is_success(self.get_d6_roll()) {
-                    RollResult::Pass
-                } else {
-                    RollResult::Fail
-                }
-            }
-            RequestedRoll::D6ThreeOutcomes(low_target, high_target) => {
-                let roll = self.get_d6_roll();
-                if high_target.is_success(roll) {
-                    RollResult::Pass
-                } else if low_target.is_success(roll) {
-                    RollResult::MiddleOutcome
-                } else {
-                    RollResult::Fail
-                }
-            }
-            RequestedRoll::Sum2D6 => RollResult::Sum2D6(self.get_2d6_roll()),
-            RequestedRoll::Sum2D6PassFail(target) => {
-                if target.is_success(self.get_2d6_roll()) {
-                    RollResult::Pass
-                } else {
-                    RollResult::Fail
-                }
-            }
-            RequestedRoll::Sum2D6ThreeOutcomes(low_target, high_target) => {
-                let roll = self.get_2d6_roll();
-                if high_target.is_success(roll) {
-                    RollResult::Pass
-                } else if low_target.is_success(roll) {
-                    RollResult::MiddleOutcome
-                } else {
-                    RollResult::Fail
-                }
-            }
-            RequestedRoll::D8 => RollResult::D8(self.get_d8_roll()),
-            RequestedRoll::Coin => RollResult::Coin(self.get_coin_toss()),
-            RequestedRoll::Deviate => RollResult::Deviate(self.get_d6_roll(), self.get_d8_roll()),
-            RequestedRoll::FoulArmor(target) => {
-                let roll1 = self.get_d6_roll();
-                let roll2 = self.get_d6_roll();
-                RollResult::FoulArmor {
-                    broken: target.is_success(roll1 + roll2),
-                    ejected: roll1 == roll2,
-                }
-            }
-            RequestedRoll::FoulInjury(ko_target, cas_target) => {
-                let roll1 = self.get_d6_roll();
-                let roll2 = self.get_d6_roll();
-                let outcome = if cas_target.is_success(roll1 + roll2) {
-                    InjuryOutcome::Casualty
-                } else if ko_target.is_success(roll1 + roll2) {
-                    InjuryOutcome::KO
-                } else {
-                    InjuryOutcome::Stunned
-                };
-                RollResult::FoulInjury {
-                    outcome,
-                    ejected: roll1 == roll2,
-                }
-            }
-            RequestedRoll::ThrowIn => RollResult::ThrowIn {
-                direction: self.get_d3_roll(),
-                distance: self.get_2d6_roll(),
-            },
-            RequestedRoll::BlockDice(num_dices) => {
-                let mut dices: [Option<BlockDice>; 3] = [None, None, None];
-                for dice in dices.iter_mut().take(u8::from(num_dices) as usize) {
-                    *dice = Some(self.get_block_dice_roll());
-                }
-                RollResult::BlockDice(dices)
-            }
-            RequestedRoll::Scatter => {
-                RollResult::Scatter(self.get_d8_roll(), self.get_d8_roll(), self.get_d8_roll())
-            }
+        debug_assert!(
+            !self.available_actions.is_empty()
+                || self.info.game_over
+                || self.pending_roll.is_some()
+        );
+        Ok(())
+    }
+
+    fn get_roll_result(&mut self, requested_roll: RequestedRoll) -> RollResult {
+        match &mut self.dice_mode {
+            DiceMode::RollDice => resolve_with_rng(requested_roll, &mut self.rng),
+            DiceMode::FixedDice(fixes) => resolve_from_fixes(requested_roll, fixes),
+            DiceMode::DicePolicy(policy) => policy.resolve(requested_roll, &mut self.rng),
+            DiceMode::RegisterRolls => unreachable!(
+                "DiceMode::RegisterRolls: micro_step pauses on NeedRoll, so \
+                 get_roll_result must be reached only via a registered roll \
+                 (handled inline in micro_step) — never as a direct call"
+            ),
         }
     }
 
@@ -1213,12 +1186,20 @@ impl GameState {
 
     pub fn step_simple(&mut self, action: SimpleAT) {
         self.step(Action::Simple(action)).unwrap();
-        self.fixes.assert_is_empty();
+        self.assert_fixes_empty();
     }
 
     pub fn step_positional(&mut self, action: PosAT, position: Position) {
         self.step(Action::Positional(action, position)).unwrap();
-        self.fixes.assert_is_empty();
+        self.assert_fixes_empty();
+    }
+
+    /// In `FixedDice` mode, assert the queue has been fully consumed.
+    /// In other modes this is a no-op — those modes have no queue.
+    pub fn assert_fixes_empty(&self) {
+        if let DiceMode::FixedDice(fixes) = &self.dice_mode {
+            fixes.assert_is_empty();
+        }
     }
 
     pub fn get_interception_positions(
@@ -1633,13 +1614,14 @@ mod gamestate_tests {
     }
     #[test]
     fn rng_seed_in_gamestate() -> Result<()> {
+        use rand::Rng;
         let mut state = standard_state();
-        state.rng_enabled = true;
+        state.set_dice_mode(crate::core::gamestate::DiceMode::RollDice);
         let seed = 5;
         state.set_seed(seed);
 
         fn get_random_rolls(state: &mut GameState) -> Vec<D6> {
-            repeat_with(|| state.get_d6_roll()).take(200).collect()
+            repeat_with(|| state.rng.gen::<D6>()).take(200).collect()
         }
 
         let numbers: Vec<D6> = get_random_rolls(&mut state);
@@ -1665,5 +1647,120 @@ mod gamestate_tests {
         let deserialized: GameState = serde_json::from_str(&json_str).unwrap();
         assert_eq!(state, deserialized);
         std::fs::remove_file("serialized_test.json").unwrap();
+    }
+
+    use crate::core::dices::{RequestedRoll, RollResult};
+    use crate::core::gamestate::DiceMode;
+    use crate::core::model::Action;
+    use crate::core::table::{PosAT, SimpleAT};
+
+    #[test]
+    #[should_panic(expected = "FixedDice access requires DiceMode::FixedDice")]
+    fn fix_d6_panics_in_rolldice_mode() {
+        let mut state = standard_state();
+        state.set_dice_mode(DiceMode::RollDice);
+        state.fix_d6(5);
+    }
+
+    #[test]
+    #[should_panic(expected = "step_with_roll requires DiceMode::RegisterRolls")]
+    fn step_with_roll_panics_in_rolldice_mode() {
+        let mut state = standard_state();
+        state.set_dice_mode(DiceMode::RollDice);
+        // pending_roll is None, but the mode-check fires first
+        let _ = state.step_with_roll(RollResult::Pass);
+    }
+
+    #[test]
+    #[should_panic(expected = "DiceMode::RegisterRolls")]
+    fn step_panics_in_registerrolls_mode() {
+        let mut state = standard_state();
+        state.set_dice_mode(DiceMode::RegisterRolls);
+        // step() debug-asserts !RegisterRolls; sending any action triggers it.
+        let _ = state.step(Action::Simple(SimpleAT::EndTurn));
+    }
+
+    #[test]
+    #[should_panic(expected = "FixedDice queue empty for D6")]
+    fn fixed_dice_empty_queue_panics_with_diagnostic() {
+        // Setup: state with FixedDice mode and an empty queue. Drive the
+        // engine into a roll request and verify the panic message names D6.
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
+        // Mode is FixedDice(empty) by default after build(). The pickup
+        // request (D6PassFail) will look for a d6 fix and find none.
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, td_pos);
+    }
+
+    #[test]
+    fn dice_policy_unmatched_rolls_use_rng() {
+        // Pickup forced to succeed by policy; the scatter/bounce/etc.
+        // dice that the policy doesn't override are drawn from RNG.
+        // Two seeded runs with different seeds should diverge on the
+        // unmatched-roll outcomes (or, at minimum, both reach Success
+        // without panicking — the policy is total).
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
+        state.set_dice_mode(DiceMode::DicePolicy(
+            crate::core::dices::DicePolicy::SucceedAtOrEasier {
+                d6: crate::core::dices::D6Target::ThreePlus,
+                sum2d6: crate::core::dices::Sum2D6Target::SevenPlus,
+                block_dice: crate::core::dices::BlockDicePolicy::Default,
+            },
+        ));
+        state.set_seed(42);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, td_pos);
+        assert_eq!(state.home.score, 1);
+    }
+
+    #[test]
+    fn register_rolls_round_trip() {
+        // RegisterRolls: micro_step pauses on NeedRoll; step_with_roll
+        // resumes. Drive a pickup all the way through both paths.
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
+        state.set_dice_mode(DiceMode::RegisterRolls);
+
+        state
+            .micro_step(Some(Action::Positional(PosAT::StartMove, start_pos)))
+            .unwrap();
+        // Drain mid-procedure ticks until we hit a decision or a roll.
+        while !state.info.game_over
+            && state.available_actions.is_empty()
+            && state.pending_roll.is_none()
+        {
+            state.micro_step(None).unwrap();
+        }
+        state
+            .micro_step(Some(Action::Positional(PosAT::Move, td_pos)))
+            .unwrap();
+        // Drain until the engine pauses on the pickup roll.
+        while !state.info.game_over
+            && state.available_actions.is_empty()
+            && state.pending_roll.is_none()
+        {
+            state.micro_step(None).unwrap();
+        }
+        assert!(
+            matches!(state.pending_roll, Some(RequestedRoll::D6PassFail(_))),
+            "expected pickup PassFail pending, got {:?}",
+            state.pending_roll
+        );
+        state.step_with_roll(RollResult::Pass).unwrap();
+        assert_eq!(state.home.score, 1, "successful pickup scores");
     }
 }

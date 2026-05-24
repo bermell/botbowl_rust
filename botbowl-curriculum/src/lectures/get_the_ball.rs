@@ -1,5 +1,5 @@
 use botbowl_engine::core::dices::{BlockDicePolicy, D6Target, DicePolicy, Sum2D6Target};
-use botbowl_engine::core::gamestate::{BuilderState, GameState, GameStateBuilder};
+use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::{BallState, Position, TeamType};
 use rand::{Rng, RngCore};
 use rand_chacha::ChaCha8Rng;
@@ -80,9 +80,8 @@ impl Lecture for GetTheBallEasy {
             .add_ball_pos(ball_pos)
             .build();
 
-        state.dice_policy = three_plus_policy();
         state.set_seed(rng.next_u64());
-        state.rng_enabled = true;
+        state.set_dice_mode(DiceMode::DicePolicy(three_plus_policy()));
 
         state
     }
@@ -157,9 +156,8 @@ impl Lecture for GetTheBallMedium {
             .add_ball_pos(ball_pos)
             .build();
 
-        state.dice_policy = three_plus_policy();
         state.set_seed(rng.next_u64());
-        state.rng_enabled = true;
+        state.set_dice_mode(DiceMode::DicePolicy(three_plus_policy()));
 
         state
     }
@@ -227,9 +225,8 @@ impl Lecture for GetTheBallHard {
             .add_ball_pos(carrier_pos)
             .build();
 
-        state.dice_policy = three_plus_with_knockdown_policy();
         state.set_seed(rng.next_u64());
-        state.rng_enabled = true;
+        state.set_dice_mode(DiceMode::DicePolicy(three_plus_with_knockdown_policy()));
 
         state
     }

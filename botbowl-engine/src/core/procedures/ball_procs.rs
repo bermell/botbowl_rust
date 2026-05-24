@@ -516,9 +516,9 @@ mod tests {
         let direction = Direction::from(d8_fix);
 
         state.step_positional(PosAT::StartMove, start_pos);
-        state.fixes.fix_d6(2); //fail pickup (3+)
+        state.fix_d6(2); //fail pickup (3+)
         state.step_positional(PosAT::Move, ball_pos);
-        state.fixes.fix_d8(d8_fix as u8);
+        state.fix_d8(d8_fix as u8);
         state.step_simple(SimpleAT::DontUseReroll);
 
         let player = state.get_player(id).unwrap();
@@ -549,8 +549,8 @@ mod tests {
 
         state.step_positional(PosAT::StartMove, Position::new((1, 1)));
 
-        state.fixes.fix_d6(2); //fail first (3+)
-        state.fixes.fix_d6(3); //succeed on reroll (3+)
+        state.fix_d6(2); //fail first (3+)
+        state.fix_d6(3); //succeed on reroll (3+)
         state.step_positional(PosAT::Move, Position::new((5, 5)));
 
         assert!(!state
@@ -578,17 +578,17 @@ mod tests {
 
         state.step_positional(PosAT::StartBlock, blocker_pos);
 
-        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fix_blockdice(BlockDice::Pow);
 
         state.step_positional(PosAT::Block, carrier_pos);
         state.step_simple(SimpleAT::SelectPow);
 
-        state.fixes.fix_d6(1); //armor
-        state.fixes.fix_d6(1); //armor
-        state.fixes.fix_d3(2); //throw in direction down
-        state.fixes.fix_d6(1); //throw in length
-        state.fixes.fix_d6(1); //throw in length
-        state.fixes.fix_d8(2); //bounce direction down
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.fix_d3(2); //throw in direction down
+        state.fix_d6(1); //throw in length
+        state.fix_d6(1); //throw in length
+        state.fix_d8(2); //bounce direction down
 
         state.step_positional(PosAT::FollowUp, carrier_pos);
 
@@ -621,10 +621,10 @@ mod tests {
 
         state.step_positional(PosAT::StartHandoff, start_pos);
 
-        state.fixes.fix_d6(6);
+        state.fix_d6(6);
         state.step_positional(PosAT::Handoff, target_pos);
 
-        // state.fixes.fix_d6(3);
+        // state.fix_d6(3);
         // state.step_simple(SimpleAT::UseReroll);
 
         assert!(state.get_player_unsafe(start_id).used);

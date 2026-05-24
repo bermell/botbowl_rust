@@ -443,13 +443,13 @@ mod tests {
         let mut state = GameStateBuilder::new().add_str(first_pos, &field).build();
 
         state.step_positional(PosAT::StartBlock, Position::new((5, 3)));
-        state.fixes.fix_blockdice(BlockDice::Push);
+        state.fix_blockdice(BlockDice::Push);
         state.step_positional(PosAT::Block, Position::new((6, 2)));
         state.step_simple(SimpleAT::SelectPush);
 
         state.step_positional(PosAT::Push, Position::new((6, 1)));
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(1);
+        state.fix_d6(1);
+        state.fix_d6(1);
 
         state.step_positional(PosAT::FollowUp, Position::new((6, 2)));
 
@@ -477,7 +477,7 @@ mod tests {
             .build();
         state.step_positional(PosAT::StartBlitz, start_pos);
 
-        state.fixes.fix_blockdice(BlockDice::Skull);
+        state.fix_blockdice(BlockDice::Skull);
         state.step_positional(PosAT::Block, target_pos);
     }
 
@@ -492,15 +492,15 @@ mod tests {
             .build();
 
         state.step_positional(PosAT::StartBlock, home_pos);
-        state.fixes.fix_blockdice(BlockDice::Pow);
-        state.fixes.fix_blockdice(BlockDice::BothDown);
+        state.fix_blockdice(BlockDice::Pow);
+        state.fix_blockdice(BlockDice::BothDown);
         state.step_positional(PosAT::Block, away_pos);
-        state.fixes.fix_d6(1); //away armor
-        state.fixes.fix_d6(1); //away armor
-        state.fixes.fix_d6(5); //home armor
-        state.fixes.fix_d6(6); //home armor
-        state.fixes.fix_d6(6); //home injury
-        state.fixes.fix_d6(6); //home injury
+        state.fix_d6(1); //away armor
+        state.fix_d6(1); //away armor
+        state.fix_d6(5); //home armor
+        state.fix_d6(6); //home armor
+        state.fix_d6(6); //home injury
+        state.fix_d6(6); //home injury
         state.step_simple(SimpleAT::SelectBothDown);
 
         assert!(state.get_player_at(home_pos).is_none());
@@ -520,7 +520,7 @@ mod tests {
             PlayerStatus::Down
         );
 
-        assert!(state.fixes.is_empty());
+        assert!(state.fixes_is_empty());
         Ok(())
     }
 
@@ -535,19 +535,19 @@ mod tests {
             .build();
 
         state.step_positional(PosAT::StartBlock, home_pos);
-        state.fixes.fix_blockdice(BlockDice::Pow);
+        state.fix_blockdice(BlockDice::Pow);
         state.step_positional(PosAT::Block, away_pos);
         state.step_simple(SimpleAT::SelectPow);
         state.step_positional(PosAT::Push, push_pos);
-        state.fixes.fix_d6(1);
-        state.fixes.fix_d6(1);
+        state.fix_d6(1);
+        state.fix_d6(1);
         state.step_positional(PosAT::FollowUp, away_pos);
 
         assert_eq!(
             state.get_player_at(push_pos).unwrap().status,
             PlayerStatus::Down
         );
-        assert!(state.fixes.is_empty());
+        assert!(state.fixes_is_empty());
         assert!(state.get_player_at(away_pos).unwrap().used);
 
         let aa = state.get_available_actions();
@@ -637,7 +637,7 @@ mod tests {
         println!("{:?}", aa_pos);
         assert!(!aa_pos.contains(&PosAT::StartBlock));
         state.step_positional(PosAT::StartBlitz, away_pos);
-        state.fixes.fix_blockdice(BlockDice::Skull);
+        state.fix_blockdice(BlockDice::Skull);
         state.step_positional(PosAT::Block, home_pos);
     }
 }
