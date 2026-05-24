@@ -362,13 +362,13 @@ impl GameDynamics for BloodBowlDynamics {
 /// Forward-simulate from a transient leaf state (pending roll or
 /// mid-procedure) until the engine reaches a decision or terminal
 /// point, then score. Success outcomes (Pass for pass/fail rolls,
-/// Advance otherwise — the constants `roll_outcomes::fix_for_outcome`
-/// queues for chance actions) are fixed before each roll-resolution
-/// step. Engine processing without a pending roll is driven by
-/// `micro_step(None)`; with `expose_rolls = true` (set on every MCTS
-/// root state) procedures requesting a roll surface it as
-/// `pending_roll` rather than consuming RNG, keeping the simulation
-/// deterministic under recombination.
+/// Advance otherwise — the constants `roll_outcomes::result_for_outcome`
+/// returns for chance actions) are passed to `step_with_roll` to
+/// resume the engine. Engine processing without a pending roll is
+/// driven by `micro_step(None)`; with `DiceMode::RegisterRolls` (set
+/// on every MCTS root state) procedures requesting a roll surface it
+/// as `pending_roll` rather than consuming RNG, keeping the
+/// simulation deterministic under recombination.
 ///
 /// `max_steps` defends against an engine bug spinning forever; 8 is
 /// the dynamics default and comfortably exceeds the longest known
