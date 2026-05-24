@@ -5,7 +5,7 @@ use std::{error, fmt};
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
@@ -576,7 +576,7 @@ pub struct AvailableActions {
     pub team: Option<TeamType>,
     simple: HashSet<SimpleAT>,
     positional: Option<FullPitch<SmallVecPosAT>>,
-    paths: Option<FullPitch<Option<Rc<Node>>>>,
+    paths: Option<FullPitch<Option<Arc<Node>>>>,
 }
 
 impl std::fmt::Debug for AvailableActions {
@@ -620,7 +620,7 @@ impl AvailableActions {
     pub fn get_positional(&self) -> &Option<FullPitch<SmallVecPosAT>> {
         &self.positional
     }
-    pub fn get_paths(&self) -> &Option<FullPitch<Option<Rc<Node>>>> {
+    pub fn get_paths(&self) -> &Option<FullPitch<Option<Arc<Node>>>> {
         &self.paths
     }
     pub fn new_empty() -> Box<Self> {
@@ -663,16 +663,16 @@ impl AvailableActions {
         assert!(self.team.is_some());
         self.simple.insert(action_type);
     }
-    pub fn insert_paths(&mut self, paths: FullPitch<Option<Rc<Node>>>) {
+    pub fn insert_paths(&mut self, paths: FullPitch<Option<Arc<Node>>>) {
         self.paths = Some(paths);
     }
-    pub fn take_path(&mut self, pos: Position) -> Option<Rc<Node>> {
+    pub fn take_path(&mut self, pos: Position) -> Option<Arc<Node>> {
         match &mut self.paths {
             Some(paths) => paths[pos].take(),
             None => None,
         }
     }
-    pub fn insert_path(&mut self, node: Rc<Node>) {
+    pub fn insert_path(&mut self, node: Arc<Node>) {
         if self.paths.is_none() {
             self.paths = Some(Default::default());
         }
@@ -698,7 +698,7 @@ impl AvailableActions {
             self.paths = Some(Default::default());
         }
         self.paths.as_mut().unwrap()[pos] =
-            Some(Rc::new(Node::new_direct_block_node(num_dice, pos)));
+            Some(Arc::new(Node::new_direct_block_node(num_dice, pos)));
     }
 
     pub fn is_legal_action(&self, action: Action) -> bool {

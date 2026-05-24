@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::{collections::HashMap, hash, iter::zip, rc::Rc};
+use std::{collections::HashMap, hash, iter::zip, sync::Arc};
 
 use crate::core::model;
 use model::*;
@@ -9,7 +9,7 @@ use super::dices::{D6Target, RollTarget, Sum2D6Target};
 use super::gamestate::GameState;
 use super::table::{NumBlockDices, PosAT};
 
-type OptRcNode = Option<Rc<Node>>;
+type OptRcNode = Option<Arc<Node>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PathingEvent {
@@ -123,7 +123,7 @@ pub struct NodeIterator {
 }
 
 impl NodeIterator {
-    fn new(node: &Rc<Node>) -> Self {
+    fn new(node: &Arc<Node>) -> Self {
         let mut queue = Vec::new();
         let mut n = node.clone();
 
@@ -155,7 +155,7 @@ impl Iterator for NodeIterator {
 pub trait CustomIntoIter {
     fn iter(&self) -> NodeIterator;
 }
-impl CustomIntoIter for Rc<Node> {
+impl CustomIntoIter for Arc<Node> {
     fn iter(&self) -> NodeIterator {
         NodeIterator::new(self)
     }
@@ -163,7 +163,7 @@ impl CustomIntoIter for Rc<Node> {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Node {
-    parent: Option<Rc<Node>>,
+    parent: Option<Arc<Node>>,
     pub position: Position,
     moves_left: u8,
     gfis_left: u8,
@@ -380,14 +380,14 @@ impl Node {
 pub struct PathFinder<'a> {
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
-    open_set: Vec<Rc<Node>>,
+    open_set: Vec<Arc<Node>>,
     risky_sets: RiskySet,
     info: GameInfo<'a>,
 }
 
 enum NodeType {
-    Risky(Rc<Node>),
-    ContinueExpanding(Rc<Node>),
+    Risky(Arc<Node>),
+    ContinueExpanding(Arc<Node>),
     NoNode,
 }
 #[derive(Debug)]
@@ -480,7 +480,7 @@ impl<'a> GameInfo<'a> {
             teammate_catch_mod: catch_mods,
         }
     }
-    fn can_continue_expanding(&self, node: &Rc<Node>) -> bool {
+    fn can_continue_expanding(&self, node: &Arc<Node>) -> bool {
         if node.remaining_movement() == 0 {
             let is_foul = self.player_action == PosAT::StartFoul;
             let can_do_ball_action = matches!(self.ball, PathingBallState::IsCarrier(_))
@@ -511,7 +511,7 @@ impl<'a> GameInfo<'a> {
     fn expand_to(
         &self,
         to: Position,
-        parent_node: &Rc<Node>,
+        parent_node: &Arc<Node>,
         prev: &mut OptRcNode,
         best: &OptRcNode,
     ) -> NodeType {
@@ -548,8 +548,8 @@ impl<'a> GameInfo<'a> {
             _ => return NodeType::NoNode,
         };
 
-        let new_node: Rc<Node> = match new_node {
-            Some(node) => Rc::new(node),
+        let new_node: Arc<Node> = match new_node {
+            Some(node) => Arc::new(node),
             None => return NodeType::NoNode,
         };
 
@@ -581,7 +581,7 @@ impl<'a> GameInfo<'a> {
         &self,
         to: Position,
         victim_id: PlayerID,
-        parent_node: &Rc<Node>,
+        parent_node: &Arc<Node>,
         prev: &OptRcNode,
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
@@ -629,7 +629,7 @@ impl<'a> GameInfo<'a> {
         &self,
         to: Position,
         victim_id: PlayerID,
-        parent_node: &Rc<Node>,
+        parent_node: &Arc<Node>,
         prev: &OptRcNode,
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
@@ -657,7 +657,7 @@ impl<'a> GameInfo<'a> {
         &self,
         to: Position,
         id: PlayerID,
-        parent_node: &Rc<Node>,
+        parent_node: &Arc<Node>,
         prev: &OptRcNode,
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
@@ -679,7 +679,7 @@ impl<'a> GameInfo<'a> {
         &self,
         to: Position,
         id: PlayerID,
-        parent_node: &Rc<Node>,
+        parent_node: &Arc<Node>,
         prev: &OptRcNode,
     ) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
@@ -732,7 +732,7 @@ impl<'a> GameInfo<'a> {
     fn expand_move_to(
         &self,
         to: Position,
-        parent_node: &Rc<Node>,
+        parent_node: &Arc<Node>,
         prev: &OptRcNode,
     ) -> Option<Node> {
         let gfi = parent_node.moves_left == 0;
@@ -802,7 +802,7 @@ impl<'a> PathFinder<'a> {
             root_node.apply_standup();
         }
 
-        let root_node = Rc::new(root_node);
+        let root_node = Arc::new(root_node);
 
         if !info.can_continue_expanding(&root_node) {
             return Ok(Default::default());
@@ -845,7 +845,7 @@ impl<'a> PathFinder<'a> {
         game_state: &GameState,
         id: PlayerID,
         target: Position,
-    ) -> Result<Option<Rc<Node>>> {
+    ) -> Result<Option<Arc<Node>>> {
         let paths = PathFinder::player_paths(game_state, id)?;
         Ok(paths[target].clone())
     }
@@ -855,7 +855,7 @@ impl<'a> PathFinder<'a> {
     pub fn safest_path_to_endzone(
         game_state: &GameState,
         id: PlayerID,
-    ) -> Result<Option<Rc<Node>>> {
+    ) -> Result<Option<Arc<Node>>> {
         let paths = PathFinder::player_paths(game_state, id)?;
         let team = game_state.get_player_unsafe(id).stats.team;
         let endzone_x = game_state.get_endzone_x(team);
@@ -873,7 +873,7 @@ impl<'a> PathFinder<'a> {
 }
 
 impl<'a> PathFinder<'a> {
-    fn prepare_nodes(&mut self, new_nodes: Vec<Rc<Node>>) {
+    fn prepare_nodes(&mut self, new_nodes: Vec<Arc<Node>>) {
         for new_node in new_nodes {
             if self.locked_nodes[new_node.position]
                 .as_ref()
@@ -898,7 +898,7 @@ impl<'a> PathFinder<'a> {
         }
     }
 
-    fn expand_node(&mut self, node: Rc<Node>) {
+    fn expand_node(&mut self, node: Arc<Node>) {
         debug_assert!(self.info.can_continue_expanding(&node));
 
         let parent_pos_and_in_tz: Option<(Position, bool)> = node
@@ -975,15 +975,15 @@ impl<'a> PathFinder<'a> {
 
 #[derive(Default)]
 struct RiskySet {
-    set: HashMap<HashableFloat, Vec<Rc<Node>>>,
+    set: HashMap<HashableFloat, Vec<Arc<Node>>>,
 }
 impl RiskySet {
-    pub fn insert_node(&mut self, node: Rc<Node>) {
+    pub fn insert_node(&mut self, node: Arc<Node>) {
         assert!(0_f32 < node.prob && node.prob <= 1.0_f32);
         let prob = HashableFloat(node.prob);
         self.set.entry(prob).or_default().push(node);
     }
-    pub fn get_next_batch(&mut self) -> Option<Vec<Rc<Node>>> {
+    pub fn get_next_batch(&mut self) -> Option<Vec<Arc<Node>>> {
         match self.set.keys().map(|hf| hf.0).reduce(f32::max) {
             Some(max_prob) => self.set.remove(&HashableFloat(max_prob)),
             None => None,

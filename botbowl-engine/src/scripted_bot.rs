@@ -185,7 +185,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
 
     // 1) If the carrier can score from here at p >= TD_ATTEMPT_PROB_THRESHOLD, do it.
     if is_carrier {
-        let mut best_td: Option<std::rc::Rc<Node>> = None;
+        let mut best_td: Option<std::sync::Arc<Node>> = None;
         for (pos, node_opt) in paths.iter_position() {
             if pos.x != endzone_x {
                 continue;
@@ -210,7 +210,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
     // 2) Drift towards the endzone on a guaranteed (prob == 1) path if we're carrying.
     if is_carrier {
         let current_distance = (endzone_x - active.position.x).abs();
-        let mut best: Option<(i8, std::rc::Rc<Node>)> = None;
+        let mut best: Option<(i8, std::sync::Arc<Node>)> = None;
         for (pos, node_opt) in paths.iter_position() {
             let Some(node) = node_opt else { continue };
             if (node.prob - 1.0).abs() > 1e-6 {
@@ -255,7 +255,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
 
     // 4) Block action: pick the best adjacent up opponent.
     {
-        let mut best: Option<std::rc::Rc<Node>> = None;
+        let mut best: Option<std::sync::Arc<Node>> = None;
         for (_, node_opt) in paths.iter_position() {
             let Some(node) = node_opt else { continue };
             if node.get_action_type() != PosAT::Block {
