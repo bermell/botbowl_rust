@@ -2,19 +2,13 @@ use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
 use botbowl_curriculum::run_trials;
 use botbowl_mcts::MctsBot;
 
-/// Still parked. v3 added deterministic dice fixes for non-pass/fail
-/// rolls (closing the RNG-non-determinism gap from v2's `Advance`) and
-/// an optimistic chance-state `score_leaf`, but the pickup chance node
-/// still doesn't surface because the engine processes a Move(target)
-/// path one square per `micro_step` and we don't fast-forward
-/// (FF+chance produced both deep-tree per-iter slowdowns of ~10000×
-/// and reconstruction panics during `Tree` drop — `apply_action`
-/// returns `None` for some recombined edge during `recon_mcts`
-/// `get_state` walks, source unknown). v4 candidates: a non-recursive
-/// `recon_mcts` `Drop`, or moving the FF inside `score_leaf` only
-/// (forward-looking value without reifying the chance state into the
-/// tree).
-#[ignore = "v5: adversarial backprop landed but rate stays 0% — bottleneck is the unaddressed FF/chance-node blocker, not opponent modelling"]
+/// Plan 010 (Track A.alt) lifts this from 0.00 to ≈1.00: `score_leaf`
+/// now forward-simulates through mid-procedure engine work (Move
+/// walking one square per `micro_step`) and through pending rolls
+/// (pickup, dodge, GFI), so leaves between squares actually score
+/// the post-pickup board rather than an intermediate position. The
+/// chance child still does not enter the tree — see plan 010 for
+/// the deferred Track A work if a future lecture needs that.
 #[test]
 fn mcts_solves_get_the_ball_easy() {
     let lecture = GetTheBallEasy::new();

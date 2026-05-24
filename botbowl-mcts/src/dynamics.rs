@@ -60,8 +60,22 @@ impl Clone for BbScore {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct BloodBowlDynamics;
+/// `ff_depth` is the upper bound on roll-resolution steps inside
+/// `optimistic_leaf_score`. 1 reproduces the v3 single-step
+/// behaviour; 8 (the default) lets multi-roll move chains (GFI then
+/// pickup; pickup then dodge) resolve to a stable decision/terminal
+/// state before scoring. Pure leaf-scoring effect — chance children
+/// still do not enter the tree.
+#[derive(Debug, Clone, Copy)]
+pub struct BloodBowlDynamics {
+    pub ff_depth: u8,
+}
+
+impl Default for BloodBowlDynamics {
+    fn default() -> Self {
+        Self { ff_depth: 8 }
+    }
+}
 
 /// Inspect a state and decide which "player" owns it from MCTS's
 /// perspective. Chance nodes are detected by a pending roll; otherwise
@@ -309,20 +323,31 @@ impl GameDynamics for BloodBowlDynamics {
         _parent_player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::Score> {
-        // For chance states (pending_roll set) the bare leaf score
-        // reflects the pre-roll board — which understates the value
-        // of a Move-onto-ball, because the ball is still `OnGround`
-        // until the pickup roll resolves. We optimistically score
-        // chance states by simulating the success outcome inline:
-        // fix the dice to a Pass result, micro_step, then score the
-        // post-success state. This is the "always assume success on
-        // first contact" heuristic — pessimistic outcomes still get
-        // discovered when MCTS budget allows the chance child to be
-        // expanded, but the initial Q is high enough that MCTS will
-        // actually choose the pickup move over a Q=200 adj-to-ball
-        // move.
-        let score = if state.pending_roll.is_some() {
-            optimistic_leaf_score(state).unwrap_or_else(|| leaf_score(state))
+        // A leaf state may be in one of four shapes:
+        //   1. terminal (`game_over` set) — bare leaf_score is correct.
+        //   2. player-decision (`available_actions.team` set) — bare
+        //      leaf_score; the next player chooses next.
+        //   3. roll pending (`pending_roll` set) — pre-roll board
+        //      understates the value of e.g. Move-onto-ball because
+        //      the ball is still `OnGround` until the pickup resolves.
+        //   4. mid-procedure (none of the above) — engine has internal
+        //      work to do (Move walks one square per micro_step; the
+        //      leaf is between squares with neither a roll nor a
+        //      decision yet pending).
+        //
+        // Shapes 3 and 4 both need FF before scoring. We optimistically
+        // resolve them by simulating success outcomes inline (Pass /
+        // Advance — same constants `roll_outcomes::fix_for_outcome`
+        // queues for chance actions) until we hit shape 1 or 2 or the
+        // `ff_depth` cap. Pessimistic outcomes still get discovered
+        // when MCTS budget allows the chance child to be expanded
+        // (currently no chance children — A.alt path); the initial Q
+        // is high enough that MCTS will actually choose pickup /
+        // dodge / GFI moves over their "safe" alternatives.
+        let needs_ff = !state.info.game_over
+            && (state.pending_roll.is_some() || state.available_actions.team.is_none());
+        let score = if needs_ff {
+            optimistic_leaf_score(state, self.ff_depth).unwrap_or_else(|| leaf_score(state))
         } else {
             leaf_score(state)
         };
@@ -334,24 +359,52 @@ impl GameDynamics for BloodBowlDynamics {
     }
 }
 
-/// Optimistic chance-state scoring: simulate the success outcome
-/// (Pass for pass/fail rolls, Advance otherwise — both fixed to
-/// the same constants `roll_outcomes::fix_for_outcome` queues) and
-/// return the leaf score of the post-resolution state.
+/// Forward-simulate from a transient leaf state (pending roll or
+/// mid-procedure) until the engine reaches a decision or terminal
+/// point, then score. Success outcomes (Pass for pass/fail rolls,
+/// Advance otherwise — the constants `roll_outcomes::fix_for_outcome`
+/// queues for chance actions) are fixed before each roll-resolution
+/// step. Engine processing without a pending roll is driven by
+/// `micro_step(None)`; with `expose_rolls = true` (set on every MCTS
+/// root state) procedures requesting a roll surface it as
+/// `pending_roll` rather than consuming RNG, keeping the simulation
+/// deterministic under recombination.
 ///
-/// Returns None if the simulation fails (engine error). Caller falls
-/// back to the bare leaf score in that case.
-fn optimistic_leaf_score(state: &GameState) -> Option<i64> {
-    let req = state.pending_roll.as_ref()?;
-    let outcome = if crate::action::is_pass_fail(req) {
-        ChanceOutcome::Pass
-    } else {
-        ChanceOutcome::Advance
-    };
+/// `max_steps` defends against an engine bug spinning forever; 8 is
+/// the dynamics default and comfortably exceeds the longest known
+/// transient chain in a single Move action (a few squares + pickup
+/// or GFI).
+///
+/// Returns None if the engine errors mid-simulation; caller falls
+/// back to the bare leaf score of the original (pre-simulation)
+/// state in that case.
+fn optimistic_leaf_score(state: &GameState, max_steps: u8) -> Option<i64> {
     let mut sim = state.clone();
-    roll_outcomes::fix_for_outcome(&mut sim, outcome);
-    if sim.micro_step(None).is_err() {
-        return None;
+    for _ in 0..max_steps {
+        if sim.info.game_over {
+            break;
+        }
+        if let Some(req) = sim.pending_roll.as_ref() {
+            let outcome = if crate::action::is_pass_fail(req) {
+                ChanceOutcome::Pass
+            } else {
+                ChanceOutcome::Advance
+            };
+            roll_outcomes::fix_for_outcome(&mut sim, outcome);
+            if sim.micro_step(None).is_err() {
+                return None;
+            }
+            continue;
+        }
+        if sim.available_actions.team.is_some() {
+            // Decision point — stop and let the caller score this state.
+            break;
+        }
+        // Mid-procedure: engine has internal work to do (e.g. Move
+        // walking one square per micro_step).
+        if sim.micro_step(None).is_err() {
+            return None;
+        }
     }
     Some(leaf_score(&sim))
 }
@@ -393,6 +446,9 @@ pub struct MctsBot {
     /// goal is the win, not extra iterations. Tests that need deterministic
     /// search results should pin this to 1 via [`with_workers`].
     pub n_workers: usize,
+    /// Forwarded to [`BloodBowlDynamics::ff_depth`] — see that field for
+    /// semantics. Default 8.
+    pub ff_depth: u8,
 }
 
 impl MctsBot {
@@ -403,11 +459,17 @@ impl MctsBot {
         Self {
             iterations_per_move,
             n_workers,
+            ff_depth: BloodBowlDynamics::default().ff_depth,
         }
     }
 
     pub fn with_workers(mut self, n_workers: usize) -> Self {
         self.n_workers = n_workers.max(1);
+        self
+    }
+
+    pub fn with_ff_depth(mut self, ff_depth: u8) -> Self {
+        self.ff_depth = ff_depth;
         self
     }
 }
@@ -439,7 +501,9 @@ impl Bot for MctsBot {
 
         let root_player = player_for_state(&root_state);
         let tree = Arc::new(Tree::new(
-            BloodBowlDynamics,
+            BloodBowlDynamics {
+                ff_depth: self.ff_depth,
+            },
             HashOnly,
             root_player,
             root_state,
@@ -504,7 +568,7 @@ mod tests {
 
     #[test]
     fn backprop_player_home_maximises_and_sums_visits() {
-        let dynamics = BloodBowlDynamics;
+        let dynamics = BloodBowlDynamics::default();
         let actions = [
             placeholder_action(),
             placeholder_action(),
@@ -526,7 +590,7 @@ mod tests {
 
     #[test]
     fn backprop_player_away_minimises_and_sums_visits() {
-        let dynamics = BloodBowlDynamics;
+        let dynamics = BloodBowlDynamics::default();
         let actions = [
             placeholder_action(),
             placeholder_action(),
