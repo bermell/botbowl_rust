@@ -354,7 +354,11 @@ impl FixedDice {
         self.blockdice_fixes.push_back(value);
     }
     pub fn is_empty(&self) -> bool {
-        self.d6_fixes.is_empty() && self.d8_fixes.is_empty() && self.blockdice_fixes.is_empty()
+        self.d3_fixes.is_empty()
+            && self.d6_fixes.is_empty()
+            && self.d8_fixes.is_empty()
+            && self.blockdice_fixes.is_empty()
+            && self.coin_fixes.is_empty()
     }
     pub fn blockdice_fixes_len(&self) -> usize {
         self.blockdice_fixes.len()
@@ -362,10 +366,12 @@ impl FixedDice {
     pub fn assert_is_empty(&self) {
         assert!(
             self.is_empty(),
-            "fixed dices are not empty: d6:{:?}, d8: {:?}, blockdice: {:?}",
+            "fixed dices are not empty: d3:{:?}, d6:{:?}, d8:{:?}, blockdice:{:?}, coin:{:?}",
+            self.d3_fixes,
             self.d6_fixes,
             self.d8_fixes,
-            self.blockdice_fixes
+            self.blockdice_fixes,
+            self.coin_fixes,
         );
     }
 }
