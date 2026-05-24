@@ -1,14 +1,20 @@
 //! Microbench for MCTS leaf-expansion cost (plan 011 step 1).
 //!
-//! Three sub-measurements timed against two start states:
-//!   (a) `MctsBot::get_action` wall-clock — full search incl. select/score/expand.
-//!   (b) `GameState::clone` raw cost — the per-child clone in `make_branch`.
-//!   (c) `BloodBowlDynamics::apply_action(StartMove)` — clone + micro_step,
-//!       including `PathFinder::player_paths` for the activated player.
+//! Two `#[ignore]`d tests:
+//!   * `expand_bench_main` — wall-clock per-op timings:
+//!       (a) `MctsBot::get_action` (full search).
+//!       (b) `GameState::clone` raw cost.
+//!       (c) `BloodBowlDynamics::apply_action(StartMove)` (clone + micro_step
+//!           + pathing).
+//!   * `expand_bench_call_counts` — algorithmic shape: wraps
+//!     `BloodBowlDynamics` in a `CountingDynamics<_>` that increments
+//!     atomic counters in each `GameDynamics` method, then drives a
+//!     `Tree` directly for N iterations. Reports per `tree.step()` the
+//!     average count of `apply_action`, `available_actions`,
+//!     `select_node`, `score_leaf`, `backprop_scores` calls.
 //!
-//! Both states are seeded with `0xCAFE_1234` (same seed as
-//! `score_td_easy.rs` / `parallel_bench.rs`) so the numbers are
-//! reproducible and comparable across the bench files.
+//! Both seeded with `0xCAFE_1234` (same seed as `score_td_easy.rs` /
+//! `parallel_bench.rs`).
 //!
 //! Run:
 //!   cargo test --release -p botbowl-mcts --test expand_bench \
@@ -20,10 +26,14 @@ use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::Action as EngineAction;
 use botbowl_engine::core::table::PosAT;
-use botbowl_mcts::{BbAction, BloodBowlDynamics, MctsBot};
+use botbowl_mcts::dynamics::BbScore;
+use botbowl_mcts::{BbAction, BbPlayer, BloodBowlDynamics, MctsBot};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use recon_mcts::GameDynamics;
+use recon_mcts::{GameDynamics, HashOnly, SearchTree, SelectNodeState, Tree};
+use std::ops::Deref;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const SEED: u64 = 0xCAFE_1234;
@@ -175,4 +185,193 @@ fn expand_bench_main() {
     eprintln!("EXPAND_BENCH seed={SEED:#x}");
     run_scenario("score_td_easy", build_score_td_easy());
     run_scenario("full_teams", build_full_teams_turn_start());
+}
+
+// ─── Call-counting wrapper ────────────────────────────────────────────
+//
+// Wraps `BloodBowlDynamics` and atomically bumps a counter on each
+// `GameDynamics` method. Drives `Tree` directly (skipping `MctsBot`) so
+// we can observe per-`tree.step()` averages for:
+//   * `apply_action`     — total times the engine moved a state
+//   * `available_actions`— times the engine enumerated legal actions
+//   * `select_node`      — times PUCT was invoked (≈ descent depth)
+//   * `score_leaf`       — times a leaf got scored (≈ N expansions × N children)
+//   * `backprop_scores`  — times scores were propagated
+//
+// This is the algorithmic-shape data plan 011 needs to decide L1 vs L3
+// vs cheap-wins — CPU-% from samply tells you where time goes, this
+// tells you how often each callback fires.
+
+#[derive(Debug, Default)]
+struct Counters {
+    apply_action: AtomicU64,
+    available_actions: AtomicU64,
+    select_node: AtomicU64,
+    score_leaf: AtomicU64,
+    backprop_scores: AtomicU64,
+}
+
+#[derive(Debug)]
+struct CountingDynamics {
+    inner: BloodBowlDynamics,
+    counters: Arc<Counters>,
+}
+
+impl GameDynamics for CountingDynamics {
+    type Player = BbPlayer;
+    type State = GameState;
+    type Action = BbAction;
+    type Score = BbScore;
+    type ActionIter = Vec<(BbPlayer, BbAction)>;
+
+    fn available_actions(
+        &self,
+        player: &Self::Player,
+        state: &Self::State,
+    ) -> Option<Self::ActionIter> {
+        self.counters
+            .available_actions
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner.available_actions(player, state)
+    }
+
+    fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
+        self.counters.apply_action.fetch_add(1, Ordering::Relaxed);
+        self.inner.apply_action(state, action)
+    }
+
+    fn select_node<II, Q, A>(
+        &self,
+        parent_score: Option<&Self::Score>,
+        parent_player: &Self::Player,
+        parent_node_state: &Self::State,
+        purpose: SelectNodeState,
+        scores_and_actions: II,
+    ) -> Self::Action
+    where
+        Self: Sized,
+        II: Clone + IntoIterator<Item = (Q, A)>,
+        Q: Deref<Target = Option<Self::Score>>,
+        A: Deref<Target = Self::Action>,
+    {
+        self.counters.select_node.fetch_add(1, Ordering::Relaxed);
+        self.inner.select_node(
+            parent_score,
+            parent_player,
+            parent_node_state,
+            purpose,
+            scores_and_actions,
+        )
+    }
+
+    fn backprop_scores<II, Q, A>(
+        &self,
+        player: &Self::Player,
+        score_current: Option<&Self::Score>,
+        child_scores_and_actions: II,
+    ) -> Option<Self::Score>
+    where
+        Self: Sized,
+        II: Clone + IntoIterator<Item = (Q, A)>,
+        A: Deref<Target = Self::Action>,
+        Q: Deref<Target = Self::Score>,
+    {
+        self.counters
+            .backprop_scores
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .backprop_scores(player, score_current, child_scores_and_actions)
+    }
+
+    fn score_leaf(
+        &self,
+        parent_score: Option<&Self::Score>,
+        parent_player: &Self::Player,
+        state: &Self::State,
+    ) -> Option<Self::Score> {
+        self.counters.score_leaf.fetch_add(1, Ordering::Relaxed);
+        self.inner.score_leaf(parent_score, parent_player, state)
+    }
+}
+
+fn player_for_root(state: &GameState) -> BbPlayer {
+    use botbowl_engine::core::model::TeamType;
+    if state.pending_roll.is_some() {
+        return BbPlayer::Chance;
+    }
+    match state.available_actions.team {
+        Some(TeamType::Home) => BbPlayer::Home,
+        Some(TeamType::Away) => BbPlayer::Away,
+        None => BbPlayer::Chance,
+    }
+}
+
+fn run_call_counts(label: &str, mut state: GameState, iters: usize) {
+    // Match `MctsBot::get_action`'s setup so the tree behaves identically.
+    state.set_dice_mode(DiceMode::RegisterRolls);
+    state.set_logging_state(false);
+    state.clear_log();
+
+    let counters = Arc::new(Counters::default());
+    let dynamics = CountingDynamics {
+        inner: BloodBowlDynamics::default(),
+        counters: Arc::clone(&counters),
+    };
+    let root_player = player_for_root(&state);
+    let tree = Tree::new(dynamics, HashOnly, root_player, state);
+
+    let t0 = Instant::now();
+    for _ in 0..iters {
+        tree.step();
+    }
+    let elapsed = t0.elapsed();
+
+    let aa = counters.apply_action.load(Ordering::Relaxed);
+    let av = counters.available_actions.load(Ordering::Relaxed);
+    let sn = counters.select_node.load(Ordering::Relaxed);
+    let sl = counters.score_leaf.load(Ordering::Relaxed);
+    let bp = counters.backprop_scores.load(Ordering::Relaxed);
+    let per_step_us = elapsed.as_nanos() as f64 / iters as f64 / 1e3;
+    let f = |n: u64| n as f64 / iters as f64;
+    eprintln!(
+        "EXPAND_COUNTS {label}/iters={iters} per_step_us={per_step_us:.2} \
+         apply_action/step={:.2} avail_actions/step={:.2} \
+         select_node/step={:.2} score_leaf/step={:.2} backprop/step={:.2}",
+        f(aa),
+        f(av),
+        f(sn),
+        f(sl),
+        f(bp),
+    );
+    eprintln!(
+        "EXPAND_COUNTS {label}/totals apply_action={aa} avail_actions={av} \
+         select_node={sn} score_leaf={sl} backprop_scores={bp}"
+    );
+}
+
+#[test]
+#[ignore = "manual call-counting bench — run with --ignored"]
+fn expand_bench_call_counts() {
+    eprintln!("EXPAND_COUNTS seed={SEED:#x}");
+    run_call_counts("score_td_easy", build_score_td_easy(), 1000);
+    run_call_counts("full_teams", build_full_teams_turn_start(), 1000);
+}
+
+#[test]
+#[ignore = "manual samply target — single-threaded, long-running for profiler"]
+fn expand_bench_for_samply() {
+    // Same workload as `expand_bench_call_counts` but with enough iters
+    // for samply (1 kHz default) to capture meaningful samples. ~1-2 s
+    // total wall-clock; runs single-threaded so all samples attribute
+    // cleanly to one thread.
+    //
+    // Recipe:
+    //   RUSTFLAGS="-C debuginfo=line-tables-only" cargo test --release \
+    //       -p botbowl-mcts --test expand_bench --no-run
+    //   samply record --save-only -o prof.json --rate 4000 -- \
+    //       target/release/deps/expand_bench-* expand_bench_for_samply \
+    //       --ignored --nocapture
+    eprintln!("EXPAND_COUNTS_SAMPLY seed={SEED:#x}");
+    run_call_counts("score_td_easy", build_score_td_easy(), 200_000);
+    run_call_counts("full_teams", build_full_teams_turn_start(), 200_000);
 }

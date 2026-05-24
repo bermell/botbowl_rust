@@ -22,48 +22,62 @@ runs mechanically.
 
 Install once: `cargo install --locked samply`.
 
-Release builds strip frame pointers and debug info; samply can't resolve
-hot frames without them. Enable debug line tables for the release
-profile **temporarily** when profiling — don't commit this; production
-release builds shouldn't carry the size cost. Either:
+**Build with full debug info.** `line-tables-only` is *not* enough on
+macOS — samply emits hex addresses instead of function names if the
+binary has no symbols. Build the test binary with `RUSTFLAGS`:
 
-- Set the env var (no file edit needed):
-  ```
-  RUSTFLAGS="-C debuginfo=line-tables-only" \
-      cargo build --release -p botbowl-mcts --test expand_bench
-  ```
-- Or paste into `botbowl_rust/Cargo.toml` for the duration of the
-  profiling session, then revert:
-  ```toml
-  [profile.release]
-  debug = "line-tables-only"
-  ```
-
-Record a profile of the bench:
-
-```
-samply record -- cargo test --release -p botbowl-mcts \
-    --test expand_bench expand_bench_main -- --ignored --nocapture
+```sh
+cd botbowl_rust
+RUSTFLAGS="-C debuginfo=2" cargo test --release \
+    -p botbowl-mcts --test expand_bench --no-run
 ```
 
-samply opens the resulting profile in a local browser viewer.
+The `--no-run` step prints the test binary path
+(`target/release/deps/expand_bench-XXXXXX`). Copy that path.
+
+**Profile the single-threaded test, not the parallel one.** The main
+`expand_bench_main` uses `std::thread::scope` for MCTS workers and
+deadlocks under samply's `SIGPROF`. Use `expand_bench_for_samply`
+instead — it drives `Tree` single-threaded via the `CountingDynamics`
+wrapper, runs ~2 s, and produces clean attribution:
+
+```sh
+samply record --save-only -o /tmp/expand_bench_profile.json --rate 4000 \
+    -- target/release/deps/expand_bench-XXXXXX \
+       expand_bench_for_samply --ignored --nocapture
+```
+
+### Flatten to a self / inclusive % table
+
+`samply load` opens a browser UI. For a CLI breakdown that can be
+diffed in commits, use `tools/samply_flatten.py` (committed alongside
+this doc — it symbolicates via `atos` on macOS):
+
+```sh
+python3 tools/samply_flatten.py /tmp/expand_bench_profile.json \
+    target/release/deps/expand_bench-XXXXXX
+```
+
+Output: top-30 self-time + top-30 inclusive-time tables, plus a
+"grouped" section that bins frames into plan-011-relevant buckets
+(pathing, clone, apply, select, recon_mcts internals, hashbrown, etc.).
+Copy the numbers into `plans/011-baseline-results.md`.
 
 ### What to look at in the profile
 
-Plan 011 hypothesises these percentages of `tree.step()` wall-clock; the
-profile lets us confirm or refute them.
+The baseline numbers and hypothesis verdicts are in
+`plans/011-baseline-results.md`. Key findings to compare against
+when re-profiling after a change:
 
-- `PathFinder::player_paths` (cumulative, callees included) — plan
-  hypothesis H1: >50%.
-- `<botbowl_engine::core::gamestate::GameState as Clone>::clone`
-  (cumulative) — plan hypothesis H2: <30%.
-- `BloodBowlDynamics::apply_action` (cumulative) — clones happen inside
-  it via the by-value parameter, so this should subsume both above.
-- `BloodBowlDynamics::select_node` + `botbowl_mcts::score::leaf_score` —
-  plan hypothesis H3: <10% combined.
-
-Capture the breakdown in `plans/011-baseline-results.md` so future
-optimisation commits can quote a delta against it.
+- `PathFinder::player_paths` (inclusive): baseline ~0.08% — H1 refuted.
+- `<GameState as Clone>::clone` (inclusive): baseline ~55.8% — H2
+  refuted in the opposite direction.
+- `Tree::make_branch` (self-time): baseline ~43.7% — top hot function
+  by self-time despite running only ~20 times per 200 000 iters
+  (worth re-checking with inline frames).
+- `BloodBowlDynamics::apply_action` (inclusive): baseline ~20.8%.
+- `BloodBowlDynamics::select_node + prior_for + puct_value`:
+  baseline ~16.1%.
 
 ## Allocation profile (follow-up, not wired yet)
 
