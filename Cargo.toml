@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+    "botbowl-engine",
+    "botbowl-curriculum",
+    "botbowl-mcts",
+    "botbowl-ui",
+]
