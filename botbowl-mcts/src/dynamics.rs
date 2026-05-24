@@ -159,9 +159,7 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             }
             BbAction::Chance { outcome, .. } => {
-                let Some(req) = new_state.pending_roll.as_ref().cloned() else {
-                    return None;
-                };
+                let req = new_state.pending_roll.as_ref().cloned()?;
                 let result = roll_outcomes::result_for_outcome(&req, *outcome);
                 if new_state.step_with_roll(result).is_err() {
                     return None;
