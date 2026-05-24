@@ -41,10 +41,7 @@ pub enum ChanceOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BbAction {
     Player(EngineAction),
-    Chance {
-        outcome: ChanceOutcome,
-        prob_bits: u32,
-    },
+    Chance { outcome: ChanceOutcome, prob_bits: u32 },
 }
 
 impl BbAction {
@@ -70,8 +67,5 @@ impl BbAction {
 /// `ChanceOutcome::Advance` (a single deterministic child) — they're
 /// "supported" too, just not enumerated.
 pub fn is_pass_fail(req: &RequestedRoll) -> bool {
-    matches!(
-        req,
-        RequestedRoll::D6PassFail(_) | RequestedRoll::Sum2D6PassFail(_)
-    )
+    matches!(req, RequestedRoll::D6PassFail(_) | RequestedRoll::Sum2D6PassFail(_))
 }

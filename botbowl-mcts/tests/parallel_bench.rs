@@ -6,9 +6,7 @@ use botbowl_mcts::MctsBot;
 #[ignore = "manual wall-clock bench"]
 fn bench_parallel_vs_serial() {
     let lecture = ScoreTdEasy::new();
-    let n_par = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let n_par = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     eprintln!("available_parallelism = {}", n_par);
 
     let iters = 20000;
@@ -31,8 +29,5 @@ fn bench_parallel_vs_serial() {
         "parallel ({} workers, {} iters): {} trials in {:?}",
         n_par, iters, trials, parallel
     );
-    eprintln!(
-        "speedup: {:.2}x",
-        serial.as_secs_f64() / parallel.as_secs_f64()
-    );
+    eprintln!("speedup: {:.2}x", serial.as_secs_f64() / parallel.as_secs_f64());
 }

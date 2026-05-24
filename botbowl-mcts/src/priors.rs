@@ -151,27 +151,21 @@ mod tests {
 
     #[test]
     fn chance_actions_get_base() {
-        let state = GameStateBuilder::new()
-            .add_home_player(Position::new((5, 5)))
-            .build();
+        let state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
         let a = BbAction::chance(ChanceOutcome::Pass, 0.5);
         assert_eq!(prior_for(&state, &a), BASE);
     }
 
     #[test]
     fn end_player_turn_gets_low_prior() {
-        let state = GameStateBuilder::new()
-            .add_home_player(Position::new((5, 5)))
-            .build();
+        let state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
         let a = pa(EA::Simple(SimpleAT::EndPlayerTurn));
         assert_eq!(prior_for(&state, &a), W_END_TURN);
     }
 
     #[test]
     fn end_turn_gets_low_prior() {
-        let state = GameStateBuilder::new()
-            .add_home_player(Position::new((5, 5)))
-            .build();
+        let state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
         let a = pa(EA::Simple(SimpleAT::EndTurn));
         assert_eq!(prior_for(&state, &a), W_END_TURN);
     }

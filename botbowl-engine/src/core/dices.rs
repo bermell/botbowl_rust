@@ -534,12 +534,9 @@ impl FixedDice {
             .unwrap_or_else(|| panic!("FixedDice queue empty for Coin (request: {:?})", request))
     }
     fn pop_blockdice(&mut self, request: &RequestedRoll) -> BlockDice {
-        self.blockdice_fixes.pop_front().unwrap_or_else(|| {
-            panic!(
-                "FixedDice queue empty for BlockDice (request: {:?})",
-                request
-            )
-        })
+        self.blockdice_fixes
+            .pop_front()
+            .unwrap_or_else(|| panic!("FixedDice queue empty for BlockDice (request: {:?})", request))
     }
 }
 
@@ -567,9 +564,7 @@ pub fn resolve_from_fixes(request: RequestedRoll, fixes: &mut FixedDice) -> Roll
                 RollResult::Fail
             }
         }
-        RequestedRoll::Sum2D6 => {
-            RollResult::Sum2D6(fixes.pop_d6(&request) + fixes.pop_d6(&request))
-        }
+        RequestedRoll::Sum2D6 => RollResult::Sum2D6(fixes.pop_d6(&request) + fixes.pop_d6(&request)),
         RequestedRoll::Sum2D6PassFail(target) => {
             if target.is_success(fixes.pop_d6(&request) + fixes.pop_d6(&request)) {
                 RollResult::Pass
@@ -589,9 +584,7 @@ pub fn resolve_from_fixes(request: RequestedRoll, fixes: &mut FixedDice) -> Roll
         }
         RequestedRoll::D8 => RollResult::D8(fixes.pop_d8(&request)),
         RequestedRoll::Coin => RollResult::Coin(fixes.pop_coin(&request)),
-        RequestedRoll::Deviate => {
-            RollResult::Deviate(fixes.pop_d6(&request), fixes.pop_d8(&request))
-        }
+        RequestedRoll::Deviate => RollResult::Deviate(fixes.pop_d6(&request), fixes.pop_d8(&request)),
         RequestedRoll::FoulArmor(target) => {
             let roll1 = fixes.pop_d6(&request);
             let roll2 = fixes.pop_d6(&request);
@@ -626,11 +619,9 @@ pub fn resolve_from_fixes(request: RequestedRoll, fixes: &mut FixedDice) -> Roll
             }
             RollResult::BlockDice(dices)
         }
-        RequestedRoll::Scatter => RollResult::Scatter(
-            fixes.pop_d8(&request),
-            fixes.pop_d8(&request),
-            fixes.pop_d8(&request),
-        ),
+        RequestedRoll::Scatter => {
+            RollResult::Scatter(fixes.pop_d8(&request), fixes.pop_d8(&request), fixes.pop_d8(&request))
+        }
     }
 }
 
@@ -666,11 +657,7 @@ impl DicePolicy {
     pub fn resolve(&mut self, request: RequestedRoll, rng: &mut ChaCha8Rng) -> RollResult {
         match *self {
             DicePolicy::Default => resolve_with_rng(request, rng),
-            DicePolicy::SucceedAtOrEasier {
-                d6,
-                sum2d6,
-                block_dice,
-            } => match request {
+            DicePolicy::SucceedAtOrEasier { d6, sum2d6, block_dice } => match request {
                 RequestedRoll::D6PassFail(target) => {
                     if (target as u8) <= (d6 as u8) {
                         RollResult::Pass
@@ -718,22 +705,13 @@ pub enum RollResult {
     Coin(Coin),
     Pass,
     Fail,
-    FoulArmor {
-        broken: bool,
-        ejected: bool,
-    },
-    FoulInjury {
-        outcome: InjuryOutcome,
-        ejected: bool,
-    },
+    FoulArmor { broken: bool, ejected: bool },
+    FoulInjury { outcome: InjuryOutcome, ejected: bool },
     MiddleOutcome,
     D6(D6),
     D8(D8),
     Deviate(D6, D8),
     Scatter(D8, D8, D8),
     Sum2D6(Sum2D6),
-    ThrowIn {
-        direction: D3,
-        distance: Sum2D6,
-    },
+    ThrowIn { direction: D3, distance: Sum2D6 },
 }

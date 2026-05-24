@@ -49,8 +49,7 @@ pub fn scripted_pick(state: &GameState) -> Option<EngineAction> {
     // practice, but if it does we fall back to attacker-picks logic.
     let attacker_team = attacker.map(|a| a.stats.team);
     let picking_team = state.available_actions.team;
-    let defender_is_picking =
-        picking_team.is_some() && attacker_team.is_some() && picking_team != attacker_team;
+    let defender_is_picking = picking_team.is_some() && attacker_team.is_some() && picking_team != attacker_team;
 
     let pick_at = if defender_is_picking {
         pick_for_defender(simple, attacker, defender)
@@ -133,9 +132,7 @@ fn pick_for_defender(
     None
 }
 
-fn active_block_attacker_defender(
-    state: &GameState,
-) -> (Option<&FieldedPlayer>, Option<&FieldedPlayer>) {
+fn active_block_attacker_defender(state: &GameState) -> (Option<&FieldedPlayer>, Option<&FieldedPlayer>) {
     let attacker = state.get_active_player();
     let defender = attacker.and_then(|att| {
         state
@@ -151,12 +148,7 @@ mod tests {
     use botbowl_engine::core::gamestate::GameStateBuilder;
     use botbowl_engine::core::model::{Position, TeamType};
 
-    fn block_state(
-        home_pos: Position,
-        away_pos: Position,
-        picking: TeamType,
-        active_at: Position,
-    ) -> GameState {
+    fn block_state(home_pos: Position, away_pos: Position, picking: TeamType, active_at: Position) -> GameState {
         let mut state = GameStateBuilder::new()
             .add_home_player(home_pos)
             .add_away_player(away_pos)
@@ -196,16 +188,9 @@ mod tests {
         );
         offer(
             &mut state,
-            &[
-                SimpleAT::SelectPow,
-                SimpleAT::SelectPush,
-                SimpleAT::SelectSkull,
-            ],
+            &[SimpleAT::SelectPow, SimpleAT::SelectPush, SimpleAT::SelectSkull],
         );
-        assert_eq!(
-            scripted_pick(&state),
-            Some(EngineAction::Simple(SimpleAT::SelectPow))
-        );
+        assert_eq!(scripted_pick(&state), Some(EngineAction::Simple(SimpleAT::SelectPow)));
     }
 
     #[test]
@@ -218,16 +203,9 @@ mod tests {
         );
         // Give the defender Dodge so PowPush becomes risky.
         let def_id = state.get_player_id_at(Position::new((6, 5))).unwrap();
-        state
-            .get_mut_player(def_id)
-            .unwrap()
-            .stats
-            .give_skill(Skill::Dodge);
+        state.get_mut_player(def_id).unwrap().stats.give_skill(Skill::Dodge);
         offer(&mut state, &[SimpleAT::SelectPowPush, SimpleAT::SelectPush]);
-        assert_eq!(
-            scripted_pick(&state),
-            Some(EngineAction::Simple(SimpleAT::SelectPush))
-        );
+        assert_eq!(scripted_pick(&state), Some(EngineAction::Simple(SimpleAT::SelectPush)));
     }
 
     #[test]
@@ -239,15 +217,8 @@ mod tests {
             Position::new((5, 5)),
         );
         let att_id = state.get_player_id_at(Position::new((5, 5))).unwrap();
-        state
-            .get_mut_player(att_id)
-            .unwrap()
-            .stats
-            .give_skill(Skill::Block);
-        offer(
-            &mut state,
-            &[SimpleAT::SelectBothDown, SimpleAT::SelectPush],
-        );
+        state.get_mut_player(att_id).unwrap().stats.give_skill(Skill::Block);
+        offer(&mut state, &[SimpleAT::SelectBothDown, SimpleAT::SelectPush]);
         assert_eq!(
             scripted_pick(&state),
             Some(EngineAction::Simple(SimpleAT::SelectBothDown))
@@ -262,14 +233,8 @@ mod tests {
             TeamType::Home,
             Position::new((5, 5)),
         );
-        offer(
-            &mut state,
-            &[SimpleAT::SelectBothDown, SimpleAT::SelectPush],
-        );
-        assert_eq!(
-            scripted_pick(&state),
-            Some(EngineAction::Simple(SimpleAT::SelectPush))
-        );
+        offer(&mut state, &[SimpleAT::SelectBothDown, SimpleAT::SelectPush]);
+        assert_eq!(scripted_pick(&state), Some(EngineAction::Simple(SimpleAT::SelectPush)));
     }
 
     #[test]
@@ -283,16 +248,9 @@ mod tests {
         );
         offer(
             &mut state,
-            &[
-                SimpleAT::SelectSkull,
-                SimpleAT::SelectPow,
-                SimpleAT::SelectPowPush,
-            ],
+            &[SimpleAT::SelectSkull, SimpleAT::SelectPow, SimpleAT::SelectPowPush],
         );
-        assert_eq!(
-            scripted_pick(&state),
-            Some(EngineAction::Simple(SimpleAT::SelectSkull))
-        );
+        assert_eq!(scripted_pick(&state), Some(EngineAction::Simple(SimpleAT::SelectSkull)));
     }
 
     #[test]
@@ -304,10 +262,7 @@ mod tests {
             Position::new((5, 5)),
         );
         offer(&mut state, &[SimpleAT::SelectPow, SimpleAT::SelectPush]);
-        assert_eq!(
-            scripted_pick(&state),
-            Some(EngineAction::Simple(SimpleAT::SelectPush))
-        );
+        assert_eq!(scripted_pick(&state), Some(EngineAction::Simple(SimpleAT::SelectPush)));
     }
 
     #[test]
@@ -320,11 +275,7 @@ mod tests {
             Position::new((5, 5)),
         );
         let def_id = state.get_player_id_at(Position::new((6, 5))).unwrap();
-        state
-            .get_mut_player(def_id)
-            .unwrap()
-            .stats
-            .give_skill(Skill::Block);
+        state.get_mut_player(def_id).unwrap().stats.give_skill(Skill::Block);
         offer(&mut state, &[SimpleAT::SelectBothDown, SimpleAT::SelectPow]);
         assert_eq!(
             scripted_pick(&state),
@@ -342,11 +293,7 @@ mod tests {
         );
         offer(
             &mut state,
-            &[
-                SimpleAT::SelectPow,
-                SimpleAT::SelectPush,
-                SimpleAT::SelectBothDown,
-            ],
+            &[SimpleAT::SelectPow, SimpleAT::SelectPush, SimpleAT::SelectBothDown],
         );
         let p1 = scripted_pick(&state);
         let p2 = scripted_pick(&state);

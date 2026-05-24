@@ -243,13 +243,8 @@ impl Lecture for GetTheBallHard {
 ///
 /// We also treat `game_over` as a terminator — protects against weird
 /// edge cases like a touchback OOB or the half ending.
-fn evaluate_ball_acquisition(
-    state: &GameState,
-    context: &LectureContext,
-    agent: TeamType,
-) -> LectureStatus {
-    let cycled =
-        state.info.home_turn > context.initial_home_turn && state.info.half == context.initial_half;
+fn evaluate_ball_acquisition(state: &GameState, context: &LectureContext, agent: TeamType) -> LectureStatus {
+    let cycled = state.info.home_turn > context.initial_home_turn && state.info.half == context.initial_half;
     if cycled || state.info.game_over {
         return if home_holds_ball(state, agent) {
             LectureStatus::Success
@@ -262,10 +257,7 @@ fn evaluate_ball_acquisition(
 
 fn home_holds_ball(state: &GameState, team: TeamType) -> bool {
     match state.ball {
-        BallState::Carried(id) => state
-            .get_player(id)
-            .map(|p| p.stats.team == team)
-            .unwrap_or(false),
+        BallState::Carried(id) => state.get_player(id).map(|p| p.stats.team == team).unwrap_or(false),
         _ => false,
     }
 }

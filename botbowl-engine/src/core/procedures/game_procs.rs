@@ -4,8 +4,8 @@ use crate::core::model::{DugoutPlayerID, ProcInput};
 
 use crate::core::dices::{RequestedRoll, RollResult};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position,
-    ProcState, Procedure, TeamType,
+    other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position, ProcState, Procedure,
+    TeamType,
 };
 use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs};
 use crate::core::table::*;
@@ -105,9 +105,7 @@ impl Procedure for Half {
         info.pass_available = true;
         info.turnover = false;
 
-        game_state
-            .get_players_on_pitch_mut()
-            .for_each(|p| p.used = false);
+        game_state.get_players_on_pitch_mut().for_each(|p| p.used = false);
 
         game_state
             .get_players_on_pitch_mut()
@@ -149,9 +147,7 @@ impl Procedure for TurnStunned {
         let active_id = game_state.info.active_player.unwrap_or(999);
         game_state
             .get_players_on_pitch_mut()
-            .filter(|p| {
-                p.stats.team == team && p.status == PlayerStatus::Stunned && p.id != active_id
-            })
+            .filter(|p| p.stats.team == team && p.status == PlayerStatus::Stunned && p.id != active_id)
             .for_each(|p| p.status = PlayerStatus::Down);
         ProcState::Done
     }
@@ -181,9 +177,9 @@ impl Turn {
                 .iter()
                 .filter(|&&pos| game_state.get_player_at(pos).unwrap().status == PlayerStatus::Up)
                 .filter(|&&pos| {
-                    game_state.get_adj_players(pos).any(|adj_player| {
-                        adj_player.status == PlayerStatus::Up && adj_player.stats.team != self.team
-                    })
+                    game_state
+                        .get_adj_players(pos)
+                        .any(|adj_player| adj_player.status == PlayerStatus::Up && adj_player.stats.team != self.team)
                 })
                 .copied()
                 .collect();
@@ -339,14 +335,10 @@ impl Procedure for CoinToss {
                 self.choosen_action = simple_action;
                 ProcState::NeedRoll(RequestedRoll::Coin)
             }
-            ProcInput::Roll(RollResult::Coin(coin))
-                if self.choosen_action == SimpleAT::from(coin) =>
-            {
+            ProcInput::Roll(RollResult::Coin(coin)) if self.choosen_action == SimpleAT::from(coin) => {
                 ProcState::DoneNew(ChooseKickReceive::new(TeamType::Away))
             }
-            ProcInput::Roll(RollResult::Coin(_)) => {
-                ProcState::DoneNew(ChooseKickReceive::new(TeamType::Home))
-            }
+            ProcInput::Roll(RollResult::Coin(_)) => ProcState::DoneNew(ChooseKickReceive::new(TeamType::Home)),
             _ => panic!("Unexpected input: {:?}", input),
         }
     }
@@ -850,10 +842,7 @@ mod tests {
         state.step_positional(PosAT::StartMove, start_pos);
         state.step_positional(PosAT::Move, td_pos);
 
-        assert_eq!(
-            state.home.score, 1,
-            "policy should have made pickup succeed"
-        );
+        assert_eq!(state.home.score, 1, "policy should have made pickup succeed");
     }
 
     #[test]

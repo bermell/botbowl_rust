@@ -11,8 +11,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::bots::Bot;
 use crate::core::gamestate::GameState;
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, FieldedPlayer, PlayerID, PlayerStatus,
-    Position, TeamType,
+    other_team, Action, AvailableActions, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType,
 };
 use crate::core::pathing::{Node, PathFinder};
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
@@ -200,10 +199,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
             }
         }
         if let Some(node) = best_td {
-            return Some((
-                Action::Positional(node.get_action_type(), node.position),
-                None,
-            ));
+            return Some((Action::Positional(node.get_action_type(), node.position), None));
         }
     }
 
@@ -226,28 +222,20 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
             }
         }
         if let Some((_, node)) = best {
-            return Some((
-                Action::Positional(node.get_action_type(), node.position),
-                None,
-            ));
+            return Some((Action::Positional(node.get_action_type(), node.position), None));
         }
     }
 
     // 3) Non-carrier: if we were started to do a pickup, move to the ball.
     if !is_carrier {
         if let BallState::OnGround(ball_pos) = state.ball {
-            if let Some(Some(node)) = paths.iter_position().find_map(|(pos, node)| {
-                if pos == ball_pos {
-                    Some(node.clone())
-                } else {
-                    None
-                }
-            }) {
+            if let Some(Some(node)) =
+                paths
+                    .iter_position()
+                    .find_map(|(pos, node)| if pos == ball_pos { Some(node.clone()) } else { None })
+            {
                 if node.prob >= 0.33 {
-                    return Some((
-                        Action::Positional(node.get_action_type(), node.position),
-                        None,
-                    ));
+                    return Some((Action::Positional(node.get_action_type(), node.position), None));
                 }
             }
         }
@@ -279,10 +267,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
             }
         }
         if let Some(node) = best {
-            return Some((
-                Action::Positional(node.get_action_type(), node.position),
-                None,
-            ));
+            return Some((Action::Positional(node.get_action_type(), node.position), None));
         }
     }
 
@@ -300,10 +285,7 @@ fn first_positional_for(aa: &AvailableActions, at: PosAT) -> Option<Action> {
     None
 }
 
-fn pick_block_die(
-    state: &GameState,
-    simple: &std::collections::HashSet<SimpleAT>,
-) -> Option<Action> {
+fn pick_block_die(state: &GameState, simple: &std::collections::HashSet<SimpleAT>) -> Option<Action> {
     let is_block_choice = simple.contains(&SimpleAT::SelectPow)
         || simple.contains(&SimpleAT::SelectPowPush)
         || simple.contains(&SimpleAT::SelectPush)
@@ -359,9 +341,7 @@ fn pick_block_die(
     None
 }
 
-fn active_block_attacker_defender(
-    state: &GameState,
-) -> (Option<&FieldedPlayer>, Option<&FieldedPlayer>) {
+fn active_block_attacker_defender(state: &GameState) -> (Option<&FieldedPlayer>, Option<&FieldedPlayer>) {
     // Best-effort: attacker is the active player; defender is the adjacent up opponent.
     let attacker = state.get_active_player();
     let defender = attacker.and_then(|att| {
@@ -406,10 +386,7 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
         .find(|p| state.get_tz_on(p.id) > 0)
     {
         if state.is_legal_action(&Action::Positional(PosAT::StartMove, player.position)) {
-            return Some((
-                Action::Positional(PosAT::StartMove, player.position),
-                vec![],
-            ));
+            return Some((Action::Positional(PosAT::StartMove, player.position), vec![]));
         }
     }
 
@@ -421,13 +398,8 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
                 .flatten()
                 .map(|p| p.prob >= TD_ATTEMPT_PROB_THRESHOLD)
                 .unwrap_or(false);
-            if can_score
-                && state.is_legal_action(&Action::Positional(PosAT::StartMove, carrier.position))
-            {
-                return Some((
-                    Action::Positional(PosAT::StartMove, carrier.position),
-                    vec![],
-                ));
+            if can_score && state.is_legal_action(&Action::Positional(PosAT::StartMove, carrier.position)) {
+                return Some((Action::Positional(PosAT::StartMove, carrier.position), vec![]));
             }
 
             if state.get_tz_on(carrier.id) == 0 {
@@ -436,20 +408,13 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
                     let current_distance = (endzone_x - carrier.position.x).abs();
                     let any_safe_progress = paths.iter_position().any(|(pos, node_opt)| {
                         node_opt.as_ref().map_or(false, |n| {
-                            (n.prob - 1.0).abs() < 1e-6
-                                && (endzone_x - pos.x).abs() < current_distance
+                            (n.prob - 1.0).abs() < 1e-6 && (endzone_x - pos.x).abs() < current_distance
                         })
                     });
                     if any_safe_progress
-                        && state.is_legal_action(&Action::Positional(
-                            PosAT::StartMove,
-                            carrier.position,
-                        ))
+                        && state.is_legal_action(&Action::Positional(PosAT::StartMove, carrier.position))
                     {
-                        return Some((
-                            Action::Positional(PosAT::StartMove, carrier.position),
-                            vec![],
-                        ));
+                        return Some((Action::Positional(PosAT::StartMove, carrier.position), vec![]));
                     }
                 }
             }
@@ -512,11 +477,7 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
     }
 
     // Step 5: nothing useful to do — end the turn.
-    if state
-        .available_actions
-        .get_simple()
-        .contains(&SimpleAT::EndTurn)
-    {
+    if state.available_actions.get_simple().contains(&SimpleAT::EndTurn) {
         return Some((Action::Simple(SimpleAT::EndTurn), vec![]));
     }
     None
@@ -535,11 +496,7 @@ fn ball_carrier(state: &GameState) -> Option<&FieldedPlayer> {
 ///
 /// Returns the player's *current* position so the caller can issue
 /// `StartBlitz` on them.
-fn plan_blitz_against_carrier(
-    state: &GameState,
-    team: TeamType,
-    carrier_id: PlayerID,
-) -> Option<Position> {
+fn plan_blitz_against_carrier(state: &GameState, team: TeamType, carrier_id: PlayerID) -> Option<Position> {
     let carrier_pos = state.get_player(carrier_id).ok()?.position;
 
     let mut best: Option<(NumBlockDices, f32, Position)> = None;
@@ -576,8 +533,7 @@ fn plan_blitz_against_carrier(
             }
             let candidate = (dice, node.prob, blitzer.position);
             match &best {
-                Some((best_dice, best_prob, _))
-                    if (*best_dice, *best_prob) >= (candidate.0, candidate.1) => {}
+                Some((best_dice, best_prob, _)) if (*best_dice, *best_prob) >= (candidate.0, candidate.1) => {}
                 _ => best = Some(candidate),
             }
         }
@@ -669,9 +625,7 @@ mod tests {
     #[test]
     fn coin_toss_returns_tails() {
         // CoinToss is the very first decision (Away picks heads/tails).
-        let state = GameStateBuilder::new()
-            .set_state(BuilderState::CoinToss)
-            .build();
+        let state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
         let (action, _) = decide(&state);
         assert_eq!(action, Action::Simple(SimpleAT::Tails));
     }

@@ -157,23 +157,15 @@ impl BotGameRunnerBuilder {
         self
     }
     fn default_state() -> GameState {
-        let mut s = GameStateBuilder::new()
-            .set_state(BuilderState::CoinToss)
-            .build();
+        let mut s = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
         s.set_dice_mode(crate::core::gamestate::DiceMode::RollDice);
         s
     }
 
     pub fn build(self) -> BotGameRunner {
-        let mut home_bot = self
-            .home_bot
-            .unwrap_or_else(|| Box::new(crate::bots::RandomBot::new()));
-        let mut away_bot = self
-            .away_bot
-            .unwrap_or_else(|| Box::new(crate::bots::RandomBot::new()));
-        let mut state = self
-            .state
-            .unwrap_or_else(BotGameRunnerBuilder::default_state);
+        let mut home_bot = self.home_bot.unwrap_or_else(|| Box::new(crate::bots::RandomBot::new()));
+        let mut away_bot = self.away_bot.unwrap_or_else(|| Box::new(crate::bots::RandomBot::new()));
+        let mut state = self.state.unwrap_or_else(BotGameRunnerBuilder::default_state);
         if let Some(seed) = self.seed {
             state.set_seed(seed);
             state.set_dice_mode(crate::core::gamestate::DiceMode::RollDice);
@@ -226,9 +218,7 @@ mod gamestate_tests {
 
     #[test]
     fn save_and_replay_game() {
-        let mut runner = BotGameRunnerBuilder::new()
-            .set_replay_file("test.json")
-            .build();
+        let mut runner = BotGameRunnerBuilder::new().set_replay_file("test.json").build();
 
         let mut intermediate_states: Vec<GameState> = vec![runner.get_state().clone()];
         while !runner.game_over() {

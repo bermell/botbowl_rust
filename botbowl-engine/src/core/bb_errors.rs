@@ -22,11 +22,7 @@ pub struct IllegalMovePosition {
 impl error::Error for IllegalMovePosition {}
 impl fmt::Display for IllegalMovePosition {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Can't move peice to already occupied position: {:?}",
-            self.position
-        )
+        write!(f, "Can't move peice to already occupied position: {:?}", self.position)
     }
 }
 

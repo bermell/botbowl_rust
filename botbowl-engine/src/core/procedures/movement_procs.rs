@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, PlayerID, PlayerStatus, ProcState, Procedure};
 use crate::core::pathing::{
-    event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent,
-    PositionOrEvent,
+    event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
 };
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs};
@@ -53,10 +52,7 @@ impl StandUp {
 }
 impl Procedure for StandUp {
     fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
-        debug_assert_eq!(
-            game_state.get_player_unsafe(self.id).status,
-            PlayerStatus::Down
-        ); // can only standup if down, not if stunned
+        debug_assert_eq!(game_state.get_player_unsafe(self.id).status, PlayerStatus::Down); // can only standup if down, not if stunned
         game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Up;
         game_state.get_mut_player_unsafe(self.id).add_move(3);
 
@@ -99,9 +95,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
         PathingEvent::Block(id, dices) => block_procs::Block::new(dices, id),
         PathingEvent::Handoff(id, target) => ball_procs::Catch::new(id, target),
         PathingEvent::Touchdown(id) => ball_procs::Touchdown::new(id),
-        PathingEvent::Foul(victim, target) => {
-            casualty_procs::Armor::new_foul(victim, target, active_player)
-        }
+        PathingEvent::Foul(victim, target) => casualty_procs::Armor::new_foul(victim, target, active_player),
         PathingEvent::StandUp => StandUp::new(active_player),
         PathingEvent::Pass { to, pass, modifer } => ball_procs::Pass::new(to, pass, modifer),
     }
@@ -179,11 +173,7 @@ impl Procedure for MoveAction {
                 proc_state
             }
             (ProcInput::Action(Action::Positional(_, position)), MoveActionState::SelectPath) => {
-                let mut path = game_state
-                    .available_actions
-                    .take_path(position)
-                    .unwrap()
-                    .iter();
+                let mut path = game_state.available_actions.take_path(position).unwrap().iter();
                 let proc_state = MoveAction::continue_along_path(&mut path, game_state);
                 if path.is_empty() {
                     self.state = MoveActionState::Init;
@@ -241,10 +231,7 @@ mod tests {
 
         state.step_simple(SimpleAT::UseReroll);
 
-        assert_eq!(
-            state.get_player_at(target_pos).unwrap().status,
-            PlayerStatus::Down
-        );
+        assert_eq!(state.get_player_at(target_pos).unwrap().status, PlayerStatus::Down);
 
         Ok(())
     }
@@ -413,9 +400,7 @@ mod tests {
                 match (state.get_player_id_at(pos), &paths[pos]) {
                     (Some(_), None) => (),
                     (None, Some(_)) => (),
-                    (Some(_), Some(_)) => {
-                        errors.push(format!("Found path already occupied square ({},{})", x, y))
-                    }
+                    (Some(_), Some(_)) => errors.push(format!("Found path already occupied square ({},{})", x, y)),
                     (None, None) => errors.push(format!("Missing a path to ({},{})!", x, y)),
                 }
             }
@@ -461,16 +446,13 @@ mod tests {
         for x in 1..5 {
             for y in 1..5 {
                 match (pos_to_prob.get(&(x, y)).unwrap(), paths.get(x, y)) {
-                    (Some(correct_prob), Some(path))
-                        if (*correct_prob - path.prob).abs() > 0.001 =>
-                    {
+                    (Some(correct_prob), Some(path)) if (*correct_prob - path.prob).abs() > 0.001 => {
                         errors.push(format!(
                             "Path to ({}, {}) has wrong prob. \nExpected prob: {}\nGot prob: {}\n",
                             x, y, *correct_prob, path.prob
                         ))
                     }
-                    (Some(correct_prob), Some(path))
-                        if (*correct_prob - path.prob).abs() <= 0.001 => {}
+                    (Some(correct_prob), Some(path)) if (*correct_prob - path.prob).abs() <= 0.001 => {}
                     (None, None) => (),
                     (Some(_), None) => errors.push(format!("No path to ({}, {})", x, y)),
                     (None, Some(path)) => errors.push(format!(
@@ -557,17 +539,8 @@ mod tests {
         state.fix_d6(2);
         state.step_positional(PosAT::Foul, target_pos);
 
-        assert_eq!(
-            state
-                .get_player_unsafe(id)
-                .position
-                .distance_to(&target_pos),
-            1
-        );
-        assert_eq!(
-            state.get_player_unsafe(victim_id).status,
-            PlayerStatus::Stunned
-        );
+        assert_eq!(state.get_player_unsafe(id).position.distance_to(&target_pos), 1);
+        assert_eq!(state.get_player_unsafe(victim_id).status, PlayerStatus::Stunned);
     }
     #[test]
     fn double_gfi_handoff_with_incremental_steps() {
@@ -595,13 +568,7 @@ mod tests {
 
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
-        assert_eq!(
-            state
-                .get_player_unsafe(id)
-                .position
-                .distance_to(&target_pos),
-            1
-        );
+        assert_eq!(state.get_player_unsafe(id).position.distance_to(&target_pos), 1);
     }
     #[test]
     fn double_gfi_handoff() {
@@ -627,18 +594,9 @@ mod tests {
 
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
-        assert_eq!(
-            state
-                .get_player_unsafe(id)
-                .position
-                .distance_to(&target_pos),
-            1
-        );
+        assert_eq!(state.get_player_unsafe(id).position.distance_to(&target_pos), 1);
     }
-    fn setup_simple_pass(
-        interceptor: bool,
-        distance: i8,
-    ) -> (GameState, Position, Position, Position) {
+    fn setup_simple_pass(interceptor: bool, distance: i8) -> (GameState, Position, Position, Position) {
         assert!(distance > 1);
         let start_pos = Position::new((3, 3));
         let target_pos = Position::new((3 + distance, 3));
@@ -714,10 +672,7 @@ mod tests {
         state.step_positional(PosAT::Pass, target_pos);
         state.fix_d8_direction(Direction::up()); //Catch
         state.step_simple(SimpleAT::DontUseReroll);
-        assert_eq!(
-            state.ball,
-            BallState::OnGround(interceptor + Direction::up())
-        );
+        assert_eq!(state.ball, BallState::OnGround(interceptor + Direction::up()));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
@@ -740,10 +695,7 @@ mod tests {
         state.fix_d6(1); //Pass fumbled
         state.fix_d8_direction(bounce_direction);
         state.step_positional(PosAT::Pass, target_pos);
-        assert_eq!(
-            state.ball,
-            BallState::OnGround(start_pos + bounce_direction)
-        );
+        assert_eq!(state.ball, BallState::OnGround(start_pos + bounce_direction));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
@@ -756,10 +708,7 @@ mod tests {
         state.fix_d8_direction(bounce_direction); //Scatter
         state.fix_d8_direction(bounce_direction); //Bounce
         state.step_positional(PosAT::Pass, target_pos);
-        assert_eq!(
-            state.ball,
-            BallState::OnGround(target_pos + 4 * bounce_direction)
-        );
+        assert_eq!(state.ball, BallState::OnGround(target_pos + 4 * bounce_direction));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
     #[test]
@@ -774,9 +723,8 @@ mod tests {
         state.fix_d8_direction(bounce_direction); //Scatter
         state.fix_d6(deviate_distance as u8);
         state.step_positional(PosAT::Pass, target_pos);
-        let expected_ball_pos = state.get_player_unsafe(passer_id).position
-            + deviate_distance * deviate_direction
-            + bounce_direction;
+        let expected_ball_pos =
+            state.get_player_unsafe(passer_id).position + deviate_distance * deviate_direction + bounce_direction;
         assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
@@ -848,10 +796,7 @@ mod tests {
         state.fix_d6(1); //armor
         state.step_positional(PosAT::FollowUp, target_pos);
 
-        assert_eq!(
-            state.get_player_at(push_pos).unwrap().status,
-            PlayerStatus::Down
-        );
+        assert_eq!(state.get_player_at(push_pos).unwrap().status, PlayerStatus::Down);
         assert_eq!(state.get_player_at(target_pos).unwrap().id, id);
     }
     #[test]
@@ -868,14 +813,8 @@ mod tests {
 
         let victim_id = state.get_player_id_at(foul_pos).unwrap();
         state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
-        assert_eq!(
-            state.get_player_unsafe(victim_id).stats.team,
-            TeamType::Away
-        );
-        assert_eq!(
-            state.get_player_unsafe(victim_id).status,
-            PlayerStatus::Down
-        );
+        assert_eq!(state.get_player_unsafe(victim_id).stats.team, TeamType::Away);
+        assert_eq!(state.get_player_unsafe(victim_id).status, PlayerStatus::Down);
 
         let id = state.get_player_id_at(fouler_pos).unwrap();
         state.step_positional(PosAT::StartFoul, fouler_pos);

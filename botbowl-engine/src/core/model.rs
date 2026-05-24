@@ -697,19 +697,14 @@ impl AvailableActions {
         if self.paths.is_none() {
             self.paths = Some(Default::default());
         }
-        self.paths.as_mut().unwrap()[pos] =
-            Some(Arc::new(Node::new_direct_block_node(num_dice, pos)));
+        self.paths.as_mut().unwrap()[pos] = Some(Arc::new(Node::new_direct_block_node(num_dice, pos)));
     }
 
     pub fn is_legal_action(&self, action: Action) -> bool {
         match action {
             Action::Simple(at) => self.simple.contains(&at),
             Action::Positional(at, pos) => {
-                if let Some(allowed_at) = self
-                    .positional
-                    .as_ref()
-                    .map(|positions| positions[pos].clone())
-                {
+                if let Some(allowed_at) = self.positional.as_ref().map(|positions| positions[pos].clone()) {
                     if allowed_at.contains(&at) {
                         return true;
                     }

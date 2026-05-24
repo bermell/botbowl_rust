@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID,
-    Position, ProcState, Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE,
+    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID, Position, ProcState,
+    Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -135,8 +135,7 @@ impl Procedure for ChangingWeather {
                 }
             }
             ProcInput::Roll(RollResult::D8(d8)) => {
-                game_state.ball =
-                    BallState::InAir(game_state.get_ball_position().unwrap() + Direction::from(d8));
+                game_state.ball = BallState::InAir(game_state.get_ball_position().unwrap() + Direction::from(d8));
                 ProcState::Done
             }
             _ => panic!("Unexpected input {:?}", input),
@@ -157,9 +156,7 @@ impl Procedure for LandKickoff {
             unreachable!()
         };
 
-        if ball_position.is_out()
-            || !ball_position.is_on_team_side(other_team(game_state.info.kicking_this_drive))
-        {
+        if ball_position.is_out() || !ball_position.is_on_team_side(other_team(game_state.info.kicking_this_drive)) {
             return ProcState::DoneNew(ball_procs::Touchback::new());
         }
 
@@ -212,20 +209,12 @@ impl Setup {
         };
         for _ in 0..3 {
             if let Some(id) = ids.next() {
-                let p = Setup::get_empty_pos_in_box(
-                    game_state,
-                    los_x_range.clone(),
-                    LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
-                );
+                let p = Setup::get_empty_pos_in_box(game_state, los_x_range.clone(), LINE_OF_SCRIMMAGE_Y_RANGE.clone());
                 game_state.field_dugout_player(id, p);
             }
         }
         for id in ids {
-            let p = Setup::get_empty_pos_in_box(
-                game_state,
-                x_range.clone(),
-                LINE_OF_SCRIMMAGE_Y_RANGE.clone(),
-            );
+            let p = Setup::get_empty_pos_in_box(game_state, x_range.clone(), LINE_OF_SCRIMMAGE_Y_RANGE.clone());
             game_state.field_dugout_player(id, p);
         }
     }
@@ -341,16 +330,16 @@ mod tests {
                 for (dx, dy) in positions {
                     let (x, y) = (middle_x + dx * x_delta_sign, middle_y + dy);
                     match state.get_player_at_coord(x, y) {
-                    Some(correct_player) if correct_player.stats == stats => (),
-                    Some(wrong_player) => panic!(
-                        "Wrong player at ({:?}, {:?}), found a {:?} ({:?}) but expected a {:?} ({:?})",
-                        x, y, wrong_player.stats.role, wrong_player.stats.team, stats.role, stats.team
-                    ),
-                    None => panic!(
-                        "No player at ({:?}, {:?}), expected a {:?} ({:?})",
-                        x, y, stats.role, stats.team
-                    ),
-                }
+                        Some(correct_player) if correct_player.stats == stats => (),
+                        Some(wrong_player) => panic!(
+                            "Wrong player at ({:?}, {:?}), found a {:?} ({:?}) but expected a {:?} ({:?})",
+                            x, y, wrong_player.stats.role, wrong_player.stats.team, stats.role, stats.team
+                        ),
+                        None => panic!(
+                            "No player at ({:?}, {:?}), expected a {:?} ({:?})",
+                            x, y, stats.role, stats.team
+                        ),
+                    }
                 }
             }
         }

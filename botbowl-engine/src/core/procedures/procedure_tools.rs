@@ -60,9 +60,7 @@ where
             ProcInput::Nothing => {
                 return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));
             }
-            ProcInput::Roll(RollResult::Pass) => {
-                return ProcState::from(self.proc.apply_success(game_state))
-            }
+            ProcInput::Roll(RollResult::Pass) => return ProcState::from(self.proc.apply_success(game_state)),
             ProcInput::Roll(RollResult::Fail) if self.state == RollProcState::RerollUsed => {
                 return ProcState::from(self.proc.apply_failure(game_state))
             }
@@ -89,11 +87,7 @@ where
             _ => (),
         }
 
-        if game_state
-            .get_team_from_player(self.id())
-            .unwrap()
-            .can_use_reroll()
-        {
+        if game_state.get_team_from_player(self.id()).unwrap().can_use_reroll() {
             let team = game_state.get_player_unsafe(self.id()).stats.team;
             let mut aa = AvailableActions::new(team);
             aa.insert_simple(SimpleAT::UseReroll);

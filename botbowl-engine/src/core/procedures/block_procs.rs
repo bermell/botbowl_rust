@@ -120,9 +120,7 @@ impl Push {
 impl Procedure for Push {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {
-            ProcInput::Nothing if self.moves_to_make.is_empty() => {
-                self.calculate_next_state(game_state)
-            }
+            ProcInput::Nothing if self.moves_to_make.is_empty() => self.calculate_next_state(game_state),
             ProcInput::Nothing => self.handle_aftermath(game_state),
             ProcInput::Action(Action::Positional(PosAT::Push, position_to))
                 if game_state.get_player_at(position_to).is_some() =>
@@ -228,9 +226,7 @@ impl BlockAction {
         game_state
             .get_adj_players(player.position)
             .filter(|adj_player| {
-                !adj_player.used
-                    && adj_player.stats.team != player.stats.team
-                    && adj_player.status == PlayerStatus::Up
+                !adj_player.used && adj_player.stats.team != player.stats.team && adj_player.status == PlayerStatus::Up
             })
             .for_each(|block_victim| {
                 aa.insert_block(
@@ -302,11 +298,7 @@ impl Block {
         let team = game_state.get_active_player().unwrap().stats.team;
         match self.state {
             BlockProcState::SelectDice => {
-                aa.team = Some(if self.is_uphill {
-                    other_team(team)
-                } else {
-                    team
-                });
+                aa.team = Some(if self.is_uphill { other_team(team) } else { team });
                 self.add_aa(&mut aa);
             }
             BlockProcState::SelectDiceOrReroll => {
@@ -334,10 +326,7 @@ impl Procedure for Block {
             ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices)),
             ProcInput::Roll(RollResult::BlockDice(rolls)) => {
                 self.roll = rolls;
-                let reroll_available = game_state
-                    .get_active_players_team()
-                    .unwrap()
-                    .can_use_reroll();
+                let reroll_available = game_state.get_active_players_team().unwrap().can_use_reroll();
                 self.state = match (reroll_available, self.is_uphill) {
                     (true, true) => BlockProcState::UphillSelectReroll,
                     (true, false) => BlockProcState::SelectDiceOrReroll,
@@ -346,10 +335,7 @@ impl Procedure for Block {
                 ProcState::NeedAction(self.available_actions(game_state))
             }
             ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
-                game_state
-                    .get_active_players_team_mut()
-                    .unwrap()
-                    .use_reroll();
+                game_state.get_active_players_team_mut().unwrap().use_reroll();
                 ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices))
             }
             ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
@@ -365,17 +351,10 @@ impl Procedure for Block {
 
                 match dice_action_type {
                     SimpleAT::SelectBothDown => {
-                        if !game_state
-                            .get_active_player()
-                            .unwrap()
-                            .has_skill(Skill::Block)
-                        {
+                        if !game_state.get_active_player().unwrap().has_skill(Skill::Block) {
                             knockdown_attacker = true;
                         }
-                        if !game_state
-                            .get_player_unsafe(self.defender)
-                            .has_skill(Skill::Block)
-                        {
+                        if !game_state.get_player_unsafe(self.defender).has_skill(Skill::Block) {
                             knockdown_defender = true;
                         }
                     }
@@ -387,10 +366,7 @@ impl Procedure for Block {
                         push = true;
                     }
                     SimpleAT::SelectPowPush => {
-                        if !game_state
-                            .get_player_unsafe(self.defender)
-                            .has_skill(Skill::Dodge)
-                        {
+                        if !game_state.get_player_unsafe(self.defender).has_skill(Skill::Dodge) {
                             knockdown_defender = true;
                         }
                         push = true;
@@ -515,10 +491,7 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(
-            state.get_player_at(away_pos).unwrap().status,
-            PlayerStatus::Down
-        );
+        assert_eq!(state.get_player_at(away_pos).unwrap().status, PlayerStatus::Down);
 
         assert!(state.fixes_is_empty());
         Ok(())
@@ -543,23 +516,14 @@ mod tests {
         state.fix_d6(1);
         state.step_positional(PosAT::FollowUp, away_pos);
 
-        assert_eq!(
-            state.get_player_at(push_pos).unwrap().status,
-            PlayerStatus::Down
-        );
+        assert_eq!(state.get_player_at(push_pos).unwrap().status, PlayerStatus::Down);
         assert!(state.fixes_is_empty());
         assert!(state.get_player_at(away_pos).unwrap().used);
 
         let aa = state.get_available_actions();
         assert!(aa.get_paths().is_none());
         assert!(
-            aa.get_positional().is_none()
-                || aa
-                    .get_positional()
-                    .clone()
-                    .unwrap()
-                    .iter()
-                    .all(|pa| { pa.is_empty() }),
+            aa.get_positional().is_none() || aa.get_positional().clone().unwrap().iter().all(|pa| { pa.is_empty() }),
         );
         assert_eq!(aa.get_simple().len(), 1);
         assert!(aa.is_legal_action(Action::Simple(SimpleAT::EndTurn)));
@@ -582,13 +546,7 @@ mod tests {
         let aa = state.get_available_actions();
         assert!(aa.get_paths().is_none());
         assert!(
-            aa.get_positional().is_none()
-                || aa
-                    .get_positional()
-                    .clone()
-                    .unwrap()
-                    .iter()
-                    .all(|pa| { pa.is_empty() }),
+            aa.get_positional().is_none() || aa.get_positional().clone().unwrap().iter().all(|pa| { pa.is_empty() }),
         );
         assert_eq!(aa.get_simple().len(), 1);
         assert!(aa.is_legal_action(Action::Simple(SimpleAT::EndTurn)));
@@ -628,12 +586,7 @@ mod tests {
         state.step_simple(SimpleAT::EndTurn);
         let aa = state.get_available_actions();
         assert!(aa.team.unwrap() == TeamType::Away);
-        let aa_pos = aa
-            .get_positional()
-            .clone()
-            .unwrap()
-            .get_pos(away_pos)
-            .clone();
+        let aa_pos = aa.get_positional().clone().unwrap().get_pos(away_pos).clone();
         println!("{:?}", aa_pos);
         assert!(!aa_pos.contains(&PosAT::StartBlock));
         state.step_positional(PosAT::StartBlitz, away_pos);

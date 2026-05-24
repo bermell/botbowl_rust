@@ -1,6 +1,4 @@
-use botbowl_engine::core::dices::{
-    BlockDice, Coin, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8,
-};
+use botbowl_engine::core::dices::{BlockDice, Coin, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8};
 use botbowl_engine::core::model::Direction;
 
 use crate::action::{BbAction, ChanceOutcome};
@@ -68,9 +66,7 @@ pub fn result_for_outcome(req: &RequestedRoll, outcome: ChanceOutcome) -> RollRe
         (RequestedRoll::Deviate, ChanceOutcome::Advance) => RollResult::Deviate(D6::One, d8_up()),
         // Scatter = three D8 directions. Pick the same direction each
         // time; the engine treats the sequence as separate bounces.
-        (RequestedRoll::Scatter, ChanceOutcome::Advance) => {
-            RollResult::Scatter(d8_up(), d8_up(), d8_up())
-        }
+        (RequestedRoll::Scatter, ChanceOutcome::Advance) => RollResult::Scatter(d8_up(), d8_up(), d8_up()),
         // ThrowIn = D3 direction + 2D6 distance. Pick low values for a
         // short throw-in.
         (RequestedRoll::ThrowIn, ChanceOutcome::Advance) => RollResult::ThrowIn {
@@ -167,11 +163,7 @@ mod tests {
 
     #[test]
     fn sum2d6_pass_fail_outcomes_sum_to_one() {
-        for target in [
-            Sum2D6Target::FourPlus,
-            Sum2D6Target::SevenPlus,
-            Sum2D6Target::NinePlus,
-        ] {
+        for target in [Sum2D6Target::FourPlus, Sum2D6Target::SevenPlus, Sum2D6Target::NinePlus] {
             let outcomes = enumerate(&RequestedRoll::Sum2D6PassFail(target));
             assert!(
                 probs_sum_to_one(&outcomes),
@@ -256,10 +248,6 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert!(
-            (pass - 4.0 / 6.0).abs() < 1e-5,
-            "expected 4/6, got {}",
-            pass
-        );
+        assert!((pass - 4.0 / 6.0).abs() < 1e-5, "expected 4/6, got {}", pass);
     }
 }

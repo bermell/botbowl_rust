@@ -166,10 +166,7 @@ fn run_scenario(label: &str, mut state: GameState) {
     prep_for_search(&mut state);
     let legal = state.available_actions.get_all().len();
     let team = state.available_actions.team;
-    eprintln!(
-        "EXPAND_BENCH {label}/legal_actions={legal} team={:?}",
-        team
-    );
+    eprintln!("EXPAND_BENCH {label}/legal_actions={legal} team={:?}", team);
 
     bench_get_action(label, &state, 20, 1000);
     bench_clone(label, &state, 100_000);
@@ -224,14 +221,8 @@ impl GameDynamics for CountingDynamics {
     type Score = BbScore;
     type ActionIter = Vec<(BbPlayer, BbAction)>;
 
-    fn available_actions(
-        &self,
-        player: &Self::Player,
-        state: &Self::State,
-    ) -> Option<Self::ActionIter> {
-        self.counters
-            .available_actions
-            .fetch_add(1, Ordering::Relaxed);
+    fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
+        self.counters.available_actions.fetch_add(1, Ordering::Relaxed);
         self.inner.available_actions(player, state)
     }
 
@@ -276,9 +267,7 @@ impl GameDynamics for CountingDynamics {
         A: Deref<Target = Self::Action>,
         Q: Deref<Target = Self::Score>,
     {
-        self.counters
-            .backprop_scores
-            .fetch_add(1, Ordering::Relaxed);
+        self.counters.backprop_scores.fetch_add(1, Ordering::Relaxed);
         self.inner
             .backprop_scores(player, score_current, child_scores_and_actions)
     }

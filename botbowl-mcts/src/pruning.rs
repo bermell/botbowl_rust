@@ -39,9 +39,7 @@ mod tests {
     /// and that player activated via StartMove, mimicking the engine state
     /// right after a `StartMove` action and before any move action.
     fn state_just_activated() -> GameState {
-        let mut state = GameStateBuilder::new()
-            .add_home_player(Position::new((5, 5)))
-            .build();
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
         // Drive engine into the active-player state by issuing a StartMove
         // on the home player. We don't care which exact path the engine
         // takes — just that get_active_player() returns Some and moves==0.
@@ -67,9 +65,7 @@ mod tests {
 
     #[test]
     fn end_player_turn_allowed_when_no_active_player() {
-        let state = GameStateBuilder::new()
-            .add_home_player(Position::new((5, 5)))
-            .build();
+        let state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
         let action = EA::Simple(SimpleAT::EndPlayerTurn);
         // No active player → P1 doesn't apply.
         assert!(!should_prune(&state, &action));

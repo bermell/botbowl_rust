@@ -52,8 +52,7 @@ pub fn player_8x4<'a>(player: &FieldedPlayer, game_state: &GameState) -> Vec<Lin
         false => Span::styled(" ", border_style),
     };
 
-    let fm =
-        |s: &'static str| Line::from(vec![border.clone(), Span::styled(s, style), border.clone()]);
+    let fm = |s: &'static str| Line::from(vec![border.clone(), Span::styled(s, style), border.clone()]);
 
     if player.status != PlayerStatus::Up {
         let empty = fm("      ");
@@ -88,8 +87,7 @@ pub fn player_6x3<'a>(player: &FieldedPlayer, game_state: &GameState) -> Vec<Lin
         false => Span::styled(" ", border_style),
     };
 
-    let fm =
-        |s: &'static str| Line::from(vec![border.clone(), Span::styled(s, style), border.clone()]);
+    let fm = |s: &'static str| Line::from(vec![border.clone(), Span::styled(s, style), border.clone()]);
 
     if player.status != PlayerStatus::Up {
         let empty = fm("    ");

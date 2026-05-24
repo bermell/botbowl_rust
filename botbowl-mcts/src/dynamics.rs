@@ -100,11 +100,7 @@ impl GameDynamics for BloodBowlDynamics {
     type Score = BbScore;
     type ActionIter = Vec<(Self::Player, Self::Action)>;
 
-    fn available_actions(
-        &self,
-        _player: &Self::Player,
-        state: &Self::State,
-    ) -> Option<Self::ActionIter> {
+    fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         if state.info.game_over {
             return None;
         }
@@ -113,12 +109,7 @@ impl GameDynamics for BloodBowlDynamics {
         if state.pending_roll.is_some() {
             let req = state.pending_roll.as_ref().unwrap();
             let outcomes = roll_outcomes::enumerate(req);
-            return Some(
-                outcomes
-                    .into_iter()
-                    .map(|a| (BbPlayer::Chance, a))
-                    .collect(),
-            );
+            return Some(outcomes.into_iter().map(|a| (BbPlayer::Chance, a)).collect());
         }
 
         // Player node: copy engine's available actions.
@@ -190,9 +181,7 @@ impl GameDynamics for BloodBowlDynamics {
         Q: Deref<Target = Option<Self::Score>>,
         A: Deref<Target = Self::Action>,
     {
-        let parent_visits = parent_score
-            .map(|s| s.visits.load(Ordering::Relaxed))
-            .unwrap_or(1) as f32;
+        let parent_visits = parent_score.map(|s| s.visits.load(Ordering::Relaxed)).unwrap_or(1) as f32;
 
         // Chance node: temporarily reverted to plain min-visits (v1
         // behaviour) while bisecting the v3 reconstruction panic.
@@ -259,10 +248,7 @@ impl GameDynamics for BloodBowlDynamics {
         Q: Deref<Target = Self::Score>,
     {
         // Chance node: probability-weighted average over visited children.
-        if score_current
-            .map(|s| s.node_kind == BbPlayer::Chance)
-            .unwrap_or(false)
-        {
+        if score_current.map(|s| s.node_kind == BbPlayer::Chance).unwrap_or(false) {
             let mut total_visits: u32 = 0;
             let mut weighted_sum: f64 = 0.0;
             let mut total_prob: f64 = 0.0;
@@ -342,8 +328,8 @@ impl GameDynamics for BloodBowlDynamics {
         // (currently no chance children — A.alt path); the initial Q
         // is high enough that MCTS will actually choose pickup /
         // dodge / GFI moves over their "safe" alternatives.
-        let needs_ff = !state.info.game_over
-            && (state.pending_roll.is_some() || state.available_actions.team.is_none());
+        let needs_ff =
+            !state.info.game_over && (state.pending_roll.is_some() || state.available_actions.team.is_none());
         let score = if needs_ff {
             optimistic_leaf_score(state, self.ff_depth).unwrap_or_else(|| leaf_score(state))
         } else {
@@ -415,12 +401,7 @@ fn optimistic_leaf_score(state: &GameState, max_steps: u8) -> Option<i64> {
 /// unexplored children; high-prior unexplored children are still
 /// preferred, but low-prior unexplored children no longer crowd out
 /// well-scored explored siblings.
-fn puct_value(
-    score: Option<&BbScore>,
-    parent_visits: f32,
-    prior: f32,
-    home_perspective: bool,
-) -> f32 {
+fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_perspective: bool) -> f32 {
     let parent_term = parent_visits.max(1.0).sqrt();
     match score {
         None => PUCT_C * prior * parent_term,
@@ -451,9 +432,7 @@ pub struct MctsBot {
 
 impl MctsBot {
     pub fn new(iterations_per_move: usize) -> Self {
-        let n_workers = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
+        let n_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         Self {
             iterations_per_move,
             n_workers,
@@ -526,9 +505,7 @@ impl Bot for MctsBot {
             }
         });
 
-        let move_info = tree
-            .get_next_move_info()
-            .expect("MCTS tree has no move info at root");
+        let move_info = tree.get_next_move_info().expect("MCTS tree has no move info at root");
         let best = move_info
             .iter()
             .max_by_key(|(_, info)| {
@@ -567,11 +544,7 @@ mod tests {
     #[test]
     fn backprop_player_home_maximises_and_sums_visits() {
         let dynamics = BloodBowlDynamics::default();
-        let actions = [
-            placeholder_action(),
-            placeholder_action(),
-            placeholder_action(),
-        ];
+        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
         let children = [child(-5, 2), child(10, 5), child(3, 1)];
         let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
         let result = dynamics
@@ -589,11 +562,7 @@ mod tests {
     #[test]
     fn backprop_player_away_minimises_and_sums_visits() {
         let dynamics = BloodBowlDynamics::default();
-        let actions = [
-            placeholder_action(),
-            placeholder_action(),
-            placeholder_action(),
-        ];
+        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
         let children = [child(-5, 2), child(10, 5), child(3, 1)];
         let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
         let result = dynamics

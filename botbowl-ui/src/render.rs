@@ -111,8 +111,7 @@ fn draw_pitch(frame: &mut Frame, state: &GameState, area: Rect) {
                 BallState::Carried(_) => false,
                 BallState::InAir(p) => p == pos,
             };
-            let td = state.get_endzone_x(TeamType::Home) == pos.x
-                || state.get_endzone_x(TeamType::Away) == pos.x;
+            let td = state.get_endzone_x(TeamType::Home) == pos.x || state.get_endzone_x(TeamType::Away) == pos.x;
 
             if let Some(player) = state.get_player_at(pos) {
                 let paragraph = player_paragraph(player, state, bg_color, *chunk);
@@ -120,10 +119,7 @@ fn draw_pitch(frame: &mut Frame, state: &GameState, area: Rect) {
             } else if ball {
                 frame.render_widget(ball_canvas(bg_color), *chunk);
             } else if td {
-                frame.render_widget(
-                    td_square_canvas(bg_color, Color::Gray, pos.y as usize),
-                    *chunk,
-                );
+                frame.render_widget(td_square_canvas(bg_color, Color::Gray, pos.y as usize), *chunk);
             } else {
                 frame.render_widget(square_canvas(bg_color), *chunk);
             }
@@ -169,10 +165,7 @@ fn side_panel_widget(state: &GameState) -> impl Widget + '_ {
         Line::from(Span::styled(proc_line, Style::default().fg(Color::Cyan))),
         Line::from(Span::styled(team_line, Style::default().fg(Color::Gray))),
         Line::from(""),
-        Line::from(Span::styled(
-            "Actions:",
-            Style::default().fg(Color::White).bold(),
-        )),
+        Line::from(Span::styled("Actions:", Style::default().fg(Color::White).bold())),
     ];
 
     let mut actions: Vec<String> = state
@@ -211,10 +204,7 @@ fn side_panel_widget(state: &GameState) -> impl Widget + '_ {
 fn log_widget(log: &[String]) -> impl Widget + '_ {
     let take = std::cmp::min(log.len(), 5);
     let start = log.len() - take;
-    let lines: Vec<Line> = log[start..]
-        .iter()
-        .map(|s| Line::from(Span::raw(s.clone())))
-        .collect();
+    let lines: Vec<Line> = log[start..].iter().map(|s| Line::from(Span::raw(s.clone()))).collect();
     Paragraph::new(lines).block(Block::default().borders(Borders::TOP).title("log"))
 }
 
@@ -234,11 +224,7 @@ fn split_cols(area: &Rect, col_width: u16, num_cols: u16) -> Rc<[Rect]> {
     Layout::default()
         .direction(Direction::Horizontal)
         .margin(0)
-        .constraints(
-            (0..num_cols)
-                .map(|_| Constraint::Length(col_width))
-                .collect::<Vec<_>>(),
-        )
+        .constraints((0..num_cols).map(|_| Constraint::Length(col_width)).collect::<Vec<_>>())
         .split(*area)
 }
 
@@ -279,12 +265,7 @@ fn ball_canvas(bg_color: Color) -> impl Widget {
         .y_bounds([0.0, 100.0])
 }
 
-fn player_paragraph<'a>(
-    player: &'a FieldedPlayer,
-    state: &'a GameState,
-    bg_color: Color,
-    rect: Rect,
-) -> Paragraph<'a> {
+fn player_paragraph<'a>(player: &'a FieldedPlayer, state: &'a GameState, bg_color: Color, rect: Rect) -> Paragraph<'a> {
     let (h, w) = (rect.height, rect.width);
     let text = match (w, h) {
         (10, 5) => player_8x4(player, state),

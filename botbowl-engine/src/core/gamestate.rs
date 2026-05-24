@@ -16,8 +16,8 @@ use model::*;
 use super::{
     bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId, MissingActionError},
     dices::{
-        resolve_from_fixes, resolve_with_rng, BlockDice, Coin, D6Target, DicePolicy, FixedDice,
-        RequestedRoll, RollResult, RollTarget,
+        resolve_from_fixes, resolve_with_rng, BlockDice, Coin, D6Target, DicePolicy, FixedDice, RequestedRoll,
+        RollResult, RollTarget,
     },
     procedures::{AnyProc, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
@@ -577,14 +577,10 @@ impl GameState {
     }
 
     pub fn get_active_player(&self) -> Option<&FieldedPlayer> {
-        self.info
-            .active_player
-            .and_then(|id| self.get_player(id).ok())
+        self.info.active_player.and_then(|id| self.get_player(id).ok())
     }
     pub fn get_active_player_mut(&mut self) -> Option<&mut FieldedPlayer> {
-        self.info
-            .active_player
-            .and_then(|id| self.get_mut_player(id).ok())
+        self.info.active_player.and_then(|id| self.get_mut_player(id).ok())
     }
     pub fn get_endzone_x(&self, team: TeamType) -> Coord {
         match team {
@@ -712,8 +708,7 @@ impl GameState {
     }
 
     pub fn get_active_players_team_mut(&mut self) -> Option<&mut TeamState> {
-        self.get_mut_team_from_player(self.info.active_player.unwrap())
-            .ok()
+        self.get_mut_team_from_player(self.info.active_player.unwrap()).ok()
     }
     pub fn get_active_teamtype(&self) -> Option<TeamType> {
         self.available_actions.get_team()
@@ -808,9 +803,7 @@ impl GameState {
 
         self.get_adj_players(player.position)
             .filter(|adj_player| {
-                adj_player.stats.team != team
-                    && adj_player.has_tackle_zone()
-                    && adj_player.id != except_from_id
+                adj_player.stats.team != team && adj_player.has_tackle_zone() && adj_player.id != except_from_id
             })
             .count() as u8
     }
@@ -829,12 +822,7 @@ impl GameState {
         self.get_blockdices_from(attacker, attacker_pos, defender)
     }
 
-    pub fn get_blockdices_from(
-        &self,
-        attacker: PlayerID,
-        attacker_pos: Position,
-        defender: PlayerID,
-    ) -> NumBlockDices {
+    pub fn get_blockdices_from(&self, attacker: PlayerID, attacker_pos: Position, defender: PlayerID) -> NumBlockDices {
         let attr = self.get_player_unsafe(attacker);
         let defr = self.get_player_unsafe(defender);
 
@@ -906,18 +894,10 @@ impl GameState {
     pub fn get_players_on_pitch_mut(&mut self) -> impl Iterator<Item = &mut FieldedPlayer> {
         self.fielded_players.iter_mut().filter_map(|x| x.as_mut())
     }
-    pub fn get_players_on_pitch_in_team(
-        &self,
-        team: TeamType,
-    ) -> impl Iterator<Item = &FieldedPlayer> {
-        self.get_players_on_pitch()
-            .filter(move |p| p.stats.team == team)
+    pub fn get_players_on_pitch_in_team(&self, team: TeamType) -> impl Iterator<Item = &FieldedPlayer> {
+        self.get_players_on_pitch().filter(move |p| p.stats.team == team)
     }
-    pub fn add_new_player_to_field(
-        &mut self,
-        player_stats: PlayerStats,
-        position: Position,
-    ) -> Result<PlayerID> {
+    pub fn add_new_player_to_field(&mut self, player_stats: PlayerStats, position: Position) -> Result<PlayerID> {
         if self.board[position].is_some() {
             return Err(Box::new(IllegalMovePosition { position }));
         }
@@ -953,9 +933,7 @@ impl GameState {
             self.info.active_player = None;
         }
 
-        let FieldedPlayer {
-            stats, position, ..
-        } = self.fielded_players[id].take().unwrap();
+        let FieldedPlayer { stats, position, .. } = self.fielded_players[id].take().unwrap();
 
         self.dugout_add_new_player(stats, place);
 
@@ -965,10 +943,7 @@ impl GameState {
 
     pub fn unfield_all_players(&mut self) -> Result<()> {
         #[allow(clippy::needless_collect)]
-        let player_id_on_pitch: Vec<PlayerID> = self
-            .get_players_on_pitch()
-            .map(|player| player.id)
-            .collect();
+        let player_id_on_pitch: Vec<PlayerID> = self.get_players_on_pitch().map(|player| player.id).collect();
 
         player_id_on_pitch
             .into_iter()
@@ -1008,17 +983,11 @@ impl GameState {
                 }
             }
         };
-        let mut top_proc = self
-            .proc_stack
-            .pop()
-            .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
+        let mut top_proc = self.proc_stack.pop().ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
         match &proc_input {
             ProcInput::Action(a) => self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, a)),
-            ProcInput::Roll(_) => self.log(format!(
-                "STEPPING: {:?}\n  input={:?}",
-                top_proc, proc_input
-            )),
+            ProcInput::Roll(_) => self.log(format!("STEPPING: {:?}\n  input={:?}", top_proc, proc_input)),
             ProcInput::Nothing => self.log(format!("STEPPING: {:?}", top_proc)),
         }
 
@@ -1112,17 +1081,10 @@ impl GameState {
         );
         self.registered_roll = Some(roll);
         self.micro_step(None)?;
-        while !self.info.game_over
-            && self.available_actions.is_empty()
-            && self.pending_roll.is_none()
-        {
+        while !self.info.game_over && self.available_actions.is_empty() && self.pending_roll.is_none() {
             self.micro_step(None)?;
         }
-        debug_assert!(
-            !self.available_actions.is_empty()
-                || self.info.game_over
-                || self.pending_roll.is_some()
-        );
+        debug_assert!(!self.available_actions.is_empty() || self.info.game_over || self.pending_roll.is_some());
         Ok(())
     }
 
@@ -1202,10 +1164,7 @@ impl GameState {
         }
     }
 
-    pub fn get_interception_positions(
-        from: Position,
-        to: Position,
-    ) -> impl Iterator<Item = Position> {
+    pub fn get_interception_positions(from: Position, to: Position) -> impl Iterator<Item = Position> {
         let fr_y = from.y as i16;
         let to_y = to.y as i16;
         let fr_x = from.x as i16;
@@ -1223,20 +1182,13 @@ impl GameState {
             .cartesian_product((min_y)..=(max_y))
             .filter(move |(x, y)| ((*x - fr_x).pow(2) + (*y - fr_y).pow(2)) <= distance_squared)
             .filter(move |(x, y)| ((*x - to_x).pow(2) + (*y - to_y).pow(2)) <= distance_squared)
-            .filter(move |(x, y)| {
-                1.2 >= ((to_x - x) * dy - (to_y - y) * dx).abs() as f32 / distance
-            })
+            .filter(move |(x, y)| 1.2 >= ((to_x - x) * dy - (to_y - y) * dx).abs() as f32 / distance)
             .map(|(x, y)| Position::new((x as i8, y as i8)))
             .filter(|pos| !pos.is_out())
             .filter(move |pos| *pos != from && *pos != to)
     }
 
-    pub fn get_intercepters(
-        &self,
-        team: TeamType,
-        from: Position,
-        to: Position,
-    ) -> Vec<(Position, D6Target)> {
+    pub fn get_intercepters(&self, team: TeamType, from: Position, to: Position) -> Vec<(Position, D6Target)> {
         // TODO: thos function needs tests!!!
         GameState::get_interception_positions(from, to)
             .filter_map(|pos| {
@@ -1274,16 +1226,10 @@ impl GameState {
         // 3 - long bomb
 
         let delta = to - from;
-        let (dx, dy) = (
-            delta.dx.unsigned_abs() as usize,
-            delta.dy.unsigned_abs() as usize,
-        );
+        let (dx, dy) = (delta.dx.unsigned_abs() as usize, delta.dy.unsigned_abs() as usize);
         let distance_modifier = MATRIX.get(dx)?.get(dy)?;
         if *distance_modifier == 8 {
-            panic!(
-                "Passing to oneself is not possible: from {} to {}",
-                from, to
-            );
+            panic!("Passing to oneself is not possible: from {} to {}", from, to);
         } else if *distance_modifier == 9 {
             return None;
         }
@@ -1321,10 +1267,7 @@ mod gamestate_tests {
         core::{
             dices::D6,
             gamestate::{BuilderState, GameState},
-            model::{
-                BallState, DugoutPlace, PlayerStats, Position, Result, TeamType, HEIGHT_, WIDTH,
-                WIDTH_,
-            },
+            model::{BallState, DugoutPlace, PlayerStats, Position, Result, TeamType, HEIGHT_, WIDTH, WIDTH_},
         },
         standard_state,
     };
@@ -1339,10 +1282,7 @@ mod gamestate_tests {
             let to = from + (dx, dy);
             let to_from = GameState::get_interception_positions(from, to);
             let from_to = GameState::get_interception_positions(to, from);
-            assert_eq!(
-                to_from.collect::<HashSet<_>>(),
-                from_to.collect::<HashSet<_>>()
-            );
+            assert_eq!(to_from.collect::<HashSet<_>>(), from_to.collect::<HashSet<_>>());
         }
     }
     #[test]
@@ -1405,8 +1345,7 @@ mod gamestate_tests {
             let from = to_from.pop().unwrap();
             let to = to_from.pop().unwrap();
 
-            let calc_intercepters =
-                GameState::get_interception_positions(from, to).collect::<HashSet<Position>>();
+            let calc_intercepters = GameState::get_interception_positions(from, to).collect::<HashSet<Position>>();
             // assert_eq!(calc_intercepters, correct_intercepters);
             if calc_intercepters != correct_intercepters {
                 // create ss, a clone of s.
@@ -1437,9 +1376,7 @@ mod gamestate_tests {
                 let error_strs: Vec<String> = ss
                     .iter()
                     .enumerate()
-                    .map(|(i, line)| {
-                        format!("{}: {}", i, line.iter().collect::<String>()).to_string()
-                    })
+                    .map(|(i, line)| format!("{}: {}", i, line.iter().collect::<String>()).to_string())
                     .filter(|s| s.contains('a') || s.contains('m') || s.contains('X'))
                     .collect();
                 let error_str: String = error_strs.join("\n");
@@ -1520,20 +1457,12 @@ mod gamestate_tests {
         let first_pos = Position::new((5, 1));
         let state = GameStateBuilder::new().add_str(first_pos, &field).build();
         assert_eq!(
-            state
-                .get_player_at(Position::new((5, 3)))
-                .unwrap()
-                .stats
-                .team,
+            state.get_player_at(Position::new((5, 3))).unwrap().stats.team,
             TeamType::Home
         );
 
         assert_eq!(
-            state
-                .get_player_at(Position::new((6, 2)))
-                .unwrap()
-                .stats
-                .team,
+            state.get_player_at(Position::new((6, 2))).unwrap().stats.team,
             TeamType::Away
         );
 
@@ -1600,9 +1529,7 @@ mod gamestate_tests {
 
         assert!(state.get_player_id_at(position).is_none());
 
-        let id = state
-            .add_new_player_to_field(player_stats, position)
-            .unwrap();
+        let id = state.add_new_player_to_field(player_stats, position).unwrap();
 
         assert_eq!(state.get_player_id_at(position), Some(id));
         assert_eq!(state.get_player(id).unwrap().position, position);
@@ -1739,20 +1666,12 @@ mod gamestate_tests {
             .micro_step(Some(Action::Positional(PosAT::StartMove, start_pos)))
             .unwrap();
         // Drain mid-procedure ticks until we hit a decision or a roll.
-        while !state.info.game_over
-            && state.available_actions.is_empty()
-            && state.pending_roll.is_none()
-        {
+        while !state.info.game_over && state.available_actions.is_empty() && state.pending_roll.is_none() {
             state.micro_step(None).unwrap();
         }
-        state
-            .micro_step(Some(Action::Positional(PosAT::Move, td_pos)))
-            .unwrap();
+        state.micro_step(Some(Action::Positional(PosAT::Move, td_pos))).unwrap();
         // Drain until the engine pauses on the pickup roll.
-        while !state.info.game_over
-            && state.available_actions.is_empty()
-            && state.pending_roll.is_none()
-        {
+        while !state.info.game_over && state.available_actions.is_empty() && state.pending_roll.is_none() {
             state.micro_step(None).unwrap();
         }
         assert!(

@@ -26,21 +26,8 @@ pub fn render_state(state: &GameState, width: u16, height: u16) -> io::Result<St
 
 /// Render a deterministic frame of a fresh seeded agent-vs-agent game after stepping `step`
 /// micro-steps. Returns the plain-text snapshot as produced by `TestBackend`'s `Display` impl.
-pub fn render_seeded_snapshot(
-    seed: u64,
-    step: usize,
-    width: u16,
-    height: u16,
-) -> io::Result<String> {
-    render_seeded_snapshot_with_bots(
-        seed,
-        step,
-        width,
-        height,
-        BotKind::Random,
-        BotKind::Random,
-        1000,
-    )
+pub fn render_seeded_snapshot(seed: u64, step: usize, width: u16, height: u16) -> io::Result<String> {
+    render_seeded_snapshot_with_bots(seed, step, width, height, BotKind::Random, BotKind::Random, 1000)
 }
 
 pub fn render_seeded_snapshot_with_bots(

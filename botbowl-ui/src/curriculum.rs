@@ -3,9 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use botbowl_curriculum::{
-    available_lectures, make_lecture, Difficulty, LectureSession, LectureStatus,
-};
+use botbowl_curriculum::{available_lectures, make_lecture, Difficulty, LectureSession, LectureStatus};
 use crossterm::event::{self, Event, KeyCode};
 
 use botbowl_ui::bot_factory::make_bot;
@@ -34,8 +32,7 @@ pub fn run(args: CurriculumArgs) -> io::Result<()> {
     };
 
     let mut agent = make_bot(args.bot, args.mcts_iters);
-    let mut session =
-        LectureSession::new(lecture.as_ref(), args.seed, args.max_steps, agent.as_mut());
+    let mut session = LectureSession::new(lecture.as_ref(), args.seed, args.max_steps, agent.as_mut());
 
     let mut log: Vec<String> = Vec::new();
     log.push(format!(

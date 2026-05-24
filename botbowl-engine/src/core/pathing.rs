@@ -18,11 +18,7 @@ pub enum PathingEvent {
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
-    Pass {
-        to: Position,
-        pass: D6Target,
-        modifer: i8,
-    },
+    Pass { to: Position, pass: D6Target, modifer: i8 },
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
@@ -72,11 +68,7 @@ impl<T> FixedQueue<T> {
             return None;
         }
 
-        self.data
-            .iter_mut()
-            .find(|val| val.is_some())
-            .unwrap()
-            .take()
+        self.data.iter_mut().find(|val| val.is_some()).unwrap().take()
     }
     pub fn is_empty(&self) -> bool {
         self.data.iter().all(|entry| entry.is_none())
@@ -88,12 +80,7 @@ impl<T> FixedQueue<T> {
         if self.is_empty() {
             None
         } else {
-            self.data
-                .iter()
-                .rev()
-                .filter(|val| val.is_some())
-                .flatten()
-                .next()
+            self.data.iter().rev().filter(|val| val.is_some()).flatten().next()
         }
     }
     pub fn iter(&self) -> impl Iterator<Item = &T> {
@@ -305,8 +292,7 @@ impl Node {
     }
     fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
         self.block_dice = Some(target);
-        self.events
-            .push_back(PathingEvent::Block(vicitm_id, target));
+        self.events.push_back(PathingEvent::Block(vicitm_id, target));
     }
     fn apply_foul(&mut self, vicitm_id: PlayerID, target: Sum2D6Target) {
         self.events.push_back(PathingEvent::Foul(vicitm_id, target));
@@ -350,10 +336,11 @@ impl Node {
 
         // best foul target, low is better
         match (self.events.last(), othr.events.last()) {
-            (
-                Some(PathingEvent::Foul(_, self_target)),
-                Some(PathingEvent::Foul(_, othr_target)),
-            ) if self_target != othr_target => return self_target < othr_target,
+            (Some(PathingEvent::Foul(_, self_target)), Some(PathingEvent::Foul(_, othr_target)))
+                if self_target != othr_target =>
+            {
+                return self_target < othr_target
+            }
             _ => (),
         }
 
@@ -444,10 +431,7 @@ impl<'a> GameInfo<'a> {
             }
             _ => PathingBallState::NotRelevant,
         };
-        let mut player_action = game_state
-            .info
-            .player_action_type
-            .unwrap_or(PosAT::StartMove);
+        let mut player_action = game_state.info.player_action_type.unwrap_or(PosAT::StartMove);
         let mut catch_mods: FullPitch<Option<D6Target>> = Default::default();
         if player_action == PosAT::StartHandoff || player_action == PosAT::StartPass {
             if matches!(ball, PathingBallState::IsCarrier(_)) {
@@ -456,9 +440,7 @@ impl<'a> GameInfo<'a> {
                     .get_players_on_pitch()
                     .filter(|p| p.stats.team == team)
                     .filter(|p| p.can_catch())
-                    .for_each(|p| {
-                        catch_mods[p.position] = Some(game_state.get_catch_target(p.id).unwrap())
-                    });
+                    .for_each(|p| catch_mods[p.position] = Some(game_state.get_catch_target(p.id).unwrap()));
                 catch_mods[player.position] = None; // can't handoff or pass to self
             } else {
                 // If not ball carrier we don't care about handoff or pass
@@ -508,13 +490,7 @@ impl<'a> GameInfo<'a> {
         }
     }
 
-    fn expand_to(
-        &self,
-        to: Position,
-        parent_node: &Arc<Node>,
-        prev: &mut OptRcNode,
-        best: &OptRcNode,
-    ) -> NodeType {
+    fn expand_to(&self, to: Position, parent_node: &Arc<Node>, prev: &mut OptRcNode, best: &OptRcNode) -> NodeType {
         debug_assert!(self.can_continue_expanding(parent_node));
 
         // expand to move_node, block_node, handoff_mode
@@ -542,9 +518,7 @@ impl<'a> GameInfo<'a> {
             {
                 self.expand_foul_to(to, player.id, parent_node, prev)
             }
-            None if parent_node.remaining_movement() > 0 => {
-                self.expand_move_to(to, parent_node, prev)
-            }
+            None if parent_node.remaining_movement() > 0 => self.expand_move_to(to, parent_node, prev),
             _ => return NodeType::NoNode,
         };
 
@@ -605,10 +579,7 @@ impl<'a> GameInfo<'a> {
                 .filter(|adj_player| {
                     adj_player.stats.team != self.team
                         && adj_player.has_tackle_zone()
-                        && self
-                            .game_state
-                            .get_tz_on_except_from_id(adj_player.id, self.id)
-                            == 0
+                        && self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0
                 })
                 .count() as i8),
         );
@@ -653,13 +624,7 @@ impl<'a> GameInfo<'a> {
         Some(next_node)
     }
 
-    fn expand_handoff_to(
-        &self,
-        to: Position,
-        id: PlayerID,
-        parent_node: &Arc<Node>,
-        prev: &OptRcNode,
-    ) -> Option<Node> {
+    fn expand_handoff_to(&self, to: Position, id: PlayerID, parent_node: &Arc<Node>, prev: &OptRcNode) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
 
         next_node.apply_handoff(id, self.teammate_catch_mod[to].unwrap());
@@ -675,13 +640,7 @@ impl<'a> GameInfo<'a> {
         Some(next_node)
     }
 
-    fn expand_pass_to(
-        &self,
-        to: Position,
-        id: PlayerID,
-        parent_node: &Arc<Node>,
-        prev: &OptRcNode,
-    ) -> Option<Node> {
+    fn expand_pass_to(&self, to: Position, id: PlayerID, parent_node: &Arc<Node>, prev: &OptRcNode) -> Option<Node> {
         let mut next_node = Node::new(Some(parent_node.clone()), to, 0, 0);
         if parent_node.position == to {
             println!(
@@ -696,9 +655,7 @@ impl<'a> GameInfo<'a> {
             );
         }
 
-        let pass_target = self
-            .game_state
-            .get_pass_target(id, parent_node.position, to)?;
+        let pass_target = self.game_state.get_pass_target(id, parent_node.position, to)?;
 
         let catch_target = self.teammate_catch_mod[to].unwrap();
         let best_intercept = self
@@ -713,10 +670,7 @@ impl<'a> GameInfo<'a> {
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
 
-        let modifier = self
-            .game_state
-            .get_pass_modifier(id, parent_node.position, to)
-            .unwrap();
+        let modifier = self.game_state.get_pass_modifier(id, parent_node.position, to).unwrap();
         next_node.apply_pass(to, catch_target, pass_target, best_intercept, modifier);
         // the Catch procedure will check fo touchdown
 
@@ -729,12 +683,7 @@ impl<'a> GameInfo<'a> {
         }
         Some(next_node)
     }
-    fn expand_move_to(
-        &self,
-        to: Position,
-        parent_node: &Arc<Node>,
-        prev: &OptRcNode,
-    ) -> Option<Node> {
+    fn expand_move_to(&self, to: Position, parent_node: &Arc<Node>, prev: &OptRcNode) -> Option<Node> {
         let gfi = parent_node.moves_left == 0;
 
         if let Some(current_best) = &prev {
@@ -790,12 +739,7 @@ impl<'a> PathFinder<'a> {
             return Ok(Default::default());
         }
         let info = GameInfo::new(game_state, player);
-        let mut root_node = Node::new(
-            None,
-            info.start_pos,
-            player.moves_left(),
-            player.gfis_left(),
-        );
+        let mut root_node = Node::new(None, info.start_pos, player.moves_left(), player.gfis_left());
         if player.status != PlayerStatus::Up {
             assert!(player.moves_left() == player.stats.ma);
             debug_assert!(matches!(player.status, PlayerStatus::Down));
@@ -841,21 +785,14 @@ impl<'a> PathFinder<'a> {
     /// Returns the best path from `id`'s current position to `target`, or None if no path exists.
     /// Safe to call for an unused fresh-turn player on the moving team — moves_left, gfis_left,
     /// and `player_action_type` default to sensible values (MA, 2, StartMove respectively).
-    pub fn safest_path_to(
-        game_state: &GameState,
-        id: PlayerID,
-        target: Position,
-    ) -> Result<Option<Arc<Node>>> {
+    pub fn safest_path_to(game_state: &GameState, id: PlayerID, target: Position) -> Result<Option<Arc<Node>>> {
         let paths = PathFinder::player_paths(game_state, id)?;
         Ok(paths[target].clone())
     }
 
     /// Returns the highest-probability path that ends on the opponent endzone column.
     /// None if no such path exists.
-    pub fn safest_path_to_endzone(
-        game_state: &GameState,
-        id: PlayerID,
-    ) -> Result<Option<Arc<Node>>> {
+    pub fn safest_path_to_endzone(game_state: &GameState, id: PlayerID) -> Result<Option<Arc<Node>>> {
         let paths = PathFinder::player_paths(game_state, id)?;
         let team = game_state.get_player_unsafe(id).stats.team;
         let endzone_x = game_state.get_endzone_x(team);
@@ -863,11 +800,7 @@ impl<'a> PathFinder<'a> {
             .iter_position()
             .filter(|(pos, _)| pos.x == endzone_x)
             .filter_map(|(_, n)| n.clone())
-            .max_by(|a, b| {
-                a.prob
-                    .partial_cmp(&b.prob)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            .max_by(|a, b| a.prob.partial_cmp(&b.prob).unwrap_or(std::cmp::Ordering::Equal));
         Ok(best)
     }
 }
@@ -905,12 +838,7 @@ impl<'a> PathFinder<'a> {
             .parent
             .as_ref()
             .filter(|parent| parent.position != node.position)
-            .map(|parent| {
-                (
-                    parent.position,
-                    self.info.tackles_zones_at(parent.position) > 0,
-                )
-            });
+            .map(|parent| (parent.position, self.info.tackles_zones_at(parent.position) > 0));
 
         //handle moving
         Direction::all_directions_iter()
@@ -919,18 +847,13 @@ impl<'a> PathFinder<'a> {
             .filter(|to_pos| {
                 parent_pos_and_in_tz
                     .map(|(parent_pos, parent_in_tz)| {
-                        parent_pos.distance_to(to_pos) == 2
-                            || (parent_in_tz && 0 < self.info.tzones[*to_pos])
+                        parent_pos.distance_to(to_pos) == 2 || (parent_in_tz && 0 < self.info.tzones[*to_pos])
                     })
                     .unwrap_or(true)
             })
             .map(|to_pos| {
-                self.info.expand_to(
-                    to_pos,
-                    &node,
-                    &mut self.nodes[to_pos],
-                    &self.locked_nodes[to_pos],
-                )
+                self.info
+                    .expand_to(to_pos, &node, &mut self.nodes[to_pos], &self.locked_nodes[to_pos])
             })
             .for_each(|node_type| match node_type {
                 NodeType::Risky(node) => self.risky_sets.insert_node(node),
@@ -942,9 +865,7 @@ impl<'a> PathFinder<'a> {
             });
 
         //handle passing
-        if self.info.player_action == PosAT::StartPass
-            && matches!(self.info.ball, PathingBallState::IsCarrier(_))
-        {
+        if self.info.player_action == PosAT::StartPass && matches!(self.info.ball, PathingBallState::IsCarrier(_)) {
             self.info
                 .game_state
                 .get_players_on_pitch()
@@ -954,12 +875,8 @@ impl<'a> PathFinder<'a> {
                 // TODO: check withing passing range
                 .map(|player| player.position)
                 .map(|to_pos| {
-                    self.info.expand_to(
-                        to_pos,
-                        &node,
-                        &mut self.nodes[to_pos],
-                        &self.locked_nodes[to_pos],
-                    )
+                    self.info
+                        .expand_to(to_pos, &node, &mut self.nodes[to_pos], &self.locked_nodes[to_pos])
                 })
                 .for_each(|node_type| match node_type {
                     NodeType::Risky(node) => self.risky_sets.insert_node(node),
@@ -995,9 +912,7 @@ impl RiskySet {
 }
 impl Debug for RiskySet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RiskySet")
-            .field("len", &self.set.len())
-            .finish()
+        f.debug_struct("RiskySet").field("len", &self.set.len()).finish()
     }
 }
 
@@ -1096,10 +1011,7 @@ mod tests {
 
         let paths = PathFinder::player_paths(&state, id).unwrap();
         let any_path = paths.iter().any(|n| n.is_some());
-        assert!(
-            !any_path,
-            "expected no paths for a stunned player, found at least one"
-        );
+        assert!(!any_path, "expected no paths for a stunned player, found at least one");
     }
 
     #[test]

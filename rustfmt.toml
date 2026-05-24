@@ -1,0 +1,3 @@
+# rust formatter configuration file
+# line width 120
+max_width = 120

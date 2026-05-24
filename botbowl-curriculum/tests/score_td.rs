@@ -17,10 +17,7 @@ fn setup_yields_a_home_carrier_with_the_ball() {
     let away_on_pitch = state
         .get_players_on_pitch_in_team(botbowl_engine::core::model::TeamType::Away)
         .count();
-    assert_eq!(
-        home_on_pitch, 1,
-        "expected exactly one home player on pitch"
-    );
+    assert_eq!(home_on_pitch, 1, "expected exactly one home player on pitch");
     assert_eq!(away_on_pitch, 0, "expected an empty away side");
 
     let carrier = state
@@ -110,10 +107,7 @@ fn medium_setup_places_blocker_in_path() {
     assert_eq!(away_on_pitch, 2);
 
     for blocker in state.get_players_on_pitch_in_team(botbowl_engine::core::model::TeamType::Away) {
-        assert_eq!(
-            blocker.position.x, 3,
-            "blockers should sit between carrier and endzone"
-        );
+        assert_eq!(blocker.position.x, 3, "blockers should sit between carrier and endzone");
     }
 
     let ctx = botbowl_curriculum::LectureContext::from_state(&state);
@@ -160,8 +154,5 @@ fn medium_scripted_dominates_random() {
         scripted_rate,
         random_rate
     );
-    assert_eq!(
-        scripted_stats.timeouts, 0,
-        "scripted bot trials must terminate"
-    );
+    assert_eq!(scripted_stats.timeouts, 0, "scripted bot trials must terminate");
 }

@@ -8,12 +8,9 @@ use crate::core::procedures::ball_procs::{
 use crate::core::procedures::block_procs::{Block, BlockAction, FollowUp, KnockDown, Push};
 use crate::core::procedures::casualty_procs::{Armor, Ejection, Injury};
 use crate::core::procedures::game_procs::{
-    ChooseKickReceive, CoinToss, GameOver, Half, KOWakeUp, Turn, TurnStunned,
-    TurnoverIfPossessionLost,
+    ChooseKickReceive, CoinToss, GameOver, Half, KOWakeUp, Turn, TurnStunned, TurnoverIfPossessionLost,
 };
-use crate::core::procedures::kickoff_procs::{
-    ChangingWeather, Kickoff, KickoffTable, LandKickoff, Setup,
-};
+use crate::core::procedures::kickoff_procs::{ChangingWeather, Kickoff, KickoffTable, LandKickoff, Setup};
 use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp};
 
 use crate::core::procedures::procedure_tools::SimpleProcContainer;

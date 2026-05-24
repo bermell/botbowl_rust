@@ -4,8 +4,7 @@ use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, D3, D6
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{
-    other_team, Action, AvailableActions, Coord, Direction, Position, ProcState, Procedure,
-    HEIGHT_, WIDTH_,
+    other_team, Action, AvailableActions, Coord, Direction, Position, ProcState, Procedure, HEIGHT_, WIDTH_,
 };
 use crate::core::model::{BallState, PlayerID};
 use crate::core::table::{PosAT, Skill};
@@ -75,9 +74,7 @@ impl Procedure for Bounce {
         let current_ball_pos = game_state.get_ball_position().unwrap();
         let new_pos = current_ball_pos + Direction::from(dice);
 
-        if self.kick
-            && (new_pos.is_out() || new_pos.is_on_team_side(game_state.info.kicking_this_drive))
-        {
+        if self.kick && (new_pos.is_out() || new_pos.is_on_team_side(game_state.info.kicking_this_drive)) {
             return ProcState::DoneNew(Touchback::new());
         }
 
@@ -136,10 +133,9 @@ impl Procedure for ThrowIn {
             ProcInput::Nothing => {
                 return ProcState::NeedRoll(RequestedRoll::ThrowIn);
             }
-            ProcInput::Roll(RollResult::ThrowIn {
-                direction,
-                distance,
-            }) => (self.get_throw_in_direction(direction), distance as i8),
+            ProcInput::Roll(RollResult::ThrowIn { direction, distance }) => {
+                (self.get_throw_in_direction(direction), distance as i8)
+            }
             _ => panic!("Unexpected input {:?} for ThrowIn", input),
         };
         let target: Position = self.from + direction * length;
@@ -154,10 +150,9 @@ impl Procedure for ThrowIn {
             ProcState::NeedRoll(RequestedRoll::ThrowIn)
         } else {
             match game_state.get_player_at(target) {
-                Some(player) if player.can_catch() => ProcState::DoneNew(Catch::new(
-                    player.id,
-                    game_state.get_catch_target(player.id).unwrap(),
-                )),
+                Some(player) if player.can_catch() => {
+                    ProcState::DoneNew(Catch::new(player.id, game_state.get_catch_target(player.id).unwrap()))
+                }
                 _ => {
                     game_state.ball = BallState::InAir(target);
                     ProcState::DoneNew(Bounce::new())
@@ -250,8 +245,7 @@ impl Procedure for Touchdown {
             if carrier_id == self.id {
                 game_state.get_mut_team_from_player(self.id).unwrap().score += 1;
                 game_state.get_mut_player_unsafe(self.id).used = true;
-                game_state.info.kickoff_by_team =
-                    Some(other_team(game_state.get_player_unsafe(self.id).stats.team));
+                game_state.info.kickoff_by_team = Some(other_team(game_state.get_player_unsafe(self.id).stats.team));
             }
         }
 
@@ -275,11 +269,7 @@ pub struct Pass {
 }
 impl Pass {
     pub fn new(pos: Position, pass: D6Target, modifier: i8) -> AnyProc {
-        AnyProc::Pass(Pass {
-            pos,
-            pass,
-            modifier,
-        })
+        AnyProc::Pass(Pass { pos, pass, modifier })
     }
 }
 impl Procedure for Pass {
@@ -359,12 +349,7 @@ pub struct DeflectOrResolve {
     intercepters: Vec<(Position, D6Target)>,
 }
 impl DeflectOrResolve {
-    pub fn new(
-        from: Position,
-        to: Position,
-        result: PassResult,
-        throw_in_pos: Option<Position>,
-    ) -> AnyProc {
+    pub fn new(from: Position, to: Position, result: PassResult, throw_in_pos: Option<Position>) -> AnyProc {
         AnyProc::DeflectOrResolve(DeflectOrResolve {
             from,
             to,
@@ -541,11 +526,7 @@ mod tests {
 
         assert_eq!(state.ball, BallState::OnGround(ball_pos));
 
-        state
-            .get_mut_player(id)
-            .unwrap()
-            .stats
-            .give_skill(Skill::SureHands);
+        state.get_mut_player(id).unwrap().stats.give_skill(Skill::SureHands);
 
         state.step_positional(PosAT::StartMove, Position::new((1, 1)));
 
@@ -553,10 +534,7 @@ mod tests {
         state.fix_d6(3); //succeed on reroll (3+)
         state.step_positional(PosAT::Move, Position::new((5, 5)));
 
-        assert!(!state
-            .get_player(id)
-            .unwrap()
-            .can_use_skill(Skill::SureHands));
+        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::SureHands));
 
         match state.ball {
             BallState::Carried(id_carrier) if id_carrier == id => (),
