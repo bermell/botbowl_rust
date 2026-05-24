@@ -3,6 +3,7 @@ use botbowl_curriculum::run_trials;
 use botbowl_mcts::MctsBot;
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn mcts_lifts_random_baseline() {
     let lecture = ScoreTdEasy::new();
     let mut agent = MctsBot::new(1000).with_workers(1);

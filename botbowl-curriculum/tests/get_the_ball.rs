@@ -25,6 +25,7 @@ fn easy_setup_places_ball_on_ground_and_home_nearby() {
 }
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn easy_scripted_picks_up_the_ball() {
     let lecture = GetTheBallEasy::new();
     let mut agent = ScriptedBot::new();
@@ -48,6 +49,7 @@ fn easy_scripted_picks_up_the_ball() {
 }
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn easy_random_baseline_is_meaningful() {
     let lecture = GetTheBallEasy::new();
     let mut agent = RandomBot::new();
@@ -92,6 +94,7 @@ fn medium_setup_places_marker_adjacent_to_ball() {
 }
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn medium_scripted_dominates_random() {
     let lecture = GetTheBallMedium::new();
 
@@ -152,6 +155,7 @@ fn hard_setup_places_carrier_with_ball() {
 }
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn hard_scripted_dominates_random() {
     let lecture = GetTheBallHard::new();
 

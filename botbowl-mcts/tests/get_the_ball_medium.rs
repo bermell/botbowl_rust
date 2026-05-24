@@ -15,6 +15,7 @@ use botbowl_mcts::MctsBot;
 /// to 0.30 to absorb run-to-run variance while still asserting a clear
 /// lift over the marked-pickup-auto-fails random baseline (~0%).
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn mcts_solves_get_the_ball_medium() {
     let lecture = GetTheBallMedium::new();
     let mut agent = MctsBot::new(1000).with_workers(1);

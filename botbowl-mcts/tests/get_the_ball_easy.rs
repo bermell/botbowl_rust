@@ -10,6 +10,7 @@ use botbowl_mcts::MctsBot;
 /// chance child still does not enter the tree — see plan 010 for
 /// the deferred Track A work if a future lecture needs that.
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn mcts_solves_get_the_ball_easy() {
     let lecture = GetTheBallEasy::new();
     let mut agent = MctsBot::new(1000).with_workers(1);

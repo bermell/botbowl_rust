@@ -38,6 +38,7 @@ fn setup_yields_a_home_carrier_with_the_ball() {
 }
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn random_agent_baseline_success_rate() {
     let lecture = ScoreTdEasy::new();
     let mut agent = RandomBot::new();
@@ -70,6 +71,7 @@ fn random_agent_baseline_success_rate() {
 }
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn scripted_agent_dominates_easy() {
     let lecture = ScoreTdEasy::new();
     let mut agent = ScriptedBot::new();
@@ -119,6 +121,7 @@ fn medium_setup_places_blocker_in_path() {
 }
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn medium_scripted_dominates_random() {
     let lecture = ScoreTdMedium::new();
 

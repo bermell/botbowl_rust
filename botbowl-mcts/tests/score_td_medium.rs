@@ -3,6 +3,7 @@ use botbowl_curriculum::run_trials;
 use botbowl_mcts::MctsBot;
 
 #[test]
+#[ignore = "bot benchmark — run with --ignored"]
 fn mcts_solves_score_td_medium() {
     let lecture = ScoreTdMedium::new();
     let mut agent = MctsBot::new(1000).with_workers(1);
