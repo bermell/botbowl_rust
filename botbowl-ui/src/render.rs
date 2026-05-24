@@ -24,8 +24,8 @@ pub fn draw(frame: &mut Frame, state: &GameState, log: &[String]) {
         .direction(Direction::Vertical)
         .margin(0)
         .constraints([
-            Constraint::Length(1),               // header
-            Constraint::Min(0),                  // body
+            Constraint::Length(1), // header
+            Constraint::Min(0),    // body
             Constraint::Length(log_panel_height(log)),
         ])
         .split(rect_size);
@@ -35,7 +35,10 @@ pub fn draw(frame: &mut Frame, state: &GameState, log: &[String]) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .margin(0)
-        .constraints([Constraint::Min(0), Constraint::Length(side_panel_width(rect_size.width))])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(side_panel_width(rect_size.width)),
+        ])
         .split(outer[1]);
 
     draw_pitch(frame, state, body[0]);
@@ -117,7 +120,10 @@ fn draw_pitch(frame: &mut Frame, state: &GameState, area: Rect) {
             } else if ball {
                 frame.render_widget(ball_canvas(bg_color), *chunk);
             } else if td {
-                frame.render_widget(td_square_canvas(bg_color, Color::Gray, pos.y as usize), *chunk);
+                frame.render_widget(
+                    td_square_canvas(bg_color, Color::Gray, pos.y as usize),
+                    *chunk,
+                );
             } else {
                 frame.render_widget(square_canvas(bg_color), *chunk);
             }
@@ -163,7 +169,10 @@ fn side_panel_widget(state: &GameState) -> impl Widget + '_ {
         Line::from(Span::styled(proc_line, Style::default().fg(Color::Cyan))),
         Line::from(Span::styled(team_line, Style::default().fg(Color::Gray))),
         Line::from(""),
-        Line::from(Span::styled("Actions:", Style::default().fg(Color::White).bold())),
+        Line::from(Span::styled(
+            "Actions:",
+            Style::default().fg(Color::White).bold(),
+        )),
     ];
 
     let mut actions: Vec<String> = state
@@ -174,7 +183,10 @@ fn side_panel_widget(state: &GameState) -> impl Widget + '_ {
         .collect();
     actions.sort();
     if actions.is_empty() {
-        lines.push(Line::from(Span::styled("  (none)", Style::default().fg(Color::DarkGray))));
+        lines.push(Line::from(Span::styled(
+            "  (none)",
+            Style::default().fg(Color::DarkGray),
+        )));
     } else {
         for action in actions.iter().take(12) {
             lines.push(Line::from(Span::raw(format!("  {action}"))));
@@ -188,7 +200,11 @@ fn side_panel_widget(state: &GameState) -> impl Widget + '_ {
     }
 
     Paragraph::new(lines)
-        .block(Block::default().borders(Borders::LEFT).border_style(Style::default().fg(Color::DarkGray)))
+        .block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
         .wrap(Wrap { trim: false })
 }
 
@@ -199,8 +215,7 @@ fn log_widget(log: &[String]) -> impl Widget + '_ {
         .iter()
         .map(|s| Line::from(Span::raw(s.clone())))
         .collect();
-    Paragraph::new(lines)
-        .block(Block::default().borders(Borders::TOP).title("log"))
+    Paragraph::new(lines).block(Block::default().borders(Borders::TOP).title("log"))
 }
 
 fn split_rows(area: &Rect, row_height: u16, num_rows: u16) -> Rc<[Rect]> {

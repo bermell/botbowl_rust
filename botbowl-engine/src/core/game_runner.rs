@@ -171,7 +171,9 @@ impl BotGameRunnerBuilder {
         let mut away_bot = self
             .away_bot
             .unwrap_or_else(|| Box::new(crate::bots::RandomBot::new()));
-        let mut state = self.state.unwrap_or_else(BotGameRunnerBuilder::default_state);
+        let mut state = self
+            .state
+            .unwrap_or_else(BotGameRunnerBuilder::default_state);
         if let Some(seed) = self.seed {
             state.set_seed(seed);
             state.rng_enabled = true;

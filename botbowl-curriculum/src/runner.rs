@@ -42,12 +42,7 @@ pub struct LectureSession<'l> {
 impl<'l> LectureSession<'l> {
     /// Build a session, mirroring the per-trial setup in `run_trials`: same
     /// setup-RNG seeding, same opponent/agent seed mixing constants.
-    pub fn new(
-        lecture: &'l dyn Lecture,
-        seed: u64,
-        max_steps: u32,
-        agent: &mut dyn Bot,
-    ) -> Self {
+    pub fn new(lecture: &'l dyn Lecture, seed: u64, max_steps: u32, agent: &mut dyn Bot) -> Self {
         let agent_team = lecture.agent_team();
         let opponent_team = match agent_team {
             TeamType::Home => TeamType::Away,

@@ -3,7 +3,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use botbowl_curriculum::{make_lecture, available_lectures, Difficulty, LectureSession, LectureStatus};
+use botbowl_curriculum::{
+    available_lectures, make_lecture, Difficulty, LectureSession, LectureStatus,
+};
 use crossterm::event::{self, Event, KeyCode};
 
 use botbowl_ui::bot_factory::make_bot;

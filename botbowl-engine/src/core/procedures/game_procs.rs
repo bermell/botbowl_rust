@@ -848,7 +848,10 @@ mod tests {
         state.step_positional(PosAT::StartMove, start_pos);
         state.step_positional(PosAT::Move, td_pos);
 
-        assert_eq!(state.home.score, 1, "policy should have made pickup succeed");
+        assert_eq!(
+            state.home.score, 1,
+            "policy should have made pickup succeed"
+        );
     }
 
     #[test]

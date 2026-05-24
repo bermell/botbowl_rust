@@ -41,7 +41,10 @@ pub enum ChanceOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BbAction {
     Player(EngineAction),
-    Chance { outcome: ChanceOutcome, prob_bits: u32 },
+    Chance {
+        outcome: ChanceOutcome,
+        prob_bits: u32,
+    },
 }
 
 impl BbAction {

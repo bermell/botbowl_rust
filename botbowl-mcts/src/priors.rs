@@ -41,8 +41,7 @@ pub fn prior_for(state: &GameState, action: &BbAction) -> f32 {
     // irrelevant — PUCT is invariant to a uniform scale of priors.
     if matches!(
         engine_action,
-        EngineAction::Simple(SimpleAT::EndPlayerTurn)
-            | EngineAction::Simple(SimpleAT::EndTurn)
+        EngineAction::Simple(SimpleAT::EndPlayerTurn) | EngineAction::Simple(SimpleAT::EndTurn)
     ) {
         return W_END_TURN;
     }

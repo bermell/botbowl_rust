@@ -1,6 +1,6 @@
 # Plan 008 — Run `recon_mcts` concurrently from `MctsBot`
 
-**Priority:** #3 in v4. Tackle *after* 006 and 007 so we don't multiply
+**Priority:** #3 in v4. Tackle _after_ 006 and 007 so we don't multiply
 correctness bugs across threads.
 
 ## Why this matters
@@ -34,7 +34,7 @@ stuck behind slow expansions).
 - `recon_mcts/src/lockref.rs` — the synchronisation primitive the tree uses.
 - `recon_mcts/tests/nim/benchmark_2048.rs` — see how the reference drives
   the tree from multiple threads (`cargo run --bin benchmark_2048
-  -p recon_mcts-test_nim --release`).
+-p recon_mcts-test_nim --release`).
 - `recon_mcts/tests/nim/test_mcts_2048.rs` — production-shape concurrent
   driver. Cribbable.
 - `botbowl_rust/botbowl-engine/src/core/gamestate.rs` — `GameState` must be
@@ -49,7 +49,7 @@ stuck behind slow expansions).
    (`#[derive(Default, Clone, Copy)]`, no state) so yes. Confirm.
 3. **Is `GameState` `Send`?** Sub-question: any `Rc<…>`? The CLAUDE.md says
    `AvailableActions` holds `FullPitch<Option<Rc<Node>>>` — `Rc` is NOT `Send`.
-   We may need to swap to `Arc` either in the engine *or* clone-on-search by
+   We may need to swap to `Arc` either in the engine _or_ clone-on-search by
    converting at `MctsBot::get_action` time.
 4. **How does the reference benchmark spawn workers?** Plain `std::thread`?
    `rayon`? Crossbeam scope? Match their pattern.
@@ -94,7 +94,7 @@ stuck behind slow expansions).
 ## Pitfalls
 
 - **`expose_rolls`/`fixes`/`rng_enabled` setup in `get_action`** must happen
-  *before* the tree is built and shared — no thread should be mutating root
+  _before_ the tree is built and shared — no thread should be mutating root
   state.
 - **Deterministic seed.** `root_state.rng_enabled = true` plus multiple
   threads = nondeterministic search even with a fixed seed. Either
@@ -132,11 +132,11 @@ Shipped in two commits, sequenced per the plan:
 **Measured speedup (10-core laptop, release build):**
 
 | Iters/move | Workers | Wall-clock (2 trials, ScoreTdEasy) | Speedup |
-|---|---|---|---|
-| 1000  | 1  | 97ms  | — |
-| 1000  | 10 | 101ms | 0.96× |
-| 20000 | 1  | 651ms | — |
-| 20000 | 10 | 368ms | 1.77× |
+| ---------- | ------- | ---------------------------------- | ------- |
+| 1000       | 1       | 97ms                               | —       |
+| 1000       | 10      | 101ms                              | 0.96×   |
+| 20000      | 1       | 651ms                              | —       |
+| 20000      | 10      | 368ms                              | 1.77×   |
 
 Speedup grows with budget — at 1k iters/move, thread spawn dominates. The
 1.77× ceiling at 20k is well below the plan's loose 4–8× estimate; bottlenecks

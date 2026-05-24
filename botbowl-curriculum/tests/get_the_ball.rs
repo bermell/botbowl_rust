@@ -82,7 +82,10 @@ fn medium_setup_places_marker_adjacent_to_ball() {
     let any_marker = state
         .get_players_on_pitch_in_team(TeamType::Away)
         .any(|p| p.position.distance_to(&ball_pos) == 1);
-    assert!(any_marker, "expected at least one Away player adjacent to the ball");
+    assert!(
+        any_marker,
+        "expected at least one Away player adjacent to the ball"
+    );
 
     let home_count = state.get_players_on_pitch_in_team(TeamType::Home).count();
     assert_eq!(home_count, 3, "Medium needs picker + blocker + assistant");
@@ -135,7 +138,10 @@ fn hard_setup_places_carrier_with_ball() {
     // Ball must be carried by an Away player.
     let carrier_id = match state.ball {
         BallState::Carried(id) => id,
-        other => panic!("expected ball to be carried by the opponent, got {:?}", other),
+        other => panic!(
+            "expected ball to be carried by the opponent, got {:?}",
+            other
+        ),
     };
     let carrier = state.get_player(carrier_id).unwrap();
     assert_eq!(carrier.stats.team, TeamType::Away);

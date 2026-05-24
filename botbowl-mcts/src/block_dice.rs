@@ -223,10 +223,7 @@ mod tests {
             .unwrap()
             .stats
             .give_skill(Skill::Dodge);
-        offer(
-            &mut state,
-            &[SimpleAT::SelectPowPush, SimpleAT::SelectPush],
-        );
+        offer(&mut state, &[SimpleAT::SelectPowPush, SimpleAT::SelectPush]);
         assert_eq!(
             scripted_pick(&state),
             Some(EngineAction::Simple(SimpleAT::SelectPush))
@@ -328,10 +325,7 @@ mod tests {
             .unwrap()
             .stats
             .give_skill(Skill::Block);
-        offer(
-            &mut state,
-            &[SimpleAT::SelectBothDown, SimpleAT::SelectPow],
-        );
+        offer(&mut state, &[SimpleAT::SelectBothDown, SimpleAT::SelectPow]);
         assert_eq!(
             scripted_pick(&state),
             Some(EngineAction::Simple(SimpleAT::SelectBothDown))
