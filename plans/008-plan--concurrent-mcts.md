@@ -115,3 +115,38 @@ stuck behind slow expansions).
 - Tree reuse across calls.
 - Removing per-step `GameState` cloning (separate perf work).
 - GPU / SIMD / fancy scheduling.
+
+## Results (2026-05-24)
+
+Shipped in two commits, sequenced per the plan:
+
+1. **Engine `Rc<Node>` → `Arc<Node>`**: surgical rename across
+   `core/pathing.rs`, `core/model.rs`, `scripted_bot.rs`. No behavior change;
+   engine tests green; downstream crates rebuild clean.
+2. **`MctsBot` parallel workers**: `Arc<Tree>` + `std::thread::scope`. New
+   `n_workers` field defaults to `std::thread::available_parallelism()`. Total
+   budget (`iterations_per_move`) is split across workers; the field's
+   semantic is preserved so test thresholds remain calibrated. New
+   `with_workers(n)` builder; integration tests pin to `with_workers(1)`.
+
+**Measured speedup (10-core laptop, release build):**
+
+| Iters/move | Workers | Wall-clock (2 trials, ScoreTdEasy) | Speedup |
+|---|---|---|---|
+| 1000  | 1  | 97ms  | — |
+| 1000  | 10 | 101ms | 0.96× |
+| 20000 | 1  | 651ms | — |
+| 20000 | 10 | 368ms | 1.77× |
+
+Speedup grows with budget — at 1k iters/move, thread spawn dominates. The
+1.77× ceiling at 20k is well below the plan's loose 4–8× estimate; bottlenecks
+are (a) the `fetch_add(Relaxed)` race on `BbScore.visits` (multiple threads
+claim the same child before the leaf returns — plan 007 territory) and
+(b) per-step `GameState.clone()` (explicit out-of-scope). Bench code lives in
+`botbowl-mcts/tests/parallel_bench.rs` as `#[ignore]`.
+
+**Test pinning:** all four curriculum integration tests
+(`score_td_{easy,medium}`, `get_the_ball_{easy,medium}`) use
+`.with_workers(1)`. `ScoreTdEasy` (previously flagged flaky at the 0.80
+threshold) is now deterministic on the seed — see updated
+`mcts-test-flake-score-td-easy` memory.

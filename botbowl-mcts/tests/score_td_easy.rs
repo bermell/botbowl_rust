@@ -5,7 +5,7 @@ use botbowl_mcts::MctsBot;
 #[test]
 fn mcts_lifts_random_baseline() {
     let lecture = ScoreTdEasy::new();
-    let mut agent = MctsBot::new(1000);
+    let mut agent = MctsBot::new(1000).with_workers(1);
     let stats = run_trials(&lecture, &mut agent, 50, 0xCAFE_1234, 400);
 
     let rate = stats.success_rate();

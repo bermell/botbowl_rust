@@ -11,7 +11,7 @@ use botbowl_mcts::MctsBot;
 #[test]
 fn mcts_solves_get_the_ball_medium() {
     let lecture = GetTheBallMedium::new();
-    let mut agent = MctsBot::new(1000);
+    let mut agent = MctsBot::new(1000).with_workers(1);
     let stats = run_trials(&lecture, &mut agent, 50, 0xBEEF_3456, 400);
 
     let rate = stats.success_rate();

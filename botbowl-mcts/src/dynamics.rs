@@ -15,6 +15,7 @@
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
@@ -387,13 +388,27 @@ fn puct_value(
 /// `Bot` adapter that drives a fresh MCTS search per call.
 pub struct MctsBot {
     pub iterations_per_move: usize,
+    /// Number of worker threads driving `tree.step()`. The total search
+    /// budget (`iterations_per_move`) is split across them; the wall-clock
+    /// goal is the win, not extra iterations. Tests that need deterministic
+    /// search results should pin this to 1 via [`with_workers`].
+    pub n_workers: usize,
 }
 
 impl MctsBot {
     pub fn new(iterations_per_move: usize) -> Self {
+        let n_workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         Self {
             iterations_per_move,
+            n_workers,
         }
+    }
+
+    pub fn with_workers(mut self, n_workers: usize) -> Self {
+        self.n_workers = n_workers.max(1);
+        self
     }
 }
 
@@ -423,11 +438,31 @@ impl Bot for MctsBot {
         root_state.clear_log();
 
         let root_player = player_for_state(&root_state);
-        let tree = Tree::new(BloodBowlDynamics, HashOnly, root_player, root_state);
+        let tree = Arc::new(Tree::new(
+            BloodBowlDynamics,
+            HashOnly,
+            root_player,
+            root_state,
+        ));
 
-        for _ in 0..self.iterations_per_move {
-            tree.step();
-        }
+        let n_workers = self.n_workers.max(1);
+        let base = self.iterations_per_move / n_workers;
+        let rem = self.iterations_per_move % n_workers;
+
+        std::thread::scope(|s| {
+            for w in 0..n_workers {
+                let iters = base + if w < rem { 1 } else { 0 };
+                if iters == 0 {
+                    continue;
+                }
+                let tree = Arc::clone(&tree);
+                s.spawn(move || {
+                    for _ in 0..iters {
+                        tree.step();
+                    }
+                });
+            }
+        });
 
         let move_info = tree
             .get_next_move_info()

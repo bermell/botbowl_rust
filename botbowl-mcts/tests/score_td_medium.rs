@@ -5,7 +5,7 @@ use botbowl_mcts::MctsBot;
 #[test]
 fn mcts_solves_score_td_medium() {
     let lecture = ScoreTdMedium::new();
-    let mut agent = MctsBot::new(1000);
+    let mut agent = MctsBot::new(1000).with_workers(1);
     let stats = run_trials(&lecture, &mut agent, 50, 0xC0DE_5678, 400);
 
     let rate = stats.success_rate();
