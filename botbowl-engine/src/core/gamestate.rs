@@ -1002,7 +1002,18 @@ impl GameState {
             .pop()
             .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
 
+        match &proc_input {
+            ProcInput::Action(a) => {
+                self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, a))
+            }
+            ProcInput::Roll(_) => {
+                self.log(format!("STEPPING: {:?}\n  input={:?}", top_proc, proc_input))
+            }
+            ProcInput::Nothing => self.log(format!("STEPPING: {:?}", top_proc)),
+        }
+
         let proc_return = top_proc.step(self, proc_input);
+        self.log(format!("  result:   {:?}", proc_return));
         self.available_actions = Default::default();
         self.next_input = match proc_return {
             ProcState::NotDoneNewProcs(new_procs) => {
@@ -1049,73 +1060,23 @@ impl GameState {
     }
 
     pub fn step(&mut self, action: Action) -> Result<()> {
-        let mut top_proc = self
-            .proc_stack
-            .pop()
-            .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
+        // `step` is the resolve-everything-inline API. `expose_rolls` is for
+        // MCTS callers that drive `micro_step` directly and want chance nodes
+        // surfaced as `pending_roll`; mixing the two modes would make this
+        // loop spin on chance nodes.
+        debug_assert!(!self.expose_rolls);
 
-        let mut proc_input: ProcInput = {
-            if self.available_actions.is_empty() {
-                self.log(format!("STEPPING: {:?}", top_proc));
-                ProcInput::Nothing
-            } else if !self.is_legal_action(&action) {
-                return Err(Box::new(IllegalActionError { action }));
-            } else {
-                self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, action));
-                ProcInput::Action(action)
-            }
+        // Match the legacy behavior of dropping the action when nothing
+        // is asking for one — some callers feed in a placeholder action
+        // after a transition that left available_actions empty.
+        let first = if self.available_actions.is_empty() {
+            None
+        } else {
+            Some(action)
         };
-
-        let mut top_proc_state: ProcState = top_proc.step(self, proc_input);
-
-        loop {
-            if self.info.game_over {
-                break;
-            }
-            self.log(format!("  result:   {:?}", top_proc_state));
-            proc_input = ProcInput::Nothing;
-            match top_proc_state {
-                ProcState::NotDoneNewProcs(mut new_procs) => {
-                    self.proc_stack.push(top_proc);
-                    top_proc = new_procs.pop().unwrap();
-                    self.proc_stack.extend(new_procs);
-                }
-                ProcState::DoneNewProcs(mut new_procs) => {
-                    top_proc = new_procs.pop().unwrap();
-                    self.proc_stack.extend(new_procs);
-                }
-                ProcState::NotDoneNew(new_proc) => {
-                    self.proc_stack.push(top_proc);
-                    top_proc = new_proc;
-                }
-                ProcState::DoneNew(new_proc) => {
-                    top_proc = new_proc;
-                }
-                ProcState::NotDone => (),
-                ProcState::Done => {
-                    top_proc = self
-                        .proc_stack
-                        .pop()
-                        .ok_or_else(|| Box::new(EmptyProcStackError {}))?;
-                }
-                ProcState::NeedAction(aa) => {
-                    self.available_actions = aa;
-                    self.proc_stack.push(top_proc);
-                    break;
-                }
-                ProcState::NeedRoll(requested_roll) => {
-                    let result = self.get_roll_result(requested_roll);
-                    proc_input = ProcInput::Roll(result);
-                }
-            };
-
-            if matches!(proc_input, ProcInput::Roll(_)) {
-                self.log(format!("STEPPING again with:   {:?}", proc_input));
-            } else {
-                self.log(format!("STEPPING: {:?}", top_proc));
-            }
-
-            top_proc_state = top_proc.step(self, proc_input);
+        self.micro_step(first)?;
+        while !self.info.game_over && self.available_actions.is_empty() {
+            self.micro_step(None)?;
         }
         debug_assert!(!self.available_actions.is_empty() || self.info.game_over);
         Ok(())
