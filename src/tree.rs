@@ -912,8 +912,17 @@ where
     where
         GD: GameDynamics<Score = Q>,
     {
+        // Persistent visited set: same cycle-safety rationale as
+        // `set_min_depth`. The recombined DAG can contain cycles (engine
+        // states hash-equal across paths), and walking parents indefinitely
+        // through a cycle would update scores forever as each loop nudges
+        // the parent's aggregate.
+        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
         let mut n_updates = 0;
         let mut h = UniqueHeap::new();
+
+        let seed_ptr: *const Node<GD, S, P, A, Q, I, M> = &*self_arc.inner;
+        visited.insert(seed_ptr);
         let d = self_arc.depth.load(Ordering::Relaxed);
         h.push((d, ArcWrap::clone(self_arc)));
 
@@ -922,9 +931,12 @@ where
                 n_updates += 1;
 
                 node.parents.read().unwrap().iter().for_each(|(_, p)| {
-                    let p = WeakWrap::upgrade(p);
-                    let dp = p.depth.load(Ordering::Relaxed);
-                    h.push((dp, p));
+                    let parent_ptr: *const Node<GD, S, P, A, Q, I, M> = p.as_ptr();
+                    if visited.insert(parent_ptr) {
+                        let p = WeakWrap::upgrade(p);
+                        let dp = p.depth.load(Ordering::Relaxed);
+                        h.push((dp, p));
+                    }
                 });
             }
         }
@@ -976,9 +988,20 @@ where
     }
 
     fn set_min_depth(self_arc: &ArcWrap<Self>) -> usize {
+        // Persistent visited set: each node is processed at most once per
+        // BFS. The recombined DAG can contain cycles (two engine states
+        // hash-equal even though one is reachable from the other), and the
+        // heap's own dedup is push-time only — once a node is popped, its
+        // UID is removed from the registry and a back-edge from a
+        // descendant would happily re-push it. Without `visited`,
+        // `update_depth` on the re-pushed node bumps its depth by 1 each
+        // cycle iteration, spinning forever.
+        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
         let mut n_updates = 0;
         let mut h = UniqueHeap::new();
 
+        let seed_ptr: *const Node<GD, S, P, A, Q, I, M> = &*self_arc.inner;
+        visited.insert(seed_ptr);
         let d = self_arc.depth.load(Ordering::Relaxed);
         let elem = Reverse((d, ArcWrap::clone(self_arc)));
         h.push(elem);
@@ -996,9 +1019,12 @@ where
             let children_rlk = node.children.read().unwrap();
             if let Some(map) = children_rlk.as_map() {
                 map.iter().for_each(|(_, c)| {
-                    let c = ArcNode::clone(c);
-                    let d = c.depth.load(Ordering::Relaxed);
-                    h.push(Reverse((d, c)));
+                    let child_ptr: *const Node<GD, S, P, A, Q, I, M> = &*c.inner;
+                    if visited.insert(child_ptr) {
+                        let c = ArcNode::clone(c);
+                        let d = c.depth.load(Ordering::Relaxed);
+                        h.push(Reverse((d, c)));
+                    }
                 });
             }
         }
@@ -1240,17 +1266,20 @@ where
     S: Hash + PartialEq<S> + Clone,
     P: Hash + PartialEq<P>,
 {
-    // The depth of a node may be modified, so we must store it as a separate field outside the
-    // `ArcNode` (required by `UniqueHeap`)
+    // Dedup by pointer only (no depth in UID). Without this, a node whose
+    // depth changes mid-BFS gets re-pushed under a new UID and reprocessed,
+    // which in a cyclic DAG runs forever — each cycle bumps depth and
+    // re-enqueues the same nodes. Pointer-only dedup bounds work to
+    // O(subgraph_size) per BFS even if cycles exist. Heap *ordering* still
+    // uses the stored depth, which is fine because `update_depth` re-reads
+    // the live max(parents) at pop time.
     type Order = Reverse<usize>;
-    type UID = (usize, *const Node<GD, S, P, A, Q, I, M>);
+    type UID = *const Node<GD, S, P, A, Q, I, M>;
     fn order(&self) -> Self::Order {
         Reverse((self.0).0)
     }
     fn unique_id(&self) -> Self::UID {
-        let d = (self.0).0;
-        let p = &*(self.0).1.inner as *const _;
-        (d, p)
+        &*(self.0).1.inner as *const _
     }
 }
 
@@ -1554,7 +1583,11 @@ where
 
                 self.reg_info.hits.fetch_add(1, Ordering::Relaxed);
 
-                Node::set_min_depth(&node);
+                if parent_node.depth.load(Ordering::Relaxed) + 1
+                    > node.depth.load(Ordering::Relaxed)
+                {
+                    Node::set_min_depth(&node);
+                }
                 // `node.score` may be `None` but the score will be set before a read lock on
                 // `node.score` is available (see `None` arm below)
             }
@@ -1573,7 +1606,11 @@ where
                 // `Node::set_min_depth` only works with children that are connected, the depth of
                 // `node` may actually be stale / incorrect, so we update the depth here while we
                 // have a write lock on `score`
-                Node::set_min_depth(&node);
+                if parent_node.depth.load(Ordering::Relaxed) + 1
+                    > node.depth.load(Ordering::Relaxed)
+                {
+                    Node::set_min_depth(&node);
+                }
 
                 // Only run `GD::score_leaf` for nodes that don't exist in the registry
                 // it's ok to hold the read lock on `node.state` for an extended period of time (if
