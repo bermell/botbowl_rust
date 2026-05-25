@@ -1591,7 +1591,7 @@ mod gamestate_tests {
 
     use crate::core::dices::{RequestedRoll, RollResult};
     use crate::core::gamestate::DiceMode;
-    use crate::core::model::Action;
+    use crate::core::model::{Action, MicroStepState, SomeProcInput};
     use crate::core::table::{PosAT, SimpleAT};
 
     #[test]
@@ -1603,21 +1603,32 @@ mod gamestate_tests {
     }
 
     #[test]
-    #[should_panic(expected = "step_with_roll requires DiceMode::RegisterRolls")]
-    fn step_with_roll_panics_in_rolldice_mode() {
+    #[should_panic(expected = "no pending_roll")]
+    fn step_with_roll_or_action_panics_without_pending_roll() {
+        // Feeding a Roll when the engine isn't paused on a roll request
+        // is a programming error — micro_step asserts pending_roll is set.
         let mut state = standard_state();
-        state.set_dice_mode(DiceMode::RollDice);
-        // pending_roll is None, but the mode-check fires first
-        let _ = state.step_with_roll(RollResult::Pass);
+        state.set_dice_mode(DiceMode::RegisterRolls);
+        let _ = state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Pass));
     }
 
     #[test]
     #[should_panic(expected = "DiceMode::RegisterRolls")]
     fn step_panics_in_registerrolls_mode() {
-        let mut state = standard_state();
+        // step() resolves rolls inline via get_roll_result; that branch
+        // is unreachable! in RegisterRolls mode — the MCTS caller is
+        // expected to drive chance nodes via step_with_roll_or_action.
+        let start_pos = Position::new((2, 5));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(td_pos)
+            .build();
         state.set_dice_mode(DiceMode::RegisterRolls);
-        // step() debug-asserts !RegisterRolls; sending any action triggers it.
-        let _ = state.step(Action::Simple(SimpleAT::EndTurn));
+        state.step(Action::Positional(PosAT::StartMove, start_pos)).unwrap();
+        // Move onto the ball triggers a pickup D6PassFail; step()'s
+        // inline roll resolution then hits the unreachable!.
+        state.step(Action::Positional(PosAT::Move, td_pos)).unwrap();
     }
 
     #[test]
@@ -1665,8 +1676,8 @@ mod gamestate_tests {
 
     #[test]
     fn register_rolls_round_trip() {
-        // RegisterRolls: micro_step pauses on NeedRoll; step_with_roll
-        // resumes. Drive a pickup all the way through both paths.
+        // RegisterRolls: step_with_roll_or_action drives the engine and
+        // pauses on NeedRoll so the caller can supply the chance outcome.
         let start_pos = Position::new((2, 5));
         let td_pos = Position::new((1, 5));
         let mut state = GameStateBuilder::new()
@@ -1675,24 +1686,30 @@ mod gamestate_tests {
             .build();
         state.set_dice_mode(DiceMode::RegisterRolls);
 
-        state
-            .micro_step(Some(Action::Positional(PosAT::StartMove, start_pos)))
-            .unwrap();
-        // Drain mid-procedure ticks until we hit a decision or a roll.
-        while !state.info.game_over && state.available_actions.is_empty() && state.pending_roll.is_none() {
-            state.micro_step(None).unwrap();
-        }
-        state.micro_step(Some(Action::Positional(PosAT::Move, td_pos))).unwrap();
-        // Drain until the engine pauses on the pickup roll.
-        while !state.info.game_over && state.available_actions.is_empty() && state.pending_roll.is_none() {
-            state.micro_step(None).unwrap();
-        }
+        let after_start = state.step_with_roll_or_action(SomeProcInput::Action(
+            Action::Positional(PosAT::StartMove, start_pos),
+        ));
+        assert_eq!(
+            after_start,
+            MicroStepState::NeedAction,
+            "StartMove should yield the next Move-target decision"
+        );
+
+        let after_move = state.step_with_roll_or_action(SomeProcInput::Action(
+            Action::Positional(PosAT::Move, td_pos),
+        ));
+        assert_eq!(
+            after_move,
+            MicroStepState::NeedRoll,
+            "moving onto the ball should pause for the pickup roll"
+        );
         assert!(
             matches!(state.pending_roll, Some(RequestedRoll::D6PassFail(_))),
             "expected pickup PassFail pending, got {:?}",
             state.pending_roll
         );
-        state.step_with_roll(RollResult::Pass).unwrap();
+
+        state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Pass));
         assert_eq!(state.home.score, 1, "successful pickup scores");
     }
 }
