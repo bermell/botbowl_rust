@@ -1,6 +1,6 @@
 use core::panic;
 use derivative::Derivative;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
@@ -955,35 +955,64 @@ impl GameState {
         self.dugout_players = Default::default();
         Ok(())
     }
-    pub fn micro_step(&mut self, action: Option<Action>) -> Result<()> {
-        let proc_input: ProcInput = {
-            if self.pending_roll.is_some() {
-                // RegisterRolls mode paused on a NeedRoll last time; the
-                // caller has since invoked `step_with_roll(result)` which
-                // stashed `registered_roll`. Consume both and feed the
-                // roll to the proc on top of the stack.
-                debug_assert!(action.is_none());
-                debug_assert!(matches!(self.dice_mode, DiceMode::RegisterRolls));
-                self.pending_roll = None;
-                let result = self.registered_roll.take().expect(
-                    "RegisterRolls: pending_roll set but no roll registered \
-                     — call step_with_roll(result) to resume",
-                );
-                ProcInput::Roll(result)
-            } else if self.available_actions.is_empty() {
-                debug_assert!(action.is_none());
-                self.next_input.take().unwrap_or(ProcInput::Nothing)
+
+    pub fn step_with_roll_or_action(&mut self, roll_or_action: SomeProcInput) -> MicroStepState {
+        // This function should eventually be on only one called from mcts bot's apply action.
+        // it either takes an action or a roll results and applies micro_step until either:
+        //  - needs a roll result
+        //  - needs an action
+        //  - game over
+        //
+        //  To do this we need to change micro_step(): it should be a private function that takes a
+        //  ProcInput and returns a MicroStepState (GameOver, NeedAction, NeedRoll, or RunAgain). If:
+        //  - RunAgain: call micro_step again with ProcInput::Nothing
+        //  - NeedAction(aa): set available_actions to aa and return
+        //  - NeedRoll(requested_roll): set pending_roll to requested_roll and return
+        //  - GameOver: set game_over to true and return
+
+        // an we need to refactor step() to call this function with an action.
+        // Step however is only called when the dicepolicy is not RegisterRolls, so if it gets a
+        // requested roll back it will just resolve it and call this function again.
+
+        let mut proc_input = ProcInput::from(roll_or_action);
+        loop {
+            let micro_step_state = self.micro_step(proc_input);
+            if micro_step_state == MicroStepState::RunAgain {
+                proc_input = ProcInput::Nothing;
+                continue;
             } else {
-                match action {
-                    None => return Err(Box::new(MissingActionError {})),
-                    Some(action) if !self.is_legal_action(&action) => {
-                        return Err(Box::new(IllegalActionError { action }))
-                    }
-                    Some(action) => ProcInput::Action(action),
-                }
+                return micro_step_state;
             }
-        };
-        let mut top_proc = self.proc_stack.pop().ok_or_else(|| Box::new(EmptyProcStackError {}))?;
+        }
+    }
+
+    fn micro_step(&mut self, proc_input: ProcInput) -> MicroStepState {
+        if self.info.game_over {
+            return MicroStepState::GameOver;
+        }
+
+        // check that arg is correct - can consider doing debug asserts here..
+        match proc_input {
+            ProcInput::Nothing => {
+                assert!(self.pending_roll.is_none());
+                assert!(self.available_actions.is_empty());
+            }
+            ProcInput::Action(action) => {
+                assert!(self.pending_roll.is_none());
+                assert!(self.is_legal_action(&action));
+            }
+            ProcInput::Roll(roll_result) => {
+                assert!(self
+                    .pending_roll
+                    .expect("micro_step called with ProcInput::Roll but no pending_roll")
+                    .is_compatible(roll_result));
+                assert!(self.available_actions.is_empty());
+            }
+        }
+        let mut top_proc = self
+            .proc_stack
+            .pop()
+            .expect("proc_stack was empty at start of micro_step - should never happen");
 
         match &proc_input {
             ProcInput::Action(a) => self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, a)),
@@ -992,103 +1021,87 @@ impl GameState {
         }
 
         let proc_return = top_proc.step(self, proc_input);
+
         self.log(format!("  result:   {:?}", proc_return));
+
         self.available_actions = Default::default();
-        self.next_input = match proc_return {
+        self.pending_roll = None;
+
+        match proc_return {
             ProcState::NotDoneNewProcs(new_procs) => {
                 self.proc_stack.push(top_proc);
                 self.proc_stack.extend(new_procs);
-                Some(ProcInput::Nothing)
+                MicroStepState::RunAgain
             }
             ProcState::DoneNewProcs(new_procs) => {
                 self.proc_stack.extend(new_procs);
-                Some(ProcInput::Nothing)
+                MicroStepState::RunAgain
             }
             ProcState::NotDoneNew(new_proc) => {
                 self.proc_stack.push(top_proc);
                 self.proc_stack.push(new_proc);
-                Some(ProcInput::Nothing)
+                MicroStepState::RunAgain
             }
             ProcState::DoneNew(new_proc) => {
                 self.proc_stack.push(new_proc);
-                Some(ProcInput::Nothing)
+                MicroStepState::RunAgain
             }
             ProcState::NotDone => {
                 self.proc_stack.push(top_proc);
-                Some(ProcInput::Nothing)
+                MicroStepState::RunAgain
             }
-            ProcState::Done => Some(ProcInput::Nothing),
+            ProcState::Done => MicroStepState::RunAgain,
             ProcState::NeedAction(aa) => {
                 self.available_actions = aa;
                 self.proc_stack.push(top_proc);
-                None
+                MicroStepState::NeedAction
             }
             ProcState::NeedRoll(requested_roll) => {
                 self.proc_stack.push(top_proc);
-                if matches!(self.dice_mode, DiceMode::RegisterRolls) {
-                    self.pending_roll = Some(requested_roll);
-                    None
-                } else {
-                    let result = self.get_roll_result(requested_roll);
-                    Some(ProcInput::Roll(result))
-                }
+                self.pending_roll = Some(requested_roll);
+                MicroStepState::NeedRoll
             }
-        };
-
-        Ok(())
+        }
     }
 
     pub fn step(&mut self, action: Action) -> Result<()> {
-        // `step` is the resolve-everything-inline API. `RegisterRolls` is
-        // for MCTS callers that drive `micro_step` and `step_with_roll`
-        // directly and want chance nodes surfaced as `pending_roll`;
-        // mixing the two would make this loop spin on chance nodes.
-        debug_assert!(!matches!(self.dice_mode, DiceMode::RegisterRolls));
-
-        // Match the legacy behavior of dropping the action when nothing
-        // is asking for one — some callers feed in a placeholder action
-        // after a transition that left available_actions empty.
-        let first = if self.available_actions.is_empty() {
-            None
+        // Match the legacy step() behavior of dropping the action when
+        // nothing is asking for one — initial-state setups and a few
+        // post-transition paths in GameStateBuilder pass a placeholder
+        // action just to drive the engine to the next decision.
+        let initial_state = if self.available_actions.is_empty() && self.pending_roll.is_none() {
+            // No input expected: drive the engine forward with Nothing.
+            let mut s = MicroStepState::RunAgain;
+            while s == MicroStepState::RunAgain {
+                s = self.micro_step(ProcInput::Nothing);
+            }
+            s
         } else {
-            Some(action)
+            self.step_with_roll_or_action(SomeProcInput::Action(action))
         };
-        self.micro_step(first)?;
-        while !self.info.game_over && self.available_actions.is_empty() {
-            self.micro_step(None)?;
+
+        let mut micro_step_state = initial_state;
+        loop {
+            if micro_step_state == MicroStepState::GameOver || micro_step_state == MicroStepState::NeedAction {
+                break;
+            } else if micro_step_state == MicroStepState::NeedRoll {
+                let roll_result = self.get_roll_result();
+                micro_step_state = self.step_with_roll_or_action(SomeProcInput::Roll(roll_result));
+            } else {
+                panic!(
+                    "step_with_roll_or_action returned unexpected state: {:?}",
+                    micro_step_state
+                );
+            }
         }
         debug_assert!(!self.available_actions.is_empty() || self.info.game_over);
         Ok(())
     }
 
-    /// Resume an engine that paused on a chance node (`DiceMode::RegisterRolls`).
-    ///
-    /// The caller observes `state.pending_roll.is_some()`, picks a roll
-    /// outcome, and passes the corresponding `RollResult` in. The engine
-    /// feeds the roll to the suspended procedure and continues stepping
-    /// until the next decision, the next chance node, or game-over.
-    ///
-    /// Panics if the current mode is not `RegisterRolls` or if no roll
-    /// is pending — the engine has no procedure expecting a roll.
-    pub fn step_with_roll(&mut self, roll: RollResult) -> Result<()> {
-        debug_assert!(
-            matches!(self.dice_mode, DiceMode::RegisterRolls),
-            "step_with_roll requires DiceMode::RegisterRolls"
-        );
-        assert!(
-            self.pending_roll.is_some(),
-            "step_with_roll called with no pending_roll"
-        );
-        self.registered_roll = Some(roll);
-        self.micro_step(None)?;
-        while !self.info.game_over && self.available_actions.is_empty() && self.pending_roll.is_none() {
-            self.micro_step(None)?;
-        }
-        debug_assert!(!self.available_actions.is_empty() || self.info.game_over || self.pending_roll.is_some());
-        Ok(())
-    }
-
-    fn get_roll_result(&mut self, requested_roll: RequestedRoll) -> RollResult {
+    fn get_roll_result(&mut self) -> RollResult {
+        let requested_roll = self
+            .pending_roll
+            .expect("get_roll_result called but no pending_roll was set");
         match &mut self.dice_mode {
             DiceMode::RollDice => resolve_with_rng(requested_roll, &mut self.rng),
             DiceMode::FixedDice(fixes) => resolve_from_fixes(requested_roll, fixes),

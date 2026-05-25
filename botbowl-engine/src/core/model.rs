@@ -546,11 +546,35 @@ pub enum Weather {
     Sweltering,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SomeProcInput {
+    Action(Action),
+    Roll(RollResult),
+}
+impl From<Action> for SomeProcInput {
+    fn from(action: Action) -> Self {
+        SomeProcInput::Action(action)
+    }
+}
+impl From<RollResult> for SomeProcInput {
+    fn from(roll: RollResult) -> Self {
+        SomeProcInput::Roll(roll)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcInput {
     Nothing,
     Action(Action),
     Roll(RollResult),
+}
+impl From<SomeProcInput> for ProcInput {
+    fn from(input: SomeProcInput) -> Self {
+        match input {
+            SomeProcInput::Action(action) => ProcInput::Action(action),
+            SomeProcInput::Roll(roll) => ProcInput::Roll(roll),
+        }
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ProcState {
@@ -562,6 +586,15 @@ pub enum ProcState {
     NotDone,
     NeedRoll(RequestedRoll),
     NeedAction(Box<AvailableActions>),
+}
+
+//rename to something more descriptive
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MicroStepState {
+    RunAgain,
+    NeedAction,
+    NeedRoll,
+    GameOver,
 }
 
 pub trait Procedure: std::fmt::Debug {

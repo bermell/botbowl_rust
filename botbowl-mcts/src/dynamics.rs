@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
-use botbowl_engine::core::model::{Action as EngineAction, TeamType};
+use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
 use recon_mcts::{GameDynamics, HashOnly, SearchTree, SelectNodeState, Tree};
 
 use crate::action::{BbAction, BbPlayer, ChanceOutcome};
@@ -124,9 +124,11 @@ impl GameDynamics for BloodBowlDynamics {
         // MCTS never sees the other dice — they'd just burn search
         // budget on a decision the rules resolve deterministically
         // given attacker/defender skills.
+        // TODO: the scripted behaviour shouldn't be in available actions, it should be in apply_action!
         if let Some(scripted) = block_dice::scripted_pick(state) {
             return Some(vec![(mcts_player, BbAction::Player(scripted))]);
         }
+
         let actions: Vec<(BbPlayer, BbAction)> = state
             .available_actions
             .get_all()
@@ -143,27 +145,21 @@ impl GameDynamics for BloodBowlDynamics {
 
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
         let mut new_state = state;
-        match action {
-            BbAction::Player(engine_action) => {
-                if new_state.micro_step(Some(*engine_action)).is_err() {
-                    return None;
-                }
-            }
+        let proc_input: SomeProcInput = match action {
+            BbAction::Player(engine_action) => SomeProcInput::Action(*engine_action),
             BbAction::Chance { outcome, .. } => {
                 let req = new_state.pending_roll.as_ref().cloned()?;
                 let result = roll_outcomes::result_for_outcome(&req, *outcome);
-                if new_state.step_with_roll(result).is_err() {
-                    return None;
-                }
+                SomeProcInput::Roll(result)
             }
-        }
-        // FF is intentionally NOT enabled here in v3 — see
-        // dynamics.rs PR notes. The combination of FF + chance-node
-        // modeling produces both deep-tree slowdowns (5-10 ms / iter
-        // vs 1 µs / iter at v1) and reconstruction panics during
-        // tree drop. Instead, v3 keeps the tree shallow and gives the
-        // pickup-move chance state a meaningful Q via the optimistic
-        // success-outcome `score_leaf` below.
+        };
+
+        new_state.step_with_roll_or_action(proc_input);
+        // TODO: in the future we might inspect the state here to see if there are scripted actions
+        // we can take here. Such as:
+        // - only one availaction, we just take it.
+        // - scripted block dice behaviour.
+
         Some(new_state)
     }
 
@@ -331,7 +327,7 @@ impl GameDynamics for BloodBowlDynamics {
         let needs_ff =
             !state.info.game_over && (state.pending_roll.is_some() || state.available_actions.team.is_none());
         let score = if needs_ff {
-            optimistic_leaf_score(state, self.ff_depth).unwrap_or_else(|| leaf_score(state))
+            optimistic_leaf_score(state).unwrap_or_else(|| leaf_score(state))
         } else {
             leaf_score(state)
         };
@@ -362,35 +358,25 @@ impl GameDynamics for BloodBowlDynamics {
 /// Returns None if the engine errors mid-simulation; caller falls
 /// back to the bare leaf score of the original (pre-simulation)
 /// state in that case.
-fn optimistic_leaf_score(state: &GameState, max_steps: u8) -> Option<i64> {
-    let mut sim = state.clone();
-    for _ in 0..max_steps {
-        if sim.info.game_over {
-            break;
-        }
-        if let Some(req) = sim.pending_roll.as_ref().cloned() {
-            let outcome = if crate::action::is_pass_fail(&req) {
+fn optimistic_leaf_score(state: &GameState) -> Option<i64> {
+    if state.pending_roll.is_none() {
+        // game state is not waiting for a roll, just score the state
+        Some(leaf_score(state))
+    } else {
+        // game state is waiting for a roll which is a weird state to score.. just forward it in a deterministic way
+        let mut sim = state.clone();
+
+        while let Some(requested_roll) = sim.pending_roll.as_ref() {
+            let outcome = if crate::action::is_pass_fail(requested_roll) {
                 ChanceOutcome::Pass
             } else {
                 ChanceOutcome::Advance
             };
-            let result = roll_outcomes::result_for_outcome(&req, outcome);
-            if sim.step_with_roll(result).is_err() {
-                return None;
-            }
-            continue;
+            let result = roll_outcomes::result_for_outcome(requested_roll, outcome);
+            sim.step_with_roll_or_action(SomeProcInput::Roll(result));
         }
-        if sim.available_actions.team.is_some() {
-            // Decision point — stop and let the caller score this state.
-            break;
-        }
-        // Mid-procedure: engine has internal work to do (e.g. Move
-        // walking one square per micro_step).
-        if sim.micro_step(None).is_err() {
-            return None;
-        }
+        Some(leaf_score(&sim))
     }
-    Some(leaf_score(&sim))
 }
 
 /// PUCT(a) = Q(a) + c · P(a) · √N(parent) / (1 + N(a))

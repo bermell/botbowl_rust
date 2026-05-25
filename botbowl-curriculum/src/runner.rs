@@ -104,7 +104,7 @@ impl<'l> LectureSession<'l> {
             Some(t) if t == self.opponent_team => Some(self.opponent.get_action(&self.state)),
             Some(_) | None => None,
         };
-        self.state.micro_step(action).unwrap();
+        self.state.step(action.unwrap()).unwrap();
         self.steps_taken += 1;
         self.status = self.lecture.evaluate(&self.state, &self.context);
     }

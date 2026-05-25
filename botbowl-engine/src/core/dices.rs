@@ -715,3 +715,30 @@ pub enum RollResult {
     Sum2D6(Sum2D6),
     ThrowIn { direction: D3, distance: Sum2D6 },
 }
+
+impl RequestedRoll {
+    pub fn is_compatible(&self, result: RollResult) -> bool {
+        match (self, result) {
+            (RequestedRoll::BlockDice(_), RollResult::BlockDice(_)) => true,
+            (RequestedRoll::Coin, RollResult::Coin(_)) => true,
+            (RequestedRoll::D6, RollResult::D6(_)) => true,
+            (RequestedRoll::D6PassFail(_), RollResult::Pass | RollResult::Fail) => true,
+            (RequestedRoll::D6ThreeOutcomes(_, _), RollResult::Pass | RollResult::MiddleOutcome | RollResult::Fail) => {
+                true
+            }
+            (RequestedRoll::D8, RollResult::D8(_)) => true,
+            (RequestedRoll::FoulArmor(_), RollResult::FoulArmor { .. }) => true,
+            (RequestedRoll::FoulInjury(_, _), RollResult::FoulInjury { .. }) => true,
+            (RequestedRoll::Deviate, RollResult::Deviate(_, _)) => true,
+            (RequestedRoll::Scatter, RollResult::Scatter(_, _, _)) => true,
+            (RequestedRoll::Sum2D6, RollResult::Sum2D6(_)) => true,
+            (RequestedRoll::Sum2D6PassFail(_), RollResult::Pass | RollResult::Fail) => true,
+            (
+                RequestedRoll::Sum2D6ThreeOutcomes(_, _),
+                RollResult::Pass | RollResult::MiddleOutcome | RollResult::Fail,
+            ) => true,
+            (RequestedRoll::ThrowIn, RollResult::ThrowIn { .. }) => true,
+            _ => false,
+        }
+    }
+}

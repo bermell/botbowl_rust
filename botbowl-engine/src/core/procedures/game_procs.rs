@@ -266,6 +266,7 @@ impl Procedure for GameOver {
         };
         game_state.info.game_over = true;
 
+        // TODO: why doesn't this just return Done? Why does it need to offer an EndSetup action?!
         let mut aa = AvailableActions::new(TeamType::Home);
         aa.insert_simple(SimpleAT::EndSetup);
         aa.insert_simple(SimpleAT::DontUseReroll);

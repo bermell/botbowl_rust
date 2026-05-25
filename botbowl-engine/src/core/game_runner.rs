@@ -62,7 +62,7 @@ impl BotGameRunner {
             Some(TeamType::Away) => Some(self.away_bot.get_action(&self.state)),
             None => None,
         };
-        self.state.micro_step(action).unwrap();
+        self.state.step(action.unwrap()).unwrap();
     }
     pub fn save_to_file(&self) {
         let Some(file) = &self.save_file else {
