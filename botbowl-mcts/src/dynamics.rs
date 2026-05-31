@@ -527,6 +527,13 @@ impl Bot for MctsBot {
         };
         let iterations = self.iterations_per_move;
 
+        // `BLOOD_MCTS_STATS=1` dumps registry hit/miss/len and DAG
+        // depth distribution after the search finishes but before the
+        // tree drops. Used to validate recombination + depth claims
+        // (plan 013) without modifying the benchmark tests.
+        let dump_stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
+        let memory_mode = MemoryMode::resolve(self.memory_mode);
+
         // Marker type is part of `Tree`'s generic parameters, so the
         // arms below monomorphise to three concrete `Tree<...>` types.
         // The post-construction worker/extract code is identical, so
@@ -534,7 +541,7 @@ impl Bot for MctsBot {
         // (a generic helper would force naming `Node<...>` bounds
         // explicitly — not worth it for three call sites).
         macro_rules! run_with_marker {
-            ($marker:expr) => {{
+            ($marker:expr, $mode_label:expr) => {{
                 let tree = Arc::new(Tree::new(gd, $marker, root_player, root_state));
                 let base = iterations / n_workers;
                 let rem = iterations % n_workers;
@@ -552,14 +559,64 @@ impl Bot for MctsBot {
                         });
                     }
                 });
+                if dump_stats {
+                    let info = tree.get_registry_info();
+                    let hits = info.hits.load(Ordering::Relaxed);
+                    let misses = info.misses.load(Ordering::Relaxed);
+                    let len = info.len.load(Ordering::Relaxed);
+                    let denom = (hits + misses).max(1);
+                    eprintln!(
+                        "MCTS_STATS mode={} iters={} workers={} reg_len={} hits={} misses={} reuse={:.4}",
+                        $mode_label,
+                        iterations,
+                        n_workers,
+                        len,
+                        hits,
+                        misses,
+                        hits as f64 / denom as f64,
+                    );
+                    // `find_children_sorted_with_depth` is itself
+                    // recursive (`tree.rs:1058`); on a deep DAG this
+                    // can overflow the worker stack just like the
+                    // search itself. Run it on the main thread (much
+                    // larger default stack) so we still get the depth
+                    // number when the worker would have crashed.
+                    let sorted = std::thread::scope(|s| {
+                        s.spawn(|| tree.find_children_sorted_with_depth())
+                            .join()
+                            .unwrap()
+                    });
+                    let max_depth = sorted.iter().map(|(_, d)| *d).max().unwrap_or(0);
+                    let n_nodes = sorted.len();
+                    // depth histogram (inv-depth: 0 == leaf), bucketed
+                    let mut buckets = [0usize; 8];
+                    for (_, d) in &sorted {
+                        let bucket = match *d {
+                            0 => 0,
+                            1..=2 => 1,
+                            3..=5 => 2,
+                            6..=10 => 3,
+                            11..=20 => 4,
+                            21..=50 => 5,
+                            51..=100 => 6,
+                            _ => 7,
+                        };
+                        buckets[bucket] += 1;
+                    }
+                    eprintln!(
+                        "MCTS_STATS mode={} reachable_nodes={} max_depth={} \
+                         depth_hist[0,1-2,3-5,6-10,11-20,21-50,51-100,100+]={:?}",
+                        $mode_label, n_nodes, max_depth, buckets
+                    );
+                }
                 tree.get_next_move_info().expect("MCTS tree has no move info at root")
             }};
         }
 
-        let move_info = match MemoryMode::resolve(self.memory_mode) {
-            MemoryMode::HashOnly => run_with_marker!(HashOnly),
-            MemoryMode::GetState => run_with_marker!(GetState),
-            MemoryMode::StoreState => run_with_marker!(StoreState),
+        let move_info = match memory_mode {
+            MemoryMode::HashOnly => run_with_marker!(HashOnly, "hash"),
+            MemoryMode::GetState => run_with_marker!(GetState, "get"),
+            MemoryMode::StoreState => run_with_marker!(StoreState, "store"),
         };
 
         let best = move_info

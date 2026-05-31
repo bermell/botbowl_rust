@@ -25,7 +25,74 @@ alternatives are runnable as-is), and pursue plan 012 Step A
 actual fix. The new env-var hook stays committed because it's a
 cheap diagnostic.
 
-## Run metadata
+## Update — DAG-shape probe (2026-05-31, post-commit)
+
+A follow-up instrumentation pass added `BLOOD_MCTS_STATS=1` to
+`MctsBot::get_action`. When set, the macro dumps the
+`recon_mcts::RegistryInfo` (hits / misses / len) and walks
+`tree.find_children_sorted_with_depth()` for a depth distribution,
+right before the tree drops. A new `tree_shape` test target runs a
+single `get_action` at controllable iter budgets so we can sample the
+tree before any overflow.
+
+Two findings tear up the assumptions in plan 011:
+
+### Finding 1 — `HashOnly`'s "recombination" is mostly fake
+
+| iters | `HashOnly` reuse | `GetState` reuse | `StoreState` reuse |
+| ----: | ---------------: | ---------------: | -----------------: |
+|    50 |           0.7563 |           0.0218 |             0.0218 |
+|   200 |           0.9010 |           0.0393 |             0.0328 |
+|   500 |           0.7668 |           0.5508 |             0.5335 |
+|  1000 |              n/a |           0.6696 |             0.6692 |
+
+`HashOnly`'s 75–90 % "reuse" at small budgets dissolves to 2–5 % under
+structural equality. Real recombination doesn't kick in until ~500
+iters; even then it's 55–67 %, not the 99.98 % plan 011 recorded. Plan
+011's number was measuring hash collisions, not recombinations.
+
+`HashOnly` at iters ≥ 50 also makes the registry's depth walk
+*non-terminating* (the depth helper recursively visits a node's
+children and the cyclic graph from collisions causes infinite
+recursion → stack overflow). That's direct evidence that `HashOnly`
+constructs a true cyclic graph, not a DAG.
+
+### Finding 2 — DAG depth is modest under correct equality
+
+Single-call probe on `ScoreTdEasy::new().setup(seed=0xCAFE_1234)`,
+single-thread `StoreState`:
+
+| iters  | reg_len | max_depth | nodes at depth ≥ 21 |
+| -----: | ------: | --------: | ------------------: |
+|     50 |     494 |         6 |                   0 |
+|    200 |   1 356 |         6 |                   0 |
+|    500 |   3 130 |        29 |                 100 |
+|  1 000 |   4 123 |        54 |                 411 |
+|  2 000 |   7 131 |        57 |                1 137 |
+|  5 000 |  14 811 |        56 |                2 407 |
+| 10 000 |  25 750 |        57 |                3 685 |
+
+Max depth caps around 54–57 even at 10 000 iters. That ceiling looks
+load-bearing — it's the depth at which the search hits states the
+scoring heuristic treats as terminal-enough that PUCT stops descending
+further. Comfortable headroom over the 2 MB default thread stack:
+54 × ~1 KB-per-`get_state`-frame ≈ 54 KB.
+
+### So why does the actual benchmark still overflow?
+
+The first `get_action` in `score_td_easy.rs` runs to depth 54 and
+prints stats cleanly. The **second** `get_action` overflows before
+emitting either stats line. The bot's intermediate move advanced the
+state to one whose search tree reaches a deeper terminal — but we
+can't see how deep because the dump happens after the workers join,
+and the worker dies first.
+
+This matches the plan-012 description: the DAG-depth pathology is
+state-dependent, not a constant cost. Bounding the horizon (Step F)
+caps the depth deterministically and removes the dependency on which
+state the bot stumbles into.
+
+## Original run metadata
 
 - Date: 2026-05-31
 - Host: Darwin arm64 (macOS, Apple silicon)
