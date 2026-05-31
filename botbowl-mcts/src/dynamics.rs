@@ -60,20 +60,82 @@ impl Clone for BbScore {
     }
 }
 
+/// Captures the root-state's turn/score so the search can treat states
+/// that have moved past the horizon as terminal.
+///
+/// "Past the horizon" = our team has started a new turn (i.e. the bot
+/// played, the opponent played, and we are back to the bot's next
+/// turn) OR either team has scored OR the game has ended. The
+/// scoring heuristic (`score::leaf_score`) already evaluates these
+/// states meaningfully, so the search can stop descending and read
+/// the value off the leaf.
+///
+/// Must be a pure function of `(state, anchor)` — the anchor is
+/// captured once per `get_action` call and is constant for the
+/// lifetime of one search, so recombination stays correct.
+#[derive(Debug, Clone, Copy)]
+pub struct HorizonAnchor {
+    pub agent_team: TeamType,
+    pub home_turn: u8,
+    pub away_turn: u8,
+    pub home_score: u8,
+    pub away_score: u8,
+}
+
+impl HorizonAnchor {
+    pub fn capture(state: &GameState, agent_team: TeamType) -> Self {
+        Self {
+            agent_team,
+            home_turn: state.info.home_turn,
+            away_turn: state.info.away_turn,
+            home_score: state.home.score,
+            away_score: state.away.score,
+        }
+    }
+
+    /// Has the state moved past the horizon? True ⇒ treat as terminal.
+    pub fn diverged(&self, state: &GameState) -> bool {
+        if state.info.game_over {
+            return true;
+        }
+        if state.home.score != self.home_score || state.away.score != self.away_score {
+            return true;
+        }
+        // The agent's turn counter only advances when it's their turn
+        // to play *again* — meaning the bot's turn ended, the opponent
+        // played, and the bot has been handed the next turn. That's
+        // exactly "opponent's end-of-turn" per the design.
+        match self.agent_team {
+            TeamType::Home => state.info.home_turn > self.home_turn,
+            TeamType::Away => state.info.away_turn > self.away_turn,
+        }
+    }
+}
+
 /// `ff_depth` is the upper bound on roll-resolution steps inside
 /// `optimistic_leaf_score`. 1 reproduces the v3 single-step
 /// behaviour; 8 (the default) lets multi-roll move chains (GFI then
 /// pickup; pickup then dodge) resolve to a stable decision/terminal
 /// state before scoring. Pure leaf-scoring effect — chance children
 /// still do not enter the tree.
+///
+/// `horizon` (None by default for backwards compatibility) bounds the
+/// search depth — `available_actions` returns None as soon as a state
+/// has diverged past the anchor. `MctsBot::get_action` always sets a
+/// horizon; only direct callers (benches, tests that drive `Tree`
+/// without `MctsBot`) see the unbounded form.
 #[derive(Debug, Clone, Copy)]
 pub struct BloodBowlDynamics {
     pub ff_depth: u8,
+    pub horizon: Option<HorizonAnchor>,
 }
 
 impl Default for BloodBowlDynamics {
     fn default() -> Self {
-        Self { ff_depth: 8 }
+        Self {
+            ff_depth: 8,
+            horizon: None,
+        }
     }
 }
 
@@ -103,6 +165,15 @@ impl GameDynamics for BloodBowlDynamics {
     fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         if state.info.game_over {
             return None;
+        }
+        // Horizon bound (Step F, plan 014): once the state has moved
+        // past the root's turn or someone has scored, the leaf-score
+        // already gives a meaningful value — no need to keep
+        // expanding.
+        if let Some(anchor) = self.horizon {
+            if anchor.diverged(state) {
+                return None;
+            }
         }
 
         // Chance node: enumerate roll outcomes.
@@ -515,8 +586,26 @@ impl Bot for MctsBot {
         root_state.clear_log();
 
         let root_player = player_for_state(&root_state);
+        // The horizon is captured from the root state and held
+        // constant for this entire `get_action` call, so it remains a
+        // pure function of `(state, anchor)` from the dynamics' point
+        // of view — recombination invariants stay intact. If the root
+        // is somehow not a player turn (chance node at root), fall
+        // back to the engine's team_turn marker.
+        let agent_team = match state.available_actions.team {
+            Some(t) => t,
+            None => root_state.info.team_turn,
+        };
+        // `BLOOD_MCTS_HORIZON=off` disables the horizon for A/B
+        // comparison (e.g. against the historical unbounded baseline).
+        let horizon_disabled = std::env::var("BLOOD_MCTS_HORIZON").ok().as_deref() == Some("off");
         let gd = BloodBowlDynamics {
             ff_depth: self.ff_depth,
+            horizon: if horizon_disabled {
+                None
+            } else {
+                Some(HorizonAnchor::capture(&root_state, agent_team))
+            },
         };
         // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
         // workers (e.g. `expand_bench_main`) force single-thread for

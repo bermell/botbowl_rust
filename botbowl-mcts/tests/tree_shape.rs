@@ -22,6 +22,7 @@
 //! done
 //! ```
 
+use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
 use botbowl_curriculum::lectures::score_td::ScoreTdEasy;
 use botbowl_curriculum::Lecture;
 use botbowl_engine::bots::Bot;
@@ -34,6 +35,11 @@ const SEED: u64 = 0xCAFE_1234;
 fn build_state() -> botbowl_engine::core::gamestate::GameState {
     let mut rng = ChaCha8Rng::seed_from_u64(SEED);
     ScoreTdEasy::new().setup(&mut rng)
+}
+
+fn build_gtb_state() -> botbowl_engine::core::gamestate::GameState {
+    let mut rng = ChaCha8Rng::seed_from_u64(0xF00D_9012);
+    GetTheBallEasy::new().setup(&mut rng)
 }
 
 fn run_once(iters: usize) {
@@ -89,4 +95,29 @@ fn iters_5000_single() {
 #[ignore = "manual DAG-shape probe — run with --ignored"]
 fn iters_10000_single() {
     run_once(10000);
+}
+
+fn run_once_gtb(iters: usize) {
+    std::env::set_var("BLOOD_MCTS_STATS", "1");
+    let mut agent = MctsBot::new(iters).with_workers(1);
+    let state = build_gtb_state();
+    let t0 = std::time::Instant::now();
+    let action = agent.get_action(&state);
+    let elapsed = t0.elapsed();
+    eprintln!(
+        "TREE_SHAPE_GTB iters={iters} elapsed_ms={:.1} chosen_action={action:?}",
+        elapsed.as_secs_f64() * 1e3
+    );
+}
+
+#[test]
+#[ignore = "manual DAG-shape probe — run with --ignored"]
+fn gtb_iters_1000() {
+    run_once_gtb(1000);
+}
+
+#[test]
+#[ignore = "manual DAG-shape probe — run with --ignored"]
+fn gtb_iters_5000() {
+    run_once_gtb(5000);
 }
