@@ -37,6 +37,15 @@ use crate::score::leaf_score;
 /// visits — verified empirically against the existing UCT baseline test.
 const PUCT_C: f32 = 10.0;
 
+/// MCTS workers spawned by `MctsBot::get_action` get an explicit
+/// 16 MB stack instead of the OS-default ~2 MB. Sized for headroom
+/// against the recursive `Node::get_state` and `Arc<Node>` drop
+/// chains in `recon_mcts` (plan 013). 16 MB ≈ 16 000 frames at
+/// ~1 KB-per-frame, which dwarfs the post-Step-F max DAG depth
+/// (~20) and gives plenty of buffer if the horizon's loosened
+/// later or a future scenario reaches deeper.
+const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 /// `recon_mcts` does not maintain its own per-node visit counter — the
 /// `Score` we give it is the *sole* source of truth. `visits` is therefore
 /// load-bearing for PUCT (read as `N(parent)` and `N(a)` in `puct_value`).
@@ -647,11 +656,22 @@ impl Bot for MctsBot {
                             continue;
                         }
                         let tree = Arc::clone(&tree);
-                        s.spawn(move || {
-                            for _ in 0..iters {
-                                tree.step();
-                            }
-                        });
+                        // Bigger stack than the platform default (2 MB
+                        // on macOS / Linux pthread): `recon_mcts`'s
+                        // `Node::get_state` and `Arc<Node>` drop chain
+                        // both recurse with the DAG depth. With Step F's
+                        // horizon bound depth caps at ~20, but the
+                        // headroom is cheap insurance against future
+                        // regressions where it might creep back up.
+                        std::thread::Builder::new()
+                            .stack_size(WORKER_STACK_SIZE)
+                            .name(format!("mcts-worker-{w}"))
+                            .spawn_scoped(s, move || {
+                                for _ in 0..iters {
+                                    tree.step();
+                                }
+                            })
+                            .expect("failed to spawn MCTS worker thread");
                     }
                 });
                 if dump_stats {
