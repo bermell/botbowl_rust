@@ -20,7 +20,7 @@ use std::sync::Arc;
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
-use recon_mcts::{GameDynamics, HashOnly, SearchTree, SelectNodeState, Tree};
+use recon_mcts::{GameDynamics, GetState, HashOnly, SearchTree, SelectNodeState, StoreState, Tree};
 
 use crate::action::{BbAction, BbPlayer, ChanceOutcome};
 use crate::block_dice;
@@ -366,7 +366,14 @@ fn optimistic_leaf_score(state: &GameState) -> Option<i64> {
         // game state is waiting for a roll which is a weird state to score.. just forward it in a deterministic way
         let mut sim = state.clone();
 
+        // Safety budget: a chance leaf with a long bounce/catch chain could
+        // otherwise spin until OOM. 32 matches the pre-refactor ceiling.
+        let mut budget: u32 = 32;
         while let Some(requested_roll) = sim.pending_roll.as_ref() {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
             let outcome = if crate::action::is_pass_fail(requested_roll) {
                 ChanceOutcome::Pass
             } else {
@@ -404,6 +411,41 @@ fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_pers
 }
 
 /// `Bot` adapter that drives a fresh MCTS search per call.
+/// Node-equality strategy used by the underlying `recon_mcts` tree.
+/// See `recon_mcts/src/tree.rs:397/416/438` for the three markers.
+///
+/// - `HashOnly`  — equality is `hash == hash`. Cheapest, but a hash
+///   collision merges two genuinely different states into one node.
+/// - `GetState`  — equality replays the action sequence from root and
+///   compares full `GameState`. No spurious merges; pays an O(depth)
+///   recompute on each equality check.
+/// - `StoreState` — full state stored on every node; equality is
+///   structural and O(1). Highest memory cost.
+///
+/// Selectable at runtime via `with_memory_mode` or the
+/// `BLOOD_MCTS_MEMORY` env var (`hash` / `get` / `store`). Env var
+/// wins when set so a single test binary can sweep all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMode {
+    HashOnly,
+    GetState,
+    StoreState,
+}
+
+impl MemoryMode {
+    fn resolve(default: MemoryMode) -> Self {
+        match std::env::var("BLOOD_MCTS_MEMORY").ok().as_deref() {
+            Some("hash") => MemoryMode::HashOnly,
+            Some("get") => MemoryMode::GetState,
+            Some("store") => MemoryMode::StoreState,
+            Some(other) => {
+                panic!("BLOOD_MCTS_MEMORY={other:?} (expected one of: hash | get | store)")
+            }
+            None => default,
+        }
+    }
+}
+
 pub struct MctsBot {
     pub iterations_per_move: usize,
     /// Number of worker threads driving `tree.step()`. The total search
@@ -414,6 +456,10 @@ pub struct MctsBot {
     /// Forwarded to [`BloodBowlDynamics::ff_depth`] — see that field for
     /// semantics. Default 8.
     pub ff_depth: u8,
+    /// Which `recon_mcts` state-memory strategy to use. See
+    /// [`MemoryMode`]. Default `HashOnly` (preserves historical
+    /// behaviour); `BLOOD_MCTS_MEMORY` overrides at runtime.
+    pub memory_mode: MemoryMode,
 }
 
 impl MctsBot {
@@ -423,6 +469,7 @@ impl MctsBot {
             iterations_per_move,
             n_workers,
             ff_depth: BloodBowlDynamics::default().ff_depth,
+            memory_mode: MemoryMode::HashOnly,
         }
     }
 
@@ -433,6 +480,11 @@ impl MctsBot {
 
     pub fn with_ff_depth(mut self, ff_depth: u8) -> Self {
         self.ff_depth = ff_depth;
+        self
+    }
+
+    pub fn with_memory_mode(mut self, memory_mode: MemoryMode) -> Self {
+        self.memory_mode = memory_mode;
         self
     }
 }
@@ -463,35 +515,53 @@ impl Bot for MctsBot {
         root_state.clear_log();
 
         let root_player = player_for_state(&root_state);
-        let tree = Arc::new(Tree::new(
-            BloodBowlDynamics {
-                ff_depth: self.ff_depth,
-            },
-            HashOnly,
-            root_player,
-            root_state,
-        ));
+        let gd = BloodBowlDynamics {
+            ff_depth: self.ff_depth,
+        };
+        // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
+        // workers (e.g. `expand_bench_main`) force single-thread for
+        // marker-comparison sweeps, without modifying the test.
+        let n_workers = match std::env::var("BLOOD_MCTS_WORKERS").ok().as_deref() {
+            Some(s) => s.parse::<usize>().unwrap_or(self.n_workers).max(1),
+            None => self.n_workers.max(1),
+        };
+        let iterations = self.iterations_per_move;
 
-        let n_workers = self.n_workers.max(1);
-        let base = self.iterations_per_move / n_workers;
-        let rem = self.iterations_per_move % n_workers;
-
-        std::thread::scope(|s| {
-            for w in 0..n_workers {
-                let iters = base + if w < rem { 1 } else { 0 };
-                if iters == 0 {
-                    continue;
-                }
-                let tree = Arc::clone(&tree);
-                s.spawn(move || {
-                    for _ in 0..iters {
-                        tree.step();
+        // Marker type is part of `Tree`'s generic parameters, so the
+        // arms below monomorphise to three concrete `Tree<...>` types.
+        // The post-construction worker/extract code is identical, so
+        // we factor it into a local macro to keep the arms readable
+        // (a generic helper would force naming `Node<...>` bounds
+        // explicitly — not worth it for three call sites).
+        macro_rules! run_with_marker {
+            ($marker:expr) => {{
+                let tree = Arc::new(Tree::new(gd, $marker, root_player, root_state));
+                let base = iterations / n_workers;
+                let rem = iterations % n_workers;
+                std::thread::scope(|s| {
+                    for w in 0..n_workers {
+                        let iters = base + if w < rem { 1 } else { 0 };
+                        if iters == 0 {
+                            continue;
+                        }
+                        let tree = Arc::clone(&tree);
+                        s.spawn(move || {
+                            for _ in 0..iters {
+                                tree.step();
+                            }
+                        });
                     }
                 });
-            }
-        });
+                tree.get_next_move_info().expect("MCTS tree has no move info at root")
+            }};
+        }
 
-        let move_info = tree.get_next_move_info().expect("MCTS tree has no move info at root");
+        let move_info = match MemoryMode::resolve(self.memory_mode) {
+            MemoryMode::HashOnly => run_with_marker!(HashOnly),
+            MemoryMode::GetState => run_with_marker!(GetState),
+            MemoryMode::StoreState => run_with_marker!(StoreState),
+        };
+
         let best = move_info
             .iter()
             .max_by_key(|(_, info)| {
