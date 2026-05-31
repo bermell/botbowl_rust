@@ -487,11 +487,16 @@ fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_pers
 ///
 /// - `HashOnly`  — equality is `hash == hash`. Cheapest, but a hash
 ///   collision merges two genuinely different states into one node.
+///   **Do not use in production** — plan 013 documents that this
+///   corrupts the DAG (cycles, illegal actions). Kept as a variant
+///   only so the `BLOOD_MCTS_MEMORY=hash` diagnostic still works.
 /// - `GetState`  — equality replays the action sequence from root and
 ///   compares full `GameState`. No spurious merges; pays an O(depth)
 ///   recompute on each equality check.
 /// - `StoreState` — full state stored on every node; equality is
-///   structural and O(1). Highest memory cost.
+///   structural and O(1). Highest memory cost — but with the
+///   horizon bound (plan 014) capping max-depth at ~20 the memory
+///   footprint is bounded too. This is the default.
 ///
 /// Selectable at runtime via `with_memory_mode` or the
 /// `BLOOD_MCTS_MEMORY` env var (`hash` / `get` / `store`). Env var
@@ -528,8 +533,9 @@ pub struct MctsBot {
     /// semantics. Default 8.
     pub ff_depth: u8,
     /// Which `recon_mcts` state-memory strategy to use. See
-    /// [`MemoryMode`]. Default `HashOnly` (preserves historical
-    /// behaviour); `BLOOD_MCTS_MEMORY` overrides at runtime.
+    /// [`MemoryMode`]. Default `StoreState` (plan 014 + 013); never
+    /// `HashOnly` for production, that mode corrupts the DAG.
+    /// `BLOOD_MCTS_MEMORY` overrides at runtime.
     pub memory_mode: MemoryMode,
 }
 
@@ -540,7 +546,7 @@ impl MctsBot {
             iterations_per_move,
             n_workers,
             ff_depth: BloodBowlDynamics::default().ff_depth,
-            memory_mode: MemoryMode::HashOnly,
+            memory_mode: MemoryMode::StoreState,
         }
     }
 
