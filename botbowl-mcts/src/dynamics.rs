@@ -285,9 +285,18 @@ impl GameDynamics for BloodBowlDynamics {
             }
         };
 
-        // Chance node: temporarily reverted to plain min-visits (v1
-        // behaviour) while bisecting the v3 reconstruction panic.
+        // Chance node: pick the outcome whose visit count is furthest
+        // below its expected count under the action's probability
+        // distribution. Score for outcome i = `p_i · (N_parent + 1) - N_i`;
+        // we pick the argmax. This makes the empirical visit ratio
+        // converge to the real probability distribution as N grows.
+        // The previous `min_by(visits)` was probability-blind and
+        // would over-sample low-probability outcomes (e.g. on a 5/6
+        // GFI it sampled failures 5× more often than they should be).
+        // `BbAction::Chance` carries `prob_bits`; `Player` variants
+        // never appear here (we're under `pending_roll.is_some()`).
         if parent_node_state.pending_roll.is_some() {
+            let total = parent_visits + 1.0;
             let pick = scores_and_actions
                 .clone()
                 .into_iter()
@@ -296,10 +305,13 @@ impl GameDynamics for BloodBowlDynamics {
                         .as_ref()
                         .as_ref()
                         .map(|s| s.visits.load(Ordering::Relaxed))
-                        .unwrap_or(0);
-                    (v, a.deref().clone())
+                        .unwrap_or(0) as f32;
+                    let action = a.deref().clone();
+                    let prob = action.prob_f32().unwrap_or(0.0);
+                    let deficit = prob * total - v;
+                    (deficit, action)
                 })
-                .min_by(|(va, _), (vb, _)| va.cmp(vb))
+                .max_by(|(da, _), (db, _)| da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
                 .expect("chance node must have at least one outcome");
             bump_chosen_visits(&pick.1);
             return pick.1;
