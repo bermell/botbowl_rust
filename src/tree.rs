@@ -878,16 +878,40 @@ where
                 drop(score_cur_rlk);
                 if let Some(score) = score_new {
                     let mut score_wlk = self.score.write().expect("no score");
-                    // `Ordering::Release` because `GD::backprop_scores` should not be reordered after
-                    // storing `score_gen`
-                    let gen_prev = self
-                        .score_gen
-                        .compare_exchange(gen, gen + 1, Ordering::Release, Ordering::Relaxed)
-                        .unwrap();
+                    // `Ordering::Release` because `GD::backprop_scores`
+                    // should not be reordered after storing `score_gen`.
+                    //
+                    // The CAS is a versioned commit: if another thread
+                    // bumped `score_gen` between our `Acquire`-load
+                    // above and now, the snapshot we computed
+                    // `score_new` from is stale — drop the write lock
+                    // (scope exit) and retry the whole protocol.
+                    //
+                    // Previous code wrote `.unwrap()` here; that
+                    // panics on contention rather than retrying, and
+                    // the poisoned write-lock cascades into the
+                    // surrounding `PoisonError` panics on every other
+                    // worker. (`compare_and_swap`, mentioned in the
+                    // ghost comment below, returned the prev value
+                    // directly with no Result — the migration to
+                    // `compare_exchange` overlooked the Err arm.)
                     // .compare_and_swap(gen, gen + 1, Ordering::Release);
-                    if gen_prev == gen {
-                        *score_wlk = Some(score);
-                        break true;
+                    match self.score_gen.compare_exchange(
+                        gen,
+                        gen + 1,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => {
+                            *score_wlk = Some(score);
+                            break true;
+                        }
+                        Err(_) => {
+                            // Drop write lock, retry. (Explicit `drop`
+                            // not needed — scope exit + `continue`
+                            // releases it before the next iter.)
+                            continue;
+                        }
                     }
                 } else {
                     break false;
