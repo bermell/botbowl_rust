@@ -13,6 +13,15 @@ stable = []
 test_internals = []
 nightly = []
 two_player = []
+# Opt-in debug-build guard against the chained-`lockref::Ref` pattern that
+# produced the original parallel deadlock (see plan 013). When enabled,
+# `lockref::Ref::new` panics if two `Ref`s are alive on the same thread —
+# the precondition for the wait-graph cycle under contention. Downstream
+# GD impls (e.g. botbowl-mcts) opt in via their dependency declaration so
+# they get the assertion in `cargo test` debug builds; recon_mcts's own
+# nim/2048 tests don't opt in because lib.rs's nim impl intentionally
+# materialises Refs into a Vec, which is benign there.
+lockref-guard = []
 
 # Tests are in a separate workspace so they can be compiled with feature
 # `test_internals` by default.  Because the tests require a considerable amount

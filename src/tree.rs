@@ -851,6 +851,17 @@ where
                 // https://en.cppreference.com/w/cpp/atomic/memory_order#Release-Acquire_ordering
                 // http://gcc.gnu.org/wiki/Atomic/GCCMM/AtomicSync
                 //
+                // PLAN 015 STEP 3b NOTE: a previous attempt hoisted
+                // `self.score.write()` to before iterating children's
+                // `score.read()`. That introduces a deadlock against the DAG
+                // cycles handled by the `visited` sets in `set_min_depth` /
+                // `backprop_scores`: two workers backproping on cyclically-
+                // related nodes X and Y each hold their own `score.write()`
+                // and request the other's `score.read()`. The read→drop→
+                // write upgrade below is intentional — keep it. If we ever
+                // want to remove the read→drop→write queue-flip contention,
+                // the only correct path is the larger CAS-packed `BbScore`
+                // refactor (plan 015 §3-2b alternative).
 
                 // let scores_and_actions = map.iter().map(|(a, child)| {
                 //     // there's a clever comment about why this looks the way it does in the
