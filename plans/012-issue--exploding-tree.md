@@ -63,7 +63,7 @@ which is where the `hash_one` / `Hasher::write` / `RawIterRange` time
 goes.
 
 `update_depth` (`tree.rs:961-976`) is `1 + max(parent.depth)`, and the
-new depth is `max(current, new_min_depth)` — i.e. *depth only grows*,
+new depth is `max(current, new_min_depth)` — i.e. _depth only grows_,
 and only the longest path matters. The BFS in `set_min_depth` skips
 descendants when the current node's depth didn't grow (`tree.rs:990`)
 so in a "steady state" DAG it should bottom out quickly.
@@ -86,6 +86,7 @@ depth, and the BFS that propagates the promotion now walks a far
 larger subgraph.
 
 Empirically:
+
 - Per `tree.step`: ~100 µs for the first ~12-14 iterations
   (still-sparse DAG), then one step takes ≥120 s (DAG hit the
   density tipping point).

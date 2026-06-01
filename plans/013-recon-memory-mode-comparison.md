@@ -8,9 +8,9 @@ does **not** fix the hang. It substitutes corruption for stack
 overflow. The underlying DAG-depth pathology is the real problem; the
 marker choice only changes how it manifests.
 
-- `HashOnly`  — corruption panics in 0.3–0.8 s (illegal action /
+- `HashOnly` — corruption panics in 0.3–0.8 s (illegal action /
   None unwrap inside `recon_mcts`). Real-world bug, not just a hang.
-- `GetState`  — no corruption, but recursive `Node::get_state()`
+- `GetState` — no corruption, but recursive `Node::get_state()`
   blows the stack in 16 s (expand bench) – 133 s (score_td_easy).
 - `StoreState` — no corruption, but stack-overflows even faster
   (0.6 s on expand bench, 15 s on score_td_easy). Probably a
@@ -27,8 +27,7 @@ cheap diagnostic.
 
 ## Update — DAG-shape probe (2026-05-31, post-commit)
 
-A follow-up instrumentation pass added `BLOOD_MCTS_STATS=1` to
-`MctsBot::get_action`. When set, the macro dumps the
+A follow-up instrumentation pass added `BLOOD_MCTS_STATS=1` to `MctsBot::get_action`. When set, the macro dumps the
 `recon_mcts::RegistryInfo` (hits / misses / len) and walks
 `tree.find_children_sorted_with_depth()` for a depth distribution,
 right before the tree drops. A new `tree_shape` test target runs a
@@ -52,7 +51,7 @@ iters; even then it's 55–67 %, not the 99.98 % plan 011 recorded. Plan
 011's number was measuring hash collisions, not recombinations.
 
 `HashOnly` at iters ≥ 50 also makes the registry's depth walk
-*non-terminating* (the depth helper recursively visits a node's
+_non-terminating_ (the depth helper recursively visits a node's
 children and the cyclic graph from collisions causes infinite
 recursion → stack overflow). That's direct evidence that `HashOnly`
 constructs a true cyclic graph, not a DAG.
@@ -62,15 +61,15 @@ constructs a true cyclic graph, not a DAG.
 Single-call probe on `ScoreTdEasy::new().setup(seed=0xCAFE_1234)`,
 single-thread `StoreState`:
 
-| iters  | reg_len | max_depth | nodes at depth ≥ 21 |
+|  iters | reg_len | max_depth | nodes at depth ≥ 21 |
 | -----: | ------: | --------: | ------------------: |
 |     50 |     494 |         6 |                   0 |
 |    200 |   1 356 |         6 |                   0 |
 |    500 |   3 130 |        29 |                 100 |
 |  1 000 |   4 123 |        54 |                 411 |
-|  2 000 |   7 131 |        57 |                1 137 |
-|  5 000 |  14 811 |        56 |                2 407 |
-| 10 000 |  25 750 |        57 |                3 685 |
+|  2 000 |   7 131 |        57 |               1 137 |
+|  5 000 |  14 811 |        56 |               2 407 |
+| 10 000 |  25 750 |        57 |               3 685 |
 
 Max depth caps around 54–57 even at 10 000 iters. That ceiling looks
 load-bearing — it's the depth at which the search hits states the
@@ -110,25 +109,44 @@ state the bot stumbles into.
 
 ### Single-thread (`BLOOD_MCTS_WORKERS=1`)
 
-| Test                 | Marker     | Status                                   | Wall clock | Notes                                                            |
-| -------------------- | ---------- | ---------------------------------------- | ---------- | ---------------------------------------------------------------- |
-| `score_td_easy`      | HashOnly   | PANIC `is_legal_action` (engine 1002)    |   0.39 s   | MCTS picked an action illegal in the actual state — clear hash-collision corruption. |
-| `score_td_easy`      | GetState   | STACK OVERFLOW                           | 133.59 s   | Recursive `Node::get_state()` walking from leaf to root.         |
-| `score_td_easy`      | StoreState | STACK OVERFLOW                           |  14.95 s   | Stored state per node, so not `get_state()` recursion — likely drop-time Arc cascade. |
-| `get_the_ball_easy`  | HashOnly   | PANIC `Option::unwrap()` `tree.rs:1516`  |   0.32 s   | recon_mcts expected a child node that wasn't there — same corruption family. |
-| `get_the_ball_easy`  | GetState   | TIMEOUT @ 300 s (no panic, no overflow)  | 300.01 s   | Made progress but glacially; would have hit OOM or stack later.  |
-| `get_the_ball_easy`  | StoreState | TIMEOUT @ 300 s (no panic, no overflow)  | 300.02 s   | RSS climbed to ~570 MB; still searching.                         |
-| `expand_bench_main`  | HashOnly   | PANIC `is_legal_action`                  |   0.34 s   | Same corruption mode as `score_td_easy`.                         |
-| `expand_bench_main`  | GetState   | STACK OVERFLOW                           |  16.18 s   |                                                                  |
-| `expand_bench_main`  | StoreState | STACK OVERFLOW                           |   0.55 s   | Fastest-failing scenario — useful future regression target.      |
+| Test                | Marker     | Status                                  | Wall clock | Notes                                                                                 |
+| ------------------- | ---------- | --------------------------------------- | ---------- | ------------------------------------------------------------------------------------- |
+| `score_td_easy`     | HashOnly   | PANIC `is_legal_action` (engine 1002)   | 0.39 s     | MCTS picked an action illegal in the actual state — clear hash-collision corruption.  |
+| `score_td_easy`     | GetState   | STACK OVERFLOW                          | 133.59 s   | Recursive `Node::get_state()` walking from leaf to root.                              |
+| `score_td_easy`     | StoreState | STACK OVERFLOW                          | 14.95 s    | Stored state per node, so not `get_state()` recursion — likely drop-time Arc cascade. |
+| `get_the_ball_easy` | HashOnly   | PANIC `Option::unwrap()` `tree.rs:1516` | 0.32 s     | recon_mcts expected a child node that wasn't there — same corruption family.          |
+| `get_the_ball_easy` | GetState   | TIMEOUT @ 300 s (no panic, no overflow) | 300.01 s   | Made progress but glacially; would have hit OOM or stack later.                       |
+| `get_the_ball_easy` | StoreState | TIMEOUT @ 300 s (no panic, no overflow) | 300.02 s   | RSS climbed to ~570 MB; still searching.                                              |
+| `expand_bench_main` | HashOnly   | PANIC `is_legal_action`                 | 0.34 s     | Same corruption mode as `score_td_easy`.                                              |
+| `expand_bench_main` | GetState   | STACK OVERFLOW                          | 16.18 s    |                                                                                       |
+| `expand_bench_main` | StoreState | STACK OVERFLOW                          | 0.55 s     | Fastest-failing scenario — useful future regression target.                           |
 
 ### Multi-thread (`BLOOD_MCTS_WORKERS` unset → `available_parallelism`)
 
-| Test                 | Marker     | Status                                   | Wall clock | Notes                                                            |
-| -------------------- | ---------- | ---------------------------------------- | ---------- | ---------------------------------------------------------------- |
-| `expand_bench_main`  | HashOnly   | PANIC CAS `tree.rs:886` + lock poison    |   0.50 s   | Plan 012 Step D — multi-thread `score_gen` CAS unwraps.          |
-| `expand_bench_main`  | GetState   | PANIC CAS `tree.rs:886` + lock poison    |   1.01 s   | Same CAS bug; reaches it slightly later because tree growth is slower. |
-| `expand_bench_main`  | StoreState | PANIC CAS `tree.rs:886` + lock poison    |   0.08 s   | Same CAS bug.                                                    |
+| Test                | Marker     | Status                                | Wall clock | Notes                                                                  |
+| ------------------- | ---------- | ------------------------------------- | ---------- | ---------------------------------------------------------------------- |
+| `expand_bench_main` | HashOnly   | PANIC CAS `tree.rs:886` + lock poison | 0.50 s     | Plan 012 Step D — multi-thread `score_gen` CAS unwraps.                |
+| `expand_bench_main` | GetState   | PANIC CAS `tree.rs:886` + lock poison | 1.01 s     | Same CAS bug; reaches it slightly later because tree growth is slower. |
+| `expand_bench_main` | StoreState | PANIC CAS `tree.rs:886` + lock poison | 0.08 s     | Same CAS bug.                                                          |
+
+**Update (2026-06-01)**: the multi-thread CAS panic at `tree.rs:886`
+is fixed in `recon_mcts` commit `8368bee`
+("tree: retry the score_gen CAS instead of unwrapping it"). The
+migration from `compare_and_swap` to `compare_exchange` had left
+`.unwrap()` in place; replacing it with a retry-on-Err `match`
+unblocks short-budget multi-thread runs end-to-end. With the fix
+applied, `expand_bench_main` at 10 workers completes
+`ScoreTdEasy/1000-iter` at 745 µs/iter wall, and `parallel_bench`
+runs cleanly at ≤5 000 iters.
+
+A **second** concurrency issue surfaces at higher budgets: `parallel_bench`
+at `iters ≥ ~8 000`, 10 workers, deadlocks (all 10 workers in a
+stopped state, RSS plateaus at ~420 MB, CPU drops to 0%). Likely an
+AB/BA lock-order issue in `Node::connect_child`'s acquire of
+`parent.children.write` + `child.parents.write` — under enough
+contention two workers can take them in opposing orders. Out of
+scope for this plan; lands as a separate follow-up (plan 015 or a
+recon_mcts upstream fix).
 
 Per-step (µs) numbers are not extractable from any of the runs above —
 every configuration crashes before `bench_get_action` finishes its
@@ -139,7 +157,7 @@ last clean datapoint we have; this experiment didn't move it.
 
 ### Why `HashOnly` panics rather than hanging
 
-Plan 012 documented a *hang* in `set_min_depth`. This run shows
+Plan 012 documented a _hang_ in `set_min_depth`. This run shows
 **panics in <1 s** instead. Most likely the curriculum scenarios on
 this branch are slightly different (or `apply_action` has tightened)
 so the hash collision now produces an immediate illegal-action /
@@ -208,7 +226,7 @@ now closed out:
 3. **Plan 012 Step D** (CAS retry at `tree.rs:886`) — needed before
    any multi-thread bench can run, but only worth tackling after A+F
    make the single-thread case healthy.
-4. *(Deferred)* Restoring `GetState` viability would also need
+4. _(Deferred)_ Restoring `GetState` viability would also need
    `recon_mcts::Node::get_state` (and probably the drop chain)
    converted from recursive to iterative. Not worth doing until the
    DAG-depth issue is bounded — at which point the simpler `HashOnly`

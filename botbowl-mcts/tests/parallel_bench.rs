@@ -9,8 +9,14 @@ fn bench_parallel_vs_serial() {
     let n_par = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     eprintln!("available_parallelism = {}", n_par);
 
-    let iters = 20000;
-    let trials = 2;
+    let iters = std::env::var("PARALLEL_ITERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(20000);
+    let trials = std::env::var("PARALLEL_TRIALS")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(2);
 
     let t0 = std::time::Instant::now();
     let mut agent = MctsBot::new(iters).with_workers(1);

@@ -7,7 +7,7 @@ Plan 013 showed that the post-refactor MCTS DAG grows deep enough
 drop chain and `Node::get_state` recursion overflow the default 2 MB
 worker stack. Plan 012 already flagged Step F as a structural fix:
 bound the MCTS horizon at the boundary the leaf-scoring heuristic
-already treats as terminal — the start of the bot's *next* turn, i.e.
+already treats as terminal — the start of the bot's _next_ turn, i.e.
 after the bot and the opponent have each played one turn.
 
 ## Change
@@ -15,14 +15,14 @@ after the bot and the opponent have each played one turn.
 `botbowl-mcts/src/dynamics.rs`:
 
 - New `HorizonAnchor { agent_team, home_turn, away_turn, home_score,
-  away_score }` captured from the root state in `MctsBot::get_action`.
+away_score }` captured from the root state in `MctsBot::get_action`.
 - `BloodBowlDynamics::horizon: Option<HorizonAnchor>` plumbs the
   anchor down to `available_actions`, which returns `None` (terminal)
   once `anchor.diverged(state)` is true. Divergence triggers when:
   - `state.info.game_over`,
   - either team's `score` has changed from the anchor,
   - or the agent's turn counter has incremented (the agent's
-    *next* turn has begun — meaning the bot played, the opponent
+    _next_ turn has begun — meaning the bot played, the opponent
     played, and we're back to the bot's clock).
 - `Default for BloodBowlDynamics` keeps `horizon: None`, so callers
   that build `Tree` directly (microbenches, `expand_bench`'s
@@ -39,16 +39,16 @@ constant for the whole search, so it remains a pure function of
 
 ### `ScoreTdEasy` — fixed and improved
 
-| Build                                  | StoreState success rate | Wall   | Status |
-| -------------------------------------- | ----------------------: | -----: | ------ |
-| pre-Step F (plan 013)                  |                     n/a |   15 s | STACK OVERFLOW |
-| **Step F (this plan)**                 |              **0.9600** | 105 s | **PASS** |
+| Build                  | StoreState success rate |  Wall | Status         |
+| ---------------------- | ----------------------: | ----: | -------------- |
+| pre-Step F (plan 013)  |                     n/a |  15 s | STACK OVERFLOW |
+| **Step F (this plan)** |              **0.9600** | 105 s | **PASS**       |
 
 Single-call DAG-shape probe on the same seed, `StoreState`, 1000 iters:
 
-| Build       | reg_len | max_depth | reuse  | wall  |
-| ----------- | ------: | --------: | -----: | ----: |
-| no horizon  |   4 123 |        54 | 0.6692 | 678 ms |
+| Build      |   reg_len | max_depth |      reuse |       wall |
+| ---------- | --------: | --------: | ---------: | ---------: |
+| no horizon |     4 123 |        54 |     0.6692 |     678 ms |
 | **Step F** | **3 364** |    **19** | **0.7102** | **532 ms** |
 
 Tree depth dropped from 54 to 19 (≈ 2.8×); per-call wall dropped by
@@ -63,7 +63,7 @@ is **0.1200** (well below the 0.70 threshold the test asserts on).
 `BLOOD_MCTS_HORIZON=off` on the same binary still times out at 300 s,
 so the low rate is **not** caused by Step F — it's the same broken
 trajectory selection plan 012 flagged. With horizon enabled the test
-at least *runs* and exposes the underlying mis-selection. The first-move
+at least _runs_ and exposes the underlying mis-selection. The first-move
 choice on the lecture's canonical seed (`0xF00D_9012`) is `StartBlitz`
 or `StartHandoff`, neither of which advances the ball acquisition
 task. Single-call depth on GTB caps at 14, so the bot has tree to
