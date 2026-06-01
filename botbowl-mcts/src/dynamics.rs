@@ -14,7 +14,7 @@
 //!   actions.
 
 use std::ops::Deref;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use botbowl_engine::bots::Bot;
@@ -57,6 +57,16 @@ pub struct BbScore {
     pub visits: AtomicU32,
     pub score: i64,
     pub node_kind: BbPlayer,
+    /// Plan 015 Step 5 — transient penalty applied during multi-worker
+    /// descent. Bumped in `select_node` when a worker chooses this
+    /// child; subtracted from `Q` (after perspective flip) in
+    /// `puct_value` so concurrent workers diverge to other subtrees.
+    /// Reset automatically: `backprop_scores` returns a freshly
+    /// constructed `BbScore` (`virtual_loss = 0`) which replaces the
+    /// previous struct in `Node.score`. Default magnitude resolved
+    /// from `BLOOD_MCTS_VIRTUAL_LOSS` via `MctsBot::new` (default 30,
+    /// `0` disables).
+    pub virtual_loss: AtomicI32,
 }
 
 impl Clone for BbScore {
@@ -65,6 +75,7 @@ impl Clone for BbScore {
             visits: AtomicU32::new(self.visits.load(Ordering::Relaxed)),
             score: self.score,
             node_kind: self.node_kind,
+            virtual_loss: AtomicI32::new(self.virtual_loss.load(Ordering::Relaxed)),
         }
     }
 }
@@ -137,6 +148,12 @@ impl HorizonAnchor {
 pub struct BloodBowlDynamics {
     pub ff_depth: u8,
     pub horizon: Option<HorizonAnchor>,
+    /// Plan 015 Step 5 — magnitude of the transient `BbScore.virtual_loss`
+    /// penalty applied on descent in `select_node`. Default 30, calibrated
+    /// against the BB Q-scale (ball control ±50, distance ±26). Set to 0
+    /// to disable. Honoured per-search; `MctsBot::new` resolves it from
+    /// `BLOOD_MCTS_VIRTUAL_LOSS`.
+    pub virtual_loss: i32,
 }
 
 impl Default for BloodBowlDynamics {
@@ -144,9 +161,17 @@ impl Default for BloodBowlDynamics {
         Self {
             ff_depth: 8,
             horizon: None,
+            virtual_loss: DEFAULT_VIRTUAL_LOSS,
         }
     }
 }
+
+/// Plan 015 Step 5 — default virtual-loss magnitude. Sized against the
+/// BB leaf-score scale (`score::leaf_score`): ball control ±50, distance
+/// ±26, plus the dominating game-score ±1000. 30 is large enough to push
+/// workers off a path with a small Q advantage, small enough not to
+/// override a real ~100-point Q lead.
+const DEFAULT_VIRTUAL_LOSS: i32 = 30;
 
 /// Inspect a state and decide which "player" owns it from MCTS's
 /// perspective. Chance nodes are detected by a pending roll; otherwise
@@ -274,11 +299,20 @@ impl GameDynamics for BloodBowlDynamics {
         // before the next is acquired — and comparing scalars only. We
         // then re-iterate (cheap: `II: Clone`) to find the chosen child
         // and `fetch_add` its `visits` atomic on the live `Q`.
-        let bump_chosen_visits = |chosen: &BbAction| {
+        // Plan 015 Step 5 — `vl` is the per-descent virtual-loss
+        // increment applied to the chosen child. Set to 0 on the chance
+        // branch (probability-driven; divergence isn't the goal) and to
+        // `self.virtual_loss` on the player branch. Subtracting it from
+        // Q in `puct_value` pushes other workers off this path until the
+        // next backprop replaces the BbScore (which resets vl to 0).
+        let bump_chosen = |chosen: &BbAction, vl: i32| {
             for (q, a) in scores_and_actions.clone().into_iter() {
                 if *a.deref() == *chosen {
                     if let Some(s) = q.as_ref() {
                         s.visits.fetch_add(1, Ordering::Relaxed);
+                        if vl != 0 {
+                            s.virtual_loss.fetch_add(vl, Ordering::Relaxed);
+                        }
                     }
                     break;
                 }
@@ -313,7 +347,7 @@ impl GameDynamics for BloodBowlDynamics {
                 })
                 .max_by(|(da, _), (db, _)| da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
                 .expect("chance node must have at least one outcome");
-            bump_chosen_visits(&pick.1);
+            bump_chosen(&pick.1, 0);
             return pick.1;
         }
 
@@ -337,7 +371,7 @@ impl GameDynamics for BloodBowlDynamics {
             })
             .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
             .expect("player node must have at least one action");
-        bump_chosen_visits(&pick.1);
+        bump_chosen(&pick.1, self.virtual_loss);
         pick.1
     }
 
@@ -381,6 +415,7 @@ impl GameDynamics for BloodBowlDynamics {
                 visits: AtomicU32::new(total_visits),
                 score: avg as i64,
                 node_kind: BbPlayer::Chance,
+                virtual_loss: AtomicI32::new(0),
             });
         }
 
@@ -404,6 +439,7 @@ impl GameDynamics for BloodBowlDynamics {
             visits: AtomicU32::new(total_visits),
             score,
             node_kind: *player,
+            virtual_loss: AtomicI32::new(0),
         })
     }
 
@@ -445,6 +481,7 @@ impl GameDynamics for BloodBowlDynamics {
             visits: AtomicU32::new(1),
             score,
             node_kind: player_for_state(state),
+            virtual_loss: AtomicI32::new(0),
         })
     }
 }
@@ -510,12 +547,20 @@ fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_pers
         None => PUCT_C * prior * parent_term,
         Some(s) => {
             let v = s.visits.load(Ordering::Relaxed) as f32;
-            let q = if home_perspective {
+            // Plan 015 Step 5 — virtual loss subtracted *after* the
+            // perspective flip so it always discounts the descending
+            // player's view of the path. The child's `BbScore.score` is
+            // Home-centric; the flip yields the current player's Q;
+            // subtracting `vl` then pushes other workers off this path
+            // regardless of which side is descending. `vl` is reset to
+            // 0 when `backprop_scores` replaces the BbScore.
+            let vl = s.virtual_loss.load(Ordering::Relaxed) as f32;
+            let q_perspective = if home_perspective {
                 s.score as f32
             } else {
                 -(s.score as f32)
             };
-            q + PUCT_C * prior * parent_term / (1.0 + v)
+            (q_perspective - vl) + PUCT_C * prior * parent_term / (1.0 + v)
         }
     }
 }
@@ -600,6 +645,11 @@ pub struct MctsBot {
     /// reuse — when it changes (turn boundary or score), the cached
     /// tree's Q values reflect the old horizon and must be discarded.
     last_anchor: Option<HorizonAnchor>,
+    /// Plan 015 Step 5 — magnitude of the transient virtual-loss
+    /// penalty applied on descent. Resolved from `BLOOD_MCTS_VIRTUAL_LOSS`
+    /// at `::new` (default 30, `0` disables). Threaded into
+    /// `BloodBowlDynamics.virtual_loss` per `get_action`.
+    virtual_loss: i32,
 }
 
 impl MctsBot {
@@ -609,6 +659,10 @@ impl MctsBot {
             Some("off") | Some("0") | Some("false") => false,
             _ => true,
         };
+        let virtual_loss = match std::env::var("BLOOD_MCTS_VIRTUAL_LOSS").ok() {
+            Some(s) => s.parse::<i32>().unwrap_or(DEFAULT_VIRTUAL_LOSS),
+            None => DEFAULT_VIRTUAL_LOSS,
+        };
         Self {
             iterations_per_move,
             n_workers,
@@ -617,6 +671,7 @@ impl MctsBot {
             reuse_enabled,
             cached_tree: None,
             last_anchor: None,
+            virtual_loss,
         }
     }
 
@@ -640,6 +695,14 @@ impl MctsBot {
     /// should leave it on (the default).
     pub fn with_tree_reuse(mut self, reuse_enabled: bool) -> Self {
         self.reuse_enabled = reuse_enabled;
+        self
+    }
+
+    /// Override the env-var default for the virtual-loss magnitude
+    /// (plan 015 Step 5). Primarily for tests that A/B against
+    /// disabled (`0`) or aggressive (`100`) settings.
+    pub fn with_virtual_loss(mut self, virtual_loss: i32) -> Self {
+        self.virtual_loss = virtual_loss;
         self
     }
 }
@@ -690,6 +753,7 @@ impl Bot for MctsBot {
             } else {
                 Some(HorizonAnchor::capture(&root_state, agent_team))
             },
+            virtual_loss: self.virtual_loss,
         };
         // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
         // workers (e.g. `expand_bench_main`) force single-thread for
@@ -897,6 +961,7 @@ mod tests {
             visits: AtomicU32::new(visits),
             score,
             node_kind: BbPlayer::Home,
+            virtual_loss: AtomicI32::new(0),
         }
     }
 
@@ -949,11 +1014,13 @@ mod tests {
             visits: AtomicU32::new(10),
             score: 50,
             node_kind: BbPlayer::Home,
+            virtual_loss: AtomicI32::new(0),
         };
         let b = BbScore {
             visits: AtomicU32::new(10),
             score: -50,
             node_kind: BbPlayer::Home,
+            virtual_loss: AtomicI32::new(0),
         };
         let parent_visits = 100.0;
         let prior = 0.5;
