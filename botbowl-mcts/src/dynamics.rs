@@ -259,30 +259,50 @@ impl GameDynamics for BloodBowlDynamics {
     {
         let parent_visits = parent_score.map(|s| s.visits.load(Ordering::Relaxed)).unwrap_or(1) as f32;
 
+        // IMPORTANT: each (Q, A) yielded by `scores_and_actions` carries a
+        // live read-guard on the child's `score` RwLock (recon_mcts wraps
+        // the read via `lockref::Ref`). Comparator-based selectors like
+        // `max_by` / `min_by` keep the *current best* alive across each
+        // following acquire of the next candidate — that is the chain
+        // that deadlocks under contention against `update_score`'s queued
+        // `score.write()` (Rust's queue-based RwLock is fair, so a queued
+        // writer blocks new readers; if any worker holds another node's
+        // score-read while waiting for this one, the wait graph cycles).
+        //
+        // We avoid that by collapsing each `(Q, A)` into a scalar inside
+        // the `.map()` closure — the Ref drops at the end of the closure,
+        // before the next is acquired — and comparing scalars only. We
+        // then re-iterate (cheap: `II: Clone`) to find the chosen child
+        // and `fetch_add` its `visits` atomic on the live `Q`.
+        let bump_chosen_visits = |chosen: &BbAction| {
+            for (q, a) in scores_and_actions.clone().into_iter() {
+                if *a.deref() == *chosen {
+                    if let Some(s) = q.as_ref() {
+                        s.visits.fetch_add(1, Ordering::Relaxed);
+                    }
+                    break;
+                }
+            }
+        };
+
         // Chance node: temporarily reverted to plain min-visits (v1
         // behaviour) while bisecting the v3 reconstruction panic.
         if parent_node_state.pending_roll.is_some() {
             let pick = scores_and_actions
                 .clone()
                 .into_iter()
-                .min_by(|a, b| {
-                    let va =
-                        a.0.as_ref()
-                            .as_ref()
-                            .map(|s| s.visits.load(Ordering::Relaxed))
-                            .unwrap_or(0);
-                    let vb =
-                        b.0.as_ref()
-                            .as_ref()
-                            .map(|s| s.visits.load(Ordering::Relaxed))
-                            .unwrap_or(0);
-                    va.cmp(&vb)
+                .map(|(q, a)| {
+                    let v = q
+                        .as_ref()
+                        .as_ref()
+                        .map(|s| s.visits.load(Ordering::Relaxed))
+                        .unwrap_or(0);
+                    (v, a.deref().clone())
                 })
+                .min_by(|(va, _), (vb, _)| va.cmp(vb))
                 .expect("chance node must have at least one outcome");
-            if let Some(s) = pick.0.as_ref() {
-                s.visits.fetch_add(1, Ordering::Relaxed);
-            }
-            return pick.1.deref().clone();
+            bump_chosen_visits(&pick.1);
+            return pick.1;
         }
 
         // Player node: PUCT with domain priors. We compute priors lazily
@@ -297,18 +317,16 @@ impl GameDynamics for BloodBowlDynamics {
         let pick = scores_and_actions
             .clone()
             .into_iter()
-            .max_by(|a, b| {
-                let pa = prior_for(parent_node_state, &a.1);
-                let pb = prior_for(parent_node_state, &b.1);
-                let va = puct_value(a.0.as_ref(), parent_visits, pa, home_perspective);
-                let vb = puct_value(b.0.as_ref(), parent_visits, pb, home_perspective);
-                va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+            .map(|(q, a)| {
+                let action = a.deref().clone();
+                let p = prior_for(parent_node_state, &action);
+                let v = puct_value(q.as_ref(), parent_visits, p, home_perspective);
+                (v, action)
             })
+            .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
             .expect("player node must have at least one action");
-        if let Some(s) = pick.0.as_ref() {
-            s.visits.fetch_add(1, Ordering::Relaxed);
-        }
-        pick.1.deref().clone()
+        bump_chosen_visits(&pick.1);
+        pick.1
     }
 
     fn backprop_scores<II, Q, A>(

@@ -121,6 +121,47 @@ A **second** concurrency issue surfaces at higher budgets: `parallel_bench` at `
 can take them in opposing orders. Out of scope for this plan; lands as a separate follow-up (plan 015 or a recon_mcts
 upstream fix).
 
+### Update (2026-06-01) — deadlock root-caused and fixed
+
+The `connect_child` AB/BA hypothesis is **wrong** on close reading: `connect_child` acquires `child.parents.write()` and
+`parent.children.write()` _disjointly_ (the temporary write-guard from the `let _r = …insert(…);` statement is dropped
+at the `;` before the next acquire). The two locks are never nested in that function.
+
+Sample-traced the live deadlock (`sample 16646 1`, line-tables-only release build, `atos -i` against the dSYM). The
+actual wait graph at `parallel_bench` 10 000 iters / 10 workers:
+
+| Workers | Stuck at                                                                                 | Lock                                              |
+| ------: | ---------------------------------------------------------------------------------------- | ------------------------------------------------- |
+|  7 / 10 | `BloodBowlDynamics::select_node` (`dynamics.rs:307`) inside `max_by`'s `.expect()` chain | next `child.score.read()`                         |
+|  2 / 10 | `Node::update_score` (`tree.rs:880`) `write()` in `queue.rs:354`                         | `self.score.write()`                              |
+|  1 / 10 | `Node::update_score` (`tree.rs:878`) drop of `RwLockReadGuard<Option<BbScore>>`          | `self.score` read-unlock taking the slow CAS path |
+
+The cycle is a fairness deadlock on `Node.score`. Rust's std `RwLock` on macOS is the queue-based fair implementation in
+`std::sys::sync::rwlock::queue` — a queued writer blocks subsequent readers. `Tree::select_node` (`tree.rs:1559-1577`)
+hands `BloodBowlDynamics::select_node` a lazy iterator whose items are
+`lockref::Ref<RwLockReadGuard<Option<BbScore>>, …>`. `max_by` keeps the current-best item alive across the acquire of
+the next candidate, so each worker holds one `child.score.read()` while attempting to acquire the next. Meanwhile,
+`Node::update_score` reads `self.score`, computes the new score, drops the read, and queues `self.score.write()`
+(`tree.rs:880`). With several workers in `update_score` queueing writes on `score` locks that other workers transiently
+hold via the `max_by` chain, the wait graph cycles.
+
+Fix lives in `botbowl-mcts/src/dynamics.rs` (`BloodBowlDynamics::select_node`), not `recon_mcts`: refactor both the
+Chance (`min_by` on visits) and Player (`max_by` on PUCT) branches so the `.map()` closure collapses `(Q, A)` into
+`(scalar, BbAction)` _inside the closure_. The `Q` (lazy read-guard) drops at the end of each closure invocation, before
+the next is acquired, so the comparator only ever holds scalars. A second pass over `II::Clone` re-acquires the chosen
+child's score-read briefly to do the `visits.fetch_add(1)`. No `recon_mcts` change required.
+
+Verification:
+
+- `parallel_bench` at 10 000 iters / 10 workers / 2 trials: completes in **7.83 s** (was: deadlock). `1.24×` over
+  single-thread.
+- `parallel_bench` at 20 000 iters / 10 workers / 2 trials: completes in **9.05 s** (was: deadlock). `2.05×` speedup
+  over single-thread — this is the per-step (µs) datapoint plan 013 noted as unrecoverable above.
+- `cargo test --workspace --release`: green.
+
+Plan-013's previous note pointing at `connect_child` is preserved above as the original hypothesis — the actual cycle
+was elsewhere.
+
 Per-step (µs) numbers are not extractable from any of the runs above — every configuration crashes before
 `bench_get_action` finishes its 20-trial loop. Plan 011's `2.37 µs / step` figure is therefore the last clean datapoint
 we have; this experiment didn't move it.
