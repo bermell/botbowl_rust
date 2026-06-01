@@ -6,8 +6,8 @@ use botbowl_mcts::MctsBot;
 #[ignore = "manual wall-clock bench"]
 fn bench_parallel_vs_serial() {
     let lecture = ScoreTdEasy::new();
-    let n_par = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    eprintln!("available_parallelism = {}", n_par);
+    let n_par_default = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    eprintln!("available_parallelism = {}", n_par_default);
 
     let iters = std::env::var("PARALLEL_ITERS")
         .ok()
@@ -17,6 +17,11 @@ fn bench_parallel_vs_serial() {
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(2);
+    let n_par = std::env::var("PARALLEL_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(n_par_default);
 
     let t0 = std::time::Instant::now();
     let mut agent = MctsBot::new(iters).with_workers(1);
@@ -28,7 +33,7 @@ fn bench_parallel_vs_serial() {
     );
 
     let t0 = std::time::Instant::now();
-    let mut agent = MctsBot::new(iters);
+    let mut agent = MctsBot::new(iters).with_workers(n_par);
     let _ = run_trials(&lecture, &mut agent, trials, 0xCAFE_1234, 400);
     let parallel = t0.elapsed();
     eprintln!(

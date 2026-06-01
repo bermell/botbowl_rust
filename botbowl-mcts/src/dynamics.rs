@@ -20,7 +20,7 @@ use std::sync::Arc;
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
-use recon_mcts::{GameDynamics, GetState, HashOnly, SearchTree, SelectNodeState, StoreState, Tree};
+use recon_mcts::{GameDynamics, GetState, HashOnly, SearchTree, SelectNodeState, StoreState, Tree, TreeAlias};
 
 use crate::action::{BbAction, BbPlayer, ChanceOutcome};
 use crate::block_dice;
@@ -82,7 +82,7 @@ impl Clone for BbScore {
 /// Must be a pure function of `(state, anchor)` — the anchor is
 /// captured once per `get_action` call and is constant for the
 /// lifetime of one search, so recombination stays correct.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HorizonAnchor {
     pub agent_team: TeamType,
     pub home_turn: u8,
@@ -561,6 +561,15 @@ impl MemoryMode {
     }
 }
 
+/// The persistent search tree carried between `get_action` calls. Marker
+/// type is part of `Tree`'s generic parameters, so the cache must enumerate
+/// each `MemoryMode` variant — they monomorphise to different `Tree` types.
+enum CachedTree {
+    HashOnly(Arc<TreeAlias<BloodBowlDynamics, HashOnly>>),
+    GetState(Arc<TreeAlias<BloodBowlDynamics, GetState>>),
+    StoreState(Arc<TreeAlias<BloodBowlDynamics, StoreState>>),
+}
+
 pub struct MctsBot {
     pub iterations_per_move: usize,
     /// Number of worker threads driving `tree.step()`. The total search
@@ -576,16 +585,38 @@ pub struct MctsBot {
     /// `HashOnly` for production, that mode corrupts the DAG.
     /// `BLOOD_MCTS_MEMORY` overrides at runtime.
     pub memory_mode: MemoryMode,
+    /// Carry the search tree across `get_action` calls within a single
+    /// trial. Within a bot turn the horizon anchor is stable, so the
+    /// surviving subtree's Q values stay valid; we just walk the
+    /// registry to the new root and resume search there.
+    ///
+    /// Default on; `BLOOD_MCTS_TREE_REUSE=off` disables and falls back
+    /// to today's fresh-tree-per-decision behaviour.
+    reuse_enabled: bool,
+    /// The tree from the previous `get_action`, or `None` for the
+    /// first call / after an anchor change / after a cache miss.
+    cached_tree: Option<CachedTree>,
+    /// The horizon captured on the previous `get_action`. Used to gate
+    /// reuse — when it changes (turn boundary or score), the cached
+    /// tree's Q values reflect the old horizon and must be discarded.
+    last_anchor: Option<HorizonAnchor>,
 }
 
 impl MctsBot {
     pub fn new(iterations_per_move: usize) -> Self {
         let n_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let reuse_enabled = match std::env::var("BLOOD_MCTS_TREE_REUSE").ok().as_deref() {
+            Some("off") | Some("0") | Some("false") => false,
+            _ => true,
+        };
         Self {
             iterations_per_move,
             n_workers,
             ff_depth: BloodBowlDynamics::default().ff_depth,
             memory_mode: MemoryMode::StoreState,
+            reuse_enabled,
+            cached_tree: None,
+            last_anchor: None,
         }
     }
 
@@ -601,6 +632,14 @@ impl MctsBot {
 
     pub fn with_memory_mode(mut self, memory_mode: MemoryMode) -> Self {
         self.memory_mode = memory_mode;
+        self
+    }
+
+    /// Override the env-var default for tree reuse. Primarily for tests
+    /// that A/B against the fresh-tree baseline; production callers
+    /// should leave it on (the default).
+    pub fn with_tree_reuse(mut self, reuse_enabled: bool) -> Self {
+        self.reuse_enabled = reuse_enabled;
         self
     }
 }
@@ -668,6 +707,23 @@ impl Bot for MctsBot {
         let dump_stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
         let memory_mode = MemoryMode::resolve(self.memory_mode);
 
+        // `new_anchor` mirrors `gd.horizon` when horizon is enabled. We
+        // gate tree reuse on it: if the previous call had the same
+        // anchor, the cached tree's Q values were computed under the
+        // same horizon and stay valid; otherwise (turn boundary, score)
+        // the tree is dropped and rebuilt.
+        let new_anchor = if horizon_disabled {
+            None
+        } else {
+            Some(HorizonAnchor::capture(&root_state, agent_team))
+        };
+        let anchor_matches = self.reuse_enabled && self.cached_tree.is_some() && new_anchor == self.last_anchor;
+        // If anchor changed (or reuse disabled), discard the cache up
+        // front so we don't hold the prior tree alive past the search.
+        if !anchor_matches {
+            self.cached_tree = None;
+        }
+
         // Marker type is part of `Tree`'s generic parameters, so the
         // arms below monomorphise to three concrete `Tree<...>` types.
         // The post-construction worker/extract code is identical, so
@@ -675,8 +731,35 @@ impl Bot for MctsBot {
         // (a generic helper would force naming `Node<...>` bounds
         // explicitly — not worth it for three call sites).
         macro_rules! run_with_marker {
-            ($marker:expr, $mode_label:expr) => {{
-                let tree = Arc::new(Tree::new(gd, $marker, root_player, root_state));
+            ($marker:expr, $mode_label:expr, $cached_arm:ident) => {{
+                // Try to reuse the cached tree. Bail to a fresh tree on:
+                //   - cache empty / wrong marker / anchor mismatch
+                //   - lookup misses (root state not in registry)
+                //   - find_path_to returns None (new root not a descendant
+                //     of the current cached-tree root)
+                let reused: Option<Arc<TreeAlias<BloodBowlDynamics, $cached_arm>>> = if anchor_matches {
+                    match self.cached_tree.take() {
+                        Some(CachedTree::$cached_arm(t)) => match t.lookup_state(root_player, root_state.clone()) {
+                            Some(node) => match t.find_path_to(&node) {
+                                Some(path) => {
+                                    for a in &path {
+                                        t.apply_action(a);
+                                    }
+                                    Some(t)
+                                }
+                                None => None,
+                            },
+                            None => None,
+                        },
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let tree = match reused {
+                    Some(t) => t,
+                    None => Arc::new(Tree::new(gd, $marker, root_player, root_state)),
+                };
                 let base = iterations / n_workers;
                 let rem = iterations % n_workers;
                 std::thread::scope(|s| {
@@ -726,11 +809,8 @@ impl Bot for MctsBot {
                     // search itself. Run it on the main thread (much
                     // larger default stack) so we still get the depth
                     // number when the worker would have crashed.
-                    let sorted = std::thread::scope(|s| {
-                        s.spawn(|| tree.find_children_sorted_with_depth())
-                            .join()
-                            .unwrap()
-                    });
+                    let sorted =
+                        std::thread::scope(|s| s.spawn(|| tree.find_children_sorted_with_depth()).join().unwrap());
                     let max_depth = sorted.iter().map(|(_, d)| *d).max().unwrap_or(0);
                     let n_nodes = sorted.len();
                     // depth histogram (inv-depth: 0 == leaf), bucketed
@@ -754,15 +834,40 @@ impl Bot for MctsBot {
                         $mode_label, n_nodes, max_depth, buckets
                     );
                 }
-                tree.get_next_move_info().expect("MCTS tree has no move info at root")
+                let move_info = tree
+                    .get_next_move_info()
+                    .expect("MCTS tree has no move info at root");
+                (move_info, tree)
             }};
         }
 
-        let move_info = match memory_mode {
-            MemoryMode::HashOnly => run_with_marker!(HashOnly, "hash"),
-            MemoryMode::GetState => run_with_marker!(GetState, "get"),
-            MemoryMode::StoreState => run_with_marker!(StoreState, "store"),
+        let (move_info, cache_after) = match memory_mode {
+            MemoryMode::HashOnly => {
+                let (mi, t) = run_with_marker!(HashOnly, "hash", HashOnly);
+                (mi, CachedTree::HashOnly(t))
+            }
+            MemoryMode::GetState => {
+                let (mi, t) = run_with_marker!(GetState, "get", GetState);
+                (mi, CachedTree::GetState(t))
+            }
+            MemoryMode::StoreState => {
+                let (mi, t) = run_with_marker!(StoreState, "store", StoreState);
+                (mi, CachedTree::StoreState(t))
+            }
         };
+        // Stash the tree for the next `get_action`. Reuse-disabled bots
+        // (BLOOD_MCTS_TREE_REUSE=off) still get here; the next call
+        // takes the `anchor_matches` branch as false and rebuilds, but
+        // the cache field stays populated. That's fine — the alternative
+        // (clear cache when reuse_enabled is false) buys nothing and
+        // adds branches.
+        if self.reuse_enabled {
+            self.cached_tree = Some(cache_after);
+            self.last_anchor = new_anchor;
+        } else {
+            self.cached_tree = None;
+            self.last_anchor = None;
+        }
 
         let best = move_info
             .iter()
