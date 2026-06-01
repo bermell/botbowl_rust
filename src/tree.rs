@@ -1824,6 +1824,111 @@ where
     fn get_game_dynamics(&self) -> Arc<GD> {
         Arc::clone(&self.game_dynamics)
     }
+
+    /// Look up a node in the transposition table by `(player, state)`.
+    ///
+    /// Returns the live `ArcNode` if a node with this player + state is registered, regardless of
+    /// whether it is currently reachable from the root. Intended for callers that want to splice an
+    /// externally-known state back into the search tree (e.g. tree reuse across decision boundaries).
+    pub fn lookup_state(&self, player: P, state: S) -> Option<ArcNode<GD, S, P, A, Q, I, M>> {
+        let hash = Node::<GD, S, P, A, Q, I, M>::hash(&player, &state);
+        let probe: ArcNode<GD, S, P, A, Q, I, M> = ArcWrap {
+            inner: Arc::new(Node {
+                hash,
+                player,
+                depth: AtomicUsize::new(0),
+                state: RwLock::new(Some(state)),
+                score: RwLock::new(None),
+                score_gen: AtomicUsize::new(0),
+                parents: RwLock::new(HashSet::new()),
+                children: RwLock::new(Children::NewLeaf),
+                registry: Arc::clone(&self.registry),
+                registered: AtomicBool::new(false),
+                game_dynamics: Arc::clone(&self.game_dynamics),
+                _marker: PhantomData,
+            }),
+        };
+        let probe_weak = ArcNode::downgrade(&probe);
+        let reg_rlk = self.registry.read().unwrap();
+        let hit = reg_rlk.get(&probe_weak).cloned();
+        drop(reg_rlk);
+        drop(probe);
+        hit.map(|w| WeakNode::upgrade(&w))
+    }
+
+    /// Find a sequence of actions that, applied via `apply_action` from the current root, reaches
+    /// `target`.
+    ///
+    /// Returns `Some(vec![])` if `target` is already the current root. Returns `None` if no path
+    /// from root to `target` exists (e.g. `target` lives in a subtree that was pruned away from the
+    /// current root).
+    ///
+    /// The search runs upward from `target` through `Node.parents`, so an action list is only
+    /// returned when the current root is an ancestor of `target` in the DAG. If multiple paths
+    /// exist (recombination), any one is returned — `apply_action`'s `move_root` cleanup correctly
+    /// prunes the unchosen branches.
+    pub fn find_path_to(&self, target: &ArcNode<GD, S, P, A, Q, I, M>) -> Option<Vec<A>> {
+        let root_arc = ArcNode::clone(&*self.root.read().unwrap());
+        let root_ptr: *const Node<GD, S, P, A, Q, I, M> = &*root_arc.inner;
+        let target_ptr: *const Node<GD, S, P, A, Q, I, M> = &*target.inner;
+        if std::ptr::eq(target_ptr, root_ptr) {
+            return Some(Vec::new());
+        }
+
+        // BFS upward from `target` along parent edges. For every visited ancestor `V`, we record
+        // `predecessor[V_ptr] = (action, child)` — the edge `V --action--> child` we walked down
+        // from. When BFS reaches the root, we replay this chain from the root downward to
+        // reconstruct the action list.
+        let mut predecessor: HashMap<
+            *const Node<GD, S, P, A, Q, I, M>,
+            (A, ArcNode<GD, S, P, A, Q, I, M>),
+        > = HashMap::new();
+        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
+        let mut queue: std::collections::VecDeque<ArcNode<GD, S, P, A, Q, I, M>> =
+            std::collections::VecDeque::new();
+        visited.insert(target_ptr);
+        queue.push_back(ArcNode::clone(target));
+
+        let mut found = false;
+        while let Some(node) = queue.pop_front() {
+            for (a, p_weak) in node.parents.read().unwrap().iter() {
+                let p_arc = WeakNode::upgrade(p_weak);
+                let p_ptr: *const Node<GD, S, P, A, Q, I, M> = &*p_arc.inner;
+                if visited.insert(p_ptr) {
+                    predecessor.insert(p_ptr, (a.clone(), ArcNode::clone(&node)));
+                    if std::ptr::eq(p_ptr, root_ptr) {
+                        found = true;
+                        break;
+                    }
+                    queue.push_back(p_arc);
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+
+        let mut actions = Vec::new();
+        let mut cursor_ptr = root_ptr;
+        let mut cursor_arc = ArcNode::clone(&root_arc);
+        loop {
+            let (a, child) = predecessor
+                .remove(&cursor_ptr)
+                .expect("predecessor chain broken before target");
+            actions.push(a);
+            let child_ptr: *const Node<GD, S, P, A, Q, I, M> = &*child.inner;
+            if std::ptr::eq(child_ptr, target_ptr) {
+                break;
+            }
+            cursor_ptr = child_ptr;
+            cursor_arc = child;
+        }
+        let _ = cursor_arc;
+        Some(actions)
+    }
 }
 
 #[cfg(any(test, feature = "test_internals"))]
