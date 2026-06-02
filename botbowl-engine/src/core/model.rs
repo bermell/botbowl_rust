@@ -25,15 +25,29 @@ pub struct FullPitch<T> {
 impl<T> Index<Position> for FullPitch<T> {
     type Output = T;
 
+    #[inline]
     fn index(&self, index: Position) -> &Self::Output {
-        let (x, y) = index.to_usize().unwrap();
-        &self.data[x][y]
+        // Hot path: pitch indexing happens in every pathfinding step.
+        // `Position::to_usize` returned `Result` via `?`, which the optimizer
+        // wasn't fully eliding. Direct casts skip Result construction entirely;
+        // out-of-bounds positions are programming errors caught in debug builds.
+        debug_assert!(
+            index.x >= 0 && index.y >= 0 && (index.x as usize) < WIDTH && (index.y as usize) < HEIGHT,
+            "FullPitch index out of bounds: {:?}",
+            index,
+        );
+        &self.data[index.x as usize][index.y as usize]
     }
 }
 impl<T> IndexMut<Position> for FullPitch<T> {
+    #[inline]
     fn index_mut(&mut self, index: Position) -> &mut Self::Output {
-        let (x, y) = index.to_usize().unwrap();
-        &mut self.data[x][y]
+        debug_assert!(
+            index.x >= 0 && index.y >= 0 && (index.x as usize) < WIDTH && (index.y as usize) < HEIGHT,
+            "FullPitch index_mut out of bounds: {:?}",
+            index,
+        );
+        &mut self.data[index.x as usize][index.y as usize]
     }
 }
 
@@ -41,13 +55,13 @@ impl<T> FullPitch<T> {
     pub fn get(&self, x: usize, y: usize) -> &T {
         &self.data[x][y]
     }
+    #[inline]
     pub fn get_pos(&self, pos: Position) -> &T {
-        let (x, y) = pos.to_usize().unwrap();
-        &self.data[x][y]
+        &self[pos]
     }
+    #[inline]
     pub fn get_pos_mut(&mut self, pos: Position) -> &mut T {
-        let (x, y) = pos.to_usize().unwrap();
-        &mut self.data[x][y]
+        &mut self[pos]
     }
     pub fn get_mut(&mut self, x: usize, y: usize) -> &mut T {
         &mut self.data[x][y]

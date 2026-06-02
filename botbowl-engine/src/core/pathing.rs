@@ -51,40 +51,41 @@ impl<T> Default for FixedQueue<T> {
     }
 }
 impl<T> FixedQueue<T> {
+    // Invariant: Some entries form a contiguous prefix of `data`; everything
+    // after the first None is also None. Every public mutator preserves this,
+    // so reads can short-circuit instead of scanning the whole array.
     pub fn len(&self) -> usize {
-        self.data.iter().filter(|val| val.is_some()).count()
+        self.data.iter().take_while(|v| v.is_some()).count()
     }
     pub fn push_back(&mut self, val: T) {
         self.add(val)
     }
     pub fn add(&mut self, val: T) {
-        assert!(!self.is_full());
-
-        let next_entry = self.data.iter_mut().find(|val| val.is_none()).unwrap();
-        *next_entry = Some(val);
+        let next = self.data.iter_mut().find(|v| v.is_none()).expect("FixedQueue full");
+        *next = Some(val);
     }
     pub fn pop(&mut self) -> Option<T> {
-        if self.is_empty() {
-            return None;
+        let first = self.data[0].take()?;
+        // shift the rest left so the invariant holds
+        for i in 0..5 {
+            self.data[i] = self.data[i + 1].take();
         }
-
-        self.data.iter_mut().find(|val| val.is_some()).unwrap().take()
+        Some(first)
     }
     pub fn is_empty(&self) -> bool {
-        self.data.iter().all(|entry| entry.is_none())
+        self.data[0].is_none()
     }
     pub fn is_full(&self) -> bool {
         self.data[5].is_some()
     }
     pub fn last(&self) -> Option<&T> {
-        if self.is_empty() {
-            None
-        } else {
-            self.data.iter().rev().filter(|val| val.is_some()).flatten().next()
-        }
+        // Under the contiguity invariant, the last Some is the rightmost
+        // non-None entry. Reverse iter + find_map stops as soon as we see one.
+        self.data.iter().rev().find_map(|v| v.as_ref())
     }
     pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.data.iter().filter_map(|item| item.as_ref())
+        // take_while terminates at the first None, then `unwrap` is safe by invariant.
+        self.data.iter().take_while(|v| v.is_some()).map(|v| v.as_ref().unwrap())
     }
     pub fn iter_rev(&self) -> impl Iterator<Item = &T> {
         self.data.iter().rev().filter_map(|item| item.as_ref())
@@ -159,6 +160,22 @@ pub struct Node {
     //euclidiean_distance: f32,
     pub prob: f32,
     events: FixedQueue<PathingEvent>,
+    // Cumulative manhattan distance from the root; used as a tie-breaker in
+    // `is_better_than`. Pre-computed so we don't walk the parent chain there.
+    // `#[serde(default)]` keeps replay files written before this field was
+    // added deserializable — they'll come back with 0, which only affects
+    // tie-break ordering and not correctness.
+    #[serde(default)]
+    cum_dist: u16,
+    // Cached result of `get_action_type` — `events.last()` plus the block_dice
+    // override. Updated by every `apply_*` so reads in `can_continue_expanding`
+    // skip the FixedQueue walk.
+    #[serde(default = "default_action_type")]
+    action_type: PosAT,
+}
+
+fn default_action_type() -> PosAT {
+    PosAT::Move
 }
 impl PartialEq for Node {
     fn eq(&self, other: &Self) -> bool {
@@ -220,32 +237,30 @@ impl Node {
             block_dice: Some(block_dice),
             prob: 1.0,
             events: Default::default(),
+            cum_dist: 0,
+            action_type: PosAT::Block,
         }
     }
 
     pub fn get_action_type(&self) -> PosAT {
-        if self.block_dice.is_some() {
-            PosAT::Block
-        } else {
-            match self.events.last() {
-                Some(PathingEvent::Block(_, _)) => PosAT::Block,
-                Some(PathingEvent::Handoff(_, _)) => PosAT::Handoff,
-                Some(PathingEvent::Foul(_, _)) => PosAT::Foul,
-                Some(PathingEvent::Pass { .. }) => PosAT::Pass,
-                _ => PosAT::Move,
-            }
-        }
+        self.action_type
     }
 
     fn new(parent: OptRcNode, position: Position, moves_left: u8, gfis_left: u8) -> Node {
+        let (prob, cum_dist) = match parent.as_ref() {
+            Some(p) => (p.prob, p.cum_dist + p.position.distance_to(&position) as u16),
+            None => (1.0, 0),
+        };
         Node {
-            prob: parent.as_ref().map(|node| node.prob).unwrap_or(1.0),
             parent,
             position,
             moves_left,
             gfis_left,
             block_dice: None,
+            prob,
             events: Default::default(),
+            cum_dist,
+            action_type: PosAT::Move,
         }
     }
     fn remaining_movement(&self) -> u8 {
@@ -268,6 +283,7 @@ impl Node {
         // TODO: concider catch (remember the intercep too!)
         self.prob *= target.success_prob();
         self.events.push_back(PathingEvent::Handoff(id, target));
+        self.action_type = PosAT::Handoff;
     }
     fn apply_pass(
         &mut self,
@@ -288,17 +304,21 @@ impl Node {
             to,
             pass: pass_target,
             modifer: pass_modifer,
-        })
+        });
+        self.action_type = PosAT::Pass;
     }
     fn apply_block(&mut self, vicitm_id: PlayerID, target: NumBlockDices) {
         self.block_dice = Some(target);
         self.events.push_back(PathingEvent::Block(vicitm_id, target));
+        self.action_type = PosAT::Block;
     }
     fn apply_foul(&mut self, vicitm_id: PlayerID, target: Sum2D6Target) {
         self.events.push_back(PathingEvent::Foul(vicitm_id, target));
+        self.action_type = PosAT::Foul;
     }
     fn apply_touchdown(&mut self, id: PlayerID) {
         self.events.push_back(PathingEvent::Touchdown(id));
+        // Touchdown does not change action_type — pickup/move still drives expansion.
     }
     fn apply_standup(&mut self) {
         self.events.push_back(PathingEvent::StandUp);
@@ -353,14 +373,10 @@ impl Node {
         false
     }
 
-    fn manhattan_distance(&self) -> i8 {
-        let mut node = self;
-        let mut distance = 0;
-        while let Some(parent) = &node.parent {
-            distance += parent.position.distance_to(&node.position);
-            node = parent;
-        }
-        distance
+    fn manhattan_distance(&self) -> u16 {
+        // Pre-computed during construction; avoids walking the parent chain in
+        // the `is_better_than` tie-breaker.
+        self.cum_dist
     }
 }
 
@@ -522,17 +538,23 @@ impl<'a> GameInfo<'a> {
             _ => return NodeType::NoNode,
         };
 
-        let new_node: Arc<Node> = match new_node {
-            Some(node) => Arc::new(node),
+        let new_node = match new_node {
+            Some(node) => node,
             None => return NodeType::NoNode,
         };
 
+        // Dominance check before Arc allocation: every expansion to a position
+        // already locked from a higher-prob batch gets discarded here (since
+        // `is_dominant_over` is the typical outcome with matching block_dice),
+        // and we'd otherwise be heap-allocating just to throw it away.
         if let Some(best_before) = &best {
-            debug_assert!(best_before.prob > new_node.prob); //this is only here to remind us of this fact
+            debug_assert!(best_before.prob > new_node.prob);
             if !best_before.is_dominant_over(&new_node) {
                 return NodeType::NoNode;
             }
         }
+
+        let new_node: Arc<Node> = Arc::new(new_node);
 
         if new_node.prob < parent_node.prob {
             return NodeType::Risky(new_node);
