@@ -495,19 +495,33 @@ impl std::hash::Hash for GameState {
     }
 }
 
+/// Log a formatted message into the game's log buffer **only when
+/// logging is on**. The `format!` is gated behind `is_logging()`, so a
+/// disabled logger costs one bool load per `micro_step` instead of
+/// formatting and discarding the whole `{:?}` tree of `ProcState`,
+/// `AvailableActions`, etc. — that formatting was ~10% of wall-clock
+/// in random-vs-random games before this macro existed.
+#[macro_export]
+macro_rules! game_log {
+    ($state:expr, $($arg:tt)*) => {
+        if $state.is_logging() {
+            $state.log(format!($($arg)*));
+        }
+    };
+}
+
 impl GameState {
     pub fn log(&mut self, s: String) {
         if !self.print_log {
-            // Logging disabled — also skip the Vec push. Without this,
-            // `state.log` grows on every `micro_step` even when nobody's
-            // reading it, and cloning the state (which MCTS does once
-            // per `apply_action`) becomes O(N) in turns played. That
-            // turns a 1s search into a multi-minute one once the game
-            // is a few moves in.
             return;
         }
         println!("{}", s);
         self.log.push(s);
+    }
+
+    #[inline]
+    pub fn is_logging(&self) -> bool {
+        self.print_log
     }
     pub fn get_log(&self) -> &Vec<String> {
         &self.log
@@ -1015,14 +1029,14 @@ impl GameState {
             .expect("proc_stack was empty at start of micro_step - should never happen");
 
         match &proc_input {
-            ProcInput::Action(a) => self.log(format!("STEPPING: {:?}\n  action={:?}", top_proc, a)),
-            ProcInput::Roll(_) => self.log(format!("STEPPING: {:?}\n  input={:?}", top_proc, proc_input)),
-            ProcInput::Nothing => self.log(format!("STEPPING: {:?}", top_proc)),
+            ProcInput::Action(a) => crate::game_log!(self, "STEPPING: {:?}\n  action={:?}", top_proc, a),
+            ProcInput::Roll(_) => crate::game_log!(self, "STEPPING: {:?}\n  input={:?}", top_proc, proc_input),
+            ProcInput::Nothing => crate::game_log!(self, "STEPPING: {:?}", top_proc),
         }
 
         let proc_return = top_proc.step(self, proc_input);
 
-        self.log(format!("  result:   {:?}", proc_return));
+        crate::game_log!(self, "  result:   {:?}", proc_return);
 
         self.available_actions = Default::default();
         self.pending_roll = None;

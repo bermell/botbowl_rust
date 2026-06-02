@@ -253,10 +253,13 @@ impl Setup {
                 }
             };
             let position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
-            game_state.log(format!(
+            crate::game_log!(
+                game_state,
                 "fielding {:?} {:?} at {:?}",
-                player.stats.role, player.stats.team, position
-            ));
+                player.stats.role,
+                player.stats.team,
+                position
+            );
             game_state.field_dugout_player(id, position)
         }
         Ok(())

@@ -126,7 +126,7 @@ impl MoveAction {
             match next_event {
                 PositionOrEvent::Position(position) => {
                     game_state.move_player(player_id, position).unwrap();
-                    game_state.log(format!("Moved to {:?}", position));
+                    crate::game_log!(game_state, "Moved to {:?}", position);
                     game_state.get_mut_player_unsafe(player_id).add_move(1);
                 }
                 PositionOrEvent::Event(roll) => {
