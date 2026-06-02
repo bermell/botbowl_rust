@@ -26,7 +26,7 @@ use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::Action as EngineAction;
 use botbowl_engine::core::table::PosAT;
-use botbowl_mcts::dynamics::BbScore;
+use botbowl_mcts::dynamics::{BbScore, HorizonAnchor};
 use botbowl_mcts::{BbAction, BbPlayer, BloodBowlDynamics, MctsBot};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -295,18 +295,39 @@ fn player_for_root(state: &GameState) -> BbPlayer {
 }
 
 fn run_call_counts(label: &str, mut state: GameState, iters: usize) {
+    run_call_counts_inner(label, &mut state, iters, false);
+}
+
+fn run_call_counts_horizon(label: &str, mut state: GameState, iters: usize) {
+    run_call_counts_inner(label, &mut state, iters, true);
+}
+
+fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_horizon: bool) {
     // Match `MctsBot::get_action`'s setup so the tree behaves identically.
     state.set_dice_mode(DiceMode::RegisterRolls);
     state.set_logging_state(false);
     state.clear_log();
 
     let counters = Arc::new(Counters::default());
+    // Mirror MctsBot::get_action's horizon capture (plan 014). Anchor
+    // is held constant for the whole search so recombination stays a
+    // pure function of (state, anchor).
+    let horizon = if with_horizon {
+        let agent_team = state.available_actions.team.unwrap_or(state.info.team_turn);
+        Some(HorizonAnchor::capture(state, agent_team))
+    } else {
+        None
+    };
+    let inner = BloodBowlDynamics {
+        horizon,
+        ..BloodBowlDynamics::default()
+    };
     let dynamics = CountingDynamics {
-        inner: BloodBowlDynamics::default(),
+        inner,
         counters: Arc::clone(&counters),
     };
-    let root_player = player_for_root(&state);
-    let tree = Tree::new(dynamics, HashOnly, root_player, state);
+    let root_player = player_for_root(state);
+    let tree = Tree::new(dynamics, HashOnly, root_player, state.clone());
 
     let t0 = Instant::now();
     for _ in 0..iters {
@@ -335,6 +356,11 @@ fn run_call_counts(label: &str, mut state: GameState, iters: usize) {
         "EXPAND_COUNTS {label}/totals apply_action={aa} avail_actions={av} \
          select_node={sn} score_leaf={sl} backprop_scores={bp}"
     );
+    // Suppress drop-time `Node::get_state` panics (HashOnly mode walks
+    // the DAG on tree drop and trips a latent re-derivation bug at
+    // tree.rs:1551 / 780 — unrelated to what this bench measures).
+    // The test process is about to exit so leaking is fine.
+    std::mem::forget(tree);
 }
 
 #[test]
@@ -343,6 +369,38 @@ fn expand_bench_call_counts() {
     eprintln!("EXPAND_COUNTS seed={SEED:#x}");
     run_call_counts("score_td_easy", build_score_td_easy(), 1000);
     run_call_counts("full_teams", build_full_teams_turn_start(), 1000);
+}
+
+// Horizon-bounded variants — one per scenario so a drop-time panic in
+// one doesn't poison the next. Mirrors the real MctsBot::get_action
+// path (Step F horizon active).
+
+#[test]
+#[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
+fn expand_counts_horizon_score_td_1k() {
+    eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
+    run_call_counts_horizon("score_td_easy@1k", build_score_td_easy(), 1000);
+}
+
+#[test]
+#[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
+fn expand_counts_horizon_score_td_10k() {
+    eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
+    run_call_counts_horizon("score_td_easy@10k", build_score_td_easy(), 10_000);
+}
+
+#[test]
+#[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
+fn expand_counts_horizon_full_teams_1k() {
+    eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
+    run_call_counts_horizon("full_teams@1k", build_full_teams_turn_start(), 1000);
+}
+
+#[test]
+#[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
+fn expand_counts_horizon_full_teams_10k() {
+    eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
+    run_call_counts_horizon("full_teams@10k", build_full_teams_turn_start(), 10_000);
 }
 
 #[test]
