@@ -96,8 +96,7 @@ fn prep_for_search(state: &mut GameState) {
 
 fn first_start_move(state: &GameState) -> Option<EngineAction> {
     state
-        .available_actions
-        .get_all()
+        .get_all_actions()
         .into_iter()
         .find(|a| matches!(a, EngineAction::Positional(PosAT::StartMove, _)))
 }
@@ -164,7 +163,7 @@ fn bench_apply_start_move(label: &str, state: &GameState, action: EngineAction, 
 
 fn run_scenario(label: &str, mut state: GameState) {
     prep_for_search(&mut state);
-    let legal = state.available_actions.get_all().len();
+    let legal = state.get_all_actions().len();
     let team = state.available_actions.team;
     eprintln!("EXPAND_BENCH {label}/legal_actions={legal} team={:?}", team);
 

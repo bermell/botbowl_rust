@@ -235,8 +235,7 @@ impl GameDynamics for BloodBowlDynamics {
         }
 
         let actions: Vec<(BbPlayer, BbAction)> = state
-            .available_actions
-            .get_all()
+            .get_all_actions()
             .into_iter()
             .filter(|a| !should_prune(state, a))
             .map(|a| (mcts_player, BbAction::Player(a)))

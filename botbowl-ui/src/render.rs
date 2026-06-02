@@ -169,8 +169,7 @@ fn side_panel_widget(state: &GameState) -> impl Widget + '_ {
     ];
 
     let mut actions: Vec<String> = state
-        .available_actions
-        .get_all()
+        .get_all_actions()
         .iter()
         .map(|a| format!("{a:?}"))
         .collect();

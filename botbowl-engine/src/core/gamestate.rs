@@ -184,6 +184,7 @@ impl GameStateBuilder {
             proc_stack: Vec::new(),
             //new_procs: VecDeque::new(),
             available_actions: AvailableActions::new_empty(),
+            path_buffer: None,
             rng: ChaCha8Rng::from_entropy(),
             info: GameInfo::new(),
             dice_mode: DiceMode::default(),
@@ -360,7 +361,7 @@ impl Default for DiceMode {
 }
 #[derive(Derivative)]
 #[derivative(PartialEq)]
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct GameState {
     pub info: GameInfo,
     pub home: TeamState,
@@ -372,6 +373,18 @@ pub struct GameState {
     pub ball: BallState,
     proc_stack: Vec<AnyProc>,
     pub available_actions: Box<AvailableActions>,
+    /// Reusable backing storage for `MoveAction`/`BlockAction`'s path
+    /// offerings. `available_actions.has_paths` is the gate — when false,
+    /// this buffer's contents are stale/unreachable. Lazy-allocated on the
+    /// first producer call; preserved across micro_steps so we don't pay
+    /// the 4KB alloc + 476-slot drop every frame. `#[serde(skip)]` because
+    /// the buffer is recoverable scratch (the producer rebuilds on the
+    /// next decision). Cloned conditionally — see `Clone for GameState`
+    /// below — so non-pathing states stay cheap to clone (the MCTS hot
+    /// path).
+    #[serde(skip, default)]
+    #[derivative(PartialEq = "ignore")]
+    pub(crate) path_buffer: Option<Box<FullPitch<Option<std::sync::Arc<super::pathing::Node>>>>>,
     /// Single source of truth for how the engine resolves dice. See
     /// `DiceMode` docs; switch via `set_dice_mode`.
     #[serde(default)]
@@ -409,6 +422,41 @@ pub struct GameState {
 }
 
 impl Eq for GameState {}
+
+// Hand-rolled Clone instead of derived: `path_buffer` is reusable scratch
+// allocated up to 4KB on the heap. Cloning it eagerly would regress the MCTS
+// hot path, where GameState clones happen for every tree expansion and the
+// vast majority of cloned states aren't currently inside a `MoveAction` /
+// `BlockAction` decision. Clone the buffer only when `available_actions.has_paths`
+// says it holds live offerings for the cloned state.
+impl Clone for GameState {
+    fn clone(&self) -> Self {
+        let path_buffer = if self.available_actions.has_paths {
+            self.path_buffer.clone()
+        } else {
+            None
+        };
+        GameState {
+            info: self.info.clone(),
+            home: self.home.clone(),
+            away: self.away.clone(),
+            fielded_players: self.fielded_players.clone(),
+            dugout_players: self.dugout_players.clone(),
+            board: self.board,
+            ball: self.ball.clone(),
+            proc_stack: self.proc_stack.clone(),
+            available_actions: self.available_actions.clone(),
+            path_buffer,
+            dice_mode: self.dice_mode.clone(),
+            pending_roll: self.pending_roll.clone(),
+            registered_roll: self.registered_roll.clone(),
+            next_input: self.next_input.clone(),
+            rng: self.rng.clone(),
+            log: self.log.clone(),
+            print_log: self.print_log,
+        }
+    }
+}
 
 // Hand-rolled Hash that covers the canonical "situation" fields only.
 // Used by MCTS-style transposition tables. The hash is intentionally
@@ -1038,7 +1086,20 @@ impl GameState {
 
         crate::game_log!(self, "  result:   {:?}", proc_return);
 
-        self.available_actions = Default::default();
+        // Conditional reset: NeedAction(_) overwrites available_actions
+        // immediately below, NeedActionInPlace was just written by the
+        // producer in `step` (and would be lost by an unconditional reset
+        // here). For every other transition, clear stale AA + path buffer
+        // contents. Note: clearing AA only drops the (small) AvailableActions
+        // body; the `Box<AvailableActions>` allocation is reused. The path
+        // buffer's `FullPitch` allocation is also reused — we just drop the
+        // Arc<Node> payload (release search results) via `clear_path_buffer`.
+        if !matches!(proc_return, ProcState::NeedAction(_) | ProcState::NeedActionInPlace) {
+            if self.available_actions.has_paths {
+                self.clear_path_buffer();
+            }
+            *self.available_actions = AvailableActions::default();
+        }
         self.pending_roll = None;
 
         match proc_return {
@@ -1066,7 +1127,18 @@ impl GameState {
             }
             ProcState::Done => MicroStepState::RunAgain,
             ProcState::NeedAction(aa) => {
+                // Old-style producer returns a freshly-built Box. Drop the
+                // currently-held AA (with any stale paths) and adopt the new one.
+                if self.available_actions.has_paths {
+                    self.clear_path_buffer();
+                }
                 self.available_actions = aa;
+                self.proc_stack.push(top_proc);
+                MicroStepState::NeedAction
+            }
+            ProcState::NeedActionInPlace => {
+                // Producer wrote `state.available_actions` (and `path_buffer`
+                // if `has_paths`) during `step`. Nothing to copy.
                 self.proc_stack.push(top_proc);
                 MicroStepState::NeedAction
             }
@@ -1129,11 +1201,89 @@ impl GameState {
     }
 
     pub fn is_legal_action(&self, action: &Action) -> bool {
-        /*let mut top_proc = self.proc_stack.pop().unwrap(); //TODO: remove these three lines at some point!
-        debug_assert_eq!(top_proc.available_actions(self), self.available_actions);
-        self.proc_stack.push(top_proc);
-         */
-        self.available_actions.is_legal_action(*action)
+        if self.available_actions.is_legal_non_path_action(*action) {
+            return true;
+        }
+        // Path-style positional actions are backed by `path_buffer`.
+        if let Action::Positional(at, pos) = action {
+            if let Some(node) = self.get_paths().and_then(|p| p[*pos].as_ref()) {
+                return node.get_action_type() == *at;
+            }
+        }
+        false
+    }
+
+    /// Borrow the path offerings produced by the last `MoveAction` /
+    /// `BlockAction`. Returns `None` unless `available_actions.has_paths` is
+    /// true — even when a buffer was allocated for an earlier decision, it's
+    /// stale until a producer refills it.
+    pub fn get_paths(&self) -> Option<&FullPitch<Option<std::sync::Arc<super::pathing::Node>>>> {
+        if self.available_actions.has_paths {
+            self.path_buffer.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Move the path node at `pos` out of the buffer. Used by `MoveAction`
+    /// and `BlockAction` to consume the chosen offering. Returns `None` if
+    /// `has_paths` is false or there's no offering at that position.
+    pub fn take_path(&mut self, pos: Position) -> Option<std::sync::Arc<super::pathing::Node>> {
+        if !self.available_actions.has_paths {
+            return None;
+        }
+        self.path_buffer.as_mut().and_then(|buf| buf[pos].take())
+    }
+
+    /// Gather every legal action — simple, positional, and path-style. Sorts
+    /// at the end because `AvailableActions::simple` is a `HashSet` whose
+    /// iteration order is randomized per run, and `RandomBot::get_action`
+    /// indexes by RNG-generated position — sort makes seeded games (and the
+    /// UI snapshot tests that depend on them) deterministic.
+    pub fn get_all_actions(&self) -> Vec<Action> {
+        let mut out = Vec::with_capacity(32);
+        self.available_actions.collect_non_path_actions(&mut out);
+        if let Some(paths) = self.get_paths() {
+            for (pos, node_opt) in paths.iter_position() {
+                if let Some(node) = node_opt {
+                    out.push(Action::Positional(node.get_action_type(), pos));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Lazy-allocate then return a mutable handle to the path buffer. Used by
+    /// `MoveAction` / `BlockAction` producers to fill in place. The flag on
+    /// `available_actions` is the producer's responsibility to set.
+    pub(crate) fn take_path_buffer(&mut self) -> Box<FullPitch<Option<std::sync::Arc<super::pathing::Node>>>> {
+        self.path_buffer
+            .take()
+            .unwrap_or_else(|| Box::new(Default::default()))
+    }
+
+    /// Drop every Arc payload in the path buffer in place, retaining the 4KB
+    /// allocation. Cheap when most slots are already `None`. Used both by
+    /// producers (before refill) and by `micro_step` when a non-NeedAction
+    /// transition makes the buffer's contents stale.
+    pub(crate) fn clear_path_buffer(&mut self) {
+        if let Some(buf) = self.path_buffer.as_mut() {
+            for slot in buf.iter_mut() {
+                *slot = None;
+            }
+        }
+        self.available_actions.has_paths = false;
+    }
+
+    /// Restore a buffer that was taken via `take_path_buffer`, marking
+    /// `has_paths` so consumers can read it. Cheap (two pointer writes).
+    pub(crate) fn install_path_buffer(
+        &mut self,
+        buf: Box<FullPitch<Option<std::sync::Arc<super::pathing::Node>>>>,
+    ) {
+        self.path_buffer = Some(buf);
+        self.available_actions.has_paths = true;
     }
 
     pub fn is_setup_legal(&self, team: TeamType) -> bool {

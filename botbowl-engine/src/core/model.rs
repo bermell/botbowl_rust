@@ -600,6 +600,12 @@ pub enum ProcState {
     NotDone,
     NeedRoll(RequestedRoll),
     NeedAction(Box<AvailableActions>),
+    /// Producer has already populated `game_state.available_actions` (and
+    /// `path_buffer` if relevant) in-place during `step`. `micro_step`
+    /// should transition to NeedAction without moving any data. Used by
+    /// path-producing procedures (`MoveAction`, `BlockAction`) to avoid
+    /// per-frame `Box<AvailableActions>` allocation.
+    NeedActionInPlace,
 }
 
 //rename to something more descriptive
@@ -623,7 +629,14 @@ pub struct AvailableActions {
     pub team: Option<TeamType>,
     simple: HashSet<SimpleAT>,
     positional: Option<FullPitch<SmallVecPosAT>>,
-    paths: Option<FullPitch<Option<Arc<Node>>>>,
+    // Whether `GameState::path_buffer` currently holds a valid set of path
+    // offerings for this decision point. The actual `FullPitch` lives on
+    // `GameState` so we can reuse the 4KB buffer across MoveAction frames
+    // and keep clones cheap when no pathing is in flight. Cleared (with the
+    // buffer's Arc payload) on every non-NeedAction transition in
+    // `GameState::micro_step`.
+    #[serde(default)]
+    pub(crate) has_paths: bool,
 }
 
 impl std::fmt::Debug for AvailableActions {
@@ -644,13 +657,8 @@ impl std::fmt::Debug for AvailableActions {
                     .or_insert(1);
             }
         }
-        if let Some(paths) = &self.paths {
-            for pos_at in paths.iter().flatten().map(|path| path.get_action_type()) {
-                pos_at_count
-                    .entry(pos_at)
-                    .and_modify(|counter| *counter += 1)
-                    .or_insert(1);
-            }
+        if self.has_paths {
+            info.field("has_paths", &true);
         }
         for (pos_at, count) in pos_at_count {
             let field_name = format!("{:?}", pos_at);
@@ -667,8 +675,8 @@ impl AvailableActions {
     pub fn get_positional(&self) -> &Option<FullPitch<SmallVecPosAT>> {
         &self.positional
     }
-    pub fn get_paths(&self) -> &Option<FullPitch<Option<Arc<Node>>>> {
-        &self.paths
+    pub fn has_paths(&self) -> bool {
+        self.has_paths
     }
     pub fn new_empty() -> Box<Self> {
         Box::default()
@@ -679,52 +687,30 @@ impl AvailableActions {
         aa
     }
     pub fn is_empty(&self) -> bool {
-        self.simple.is_empty() && self.paths.is_none() && self.positional.is_none()
+        self.simple.is_empty() && !self.has_paths && self.positional.is_none()
     }
-    pub fn get_all(&self) -> Vec<Action> {
-        let mut positions: Vec<Action> = self
-            .positional
-            .as_ref()
-            .unwrap_or(&Default::default())
-            .iter_position()
-            .flat_map(|(pos, sv)| sv.iter().map(move |at| Action::Positional(*at, pos)))
-            .collect();
-        let simple: Vec<Action> = self.simple.iter().map(|at| Action::Simple(*at)).collect();
-        // concat the vectors
-        let paths: Vec<Action> = self
-            .paths
-            .as_ref()
-            .unwrap_or(&Default::default())
-            .iter_position()
-            .flat_map(|(pos, node)| {
-                node.as_ref()
-                    .map(|node| Action::Positional(node.get_action_type(), pos))
-            })
-            .collect();
-        positions.extend(simple);
-        positions.extend(paths);
-        positions.sort();
-        positions
+    /// Collects every simple action and every positional action backed by
+    /// `self.positional`. Path-style actions are NOT included — call
+    /// `GameState::get_all_actions` (the wrapper) to pick those up from
+    /// `path_buffer`. The split exists because paths live on `GameState`
+    /// now to allow per-game buffer reuse. No sort: every consumer is
+    /// either index-pick (RandomBot), `.contains()` (ScriptedBot) or filter
+    /// (MCTS), so deterministic ordering isn't needed.
+    pub fn collect_non_path_actions(&self, out: &mut Vec<Action>) {
+        if let Some(positional) = self.positional.as_ref() {
+            for (pos, sv) in positional.iter_position() {
+                for at in sv.iter() {
+                    out.push(Action::Positional(*at, pos));
+                }
+            }
+        }
+        for at in self.simple.iter() {
+            out.push(Action::Simple(*at));
+        }
     }
     pub fn insert_simple(&mut self, action_type: SimpleAT) {
         assert!(self.team.is_some());
         self.simple.insert(action_type);
-    }
-    pub fn insert_paths(&mut self, paths: FullPitch<Option<Arc<Node>>>) {
-        self.paths = Some(paths);
-    }
-    pub fn take_path(&mut self, pos: Position) -> Option<Arc<Node>> {
-        match &mut self.paths {
-            Some(paths) => paths[pos].take(),
-            None => None,
-        }
-    }
-    pub fn insert_path(&mut self, node: Arc<Node>) {
-        if self.paths.is_none() {
-            self.paths = Some(Default::default());
-        }
-        let pos = node.position;
-        self.paths.as_mut().unwrap()[pos] = Some(node);
     }
     pub fn insert_positional(&mut self, action_type: PosAT, positions: Vec<Position>) {
         assert!(self.team.is_some());
@@ -740,26 +726,19 @@ impl AvailableActions {
             self_positional[pos].push(action_type);
         })
     }
-    pub fn insert_block(&mut self, pos: Position, num_dice: NumBlockDices) {
-        if self.paths.is_none() {
-            self.paths = Some(Default::default());
-        }
-        self.paths.as_mut().unwrap()[pos] = Some(Arc::new(Node::new_direct_block_node(num_dice, pos)));
-    }
 
-    pub fn is_legal_action(&self, action: Action) -> bool {
+    /// Returns true iff `action` is in `simple`/`positional`. Path-style
+    /// positional actions are checked separately by `GameState::is_legal_action`
+    /// using `path_buffer`.
+    pub fn is_legal_non_path_action(&self, action: Action) -> bool {
         match action {
             Action::Simple(at) => self.simple.contains(&at),
             Action::Positional(at, pos) => {
-                if let Some(allowed_at) = self.positional.as_ref().map(|positions| positions[pos].clone()) {
-                    if allowed_at.contains(&at) {
-                        return true;
-                    }
+                if let Some(allowed_at) = self.positional.as_ref().map(|positions| &positions[pos]) {
+                    allowed_at.contains(&at)
+                } else {
+                    false
                 }
-                if let Some(Some(path)) = self.paths.as_ref().map(|paths| paths[pos].as_ref()) {
-                    return path.get_action_type() == at;
-                }
-                false
             }
         }
     }

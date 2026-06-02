@@ -139,12 +139,25 @@ impl MoveAction {
         }
         ProcState::NotDone
     }
-    fn available_actions(&self, game_state: &GameState) -> Box<AvailableActions> {
-        let player = game_state.get_player_unsafe(self.player_id);
-        let mut aa = AvailableActions::new(player.stats.team);
-        aa.insert_paths(PathFinder::player_paths(game_state, self.player_id).unwrap());
-        aa.insert_simple(SimpleAT::EndPlayerTurn);
-        aa
+    /// Fills `game_state.available_actions` + `path_buffer` in place. The
+    /// buffer is taken out, filled by `PathFinder::fill_player_paths` (which
+    /// only reads `&GameState`), then put back and flagged via
+    /// `install_path_buffer`. The take/put sidesteps the borrow conflict
+    /// without needing unsafe.
+    fn fill_available_actions(&self, game_state: &mut GameState) {
+        let team = game_state.get_player_unsafe(self.player_id).stats.team;
+        let mut buf = game_state.take_path_buffer();
+        PathFinder::fill_player_paths(game_state, self.player_id, &mut *buf).unwrap();
+        game_state.install_path_buffer(buf);
+
+        // Reset AA in place: drop any previously-populated simple/positional
+        // entries while keeping the Box<AvailableActions> allocation. Then
+        // restore the has_paths flag (the install above set it, but
+        // resetting *available_actions clobbered it).
+        *game_state.available_actions = AvailableActions::default();
+        game_state.available_actions.team = Some(team);
+        game_state.available_actions.has_paths = true;
+        game_state.available_actions.insert_simple(SimpleAT::EndPlayerTurn);
     }
 }
 impl Procedure for MoveAction {
@@ -163,7 +176,8 @@ impl Procedure for MoveAction {
         match (input, &mut self.state) {
             (ProcInput::Nothing, MoveActionState::Init) => {
                 self.state = MoveActionState::SelectPath;
-                ProcState::NeedAction(self.available_actions(game_state))
+                self.fill_available_actions(game_state);
+                ProcState::NeedActionInPlace
             }
             (ProcInput::Nothing, MoveActionState::ActivePath(path)) => {
                 let proc_state = MoveAction::continue_along_path(path, game_state);
@@ -173,7 +187,7 @@ impl Procedure for MoveAction {
                 proc_state
             }
             (ProcInput::Action(Action::Positional(_, position)), MoveActionState::SelectPath) => {
-                let mut path = game_state.available_actions.take_path(position).unwrap().iter();
+                let mut path = game_state.take_path(position).unwrap().iter();
                 let proc_state = MoveAction::continue_along_path(&mut path, game_state);
                 if path.is_empty() {
                     self.state = MoveActionState::Init;

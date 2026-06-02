@@ -753,12 +753,32 @@ impl<'a> PathFinder<'a> {
         }
     }
     pub fn player_paths(game_state: &GameState, id: PlayerID) -> Result<FullPitch<OptRcNode>> {
+        let mut out: FullPitch<OptRcNode> = Default::default();
+        Self::fill_player_paths(game_state, id, &mut out)?;
+        Ok(out)
+    }
+
+    /// Fill `out` with reachable paths for `id`. Clears `out` on entry, so
+    /// callers can pass a buffer that was filled by a previous call. This is
+    /// the variant used by `MoveAction`/`BlockAction` to write directly into
+    /// `GameState::path_buffer` and skip a per-frame 4KB allocation.
+    pub fn fill_player_paths(
+        game_state: &GameState,
+        id: PlayerID,
+        out: &mut FullPitch<OptRcNode>,
+    ) -> Result<()> {
+        // Release any stale Arc payload from a previous fill — caller may
+        // be reusing the same buffer.
+        for slot in out.iter_mut() {
+            *slot = None;
+        }
+
         let player = game_state.get_player_unsafe(id);
         // Stunned players cannot move or stand up this turn — they go Prone at the next
         // TurnStunned. Returning empty paths matches that, and prevents callers from
         // spawning a StandUp procedure that would trip its own assertion.
         if player.status == PlayerStatus::Stunned {
-            return Ok(Default::default());
+            return Ok(());
         }
         let info = GameInfo::new(game_state, player);
         let mut root_node = Node::new(None, info.start_pos, player.moves_left(), player.gfis_left());
@@ -771,7 +791,7 @@ impl<'a> PathFinder<'a> {
         let root_node = Arc::new(root_node);
 
         if !info.can_continue_expanding(&root_node) {
-            return Ok(Default::default());
+            return Ok(());
         }
 
         let mut pf = PathFinder::new(info);
@@ -801,7 +821,11 @@ impl<'a> PathFinder<'a> {
             };
         }
 
-        Ok(pf.locked_nodes)
+        // Move the search results into the caller's buffer. `pf.locked_nodes`
+        // was None-everywhere at the start (Default in PathFinder::new) so
+        // the swap leaves us with an empty FullPitch to drop with pf.
+        std::mem::swap(&mut pf.locked_nodes, out);
+        Ok(())
     }
 
     /// Returns the best path from `id`'s current position to `target`, or None if no path exists.

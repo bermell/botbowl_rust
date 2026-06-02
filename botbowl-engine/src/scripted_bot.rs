@@ -71,7 +71,7 @@ impl Bot for ScriptedBot {
 }
 
 fn first_legal_simple_or_any(state: &GameState) -> Option<Action> {
-    let all = state.available_actions.get_all();
+    let all = state.get_all_actions();
     // Prefer the most "neutral" simple action.
     for preferred in [
         SimpleAT::EndTurn,
@@ -129,10 +129,10 @@ fn decide(state: &GameState) -> (Action, Vec<Action>) {
     }
 
     // Push / follow-up — single positional choices.
-    if let Some(action) = first_positional_for(aa, PosAT::Push) {
+    if let Some(action) = first_positional_for(state, PosAT::Push) {
         return (action, vec![]);
     }
-    if let Some(action) = first_positional_for(aa, PosAT::FollowUp) {
+    if let Some(action) = first_positional_for(state, PosAT::FollowUp) {
         return (action, vec![]);
     }
 
@@ -180,7 +180,7 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
     let endzone_x = state.get_endzone_x(team);
     let is_carrier = matches!(state.ball, BallState::Carried(id) if id == active.id);
 
-    let paths = state.available_actions.get_paths().as_ref()?;
+    let paths = state.get_paths()?;
 
     // 1) If the carrier can score from here at p >= TD_ATTEMPT_PROB_THRESHOLD, do it.
     if is_carrier {
@@ -274,8 +274,8 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
     None
 }
 
-fn first_positional_for(aa: &AvailableActions, at: PosAT) -> Option<Action> {
-    for action in aa.get_all() {
+fn first_positional_for(state: &GameState, at: PosAT) -> Option<Action> {
+    for action in state.get_all_actions() {
         if let Action::Positional(action_at, _) = action {
             if action_at == at {
                 return Some(action);

@@ -27,7 +27,7 @@ impl Default for RandomBot {
 
 impl Bot for RandomBot {
     fn get_action(&mut self, state: &GameState) -> Action {
-        let action_list = state.available_actions.get_all();
+        let action_list = state.get_all_actions();
         let l = action_list.len();
         debug_assert!(l > 0);
         let choice = self.rng.gen_range(0..l);

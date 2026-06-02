@@ -219,32 +219,46 @@ impl BlockAction {
     pub fn new() -> AnyProc {
         AnyProc::BlockAction(BlockAction {})
     }
-    fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
+    fn fill_available_actions(&mut self, game_state: &mut GameState) {
         let player = game_state.get_active_player().unwrap();
-        let mut aa = AvailableActions::new(player.stats.team);
+        let team = player.stats.team;
+        let attacker_id = player.id;
+        let attacker_pos = player.position;
 
-        game_state
-            .get_adj_players(player.position)
+        // Collect first to release the &GameState borrow before mutating below.
+        let victims: smallvec::SmallVec<[(Position, NumBlockDices); 4]> = game_state
+            .get_adj_players(attacker_pos)
             .filter(|adj_player| {
-                !adj_player.used && adj_player.stats.team != player.stats.team && adj_player.status == PlayerStatus::Up
+                !adj_player.used && adj_player.stats.team != team && adj_player.status == PlayerStatus::Up
             })
-            .for_each(|block_victim| {
-                aa.insert_block(
-                    block_victim.position,
-                    game_state.get_blockdices(player.id, block_victim.id),
-                )
-            });
+            .map(|defender| (defender.position, game_state.get_blockdices(attacker_id, defender.id)))
+            .collect();
 
-        aa.insert_simple(SimpleAT::EndPlayerTurn);
-        aa
+        // Reset AA + buffer, then place the block offerings.
+        let mut buf = game_state.take_path_buffer();
+        for slot in buf.iter_mut() {
+            *slot = None;
+        }
+        for (pos, dice) in victims.iter() {
+            buf[*pos] = Some(std::sync::Arc::new(crate::core::pathing::Node::new_direct_block_node(*dice, *pos)));
+        }
+        game_state.install_path_buffer(buf);
+
+        *game_state.available_actions = AvailableActions::default();
+        game_state.available_actions.team = Some(team);
+        game_state.available_actions.has_paths = true;
+        game_state.available_actions.insert_simple(SimpleAT::EndPlayerTurn);
     }
 }
 impl Procedure for BlockAction {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {
-            ProcInput::Nothing => ProcState::NeedAction(self.available_actions(game_state)),
+            ProcInput::Nothing => {
+                self.fill_available_actions(game_state);
+                ProcState::NeedActionInPlace
+            }
             ProcInput::Action(Action::Positional(PosAT::Block, position)) => {
-                let block_path = game_state.available_actions.take_path(position).unwrap();
+                let block_path = game_state.take_path(position).unwrap();
                 let num_dice = block_path.get_block_dice().unwrap();
                 let defender_id = game_state.get_player_id_at(position).unwrap();
                 game_state.get_active_player_mut().unwrap().used = true;
@@ -520,13 +534,16 @@ mod tests {
         assert!(state.fixes_is_empty());
         assert!(state.get_player_at(away_pos).unwrap().used);
 
-        let aa = state.get_available_actions();
-        assert!(aa.get_paths().is_none());
-        assert!(
-            aa.get_positional().is_none() || aa.get_positional().clone().unwrap().iter().all(|pa| { pa.is_empty() }),
-        );
-        assert_eq!(aa.get_simple().len(), 1);
-        assert!(aa.is_legal_action(Action::Simple(SimpleAT::EndTurn)));
+        assert!(state.get_paths().is_none());
+        {
+            let aa = state.get_available_actions();
+            assert!(
+                aa.get_positional().is_none()
+                    || aa.get_positional().clone().unwrap().iter().all(|pa| { pa.is_empty() }),
+            );
+            assert_eq!(aa.get_simple().len(), 1);
+        }
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
 
         Ok(())
     }
@@ -543,13 +560,16 @@ mod tests {
         state.step_simple(SimpleAT::EndPlayerTurn);
 
         assert!(state.get_player_at(home_pos).unwrap().used);
-        let aa = state.get_available_actions();
-        assert!(aa.get_paths().is_none());
-        assert!(
-            aa.get_positional().is_none() || aa.get_positional().clone().unwrap().iter().all(|pa| { pa.is_empty() }),
-        );
-        assert_eq!(aa.get_simple().len(), 1);
-        assert!(aa.is_legal_action(Action::Simple(SimpleAT::EndTurn)));
+        assert!(state.get_paths().is_none());
+        {
+            let aa = state.get_available_actions();
+            assert!(
+                aa.get_positional().is_none()
+                    || aa.get_positional().clone().unwrap().iter().all(|pa| { pa.is_empty() }),
+            );
+            assert_eq!(aa.get_simple().len(), 1);
+        }
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
     }
 
     #[test]
@@ -566,11 +586,9 @@ mod tests {
         state.get_mut_player_unsafe(downed_id).status = PlayerStatus::Down;
 
         state.step_positional(PosAT::StartBlock, home_pos);
-        let aa = state.get_available_actions();
+        let block_paths = state.get_paths().expect("BlockAction should have populated paths");
 
-        let block_aa = aa.get_paths().clone().unwrap();
-
-        assert!(block_aa.get_pos(away_pos_down).is_none());
+        assert!(block_paths.get_pos(away_pos_down).is_none());
     }
     #[test]
     fn prune_players_cant_startblock_but_can_startblitz() {
