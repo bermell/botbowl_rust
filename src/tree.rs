@@ -2026,27 +2026,50 @@ where
                     Node::set_min_depth(node);
                 }
 
-                // Use the (sole) parent's score for the score_leaf hint.
-                let parent_score_for_leaf = {
-                    let parents = node.parents.read().unwrap();
-                    parents
-                        .iter()
-                        .next()
-                        .map(|(_, w)| WeakNode::upgrade(w))
-                };
-                let parent_score_rlk =
-                    parent_score_for_leaf.as_ref().map(|p| p.score.read().unwrap());
-                let parent_score_ref =
-                    parent_score_rlk.as_ref().and_then(|g| g.as_ref());
-
-                *score_wlk = GD::score_leaf(
-                    &*self.game_dynamics,
-                    parent_score_ref,
-                    &node.player,
-                    node.state.read().unwrap().as_ref().unwrap(),
-                );
-                drop(parent_score_rlk);
+                // Compute the leaf score BEFORE holding `score_wlk` over
+                // `parent.score.read()`. Original ordering
+                // (`placeholder.score.write` held while taking
+                // `parent.score.read`) deadlocks under contention
+                // against `update_score`'s reader-then-writer chain on
+                // the parent, because the queue-fair RwLock forbids new
+                // readers behind a queued writer. The lock order this
+                // function must follow is the same as `update_score`'s:
+                // **parent.score before child.score**.
+                //
+                // It is safe to release `score_wlk`, take
+                // `parent.score.read`, compute, then re-acquire
+                // `score_wlk` — the `registered=true` flag set inside
+                // `Node::register` is the actual materialisation
+                // sentinel that other workers re-check at the top of
+                // this function. They'll skip materialisation and
+                // either descend on a placeholder that now has
+                // `score: None` (PUCT treats as unvisited, fine) or
+                // queue briefly on `score_wlk` here.
                 drop(score_wlk);
+
+                let parent_for_score = node
+                    .parents
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .next()
+                    .map(|(_, w)| WeakNode::upgrade(w));
+                let leaf_score = {
+                    let parent_score_rlk =
+                        parent_for_score.as_ref().map(|p| p.score.read().unwrap());
+                    let parent_score_ref =
+                        parent_score_rlk.as_ref().and_then(|g| g.as_ref());
+                    GD::score_leaf(
+                        &*self.game_dynamics,
+                        parent_score_ref,
+                        &node.player,
+                        node.state.read().unwrap().as_ref().unwrap(),
+                    )
+                };
+
+                let mut score_wlk2 = node.score.write().unwrap();
+                *score_wlk2 = leaf_score;
+                drop(score_wlk2);
 
                 <Node<GD, S, P, A, Q, I, M> as StateMemory>::modify_state(&node.state);
                 MaterializeOutcome::Done
