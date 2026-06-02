@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
 /// Convenience type alias.
@@ -371,6 +371,7 @@ pub mod state_memory {
     use crate::game_dynamics::GameDynamics;
 
     use std::hash::Hash;
+    use std::sync::atomic::Ordering;
     use std::sync::RwLock;
 
     /// A trait used to modify how states are stored in the transposition table.  Generally for
@@ -446,7 +447,7 @@ pub mod state_memory {
         type State = S;
 
         fn eq(&self, rhs: &Self) -> bool {
-            self.hash == rhs.hash
+            self.hash.load(Ordering::Relaxed) == rhs.hash.load(Ordering::Relaxed)
         }
 
         fn modify_state(state: &RwLock<Option<Self::State>>) {
@@ -627,7 +628,12 @@ where
     GD: ?Sized,
     M: ?Sized,
 {
-    hash: u64,
+    // `AtomicU64` rather than plain `u64` because placeholder children
+    // (created by `enumerate_placeholders` with no state yet) initialise
+    // hash=0 and have it set to the real hash on first descent, inside
+    // `materialize_placeholder`. Placeholders are not in the registry
+    // so their hash is never read until materialisation.
+    hash: AtomicU64,
     player: P,
     depth: AtomicUsize,
     state: RwLock<Option<S>>,
@@ -662,7 +668,7 @@ where
         registry: Arc<RwLock<HashSet<WeakNode<GD, S, P, A, Q, I, M>>>>,
     ) -> ArcWrap<Self> {
         let node = Self {
-            hash: Self::hash(&player, &state),
+            hash: AtomicU64::new(Self::hash(&player, &state)),
             player,
             depth: AtomicUsize::new(0),
             state: RwLock::new(Some(state)),
@@ -696,7 +702,7 @@ where
         let hash = Node::<GD, S, P, A, Q, I, M>::hash(&player, &state);
         ArcNode {
             inner: Arc::new(Node {
-                hash,
+                hash: AtomicU64::new(hash),
                 player,
                 depth,
                 state: RwLock::new(Some(state)),
@@ -710,6 +716,50 @@ where
                 _marker: PhantomData,
             }),
         }
+    }
+
+    /// Construct a placeholder child for lazy expansion: no state, no
+    /// score, single parent edge wired up, not registered. The hash is
+    /// initialised to 0 (sentinel) and set on first descent via
+    /// `materialize_placeholder`. Cheap — no `apply_action`, no
+    /// `score_leaf`, no registry write.
+    fn new_placeholder(
+        parent_node: &ArcNode<GD, S, P, A, Q, I, M>,
+        player: P,
+        action: A,
+    ) -> ArcWrap<Self>
+    where
+        A: Clone,
+    {
+        let registry = Arc::clone(&parent_node.registry);
+        let game_dynamics = Arc::clone(&parent_node.game_dynamics);
+        let parent_depth = parent_node.depth.load(Ordering::Relaxed);
+        let placeholder = ArcNode {
+            inner: Arc::new(Node {
+                hash: AtomicU64::new(0),
+                player,
+                depth: AtomicUsize::new(parent_depth + 1),
+                state: RwLock::new(None),
+                score: RwLock::new(None),
+                score_gen: AtomicUsize::new(0),
+                parents: RwLock::new(HashSet::new()),
+                children: RwLock::new(Children::NewLeaf),
+                registry,
+                registered: AtomicBool::new(false),
+                game_dynamics,
+                _marker: PhantomData,
+            }),
+        };
+        // Wire the single parent edge directly. We don't go through
+        // `connect_child` because it asserts the parent is `BranchWip`
+        // and we are about to insert into a `Children::Branch` map
+        // ourselves in `enumerate_placeholders`.
+        placeholder
+            .parents
+            .write()
+            .unwrap()
+            .insert((action, ArcNode::downgrade(parent_node)));
+        placeholder
     }
 
     fn register<R>(self_arc: &ArcNode<GD, S, P, A, Q, I, M>, reg_wlk: Option<&mut R>)
@@ -870,10 +920,23 @@ where
                 //     (q, a)
                 // });
 
-                let scores_and_actions = map.iter().map(|(a, child)| {
-                    // Unwrap the Option<Q> to get a reference to Q
-                    let q = lockref::Ref::new(child.score.read().unwrap(), |q| q.as_ref().unwrap());
-                    (q, a)
+                // Plan 016 (lazy expansion): under placeholder children
+                // some entries in `map` legitimately have `score: None`
+                // — those children have not yet been descended into and
+                // therefore not yet been `score_leaf`'d. Filter them out
+                // before handing to `GD::backprop_scores`, whose `Q`
+                // bound (`Deref<Target = Self::Score>`) does not admit
+                // `None`. If zero children are scored, the iterator is
+                // empty and the parent's aggregated score stays `None`
+                // — exactly what we want, since no signal is available
+                // yet.
+                let scores_and_actions = map.iter().filter_map(|(a, child)| {
+                    let lock = child.score.read().unwrap();
+                    if lock.is_none() {
+                        return None;
+                    }
+                    let q = lockref::Ref::new(lock, |q| q.as_ref().unwrap());
+                    Some((q, a))
                 });
 
                 // `Ordering::Acquire` because `GD::backprop_scores` should not be reordered before
@@ -1196,7 +1259,16 @@ where
             for (a, c) in children.drain() {
                 // The below is effectively the same condition as:
                 // if c.parents.read().unwrap().len() == 1 {
-                if Arc::strong_count(&c.inner) == 1 {
+                //
+                // Plan 016 (lazy expansion): also require the child to
+                // be registered. Unregistered placeholders carry no
+                // children of their own and their `get_state` may not
+                // even be valid (an over-permissive `available_actions`
+                // would have apply_action return None), so we have no
+                // reason to derive their state on drop.
+                if Arc::strong_count(&c.inner) == 1
+                    && c.registered.load(Ordering::Relaxed)
+                {
                     *c.state.write().unwrap() = Some(c.inner.get_state());
                 }
 
@@ -1206,8 +1278,16 @@ where
                     .unwrap()
                     .remove(&(a, ArcNode::downgrade(self_arc)));
 
+                // Plan 016 (lazy expansion): an unregistered child is
+                // a placeholder being orphaned; it has no state stored
+                // and no other parents, and it is about to drop. That
+                // case is fine — the original invariant
+                // (`state.is_some() || parents != empty`) is for
+                // registered nodes whose state must remain derivable.
                 debug_assert!(
-                    c.state.read().unwrap().is_some() || !c.parents.read().unwrap().is_empty(),
+                    c.state.read().unwrap().is_some()
+                        || !c.parents.read().unwrap().is_empty()
+                        || !c.registered.load(Ordering::Relaxed),
                     "child needs a parent",
                 );
 
@@ -1254,7 +1334,7 @@ where
     where
         H: Hasher,
     {
-        h.write_u64(self.hash);
+        h.write_u64(self.hash.load(Ordering::Relaxed));
     }
 }
 
@@ -1332,7 +1412,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Node")
             .field("ptr", &format!("{:p}", self))
-            .field("hash", &self.hash)
+            .field("hash", &self.hash.load(Ordering::Relaxed))
             .field("player", &self.player)
             .field("score", self.score.read().unwrap().as_ref().unwrap())
             .field("depth", &self.depth.load(Ordering::Relaxed))
@@ -1468,6 +1548,22 @@ impl RegistryInfo {
     }
 }
 
+/// Outcome of `Tree::materialize_placeholder` — either the placeholder
+/// has been registered + scored in place (`Done`), or a hash-equal twin
+/// already existed and the parent's children map has been rewritten to
+/// point to it (`Twin(twin)`). The caller in `step_into` then continues
+/// descent with the materialised node (Done case: same node) or with
+/// the twin.
+enum MaterializeOutcome<GD, S, P, A, Q, I, M>
+where
+    Node<GD, S, P, A, Q, I, M>: OnDrop,
+    GD: ?Sized,
+    M: ?Sized,
+{
+    Done,
+    Twin(ArcNode<GD, S, P, A, Q, I, M>),
+}
+
 /// An acyclic collection of connected `Node`s with a unique root.
 #[derive(Debug)]
 pub struct Tree<N: ?Sized + OnDrop, GD: ?Sized> {
@@ -1523,10 +1619,30 @@ where
             let children_rlk = node.children.read().unwrap();
             match *children_rlk {
                 Children::NewLeaf => {
-                    // encountered a leaf node, so create a new child node
+                    // Plan 016 (lazy expansion):
+                    //   1. If this node is a placeholder (unregistered),
+                    //      materialise it first — derive its state,
+                    //      registry-check, score-or-swap-for-twin.
+                    //   2. Then enumerate its children as placeholders
+                    //      (cheap — no apply_action / score_leaf).
                     drop(children_rlk);
-                    self.make_branch_wip(&node_state, &node);
-                    self.make_branch(&node_state, &node);
+                    if !node.registered.load(Ordering::Acquire) {
+                        match self.materialize_placeholder(&node, &node_state) {
+                            MaterializeOutcome::Twin(twin) => {
+                                // Twin already exists in the registry —
+                                // descent continues with it. `node_state`
+                                // is unchanged (twin has the same state by
+                                // hash-equality).
+                                node = twin;
+                                continue;
+                            }
+                            MaterializeOutcome::Done => {
+                                // node has been registered + scored.
+                                // Fall through to enumerate children.
+                            }
+                        }
+                    }
+                    self.enumerate_placeholders(&node_state, &node);
                     Node::backprop_scores(&node);
                     return Some(node_state);
                 }
@@ -1546,9 +1662,41 @@ where
                     let next_node = ArcNode::clone(map.get(&action).unwrap());
 
                     drop(children_rlk);
-                    node = next_node;
-                    node_state =
-                        GD::apply_action(&*node.game_dynamics, node_state, &action).unwrap();
+                    // Plan 016 (lazy expansion): placeholders are created
+                    // straight from `available_actions` without
+                    // pre-validating via `apply_action`. If a user
+                    // implementation lists an action that turns out to be
+                    // illegal (the old `make_branch` flow silently
+                    // dropped such children), prune the placeholder
+                    // here and retry selection.
+                    match GD::apply_action(&*next_node.game_dynamics, node_state.clone(), &action) {
+                        Some(new_state) => {
+                            node = next_node;
+                            node_state = new_state;
+                        }
+                        None => {
+                            // Drop next_node now so we can take the
+                            // parent's children write-lock without an
+                            // outstanding Arc to the placeholder.
+                            drop(next_node);
+                            let mut children_wlk = node.children.write().unwrap();
+                            if let Some(map) = children_wlk.as_map_mut() {
+                                if let Some(placeholder) = map.remove(&action) {
+                                    // Mirror the twin-swap cleanup:
+                                    // clear placeholder.parents so its
+                                    // on_drop assertion is satisfied.
+                                    placeholder.parents.write().unwrap().clear();
+                                }
+                                if map.is_empty() {
+                                    *children_wlk = Children::None;
+                                }
+                            }
+                            drop(children_wlk);
+                            // Re-enter the loop on the same `node` —
+                            // either descend into the reduced map or
+                            // hit `Children::None` and return.
+                        }
+                    }
                 }
                 Children::None => {
                     // Currently the implementation assumes that the score of a `Terminal` node is
@@ -1720,27 +1868,194 @@ where
         }
     }
 
-    fn make_branch_wip(&self, parent_state: &S, parent_node: &ArcNode<GD, S, P, A, Q, I, M>) {
-        // checking again that it's still a `NewLeaf` node, although it was already checked before
-        // calling this function, that's because the node could have been converted to a
-        // `BranchWip` by another thread (though unlikely..). But now we are holding a write lock on the node.
-        if let ref mut children @ Children::NewLeaf = *parent_node.children.write().unwrap() {
-            let players_actions = self
-                .game_dynamics
-                .available_actions(&parent_node.player, parent_state);
-
-            match players_actions {
-                Some(player_acts) => {
-                    // player actions from this state. Use exitsing code to handle this
-                    let branch_wip = BranchWip::new(player_acts.into_iter());
-                    *children = Children::BranchWip(branch_wip);
+    /// Plan 016 (lazy expansion): replace the previous
+    /// `make_branch_wip → make_branch` pair. Enumerates legal actions
+    /// and allocates one *placeholder* `ArcNode` per action — no
+    /// `apply_action`, no `score_leaf`, no registry insert. Flips
+    /// parent.children straight to `Children::Branch(HashMap)`. Each
+    /// placeholder is materialised (state derived, registry check,
+    /// `score_leaf`'d) only on first descent via
+    /// `materialize_placeholder`.
+    ///
+    /// Re-checks `NewLeaf` under the write-lock — another worker may
+    /// have raced to flip the parent in the meantime.
+    fn enumerate_placeholders(&self, parent_state: &S, parent_node: &ArcNode<GD, S, P, A, Q, I, M>)
+    where
+        A: Clone,
+    {
+        let mut children_wlk = parent_node.children.write().unwrap();
+        if !matches!(*children_wlk, Children::NewLeaf) {
+            return;
+        }
+        let players_actions = self
+            .game_dynamics
+            .available_actions(&parent_node.player, parent_state);
+        match players_actions {
+            Some(player_acts) => {
+                let mut map = HashMap::new();
+                for (p, a) in player_acts {
+                    let placeholder = Node::new_placeholder(parent_node, p, a.clone());
+                    map.insert(a, placeholder);
                 }
-
-                None => {
-                    *children = Children::None;
+                if map.is_empty() {
+                    *children_wlk = Children::None;
+                } else {
+                    *children_wlk = Children::Branch(map);
                 }
             }
+            None => {
+                *children_wlk = Children::None;
+            }
         }
+    }
+
+    /// Plan 016 (lazy expansion): turn a placeholder into a real
+    /// registered leaf — or swap it for a registry twin if an
+    /// equivalent state was already materialised via a different
+    /// parent. Called from `step_into`'s `NewLeaf` arm the first time
+    /// descent reaches a placeholder.
+    ///
+    /// `node_state` is the placeholder's state (computed by the
+    /// previous `apply_action` during descent). On entry, `node` has
+    /// `registered=false`, `state=None`, `score=None`, and exactly one
+    /// parent edge. On return (the `Done` arm), it has its hash set,
+    /// state stored, registered, and scored. The `Twin` arm splices
+    /// the existing twin into the parent's children map in place of
+    /// the placeholder, drops the placeholder, and asks the caller to
+    /// continue descent with the twin.
+    fn materialize_placeholder(
+        &self,
+        node: &ArcNode<GD, S, P, A, Q, I, M>,
+        node_state: &S,
+    ) -> MaterializeOutcome<GD, S, P, A, Q, I, M>
+    where
+        A: Clone,
+    {
+        // Take `score.write()` first — this is the "score is being
+        // computed" sentinel that other workers will block on, mirroring
+        // the `create_scored_child` None-arm protocol at tree.rs:1632.
+        let mut score_wlk = node.score.write().unwrap();
+        // Re-check: did another worker materialise us while we waited
+        // for the write lock?
+        if node.registered.load(Ordering::Acquire) {
+            return MaterializeOutcome::Done;
+        }
+
+        // Stash the state and compute the hash. Both must be set before
+        // we put the node in the registry (the registry's hash-set
+        // probe reads `self.hash` and StateMemory::eq may read state).
+        let h = Self::hash_for(&node.player, node_state);
+        node.hash.store(h, Ordering::Relaxed);
+        *node.state.write().unwrap() = Some(node_state.clone());
+
+        // Registry probe.
+        let mut reg_wlk = self.registry.write().unwrap();
+        match reg_wlk.get(&ArcNode::downgrade(node)) {
+            Some(existing) => {
+                // Twin exists — splice it in to replace the placeholder.
+                let twin = WeakNode::upgrade(existing);
+                drop(reg_wlk);
+                self.reg_info.hits.fetch_add(1, Ordering::Relaxed);
+
+                // The placeholder has exactly one parent edge (set in
+                // `new_placeholder`). Move it to the twin and rewrite
+                // the parent's children-map entry.
+                let parents_snapshot: Vec<(A, WeakNode<GD, S, P, A, Q, I, M>)> = node
+                    .parents
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .map(|(a, w)| (a.clone(), w.clone()))
+                    .collect();
+                for (a, parent_weak) in &parents_snapshot {
+                    let parent = WeakNode::upgrade(parent_weak);
+                    twin.parents
+                        .write()
+                        .unwrap()
+                        .insert((a.clone(), parent_weak.clone()));
+                    let mut parent_children_wlk = parent.children.write().unwrap();
+                    if let Some(map) = parent_children_wlk.as_map_mut() {
+                        map.insert(a.clone(), ArcNode::clone(&twin));
+                    }
+                    drop(parent_children_wlk);
+                }
+                // Promote twin's depth if any new parent edge would.
+                for (_, parent_weak) in &parents_snapshot {
+                    let parent = WeakNode::upgrade(parent_weak);
+                    if parent.depth.load(Ordering::Relaxed) + 1
+                        > twin.depth.load(Ordering::Relaxed)
+                    {
+                        Node::set_min_depth(&twin);
+                        break;
+                    }
+                }
+                // Score on the placeholder stays None — the placeholder
+                // is about to be dropped (no live refs once the local
+                // `node` Arc goes out of scope in the caller).
+                drop(score_wlk);
+                // Clear the placeholder's parent edges so the
+                // `on_drop` assertion (`unregistered ⇒ 0 parents`) is
+                // satisfied when its last Arc is released.
+                node.parents.write().unwrap().clear();
+                MaterializeOutcome::Twin(twin)
+            }
+            None => {
+                // Miss — register the placeholder and score it. Mirror
+                // the create_scored_child None-arm critical section.
+                Node::register(node, Some(&mut reg_wlk));
+                drop(reg_wlk);
+                self.reg_info.misses.fetch_add(1, Ordering::Relaxed);
+
+                // Parent depth may have grown since placeholder
+                // construction; refresh.
+                let parent_max_depth = node
+                    .parents
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .map(|(_, p)| WeakNode::upgrade(p).depth.load(Ordering::Relaxed))
+                    .max()
+                    .unwrap_or(0);
+                if parent_max_depth + 1 > node.depth.load(Ordering::Relaxed) {
+                    Node::set_min_depth(node);
+                }
+
+                // Use the (sole) parent's score for the score_leaf hint.
+                let parent_score_for_leaf = {
+                    let parents = node.parents.read().unwrap();
+                    parents
+                        .iter()
+                        .next()
+                        .map(|(_, w)| WeakNode::upgrade(w))
+                };
+                let parent_score_rlk =
+                    parent_score_for_leaf.as_ref().map(|p| p.score.read().unwrap());
+                let parent_score_ref =
+                    parent_score_rlk.as_ref().and_then(|g| g.as_ref());
+
+                *score_wlk = GD::score_leaf(
+                    &*self.game_dynamics,
+                    parent_score_ref,
+                    &node.player,
+                    node.state.read().unwrap().as_ref().unwrap(),
+                );
+                drop(parent_score_rlk);
+                drop(score_wlk);
+
+                <Node<GD, S, P, A, Q, I, M> as StateMemory>::modify_state(&node.state);
+                MaterializeOutcome::Done
+            }
+        }
+    }
+
+    /// Helper duplicating `Node::hash`'s logic at the `Tree` level so
+    /// `materialize_placeholder` can compute a hash without holding any
+    /// `Node` reference.
+    fn hash_for(player: &P, state: &S) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        player.hash(&mut hasher);
+        state.hash(&mut hasher);
+        hasher.finish()
     }
 
     fn best_action(&self) -> Status<A> {
@@ -1845,7 +2160,7 @@ where
         let hash = Node::<GD, S, P, A, Q, I, M>::hash(&player, &state);
         let probe: ArcNode<GD, S, P, A, Q, I, M> = ArcWrap {
             inner: Arc::new(Node {
-                hash,
+                hash: AtomicU64::new(hash),
                 player,
                 depth: AtomicUsize::new(0),
                 state: RwLock::new(Some(state)),
