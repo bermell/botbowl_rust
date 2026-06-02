@@ -261,7 +261,7 @@ impl GameDynamics for BloodBowlDynamics {
         new_state.step_with_roll_or_action(proc_input);
         // TODO: in the future we might inspect the state here to see if there are scripted actions
         // we can take here. Such as:
-        // - only one availaction, we just take it.
+        // - only one available action, we just take it.
         // - scripted block dice behaviour.
 
         Some(new_state)
@@ -364,6 +364,10 @@ impl GameDynamics for BloodBowlDynamics {
             .into_iter()
             .map(|(q, a)| {
                 let action = a.deref().clone();
+
+                // TODO: The prior should be
+                // calculated in available actions and cached on the BbAction, to avoid recomputing
+                // it on every descent.
                 let p = prior_for(parent_node_state, &action);
                 let v = puct_value(q.as_ref(), parent_visits, p, home_perspective);
                 (v, action)
