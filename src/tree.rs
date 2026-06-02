@@ -1957,6 +1957,15 @@ where
                 drop(reg_wlk);
                 self.reg_info.hits.fetch_add(1, Ordering::Relaxed);
 
+                // Drop `score_wlk` BEFORE we go take `parent.children`'s
+                // write lock. Otherwise we'd hold the placeholder's
+                // `score.write()` across a `parent.children.write()`,
+                // which deadlocks against another worker descending the
+                // same parent (it holds `parent.children.read()` and
+                // calls `select_node` which takes each child's
+                // `score.read()` — including ours).
+                drop(score_wlk);
+
                 // The placeholder has exactly one parent edge (set in
                 // `new_placeholder`). Move it to the twin and rewrite
                 // the parent's children-map entry.
@@ -1989,13 +1998,10 @@ where
                         break;
                     }
                 }
-                // Score on the placeholder stays None — the placeholder
-                // is about to be dropped (no live refs once the local
-                // `node` Arc goes out of scope in the caller).
-                drop(score_wlk);
-                // Clear the placeholder's parent edges so the
-                // `on_drop` assertion (`unregistered ⇒ 0 parents`) is
-                // satisfied when its last Arc is released.
+                // (Placeholder's `score` stays `None` — it's about to
+                // be dropped.) Clear the placeholder's parent edges so
+                // the `on_drop` assertion (`unregistered ⇒ 0 parents`)
+                // is satisfied when its last Arc is released.
                 node.parents.write().unwrap().clear();
                 MaterializeOutcome::Twin(twin)
             }
