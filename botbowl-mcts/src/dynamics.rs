@@ -196,6 +196,15 @@ impl GameDynamics for BloodBowlDynamics {
     type Score = BbScore;
     type ActionIter = Vec<(Self::Player, Self::Action)>;
 
+    // TODO: there are currently a few things left to do here.
+    //  - Action filtering: with domain knowledge we can prune some action that we know to be bad
+    //  - priors calculated in the available actions and cached on the BbAction, to avoid
+    //    recomputing them on every descent.
+    //  - Scripted actions: Some decisions are effectively deterministic, like picking a block die.
+    //    we should just script those. They should automaticaaly be applied in apply_action()
+    //  - scripted chance outcomes: To make the tree less bushy we can just pick outcomes. eg armor
+    //    breaks never succeed (if armor breaks it means a bunch of more rolls). maybe ball scatter too.
+
     fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         if state.info.game_over {
             return None;
@@ -259,7 +268,7 @@ impl GameDynamics for BloodBowlDynamics {
         };
 
         new_state.step_with_roll_or_action(proc_input);
-        // TODO: in the future we might inspect the state here to see if there are scripted actions
+        // TODO: After taking a step here we should
         // we can take here. Such as:
         // - only one available action, we just take it.
         // - scripted block dice behaviour.
