@@ -235,6 +235,107 @@ mod tests {
         assert!(is_advance(&outcomes[0]));
     }
 
+    // The remaining tests pin the scripted-chance behaviour of
+    // `result_for_outcome`: foul armour stays intact, the injury
+    // roll collapses to Stunned, and scatter/throw-in directions
+    // are deterministic. The scripts are load-bearing for MCTS
+    // recombination — two paths to the same chance outcome must
+    // produce identical post-roll states, or the DAG silently
+    // splits. See the `Foul armor breaks` and `Ball bounce/scatter`
+    // sections of plan 003.
+
+    #[test]
+    fn foul_armor_advance_holds_for_high_av() {
+        // SevenPlus target ~ AV 7. Roll-of-3 (the Advance constant) is
+        // a fail; armour holds, no injury cascade triggered.
+        let result = result_for_outcome(
+            &RequestedRoll::FoulArmor(Sum2D6Target::SevenPlus),
+            ChanceOutcome::Advance,
+        );
+        match result {
+            RollResult::FoulArmor { broken, ejected } => {
+                assert!(!broken, "expected armour to hold at AV 7");
+                assert!(!ejected, "fouler must not be ejected on the scripted path");
+            }
+            other => panic!("expected FoulArmor result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn foul_armor_advance_breaks_for_av_three() {
+        // ThreePlus target — armour needing just 3+ to break (an
+        // already-injured / shoeless target). Roll-of-3 succeeds
+        // against ThreePlus → armour broken. Documents the asymmetry:
+        // weak armour still cascades into the injury roll, which is
+        // itself scripted to Stunned (see test below).
+        let result = result_for_outcome(
+            &RequestedRoll::FoulArmor(Sum2D6Target::ThreePlus),
+            ChanceOutcome::Advance,
+        );
+        match result {
+            RollResult::FoulArmor { broken, .. } => assert!(broken, "roll-of-3 should beat ThreePlus"),
+            other => panic!("expected FoulArmor result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn foul_injury_advance_collapses_to_stunned() {
+        use botbowl_engine::core::model::InjuryOutcome;
+        // Typical Blood Bowl injury thresholds: KO at 8+, Cas at 10+.
+        // Roll-of-3 misses both → Stunned. Scripting this collapses
+        // the injury sub-tree to a single deterministic outcome.
+        let result = result_for_outcome(
+            &RequestedRoll::FoulInjury(Sum2D6Target::EightPlus, Sum2D6Target::TenPlus),
+            ChanceOutcome::Advance,
+        );
+        match result {
+            RollResult::FoulInjury { outcome, ejected } => {
+                assert_eq!(outcome, InjuryOutcome::Stunned);
+                assert!(!ejected);
+            }
+            other => panic!("expected FoulInjury result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scatter_advance_uses_three_up_directions() {
+        let up = botbowl_engine::core::dices::D8::from(botbowl_engine::core::model::Direction::up());
+        let result = result_for_outcome(&RequestedRoll::Scatter, ChanceOutcome::Advance);
+        match result {
+            RollResult::Scatter(a, b, c) => {
+                assert_eq!(a, up);
+                assert_eq!(b, up);
+                assert_eq!(c, up);
+            }
+            other => panic!("expected Scatter result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deviate_advance_uses_minimum_distance_up() {
+        let up = botbowl_engine::core::dices::D8::from(botbowl_engine::core::model::Direction::up());
+        let result = result_for_outcome(&RequestedRoll::Deviate, ChanceOutcome::Advance);
+        match result {
+            RollResult::Deviate(d6, d8) => {
+                assert_eq!(d6, D6::One);
+                assert_eq!(d8, up);
+            }
+            other => panic!("expected Deviate result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn throw_in_advance_uses_d3_one_and_min_distance() {
+        let result = result_for_outcome(&RequestedRoll::ThrowIn, ChanceOutcome::Advance);
+        match result {
+            RollResult::ThrowIn { direction, distance } => {
+                assert_eq!(direction, D3::One);
+                assert_eq!(distance, Sum2D6::Two);
+            }
+            other => panic!("expected ThrowIn result, got {:?}", other),
+        }
+    }
+
     #[test]
     fn three_plus_pass_probability_is_4_over_6() {
         let outcomes = enumerate(&RequestedRoll::D6PassFail(D6Target::ThreePlus));

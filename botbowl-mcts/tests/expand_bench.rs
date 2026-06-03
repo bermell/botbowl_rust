@@ -143,7 +143,7 @@ fn bench_apply_start_move(label: &str, state: &GameState, action: EngineAction, 
     base.set_dice_mode(DiceMode::RegisterRolls);
 
     let dynamics = BloodBowlDynamics::default();
-    let bb_action = BbAction::Player(action);
+    let bb_action = BbAction::player(action, 1.0);
     let t0 = Instant::now();
     let mut applied: u64 = 0;
     for _ in 0..iters {

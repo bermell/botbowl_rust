@@ -5,6 +5,7 @@ pub mod priors;
 pub mod pruning;
 pub mod roll_outcomes;
 pub mod score;
+pub mod scripted;
 
 pub use action::{BbAction, BbPlayer, ChanceOutcome};
 pub use dynamics::{BloodBowlDynamics, MctsBot};

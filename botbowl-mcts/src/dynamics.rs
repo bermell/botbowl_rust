@@ -23,11 +23,11 @@ use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamTyp
 use recon_mcts::{GameDynamics, GetState, HashOnly, SearchTree, SelectNodeState, StoreState, Tree, TreeAlias};
 
 use crate::action::{BbAction, BbPlayer, ChanceOutcome};
-use crate::block_dice;
-use crate::priors::prior_for;
+use crate::priors::prior_for_engine_action;
 use crate::pruning::should_prune;
 use crate::roll_outcomes;
 use crate::score::leaf_score;
+use crate::scripted;
 
 /// PUCT exploration constant. Sized so that the `c · P · √N(parent) /
 /// (1 + N(a))` term is comparable to leaf-score magnitudes (game score
@@ -173,6 +173,21 @@ impl Default for BloodBowlDynamics {
 /// override a real ~100-point Q lead.
 const DEFAULT_VIRTUAL_LOSS: i32 = 30;
 
+/// Returns the unique surviving engine action when, after `pruning`
+/// filters out domain-bad options, exactly one legal action remains.
+/// Used by `apply_action`'s quiescent loop to walk past trivial
+/// single-choice nodes so MCTS never spends a tree node modelling
+/// them. Pure on state — same input always yields the same result.
+fn sole_legal_action(state: &GameState) -> Option<EngineAction> {
+    state.available_actions.team?;
+    let mut iter = state.get_all_actions().into_iter().filter(|a| !should_prune(state, a));
+    let first = iter.next()?;
+    if iter.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
 /// Inspect a state and decide which "player" owns it from MCTS's
 /// perspective. Chance nodes are detected by a pending roll; otherwise
 /// the engine's `available_actions.team` tells us whose move it is.
@@ -232,22 +247,43 @@ impl GameDynamics for BloodBowlDynamics {
             TeamType::Home => BbPlayer::Home,
             TeamType::Away => BbPlayer::Away,
         };
-        // Scripted block-die selection: if the engine is asking the
-        // bot to pick which block die to apply, collapse the fan-out
-        // to a single scripted choice (`block_dice::scripted_pick`).
-        // MCTS never sees the other dice — they'd just burn search
-        // budget on a decision the rules resolve deterministically
-        // given attacker/defender skills.
-        // TODO: the scripted behaviour shouldn't be in available actions, it should be in apply_action!
-        if let Some(scripted) = block_dice::scripted_pick(state) {
-            return Some(vec![(mcts_player, BbAction::Player(scripted))]);
-        }
+        // Block-die picks and other scripted player decisions are
+        // resolved inside `apply_action`'s quiescent-advance loop
+        // (see `scripted::scripted_player_pick`), so MCTS never sees
+        // those intermediate states. The only way one could surface
+        // here is if the *root* state passed to `MctsBot::get_action`
+        // is itself mid-block-die — uncommon in practice; the search
+        // would waste one expansion fanning out over die choices,
+        // then converge after a single `apply_action` step.
 
-        let actions: Vec<(BbPlayer, BbAction)> = state
-            .get_all_actions()
-            .into_iter()
+        // Safety net: if the pruning rules narrow the list to *zero*
+        // legal actions while the engine still offers something, fall
+        // back to the unfiltered set. Pruning is supposed to remove
+        // wasteful options, not deadlock the search — better to spend
+        // budget evaluating bad moves than to mark the node terminal
+        // and corrupt the search. In debug builds we log the fallback
+        // once per call site so a real bug doesn't go silent.
+        let raw_actions = state.get_all_actions();
+        let mut filtered: Vec<EngineAction> = raw_actions
+            .iter()
+            .copied()
             .filter(|a| !should_prune(state, a))
-            .map(|a| (mcts_player, BbAction::Player(a)))
+            .collect();
+        if filtered.is_empty() && !raw_actions.is_empty() {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "pruning emptied the action list at player_action_type={:?}; falling back to {} unfiltered actions",
+                state.info.player_action_type,
+                raw_actions.len()
+            );
+            filtered = raw_actions;
+        }
+        let actions: Vec<(BbPlayer, BbAction)> = filtered
+            .into_iter()
+            .map(|a| {
+                let prior = prior_for_engine_action(state, a);
+                (mcts_player, BbAction::player(a, prior))
+            })
             .collect();
         if actions.is_empty() {
             None
@@ -259,19 +295,40 @@ impl GameDynamics for BloodBowlDynamics {
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
         let mut new_state = state;
         let proc_input: SomeProcInput = match action {
-            BbAction::Player(engine_action) => SomeProcInput::Action(*engine_action),
+            BbAction::Player {
+                action: engine_action, ..
+            } => SomeProcInput::Action(*engine_action),
             BbAction::Chance { outcome, .. } => {
                 let req = new_state.pending_roll.as_ref().cloned()?;
                 let result = roll_outcomes::result_for_outcome(&req, *outcome);
                 SomeProcInput::Roll(result)
             }
         };
-
         new_state.step_with_roll_or_action(proc_input);
-        // TODO: After taking a step here we should
-        // we can take here. Such as:
-        // - only one available action, we just take it.
-        // - scripted block dice behaviour.
+
+        // Quiescent-advance: keep stepping the engine while the state
+        // is at a player decision whose outcome is effectively
+        // scripted (block-die picks, coin toss, kick/receive) or
+        // where pruning has narrowed the action set to a single
+        // legal choice. Each pass is a pure function of state, so
+        // recombination invariants stay intact.
+        //
+        // The 32-step budget matches `optimistic_leaf_score`'s
+        // ceiling; if we ever hit it the engine is likely stuck in a
+        // loop and a debug_assert will surface it in tests.
+        let mut budget: u32 = 32;
+        while budget > 0 && !new_state.info.game_over && new_state.pending_roll.is_none() {
+            let next = if let Some(scripted) = scripted::scripted_player_pick(&new_state) {
+                scripted
+            } else if let Some(sole) = sole_legal_action(&new_state) {
+                sole
+            } else {
+                break;
+            };
+            new_state.step_with_roll_or_action(SomeProcInput::Action(next));
+            budget -= 1;
+        }
+        debug_assert!(budget > 0, "apply_action quiescent loop exhausted budget");
 
         Some(new_state)
     }
@@ -359,25 +416,23 @@ impl GameDynamics for BloodBowlDynamics {
             return pick.1;
         }
 
-        // Player node: PUCT with domain priors. We compute priors lazily
-        // here rather than caching them on `BbScore` — the cost is one
-        // `prior_for` call per child per descent, which is cheap (enum
-        // match + a few position comparisons) and avoids threading
-        // parent-state into `score_leaf`.
+        // Player node: PUCT with domain priors. Priors are cached on the
+        // `BbAction::Player` variant at expansion time (see
+        // `available_actions`), so this descent reads them off rather
+        // than re-querying `prior_for` per visit. `prior_f32()` returns
+        // `None` only for chance actions, which never appear in this
+        // branch — `parent_node_state.pending_roll` was checked above.
         //
         // Scores are Home-centric. Home maximises PUCT; Away mirrors
         // by negating Q before adding the exploration bonus.
+        let _ = parent_node_state; // no longer needed for priors; kept in case future rules want it.
         let home_perspective = *parent_player == BbPlayer::Home;
         let pick = scores_and_actions
             .clone()
             .into_iter()
             .map(|(q, a)| {
                 let action = a.deref().clone();
-
-                // TODO: The prior should be
-                // calculated in available actions and cached on the BbAction, to avoid recomputing
-                // it on every descent.
-                let p = prior_for(parent_node_state, &action);
+                let p = action.prior_f32().unwrap_or(1.0);
                 let v = puct_value(q.as_ref(), parent_visits, p, home_perspective);
                 (v, action)
             })
@@ -955,7 +1010,7 @@ impl Bot for MctsBot {
             })
             .expect("root must offer at least one action");
         match &best.0 {
-            BbAction::Player(a) => *a,
+            BbAction::Player { action, .. } => *action,
             BbAction::Chance { .. } => {
                 panic!("root selected a chance action — root must be a player turn");
             }
@@ -1017,6 +1072,50 @@ mod tests {
             result.node_kind,
             BbPlayer::Away,
             "node_kind should mirror the player owning the node"
+        );
+    }
+
+    /// `apply_action` must collapse scripted player decisions
+    /// (coin toss, kick/receive, block-die picks) into a single
+    /// engine advance so the MCTS DAG doesn't carry nodes for
+    /// them. Drive the engine from the pre-coin-toss state and
+    /// confirm the post-apply state is well past the toss + the
+    /// kick/receive choice.
+    #[test]
+    fn apply_action_walks_through_scripted_coin_toss() {
+        use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameStateBuilder};
+        use botbowl_engine::core::model::Action as EA;
+        use botbowl_engine::core::table::SimpleAT;
+
+        let mut state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
+        state.set_dice_mode(DiceMode::RegisterRolls);
+
+        // Sanity: the pre-step state really does offer Heads/Tails as
+        // a simple choice — i.e. the engine is at the toss decision.
+        let simple_before = state.available_actions.get_simple();
+        assert!(
+            simple_before.contains(&SimpleAT::Heads) && simple_before.contains(&SimpleAT::Tails),
+            "pre-condition: expected the toss decision"
+        );
+
+        let dynamics = BloodBowlDynamics::default();
+        // The MCTS edge that triggers this apply is the scripted
+        // `Heads` pick itself (what the quiescent loop would pick on
+        // the very next iteration anyway). After this call, we
+        // should be past the toss *and* past the kick/receive
+        // sub-decision — both are scripted.
+        let bb = BbAction::player(EA::Simple(SimpleAT::Heads), 1.0);
+        let out = dynamics
+            .apply_action(state, &bb)
+            .expect("apply_action should not abort on a fresh coin-toss state");
+
+        let simple_after = out.available_actions.get_simple();
+        let still_toss = simple_after.contains(&SimpleAT::Heads) || simple_after.contains(&SimpleAT::Tails);
+        let still_kick_receive = simple_after.contains(&SimpleAT::Kick) && simple_after.contains(&SimpleAT::Receive);
+        assert!(!still_toss, "post-apply: must have left the toss decision");
+        assert!(
+            !still_kick_receive,
+            "post-apply: kick/receive should have been scripted-through too"
         );
     }
 

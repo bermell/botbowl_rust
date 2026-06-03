@@ -29,11 +29,16 @@ const W_END_TURN: f32 = 0.2;
 /// domain-good actions. Chance actions always return [`BASE`] — priors
 /// don't influence stochastic outcome selection in v1.
 pub fn prior_for(state: &GameState, action: &BbAction) -> f32 {
-    let engine_action = match action {
-        BbAction::Player(a) => *a,
-        BbAction::Chance { .. } => return BASE,
-    };
+    match action {
+        BbAction::Player { action, .. } => prior_for_engine_action(state, *action),
+        BbAction::Chance { .. } => BASE,
+    }
+}
 
+/// Engine-action entry point used by `available_actions` so the
+/// caller doesn't have to wrap into a `BbAction` just to read the
+/// prior. `prior_for` delegates to this for player actions.
+pub fn prior_for_engine_action(state: &GameState, engine_action: EngineAction) -> f32 {
     // ×0.2 — discourage turn-ending choices when domain-good actions are
     // available. Always applied (rather than gating on "are there other
     // siblings?") so this stays a pure function of (state, action); when
@@ -126,7 +131,9 @@ mod tests {
     use botbowl_engine::core::table::{PosAT, SimpleAT};
 
     fn pa(a: EA) -> BbAction {
-        BbAction::Player(a)
+        // Prior payload is irrelevant for the tests — they call
+        // `prior_for` directly, not the cache. Default to 0.0.
+        BbAction::player(a, 0.0)
     }
 
     /// Build a Home-turn state with one Home and one Away player and the
