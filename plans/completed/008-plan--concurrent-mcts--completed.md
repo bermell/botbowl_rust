@@ -1,4 +1,8 @@
-# Plan 008 — Run `recon_mcts` concurrently from `MctsBot`
+# Plan 008 — Run `recon_mcts` concurrently from `MctsBot` (completed)
+
+**Status:** Completed. `MctsBot::get_action` runs `n_workers` (`std::thread::available_parallelism`
+by default) workers via `std::thread::scope`; the total `iterations_per_move` budget is split across
+them. Tests pin to `with_workers(1)` for determinism.
 
 **Priority:** #3 in v4. Tackle _after_ 006 and 007 so we don't multiply correctness bugs across threads.
 

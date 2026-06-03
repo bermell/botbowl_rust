@@ -1,6 +1,8 @@
-# Plan 006 — Adversarial backprop in `BloodBowlDynamics`
+# Plan 006 — Adversarial backprop in `BloodBowlDynamics` (completed)
 
-**Priority:** #1 in v4. The single largest correctness gap in the bot today.
+**Status:** Completed. Scores stay Home-centric end-to-end; `backprop_scores` maximises on Home
+nodes and minimises on Away nodes; `select_node` mirrors via `home_perspective` in `puct_value`.
+See `botbowl-mcts/src/dynamics.rs` (`backprop_scores`, `puct_value`).
 
 ## Why this matters
 

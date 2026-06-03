@@ -1,4 +1,8 @@
-# Plan 007 — Verify visit-count semantics in `BbScore`
+# Plan 007 — Verify visit-count semantics in `BbScore` (completed)
+
+**Status:** Completed. `BbScore.visits` is the single source of truth for PUCT; `backprop_scores`
+sums child visits on player nodes (matching the Chance branch). See `botbowl-mcts/src/dynamics.rs`
+(`BbScore`, `backprop_scores`).
 
 **Priority:** #2 in v4. Investigation first; code change only if a bug surfaces. Possibly explains a chunk of
 search-behaviour weirdness if wrong.

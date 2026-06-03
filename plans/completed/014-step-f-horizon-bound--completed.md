@@ -1,4 +1,9 @@
-# Plan 014 — Step F: horizon-bounded MCTS
+# Plan 014 — Step F: horizon-bounded MCTS (completed)
+
+**Status:** Completed. `HorizonAnchor` captures `{agent_team, home_turn, away_turn, home_score,
+away_score}` at the root of every `get_action` call; `BloodBowlDynamics::available_actions`
+returns `None` once the state diverges past the anchor (score change, agent's next turn, or
+game over). `BLOOD_MCTS_HORIZON=off` disables for A/B.
 
 ## Context
 

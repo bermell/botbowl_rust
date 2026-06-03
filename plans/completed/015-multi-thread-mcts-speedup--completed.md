@@ -1,4 +1,30 @@
-# Plan 015 — Multi-thread MCTS speedup
+# Plan 015 — Multi-thread MCTS speedup (completed / partial)
+
+**Status:** Closed out as partially landed. Performance work is now deprioritized in favour of
+bot capability.
+
+**What landed:**
+
+- **Step 0 — chance-node selector** (`BloodBowlDynamics::select_node`): switched from
+  `min_by(visits)` to `argmax(p_i · (N_parent + 1) - N_i)` so empirical visit ratio converges
+  to the real probability distribution.
+- **Step 1 — tree reuse across `get_action`** (`MctsBot.cached_tree` + `last_anchor`): cached
+  tree is walked to the new root via `Tree::lookup_state` + `find_path_to` + `apply_action`.
+  Reuse gates on `HorizonAnchor` equality; anchor change ⇒ rebuild. `BLOOD_MCTS_TREE_REUSE=off`
+  disables.
+- **Step 5 — virtual loss** (`BbScore.virtual_loss`, `MctsBot.virtual_loss`): transient penalty
+  applied on descent in `select_node`, subtracted in `puct_value`, reset to 0 on backprop.
+  Default magnitude 30; `BLOOD_MCTS_VIRTUAL_LOSS` overrides.
+
+**What did not land** (deferred indefinitely with the broader perf pause):
+
+- Step 2 (`GD::score_leaf` outside `registry.write()`) — turned out to already be the case on
+  re-reading; no change needed.
+- Step 3 (`update_score` write-lock contention reduction).
+- Step 4 (`Tree::select_node` lock-chain audit / debug assertion).
+
+The benchmark numbers below were the pre-Step-1 baseline (single-thread 9.7 s @ 10k iters /
+20k iters etc.). They were never re-captured after Steps 0/1/5 landed; treat them as historical.
 
 ## Context
 

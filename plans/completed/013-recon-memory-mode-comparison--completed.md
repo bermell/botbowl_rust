@@ -1,4 +1,9 @@
-# Plan 013 — `recon_mcts` memory-mode comparison
+# Plan 013 — `recon_mcts` memory-mode comparison (completed)
+
+**Status:** Completed. `MctsBot` defaults to `StoreState`; `BLOOD_MCTS_MEMORY={hash|get|store}`
+selects at runtime. The deadlock fix in `BloodBowlDynamics::select_node` (closure collapses
+`(Q,A)` into scalars to drop the read-guard) and the CAS-retry fix in `recon_mcts/src/tree.rs`
+both landed.
 
 ## TL;DR
 

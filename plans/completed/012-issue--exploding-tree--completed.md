@@ -1,4 +1,8 @@
-# Issue 012 — MCTS tree explodes after the step-function refactor
+# Issue 012 — MCTS tree explodes after the step-function refactor (completed)
+
+**Status:** Resolved by plan 014 (horizon bound on `available_actions`, capping max DAG depth)
+and plan 016 (lazy expansion). The `set_min_depth` pre-check that plan 012 Step A targeted was
+not needed once horizon kept the DAG shallow.
 
 ## Symptom
 

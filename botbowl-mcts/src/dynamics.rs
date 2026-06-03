@@ -487,9 +487,9 @@ impl GameDynamics for BloodBowlDynamics {
         }
 
         // Player node. Scores are Home-centric, so Home maximises and
-        // Away minimises. Visits sum across children so PUCT's
-        // √N(parent) reflects total descents (matching the Chance
-        // branch above).
+        // Away minimises (plan 006 — adversarial backprop). Visits
+        // sum across children so PUCT's √N(parent) reflects total
+        // descents (plan 007 — matches the Chance branch above).
         let want_max = *player == BbPlayer::Home;
         let mut best_score: Option<i64> = None;
         let mut total_visits: u32 = 0;
@@ -528,7 +528,9 @@ impl GameDynamics for BloodBowlDynamics {
         //      leaf is between squares with neither a roll nor a
         //      decision yet pending).
         //
-        // Shapes 3 and 4 both need FF before scoring. We optimistically
+        // Shapes 3 and 4 both need FF before scoring (plan 010 Track
+        // A.alt — FF lives here, not in `apply_action`, so chance
+        // children stay out of the tree). We optimistically
         // resolve them by simulating success outcomes inline (Pass /
         // Advance — same constants `roll_outcomes::fix_for_outcome`
         // queues for chance actions) until we hit shape 1 or 2 or the
@@ -900,8 +902,10 @@ impl Bot for MctsBot {
                             continue;
                         }
                         let tree = Arc::clone(&tree);
-                        // Bigger stack than the platform default (2 MB
-                        // on macOS / Linux pthread): `recon_mcts`'s
+                        // Plan 008: workers spawn via `std::thread::scope`,
+                        // total `iterations_per_move` is split across them.
+                        // Bigger stack than the platform default (2 MB on
+                        // macOS / Linux pthread): `recon_mcts`'s
                         // `Node::get_state` and `Arc<Node>` drop chain
                         // both recurse with the DAG depth. With Step F's
                         // horizon bound depth caps at ~20, but the

@@ -1,4 +1,8 @@
-# Biased action selection policy
+# Biased action selection policy (completed)
+
+**Status:** Completed. Implemented as PUCT priors in `botbowl-mcts/src/priors.rs` (×10 pickup,
+×10 blitz-carrier, ×5 mark-carrier, ×5 carrier-towards-endzone, ×0.2 end-turn). PUCT in
+`puct_value` automatically de-weights the prior as visit count grows (the `1/(1+N(a))` term).
 
 To make the first few iterations of the tree searcher more efficient we can bias the action selection policy towards
 actions that are usually good.

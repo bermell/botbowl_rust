@@ -1,4 +1,8 @@
-# Plan 016 — Lazy expansion via placeholder children
+# Plan 016 — Lazy expansion via placeholder children (completed)
+
+**Status:** Completed. `recon_mcts` materialises children as cheap placeholders on first hit and
+only computes state + score when descent picks the action. Lifted `GetTheBallEasy` from 0.12 → 1.00
+and dropped `ScoreTdEasy@1k` per-step wall by ~6×.
 
 ## Context
 

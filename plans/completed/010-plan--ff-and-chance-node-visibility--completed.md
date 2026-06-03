@@ -1,4 +1,7 @@
-# Plan 010 — Fast-forward mid-procedure states & make chance nodes visible
+# Plan 010 — Fast-forward mid-procedure states & make chance nodes visible (completed)
+
+**Status:** Completed via Track A.alt (FF lives in `score_leaf`, chance children stay out of the
+tree; no `recon_mcts` changes). See the matching `010-learnings` file for what actually landed.
 
 **Priority:** #5 in v4 — _after_ 006, 007, 008, 009 are stable. This is the hard one. It's the v3 work that didn't land;
 the goal here is to make it landable.

@@ -26,36 +26,35 @@ game.
 
 ## What has been built?
 
-- We have an implementation of the game engine. Though not yet optimized for the memory footprint of the search tree, it
-  is very easy to control for the stochastic nature of the game.
-- We have an MCTS implementation with a test implementation working for the game 2048. The tree searcher also has a
-  recombination mechanism to reduce the size of the search tree by merging nodes that represent the same game state. The
-  implementation supports multiple threads operating on the same tree.
-- We have a low quality terminal UI implementation to visualize the game state and see agents play.
+- We have an implementation of the game engine. It is very easy to control for the stochastic nature of the game via the
+  `DiceMode` enum (see below).
+- We have an MCTS implementation (`recon_mcts/`) with a test implementation working for the game 2048. The tree searcher
+  recombines equivalent states by hash to bound tree size, supports multiple threads operating on the same tree, and
+  materialises children lazily (plan 016).
+- We have a terminal UI implementation (`botbowl-ui/`) to visualize the game state and see agents play, with `live` /
+  `replay` / `snapshot` / `curriculum` subcommands.
 - We have a first-iteration scripted Rust bot (`botbowl-engine/src/scripted_bot.rs`) translated from the Python
   reference. It handles coin toss, setup, kickoff, block-die selection, reroll decisions, ball-carrier pathing toward
-  the endzone, safe blocks, and pickup attempts. The ladder is the natural extension point — more capability per step
-  before falling through to "end turn".
-- We have the start of a curriculum-learning suite (`botbowl-curriculum/`) with a `Lecture` trait, a trial runner, and
-  five lectures: "Score TD — Easy/Medium" and "Get the ball — Easy/Medium/Hard". The scripted bot scores ≥97% on all
-  five; random ≤1% on four of them. The runner is what later steps (MCTS heuristic / rollout / NN) will measure against.
+  the endzone, safe blocks, blitzing the enemy ball carrier when a 2-dice blitz is achievable, and pickup attempts. The
+  ladder is the natural extension point — more capability per step before falling through to "end turn".
+- We have a curriculum-learning suite (`botbowl-curriculum/`) with a `Lecture` trait, a deterministic trial runner, and
+  the "Score TD — Easy/Medium" and "Get the ball — Easy/Medium" lectures. The scripted bot clears all of them with
+  margin over random.
 - We have a `DiceMode` enum on `GameState` (engine side, `core/gamestate.rs`) that makes dice resolution explicit:
   `RollDice` (RNG only, production play), `FixedDice(queue)` (tests/builders, FIFO pop, panic on empty), `RegisterRolls`
-  (MCTS — engine pauses on every roll, caller resumes via `state.step_with_roll(result)`), and `DicePolicy(policy)`
-  (lectures). Lecture policies are _total_: built-ins like `SucceedAtOrEasier { d6, sum2d6, block_dice }` pin
-  pickup/dodge/block outcomes and delegate scatter/bounce/etc. to RNG internally. `SucceedAtOrEasier` covers the grand
-  plan's "3+ succeeds, 4+ fails" pass/fail semantics plus a `KnockdownAtAdvantage` block-die policy that turns 2+
-  attacker-dice rolls into all-Pow.
+  (MCTS — engine pauses on every roll, caller resumes via `state.step_with_roll_or_action(result)`), and
+  `DicePolicy(policy)` (lectures). Lecture policies are _total_: built-ins like
+  `SucceedAtOrEasier { d6, sum2d6, block_dice }` pin pickup/dodge/block outcomes and delegate scatter/bounce/etc. to RNG
+  internally.
 - We have a hand-rolled `Hash`/`Eq` on `GameState` ignoring `log`/`rng`/etc., so MCTS-style transposition tables can
   recombine equivalent positions reached via different histories. MCTS clones the search root, calls
-  `set_dice_mode(DiceMode::RegisterRolls)`, then drives the tree via `micro_step` (paused-on-roll observations land in
-  `state.pending_roll`) and `step_with_roll(result)` (deterministic resumption per chance outcome).
-- We have an MCTS bootstrap crate (`botbowl-mcts/`) with `GameDynamics` for the engine, explicit chance nodes
-  (`BbAction::Chance` with probability weights, mirroring the 2048 reference), and an `MctsBot` adapter implementing the
-  `Bot` trait. With _pure UCT_ action selection (no scripted-bot warm start) and a tier-1+2+4 leaf-score ladder, MCTS
-  lifts Score TD Easy from the random baseline of ~9% to **62%** at 1000 search iterations per move — a clear
-  demonstration that the tree search is doing real navigation, attributable to the search itself rather than to an inner
-  heuristic.
+  `set_dice_mode(DiceMode::RegisterRolls)`, then drives the tree (paused-on-roll observations land in
+  `state.pending_roll`); chance outcomes resume the engine deterministically.
+- We have an MCTS bot (`botbowl-mcts/MctsBot`) running PUCT with domain priors (plan 004), pure-function pruning
+  (plan/idea 003), adversarial backprop (Home maxes, Away mins — plan 006), horizon-bounded search (plan 014), parallel
+  workers (plan 008), tree reuse across decisions within a turn (plan 015), virtual-loss for concurrency (plan 015 Step
+  5), and lazy child materialisation (plan 016). It clears the curriculum lectures it is currently pointed at; see the
+  `botbowl-mcts/tests/` `#[ignore]`d integration tests for thresholds.
 
 ## Order of business
 

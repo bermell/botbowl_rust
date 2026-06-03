@@ -1,4 +1,7 @@
-# MCTS work — learnings (v1 → v3)
+# MCTS work — learnings (v1 → v3) (completed)
+
+**Status:** Completed — historical retrospective covering v1 → v3 of the MCTS crate. The follow-up
+work flagged here landed in plans 006-010, 014, 016.
 
 Three iterations of work on the `botbowl-mcts` crate this session. v1 and v2 delivered real wins; v3 attempted to
 unblock the `GetTheBall*` curriculum lectures and hit blockers worth writing down for whoever picks this up next.

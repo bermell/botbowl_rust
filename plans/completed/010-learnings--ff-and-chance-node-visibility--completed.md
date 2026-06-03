@@ -1,4 +1,6 @@
-# Plan 010 — Learnings (Track A.alt landed 2026-05-24)
+# Plan 010 — Learnings (Track A.alt landed 2026-05-24) (completed)
+
+**Status:** Completed — retrospective on the FF / chance-node-visibility work.
 
 ## TL;DR
 

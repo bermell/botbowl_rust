@@ -1,4 +1,7 @@
-# Plan 009 — Push exactly `num_dices` `BlockDice` fixes (close stale-fix landmine)
+# Plan 009 — Push exactly `num_dices` `BlockDice` fixes (close stale-fix landmine) (completed)
+
+**Status:** Completed. `roll_outcomes::fix_for_outcome` matches on `BlockDice(n)` and pushes
+`u8::from(n)` Pow fixes. Regression test in `roll_outcomes.rs` covers every `NumBlockDices` variant.
 
 **Priority:** #4 in v4. Small, well-scoped, known landmine. Good warm-up ticket; could be done in parallel with the
 bigger plans.

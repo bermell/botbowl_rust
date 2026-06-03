@@ -97,7 +97,9 @@ pub fn result_for_outcome(req: &RequestedRoll, outcome: ChanceOutcome) -> RollRe
         // BlockDice: a deterministic Pow per die. Matches
         // `BlockDicePolicy::KnockdownAtAdvantage` semantics; the
         // player-side die selection that follows is collapsed by
-        // `block_dice::scripted_pick` in the dynamics.
+        // `block_dice::scripted_pick` in the dynamics. Plan 009:
+        // push exactly `num_dices` fixes (not a constant 3) to
+        // avoid stale fixes leaking into unrelated later block rolls.
         (RequestedRoll::BlockDice(n), ChanceOutcome::Advance) => {
             let mut dices: [Option<BlockDice>; 3] = [None, None, None];
             for slot in dices.iter_mut().take(u8::from(*n) as usize) {
