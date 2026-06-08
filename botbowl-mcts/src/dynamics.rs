@@ -304,7 +304,17 @@ impl GameDynamics for BloodBowlDynamics {
                 SomeProcInput::Roll(result)
             }
         };
+
         new_state.step_with_roll_or_action(proc_input);
+        //TODO: ☝️Some of the action filtering we want to do has to do with pathfinding and can only
+        // be done after the action is appiled such as:
+        //  - After START_HANDOFF / START_PASS action. If player doesn't have ball check that they can pickup ball
+        //    AND reach a teammate to hand off to. If not the action should not be allow. And if
+        //    they have ball there should be a player available to pass/handoff to.
+        //  - Aftert START_BLITZ action, the player needs to be in range of a standing opponent to
+        //    blitz, otherwise the action should not be allowed.
+        //  to figure all this out we need to apply the action and then check the pathfinding.
+        //  recon_mcts support disallowing the appiled action by returning None from this function
 
         // Quiescent-advance: keep stepping the engine while the state
         // is at a player decision whose outcome is effectively
