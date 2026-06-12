@@ -30,7 +30,7 @@ use botbowl_mcts::dynamics::{BbScore, HorizonAnchor};
 use botbowl_mcts::{BbAction, BbPlayer, BloodBowlDynamics, MctsBot};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use recon_mcts::{GameDynamics, HashOnly, SearchTree, SelectNodeState, Tree};
+use recon_mcts::{GameDynamics, SearchTree, SelectNodeState, StoreState, Tree};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -327,7 +327,11 @@ fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_
         counters: Arc::clone(&counters),
     };
     let root_player = player_for_root(state);
-    let tree = Tree::new(dynamics, HashOnly, root_player, state.clone());
+    // StoreState matches production MctsBot::get_action (dynamics.rs:749).
+    // HashOnly corrupts the DAG (collisions merge distinct states), which
+    // surfaced both mid-search (illegal-action assert in micro_step) and on
+    // drop (DAG re-derivation) — see the old std::mem::forget hack below.
+    let tree = Tree::new(dynamics, StoreState, root_player, state.clone());
 
     let t0 = Instant::now();
     for _ in 0..iters {
@@ -356,11 +360,10 @@ fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_
         "EXPAND_COUNTS {label}/totals apply_action={aa} avail_actions={av} \
          select_node={sn} score_leaf={sl} backprop_scores={bp}"
     );
-    // Suppress drop-time `Node::get_state` panics (HashOnly mode walks
-    // the DAG on tree drop and trips a latent re-derivation bug at
-    // tree.rs:1551 / 780 — unrelated to what this bench measures).
-    // The test process is about to exit so leaking is fine.
-    std::mem::forget(tree);
+    // StoreState stores full state per node, so dropping the tree no longer
+    // re-derives the DAG — the old `std::mem::forget(tree)` HashOnly hack is
+    // gone and the tree drops normally here.
+    drop(tree);
 }
 
 #[test]
@@ -418,6 +421,11 @@ fn expand_bench_for_samply() {
     //       target/release/deps/expand_bench-* expand_bench_for_samply \
     //       --ignored --nocapture
     eprintln!("EXPAND_COUNTS_SAMPLY seed={SEED:#x}");
-    run_call_counts("score_td_easy", build_score_td_easy(), 200_000);
-    run_call_counts("full_teams", build_full_teams_turn_start(), 200_000);
+    // 200k iters give samply enough samples in the release build this test
+    // targets. In a debug build (the routine `--ignored` suite) that many
+    // StoreState nodes blow up memory and wall-clock, so cut it down — debug
+    // is never the real profiling run.
+    let iters = if cfg!(debug_assertions) { 5_000 } else { 200_000 };
+    run_call_counts("score_td_easy", build_score_td_easy(), iters);
+    run_call_counts("full_teams", build_full_teams_turn_start(), iters);
 }
