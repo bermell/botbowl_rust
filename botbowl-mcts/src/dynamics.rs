@@ -20,7 +20,7 @@ use std::sync::Arc;
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
-use recon_mcts::{GameDynamics, GetState, HashOnly, SearchTree, SelectNodeState, StoreState, Tree, TreeAlias};
+use recon_mcts::{GameDynamics, GetState, SearchTree, SelectNodeState, StoreState, Tree, TreeAlias};
 
 use crate::action::{BbAction, BbPlayer, ChanceOutcome};
 use crate::priors::prior_for_engine_action;
@@ -646,27 +646,32 @@ fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_pers
 
 /// `Bot` adapter that drives a fresh MCTS search per call.
 /// Node-equality strategy used by the underlying `recon_mcts` tree.
-/// See `recon_mcts/src/tree.rs:397/416/438` for the three markers.
+/// See `recon_mcts/src/tree.rs:397/416/438` for the markers.
 ///
-/// - `HashOnly`  — equality is `hash == hash`. Cheapest, but a hash
-///   collision merges two genuinely different states into one node.
-///   **Do not use in production** — plan 013 documents that this
-///   corrupts the DAG (cycles, illegal actions). Kept as a variant
-///   only so the `BLOOD_MCTS_MEMORY=hash` diagnostic still works.
+/// **GOTCHA — never use `recon_mcts`'s `HashOnly` marker with Blood Bowl.**
+/// `HashOnly` treats two nodes as equal iff their state *hashes* match. A
+/// `GameState` is large (full pitch + both rosters + proc stack), so hash
+/// collisions are inevitable, and a collision silently *merges two genuinely
+/// different states into one DAG node* — producing illegal actions mid-search
+/// (`micro_step` legality asserts), corrupted backprop, and re-derivation
+/// panics on tree drop. It is not a tuning knob; it is broken for this game.
+/// The `HashOnly` variant was therefore removed from `MemoryMode` (it lives on
+/// in `recon_mcts` only for deterministic games like the `nim`/2048 demo).
+/// If you ever reach for `recon_mcts::HashOnly` here, don't — use `StoreState`.
+///
+/// The two safe modes:
 /// - `GetState`  — equality replays the action sequence from root and
 ///   compares full `GameState`. No spurious merges; pays an O(depth)
-///   recompute on each equality check.
+///   recompute on each equality check. Diagnostic-only.
 /// - `StoreState` — full state stored on every node; equality is
-///   structural and O(1). Highest memory cost — but with the
-///   horizon bound (plan 014) capping max-depth at ~20 the memory
-///   footprint is bounded too. This is the default.
+///   structural and O(1). Highest memory cost — but with the horizon bound
+///   (plan 014) capping max-depth at ~20 the footprint is bounded too.
+///   **This is the default and the only mode production should use.**
 ///
-/// Selectable at runtime via `with_memory_mode` or the
-/// `BLOOD_MCTS_MEMORY` env var (`hash` / `get` / `store`). Env var
-/// wins when set so a single test binary can sweep all three.
+/// Selectable at runtime via `with_memory_mode` or the `BLOOD_MCTS_MEMORY`
+/// env var (`get` / `store` only). Env var wins when set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryMode {
-    HashOnly,
     GetState,
     StoreState,
 }
@@ -674,11 +679,16 @@ pub enum MemoryMode {
 impl MemoryMode {
     fn resolve(default: MemoryMode) -> Self {
         match std::env::var("BLOOD_MCTS_MEMORY").ok().as_deref() {
-            Some("hash") => MemoryMode::HashOnly,
             Some("get") => MemoryMode::GetState,
             Some("store") => MemoryMode::StoreState,
+            // `hash` is intentionally unsupported — HashOnly corrupts the DAG
+            // for Blood Bowl (see the GOTCHA on `MemoryMode`). Fail loudly
+            // rather than silently honour a footgun.
+            Some("hash") => {
+                panic!("BLOOD_MCTS_MEMORY=hash is unsupported: HashOnly corrupts the DAG for Blood Bowl (large state => hash collisions merge distinct nodes). Use 'store' (default) or 'get'.")
+            }
             Some(other) => {
-                panic!("BLOOD_MCTS_MEMORY={other:?} (expected one of: hash | get | store)")
+                panic!("BLOOD_MCTS_MEMORY={other:?} (expected one of: get | store)")
             }
             None => default,
         }
@@ -689,7 +699,6 @@ impl MemoryMode {
 /// type is part of `Tree`'s generic parameters, so the cache must enumerate
 /// each `MemoryMode` variant — they monomorphise to different `Tree` types.
 enum CachedTree {
-    HashOnly(Arc<TreeAlias<BloodBowlDynamics, HashOnly>>),
     GetState(Arc<TreeAlias<BloodBowlDynamics, GetState>>),
     StoreState(Arc<TreeAlias<BloodBowlDynamics, StoreState>>),
 }
@@ -705,9 +714,10 @@ pub struct MctsBot {
     /// semantics. Default 8.
     pub ff_depth: u8,
     /// Which `recon_mcts` state-memory strategy to use. See
-    /// [`MemoryMode`]. Default `StoreState` (plan 014 + 013); never
-    /// `HashOnly` for production, that mode corrupts the DAG.
-    /// `BLOOD_MCTS_MEMORY` overrides at runtime.
+    /// [`MemoryMode`]. Always `StoreState` in production (plan 014 + 013);
+    /// `HashOnly` was removed entirely because it corrupts the DAG for
+    /// Blood Bowl (see the GOTCHA on [`MemoryMode`]). `BLOOD_MCTS_MEMORY`
+    /// can switch to the safe `get` diagnostic at runtime.
     pub memory_mode: MemoryMode,
     /// Carry the search tree across `get_action` calls within a single
     /// trial. Within a bot turn the horizon anchor is stable, so the
@@ -987,10 +997,6 @@ impl Bot for MctsBot {
         }
 
         let (move_info, cache_after) = match memory_mode {
-            MemoryMode::HashOnly => {
-                let (mi, t) = run_with_marker!(HashOnly, "hash", HashOnly);
-                (mi, CachedTree::HashOnly(t))
-            }
             MemoryMode::GetState => {
                 let (mi, t) = run_with_marker!(GetState, "get", GetState);
                 (mi, CachedTree::GetState(t))
