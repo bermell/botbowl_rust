@@ -1,0 +1,35 @@
+[package]
+name = "recon_mcts-test_nim"
+version = "0.1.0"
+authors = ["trtsl@github.com"]
+edition = "2018"
+autotests = false
+
+[dependencies]
+rand = "0.9.0"
+rayon = "1.10"
+
+[dependencies.recon_mcts]
+path = "../.."
+features = ["test_internals"]
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "visualize_2048"
+path = "main.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "benchmark_2048"
+path = "benchmark_2048.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "compare_2048"
+path = "compare_2048.rs"
+test = false
+doctest = false
