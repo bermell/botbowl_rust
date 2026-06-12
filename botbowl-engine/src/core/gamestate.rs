@@ -75,17 +75,23 @@ impl GameStateBuilder {
 
         // Dugout
         let place = DugoutPlace::Reserves;
+        // Role split scales with roster size; linemen take the remainder.
+        // At ROSTER_PER_TEAM=12 this is the historical 6 linemen + 2 each of
+        // blitzer/catcher/thrower. The per-tier distribution on smaller boards
+        // is a deferred curriculum decision — this is just a sane default.
+        let positionals = (ROSTER_PER_TEAM / 6).max(1);
+        let linemen = ROSTER_PER_TEAM - 3 * positionals;
         for team in [TeamType::Home, TeamType::Away] {
-            for _ in 0..6 {
+            for _ in 0..linemen {
                 state.dugout_add_new_player(PlayerStats::new_lineman(team), place);
             }
-            for _ in 0..2 {
+            for _ in 0..positionals {
                 state.dugout_add_new_player(PlayerStats::new_blitzer(team), place);
             }
-            for _ in 0..2 {
+            for _ in 0..positionals {
                 state.dugout_add_new_player(PlayerStats::new_catcher(team), place);
             }
-            for _ in 0..2 {
+            for _ in 0..positionals {
                 state.dugout_add_new_player(PlayerStats::new_thrower(team), place);
             }
         }
@@ -367,8 +373,12 @@ pub struct GameState {
     pub home: TeamState,
     pub away: TeamState,
 
-    fielded_players: [Option<FieldedPlayer>; 22],
-    dugout_players: [Option<DugoutPlayer>; 32],
+    // Both arrays are sized for the whole roster: a player is either fielded or
+    // in the dugout, and at most ROSTER_PER_TEAM per team can exist. (SetupLine
+    // can field more than TEAM_SIZE when the roster is smaller than the
+    // formation template, so fielded must hold the full roster, not 2*TEAM_SIZE.)
+    fielded_players: [Option<FieldedPlayer>; 2 * ROSTER_PER_TEAM],
+    dugout_players: [Option<DugoutPlayer>; 2 * ROSTER_PER_TEAM],
     board: FullPitch<Option<PlayerID>>,
     pub ball: BallState,
     proc_stack: Vec<AnyProc>,
@@ -1296,10 +1306,10 @@ impl GameState {
             .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
             .count();
         let num_available_players = num_players_on_bench + num_players_on_pitch;
-        let min_people_on_pitch = 11.min(num_available_players);
+        let min_people_on_pitch = TEAM_SIZE.min(num_available_players);
         let min_people_on_scrimage = 3.min(num_available_players);
 
-        if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > 11 {
+        if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > TEAM_SIZE {
             return false;
         }
         let line_of_scrimage_x = self.get_line_of_scrimage_x(team);

@@ -93,15 +93,12 @@ impl<T> FullPitch<Option<T>> {
     }
 }
 
-pub const WIDTH: usize = 28;
-pub const HEIGHT: usize = 17;
-pub const WIDTH_: Coord = WIDTH as Coord;
-pub const HEIGHT_: Coord = HEIGHT as Coord;
-pub const LINE_OF_SCRIMMAGE_HOME_X: Coord = 14;
-pub const LINE_OF_SCRIMMAGE_AWAY_X: Coord = 13;
-pub const LINE_OF_SCRIMMAGE_Y_RANGE: std::ops::RangeInclusive<Coord> = 5..=11;
-pub const NORTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 1..=4;
-pub const SOUTH_WING_Y_RANGE: std::ops::RangeInclusive<Coord> = 12..=15;
+// Board dimensions and team size are build-time configurable (plan 017). The
+// constants below — WIDTH/HEIGHT/WIDTH_/HEIGHT_, TEAM_SIZE/ROSTER_PER_TEAM, and
+// the LOS / wing geometry — are emitted by `build.rs` into `$OUT_DIR`. The
+// default build reproduces the historical 28x17 / 11-player values exactly.
+// `Coord` (defined above) is in scope for the generated file.
+include!(concat!(env!("OUT_DIR"), "/board_config.rs"));
 
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;

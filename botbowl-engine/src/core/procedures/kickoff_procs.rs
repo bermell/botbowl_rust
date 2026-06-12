@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID, Position, ProcState,
-    Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE,
+    Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE, TEAM_SIZE,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -195,7 +195,7 @@ impl Setup {
         #[allow(clippy::needless_collect)]
         let players: Vec<PlayerID> = game_state
             .get_dugout()
-            .take(11)
+            .take(TEAM_SIZE)
             .filter(|dplayer| dplayer.stats.team == self.team)
             .map(|p| p.id)
             .collect();

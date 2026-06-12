@@ -38,9 +38,8 @@ expressions of W/H rather than hand-tuned literals. See the table above which ca
 as constants, or computed from the base dimensions with some heuristics.
 
 Setup-legality rules (min 3 on LOS, max 2 per wing) and parts of the kickoff procedure assume 11-on-11 and a real
-formation; on small tiers (≤ ~5 players) we drop the LOS/wing constraints and use a simpler setup. Gated on
-`BOARD_PLAYERS` rather than a runtime tier flag so the smaller binary doesn't even compile the formation-check code
-paths.
+formation; on small tier we drop the wing constraints and use a simpler setup. Gated on `BOARD_PLAYERS` rather than a
+runtime tier flag so the smaller binary doesn't even compile the formation-check code paths.
 
 ### Migration steps
 
