@@ -12,7 +12,7 @@ Four member crates sharing one `Cargo.lock` and one `target/`:
 
 - `botbowl-engine/` — pure rules library (procedure-stack state machine, `DiceMode`, pathing, scripted bot).
 - `botbowl-curriculum/` — training scenarios (`Lecture` trait, deterministic trial runner).
-- `botbowl-mcts/` — MCTS adapter (`BloodBowlDynamics` + `MctsBot`) on top of the sibling `recon_mcts` crate.
+- `botbowl-mcts/` — MCTS adapter (`BloodBowlDynamics` + `MctsBot`) on top of the nested `recon_mcts/` crate.
 - `botbowl-ui/` — `ratatui` terminal frontend: `live` / `replay` / `snapshot` / `curriculum` subcommands.
 
 See `../CLAUDE.md` for the architectural overview and `plans/001-grand-plan.md` for the long-term roadmap.
