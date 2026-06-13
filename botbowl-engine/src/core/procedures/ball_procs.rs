@@ -35,6 +35,11 @@ impl SimpleProc for PickupProc {
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.ball = BallState::Carried(self.id);
+        // The active player just picked up the ball this activation; they are
+        // owed one follow-up move action (the pathfinder stops a non-carrier's
+        // path at the ball, so they need a fresh carrier-routed path to run).
+        // See the field doc on `GameInfo::pickup_this_activation`.
+        game_state.info.pickup_this_activation = true;
         let player = game_state.get_player_unsafe(self.id);
         if player.position.x == game_state.get_endzone_x(player.stats.team) {
             game_state.info.handle_td_by = Some(self.id);
@@ -541,6 +546,44 @@ mod tests {
             _ => panic!("wrong ball carried"),
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn pickup_sets_and_clears_activation_flag() -> Result<()> {
+        // Drives the `GameInfo::pickup_this_activation` lifecycle that the
+        // MCTS P8 pruning rule depends on: cleared at activation, set when the
+        // ball is picked up, and cleared again the moment the next move action
+        // is selected (consuming the one-move pickup bonus).
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+        assert!(state.home_to_act());
+        let id = state.get_player_id_at(start_pos).unwrap();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        assert!(
+            !state.info.pickup_this_activation,
+            "flag must be clear right after activation"
+        );
+
+        state.fix_d6(6); // succeed the pickup (3+ for AG3)
+        state.step_positional(PosAT::Move, ball_pos);
+        assert!(matches!(state.ball, BallState::Carried(c) if c == id));
+        assert!(
+            state.info.pickup_this_activation,
+            "flag must be set once the ball is picked up"
+        );
+
+        // Selecting the follow-up move consumes the bonus.
+        state.step_positional(PosAT::Move, Position::new((6, 5)));
+        assert!(
+            !state.info.pickup_this_activation,
+            "flag must clear when the follow-up move action is selected"
+        );
         Ok(())
     }
 

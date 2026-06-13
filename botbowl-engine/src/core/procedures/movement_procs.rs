@@ -187,6 +187,19 @@ impl Procedure for MoveAction {
                 proc_state
             }
             (ProcInput::Action(Action::Positional(_, position)), MoveActionState::SelectPath) => {
+                // Selecting a move action consumes any pickup-bonus owed from a
+                // previous step this activation. (When this very action is the
+                // one that picks up the ball, the flag is false here and gets
+                // set later by `PickupProc::apply_success`.) See the field doc
+                // on `GameInfo::pickup_this_activation`.
+                game_state.info.pickup_this_activation = false;
+                // Post-block move consumes the blitz entitlement (plan 019).
+                // A *pre*-block move runs under `StartBlitz` still, so it's
+                // excluded — only the post-block move (under `StartMove`,
+                // flipped by `Block::step`, `block_procs.rs:338`) clears it.
+                if game_state.info.player_action_type == Some(PosAT::StartMove) {
+                    game_state.info.blitz_this_activation = false;
+                }
                 let mut path = game_state.take_path(position).unwrap().iter();
                 let proc_state = MoveAction::continue_along_path(&mut path, game_state);
                 if path.is_empty() {
@@ -912,5 +925,54 @@ mod tests {
         assert_eq!(player.moves_left(), player.stats.ma);
         assert_eq!(player.gfis_left(), 2);
         state.step_positional(PosAT::StartMove, move_target)
+    }
+
+    // --- `blitz_this_activation` lifecycle (plan 019) -------------------
+
+    #[test]
+    fn blitz_flag_not_cleared_by_pre_block_move() {
+        // A move made while still `StartBlitz` (i.e. before the block) must
+        // not consume the post-block move entitlement.
+        let start_pos = Position::new((5, 5));
+        let opp_pos = Position::new((7, 7));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(opp_pos)
+            .build();
+
+        state.step_positional(PosAT::StartBlitz, start_pos);
+        assert!(state.info.blitz_this_activation);
+
+        state.step_positional(PosAT::Move, Position::new((6, 6)));
+        assert_eq!(state.info.player_action_type, Some(PosAT::StartBlitz));
+        assert!(state.info.blitz_this_activation);
+    }
+
+    #[test]
+    fn blitz_flag_cleared_on_post_block_move_selection() {
+        let start_pos = Position::new((5, 5));
+        let opp_pos = Position::new((7, 7));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(opp_pos)
+            .build();
+
+        state.step_positional(PosAT::StartBlitz, start_pos);
+        assert!(state.info.blitz_this_activation);
+
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::Block, opp_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, opp_pos + (1, 1));
+        state.fix_d6(1);
+        state.fix_d6(1);
+        state.step_positional(PosAT::FollowUp, opp_pos + (-1, -1));
+
+        // Block resolved: flag still owed until the post-block move is made.
+        assert_eq!(state.info.player_action_type, Some(PosAT::StartMove));
+        assert!(state.info.blitz_this_activation);
+
+        state.step_positional(PosAT::Move, start_pos + (1, 0));
+        assert!(!state.info.blitz_this_activation);
     }
 }

@@ -210,6 +210,7 @@ impl GameStateBuilder {
             BuilderState::Setup { turn } => turn,
             BuilderState::Turn { turn } => turn,
         };
+        // TODO: we should set the dice policy to fixed here. But likely needs changes elsewhere
         assert!(user_turn > 0, "turn must be positive");
         assert_eq!(state.info.home_turn, 0);
         assert_eq!(state.info.away_turn, 0);
@@ -306,6 +307,21 @@ pub struct GameInfo {
     pub pass_available: bool,
     pub blitz_available: bool,
     pub handle_td_by: Option<PlayerID>,
+    /// True iff the currently-active player picked up the ball during this
+    /// activation and has not yet started a follow-up move action. Set in
+    /// `PickupProc::apply_success`, cleared at activation start
+    /// (`set_active_player`), when `Turn` clears the active player, and when
+    /// the player selects their next move action in `MoveAction`.
+    ///
+    /// Part of the hashed/compared state on purpose: a player who *just*
+    /// picked up the ball and one who was *already* carrying can otherwise
+    /// reach a byte-identical `GameState`, and the MCTS bot needs to treat
+    /// them differently (the former is owed one extra move action — see
+    /// `botbowl-mcts` pruning rule P8). Keeping the distinction in the state
+    /// keeps that pruning a pure function of `(state, action)`.
+    #[serde(default)]
+    pub pickup_this_activation: bool,
+    pub blitz_this_activation: bool,
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -328,6 +344,8 @@ impl GameInfo {
             kickoff_by_team: None,
             kicking_this_drive: TeamType::Away,
             turnover: false,
+            pickup_this_activation: false,
+            blitz_this_activation: false,
         }
     }
 }
@@ -483,6 +501,8 @@ impl std::hash::Hash for GameState {
         self.info.game_over.hash(h);
         self.info.turnover.hash(h);
         self.info.active_player.hash(h);
+        self.info.pickup_this_activation.hash(h);
+        self.info.blitz_this_activation.hash(h);
         self.info.handle_td_by.hash(h);
         (self.info.kicking_first_half as u8).hash(h);
         (self.info.kicking_this_drive as u8).hash(h);
@@ -646,6 +666,9 @@ impl GameState {
     pub fn set_active_player(&mut self, id: PlayerID) {
         debug_assert!(self.get_player(id).is_ok());
         self.info.active_player = Some(id);
+        // Fresh activation — clear any pickup-bonus owed to a prior activation.
+        self.info.pickup_this_activation = false;
+        self.info.blitz_this_activation = false;
     }
 
     pub fn get_active_player(&self) -> Option<&FieldedPlayer> {
@@ -1268,9 +1291,7 @@ impl GameState {
     /// `MoveAction` / `BlockAction` producers to fill in place. The flag on
     /// `available_actions` is the producer's responsibility to set.
     pub(crate) fn take_path_buffer(&mut self) -> Box<FullPitch<Option<std::sync::Arc<super::pathing::Node>>>> {
-        self.path_buffer
-            .take()
-            .unwrap_or_else(|| Box::new(Default::default()))
+        self.path_buffer.take().unwrap_or_else(|| Box::new(Default::default()))
     }
 
     /// Drop every Arc payload in the path buffer in place, retaining the 4KB
@@ -1288,10 +1309,7 @@ impl GameState {
 
     /// Restore a buffer that was taken via `take_path_buffer`, marking
     /// `has_paths` so consumers can read it. Cheap (two pointer writes).
-    pub(crate) fn install_path_buffer(
-        &mut self,
-        buf: Box<FullPitch<Option<std::sync::Arc<super::pathing::Node>>>>,
-    ) {
+    pub(crate) fn install_path_buffer(&mut self, buf: Box<FullPitch<Option<std::sync::Arc<super::pathing::Node>>>>) {
         self.path_buffer = Some(buf);
         self.available_actions.has_paths = true;
     }
@@ -1860,18 +1878,15 @@ mod gamestate_tests {
             .build();
         state.set_dice_mode(DiceMode::RegisterRolls);
 
-        let after_start = state.step_with_roll_or_action(SomeProcInput::Action(
-            Action::Positional(PosAT::StartMove, start_pos),
-        ));
+        let after_start =
+            state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::StartMove, start_pos)));
         assert_eq!(
             after_start,
             MicroStepState::NeedAction,
             "StartMove should yield the next Move-target decision"
         );
 
-        let after_move = state.step_with_roll_or_action(SomeProcInput::Action(
-            Action::Positional(PosAT::Move, td_pos),
-        ));
+        let after_move = state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::Move, td_pos)));
         assert_eq!(
             after_move,
             MicroStepState::NeedRoll,

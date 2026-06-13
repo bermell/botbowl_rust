@@ -85,7 +85,10 @@ impl<T> FixedQueue<T> {
     }
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         // take_while terminates at the first None, then `unwrap` is safe by invariant.
-        self.data.iter().take_while(|v| v.is_some()).map(|v| v.as_ref().unwrap())
+        self.data
+            .iter()
+            .take_while(|v| v.is_some())
+            .map(|v| v.as_ref().unwrap())
     }
     pub fn iter_rev(&self) -> impl Iterator<Item = &T> {
         self.data.iter().rev().filter_map(|item| item.as_ref())
@@ -762,11 +765,7 @@ impl<'a> PathFinder<'a> {
     /// callers can pass a buffer that was filled by a previous call. This is
     /// the variant used by `MoveAction`/`BlockAction` to write directly into
     /// `GameState::path_buffer` and skip a per-frame 4KB allocation.
-    pub fn fill_player_paths(
-        game_state: &GameState,
-        id: PlayerID,
-        out: &mut FullPitch<OptRcNode>,
-    ) -> Result<()> {
+    pub fn fill_player_paths(game_state: &GameState, id: PlayerID, out: &mut FullPitch<OptRcNode>) -> Result<()> {
         // Release any stale Arc payload from a previous fill — caller may
         // be reusing the same buffer.
         for slot in out.iter_mut() {

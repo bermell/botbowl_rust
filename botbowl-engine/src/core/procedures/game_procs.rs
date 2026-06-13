@@ -222,6 +222,7 @@ impl Procedure for Turn {
 
         game_state.info.active_player = None;
         game_state.info.player_action_type = None;
+        game_state.info.pickup_this_activation = false;
         if input == ProcInput::Nothing {
             return ProcState::NeedAction(self.available_actions(game_state));
         }
@@ -235,7 +236,10 @@ impl Procedure for Turn {
                 PosAT::StartHandoff => info.handoff_available = false,
                 PosAT::StartPass => info.pass_available = false,
                 PosAT::StartFoul => info.foul_available = false,
-                PosAT::StartBlitz => info.blitz_available = false,
+                PosAT::StartBlitz => {
+                    info.blitz_available = false;
+                    info.blitz_this_activation = true;
+                }
                 PosAT::StartBlock => {
                     return ProcState::NotDoneNew(block_procs::BlockAction::new());
                 }

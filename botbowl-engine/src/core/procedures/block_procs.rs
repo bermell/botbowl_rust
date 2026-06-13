@@ -240,7 +240,9 @@ impl BlockAction {
             *slot = None;
         }
         for (pos, dice) in victims.iter() {
-            buf[*pos] = Some(std::sync::Arc::new(crate::core::pathing::Node::new_direct_block_node(*dice, *pos)));
+            buf[*pos] = Some(std::sync::Arc::new(crate::core::pathing::Node::new_direct_block_node(
+                *dice, *pos,
+            )));
         }
         game_state.install_path_buffer(buf);
 

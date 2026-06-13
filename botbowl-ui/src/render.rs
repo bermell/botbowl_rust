@@ -168,11 +168,7 @@ fn side_panel_widget(state: &GameState) -> impl Widget + '_ {
         Line::from(Span::styled("Actions:", Style::default().fg(Color::White).bold())),
     ];
 
-    let mut actions: Vec<String> = state
-        .get_all_actions()
-        .iter()
-        .map(|a| format!("{a:?}"))
-        .collect();
+    let mut actions: Vec<String> = state.get_all_actions().iter().map(|a| format!("{a:?}")).collect();
     actions.sort();
     if actions.is_empty() {
         lines.push(Line::from(Span::styled(
