@@ -14,8 +14,9 @@
 //!   actions.
 
 use std::ops::Deref;
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
@@ -661,12 +662,22 @@ enum CachedTree {
     StoreState(Arc<TreeAlias<BloodBowlDynamics, StoreState>>),
 }
 
+/// How long each `MctsBot::get_action` call runs the tree search.
+#[derive(Debug, Clone, Copy)]
+pub enum SearchBudget {
+    /// Run exactly this many `tree.step()` calls, split across workers.
+    Iterations(usize),
+    /// Run all workers for this many whole seconds, then stop.
+    Seconds(u64),
+}
+
 pub struct MctsBot {
-    pub iterations_per_move: usize,
-    /// Number of worker threads driving `tree.step()`. The total search
-    /// budget (`iterations_per_move`) is split across them; the wall-clock
-    /// goal is the win, not extra iterations. Tests that need deterministic
-    /// search results should pin this to 1 via [`with_workers`].
+    pub budget: SearchBudget,
+    /// Number of worker threads driving `tree.step()`. For
+    /// `SearchBudget::Iterations` the total step count is split across
+    /// them; for `SearchBudget::Seconds` every worker runs until the
+    /// time limit fires. Tests that need deterministic results should
+    /// pin this to 1 via [`with_workers`].
     pub n_workers: usize,
     /// Which `recon_mcts` state-memory strategy to use. See
     /// [`MemoryMode`]. Always `StoreState` in production (plan 014 + 013);
@@ -697,7 +708,7 @@ pub struct MctsBot {
 }
 
 impl MctsBot {
-    pub fn new(iterations_per_move: usize) -> Self {
+    pub fn new(budget: SearchBudget) -> Self {
         let n_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         let reuse_enabled = match std::env::var("BLOOD_MCTS_TREE_REUSE").ok().as_deref() {
             Some("off") | Some("0") | Some("false") => false,
@@ -708,7 +719,7 @@ impl MctsBot {
             None => DEFAULT_VIRTUAL_LOSS,
         };
         Self {
-            iterations_per_move,
+            budget,
             n_workers,
             memory_mode: MemoryMode::StoreState,
             reuse_enabled,
@@ -800,7 +811,7 @@ impl Bot for MctsBot {
             Some(s) => s.parse::<usize>().unwrap_or(self.n_workers).max(1),
             None => self.n_workers.max(1),
         };
-        let iterations = self.iterations_per_move;
+        let budget = self.budget;
 
         // `BLOOD_MCTS_STATS=1` dumps registry hit/miss/len and DAG
         // depth distribution after the search finishes but before the
@@ -862,45 +873,76 @@ impl Bot for MctsBot {
                     Some(t) => t,
                     None => Arc::new(Tree::new(gd, $marker, root_player, root_state)),
                 };
-                let base = iterations / n_workers;
-                let rem = iterations % n_workers;
-                std::thread::scope(|s| {
-                    for w in 0..n_workers {
-                        let iters = base + if w < rem { 1 } else { 0 };
-                        if iters == 0 {
-                            continue;
-                        }
-                        let tree = Arc::clone(&tree);
-                        // Plan 008: workers spawn via `std::thread::scope`,
-                        // total `iterations_per_move` is split across them.
-                        // Bigger stack than the platform default (2 MB on
-                        // macOS / Linux pthread): `recon_mcts`'s
-                        // `Node::get_state` and `Arc<Node>` drop chain
-                        // both recurse with the DAG depth. With Step F's
-                        // horizon bound depth caps at ~20, but the
-                        // headroom is cheap insurance against future
-                        // regressions where it might creep back up.
-                        std::thread::Builder::new()
-                            .stack_size(WORKER_STACK_SIZE)
-                            .name(format!("mcts-worker-{w}"))
-                            .spawn_scoped(s, move || {
-                                for _ in 0..iters {
-                                    tree.step();
+                // Plan 008: workers spawn via `std::thread::scope`.
+                // Bigger stack than the platform default (2 MB on macOS /
+                // Linux pthread): `recon_mcts`'s `Node::get_state` and
+                // `Arc<Node>` drop chain both recurse with the DAG depth.
+                // With Step F's horizon bound depth caps at ~20, but the
+                // headroom is cheap insurance against future regressions
+                // where it might creep back up.
+                match budget {
+                    SearchBudget::Iterations(total) => {
+                        let base = total / n_workers;
+                        let rem = total % n_workers;
+                        std::thread::scope(|s| {
+                            for w in 0..n_workers {
+                                let iters = base + if w < rem { 1 } else { 0 };
+                                if iters == 0 {
+                                    continue;
                                 }
-                            })
-                            .expect("failed to spawn MCTS worker thread");
+                                let tree = Arc::clone(&tree);
+                                std::thread::Builder::new()
+                                    .stack_size(WORKER_STACK_SIZE)
+                                    .name(format!("mcts-worker-{w}"))
+                                    .spawn_scoped(s, move || {
+                                        for _ in 0..iters {
+                                            tree.step();
+                                        }
+                                    })
+                                    .expect("failed to spawn MCTS worker thread");
+                            }
+                        });
                     }
-                });
+                    SearchBudget::Seconds(secs) => {
+                        let stop = AtomicBool::new(false);
+                        let stop_ref = &stop;
+                        std::thread::scope(|s| {
+                            std::thread::Builder::new()
+                                .name("mcts-timer".into())
+                                .spawn_scoped(s, || {
+                                    std::thread::sleep(Duration::from_secs(secs));
+                                    stop_ref.store(true, Ordering::Relaxed);
+                                })
+                                .expect("failed to spawn MCTS timer thread");
+                            for w in 0..n_workers {
+                                let tree = Arc::clone(&tree);
+                                std::thread::Builder::new()
+                                    .stack_size(WORKER_STACK_SIZE)
+                                    .name(format!("mcts-worker-{w}"))
+                                    .spawn_scoped(s, move || {
+                                        while !stop_ref.load(Ordering::Relaxed) {
+                                            tree.step();
+                                        }
+                                    })
+                                    .expect("failed to spawn MCTS worker thread");
+                            }
+                        });
+                    }
+                }
                 if dump_stats {
                     let info = tree.get_registry_info();
                     let hits = info.hits.load(Ordering::Relaxed);
                     let misses = info.misses.load(Ordering::Relaxed);
                     let len = info.len.load(Ordering::Relaxed);
                     let denom = (hits + misses).max(1);
+                    let budget_label = match budget {
+                        SearchBudget::Iterations(n) => format!("{n}"),
+                        SearchBudget::Seconds(s) => format!("~{} ({}s)", hits + misses, s),
+                    };
                     eprintln!(
                         "MCTS_STATS mode={} iters={} workers={} reg_len={} hits={} misses={} reuse={:.4}",
                         $mode_label,
-                        iterations,
+                        budget_label,
                         n_workers,
                         len,
                         hits,

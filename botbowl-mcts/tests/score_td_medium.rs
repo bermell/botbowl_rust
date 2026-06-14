@@ -1,12 +1,12 @@
 use botbowl_curriculum::lectures::score_td::ScoreTdMedium;
 use botbowl_curriculum::run_trials;
-use botbowl_mcts::MctsBot;
+use botbowl_mcts::{MctsBot, SearchBudget};
 
 #[test]
 #[ignore = "bot benchmark — run with --ignored"]
 fn mcts_solves_score_td_medium() {
     let lecture = ScoreTdMedium::new();
-    let mut agent = MctsBot::new(1000).with_workers(1);
+    let mut agent = MctsBot::new(SearchBudget::Iterations(1000)).with_workers(1);
     let stats = run_trials(&lecture, &mut agent, 50, 0xC0DE_5678, 400);
 
     let rate = stats.success_rate();

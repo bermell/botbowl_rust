@@ -26,7 +26,7 @@ use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
 use botbowl_curriculum::lectures::score_td::ScoreTdEasy;
 use botbowl_curriculum::Lecture;
 use botbowl_engine::bots::Bot;
-use botbowl_mcts::MctsBot;
+use botbowl_mcts::{MctsBot, SearchBudget};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
@@ -44,7 +44,7 @@ fn build_gtb_state() -> botbowl_engine::core::gamestate::GameState {
 
 fn run_once(iters: usize) {
     std::env::set_var("BLOOD_MCTS_STATS", "1");
-    let mut agent = MctsBot::new(iters).with_workers(1);
+    let mut agent = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(1);
     let state = build_state();
     let t0 = std::time::Instant::now();
     let action = agent.get_action(&state);
@@ -99,7 +99,7 @@ fn iters_10000_single() {
 
 fn run_once_gtb(iters: usize) {
     std::env::set_var("BLOOD_MCTS_STATS", "1");
-    let mut agent = MctsBot::new(iters).with_workers(1);
+    let mut agent = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(1);
     let state = build_gtb_state();
     let t0 = std::time::Instant::now();
     let action = agent.get_action(&state);

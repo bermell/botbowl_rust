@@ -1,6 +1,6 @@
 use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
 use botbowl_curriculum::run_trials;
-use botbowl_mcts::MctsBot;
+use botbowl_mcts::{MctsBot, SearchBudget};
 
 /// Plan 010 (Track A.alt) lifts this from 0.00 to ≈1.00: `score_leaf`
 /// now forward-simulates through mid-procedure engine work (Move
@@ -13,7 +13,7 @@ use botbowl_mcts::MctsBot;
 #[ignore = "bot benchmark — run with --ignored"]
 fn mcts_solves_get_the_ball_easy() {
     let lecture = GetTheBallEasy::new();
-    let mut agent = MctsBot::new(1000).with_workers(1);
+    let mut agent = MctsBot::new(SearchBudget::Iterations(1000)).with_workers(1);
     let stats = run_trials(&lecture, &mut agent, 50, 0xF00D_9012, 400);
 
     let rate = stats.success_rate();

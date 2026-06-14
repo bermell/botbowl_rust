@@ -27,7 +27,7 @@ use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameSta
 use botbowl_engine::core::model::Action as EngineAction;
 use botbowl_engine::core::table::PosAT;
 use botbowl_mcts::dynamics::{BbScore, HorizonAnchor};
-use botbowl_mcts::{BbAction, BbPlayer, BloodBowlDynamics, MctsBot};
+use botbowl_mcts::{BbAction, BbPlayer, BloodBowlDynamics, MctsBot, SearchBudget};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use recon_mcts::{GameDynamics, SearchTree, SelectNodeState, StoreState, Tree};
@@ -105,7 +105,7 @@ fn bench_get_action(label: &str, state: &GameState, trials: usize, iters: usize)
     let mut total = Duration::ZERO;
     let mut sink: u64 = 0;
     for _ in 0..trials {
-        let mut bot = MctsBot::new(iters);
+        let mut bot = MctsBot::new(SearchBudget::Iterations(iters));
         let t0 = Instant::now();
         let action = bot.get_action(state);
         total += t0.elapsed();

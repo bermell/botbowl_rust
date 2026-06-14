@@ -1,6 +1,6 @@
 use botbowl_curriculum::lectures::get_the_ball::GetTheBallMedium;
 use botbowl_curriculum::run_trials;
-use botbowl_mcts::MctsBot;
+use botbowl_mcts::{MctsBot, SearchBudget};
 
 /// Plan 010 (Track A.alt) lifts this from 0.00 → ≈0.35 measured
 /// (range 0.32–0.44 across runs; 50 trials at p≈0.37 has ±0.07 SD
@@ -18,7 +18,7 @@ use botbowl_mcts::MctsBot;
 #[ignore = "bot benchmark — run with --ignored"]
 fn mcts_solves_get_the_ball_medium() {
     let lecture = GetTheBallMedium::new();
-    let mut agent = MctsBot::new(1000).with_workers(1);
+    let mut agent = MctsBot::new(SearchBudget::Iterations(1000)).with_workers(1);
     let stats = run_trials(&lecture, &mut agent, 50, 0xBEEF_3456, 400);
 
     let rate = stats.success_rate();

@@ -1,6 +1,6 @@
 use botbowl_curriculum::lectures::score_td::ScoreTdEasy;
 use botbowl_curriculum::run_trials;
-use botbowl_mcts::MctsBot;
+use botbowl_mcts::{MctsBot, SearchBudget};
 
 #[test]
 #[ignore = "manual wall-clock bench"]
@@ -24,7 +24,7 @@ fn bench_parallel_vs_serial() {
         .unwrap_or(n_par_default);
 
     let t0 = std::time::Instant::now();
-    let mut agent = MctsBot::new(iters).with_workers(1);
+    let mut agent = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(1);
     let _ = run_trials(&lecture, &mut agent, trials, 0xCAFE_1234, 400);
     let serial = t0.elapsed();
     eprintln!(
@@ -33,7 +33,7 @@ fn bench_parallel_vs_serial() {
     );
 
     let t0 = std::time::Instant::now();
-    let mut agent = MctsBot::new(iters).with_workers(n_par);
+    let mut agent = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(n_par);
     let _ = run_trials(&lecture, &mut agent, trials, 0xCAFE_1234, 400);
     let parallel = t0.elapsed();
     eprintln!(
