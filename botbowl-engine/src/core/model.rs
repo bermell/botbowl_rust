@@ -5,11 +5,9 @@ use std::{error, fmt};
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
-use std::sync::Arc;
 
 use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
-use super::pathing::Node;
 use super::procedures::AnyProc;
 use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
 use crate::core::table;

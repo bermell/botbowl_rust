@@ -1,6 +1,6 @@
 use core::panic;
 use derivative::Derivative;
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
@@ -9,12 +9,12 @@ use std::{
     collections::HashSet,
 };
 
-use crate::core::{bb_errors::EmptyProcStackError, model, procedures::CoinToss};
+use crate::core::{model, procedures::CoinToss};
 
 use model::*;
 
 use super::{
-    bb_errors::{IllegalActionError, IllegalMovePosition, InvalidPlayerId, MissingActionError},
+    bb_errors::{IllegalMovePosition, InvalidPlayerId},
     dices::{
         resolve_from_fixes, resolve_with_rng, BlockDice, Coin, D6Target, DicePolicy, FixedDice, RequestedRoll,
         RollResult, RollTarget,

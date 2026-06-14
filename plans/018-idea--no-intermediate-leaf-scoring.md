@@ -1,6 +1,17 @@
 # Idea: stop scoring intermediate states — only evaluate decision / terminal nodes
 
-**Status:** idea / not started. Captures a design direction discussed 2026-06-12.
+**Status:** implemented 2026-06-14 (minimal scope). Captures a design direction discussed 2026-06-12.
+
+**Outcome:** Step 1 concluded **no `recon_mcts` change was needed** — all chance-node machinery
+(`select_node` probability descent, `backprop_scores` expectation, `available_actions` outcome
+enumeration, `apply_action` roll resolution) already existed on the botbowl side. The only collapse
+was the optimistic fast-forward in `score_leaf`. Fix: `score_leaf` returns `None` for pending-roll
+states (chance nodes are *expanded, not scored*; value derives from children's probability-weighted
+backprop), and `backprop_scores` now detects chance by child-action variant rather than the
+(now-`None`) `score_current.node_kind`. Removed `optimistic_leaf_score` + the dead `ff_depth`
+plumbing + the unused `is_pass_fail` helper. **Deferred:** scatter/bounce/throw-in/block still
+collapse to a single deterministic `Advance` child (`roll_outcomes::enumerate`) — proper weighted
+multi-outcome fan-out (with a branching policy) is the open question below, not done.
 
 ## Problem
 

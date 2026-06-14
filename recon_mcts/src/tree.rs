@@ -462,6 +462,7 @@ pub mod state_memory {
 // None: a terminal node in the game that will never have children
 enum Children<I, A, N> {
     NewLeaf,
+    #[allow(dead_code)]
     BranchWip(BranchWip<I, A, N>),
     Branch(HashMap<A, N>),
     None,
@@ -511,6 +512,7 @@ mod branch_wip {
 
     #[allow(clippy::mutex_atomic)]
     impl Notifier {
+        #[allow(dead_code)]
         fn new() -> Self {
             Self {
                 cv: Condvar::new(),
@@ -539,6 +541,7 @@ mod branch_wip {
     }
 
     impl<I, A, N> BranchWip<I, A, N> {
+        #[allow(dead_code)]
         pub fn new(unscored: I) -> Self {
             Self {
                 unscored,
@@ -1934,7 +1937,7 @@ where
         // Take `score.write()` first — this is the "score is being
         // computed" sentinel that other workers will block on, mirroring
         // the `create_scored_child` None-arm protocol at tree.rs:1632.
-        let mut score_wlk = node.score.write().unwrap();
+        let score_wlk = node.score.write().unwrap();
         // Re-check: did another worker materialise us while we waited
         // for the write lock?
         if node.registered.load(Ordering::Acquire) {

@@ -1,6 +1,5 @@
 use std::hash::{Hash, Hasher};
 
-use botbowl_engine::core::dices::RequestedRoll;
 use botbowl_engine::core::model::Action as EngineAction;
 
 /// The "player" each node belongs to from MCTS's perspective. The third
@@ -133,12 +132,4 @@ impl BbAction {
             BbAction::Chance { .. } => None,
         }
     }
-}
-
-/// Whether the dynamics knows how to enumerate `req` as a probabilistic
-/// Pass/Fail chance node. Other roll types are handled via
-/// `ChanceOutcome::Advance` (a single deterministic child) — they're
-/// "supported" too, just not enumerated.
-pub fn is_pass_fail(req: &RequestedRoll) -> bool {
-    matches!(req, RequestedRoll::D6PassFail(_) | RequestedRoll::Sum2D6PassFail(_))
 }

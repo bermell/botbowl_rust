@@ -11,7 +11,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::bots::Bot;
 use crate::core::gamestate::GameState;
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType,
+    other_team, Action, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType,
 };
 use crate::core::pathing::{Node, PathFinder};
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};

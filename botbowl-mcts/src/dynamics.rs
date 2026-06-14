@@ -22,7 +22,7 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
 use recon_mcts::{GameDynamics, GetState, SearchTree, SelectNodeState, StoreState, Tree, TreeAlias};
 
-use crate::action::{BbAction, BbPlayer, ChanceOutcome};
+use crate::action::{BbAction, BbPlayer};
 use crate::priors::prior_for_engine_action;
 use crate::pruning::should_prune;
 use crate::roll_outcomes;
@@ -132,13 +132,6 @@ impl HorizonAnchor {
     }
 }
 
-/// `ff_depth` is the upper bound on roll-resolution steps inside
-/// `optimistic_leaf_score`. 1 reproduces the v3 single-step
-/// behaviour; 8 (the default) lets multi-roll move chains (GFI then
-/// pickup; pickup then dodge) resolve to a stable decision/terminal
-/// state before scoring. Pure leaf-scoring effect — chance children
-/// still do not enter the tree.
-///
 /// `horizon` (None by default for backwards compatibility) bounds the
 /// search depth — `available_actions` returns None as soon as a state
 /// has diverged past the anchor. `MctsBot::get_action` always sets a
@@ -146,7 +139,6 @@ impl HorizonAnchor {
 /// without `MctsBot`) see the unbounded form.
 #[derive(Debug, Clone, Copy)]
 pub struct BloodBowlDynamics {
-    pub ff_depth: u8,
     pub horizon: Option<HorizonAnchor>,
     /// Plan 015 Step 5 — magnitude of the transient `BbScore.virtual_loss`
     /// penalty applied on descent in `select_node`. Default 30, calibrated
@@ -159,7 +151,6 @@ pub struct BloodBowlDynamics {
 impl Default for BloodBowlDynamics {
     fn default() -> Self {
         Self {
-            ff_depth: 8,
             horizon: None,
             virtual_loss: DEFAULT_VIRTUAL_LOSS,
         }
@@ -455,7 +446,7 @@ impl GameDynamics for BloodBowlDynamics {
     fn backprop_scores<II, Q, A>(
         &self,
         player: &Self::Player,
-        score_current: Option<&Self::Score>,
+        _score_current: Option<&Self::Score>,
         child_scores_and_actions: II,
     ) -> Option<Self::Score>
     where
@@ -465,7 +456,25 @@ impl GameDynamics for BloodBowlDynamics {
         Q: Deref<Target = Self::Score>,
     {
         // Chance node: probability-weighted average over visited children.
-        if score_current.map(|s| s.node_kind == BbPlayer::Chance).unwrap_or(false) {
+        //
+        // Detect a chance node by its children's action variant rather
+        // than `score_current.node_kind`: a chance node is *expanded, not
+        // scored* (plan 018, `score_leaf` returns `None` for it), so
+        // `score_current` is `None` until this aggregation runs and a
+        // `node_kind` check would misroute it to the player branch.
+        // recon_mcts hands us only already-scored children, and a chance
+        // node's children are all `BbAction::Chance` (`pending_roll.is_some()`
+        // ⟺ `available_actions` enumerated roll outcomes), so peeking the
+        // first child's action is equivalent to the old check on every
+        // node that has scored children — and works when the node is
+        // unscored.
+        let is_chance = child_scores_and_actions
+            .clone()
+            .into_iter()
+            .next()
+            .map(|(_, a)| matches!(*a.deref(), BbAction::Chance { .. }))
+            .unwrap_or(false);
+        if is_chance {
             let mut total_visits: u32 = 0;
             let mut weighted_sum: f64 = 0.0;
             let mut total_prob: f64 = 0.0;
@@ -526,89 +535,38 @@ impl GameDynamics for BloodBowlDynamics {
         _parent_player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::Score> {
-        // A leaf state may be in one of four shapes:
-        //   1. terminal (`game_over` set) — bare leaf_score is correct.
-        //   2. player-decision (`available_actions.team` set) — bare
-        //      leaf_score; the next player chooses next.
-        //   3. roll pending (`pending_roll` set) — pre-roll board
-        //      understates the value of e.g. Move-onto-ball because
-        //      the ball is still `OnGround` until the pickup resolves.
-        //   4. mid-procedure (none of the above) — engine has internal
-        //      work to do (Move walks one square per micro_step; the
-        //      leaf is between squares with neither a roll nor a
-        //      decision yet pending).
-        //
-        // Shapes 3 and 4 both need FF before scoring (plan 010 Track
-        // A.alt — FF lives here, not in `apply_action`, so chance
-        // children stay out of the tree). We optimistically
-        // resolve them by simulating success outcomes inline (Pass /
-        // Advance — same constants `roll_outcomes::fix_for_outcome`
-        // queues for chance actions) until we hit shape 1 or 2 or the
-        // `ff_depth` cap. Pessimistic outcomes still get discovered
-        // when MCTS budget allows the chance child to be expanded
-        // (currently no chance children — A.alt path); the initial Q
-        // is high enough that MCTS will actually choose pickup /
-        // dodge / GFI moves over their "safe" alternatives.
-        let needs_ff =
-            !state.info.game_over && (state.pending_roll.is_some() || state.available_actions.team.is_none());
-        let score = if needs_ff {
-            optimistic_leaf_score(state).unwrap_or_else(|| leaf_score(state))
-        } else {
-            leaf_score(state)
-        };
+        // The value function (heuristic now, NN later) is evaluated
+        // *only* at player-decision and terminal nodes — never on a
+        // transient pre-roll (chance) state (plan 018). A leaf state is
+        // one of:
+        //   1. roll pending (`pending_roll` set) — a CHANCE node. We do
+        //      not score it: returning `None` leaves it *expanded, not
+        //      scored*. recon_mcts still expands it (its children are the
+        //      weighted roll outcomes, see `available_actions`), and its
+        //      value is derived purely from its children's
+        //      probability-weighted backprop (`backprop_scores`). This
+        //      is what kills the old optimistic over-valuation of risky
+        //      rolls (e.g. a marked-ball pickup that auto-fails).
+        //   2. terminal (`game_over` set) — bare leaf_score is the true
+        //      drive outcome.
+        //   3. player-decision (`available_actions.team` set) — the value
+        //      function; the next player chooses from here.
+        //   4. mid-procedure (none of the above) — `available_actions`
+        //      returns `None`, so recon_mcts marks it terminal; it cannot
+        //      be expanded and therefore must carry a score. We give it
+        //      `leaf_score`. This technically scores an intermediate
+        //      state, but such states are unexpandable and rare; the
+        //      principled fix is to advance through them in
+        //      `apply_action`'s quiescent loop (future work).
+        if state.pending_roll.is_some() {
+            return None; // chance node — expanded, not scored
+        }
         Some(BbScore {
             visits: AtomicU32::new(1),
-            score,
+            score: leaf_score(state),
             node_kind: player_for_state(state),
             virtual_loss: AtomicI32::new(0),
         })
-    }
-}
-
-/// Forward-simulate from a transient leaf state (pending roll or
-/// mid-procedure) until the engine reaches a decision or terminal
-/// point, then score. Success outcomes (Pass for pass/fail rolls,
-/// Advance otherwise — the constants `roll_outcomes::result_for_outcome`
-/// returns for chance actions) are passed to `step_with_roll` to
-/// resume the engine. Engine processing without a pending roll is
-/// driven by `micro_step(None)`; with `DiceMode::RegisterRolls` (set
-/// on every MCTS root state) procedures requesting a roll surface it
-/// as `pending_roll` rather than consuming RNG, keeping the
-/// simulation deterministic under recombination.
-///
-/// `max_steps` defends against an engine bug spinning forever; 8 is
-/// the dynamics default and comfortably exceeds the longest known
-/// transient chain in a single Move action (a few squares + pickup
-/// or GFI).
-///
-/// Returns None if the engine errors mid-simulation; caller falls
-/// back to the bare leaf score of the original (pre-simulation)
-/// state in that case.
-fn optimistic_leaf_score(state: &GameState) -> Option<i64> {
-    if state.pending_roll.is_none() {
-        // game state is not waiting for a roll, just score the state
-        Some(leaf_score(state))
-    } else {
-        // game state is waiting for a roll which is a weird state to score.. just forward it in a deterministic way
-        let mut sim = state.clone();
-
-        // Safety budget: a chance leaf with a long bounce/catch chain could
-        // otherwise spin until OOM. 32 matches the pre-refactor ceiling.
-        let mut budget: u32 = 32;
-        while let Some(requested_roll) = sim.pending_roll.as_ref() {
-            if budget == 0 {
-                break;
-            }
-            budget -= 1;
-            let outcome = if crate::action::is_pass_fail(requested_roll) {
-                ChanceOutcome::Pass
-            } else {
-                ChanceOutcome::Advance
-            };
-            let result = roll_outcomes::result_for_outcome(requested_roll, outcome);
-            sim.step_with_roll_or_action(SomeProcInput::Roll(result));
-        }
-        Some(leaf_score(&sim))
     }
 }
 
@@ -710,9 +668,6 @@ pub struct MctsBot {
     /// goal is the win, not extra iterations. Tests that need deterministic
     /// search results should pin this to 1 via [`with_workers`].
     pub n_workers: usize,
-    /// Forwarded to [`BloodBowlDynamics::ff_depth`] — see that field for
-    /// semantics. Default 8.
-    pub ff_depth: u8,
     /// Which `recon_mcts` state-memory strategy to use. See
     /// [`MemoryMode`]. Always `StoreState` in production (plan 014 + 013);
     /// `HashOnly` was removed entirely because it corrupts the DAG for
@@ -755,7 +710,6 @@ impl MctsBot {
         Self {
             iterations_per_move,
             n_workers,
-            ff_depth: BloodBowlDynamics::default().ff_depth,
             memory_mode: MemoryMode::StoreState,
             reuse_enabled,
             cached_tree: None,
@@ -766,11 +720,6 @@ impl MctsBot {
 
     pub fn with_workers(mut self, n_workers: usize) -> Self {
         self.n_workers = n_workers.max(1);
-        self
-    }
-
-    pub fn with_ff_depth(mut self, ff_depth: u8) -> Self {
-        self.ff_depth = ff_depth;
         self
     }
 
@@ -800,12 +749,13 @@ impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
         // Clone the state and turn on roll-by-roll stepping for the
         // search. `DiceMode::RegisterRolls` keeps `pending_roll` visible
-        // on post-action states, letting `score_leaf` invoke
-        // `expected_leaf_score` to give pickup / dodge / GFI chance
-        // nodes a probability-weighted Q instead of the misleading
-        // pre-roll value. (We tried `DiceMode::RollDice` to elide the
-        // chance-node modelling, but the engine's internal roll
-        // resolution per `micro_step` ran orders of magnitude slower
+        // on post-action states, so pickup / dodge / GFI rolls become
+        // first-class chance nodes in the tree: `score_leaf` returns
+        // `None` for them (expanded, not scored — plan 018) and their Q
+        // is the probability-weighted backprop of their roll outcomes,
+        // not a misleading pre-roll value. (We tried `DiceMode::RollDice`
+        // to elide the chance-node modelling, but the engine's internal
+        // roll resolution per `micro_step` ran orders of magnitude slower
         // for the same search budget.)
         //
         // `set_dice_mode` also drops any in-flight `registered_roll`
@@ -836,7 +786,6 @@ impl Bot for MctsBot {
         // comparison (e.g. against the historical unbounded baseline).
         let horizon_disabled = std::env::var("BLOOD_MCTS_HORIZON").ok().as_deref() == Some("off");
         let gd = BloodBowlDynamics {
-            ff_depth: self.ff_depth,
             horizon: if horizon_disabled {
                 None
             } else {
@@ -1041,7 +990,8 @@ impl Bot for MctsBot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::ChanceOutcome;
+    use botbowl_engine::core::model::Action as EngineAction;
+    use botbowl_engine::core::table::SimpleAT;
 
     fn child(score: i64, visits: u32) -> BbScore {
         BbScore {
@@ -1052,8 +1002,11 @@ mod tests {
         }
     }
 
+    // A player node's children carry `BbAction::Player` actions — that
+    // variant is what `backprop_scores` keys its player/chance routing
+    // on (plan 018). The specific engine action is irrelevant here.
     fn placeholder_action() -> BbAction {
-        BbAction::chance(ChanceOutcome::Pass, 1.0)
+        BbAction::player(EngineAction::Simple(SimpleAT::EndTurn), 1.0)
     }
 
     #[test]
