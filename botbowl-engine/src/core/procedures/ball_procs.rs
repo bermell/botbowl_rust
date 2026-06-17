@@ -125,11 +125,7 @@ impl ThrowIn {
             Position { y: MAX_Y, .. } => [(1, -1), (0, -1), (-1, -1)],
             _ => panic!("very wrong!"),
         };
-        Direction::from(match dice {
-            D3::One => directions[0],
-            D3::Two => directions[1],
-            D3::Three => directions[2],
-        })
+        Direction::from(directions[dice as usize - 1])
     }
 }
 impl Procedure for ThrowIn {

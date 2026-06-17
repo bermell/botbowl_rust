@@ -691,7 +691,7 @@ pub enum RequestedRoll {
     D8,
     FoulArmor(Sum2D6Target),
     FoulInjury(Sum2D6Target, Sum2D6Target),
-    Deviate, // TODO: this should be called deviate
+    Deviate,
     Scatter,
     Sum2D6,
     Sum2D6PassFail(Sum2D6Target),
