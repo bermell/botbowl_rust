@@ -997,17 +997,18 @@ mod tests {
 
     #[test]
     fn safest_path_to_endzone_clear_lane() {
-        // Home ball carrier at (3,8) with no opponents in the way; endzone_x for Home is 1.
+        // Home ball carrier near its endzone (x=1) with no opponents in the way.
+        let start = Position::new((3, crate::core::model::HEIGHT_ / 2));
         let mut state = GameStateBuilder::new()
-            .add_home_player(Position::new((3, 8)))
-            .add_ball((3, 8))
+            .add_home_player(start)
+            .add_ball((start.x, start.y))
             .set_state(BuilderState::Turn { turn: 1 })
             .build();
         // Make sure it's the home team's turn so a Home player's MoveAction is well-formed.
         if state.info.team_turn != TeamType::Home {
             state.step_simple(SimpleAT::EndTurn);
         }
-        let id = state.get_player_id_at(Position::new((3, 8))).unwrap();
+        let id = state.get_player_id_at(start).unwrap();
         let path = PathFinder::safest_path_to_endzone(&state, id)
             .unwrap()
             .expect("expected a path to the endzone");
@@ -1018,18 +1019,20 @@ mod tests {
     #[test]
     fn safest_path_to_non_active_teammate() {
         // Two home players, no opponents. Path from teammate (not yet activated) to a target.
+        let cx = crate::core::model::WIDTH_ / 2;
+        let cy = crate::core::model::HEIGHT_ / 2;
         let mut state = GameStateBuilder::new()
-            .add_home_player(Position::new((10, 8)))
-            .add_home_player(Position::new((12, 8)))
+            .add_home_player(Position::new((cx - 1, cy)))
+            .add_home_player(Position::new((cx + 1, cy)))
             .set_state(BuilderState::Turn { turn: 1 })
             .build();
         if state.info.team_turn != TeamType::Home {
             state.step_simple(SimpleAT::EndTurn);
         }
-        let id = state.get_player_id_at(Position::new((10, 8))).unwrap();
+        let id = state.get_player_id_at(Position::new((cx - 1, cy))).unwrap();
         // No START_xxx action taken yet, so this player is not active.
         assert!(state.info.active_player.is_none());
-        let target = Position::new((11, 8));
+        let target = Position::new((cx, cy));
         let path = PathFinder::safest_path_to(&state, id, target)
             .unwrap()
             .expect("expected a path to adjacent empty square");
@@ -1043,7 +1046,7 @@ mod tests {
         // at the start of *their next* team turn, not before). Pathing must reflect
         // that — otherwise we generate standup paths whose execution trips
         // StandUp::step's debug_assert.
-        let start = Position::new((10, 8));
+        let start = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
         let mut state = GameStateBuilder::new()
             .add_home_player(start)
             .set_state(BuilderState::Turn { turn: 1 })
@@ -1061,7 +1064,7 @@ mod tests {
 
     #[test]
     fn safest_path_for_downed_teammate_includes_standup() {
-        let start = Position::new((10, 8));
+        let start = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
         let mut state = GameStateBuilder::new()
             .add_home_player(start)
             .set_state(BuilderState::Turn { turn: 1 })
@@ -1072,7 +1075,7 @@ mod tests {
         let id = state.get_player_id_at(start).unwrap();
         state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
         // Adjacent square, reachable after 3-move standup + 1 move.
-        let target = Position::new((11, 8));
+        let target = Position::new((start.x + 1, start.y));
         let path = PathFinder::safest_path_to(&state, id, target)
             .unwrap()
             .expect("expected a path that includes standup");

@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID, Position, ProcState,
-    Procedure, Result, TeamType, Weather, HEIGHT_, LINE_OF_SCRIMMAGE_Y_RANGE, TEAM_SIZE,
+    Procedure, Result, TeamType, Weather, HEIGHT_, KICKOFF_TABLE_ENABLED, LINE_OF_SCRIMMAGE_Y_RANGE,
+    TEAM_SIZE, WIDTH_,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -42,9 +43,17 @@ impl Procedure for Kickoff {
             _ => panic!("Unexpected input {:?}", input),
         };
 
-        let ball_pos = self.aim + Direction::from(dir_roll) * (len_roll as Coord);
+        // Cap deviate distance at half the board width so the kick can't be
+        // flung out of bounds on narrow tiers (no-op on the full pitch).
+        let len = (len_roll as Coord).min(WIDTH_ / 2);
+        let ball_pos = self.aim + Direction::from(dir_roll) * len;
         game_state.ball = BallState::InAir(ball_pos);
-        ProcState::DoneNew(KickoffTable::new())
+        if KICKOFF_TABLE_ENABLED {
+            ProcState::DoneNew(KickoffTable::new())
+        } else {
+            // Degenerate kickoff for small tiers: ball just lands, no event roll.
+            ProcState::DoneNew(LandKickoff::new())
+        }
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,7 +250,16 @@ impl Setup {
         let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
         let middle_x = game_state.get_line_of_scrimage_x(self.team);
         let middle_y = HEIGHT_ / 2;
+        // Clamp formation offsets so they stay on-pitch and on our own half on
+        // small boards. On the full pitch these bounds are wider than any offset,
+        // so the historical formation is reproduced exactly.
+        let max_dx = WIDTH_ / 2 - 2;
+        let max_dy = (middle_y - 1).min(HEIGHT_ - 2 - middle_y);
+        let mut fielded = 0usize;
         for id in players {
+            if fielded >= TEAM_SIZE {
+                break;
+            }
             let player = game_state.get_dugout_player(id).unwrap();
             let (dx, dy) = {
                 match player.stats.role {
@@ -252,7 +270,15 @@ impl Setup {
                     _ => continue,
                 }
             };
-            let position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
+            let (dx, dy) = (dx.min(max_dx), dy.clamp(-max_dy, max_dy));
+            let mut position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
+            // Clamping can collide players onto the same square on tiny boards;
+            // fall back to the nearest free square on our own half.
+            if position.is_out() || game_state.get_player_id_at(position).is_some() {
+                position = Self::first_free_own_half(game_state, middle_x, x_delta_sign);
+            }
+            fielded += 1;
+            let player = game_state.get_dugout_player(id).unwrap();
             crate::game_log!(
                 game_state,
                 "fielding {:?} {:?} at {:?}",
@@ -263,6 +289,24 @@ impl Setup {
             game_state.field_dugout_player(id, position)
         }
         Ok(())
+    }
+    /// First empty square on `team`'s own half, scanning from the line of
+    /// scrimmage backwards toward the end zone. Used as a collision fallback
+    /// when clamped formation offsets overlap on small boards.
+    fn first_free_own_half(game_state: &GameState, los_x: Coord, x_delta_sign: Coord) -> Position {
+        let xs: Vec<Coord> = if x_delta_sign > 0 {
+            (los_x..=WIDTH_ - 2).collect()
+        } else {
+            (1..=los_x).rev().collect()
+        };
+        for x in xs {
+            for y in 1..=HEIGHT_ - 2 {
+                if game_state.get_player_id_at_coord(x, y).is_none() {
+                    return Position { x, y };
+                }
+            }
+        }
+        panic!("no free square on own half for setup");
     }
 }
 impl Procedure for Setup {
@@ -295,6 +339,9 @@ mod tests {
 
     #[test]
     fn test_setup_preconfigured_formations() {
+        // The hard-coded formation offsets only fit (un-clamped) and field the
+        // full 11-player line on the default pitch.
+        crate::skip_if_board_smaller_than!(28, 17);
         let mut state: GameState = GameStateBuilder::new_at_setup();
         //away as defense
         state.step_simple(SimpleAT::SetupLine);
@@ -350,6 +397,7 @@ mod tests {
 
     #[test]
     fn kickoff_get_the_ref() {
+        crate::skip_if_board_smaller_than!(28, 17);
         let mut state: GameState = GameStateBuilder::new_at_kickoff();
         // ball fixes
         state.fix_d8_direction(Direction::up()); // scatter direction
@@ -379,6 +427,7 @@ mod tests {
     }
     #[test]
     fn kickoff_timeout_step_clock_forward() {
+        crate::skip_if_board_smaller_than!(28, 17);
         let mut state: GameState = GameStateBuilder::new_at_kickoff();
         // ball fixes
         state.fix_d8_direction(Direction::up()); // scatter direction
@@ -398,6 +447,7 @@ mod tests {
 
     #[test]
     fn kickoff_timeout_step_clock_backwards() {
+        crate::skip_if_board_smaller_than!(28, 17);
         let mut state: GameState = GameStateBuilder::new()
             .set_state(BuilderState::Kickoff { turn: 7 })
             .build();

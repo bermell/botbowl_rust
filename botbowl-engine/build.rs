@@ -54,6 +54,20 @@ fn main() {
     let south_lo = los_hi + 1; // 12
     let south_hi = height - 2; // 15 (last playable row)
 
+    // Fail the build (not a runtime panic) if a board combo produces empty or
+    // out-of-bounds setup ranges. Holds for every tier in plan 017's table.
+    let last_playable = height - 2;
+    assert!(
+        1 <= los_lo && los_lo <= los_hi && los_hi <= last_playable,
+        "LOS y-range {los_lo}..={los_hi} invalid for height {height}"
+    );
+    assert!(north_lo <= north_hi, "north wing y-range {north_lo}..={north_hi} empty");
+    assert!(south_lo <= south_hi, "south wing y-range {south_lo}..={south_hi} empty");
+
+    // Kickoff-table events (Perfect Defense, Blitz!, …) assume a real formation;
+    // below 7 players we use a degenerate kickoff (ball lands, no event roll).
+    let kickoff_table_enabled = team_size >= 7;
+
     // Roster keeps one reserve over the fielded team size (12 @11).
     let roster_per_team = team_size + 1;
 
@@ -65,6 +79,7 @@ pub const WIDTH_: Coord = WIDTH as Coord;
 pub const HEIGHT_: Coord = HEIGHT as Coord;
 pub const TEAM_SIZE: usize = {team_size};
 pub const ROSTER_PER_TEAM: usize = {roster_per_team};
+pub const KICKOFF_TABLE_ENABLED: bool = {kickoff_table_enabled};
 pub const LINE_OF_SCRIMMAGE_HOME_X: Coord = {los_home_x};
 pub const LINE_OF_SCRIMMAGE_AWAY_X: Coord = {los_away_x};
 pub const LINE_OF_SCRIMMAGE_Y_RANGE: std::ops::RangeInclusive<Coord> = {los_lo}..={los_hi};

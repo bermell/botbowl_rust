@@ -135,7 +135,9 @@ impl Procedure for ThrowIn {
                 return ProcState::NeedRoll(RequestedRoll::ThrowIn);
             }
             ProcInput::Roll(RollResult::ThrowIn { direction, distance }) => {
-                (self.get_throw_in_direction(direction), distance as i8)
+                // Cap distance at half the board width so a throw-in can't fling
+                // the ball clear across a narrow board (no-op on the full pitch).
+                (self.get_throw_in_direction(direction), (distance as i8).min(WIDTH_ / 2))
             }
             _ => panic!("Unexpected input {:?} for ThrowIn", input),
         };

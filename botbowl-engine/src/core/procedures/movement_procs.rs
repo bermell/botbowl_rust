@@ -857,8 +857,10 @@ mod tests {
     }
     #[test]
     fn standup_pathing() {
-        let start_pos = Position::new((5, 5));
-        let target = Position::new((8, 8));
+        // Needs a (3,3) diagonal plus a push square — requires at least 7 rows.
+        crate::skip_if_board_smaller_than!(8, 7);
+        let start_pos = Position::new((2, 1));
+        let target = start_pos + (3, 3);
         let push_to = target + (1, 1);
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)

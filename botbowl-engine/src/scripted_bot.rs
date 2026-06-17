@@ -596,10 +596,12 @@ mod tests {
         // The attacker at (10,8) has a teammate at (11,8) as an assist on the opposite
         // side of (9,8)? No — assist needs to be adjacent to the *defender*. Move the
         // second home player to (10,7) to be adjacent to defender (9,8) for the assist.
+        let dx = crate::core::model::WIDTH_ / 2;
+        let dy = crate::core::model::HEIGHT_ / 2;
         let mut state = GameStateBuilder::new()
-            .add_home_player(Position::new((10, 8)))
-            .add_home_player(Position::new((10, 7)))
-            .add_away_player(Position::new((9, 8)))
+            .add_home_player(Position::new((dx + 1, dy)))
+            .add_home_player(Position::new((dx + 1, dy - 1)))
+            .add_away_player(Position::new((dx, dy)))
             .set_state(BuilderState::Turn { turn: 1 })
             .build();
 

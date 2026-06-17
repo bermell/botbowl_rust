@@ -41,6 +41,10 @@ Setup-legality rules (min 3 on LOS, max 2 per wing) and parts of the kickoff pro
 formation; on small tier we drop the wing constraints and use a simpler setup. Gated on `BOARD_PLAYERS` rather than a
 runtime tier flag so the smaller binary doesn't even compile the formation-check code paths.
 
+Kickoff scatter and throw in dice need to be adjusted both in `ball_procs.rs`. The cleanest solution is to hard-code
+which kind of requested roll we use. The distance dice in kickoff scatter and throw in can never be more than `WIDTH/2`
+or it risks landing the ball out of bounds too often.
+
 ### Migration steps
 
 Mechanical (do first, low risk):
@@ -75,16 +79,16 @@ Decisions to make (these are curriculum design, not refactors):
 
 - **Test strategy.** ~40+ tests in `gamestate.rs` and `pathing.rs` hardcode coordinates like `(10, 8)` that OOB-assert
   on small boards. Rewriting them all to be size-generic is high-cost and most pin behaviors that only exist on the full
-  pitch (e.g. specific LOS / wing rules). Proposal: the full-pitch build runs the existing test suite as-is, and each
-  small-board build runs a curated subset plus tier-specific tests. CI runs the full-pitch build; small-board builds are
-  validated opportunistically.
+  pitch (e.g. specific LOS / wing rules). Answer: attempt to re-write the hard coded coordinates so they work on all
+  board sizes it makes sense to run the test on. For the test that require large dimensions we have a mechanism to skip
+  them if testing on a too small board.
 - **Cross-tier weight transfer.** Tower weights transfer cleanly (it's a fully-conv stack). The value head is a pooled
   scalar, also fine. The policy head has a non-spatial branch whose output dimension is the number of non-spatial verbs
   — verify that's stable across tiers (it should be: reroll, end turn, etc., don't depend on board size) and that the
   spatial-policy head's per-cell output transfers naturally to bigger pitches.
 - **Curriculum promotion criteria.** When do we stop training tier K and move to tier K+1? Win rate vs. scripted bot?
   MCTS-vs-MCTS-without-prior comparison? Plateau detection on the value head's validation loss? Pick one before starting
-  so we're not re-deciding mid-run.
+  so we're not re-deciding mid-run. Answer: defer this to later. Let's manually check this to begin with.
 
 ## Network architecture
 

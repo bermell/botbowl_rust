@@ -601,6 +601,9 @@ mod tests {
     }
     #[test]
     fn start_of_game() {
+        // Pins the full-board kickoff dice script (scatter up 5, fixed bounce
+        // landing at (23, 2)); only meaningful on the default 28x17 pitch.
+        crate::skip_if_board_smaller_than!(28, 17);
         let mut state: GameState = GameStateBuilder::new_start_of_game();
 
         assert!(state.away_to_act());

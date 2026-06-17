@@ -233,24 +233,35 @@ impl GameStateBuilder {
         if let BuilderState::Kickoff { .. } = self.state {
             return state;
         }
-        // ball fixes
-        state.fix_d8_direction(Direction::up()); // scatter direction
-        state.fix_d6(5); // scatter length
 
-        // kickoff event fix - changing Weather
-        state.fix_d6(4);
-        state.fix_d6(4);
-
-        //changing weather - fair
-        state.fix_d6(4);
-        state.fix_d6(4);
-
-        state.fix_d8_direction(Direction::down()); // gust of wind
-        state.fix_d8_direction(Direction::down()); // bounce
-
+        // Fast-forward through the kickoff to reach the receiving team's turn.
+        // Its outcome is discarded below (players and ball are reset), so resolve
+        // it with the RNG under a fixed seed — board-independent, unlike the old
+        // hand-pinned dice script which assumed a 28x17 pitch (a fixed "scatter
+        // up 5" lands out of bounds on shorter boards).
+        state.set_dice_mode(DiceMode::RollDice);
+        state.set_seed(0);
         state.step_simple(SimpleAT::KickoffAimMiddle);
-        state.clear_all_players().unwrap();
+        // A scattered kick can land out of bounds, prompting the receiver to
+        // place the touchback ball. Resolve any such pre-turn choice.
+        let mut guard = 0;
+        while !state.get_available_actions().get_simple().contains(&SimpleAT::EndTurn) {
+            let mut actions = Vec::new();
+            state.get_available_actions().collect_non_path_actions(&mut actions);
+            let action = actions
+                .into_iter()
+                .find(|a| matches!(a, Action::Positional(..)))
+                .expect("kickoff stalled with no resolvable action before the turn");
+            state.step(action).unwrap();
+            guard += 1;
+            assert!(guard < 8, "kickoff fast-forward did not reach a turn");
+        }
+        // Back to the default FixedDice mode for the caller's test rolls.
+        state.set_dice_mode(DiceMode::default());
+        // Drop the ball before clearing players: a receiver may have caught the
+        // kick, and unfield_player refuses to remove the ball carrier.
         state.ball = BallState::OffPitch;
+        state.clear_all_players().unwrap();
 
         for position in self.home_players.iter() {
             let player_stats = PlayerStats::new_lineman(TeamType::Home);
@@ -1598,14 +1609,15 @@ mod gamestate_tests {
 
     #[test]
     fn kickoff_position() {
+        use crate::core::model::{HEIGHT_, WIDTH_};
         let state = GameStateBuilder::new().build();
         assert_eq!(
             state.get_best_kickoff_aim_for(crate::core::model::TeamType::Home),
-            Position::new((7, 7))
+            Position::new((WIDTH_ / 4, HEIGHT_ / 2 - 1))
         );
         assert_eq!(
             state.get_best_kickoff_aim_for(crate::core::model::TeamType::Away),
-            Position::new((21, 7))
+            Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2 - 1))
         );
     }
 
@@ -1713,7 +1725,7 @@ mod gamestate_tests {
         let mut state = standard_state();
         let id = 1;
         let old_pos = Position::new((2, 2));
-        let new_pos = Position::new((10, 10));
+        let new_pos = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
 
         assert_eq!(state.get_player_id_at(old_pos), Some(id));
         assert_eq!(state.get_player(id).unwrap().position, old_pos);
@@ -1730,7 +1742,7 @@ mod gamestate_tests {
     fn field_a_player() -> Result<()> {
         let mut state = standard_state();
         let player_stats = PlayerStats::new_lineman(TeamType::Home);
-        let position = Position::new((10, 10));
+        let position = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
 
         assert!(state.get_player_id_at(position).is_none());
 

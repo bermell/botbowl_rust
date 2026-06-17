@@ -98,6 +98,27 @@ impl<T> FullPitch<Option<T>> {
 // `Coord` (defined above) is in scope for the generated file.
 include!(concat!(env!("OUT_DIR"), "/board_config.rs"));
 
+/// Early-return from a `#[test]` (returning `()`) when the build's board is
+/// smaller than the given playable-ish engine dimensions. Used to skip tests
+/// that pin full-pitch behavior (specific LOS/wing rules, long pathing lanes,
+/// hand-tuned kickoff scatter) when the engine is compiled for a smaller tier.
+#[macro_export]
+macro_rules! skip_if_board_smaller_than {
+    ($w:expr, $h:expr) => {
+        if ($crate::core::model::WIDTH as usize) < $w || ($crate::core::model::HEIGHT as usize) < $h {
+            eprintln!(
+                "skipping {}: board {}x{} smaller than required {}x{}",
+                module_path!(),
+                $crate::core::model::WIDTH,
+                $crate::core::model::HEIGHT,
+                $w,
+                $h
+            );
+            return;
+        }
+    };
+}
+
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
 
