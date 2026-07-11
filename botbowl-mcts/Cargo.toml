@@ -7,6 +7,16 @@ edition = "2021"
 botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
 recon_mcts = { version = "0.1.0", path = "../recon_mcts/", features = ["lockref-guard"] }
 
+[features]
+# Opt-in gate for the heavy profiling benches in `tests/expand_bench.rs`.
+# OFF by default so the routine `cargo test --release -- --ignored` (the
+# ~2 min bot benchmark suite) does NOT sweep them up — they are minutes-long,
+# many-thread, high-memory profiling runs, not part of that suite. Run them
+# explicitly with:
+#   cargo test --release -p botbowl-mcts --features expand_bench \
+#       --test expand_bench -- --ignored --nocapture
+expand_bench = []
+
 [dev-dependencies]
 botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
 rand = "0.8"

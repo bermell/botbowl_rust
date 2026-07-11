@@ -16,9 +16,15 @@
 //! Both seeded with `0xCAFE_1234` (same seed as `score_td_easy.rs` /
 //! `parallel_bench.rs`).
 //!
-//! Run:
-//!   cargo test --release -p botbowl-mcts --test expand_bench \
-//!       -- --ignored --nocapture
+//! These are minutes-long, many-thread, high-memory profiling runs — NOT
+//! part of the routine `cargo test --ignored` bot benchmark suite. They are
+//! gated behind the `expand_bench` cargo feature (see this crate's
+//! `Cargo.toml`), so a plain `cargo test --release -- --ignored` compiles
+//! this file to zero tests and never runs them. Run explicitly with:
+//!
+//!   cargo test --release -p botbowl-mcts --features expand_bench \
+//!       --test expand_bench -- --ignored --nocapture
+#![cfg(feature = "expand_bench")]
 
 use botbowl_curriculum::lectures::score_td::ScoreTdEasy;
 use botbowl_curriculum::Lecture;
@@ -37,6 +43,24 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const SEED: u64 = 0xCAFE_1234;
+
+/// These are `#[ignore]`d manual benchmarks meant for `--release` (see the
+/// module doc — every recipe passes `--release`). In a **debug** build
+/// `StoreState` keeps a full `GameState` per DAG node, so they are slow and
+/// memory-hungry regardless of iteration count (`full_teams@10k` was
+/// OOM-killed) — and a debug build is never the real measurement run anyway.
+/// So skip them entirely in debug: `cargo test --ignored` stays instant and
+/// the real numbers come from `cargo test --release ... --ignored`.
+///
+/// Call at the top of each bench: `if skip_unless_release("name") { return; }`.
+fn skip_unless_release(name: &str) -> bool {
+    if cfg!(debug_assertions) {
+        eprintln!("SKIP {name}: expand_bench is a --release-only benchmark (debug build)");
+        true
+    } else {
+        false
+    }
+}
 
 fn build_score_td_easy() -> GameState {
     let mut rng = ChaCha8Rng::seed_from_u64(SEED);
@@ -161,23 +185,50 @@ fn bench_apply_start_move(label: &str, state: &GameState, action: EngineAction, 
     );
 }
 
+/// Run `f` on a thread with an explicit 16 MB stack, mirroring the worker
+/// threads `MctsBot::get_action` spawns (dynamics.rs `WORKER_STACK_SIZE`).
+///
+/// `recon_mcts` tears the search DAG down *recursively*: `Node::on_drop`
+/// (recon_mcts/src/tree.rs) drains a node's children, and dropping each
+/// child re-enters `on_drop`, so the teardown recurses to the DAG's depth.
+/// The cargo-test worker thread's default ~2 MB stack overflows once a deep
+/// chain forms — which these benches do whenever a tree is dropped on the
+/// test thread (a `Tree` driven directly, or an `MctsBot`'s reused/cached
+/// tree). Production never trips this because it only drops trees on/after
+/// its own big-stack workers. 16 MB dwarfs any depth these benches reach.
+fn with_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn_scoped(s, f)
+            .expect("failed to spawn big-stack bench thread")
+            .join()
+            .expect("bench thread panicked")
+    })
+}
+
 fn run_scenario(label: &str, mut state: GameState) {
     prep_for_search(&mut state);
     let legal = state.get_all_actions().len();
     let team = state.available_actions.team;
     eprintln!("EXPAND_BENCH {label}/legal_actions={legal} team={:?}", team);
 
-    bench_get_action(label, &state, 20, 1000);
-    bench_clone(label, &state, 100_000);
-    match first_start_move(&state) {
-        Some(a) => bench_apply_start_move(label, &state, a, 10_000),
-        None => eprintln!("EXPAND_BENCH {label}/apply_start_move=SKIPPED (no StartMove legal)"),
-    }
+    with_big_stack(|| {
+        bench_get_action(label, &state, 20, 1000);
+        bench_clone(label, &state, 100_000);
+        match first_start_move(&state) {
+            Some(a) => bench_apply_start_move(label, &state, a, 10_000),
+            None => eprintln!("EXPAND_BENCH {label}/apply_start_move=SKIPPED (no StartMove legal)"),
+        }
+    });
 }
 
 #[test]
 #[ignore = "manual wall-clock bench — run with --ignored"]
 fn expand_bench_main() {
+    if skip_unless_release("expand_bench_main") {
+        return;
+    }
     eprintln!("EXPAND_BENCH seed={SEED:#x}");
     run_scenario("score_td_easy", build_score_td_easy());
     run_scenario("full_teams", build_full_teams_turn_start());
@@ -327,17 +378,31 @@ fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_
         counters: Arc::clone(&counters),
     };
     let root_player = player_for_root(state);
-    // StoreState matches production MctsBot::get_action (dynamics.rs:749).
-    // HashOnly corrupts the DAG (collisions merge distinct states), which
-    // surfaced both mid-search (illegal-action assert in micro_step) and on
-    // drop (DAG re-derivation) — see the old std::mem::forget hack below.
-    let tree = Tree::new(dynamics, StoreState, root_player, state.clone());
+    let root_state = state.clone();
 
-    let t0 = Instant::now();
-    for _ in 0..iters {
-        tree.step();
-    }
-    let elapsed = t0.elapsed();
+    // Drive the tree (and, critically, drop it) on a big stack — without a
+    // horizon (`with_horizon == false`) the score_td drive builds deep DAG
+    // chains whose recursive teardown overflows the test thread's default
+    // ~2 MB stack. See `with_big_stack`.
+    let elapsed = with_big_stack(move || {
+        // StoreState matches production MctsBot::get_action (dynamics.rs:749).
+        // HashOnly corrupts the DAG (collisions merge distinct states), which
+        // surfaced both mid-search (illegal-action assert in micro_step) and on
+        // drop (DAG re-derivation) — see the old std::mem::forget hack below.
+        let tree = Tree::new(dynamics, StoreState, root_player, root_state);
+
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            tree.step();
+        }
+        let elapsed = t0.elapsed();
+
+        // StoreState stores full state per node, so dropping the tree no longer
+        // re-derives the DAG — the old `std::mem::forget(tree)` HashOnly hack is
+        // gone and the tree drops normally here (on this big-stack thread).
+        drop(tree);
+        elapsed
+    });
 
     let aa = counters.apply_action.load(Ordering::Relaxed);
     let av = counters.available_actions.load(Ordering::Relaxed);
@@ -360,15 +425,14 @@ fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_
         "EXPAND_COUNTS {label}/totals apply_action={aa} avail_actions={av} \
          select_node={sn} score_leaf={sl} backprop_scores={bp}"
     );
-    // StoreState stores full state per node, so dropping the tree no longer
-    // re-derives the DAG — the old `std::mem::forget(tree)` HashOnly hack is
-    // gone and the tree drops normally here.
-    drop(tree);
 }
 
 #[test]
 #[ignore = "manual call-counting bench — run with --ignored"]
 fn expand_bench_call_counts() {
+    if skip_unless_release("expand_bench_call_counts") {
+        return;
+    }
     eprintln!("EXPAND_COUNTS seed={SEED:#x}");
     run_call_counts("score_td_easy", build_score_td_easy(), 1000);
     run_call_counts("full_teams", build_full_teams_turn_start(), 1000);
@@ -381,6 +445,9 @@ fn expand_bench_call_counts() {
 #[test]
 #[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
 fn expand_counts_horizon_score_td_1k() {
+    if skip_unless_release("expand_counts_horizon_score_td_1k") {
+        return;
+    }
     eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
     run_call_counts_horizon("score_td_easy@1k", build_score_td_easy(), 1000);
 }
@@ -388,6 +455,9 @@ fn expand_counts_horizon_score_td_1k() {
 #[test]
 #[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
 fn expand_counts_horizon_score_td_10k() {
+    if skip_unless_release("expand_counts_horizon_score_td_10k") {
+        return;
+    }
     eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
     run_call_counts_horizon("score_td_easy@10k", build_score_td_easy(), 10_000);
 }
@@ -395,6 +465,9 @@ fn expand_counts_horizon_score_td_10k() {
 #[test]
 #[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
 fn expand_counts_horizon_full_teams_1k() {
+    if skip_unless_release("expand_counts_horizon_full_teams_1k") {
+        return;
+    }
     eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
     run_call_counts_horizon("full_teams@1k", build_full_teams_turn_start(), 1000);
 }
@@ -402,6 +475,9 @@ fn expand_counts_horizon_full_teams_1k() {
 #[test]
 #[ignore = "manual call-counting bench (horizon, plan 014) — run with --ignored"]
 fn expand_counts_horizon_full_teams_10k() {
+    if skip_unless_release("expand_counts_horizon_full_teams_10k") {
+        return;
+    }
     eprintln!("EXPAND_COUNTS_HORIZON seed={SEED:#x}");
     run_call_counts_horizon("full_teams@10k", build_full_teams_turn_start(), 10_000);
 }
@@ -420,12 +496,12 @@ fn expand_bench_for_samply() {
     //   samply record --save-only -o prof.json --rate 4000 -- \
     //       target/release/deps/expand_bench-* expand_bench_for_samply \
     //       --ignored --nocapture
+    if skip_unless_release("expand_bench_for_samply") {
+        return;
+    }
     eprintln!("EXPAND_COUNTS_SAMPLY seed={SEED:#x}");
     // 200k iters give samply enough samples in the release build this test
-    // targets. In a debug build (the routine `--ignored` suite) that many
-    // StoreState nodes blow up memory and wall-clock, so cut it down — debug
-    // is never the real profiling run.
-    let iters = if cfg!(debug_assertions) { 5_000 } else { 200_000 };
-    run_call_counts("score_td_easy", build_score_td_easy(), iters);
-    run_call_counts("full_teams", build_full_teams_turn_start(), iters);
+    // targets (debug is skipped above — never the real profiling run).
+    run_call_counts("score_td_easy", build_score_td_easy(), 200_000);
+    run_call_counts("full_teams", build_full_teams_turn_start(), 200_000);
 }
