@@ -24,7 +24,7 @@ fn player_style(player: &FieldedPlayer, game_state: &GameState) -> Style {
 fn is_active(player: &FieldedPlayer, game_state: &GameState) -> bool {
     game_state
         .get_active_player()
-        .map_or(false, |active| active.id == player.id)
+        .is_some_and(|active| active.id == player.id)
 }
 fn is_carrier(player: &FieldedPlayer, game_state: &GameState) -> bool {
     match game_state.ball {

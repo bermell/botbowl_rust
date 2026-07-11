@@ -718,27 +718,23 @@ pub enum RollResult {
 
 impl RequestedRoll {
     pub fn is_compatible(&self, result: RollResult) -> bool {
-        match (self, result) {
-            (RequestedRoll::BlockDice(_), RollResult::BlockDice(_)) => true,
-            (RequestedRoll::Coin, RollResult::Coin(_)) => true,
-            (RequestedRoll::D6, RollResult::D6(_)) => true,
-            (RequestedRoll::D6PassFail(_), RollResult::Pass | RollResult::Fail) => true,
-            (RequestedRoll::D6ThreeOutcomes(_, _), RollResult::Pass | RollResult::MiddleOutcome | RollResult::Fail) => {
-                true
+        use RequestedRoll as Req;
+        use RollResult as Res;
+        match self {
+            Req::BlockDice(_) => matches!(result, Res::BlockDice(_)),
+            Req::Coin => matches!(result, Res::Coin(_)),
+            Req::D6 => matches!(result, Res::D6(_)),
+            Req::D6PassFail(_) | Req::Sum2D6PassFail(_) => matches!(result, Res::Pass | Res::Fail),
+            Req::D6ThreeOutcomes(..) | Req::Sum2D6ThreeOutcomes(..) => {
+                matches!(result, Res::Pass | Res::MiddleOutcome | Res::Fail)
             }
-            (RequestedRoll::D8, RollResult::D8(_)) => true,
-            (RequestedRoll::FoulArmor(_), RollResult::FoulArmor { .. }) => true,
-            (RequestedRoll::FoulInjury(_, _), RollResult::FoulInjury { .. }) => true,
-            (RequestedRoll::Deviate, RollResult::Deviate(_, _)) => true,
-            (RequestedRoll::Scatter, RollResult::Scatter(_, _, _)) => true,
-            (RequestedRoll::Sum2D6, RollResult::Sum2D6(_)) => true,
-            (RequestedRoll::Sum2D6PassFail(_), RollResult::Pass | RollResult::Fail) => true,
-            (
-                RequestedRoll::Sum2D6ThreeOutcomes(_, _),
-                RollResult::Pass | RollResult::MiddleOutcome | RollResult::Fail,
-            ) => true,
-            (RequestedRoll::ThrowIn, RollResult::ThrowIn { .. }) => true,
-            _ => false,
+            Req::D8 => matches!(result, Res::D8(_)),
+            Req::FoulArmor(_) => matches!(result, Res::FoulArmor { .. }),
+            Req::FoulInjury(..) => matches!(result, Res::FoulInjury { .. }),
+            Req::Deviate => matches!(result, Res::Deviate(_, _)),
+            Req::Scatter => matches!(result, Res::Scatter(_, _, _)),
+            Req::Sum2D6 => matches!(result, Res::Sum2D6(_)),
+            Req::ThrowIn => matches!(result, Res::ThrowIn { .. }),
         }
     }
 }

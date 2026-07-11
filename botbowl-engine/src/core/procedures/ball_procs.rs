@@ -498,8 +498,6 @@ mod tests {
             .add_ball_pos(ball_pos)
             .build();
 
-        let id = state.get_player_id_at(start_pos).unwrap();
-
         let d8_fix = D8::One;
         let direction = Direction::from(d8_fix);
 
@@ -509,7 +507,6 @@ mod tests {
         state.fix_d8(d8_fix as u8);
         state.step_simple(SimpleAT::DontUseReroll);
 
-        let player = state.get_player(id).unwrap();
         assert!(matches!(state.ball, BallState::OnGround(pos) if pos == ball_pos + direction));
 
         Ok(())

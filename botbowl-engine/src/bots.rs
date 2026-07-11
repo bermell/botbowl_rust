@@ -50,7 +50,7 @@ mod tests {
         // Fixed seeds keep the bench reproducible: every trial replays the same
         // sequence of game states and actions, so wall-clock deltas reflect code
         // changes rather than RNG variance.
-        const BASE_SEED: u64 = 0xB10D_B0F1_2026_06_02;
+        const BASE_SEED: u64 = 0xB10DB0F120260602;
         // Default to a stable distribution sample. For profilers (e.g. samply),
         // override with `BOTBOWL_BENCH_TRIALS=50` so the recording captures a
         // handful of games rather than minutes of accumulated noise.

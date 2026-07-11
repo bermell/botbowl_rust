@@ -147,7 +147,7 @@ impl MoveAction {
     fn fill_available_actions(&self, game_state: &mut GameState) {
         let team = game_state.get_player_unsafe(self.player_id).stats.team;
         let mut buf = game_state.take_path_buffer();
-        PathFinder::fill_player_paths(game_state, self.player_id, &mut *buf).unwrap();
+        PathFinder::fill_player_paths(game_state, self.player_id, &mut buf).unwrap();
         game_state.install_path_buffer(buf);
 
         // Reset AA in place: drop any previously-populated simple/positional

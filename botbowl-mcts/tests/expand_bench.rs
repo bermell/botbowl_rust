@@ -2,10 +2,10 @@
 //!
 //! Two `#[ignore]`d tests:
 //!   * `expand_bench_main` — wall-clock per-op timings:
-//!       (a) `MctsBot::get_action` (full search).
-//!       (b) `GameState::clone` raw cost.
-//!       (c) `BloodBowlDynamics::apply_action(StartMove)` (clone + micro_step
-//!           + pathing).
+//!     (a) `MctsBot::get_action` (full search).
+//!     (b) `GameState::clone` raw cost.
+//!     (c) `BloodBowlDynamics::apply_action(StartMove)` (clone + micro_step
+//!      + pathing).
 //!   * `expand_bench_call_counts` — algorithmic shape: wraps
 //!     `BloodBowlDynamics` in a `CountingDynamics<_>` that increments
 //!     atomic counters in each `GameDynamics` method, then drives a

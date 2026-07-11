@@ -10,9 +10,7 @@ use rand_chacha::ChaCha8Rng;
 
 use crate::bots::Bot;
 use crate::core::gamestate::GameState;
-use crate::core::model::{
-    other_team, Action, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType,
-};
+use crate::core::model::{other_team, Action, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType};
 use crate::core::pathing::{Node, PathFinder};
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
@@ -407,7 +405,7 @@ fn make_plan(state: &GameState) -> Option<(Action, Vec<Action>)> {
                     let endzone_x = state.get_endzone_x(team);
                     let current_distance = (endzone_x - carrier.position.x).abs();
                     let any_safe_progress = paths.iter_position().any(|(pos, node_opt)| {
-                        node_opt.as_ref().map_or(false, |n| {
+                        node_opt.as_ref().is_some_and(|n| {
                             (n.prob - 1.0).abs() < 1e-6 && (endzone_x - pos.x).abs() < current_distance
                         })
                     });

@@ -477,19 +477,19 @@ impl Clone for GameState {
         };
         GameState {
             info: self.info.clone(),
-            home: self.home.clone(),
-            away: self.away.clone(),
+            home: self.home,
+            away: self.away,
             fielded_players: self.fielded_players.clone(),
             dugout_players: self.dugout_players.clone(),
             board: self.board,
-            ball: self.ball.clone(),
+            ball: self.ball,
             proc_stack: self.proc_stack.clone(),
             available_actions: self.available_actions.clone(),
             path_buffer,
             dice_mode: self.dice_mode.clone(),
-            pending_roll: self.pending_roll.clone(),
-            registered_roll: self.registered_roll.clone(),
-            next_input: self.next_input.clone(),
+            pending_roll: self.pending_roll,
+            registered_roll: self.registered_roll,
+            next_input: self.next_input,
             rng: self.rng.clone(),
             log: self.log.clone(),
             print_log: self.print_log,
@@ -1302,7 +1302,7 @@ impl GameState {
     /// `MoveAction` / `BlockAction` producers to fill in place. The flag on
     /// `available_actions` is the producer's responsibility to set.
     pub(crate) fn take_path_buffer(&mut self) -> Box<FullPitch<Option<std::sync::Arc<super::pathing::Node>>>> {
-        self.path_buffer.take().unwrap_or_else(|| Box::new(Default::default()))
+        self.path_buffer.take().unwrap_or_default()
     }
 
     /// Drop every Arc payload in the path buffer in place, retaining the 4KB
@@ -1796,7 +1796,7 @@ mod gamestate_tests {
     use crate::core::dices::{RequestedRoll, RollResult};
     use crate::core::gamestate::DiceMode;
     use crate::core::model::{Action, MicroStepState, SomeProcInput};
-    use crate::core::table::{PosAT, SimpleAT};
+    use crate::core::table::PosAT;
 
     #[test]
     #[should_panic(expected = "FixedDice access requires DiceMode::FixedDice")]

@@ -194,7 +194,6 @@ mod tests {
 
         state.step_simple(SimpleAT::DontUseReroll);
 
-        let player = state.get_player_unsafe(id);
         assert_eq!(state.ball, BallState::OnGround(move_to + direction));
 
         Ok(())

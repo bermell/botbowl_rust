@@ -710,10 +710,10 @@ pub struct MctsBot {
 impl MctsBot {
     pub fn new(budget: SearchBudget) -> Self {
         let n_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        let reuse_enabled = match std::env::var("BLOOD_MCTS_TREE_REUSE").ok().as_deref() {
-            Some("off") | Some("0") | Some("false") => false,
-            _ => true,
-        };
+        let reuse_enabled = !matches!(
+            std::env::var("BLOOD_MCTS_TREE_REUSE").ok().as_deref(),
+            Some("off") | Some("0") | Some("false")
+        );
         let virtual_loss = match std::env::var("BLOOD_MCTS_VIRTUAL_LOSS").ok() {
             Some(s) => s.parse::<i32>().unwrap_or(DEFAULT_VIRTUAL_LOSS),
             None => DEFAULT_VIRTUAL_LOSS,

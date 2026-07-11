@@ -219,7 +219,7 @@ fn prune_redundant_move_after_first(state: &GameState) -> bool {
     }
     true
 }
-
+#[allow(dead_code)]
 fn has_standing_teammate_adjacent(
     state: &GameState,
     dest: Position,
@@ -469,6 +469,8 @@ mod tests {
     fn assert_is_pruned_positional(state: &GameState, at: PosAT, pos: Position) {
         assert_is_pruned(state, &EA::Positional(at, pos));
     }
+
+    #[allow(dead_code)]
     fn assert_is_pruned_simple(state: &GameState, at: SimpleAT) {
         assert_is_pruned(state, &EA::Simple(at));
     }
@@ -529,7 +531,10 @@ mod tests {
 
         // (6,6) is adjacent to the opponent at (7,7) — the single allowed
         // pre-block positioning move.
-        assert!(!should_prune(&state, &EA::Positional(PosAT::Move, Position::new((6, 6)))));
+        assert!(!should_prune(
+            &state,
+            &EA::Positional(PosAT::Move, Position::new((6, 6)))
+        ));
 
         state.fix_blockdice(BlockDice::Pow);
         check_prune_and_step(&mut state, EA::Positional(PosAT::Block, opp_pos));
@@ -579,7 +584,10 @@ mod tests {
         assert!(!state.info.blitz_this_activation);
         assert!(state.info.pickup_this_activation);
 
-        assert!(!should_prune(&state, &EA::Positional(PosAT::Move, Position::new((9, 7)))));
+        assert!(!should_prune(
+            &state,
+            &EA::Positional(PosAT::Move, Position::new((9, 7)))
+        ));
         check_prune_and_step(&mut state, EA::Positional(PosAT::Move, Position::new((9, 7))));
 
         // Both bonuses spent — further moves are pruned, EndPlayerTurn is not.
