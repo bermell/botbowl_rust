@@ -144,9 +144,7 @@ pub trait SearchTree {
     /// root itself).  Note that `usize` is always strictly smaller for a child than its parent.
     /// This is basically a [depth first
     /// search](https://en.wikipedia.org/wiki/Topological_sorting#Depth-first_search).
-    fn find_children_sorted_with_depth(
-        &self,
-    ) -> Vec<(ArcWrap<NodeAlias<Self::GD, Self::Memory>>, usize)>
+    fn find_children_sorted_with_depth(&self) -> Vec<(ArcWrap<NodeAlias<Self::GD, Self::Memory>>, usize)>
     where
         NodeAlias<Self::GD, Self::Memory>: OnDrop;
 
@@ -237,9 +235,7 @@ where
     }
 
     #[inline(always)]
-    fn find_children_sorted_with_depth(
-        &self,
-    ) -> Vec<(ArcWrap<NodeAlias<Self::GD, Self::Memory>>, usize)>
+    fn find_children_sorted_with_depth(&self) -> Vec<(ArcWrap<NodeAlias<Self::GD, Self::Memory>>, usize)>
     where
         NodeAlias<Self::GD, Self::Memory>: OnDrop,
     {
@@ -684,18 +680,12 @@ where
             game_dynamics,
             _marker: PhantomData,
         };
-        let this = ArcWrap::<Self> {
-            inner: Arc::new(node),
-        };
+        let this = ArcWrap::<Self> { inner: Arc::new(node) };
         Self::register(&this, Option::<&mut &mut HashSet<_, _>>::None);
         this
     }
 
-    fn new_child(
-        parent_node: &ArcNode<GD, S, P, A, Q, I, M>,
-        player: P,
-        state: S,
-    ) -> ArcWrap<Self> {
+    fn new_child(parent_node: &ArcNode<GD, S, P, A, Q, I, M>, player: P, state: S) -> ArcWrap<Self> {
         // the depth must be set after the node is connected to its parents using
         // `Node::connect_child` but before the scores of the node are propagated using
         // `Node::backprop_scores`
@@ -726,11 +716,7 @@ where
     /// initialised to 0 (sentinel) and set on first descent via
     /// `materialize_placeholder`. Cheap — no `apply_action`, no
     /// `score_leaf`, no registry write.
-    fn new_placeholder(
-        parent_node: &ArcNode<GD, S, P, A, Q, I, M>,
-        player: P,
-        action: A,
-    ) -> ArcWrap<Self>
+    fn new_placeholder(parent_node: &ArcNode<GD, S, P, A, Q, I, M>, player: P, action: A) -> ArcWrap<Self>
     where
         A: Clone,
     {
@@ -771,11 +757,7 @@ where
     {
         let mut _r = match reg_wlk {
             Some(reg_wlk) => reg_wlk.insert(ArcNode::downgrade(self_arc)),
-            None => self_arc
-                .registry
-                .write()
-                .unwrap()
-                .insert(ArcNode::downgrade(self_arc)),
+            None => self_arc.registry.write().unwrap().insert(ArcNode::downgrade(self_arc)),
         };
 
         _r &= !self_arc
@@ -854,15 +836,7 @@ where
             .drain()
             .map(|(a, wn)| (a, WeakNode::upgrade(&wn)))
             .filter(|(_, p)| p.as_ptr() != self.as_ptr())
-            .all(|(a, p)| {
-                p.children
-                    .write()
-                    .unwrap()
-                    .as_map_mut()
-                    .unwrap()
-                    .remove(&a)
-                    .is_some()
-            });
+            .all(|(a, p)| p.children.write().unwrap().as_map_mut().unwrap().remove(&a).is_some());
 
         debug_assert!(r, "parent did not know about child");
 
@@ -973,12 +947,10 @@ where
                     // directly with no Result — the migration to
                     // `compare_exchange` overlooked the Err arm.)
                     // .compare_and_swap(gen, gen + 1, Ordering::Release);
-                    match self.score_gen.compare_exchange(
-                        gen,
-                        gen + 1,
-                        Ordering::Release,
-                        Ordering::Relaxed,
-                    ) {
+                    match self
+                        .score_gen
+                        .compare_exchange(gen, gen + 1, Ordering::Release, Ordering::Relaxed)
+                    {
                         Ok(_) => {
                             *score_wlk = Some(score);
                             break true;
@@ -1055,11 +1027,7 @@ where
     }
 
     #[allow(dead_code)]
-    fn apply_atomic(
-        base: &AtomicUsize,
-        order: Ordering,
-        f_desired: &mut impl FnMut(usize) -> usize,
-    ) -> usize {
+    fn apply_atomic(base: &AtomicUsize, order: Ordering, f_desired: &mut impl FnMut(usize) -> usize) -> usize {
         // somewhat generic idea from https://software.intel.com/en-us/node/506125
         // same as:
         // base.fetch_update(order, order, |x| Some(f_desired(x)))
@@ -1153,9 +1121,12 @@ where
         visited: &mut HashSet<*const Node<GD, S, P, A, Q, I, M>>,
     ) {
         if visited.insert(self_arc.as_ptr()) {
-            self_arc.parents.read().unwrap().iter().for_each(|(_, p)| {
-                Self::find_parents_sorted(&WeakNode::upgrade(p), sorted, visited)
-            });
+            self_arc
+                .parents
+                .read()
+                .unwrap()
+                .iter()
+                .for_each(|(_, p)| Self::find_parents_sorted(&WeakNode::upgrade(p), sorted, visited));
             sorted.push(ArcNode::clone(self_arc));
         }
     }
@@ -1252,19 +1223,9 @@ where
         }
 
         for (a, p) in self_arc.parents.read().unwrap().iter() {
-            let r = p
-                .upgrade()
-                .children
-                .write()
-                .unwrap()
-                .as_map_mut()
-                .unwrap()
-                .remove(a);
+            let r = p.upgrade().children.write().unwrap().as_map_mut().unwrap().remove(a);
 
-            debug_assert!(
-                r.is_some(),
-                "could not remove dropped node from parent's children"
-            );
+            debug_assert!(r.is_some(), "could not remove dropped node from parent's children");
         }
 
         if let Some(ref mut children) = self_arc.children.write().unwrap().as_map_mut() {
@@ -1278,17 +1239,11 @@ where
                 // even be valid (an over-permissive `available_actions`
                 // would have apply_action return None), so we have no
                 // reason to derive their state on drop.
-                if Arc::strong_count(&c.inner) == 1
-                    && c.registered.load(Ordering::Relaxed)
-                {
+                if Arc::strong_count(&c.inner) == 1 && c.registered.load(Ordering::Relaxed) {
                     *c.state.write().unwrap() = Some(c.inner.get_state());
                 }
 
-                let r = c
-                    .parents
-                    .write()
-                    .unwrap()
-                    .remove(&(a, ArcNode::downgrade(self_arc)));
+                let r = c.parents.write().unwrap().remove(&(a, ArcNode::downgrade(self_arc)));
 
                 // Plan 016 (lazy expansion): an unregistered child is
                 // a placeholder being orphaned; it has no state stored
@@ -1315,11 +1270,7 @@ where
         }
 
         if self_arc.registered.load(Ordering::Relaxed) {
-            let _r = self_arc
-                .registry
-                .write()
-                .unwrap()
-                .remove(&ArcNode::downgrade(self_arc));
+            let _r = self_arc.registry.write().unwrap().remove(&ArcNode::downgrade(self_arc));
             debug_assert!(_r, "could not remove node");
         } else {
             #[cfg(debug_assertions)]
@@ -1626,7 +1577,86 @@ where
         self.step_into(state, node)
     }
 
+    /// Diagnostic crash path for the descent guard in [`Self::step_into`]:
+    /// write the offending descent (root → cycle) to a file in the temp
+    /// dir, then panic naming that file. `repeat` is the node the descent
+    /// just revisited; its first occurrence in `path` marks the cycle
+    /// entry. Rendering uses [`GameDynamics::fmt_state`] /
+    /// [`GameDynamics::fmt_action`] so implementations can make the dump
+    /// meaningful without a `Debug` bound on `State` / `Action`.
+    #[cold]
+    fn panic_with_cycle_dump(
+        &self,
+        path: &[(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)],
+        repeat: &ArcNode<GD, S, P, A, Q, I, M>,
+    ) -> ! {
+        use std::fmt::Write as _;
+        let repeat_ptr: *const Node<GD, S, P, A, Q, I, M> = &*repeat.inner;
+        let mut report = String::new();
+        let _ = writeln!(report, "recon_mcts: cycle detected in the search graph.");
+        let _ = writeln!(
+            report,
+            "A single descent revisited node {repeat_ptr:?}. The graph built from GameDynamics \
+             must be a DAG (see the GameDynamics::State docs): if a game state can legitimately \
+             recur, encode the repetition into the state (e.g. a repeat counter) so recurring \
+             situations compare unequal and recombination cannot merge them."
+        );
+        let _ = writeln!(
+            report,
+            "Descent path ({} nodes, root first; the cycle runs from the marked node to the end \
+             and back):",
+            path.len()
+        );
+        for (i, (n, a)) in path.iter().enumerate() {
+            let ptr: *const Node<GD, S, P, A, Q, I, M> = &*n.inner;
+            let marker = if ptr == repeat_ptr {
+                "  <-- cycle entry (revisited)"
+            } else {
+                ""
+            };
+            let action = match a {
+                Some(a) => self.game_dynamics.fmt_action(a),
+                None => "<root or twin swap>".to_string(),
+            };
+            let _ = writeln!(
+                report,
+                "[{i}] node {ptr:?}{marker}\n     action into node: {action}\n     state: {}",
+                self.game_dynamics.fmt_state(&n.get_state())
+            );
+        }
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let file = std::env::temp_dir().join(format!("recon_mcts_cycle_{}_{millis}.txt", std::process::id()));
+        if std::fs::write(&file, &report).is_ok() {
+            panic!(
+                "recon_mcts: cycle detected in the search graph — a descent revisited a node \
+                 after {} hops; the graph must be a DAG. Debug dump: {}",
+                path.len(),
+                file.display()
+            );
+        } else {
+            panic!(
+                "recon_mcts: cycle detected in the search graph — a descent revisited a node \
+                 after {} hops; the graph must be a DAG. (dump write failed)\n{report}",
+                path.len()
+            );
+        }
+    }
+
     fn step_into(&self, mut node_state: S, mut node: ArcNode<GD, S, P, A, Q, I, M>) -> Option<S> {
+        // Descent guard: the recombined graph must be a DAG (see
+        // `GameDynamics::State` docs), but a `GameDynamics` whose states
+        // can recur creates a true cycle once the registry merges the
+        // recurring state with its own ancestor — and this loop would
+        // then descend around it forever. A descent through a DAG is a
+        // simple path, so revisiting a node proves a cycle: crash the
+        // search with a diagnostic dump instead of hanging.
+        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
+        let mut path: Vec<(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)> = Vec::new();
+        visited.insert(&*node.inner);
+        path.push((ArcNode::clone(&node), None));
         loop {
             let children_rlk = node.children.read().unwrap();
             match *children_rlk {
@@ -1646,6 +1676,10 @@ where
                                 // is unchanged (twin has the same state by
                                 // hash-equality).
                                 node = twin;
+                                if !visited.insert(&*node.inner) {
+                                    self.panic_with_cycle_dump(&path, &node);
+                                }
+                                path.push((ArcNode::clone(&node), None));
                                 continue;
                             }
                             MaterializeOutcome::Done => {
@@ -1667,8 +1701,7 @@ where
                     self.make_branch(&node_state, &node);
                 }
                 Children::Branch(ref map) => {
-                    let action =
-                        Self::select_node(self, &node, &node_state, map, SelectNodeState::Explore);
+                    let action = Self::select_node(self, &node, &node_state, map, SelectNodeState::Explore);
 
                     // get the selected child node, calculate its state, and keep recursing
                     let next_node = ArcNode::clone(map.get(&action).unwrap());
@@ -1685,6 +1718,10 @@ where
                         Some(new_state) => {
                             node = next_node;
                             node_state = new_state;
+                            if !visited.insert(&*node.inner) {
+                                self.panic_with_cycle_dump(&path, &node);
+                            }
+                            path.push((ArcNode::clone(&node), Some(action.clone())));
                         }
                         None => {
                             // Drop next_node now so we can take the
@@ -1757,13 +1794,7 @@ where
         )
     }
 
-    fn create_scored_child(
-        &self,
-        parent_node: &ArcNode<GD, S, P, A, Q, I, M>,
-        player: P,
-        action: A,
-        state: S,
-    ) {
+    fn create_scored_child(&self, parent_node: &ArcNode<GD, S, P, A, Q, I, M>, player: P, action: A, state: S) {
         let node = Node::new_child(parent_node, player, state);
 
         // check if node is in the registry, if not: add to registry, then calculate score, then
@@ -1778,9 +1809,7 @@ where
 
                 self.reg_info.hits.fetch_add(1, Ordering::Relaxed);
 
-                if parent_node.depth.load(Ordering::Relaxed) + 1
-                    > node.depth.load(Ordering::Relaxed)
-                {
+                if parent_node.depth.load(Ordering::Relaxed) + 1 > node.depth.load(Ordering::Relaxed) {
                     Node::set_min_depth(&node);
                 }
                 // `node.score` may be `None` but the score will be set before a read lock on
@@ -1801,9 +1830,7 @@ where
                 // `Node::set_min_depth` only works with children that are connected, the depth of
                 // `node` may actually be stale / incorrect, so we update the depth here while we
                 // have a write lock on `score`
-                if parent_node.depth.load(Ordering::Relaxed) + 1
-                    > node.depth.load(Ordering::Relaxed)
-                {
+                if parent_node.depth.load(Ordering::Relaxed) + 1 > node.depth.load(Ordering::Relaxed) {
                     Node::set_min_depth(&node);
                 }
 
@@ -1837,9 +1864,7 @@ where
                     // `Self::create_scored_child` could both be slow (depending on user
                     // implementation of `GameDynamics` so we go ahead and drop the `children_wlk`
                     drop(children_wlk);
-                    if let Some(state) =
-                        GD::apply_action(&*parent_node.game_dynamics, parent_state.clone(), &a)
-                    {
+                    if let Some(state) = GD::apply_action(&*parent_node.game_dynamics, parent_state.clone(), &a) {
                         self.create_scored_child(parent_node, p, a, state);
                         children_wlk = parent_node.children.write().unwrap();
                     } else {
@@ -1899,9 +1924,7 @@ where
         if !matches!(*children_wlk, Children::NewLeaf) {
             return;
         }
-        let players_actions = self
-            .game_dynamics
-            .available_actions(&parent_node.player, parent_state);
+        let players_actions = self.game_dynamics.available_actions(&parent_node.player, parent_state);
         match players_actions {
             Some(player_acts) => {
                 let mut map = HashMap::new();
@@ -1990,10 +2013,7 @@ where
                     .collect();
                 for (a, parent_weak) in &parents_snapshot {
                     let parent = WeakNode::upgrade(parent_weak);
-                    twin.parents
-                        .write()
-                        .unwrap()
-                        .insert((a.clone(), parent_weak.clone()));
+                    twin.parents.write().unwrap().insert((a.clone(), parent_weak.clone()));
                     let mut parent_children_wlk = parent.children.write().unwrap();
                     if let Some(map) = parent_children_wlk.as_map_mut() {
                         map.insert(a.clone(), ArcNode::clone(&twin));
@@ -2003,9 +2023,7 @@ where
                 // Promote twin's depth if any new parent edge would.
                 for (_, parent_weak) in &parents_snapshot {
                     let parent = WeakNode::upgrade(parent_weak);
-                    if parent.depth.load(Ordering::Relaxed) + 1
-                        > twin.depth.load(Ordering::Relaxed)
-                    {
+                    if parent.depth.load(Ordering::Relaxed) + 1 > twin.depth.load(Ordering::Relaxed) {
                         Node::set_min_depth(&twin);
                         break;
                     }
@@ -2067,10 +2085,8 @@ where
                     .next()
                     .map(|(_, w)| WeakNode::upgrade(w));
                 let leaf_score = {
-                    let parent_score_rlk =
-                        parent_for_score.as_ref().map(|p| p.score.read().unwrap());
-                    let parent_score_ref =
-                        parent_score_rlk.as_ref().and_then(|g| g.as_ref());
+                    let parent_score_rlk = parent_for_score.as_ref().map(|p| p.score.read().unwrap());
+                    let parent_score_ref = parent_score_rlk.as_ref().and_then(|g| g.as_ref());
                     GD::score_leaf(
                         &*self.game_dynamics,
                         parent_score_ref,
@@ -2246,13 +2262,10 @@ where
         // `predecessor[V_ptr] = (action, child)` — the edge `V --action--> child` we walked down
         // from. When BFS reaches the root, we replay this chain from the root downward to
         // reconstruct the action list.
-        let mut predecessor: HashMap<
-            *const Node<GD, S, P, A, Q, I, M>,
-            (A, ArcNode<GD, S, P, A, Q, I, M>),
-        > = HashMap::new();
+        let mut predecessor: HashMap<*const Node<GD, S, P, A, Q, I, M>, (A, ArcNode<GD, S, P, A, Q, I, M>)> =
+            HashMap::new();
         let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
-        let mut queue: std::collections::VecDeque<ArcNode<GD, S, P, A, Q, I, M>> =
-            std::collections::VecDeque::new();
+        let mut queue: std::collections::VecDeque<ArcNode<GD, S, P, A, Q, I, M>> = std::collections::VecDeque::new();
         visited.insert(target_ptr);
         queue.push_back(ArcNode::clone(target));
 
@@ -2367,14 +2380,10 @@ pub(crate) mod test {
             assert_eq!(d, visited.get(&c.as_ptr()).unwrap());
             let mut sub_children = Vec::new();
             Node::find_children_sorted_with_depth(c, &mut sub_children, &mut HashMap::new());
-            sub_children
-                .iter()
-                .rev()
-                .skip(1)
-                .for_each(|(sub_c, sub_d)| {
-                    assert_eq!(sub_d, visited.get(&sub_c.as_ptr()).unwrap());
-                    assert!(d > sub_d);
-                });
+            sub_children.iter().rev().skip(1).for_each(|(sub_c, sub_d)| {
+                assert_eq!(sub_d, visited.get(&sub_c.as_ptr()).unwrap());
+                assert!(d > sub_d);
+            });
         });
         (children, visited)
     }

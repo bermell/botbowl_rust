@@ -78,11 +78,7 @@ impl GameDynamics for Game2048Dynamics {
     type Score = ScoreItem;
     type ActionIter = Vec<(Self::Player, Self::Action)>;
 
-    fn available_actions(
-        &self,
-        _player: &Self::Player,
-        state: &Self::State,
-    ) -> Option<Self::ActionIter> {
+    fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         match state.state {
             GameState::Done => None,
             GameState::WaitingForAction => Some(
@@ -143,19 +139,12 @@ impl GameDynamics for Game2048Dynamics {
                     let a = a.0.as_ref().unwrap();
                     let b = b.0.as_ref().unwrap();
 
-                    a.visits
-                        .load(Ordering::Relaxed)
-                        .cmp(&b.visits.load(Ordering::Relaxed))
+                    a.visits.load(Ordering::Relaxed).cmp(&b.visits.load(Ordering::Relaxed))
                 })
                 .unwrap();
 
             // increment the visits
-            min_ii_item
-                .0
-                .as_ref()
-                .unwrap()
-                .visits
-                .fetch_add(1, Ordering::Relaxed);
+            min_ii_item.0.as_ref().unwrap().visits.fetch_add(1, Ordering::Relaxed);
 
             return min_ii_item.1.to_owned();
         } else if parent_node_state.state == GameState::WaitingForAction {
@@ -180,12 +169,7 @@ impl GameDynamics for Game2048Dynamics {
                 .unwrap();
 
             // increment the visits
-            max_ii_item
-                .0
-                .as_ref()
-                .unwrap()
-                .visits
-                .fetch_add(1, Ordering::Relaxed);
+            max_ii_item.0.as_ref().unwrap().visits.fetch_add(1, Ordering::Relaxed);
             // return the action
             return max_ii_item.1.to_owned();
         }
@@ -207,9 +191,7 @@ impl GameDynamics for Game2048Dynamics {
         // if score_current is waiting for action or None; we need to return the max score in
         // child_scores_and_actions
         // else we return the weighted average of the scores that has at least one visit
-        if score_current.is_none()
-            || score_current.unwrap().action_node == GameState::WaitingForAction
-        {
+        if score_current.is_none() || score_current.unwrap().action_node == GameState::WaitingForAction {
             // Plan 016 (lazy expansion in recon_mcts): the input
             // iterator is filtered by `update_score` to drop placeholder
             // children with `score: None`. If *every* child is a
@@ -331,10 +313,7 @@ mod test {
                         // Verify the action has been visited
                         if let Some(score) = &best_node_info.score {
                             let visits = score.visits.load(std::sync::atomic::Ordering::Relaxed);
-                            assert!(
-                                visits > 0,
-                                "Best action should have been visited at least once"
-                            );
+                            assert!(visits > 0, "Best action should have been visited at least once");
                             println!("Action {:?} has {} visits", direction, visits);
                         }
                     }
@@ -347,10 +326,7 @@ mod test {
                         // Verify the chance action has been visited
                         if let Some(score) = &best_node_info.score {
                             let visits = score.visits.load(std::sync::atomic::Ordering::Relaxed);
-                            assert!(
-                                visits > 0,
-                                "Best chance action should have been visited at least once"
-                            );
+                            assert!(visits > 0, "Best chance action should have been visited at least once");
                             println!("Chance action has {} visits", visits);
                         }
                     }
@@ -366,10 +342,7 @@ mod test {
                                 println!("  Action {:?}: {} visits", dir, visits)
                             }
                             ActionChance::Chance(coord, value, prob) => {
-                                println!(
-                                    "  Chance ({:?}, {}, {}): {} visits",
-                                    coord, value, prob, visits
-                                );
+                                println!("  Chance ({:?}, {}, {}): {} visits", coord, value, prob, visits);
                             }
                         }
                     }

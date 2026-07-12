@@ -191,8 +191,7 @@ pub mod prelude {
     pub use crate::game_dynamics::{BaseGD, DynGD, GameDynamics, SelectNodeState};
     pub use crate::tree::state_memory::{self, GetState, HashOnly, StateMemory, StoreState};
     pub use crate::tree::{
-        ArcNode, ArcWrap, Node, NodeInfo, OnDrop, RegistryInfo, SearchTree, Status, Tree, WeakNode,
-        WeakWrap,
+        ArcNode, ArcWrap, Node, NodeInfo, OnDrop, RegistryInfo, SearchTree, Status, Tree, WeakNode, WeakWrap,
     };
 
     pub use crate::tree::NodeAlias;

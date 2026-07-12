@@ -191,11 +191,7 @@ impl GameVisualizer {
         output
     }
 
-    fn generate_display_lines(
-        &self,
-        action_table: Option<String>,
-        chosen_action: Option<Direction>,
-    ) -> Vec<String> {
+    fn generate_display_lines(&self, action_table: Option<String>, chosen_action: Option<Direction>) -> Vec<String> {
         let board_lines = self.generate_board_lines();
 
         if let Some(table) = action_table {

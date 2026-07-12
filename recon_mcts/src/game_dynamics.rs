@@ -62,11 +62,7 @@ pub trait GameDynamics {
     /// Convert an input state into the available actions / moves. Return `None` if the game is
     /// over.  If the game is over, the [`GameDynamics::score_leaf`] method
     /// will be called to evaluate the state
-    fn available_actions(
-        &self,
-        player: &Self::Player,
-        state: &Self::State,
-    ) -> Option<Self::ActionIter>;
+    fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter>;
 
     /// Modify the state input (i.e. game board) with an action.
     ///
@@ -179,6 +175,20 @@ pub trait GameDynamics {
         parent_player: &Self::Player,
         state: &Self::State,
     ) -> Option<Self::Score>;
+
+    /// Human-readable rendering of a state, used only in diagnostic
+    /// output (e.g. the cycle dump written when a descent revisits a
+    /// node). Override for meaningful crash reports; the default keeps
+    /// `Self::State: Debug` from becoming a trait bound.
+    fn fmt_state(&self, _state: &Self::State) -> String {
+        "<implement GameDynamics::fmt_state for details>".to_string()
+    }
+
+    /// Human-readable rendering of an action; diagnostics only, see
+    /// [`GameDynamics::fmt_state`].
+    fn fmt_action(&self, _action: &Self::Action) -> String {
+        "<implement GameDynamics::fmt_action for details>".to_string()
+    }
 }
 
 /// A trait that can be used to implemented [`DynGD`] without implementing [`GameDynamics`].
@@ -200,11 +210,7 @@ pub trait BaseGD {
     type ActionIter: IntoIterator<Item = (Self::Player, Self::Action)>;
 
     /// See [`GameDynamics::available_actions`] for a description of this associated function.
-    fn available_actions(
-        &self,
-        player: &Self::Player,
-        state: &Self::State,
-    ) -> Option<Self::ActionIter>;
+    fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter>;
 
     /// See [`GameDynamics::apply_action`] for a description of this associated function.
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State>;
@@ -229,11 +235,7 @@ where
     type ActionIter = <T as GameDynamics>::ActionIter;
 
     #[inline(always)]
-    fn available_actions(
-        &self,
-        player: &Self::Player,
-        state: &Self::State,
-    ) -> Option<Self::ActionIter> {
+    fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         <T as GameDynamics>::available_actions(self, player, state)
     }
 
@@ -289,9 +291,7 @@ pub trait DynGD: BaseGD {
         parent_player: &Self::Player,
         parent_node_state: &Self::State,
         purpose: SelectNodeState,
-        scores_and_actions: &mut dyn Iterator<
-            Item = (Ref<'_, Option<Self::Score>>, Ref<'_, Self::Action>),
-        >,
+        scores_and_actions: &mut dyn Iterator<Item = (Ref<'_, Option<Self::Score>>, Ref<'_, Self::Action>)>,
     ) -> Self::Action;
 
     /// See [`GameDynamics::backprop_scores`] for a description of this associated function.
@@ -357,14 +357,7 @@ where
 
         let mut qa = scores.zip(actions);
 
-        <T as DynGD>::select_node(
-            self,
-            parent_score,
-            parent_player,
-            parent_node_state,
-            purpose,
-            &mut qa,
-        )
+        <T as DynGD>::select_node(self, parent_score, parent_player, parent_node_state, purpose, &mut qa)
     }
 
     fn backprop_scores<II, Q, A>(
@@ -387,12 +380,7 @@ where
             .ref_iter(&reserved_space)
             .map(|q| Ref::map(q, Deref::deref));
 
-        <T as DynGD>::backprop_scores(
-            self,
-            player,
-            score_current,
-            &mut child_scores_and_actions_fixed,
-        )
+        <T as DynGD>::backprop_scores(self, player, score_current, &mut child_scores_and_actions_fixed)
     }
 
     #[inline(always)]

@@ -228,8 +228,7 @@ impl GameDynamics for BloodBowlDynamics {
 
         // Chance node: enumerate roll outcomes.
         if state.pending_roll.is_some() {
-            let req = state.pending_roll.as_ref().unwrap();
-            let outcomes = roll_outcomes::enumerate(req);
+            let outcomes = roll_outcomes::enumerate(state.pending_roll.as_ref().unwrap());
             return Some(outcomes.into_iter().map(|a| (BbPlayer::Chance, a)).collect());
         }
 
@@ -282,6 +281,27 @@ impl GameDynamics for BloodBowlDynamics {
         } else {
             Some(actions)
         }
+    }
+
+    /// Diagnostics only (recon_mcts cycle dump). A compact situation
+    /// line first — cycles so far have been readable from turn/ball/
+    /// pending-roll alone — then the full state for the hard cases.
+    fn fmt_state(&self, state: &Self::State) -> String {
+        format!(
+            "turn h{}/a{} score {}–{} ball {:?} pending_roll {:?} proc_top {:?}\nfull: {:?}",
+            state.info.home_turn,
+            state.info.away_turn,
+            state.home.score,
+            state.away.score,
+            state.ball,
+            state.pending_roll,
+            state.proc_stack_top(),
+            state,
+        )
+    }
+
+    fn fmt_action(&self, action: &Self::Action) -> String {
+        format!("{action:?}")
     }
 
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {

@@ -8,12 +8,7 @@ use rand::Rng;
 const SIZE: usize = 4;
 
 /// Serpentine preference: large tiles should sit toward bottom-left (highest weight at (3,0)).
-const SNAKE_WEIGHT: [[i64; SIZE]; SIZE] = [
-    [1, 2, 3, 4],
-    [8, 7, 6, 5],
-    [9, 10, 11, 12],
-    [16, 15, 14, 13],
-];
+const SNAKE_WEIGHT: [[i64; SIZE]; SIZE] = [[1, 2, 3, 4], [8, 7, 6, 5], [9, 10, 11, 12], [16, 15, 14, 13]];
 
 pub type SqVal = u32;
 pub type Grid = [[SqVal; SIZE]; SIZE];
@@ -142,15 +137,10 @@ impl Game2048 {
         // TODO: cache this?
         debug_assert!(self.state == GameState::WaitingForAction);
         let mut aa: HashSet<Direction> = HashSet::new();
-        let all_dirs = [
-            Direction::Up,
-            Direction::Down,
-            Direction::Left,
-            Direction::Right,
-        ]
-        .iter()
-        .cloned()
-        .collect::<HashSet<_>>();
+        let all_dirs = [Direction::Up, Direction::Down, Direction::Left, Direction::Right]
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
 
         for coord in self.filled_squares() {
             if aa == all_dirs {
@@ -171,15 +161,11 @@ impl Game2048 {
         aa
     }
     pub fn filled_squares(&self) -> Vec<Coord> {
-        Coord::all_coords()
-            .filter(|&coord| self[coord] != 0)
-            .collect()
+        Coord::all_coords().filter(|&coord| self[coord] != 0).collect()
     }
 
     pub fn empty_squares(&self) -> HashSet<Coord> {
-        Coord::all_coords()
-            .filter(|&coord| self[coord] == 0)
-            .collect()
+        Coord::all_coords().filter(|&coord| self[coord] == 0).collect()
     }
     pub fn in_bounds(&self, coord: Coord) -> bool {
         coord.row < SIZE && coord.col < SIZE
@@ -231,10 +217,7 @@ impl Game2048 {
         match direction {
             Direction::Left => {
                 for row in 0..SIZE {
-                    let values: Vec<SqVal> = (0..SIZE)
-                        .map(|col| self.board[row][col])
-                        .filter(|&v| v != 0)
-                        .collect();
+                    let values: Vec<SqVal> = (0..SIZE).map(|col| self.board[row][col]).filter(|&v| v != 0).collect();
                     let (merged, add) = Self::merge_line(values);
                     self.score += add;
                     for c in 0..SIZE {
@@ -264,10 +247,7 @@ impl Game2048 {
             }
             Direction::Up => {
                 for col in 0..SIZE {
-                    let values: Vec<SqVal> = (0..SIZE)
-                        .map(|row| self.board[row][col])
-                        .filter(|&v| v != 0)
-                        .collect();
+                    let values: Vec<SqVal> = (0..SIZE).map(|row| self.board[row][col]).filter(|&v| v != 0).collect();
                     let (merged, add) = Self::merge_line(values);
                     self.score += add;
                     for r in 0..SIZE {
@@ -512,8 +492,7 @@ mod test {
     /// become two merged tiles (e.g. four 2s → two 4s), not one doubled merge.
     #[test]
     fn four_equal_tiles_do_not_chain_merge_in_one_move() {
-        let mut game =
-            Game2048::new_custom([[1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
+        let mut game = Game2048::new_custom([[1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
         game.step_action(Direction::Left);
         let expected = [[2, 2, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
         assert_eq!(game.board, expected);
@@ -523,8 +502,7 @@ mod test {
     /// Tile exponents are log2: two 2s (exp 1) merge to 4 (exp 2) → +4 points.
     #[test]
     fn merge_score_adds_value_of_resulting_tile() {
-        let mut game =
-            Game2048::new_custom([[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
+        let mut game = Game2048::new_custom([[1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
         game.step_action(Direction::Left);
         assert_eq!(game.board[0][0], 2);
         assert_eq!(game.score, 4);

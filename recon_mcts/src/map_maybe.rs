@@ -39,11 +39,7 @@ where
     F: Fn(&I) -> &O,
 {
     pub(crate) fn new(r: T, f: F) -> Self {
-        Self {
-            r,
-            f,
-            _m: PhantomData,
-        }
+        Self { r, f, _m: PhantomData }
     }
 }
 
@@ -74,36 +70,24 @@ mod test {
     }
 
     // note that some of these explicit lifetimes can be elided as in `as_map_maybe` below
-    fn as_deref<'a: 'b, 'b, II, A, S>(
-        v: II,
-    ) -> impl IntoIterator<Item = (A, impl 'b + MapMaybe<'a, Target = String>)>
+    fn as_deref<'a: 'b, 'b, II, A, S>(v: II) -> impl IntoIterator<Item = (A, impl 'b + MapMaybe<'a, Target = String>)>
     where
         II: IntoIterator<Item = (A, S)>,
         A: 'a + Deref<Target = u8>,
         S: 'a + Deref<Target = Option<(u64, String)>>,
     {
-        v.into_iter().map(|x| {
-            (
-                x.0,
-                Ref::new(x.1, (|x| &x.1) as fn(&(u64, String)) -> &String),
-            )
-        })
+        v.into_iter()
+            .map(|x| (x.0, Ref::new(x.1, (|x| &x.1) as fn(&(u64, String)) -> &String)))
     }
 
-    fn as_map_maybe<'a, II, A, S>(
-        v: II,
-    ) -> impl IntoIterator<Item = (A, impl MapMaybe<'a, Target = String>)>
+    fn as_map_maybe<'a, II, A, S>(v: II) -> impl IntoIterator<Item = (A, impl MapMaybe<'a, Target = String>)>
     where
         II: IntoIterator<Item = (A, S)>,
         A: Deref<Target = u8>,
         S: MapMaybe<'a, Target = (u64, String)>,
     {
-        v.into_iter().map(|x| {
-            (
-                x.0,
-                Ref::new(x.1, (|x| &x.1) as fn(&(u64, String)) -> &String),
-            )
-        })
+        v.into_iter()
+            .map(|x| (x.0, Ref::new(x.1, (|x| &x.1) as fn(&(u64, String)) -> &String)))
     }
 
     fn checks<'a, II, A, M>(v: II)
@@ -117,8 +101,7 @@ mod test {
             .map(|(x, y)| assert_eq!((x.deref(), y.map()), (&0, Some(&"10".to_string()))));
         it.next()
             .map(|(x, y)| assert_eq!((x.deref(), y.map()), (&1, Some(&"11".to_string()))));
-        it.next()
-            .map(|(x, y)| assert_eq!((x.deref(), y.map()), (&2, None)));
+        it.next().map(|(x, y)| assert_eq!((x.deref(), y.map()), (&2, None)));
         assert!(it.next().is_none());
     }
 

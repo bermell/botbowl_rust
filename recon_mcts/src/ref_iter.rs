@@ -48,9 +48,7 @@ where
         // The `try_borrow_mut` in the line above requires that the `Ref` returned by `borrow`
         // below must go out of scope before `next` is called; this implies that an item returned
         // by the iterator cannot be dereferenced after the next item is obtained from the iterator
-        Some(Ref::map(self.item.borrow(), |x: &Option<T>| {
-            x.as_ref().unwrap()
-        }))
+        Some(Ref::map(self.item.borrow(), |x: &Option<T>| x.as_ref().unwrap()))
     }
 }
 
@@ -109,15 +107,11 @@ mod test {
 
         // `max_by` causes items to be interleaved, so using it requires either dereferencing and
         // cloning prior to calling max_by or collecting everything into a `Vec`
-        items
-            .map(|x| x.clone())
-            .max_by(|a, b| a.partial_cmp(b).unwrap());
+        items.map(|x| x.clone()).max_by(|a, b| a.partial_cmp(b).unwrap());
     }
 
     #[test]
-    #[should_panic(
-        expected = "A prior `Ref` item was borrowed after `next()` was called on the iterator"
-    )]
+    #[should_panic(expected = "A prior `Ref` item was borrowed after `next()` was called on the iterator")]
     fn test_interleave_cloned_and_held() {
         let item = RefCell::new(None);
         let items = RefIter::<_, u8>::new(0..5, &item);

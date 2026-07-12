@@ -160,9 +160,6 @@ mod tests {
 
     #[test]
     fn random_baseline_is_deterministic() {
-        assert_eq!(
-            run_random_baseline_game(12345),
-            run_random_baseline_game(12345)
-        );
+        assert_eq!(run_random_baseline_game(12345), run_random_baseline_game(12345));
     }
 }

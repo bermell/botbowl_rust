@@ -343,43 +343,29 @@ fn parse_time_ms_list_argument(spec: &str) -> Result<Vec<MctsMoveBudget>, String
         .collect())
 }
 
-fn parse_iteration_positionals(
-    args: &[String],
-) -> Result<(usize, u64, Vec<MctsMoveBudget>), String> {
+fn parse_iteration_positionals(args: &[String]) -> Result<(usize, u64, Vec<MctsMoveBudget>), String> {
     match args.len() {
         0 => Ok((100, 0, default_mcts_iteration_budgets())),
         1 => Ok((
-            args[0]
-                .parse()
-                .map_err(|_| "num_games must be a number".to_string())?,
+            args[0].parse().map_err(|_| "num_games must be a number".to_string())?,
             0,
             default_mcts_iteration_budgets(),
         )),
         2 => Ok((
-            args[0]
-                .parse()
-                .map_err(|_| "num_games must be a number".to_string())?,
-            args[1]
-                .parse()
-                .map_err(|_| "base_seed must be a number".to_string())?,
+            args[0].parse().map_err(|_| "num_games must be a number".to_string())?,
+            args[1].parse().map_err(|_| "base_seed must be a number".to_string())?,
             default_mcts_iteration_budgets(),
         )),
         _ => {
-            let num_games = args[0]
-                .parse()
-                .map_err(|_| "num_games must be a number".to_string())?;
-            let base_seed = args[1]
-                .parse()
-                .map_err(|_| "base_seed must be a number".to_string())?;
+            let num_games = args[0].parse().map_err(|_| "num_games must be a number".to_string())?;
+            let base_seed = args[1].parse().map_err(|_| "base_seed must be a number".to_string())?;
             let iters: Vec<usize> = args[2..]
                 .iter()
                 .filter_map(|s| s.parse().ok())
                 .filter(|&n| n > 0)
                 .collect();
             if iters.is_empty() {
-                return Err(
-                    "no valid iteration budgets (positive integers) after base_seed".into(),
-                );
+                return Err("no valid iteration budgets (positive integers) after base_seed".into());
             }
             Ok((
                 num_games,
@@ -395,18 +381,12 @@ fn parse_time_mode_positionals(args: &[String]) -> Result<(usize, u64), String> 
     match args.len() {
         0 => Ok((100, 0)),
         1 => Ok((
-            args[0]
-                .parse()
-                .map_err(|_| "num_games must be a number".to_string())?,
+            args[0].parse().map_err(|_| "num_games must be a number".to_string())?,
             0,
         )),
         2 => Ok((
-            args[0]
-                .parse()
-                .map_err(|_| "num_games must be a number".to_string())?,
-            args[1]
-                .parse()
-                .map_err(|_| "base_seed must be a number".to_string())?,
+            args[0].parse().map_err(|_| "num_games must be a number".to_string())?,
+            args[1].parse().map_err(|_| "base_seed must be a number".to_string())?,
         )),
         n => Err(format!(
             "with --time-ms, use at most num_games and base_seed after the ms list (got {} extra argument(s))",
@@ -429,9 +409,9 @@ fn parse_args() -> Result<(usize, u64, Vec<MctsMoveBudget>, bool), String> {
             }
             "--time-ms" => {
                 i += 1;
-                let spec = args.get(i).ok_or_else(|| {
-                    "--time-ms must be followed by a value (e.g. 150,300,600)".to_string()
-                })?;
+                let spec = args
+                    .get(i)
+                    .ok_or_else(|| "--time-ms must be followed by a value (e.g. 150,300,600)".to_string())?;
                 if spec.starts_with('-') {
                     return Err("--time-ms must be followed by a ms list, not another flag".into());
                 }
@@ -535,10 +515,8 @@ fn main() {
 
     let mut heuristic_scores = vec![0i32; num_games];
     let mut random_scores = vec![0i32; num_games];
-    let mut mcts_by_budget: Vec<Vec<i32>> =
-        mcts_budgets.iter().map(|_| vec![0i32; num_games]).collect();
-    let mut mcts_steps_by_budget: Vec<Vec<u64>> =
-        mcts_budgets.iter().map(|_| vec![0u64; num_games]).collect();
+    let mut mcts_by_budget: Vec<Vec<i32>> = mcts_budgets.iter().map(|_| vec![0i32; num_games]).collect();
+    let mut mcts_steps_by_budget: Vec<Vec<u64>> = mcts_budgets.iter().map(|_| vec![0u64; num_games]).collect();
 
     for (i, (h, r, m)) in rows.into_iter().enumerate() {
         heuristic_scores[i] = h;
@@ -573,14 +551,8 @@ fn main() {
 
     let score_rows: Vec<(String, ScoreSummary)> = {
         let mut v = vec![
-            (
-                "Random baseline".to_string(),
-                ScoreSummary::from_scores(&random_scores),
-            ),
-            (
-                "Heuristic".to_string(),
-                ScoreSummary::from_scores(&heuristic_scores),
-            ),
+            ("Random baseline".to_string(), ScoreSummary::from_scores(&random_scores)),
+            ("Heuristic".to_string(), ScoreSummary::from_scores(&heuristic_scores)),
         ];
         for (j, budget) in mcts_budgets.iter().enumerate() {
             v.push((
@@ -603,10 +575,7 @@ fn main() {
         })
         .collect();
     println!();
-    print_steps_summary_table(
-        "═══ Tree step() total per game (warmup + search) ═══",
-        &step_rows,
-    );
+    print_steps_summary_table("═══ Tree step() total per game (warmup + search) ═══", &step_rows);
 }
 
 /// One row per game: baseline columns plus score and step count for each MCTS budget.

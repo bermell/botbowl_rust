@@ -81,10 +81,7 @@ pub struct ActionIter {
 
 impl ActionIter {
     fn new(player: Player, max: usize) -> Self {
-        Self {
-            player,
-            nums: 1..=max,
-        }
+        Self { player, nums: 1..=max }
     }
 }
 
@@ -117,11 +114,7 @@ impl GameDynamics for Nim {
     // https://github.com/rust-lang/rust/issues/63063
     type ActionIter = ActionIter;
 
-    fn available_actions(
-        &self,
-        player: &Self::Player,
-        _state: &Self::State,
-    ) -> Option<Self::ActionIter> {
+    fn available_actions(&self, player: &Self::Player, _state: &Self::State) -> Option<Self::ActionIter> {
         match player {
             Player::P1 => Some(ActionIter::new(Player::P2, self.max_move)),
             Player::P2 => Some(ActionIter::new(Player::P1, self.max_move)),
@@ -169,9 +162,7 @@ impl GameDynamics for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().map(|s| s.player1).unwrap_or(f64::INFINITY);
                     let e = match purpose {
-                        SelectNodeState::Explore => {
-                            self.rng.lock().unwrap().random_range(-0.1..0.1)
-                        }
+                        SelectNodeState::Explore => self.rng.lock().unwrap().random_range(-0.1..0.1),
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q, a, qp + e)
@@ -189,9 +180,7 @@ impl GameDynamics for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().map(|s| s.player2).unwrap_or(f64::INFINITY);
                     let e = match purpose {
-                        SelectNodeState::Explore => {
-                            self.rng.lock().unwrap().random_range(-0.1..0.1)
-                        }
+                        SelectNodeState::Explore => self.rng.lock().unwrap().random_range(-0.1..0.1),
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q, a, qp + e)
@@ -301,9 +290,7 @@ impl DynGD for Nim {
         parent_player: &Self::Player,
         _parent_node_state: &Self::State,
         purpose: SelectNodeState,
-        scores_and_actions: &mut (dyn Iterator<
-            Item = (Ref<'_, Option<Self::Score>>, Ref<'_, Self::Action>),
-        >),
+        scores_and_actions: &mut (dyn Iterator<Item = (Ref<'_, Option<Self::Score>>, Ref<'_, Self::Action>)>),
     ) -> Self::Action {
         // you can comment the line below and it'll still run (but it runs more slowly on some
         // machines ...  mysterious)
@@ -320,9 +307,7 @@ impl DynGD for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().map(|s| s.player1).unwrap_or(f64::INFINITY);
                     let e = match purpose {
-                        SelectNodeState::Explore => {
-                            self.rng.lock().unwrap().random_range(-0.1..0.1)
-                        }
+                        SelectNodeState::Explore => self.rng.lock().unwrap().random_range(-0.1..0.1),
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q.clone(), a.clone(), qp + e)
@@ -332,9 +317,7 @@ impl DynGD for Nim {
                 .map(|(q, a)| {
                     let qp = q.as_ref().map(|s| s.player2).unwrap_or(f64::INFINITY);
                     let e = match purpose {
-                        SelectNodeState::Explore => {
-                            self.rng.lock().unwrap().random_range(-0.1..0.1)
-                        }
+                        SelectNodeState::Explore => self.rng.lock().unwrap().random_range(-0.1..0.1),
                         SelectNodeState::Exploit => 0.0,
                     };
                     (q.clone(), a.clone(), qp + e)
@@ -482,11 +465,7 @@ mod test {
             }
 
             let children = t.find_children_sorted_with_depth();
-            println!(
-                "nnodes: {} depth: {}",
-                children.len(),
-                children.last().unwrap().1
-            );
+            println!("nnodes: {} depth: {}", children.len(), children.last().unwrap().1);
             // Plan 016 (lazy expansion): the tree may contain placeholder
             // children that are not in the registry — they only enter
             // the registry on first descent (materialisation). The
