@@ -156,3 +156,18 @@ path the bench was a proxy for.
    indicated during planning that "scoring a chance node directly is
    fine"; that simplification is independent of the lazy-expansion
    change and was deliberately deferred to keep this PR focused.
+
+## Postscript (2026-07-11) — latent backprop bug introduced here, fixed
+
+Lazy expansion silently killed upward score propagation. `Node::backprop_scores`
+seeds its heap at the freshly scored leaf and only pushed a node's *parents* when
+that node's own `update_score()` returned true. A fresh leaf's children are all
+unscored placeholders, so `GD::backprop_scores` received an empty iterator,
+returned `None`, and the walk stopped at the seed — no leaf score ever reached
+an ancestor. The bug was masked while `score_leaf` fast-forwarded chance states
+optimistically (root children carried useful Q at materialisation, so 1-ply
+greedy still solved the lectures); removing the fast-forward (plan 018 follow-up
+commit 8d81444) dropped `GetTheBallEasy` MCTS from 1.00 to 0.00. Fix: the walk
+now always continues past the *seed* node (its score was just assigned
+externally by `score_leaf`); interior nodes still propagate only when their
+aggregate changed. Restored 1.00.

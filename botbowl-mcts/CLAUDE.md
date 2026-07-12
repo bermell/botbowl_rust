@@ -22,7 +22,7 @@ Clones the root state, sets `DiceMode::RegisterRolls`, force-disables logging an
 
 ## Env knobs for A/B and debugging
 
-Read once per `get_action`: `BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_STATS=1`.
+Read once per `get_action`: `BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_STATS=1`, `BLOOD_MCTS_DEBUG_ROOT=1` (dump top-10 root children by visits/Q after each search — first thing to reach for when the bot plays nonsense; all-zero Q means backprop is broken).
 
 ## Invariant (also stated at repo root)
 

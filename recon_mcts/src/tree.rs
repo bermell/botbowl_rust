@@ -1028,9 +1028,18 @@ where
         h.push((d, ArcWrap::clone(self_arc)));
 
         while let Some((_, node)) = h.pop() {
-            if node.update_score() {
+            let node_ptr: *const Node<GD, S, P, A, Q, I, M> = &*node.inner;
+            let updated = node.update_score();
+            if updated {
                 n_updates += 1;
-
+            }
+            // Walk past the seed unconditionally: the seed's score was just
+            // assigned externally (`GD::score_leaf` on a fresh leaf whose
+            // children are unscored placeholders), so its own `update_score`
+            // has nothing to aggregate and returns false — but its parents
+            // still need to observe the new score. Interior nodes propagate
+            // only when their aggregate actually changed.
+            if updated || node_ptr == seed_ptr {
                 node.parents.read().unwrap().iter().for_each(|(_, p)| {
                     let parent_ptr: *const Node<GD, S, P, A, Q, I, M> = p.as_ptr();
                     if visited.insert(parent_ptr) {

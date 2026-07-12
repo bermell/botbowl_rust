@@ -1011,6 +1011,24 @@ impl Bot for MctsBot {
             self.last_anchor = None;
         }
 
+        if std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1") {
+            let mut infos: Vec<_> = move_info
+                .iter()
+                .map(|(a, info)| {
+                    let (v, s) = info
+                        .score
+                        .as_ref()
+                        .map(|s| (s.visits.load(Ordering::Relaxed), s.score))
+                        .unwrap_or((0, 0));
+                    (v, s, a.clone())
+                })
+                .collect();
+            infos.sort_by_key(|(v, _, _)| std::cmp::Reverse(*v));
+            eprintln!("== root children ({}):", infos.len());
+            for (v, s, a) in infos.iter().take(10) {
+                eprintln!("   visits={v:5} q={s:6} {a:?}");
+            }
+        }
         let best = move_info
             .iter()
             .max_by_key(|(_, info)| {
