@@ -888,7 +888,7 @@ impl<'a> PathFinder<'a> {
         //handle moving
         Direction::all_directions_iter()
             .map(|direction| node.position + *direction)
-            .filter(|to_pos| !to_pos.is_out())
+            .filter(|to_pos| !self.info.game_state.is_out(*to_pos))
             .filter(|to_pos| {
                 parent_pos_and_in_tz
                     .map(|(parent_pos, parent_in_tz)| {

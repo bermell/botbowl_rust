@@ -58,13 +58,13 @@ impl Push {
         push_squares.push(on + direction);
         let free_squares: Vec<Position> = push_squares
             .iter()
-            .filter(|&pos| !pos.is_out() && game_state.get_player_at(*pos).is_none())
+            .filter(|&pos| !game_state.is_out(*pos) && game_state.get_player_at(*pos).is_none())
             .copied()
             .collect();
 
         if !free_squares.is_empty() {
             PushSquares::FreeSquares(free_squares)
-        } else if push_squares.iter().any(|&pos| pos.is_out()) {
+        } else if push_squares.iter().any(|&pos| game_state.is_out(pos)) {
             PushSquares::Crowd(push_squares.pop().unwrap())
         } else {
             PushSquares::ChainPush(push_squares)
@@ -83,7 +83,7 @@ impl Push {
     fn handle_aftermath(&mut self, game_state: &mut GameState) -> ProcState {
         let mut procs: Vec<AnyProc> = Vec::with_capacity(2);
         let (last_push_from, last_push_to) = self.moves_to_make.pop().unwrap();
-        if last_push_to.is_out() {
+        if game_state.is_out(last_push_to) {
             let id = game_state.get_player_id_at(last_push_to).unwrap();
             if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
                 game_state.ball = BallState::InAir(last_push_from);

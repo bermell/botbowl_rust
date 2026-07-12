@@ -4,7 +4,7 @@ use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, D3, D6
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{
-    other_team, Action, AvailableActions, Coord, Direction, Position, ProcState, Procedure, HEIGHT_, WIDTH_,
+    other_team, Action, AvailableActions, BoardDims, Coord, Direction, Position, ProcState, Procedure,
 };
 use crate::core::model::{BallState, PlayerID};
 use crate::core::table::{PosAT, Skill};
@@ -79,7 +79,9 @@ impl Procedure for Bounce {
         let current_ball_pos = game_state.get_ball_position().unwrap();
         let new_pos = current_ball_pos + Direction::from(dice);
 
-        if self.kick && (new_pos.is_out() || new_pos.is_on_team_side(game_state.info.kicking_this_drive)) {
+        if self.kick
+            && (game_state.is_out(new_pos) || game_state.is_on_team_side(new_pos, game_state.info.kicking_this_drive))
+        {
             return ProcState::DoneNew(Touchback::new());
         }
 
@@ -95,7 +97,7 @@ impl Procedure for Bounce {
                 game_state.ball = BallState::InAir(new_pos);
                 ProcState::NotDone
             }
-        } else if new_pos.is_out() {
+        } else if game_state.is_out(new_pos) {
             ProcState::DoneNew(ThrowIn::new(current_ball_pos))
         } else {
             game_state.ball = BallState::OnGround(new_pos);
@@ -111,19 +113,30 @@ impl ThrowIn {
     pub fn new(from: Position) -> AnyProc {
         AnyProc::ThrowIn(ThrowIn { from })
     }
-    fn get_throw_in_direction(&self, dice: D3) -> Direction {
-        const MAX_X: Coord = WIDTH_ - 2;
-        const MAX_Y: Coord = HEIGHT_ - 2;
-        let directions: [(Coord, Coord); 3] = match self.from {
-            Position { x: 1, y: 1 } => [(1, 0), (1, 1), (0, 1)],
-            Position { x: 1, y: MAX_Y } => [(1, 0), (1, -1), (0, -1)],
-            Position { x: MAX_X, y: 1 } => [(-1, 0), (-1, 1), (0, 1)],
-            Position { x: MAX_X, y: MAX_Y } => [(-1, 0), (-1, -1), (0, -1)],
-            Position { x: 1, .. } => [(1, 1), (1, 0), (1, -1)],
-            Position { x: MAX_X, .. } => [(-1, 1), (-1, 0), (-1, -1)],
-            Position { y: 1, .. } => [(1, 1), (0, 1), (-1, 1)],
-            Position { y: MAX_Y, .. } => [(1, -1), (0, -1), (-1, -1)],
-            _ => panic!("very wrong!"),
+    fn get_throw_in_direction(&self, dice: D3, dims: BoardDims) -> Direction {
+        // Last playable column/row of the logical board (index 0 and width-1 /
+        // height-1 are the OOB border). Runtime dims → can't be `const` match arms.
+        let max_x: Coord = dims.width - 2;
+        let max_y: Coord = dims.height - 2;
+        let Position { x, y } = self.from;
+        let directions: [(Coord, Coord); 3] = if x == 1 && y == 1 {
+            [(1, 0), (1, 1), (0, 1)]
+        } else if x == 1 && y == max_y {
+            [(1, 0), (1, -1), (0, -1)]
+        } else if x == max_x && y == 1 {
+            [(-1, 0), (-1, 1), (0, 1)]
+        } else if x == max_x && y == max_y {
+            [(-1, 0), (-1, -1), (0, -1)]
+        } else if x == 1 {
+            [(1, 1), (1, 0), (1, -1)]
+        } else if x == max_x {
+            [(-1, 1), (-1, 0), (-1, -1)]
+        } else if y == 1 {
+            [(1, 1), (0, 1), (-1, 1)]
+        } else if y == max_y {
+            [(1, -1), (0, -1), (-1, -1)]
+        } else {
+            panic!("very wrong!")
         };
         Direction::from(directions[dice as usize - 1])
     }
@@ -137,16 +150,20 @@ impl Procedure for ThrowIn {
             ProcInput::Roll(RollResult::ThrowIn { direction, distance }) => {
                 // Cap distance at half the board width so a throw-in can't fling
                 // the ball clear across a narrow board (no-op on the full pitch).
-                (self.get_throw_in_direction(direction), (distance as i8).min(WIDTH_ / 2))
+                let dims = game_state.board_dims;
+                (
+                    self.get_throw_in_direction(direction, dims),
+                    (distance as i8).min(dims.max_scatter()),
+                )
             }
             _ => panic!("Unexpected input {:?} for ThrowIn", input),
         };
         let target: Position = self.from + direction * length;
 
-        if target.is_out() {
+        if game_state.is_out(target) {
             self.from = target - direction;
 
-            while self.from.is_out() {
+            while game_state.is_out(self.from) {
                 self.from -= direction;
             }
 
@@ -308,7 +325,7 @@ impl Procedure for Pass {
                 let mut throwin_pos = None;
                 for d in [r1, r2, r3].iter().map(|r| Direction::from(*r)) {
                     let new_target = target + d;
-                    if new_target.is_out() {
+                    if game_state.is_out(new_target) {
                         throwin_pos = Some(target);
                         break;
                     }
@@ -326,7 +343,7 @@ impl Procedure for Pass {
                 let dir = Direction::from(direction);
                 for _ in 0..(distance as i8) {
                     let new_target = target + dir;
-                    if new_target.is_out() {
+                    if game_state.is_out(new_target) {
                         throwin_pos = Some(target);
                         break;
                     }
@@ -393,7 +410,7 @@ impl Procedure for DeflectOrResolve {
         };
         let failed_deflect_proc: AnyProc = {
             if let Some(throw_in_pos) = self.throw_in_pos {
-                debug_assert!(!throw_in_pos.is_out());
+                debug_assert!(!game_state.is_out(throw_in_pos));
                 ThrowIn::new(throw_in_pos)
             } else {
                 match game_state.get_player_at(self.to) {

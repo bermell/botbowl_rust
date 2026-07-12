@@ -35,6 +35,8 @@ pub struct GameStateBuilder {
     away_players: Vec<Position>,
     ball_pos: Option<Position>,
     state: BuilderState,
+    /// Runtime board override for `build()`. `None` → read `BoardDims::from_env()`.
+    board_dims: Option<BoardDims>,
 }
 
 impl GameStateBuilder {
@@ -71,16 +73,20 @@ impl GameStateBuilder {
     ///which right now is the coin toss. (but later should be pregame which does weather roll abd
     ///such)
     pub fn new_start_of_game() -> GameState {
-        let mut state = GameStateBuilder::empty_state();
+        GameStateBuilder::new_start_of_game_with(BoardDims::from_env())
+    }
+    pub fn new_start_of_game_with(board_dims: BoardDims) -> GameState {
+        let mut state = GameStateBuilder::empty_state_with(board_dims);
 
         // Dugout
         let place = DugoutPlace::Reserves;
         // Role split scales with roster size; linemen take the remainder.
-        // At ROSTER_PER_TEAM=12 this is the historical 6 linemen + 2 each of
+        // At roster_per_team()=12 this is the historical 6 linemen + 2 each of
         // blitzer/catcher/thrower. The per-tier distribution on smaller boards
         // is a deferred curriculum decision — this is just a sane default.
-        let positionals = (ROSTER_PER_TEAM / 6).max(1);
-        let linemen = ROSTER_PER_TEAM - 3 * positionals;
+        let roster_per_team = state.board_dims.roster_per_team();
+        let positionals = (roster_per_team / 6).max(1);
+        let linemen = roster_per_team - 3 * positionals;
         for team in [TeamType::Home, TeamType::Away] {
             for _ in 0..linemen {
                 state.dugout_add_new_player(PlayerStats::new_lineman(team), place);
@@ -109,7 +115,14 @@ impl GameStateBuilder {
             away_players: Vec::new(),
             ball_pos: None,
             state: BuilderState::Turn { turn: 1 },
+            board_dims: None,
         }
+    }
+    /// Override the runtime board for `build()` — the testing hook that lets one
+    /// binary exercise any board `<=` the compiled capacity without a recompile.
+    pub fn with_board_dims(&mut self, board_dims: BoardDims) -> &mut GameStateBuilder {
+        self.board_dims = Some(board_dims);
+        self
     }
     pub fn add_str(&mut self, start_pos: Position, s: &str) -> &mut GameStateBuilder {
         let mut pos = start_pos;
@@ -180,7 +193,11 @@ impl GameStateBuilder {
     }
 
     pub fn empty_state() -> GameState {
+        GameStateBuilder::empty_state_with(BoardDims::from_env())
+    }
+    pub fn empty_state_with(board_dims: BoardDims) -> GameState {
         GameState {
+            board_dims,
             fielded_players: Default::default(),
             home: TeamState::new(),
             away: TeamState::new(),
@@ -202,7 +219,8 @@ impl GameStateBuilder {
         }
     }
     pub fn build(&mut self) -> GameState {
-        let mut state = GameStateBuilder::new_start_of_game();
+        let dims = self.board_dims.unwrap_or_else(BoardDims::from_env);
+        let mut state = GameStateBuilder::new_start_of_game_with(dims);
 
         let user_turn = match self.state {
             BuilderState::CoinToss => return state,
@@ -402,6 +420,11 @@ pub struct GameState {
     pub home: TeamState,
     pub away: TeamState,
 
+    /// The runtime-active board (logical dimensions + team size). Constant for
+    /// the life of a game; sourced from env / the builder at construction. The
+    /// physical arrays below stay at compile-time capacity — see `BoardDims`.
+    pub board_dims: BoardDims,
+
     // Both arrays are sized for the whole roster: a player is either fielded or
     // in the dugout, and at most ROSTER_PER_TEAM per team can exist. (SetupLine
     // can field more than TEAM_SIZE when the roster is smaller than the
@@ -479,6 +502,7 @@ impl Clone for GameState {
             info: self.info.clone(),
             home: self.home,
             away: self.away,
+            board_dims: self.board_dims,
             fielded_players: self.fielded_players.clone(),
             dugout_players: self.dugout_players.clone(),
             board: self.board,
@@ -689,10 +713,15 @@ impl GameState {
         self.info.active_player.and_then(|id| self.get_mut_player(id).ok())
     }
     pub fn get_endzone_x(&self, team: TeamType) -> Coord {
-        match team {
-            TeamType::Home => 1,
-            TeamType::Away => WIDTH_ - 2,
-        }
+        self.board_dims.endzone_x(team)
+    }
+    /// Out of bounds of the runtime-active board (gameplay OOB). For array-bound
+    /// sanity checks use `Position::is_out` instead.
+    pub fn is_out(&self, pos: Position) -> bool {
+        self.board_dims.is_out(pos)
+    }
+    pub fn is_on_team_side(&self, pos: Position, team: TeamType) -> bool {
+        self.board_dims.is_on_team_side(pos, team)
     }
     pub fn set_seed(&mut self, state: u64) {
         self.rng = ChaCha8Rng::seed_from_u64(state);
@@ -775,9 +804,11 @@ impl GameState {
     }
 
     pub fn get_best_kickoff_aim_for(&self, team: TeamType) -> Position {
+        let w = self.board_dims.width;
+        let mid_y = self.board_dims.height / 2 - 1;
         match team {
-            TeamType::Home => Position::new((WIDTH_ / 4, HEIGHT_ / 2 - 1)),
-            TeamType::Away => Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2 - 1)),
+            TeamType::Home => Position::new((w / 4, mid_y)),
+            TeamType::Away => Position::new((w * 3 / 4, mid_y)),
         }
     }
 
@@ -975,10 +1006,7 @@ impl GameState {
         }
     }
     pub fn get_line_of_scrimage_x(&self, team: TeamType) -> Coord {
-        match team {
-            TeamType::Home => LINE_OF_SCRIMMAGE_HOME_X,
-            TeamType::Away => LINE_OF_SCRIMMAGE_AWAY_X,
-        }
+        self.board_dims.los_x(team)
     }
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()> {
         let old_pos = self.get_player(id)?.position;
@@ -1335,27 +1363,31 @@ impl GameState {
             .filter(|player| player.stats.team == team && player.place == DugoutPlace::Reserves)
             .count();
         let num_available_players = num_players_on_bench + num_players_on_pitch;
-        let min_people_on_pitch = TEAM_SIZE.min(num_available_players);
+        let team_size = self.board_dims.team_size;
+        let min_people_on_pitch = team_size.min(num_available_players);
         let min_people_on_scrimage = 3.min(num_available_players);
 
-        if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > TEAM_SIZE {
+        if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > team_size {
             return false;
         }
         let line_of_scrimage_x = self.get_line_of_scrimage_x(team);
+        let los_y_range = self.board_dims.los_y_range();
+        let south_wing_y_range = self.board_dims.south_wing_y_range();
+        let north_wing_y_range = self.board_dims.north_wing_y_range();
 
         for pos in self.get_players_on_pitch_in_team(team).map(|p| p.position) {
-            if pos.is_out()
+            if self.is_out(pos)
                 || (team == TeamType::Home && pos.x < line_of_scrimage_x)
                 || (team == TeamType::Away && pos.x > line_of_scrimage_x)
             {
                 return false;
             }
 
-            if pos.x == line_of_scrimage_x && LINE_OF_SCRIMMAGE_Y_RANGE.contains(&pos.y) {
+            if pos.x == line_of_scrimage_x && los_y_range.contains(&pos.y) {
                 line_of_scrimage += 1;
-            } else if SOUTH_WING_Y_RANGE.contains(&pos.y) {
+            } else if south_wing_y_range.contains(&pos.y) {
                 south_wing += 1;
-            } else if NORTH_WING_Y_RANGE.contains(&pos.y) {
+            } else if north_wing_y_range.contains(&pos.y) {
                 north_wing += 1;
             }
         }
@@ -1912,5 +1944,108 @@ mod gamestate_tests {
 
         state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Pass));
         assert_eq!(state.home.score, 1, "successful pickup scores");
+    }
+}
+
+/// Runtime board sizing (plan 017): one binary plays a board smaller than the
+/// compiled capacity, chosen at runtime via `with_board_dims` — no recompile.
+#[cfg(test)]
+mod runtime_board_dims_tests {
+    use super::GameStateBuilder;
+    use crate::bots::RandomBot;
+    use crate::core::game_runner::BotGameRunnerBuilder;
+    use crate::core::gamestate::BuilderState;
+    use crate::core::model::{BoardDims, Position, TeamType, TEAM_SIZE};
+
+    // A 16x9 engine board (14x7 playable) with 3 players — the plan's small tier.
+    // Runs whenever the compiled capacity is at least this big.
+    const W: i8 = 16;
+    const H: i8 = 9;
+    const PLAYERS: usize = 3;
+
+    fn fits_capacity() -> bool {
+        (crate::core::model::WIDTH as i8) >= W && (crate::core::model::HEIGHT as i8) >= H && TEAM_SIZE >= PLAYERS
+    }
+
+    #[test]
+    fn runtime_small_board_geometry() {
+        if !fits_capacity() {
+            return;
+        }
+        let dims = BoardDims::new(W, H, PLAYERS);
+        let state = GameStateBuilder::new().with_board_dims(dims).build();
+        assert_eq!(state.board_dims, dims, "runtime dims propagate to the built state");
+
+        // Logical out-of-bounds: last playable column is width-2 = 14.
+        assert!(
+            !state.is_out(Position::new((14, 4))),
+            "(14,4) is the last playable column"
+        );
+        assert!(
+            state.is_out(Position::new((15, 4))),
+            "column 15 is the logical OOB border"
+        );
+        // The physical array is larger than the logical board at default capacity,
+        // yet squares beyond the logical board are still out of bounds.
+        crate::skip_if_board_smaller_than!(28, 17);
+        assert!(
+            !Position::new((20, 4)).is_out(),
+            "col 20 is inside the *physical* 28-wide array (capacity check)",
+        );
+        assert!(
+            state.is_out(Position::new((20, 4))),
+            "...but logically out on the 16-wide board"
+        );
+    }
+
+    #[test]
+    fn runtime_small_board_derived_geometry() {
+        if !fits_capacity() {
+            return;
+        }
+        let state = GameStateBuilder::new()
+            .with_board_dims(BoardDims::new(W, H, PLAYERS))
+            .build();
+        // Symmetric line of scrimmage around width/2 = 8.
+        assert_eq!(state.get_line_of_scrimage_x(TeamType::Home), 8);
+        assert_eq!(state.get_line_of_scrimage_x(TeamType::Away), 7);
+        // End zones sit on the innermost playable columns.
+        assert_eq!(state.get_endzone_x(TeamType::Home), 1);
+        assert_eq!(state.get_endzone_x(TeamType::Away), W - 2);
+        // Fewer than 7 players → degenerate kickoff (no event table).
+        assert!(!state.board_dims.kickoff_table_enabled());
+    }
+
+    #[test]
+    fn runtime_small_board_plays_full_game() {
+        if !fits_capacity() {
+            return;
+        }
+        // A full game from the coin toss on the runtime-small board exercises
+        // setup, kickoff, bounces and throw-ins end-to-end — all without a rebuild.
+        for seed in 0..5u64 {
+            let state = GameStateBuilder::new()
+                .with_board_dims(BoardDims::new(W, H, PLAYERS))
+                .set_state(BuilderState::CoinToss)
+                .build();
+            assert_eq!(state.board_dims.width, W);
+            let mut bot_game = BotGameRunnerBuilder::new()
+                .set_home_bot(Box::new(RandomBot::new()))
+                .set_away_bot(Box::new(RandomBot::new()))
+                .set_state(state)
+                .set_seed(seed)
+                .build();
+            let result = bot_game.run();
+            let _ = result; // completing without panic is the assertion
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds compiled capacity")]
+    fn board_dims_over_capacity_panics() {
+        // One column wider than the compiled physical array must be rejected —
+        // the arrays can't hold it, so you'd have to recompile larger.
+        let over = (crate::core::model::WIDTH as i8) + 2;
+        let _ = BoardDims::new(over, H, PLAYERS);
     }
 }

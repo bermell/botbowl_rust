@@ -14,9 +14,6 @@ use ratatui::{
 
 use crate::player_drawings::{player_2x1, player_4x2, player_6x3, player_8x4};
 
-const ROWS: u16 = 15;
-const COLS: u16 = 26;
-
 pub fn draw(frame: &mut Frame, state: &GameState, log: &[String]) {
     let rect_size = frame.size();
 
@@ -64,14 +61,17 @@ fn log_panel_height(log: &[String]) -> u16 {
 }
 
 fn draw_pitch(frame: &mut Frame, state: &GameState, area: Rect) {
+    // Grid follows the runtime-active (playable) board, not the compiled capacity.
+    let cols = (state.board_dims.width - 2) as u16;
+    let rows = (state.board_dims.height - 2) as u16;
     let allowed_square_sizes = &[(10, 5), (8, 4), (6, 3), (4, 2), (2, 1)];
     let (square_width, square_height) = allowed_square_sizes
         .iter()
-        .find(|(w, h)| area.width / COLS >= *w && area.height / ROWS >= *h)
+        .find(|(w, h)| area.width / cols >= *w && area.height / rows >= *h)
         .copied()
         .unwrap_or((2, 1));
-    let pitch_width = square_width * COLS;
-    let pitch_height = square_height * ROWS;
+    let pitch_width = square_width * cols;
+    let pitch_height = square_height * rows;
 
     if area.width < pitch_width || area.height < pitch_height {
         // Fallback: not enough room — render a placeholder rather than panic.
@@ -92,10 +92,10 @@ fn draw_pitch(frame: &mut Frame, state: &GameState, area: Rect) {
         height: pitch_height,
     };
 
-    let rows: Rc<[Rect]> = split_rows(&pitch, square_height, ROWS);
-    let squares: Vec<Vec<Rect>> = rows
+    let row_rects: Rc<[Rect]> = split_rows(&pitch, square_height, rows);
+    let squares: Vec<Vec<Rect>> = row_rects
         .iter()
-        .map(|row| split_cols(row, square_width, COLS).to_vec())
+        .map(|row| split_cols(row, square_width, cols).to_vec())
         .collect();
 
     for (y, row_rects) in squares.iter().enumerate() {

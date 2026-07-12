@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID, Position, ProcState,
-    Procedure, Result, TeamType, Weather, HEIGHT_, KICKOFF_TABLE_ENABLED, LINE_OF_SCRIMMAGE_Y_RANGE,
-    TEAM_SIZE, WIDTH_,
+    Procedure, Result, TeamType, Weather,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -45,10 +44,10 @@ impl Procedure for Kickoff {
 
         // Cap deviate distance at half the board width so the kick can't be
         // flung out of bounds on narrow tiers (no-op on the full pitch).
-        let len = (len_roll as Coord).min(WIDTH_ / 2);
+        let len = (len_roll as Coord).min(game_state.board_dims.max_scatter());
         let ball_pos = self.aim + Direction::from(dir_roll) * len;
         game_state.ball = BallState::InAir(ball_pos);
-        if KICKOFF_TABLE_ENABLED {
+        if game_state.board_dims.kickoff_table_enabled() {
             ProcState::DoneNew(KickoffTable::new())
         } else {
             // Degenerate kickoff for small tiers: ball just lands, no event roll.
@@ -137,7 +136,7 @@ impl Procedure for ChangingWeather {
             ProcInput::Roll(RollResult::Sum2D6(roll)) => {
                 game_state.info.weather = Weather::from(roll);
                 let ball_pos = game_state.get_ball_position().unwrap();
-                if game_state.info.weather == Weather::Nice && !ball_pos.is_out() {
+                if game_state.info.weather == Weather::Nice && !game_state.is_out(ball_pos) {
                     ProcState::NeedRoll(RequestedRoll::D8)
                 } else {
                     ProcState::Done
@@ -165,7 +164,9 @@ impl Procedure for LandKickoff {
             unreachable!()
         };
 
-        if ball_position.is_out() || !ball_position.is_on_team_side(other_team(game_state.info.kicking_this_drive)) {
+        if game_state.is_out(ball_position)
+            || !game_state.is_on_team_side(ball_position, other_team(game_state.info.kicking_this_drive))
+        {
             return ProcState::DoneNew(ball_procs::Touchback::new());
         }
 
@@ -204,26 +205,27 @@ impl Setup {
         #[allow(clippy::needless_collect)]
         let players: Vec<PlayerID> = game_state
             .get_dugout()
-            .take(TEAM_SIZE)
+            .take(game_state.board_dims.team_size)
             .filter(|dplayer| dplayer.stats.team == self.team)
             .map(|p| p.id)
             .collect();
 
         let mut ids = players.into_iter();
         let los_x = game_state.get_line_of_scrimage_x(self.team);
+        let los_y_range = game_state.board_dims.los_y_range();
         let los_x_range = los_x..=los_x;
         let x_range = match self.team {
-            TeamType::Home => los_x..=crate::core::model::WIDTH_ - 2,
+            TeamType::Home => los_x..=game_state.board_dims.width - 2,
             TeamType::Away => 1..=los_x,
         };
         for _ in 0..3 {
             if let Some(id) = ids.next() {
-                let p = Setup::get_empty_pos_in_box(game_state, los_x_range.clone(), LINE_OF_SCRIMMAGE_Y_RANGE.clone());
+                let p = Setup::get_empty_pos_in_box(game_state, los_x_range.clone(), los_y_range.clone());
                 game_state.field_dugout_player(id, p);
             }
         }
         for id in ids {
-            let p = Setup::get_empty_pos_in_box(game_state, x_range.clone(), LINE_OF_SCRIMMAGE_Y_RANGE.clone());
+            let p = Setup::get_empty_pos_in_box(game_state, x_range.clone(), los_y_range.clone());
             game_state.field_dugout_player(id, p);
         }
     }
@@ -247,17 +249,18 @@ impl Setup {
             .filter(|dplayer| dplayer.place == DugoutPlace::Reserves)
             .map(|p| p.id)
             .collect();
+        let dims = game_state.board_dims;
         let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
         let middle_x = game_state.get_line_of_scrimage_x(self.team);
-        let middle_y = HEIGHT_ / 2;
+        let middle_y = dims.height / 2;
         // Clamp formation offsets so they stay on-pitch and on our own half on
         // small boards. On the full pitch these bounds are wider than any offset,
         // so the historical formation is reproduced exactly.
-        let max_dx = WIDTH_ / 2 - 2;
-        let max_dy = (middle_y - 1).min(HEIGHT_ - 2 - middle_y);
+        let max_dx = dims.width / 2 - 2;
+        let max_dy = (middle_y - 1).min(dims.height - 2 - middle_y);
         let mut fielded = 0usize;
         for id in players {
-            if fielded >= TEAM_SIZE {
+            if fielded >= dims.team_size {
                 break;
             }
             let player = game_state.get_dugout_player(id).unwrap();
@@ -274,7 +277,7 @@ impl Setup {
             let mut position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
             // Clamping can collide players onto the same square on tiny boards;
             // fall back to the nearest free square on our own half.
-            if position.is_out() || game_state.get_player_id_at(position).is_some() {
+            if game_state.is_out(position) || game_state.get_player_id_at(position).is_some() {
                 position = Self::first_free_own_half(game_state, middle_x, x_delta_sign);
             }
             fielded += 1;
@@ -295,12 +298,12 @@ impl Setup {
     /// when clamped formation offsets overlap on small boards.
     fn first_free_own_half(game_state: &GameState, los_x: Coord, x_delta_sign: Coord) -> Position {
         let xs: Vec<Coord> = if x_delta_sign > 0 {
-            (los_x..=WIDTH_ - 2).collect()
+            (los_x..=game_state.board_dims.width - 2).collect()
         } else {
             (1..=los_x).rev().collect()
         };
         for x in xs {
-            for y in 1..=HEIGHT_ - 2 {
+            for y in 1..=game_state.board_dims.height - 2 {
                 if game_state.get_player_id_at_coord(x, y).is_none() {
                     return Position { x, y };
                 }
@@ -352,7 +355,7 @@ mod tests {
 
         for team in [TeamType::Home, TeamType::Away] {
             let middle_x = state.get_line_of_scrimage_x(team);
-            let middle_y = HEIGHT_ / 2;
+            let middle_y = state.board_dims.height / 2;
 
             let linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
             let blitzer_pos = vec![(0, -2), (0, 2)];

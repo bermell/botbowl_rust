@@ -4,7 +4,7 @@ use std::{error, fmt};
 
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
-use std::ops::{Add, AddAssign, Index, IndexMut, Mul, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Index, IndexMut, Mul, RangeInclusive, Sub, SubAssign};
 
 use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
@@ -97,6 +97,144 @@ impl<T> FullPitch<Option<T>> {
 // default build reproduces the historical 28x17 / 11-player values exactly.
 // `Coord` (defined above) is in scope for the generated file.
 include!(concat!(env!("OUT_DIR"), "/board_config.rs"));
+
+/// Runtime-active board dimensions (plan 017 → runtime tiers). The compile-time
+/// consts above (`WIDTH`/`HEIGHT`/`TEAM_SIZE`/`ROSTER_PER_TEAM`) are the physical
+/// **capacity** — the largest board this binary can run, and the fixed size of
+/// `FullPitch` / the roster arrays. `BoardDims` is the smaller **logical** board
+/// actually in play, inset into the low corner of the full-size arrays; cells
+/// beyond it are permanent no-man's-land (always out of bounds, never occupied).
+///
+/// All gameplay geometry (out-of-bounds, team side, end zones, line-of-scrimmage
+/// and wing ranges, kickoff aim, throw-in/deviate caps, kickoff-table gating) is
+/// derived here at runtime — the formulas mirror `build.rs`. Physical/array-bound
+/// checks keep using the capacity consts (`Position::is_out`, `FullPitch` index).
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BoardDims {
+    /// Engine width incl. the 1-cell out-of-bounds border; `<= WIDTH`.
+    pub width: Coord,
+    /// Engine height incl. the 1-cell out-of-bounds border; `<= HEIGHT`.
+    pub height: Coord,
+    /// Players fielded per team; `<= TEAM_SIZE`.
+    pub team_size: usize,
+}
+
+impl Default for BoardDims {
+    /// The full compiled board — makes a default build byte-identical to the
+    /// pre-runtime engine (existing tests unaffected when no env vars are set).
+    fn default() -> Self {
+        BoardDims {
+            width: WIDTH_,
+            height: HEIGHT_,
+            team_size: TEAM_SIZE,
+        }
+    }
+}
+
+impl BoardDims {
+    /// `width`/`height` are engine dimensions (playable + 2 border); validates
+    /// the same parity/floor rules as `build.rs` and that nothing exceeds the
+    /// compiled capacity. Panics on violation.
+    pub fn new(width: Coord, height: Coord, team_size: usize) -> BoardDims {
+        let pw = width - 2; // playable width
+        let ph = height - 2; // playable height
+        assert!(pw >= 8 && pw % 2 == 0, "playable width must be even and >= 8, got {pw}");
+        assert!(ph >= 3 && ph % 2 == 1, "playable height must be odd and >= 3, got {ph}");
+        assert!(team_size >= 1, "team_size must be >= 1, got {team_size}");
+        assert!(
+            (width as usize) <= WIDTH && (height as usize) <= HEIGHT && team_size <= TEAM_SIZE,
+            "board {width}x{height}/{team_size} exceeds compiled capacity {WIDTH}x{HEIGHT}/{TEAM_SIZE} \
+             — recompile with larger BOARD_SIZE_W/BOARD_SIZE_H/BOARD_PLAYERS",
+        );
+        let dims = BoardDims {
+            width,
+            height,
+            team_size,
+        };
+        // Derived setup ranges must stay non-empty and on-pitch (mirrors build.rs).
+        let los = dims.los_y_range();
+        assert!(1 <= *los.start() && los.start() <= los.end() && *los.end() <= height - 2);
+        assert!(!dims.north_wing_y_range().is_empty(), "north wing y-range empty");
+        assert!(!dims.south_wing_y_range().is_empty(), "south wing y-range empty");
+        dims
+    }
+
+    /// Read the active board from `BOARD_SIZE_W`/`BOARD_SIZE_H`/`BOARD_PLAYERS`
+    /// (env carries *playable* dims; we add the 2-cell border). Any var left
+    /// unset keeps the compiled default for that axis.
+    pub fn from_env() -> BoardDims {
+        fn parse(name: &str) -> Option<usize> {
+            match std::env::var(name) {
+                Ok(v) => Some(
+                    v.trim()
+                        .parse()
+                        .unwrap_or_else(|_| panic!("{name}='{v}' is not a usize")),
+                ),
+                Err(_) => None,
+            }
+        }
+        let d = BoardDims::default();
+        let width = parse("BOARD_SIZE_W").map_or(d.width, |pw| (pw + 2) as Coord);
+        let height = parse("BOARD_SIZE_H").map_or(d.height, |ph| (ph + 2) as Coord);
+        let team_size = parse("BOARD_PLAYERS").unwrap_or(d.team_size);
+        BoardDims::new(width, height, team_size)
+    }
+
+    fn center_y(&self) -> Coord {
+        self.height / 2
+    }
+    fn los_half(&self) -> Coord {
+        (self.height - 4) / 4
+    }
+    pub fn los_home_x(&self) -> Coord {
+        self.width / 2
+    }
+    pub fn los_away_x(&self) -> Coord {
+        self.width / 2 - 1
+    }
+    pub fn los_x(&self, team: TeamType) -> Coord {
+        match team {
+            TeamType::Home => self.los_home_x(),
+            TeamType::Away => self.los_away_x(),
+        }
+    }
+    pub fn los_y_range(&self) -> RangeInclusive<Coord> {
+        (self.center_y() - self.los_half())..=(self.center_y() + self.los_half())
+    }
+    pub fn north_wing_y_range(&self) -> RangeInclusive<Coord> {
+        1..=(self.center_y() - self.los_half() - 1)
+    }
+    pub fn south_wing_y_range(&self) -> RangeInclusive<Coord> {
+        (self.center_y() + self.los_half() + 1)..=(self.height - 2)
+    }
+    pub fn endzone_x(&self, team: TeamType) -> Coord {
+        match team {
+            TeamType::Home => 1,
+            TeamType::Away => self.width - 2,
+        }
+    }
+    /// Kickoff scatter/deviate & throw-in distances are capped here so the ball
+    /// can't be flung clear across a narrow board.
+    pub fn max_scatter(&self) -> Coord {
+        self.width / 2
+    }
+    pub fn kickoff_table_enabled(&self) -> bool {
+        self.team_size >= 7
+    }
+    pub fn roster_per_team(&self) -> usize {
+        self.team_size + 1
+    }
+    /// Out of bounds of the *logical* board (not the physical array).
+    pub fn is_out(&self, pos: Position) -> bool {
+        pos.x <= 0 || pos.x >= self.width - 1 || pos.y <= 0 || pos.y >= self.height - 1
+    }
+    pub fn is_on_team_side(&self, pos: Position, team: TeamType) -> bool {
+        match team {
+            TeamType::Home => pos.x >= self.width / 2,
+            TeamType::Away => pos.x < self.width / 2,
+        }
+    }
+}
 
 /// Early-return from a `#[test]` (returning `()`) when the build's board is
 /// smaller than the given playable-ish engine dimensions. Used to skip tests
@@ -216,14 +354,11 @@ impl Position {
     pub fn distance_to(&self, other: &Position) -> Coord {
         (*self - *other).distance()
     }
+    /// Out of bounds of the *physical* pitch array (the compiled capacity, not
+    /// the runtime-active board). Use this only for array-bound sanity checks;
+    /// gameplay out-of-bounds goes through `BoardDims::is_out` / `GameState::is_out`.
     pub fn is_out(&self) -> bool {
         self.x <= 0 || self.x >= WIDTH_ - 1 || self.y <= 0 || self.y >= HEIGHT_ - 1
-    }
-    pub fn is_on_team_side(&self, team: TeamType) -> bool {
-        match team {
-            TeamType::Home => self.x >= WIDTH_ / 2,
-            TeamType::Away => self.x < WIDTH_ / 2,
-        }
     }
 }
 impl From<(usize, usize)> for Position {
