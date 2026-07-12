@@ -71,27 +71,14 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
             direction: D3::One,
             distance: Sum2D6::Two,
         },
-        // FoulArmor: two D6s. (1, 2) → roll sum 3, no doubles. With a
-        // target stricter than 3, armor is intact and no ejection.
-        RequestedRoll::FoulArmor(target) => RollResult::FoulArmor {
-            broken: target.is_success(Sum2D6::Three),
+        RequestedRoll::FoulArmor(..) => RollResult::FoulArmor {
+            broken: false,
             ejected: false,
         },
-        // FoulInjury: (1, 2) → Stunned, no ejection.
-        RequestedRoll::FoulInjury(ko_target, cas_target) => {
-            let sum = Sum2D6::Three;
-            let injury_outcome = if cas_target.is_success(sum) {
-                botbowl_engine::core::model::InjuryOutcome::Casualty
-            } else if ko_target.is_success(sum) {
-                botbowl_engine::core::model::InjuryOutcome::KO
-            } else {
-                botbowl_engine::core::model::InjuryOutcome::Stunned
-            };
-            RollResult::FoulInjury {
-                outcome: injury_outcome,
-                ejected: false,
-            }
-        }
+        RequestedRoll::FoulInjury(..) => RollResult::FoulInjury {
+            outcome: botbowl_engine::core::model::InjuryOutcome::Stunned,
+            ejected: false,
+        },
         // BlockDice: a deterministic Pow per die. Matches
         // `BlockDicePolicy::KnockdownAtAdvantage` semantics; the
         // player-side die selection that follows is collapsed by
