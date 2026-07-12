@@ -6,12 +6,12 @@
 //!   nodes vs. `Chance` outcome nodes).
 //! - `Score` is a small struct with atomic visit counter, integer score,
 //!   and the node-kind discriminator that `backprop_scores` switches on.
-//! - `available_actions` returns engine actions for player nodes,
-//!   `ChanceOutcome` choices for chance nodes (when `state.pending_roll`
-//!   is `Some`).
-//! - `apply_action` calls `state.micro_step(Some(a))` for player actions,
-//!   queues a dice fix and calls `state.micro_step(None)` for chance
-//!   actions.
+//! - `available_actions` returns engine actions for player nodes, and
+//!   `RollResult`-carrying chance actions for chance nodes (when
+//!   `state.pending_roll` is `Some`) via `roll_outcomes::enumerate`.
+//! - `apply_action` resumes the engine with `SomeProcInput::Action` for
+//!   player actions and `SomeProcInput::Roll(result)` for chance
+//!   actions, feeding the stored `RollResult` straight in.
 
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
@@ -310,10 +310,22 @@ impl GameDynamics for BloodBowlDynamics {
             BbAction::Player {
                 action: engine_action, ..
             } => SomeProcInput::Action(*engine_action),
-            BbAction::Chance { outcome, .. } => {
-                let req = new_state.pending_roll.as_ref().cloned()?;
-                let result = roll_outcomes::result_for_outcome(&req, *outcome);
-                SomeProcInput::Roll(result)
+            BbAction::Chance { result, .. } => {
+                // The result was enumerated from this state's pending
+                // roll, so it must still be compatible with it. A Chance
+                // action only exists because `available_actions` saw a
+                // pending roll here — a missing/incompatible roll is a
+                // search bug, not a legitimately disallowed action.
+                debug_assert!(
+                    new_state
+                        .pending_roll
+                        .as_ref()
+                        .is_some_and(|req| req.is_compatible(*result)),
+                    "chance result {:?} incompatible with pending_roll {:?}",
+                    result,
+                    new_state.pending_roll,
+                );
+                SomeProcInput::Roll(*result)
             }
         };
 

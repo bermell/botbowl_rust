@@ -47,7 +47,7 @@ fn truncate_to<T: Ord>(lower_limit: T, upper_limit: T, value: T) -> T {
 }
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Deserialize, Serialize)]
 pub enum Coin {
     Heads,
     Tails,
@@ -74,7 +74,7 @@ impl Distribution<Coin> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum D8 {
         One = 1,
         Two,
@@ -119,7 +119,7 @@ impl From<(Coord, Coord)> for D8 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum BlockDice {
     Skull,
     BothDown,
@@ -155,7 +155,7 @@ impl Distribution<BlockDice> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum D6 {
         One = 1,
         Two,
@@ -192,7 +192,7 @@ impl Add<D6> for D6 {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
+    #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy, Deserialize, Serialize)]
     pub enum D3 {
         One = 1,
         Two,
@@ -250,7 +250,7 @@ impl RollTarget<D6> for D6Target {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
+    #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
     pub enum Sum2D6 {
         Two = 2,
         Three,
@@ -699,7 +699,7 @@ pub enum RequestedRoll {
     ThrowIn,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize, Deserialize)]
 pub enum RollResult {
     BlockDice([Option<BlockDice>; 3]),
     Coin(Coin),

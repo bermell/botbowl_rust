@@ -7,5 +7,5 @@ pub mod roll_outcomes;
 pub mod score;
 pub mod scripted;
 
-pub use action::{BbAction, BbPlayer, ChanceOutcome};
+pub use action::{BbAction, BbPlayer};
 pub use dynamics::{BloodBowlDynamics, MctsBot, SearchBudget};

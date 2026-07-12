@@ -125,7 +125,8 @@ pub fn prior_for_engine_action(state: &GameState, engine_action: EngineAction) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{BbAction, ChanceOutcome};
+    use crate::action::BbAction;
+    use botbowl_engine::core::dices::RollResult;
     use botbowl_engine::core::gamestate::GameStateBuilder;
     use botbowl_engine::core::model::{Action as EA, BallState, Position, TeamType};
     use botbowl_engine::core::table::{PosAT, SimpleAT};
@@ -159,7 +160,7 @@ mod tests {
     #[test]
     fn chance_actions_get_base() {
         let state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
-        let a = BbAction::chance(ChanceOutcome::Pass, 0.5);
+        let a = BbAction::chance(RollResult::Pass, 0.5);
         assert_eq!(prior_for(&state, &a), BASE);
     }
 

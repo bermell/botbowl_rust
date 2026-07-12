@@ -769,7 +769,7 @@ pub struct BlockActionChoice {
     pub num_dices: NumBlockDices,
     pub position: Position,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InjuryOutcome {
     Stunned,
     KO,

@@ -1,5 +1,6 @@
 use std::hash::{Hash, Hasher};
 
+use botbowl_engine::core::dices::RollResult;
 use botbowl_engine::core::model::Action as EngineAction;
 
 /// The "player" each node belongs to from MCTS's perspective. The third
@@ -12,33 +13,17 @@ pub enum BbPlayer {
     Chance,
 }
 
-/// A concrete roll outcome the dynamics can apply against a pending
-/// `RequestedRoll`.
-///
-/// Pass/Fail covers the two-outcome rolls we model probabilistically
-/// (D6PassFail, Sum2D6PassFail). `Advance` is the single-outcome
-/// catch-all for rolls we don't enumerate (D8, Deviate, Scatter,
-/// BlockDice, ThrowIn, ...): MCTS sees one chance child per such roll,
-/// and `apply_action` resolves it by stepping the engine, which uses
-/// the configured `DicePolicy` (or the RNG when no policy applies).
-/// This keeps the tree branching bounded while still letting MCTS see
-/// the post-roll state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChanceOutcome {
-    /// The pending pass/fail roll passes. Applied by queuing a D6 of 6
-    /// (or sum-2D6 of 12) — high enough to clear any target.
-    Pass,
-    /// The pending pass/fail roll fails. Applied by queuing a D6 of 1
-    /// (or sum-2D6 of 2) — low enough to miss any non-trivial target.
-    Fail,
-    /// "Just let the engine resolve it." No dice fix is queued; the
-    /// engine consumes the `pending_roll` via its dice policy / RNG on
-    /// the next `micro_step(None)`. Used for non-pass/fail rolls.
-    Advance,
-}
-
 /// MCTS-level action: either a game choice from the engine's
 /// available_actions, or a chance outcome resolving a pending roll.
+///
+/// The `Chance` variant carries the concrete engine `RollResult` that
+/// `apply_action` feeds straight into `SomeProcInput::Roll` — no
+/// intermediate abstraction. `roll_outcomes::enumerate` decides which
+/// results a given `RequestedRoll` fans out into (pass/fail rolls
+/// branch into two weighted `RollResult::Pass`/`Fail` children; every
+/// other roll type collapses to a single deterministic child), so the
+/// stored result is a pure function of the parent's pending roll plus
+/// the chosen branch — which is what keeps DAG recombination sound.
 ///
 /// `prior_bits` on the `Player` variant caches the domain-knowledge
 /// prior (`priors::prior_for`) at expansion time so `select_node`'s
@@ -58,7 +43,7 @@ pub enum ChanceOutcome {
 #[derive(Debug, Clone)]
 pub enum BbAction {
     Player { action: EngineAction, prior_bits: u32 },
-    Chance { outcome: ChanceOutcome, prob_bits: u32 },
+    Chance { result: RollResult, prob_bits: u32 },
 }
 
 impl PartialEq for BbAction {
@@ -67,11 +52,11 @@ impl PartialEq for BbAction {
             (BbAction::Player { action: a, .. }, BbAction::Player { action: b, .. }) => a == b,
             (
                 BbAction::Chance {
-                    outcome: a,
+                    result: a,
                     prob_bits: pa,
                 },
                 BbAction::Chance {
-                    outcome: b,
+                    result: b,
                     prob_bits: pb,
                 },
             ) => a == b && pa == pb,
@@ -89,9 +74,9 @@ impl Hash for BbAction {
                 0u8.hash(h);
                 action.hash(h);
             }
-            BbAction::Chance { outcome, prob_bits } => {
+            BbAction::Chance { result, prob_bits } => {
                 1u8.hash(h);
-                outcome.hash(h);
+                result.hash(h);
                 prob_bits.hash(h);
             }
         }
@@ -101,9 +86,9 @@ impl Hash for BbAction {
 impl BbAction {
     /// Constructor that stores the probability as IEEE-754 bits so the
     /// enum stays Hash + Eq (f32 is not Hash). Use `prob_f32()` to read.
-    pub fn chance(outcome: ChanceOutcome, prob: f32) -> Self {
+    pub fn chance(result: RollResult, prob: f32) -> Self {
         BbAction::Chance {
-            outcome,
+            result,
             prob_bits: prob.to_bits(),
         }
     }
