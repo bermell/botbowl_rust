@@ -37,6 +37,12 @@ pub struct LectureSession<'l> {
     status: LectureStatus,
     steps_taken: u32,
     max_steps: u32,
+    agent_actions_taken: u32,
+    /// Cap on agent `get_action` calls per trial; `None` = unlimited.
+    /// Hitting the cap ends the trial as a timeout, same as `max_steps`.
+    /// This is the knob that keeps expensive bots (MCTS) from burning a
+    /// full search per micro-step on trials that are already lost.
+    max_agent_actions: Option<u32>,
 }
 
 impl<'l> LectureSession<'l> {
@@ -74,7 +80,15 @@ impl<'l> LectureSession<'l> {
             status,
             steps_taken: 0,
             max_steps,
+            agent_actions_taken: 0,
+            max_agent_actions: None,
         }
+    }
+
+    /// Cap agent `get_action` calls per trial. See `max_agent_actions`.
+    pub fn with_max_agent_actions(mut self, max_agent_actions: Option<u32>) -> Self {
+        self.max_agent_actions = max_agent_actions;
+        self
     }
 
     pub fn state(&self) -> &GameState {
@@ -89,8 +103,14 @@ impl<'l> LectureSession<'l> {
         self.steps_taken
     }
 
+    pub fn agent_actions_taken(&self) -> u32 {
+        self.agent_actions_taken
+    }
+
     pub fn is_finished(&self) -> bool {
-        self.status != LectureStatus::InProgress || self.steps_taken >= self.max_steps
+        self.status != LectureStatus::InProgress
+            || self.steps_taken >= self.max_steps
+            || self.max_agent_actions.is_some_and(|cap| self.agent_actions_taken >= cap)
     }
 
     /// Advance one micro-step. No-op once `is_finished()`. Caches the new
@@ -100,7 +120,10 @@ impl<'l> LectureSession<'l> {
             return;
         }
         let action = match self.state.available_actions.team {
-            Some(t) if t == self.agent_team => Some(agent.get_action(&self.state)),
+            Some(t) if t == self.agent_team => {
+                self.agent_actions_taken += 1;
+                Some(agent.get_action(&self.state))
+            }
             Some(t) if t == self.opponent_team => Some(self.opponent.get_action(&self.state)),
             Some(_) | None => None,
         };
@@ -108,6 +131,19 @@ impl<'l> LectureSession<'l> {
         self.steps_taken += 1;
         self.status = self.lecture.evaluate(&self.state, &self.context);
     }
+}
+
+/// Per-run knobs for [`run_trials_cfg`].
+#[derive(Debug, Clone, Copy)]
+pub struct TrialConfig {
+    pub n_trials: u32,
+    pub seed: u64,
+    /// Max micro-steps per trial (any actor). Exceeding = timeout.
+    pub max_steps_per_trial: u32,
+    /// Max agent `get_action` calls per trial; `None` = unlimited.
+    /// Exceeding = timeout. The knob that bounds wall-clock for
+    /// expensive bots — see `LectureSession::max_agent_actions`.
+    pub max_agent_actions: Option<u32>,
 }
 
 /// Run `n_trials` of `lecture` with `agent` controlling `lecture.agent_team()`.
@@ -124,11 +160,26 @@ pub fn run_trials(
     seed: u64,
     max_steps_per_trial: u32,
 ) -> TrialStats {
+    run_trials_cfg(
+        lecture,
+        agent,
+        TrialConfig {
+            n_trials,
+            seed,
+            max_steps_per_trial,
+            max_agent_actions: None,
+        },
+    )
+}
+
+/// [`run_trials`] with the full knob set — see [`TrialConfig`].
+pub fn run_trials_cfg(lecture: &dyn Lecture, agent: &mut dyn Bot, cfg: TrialConfig) -> TrialStats {
     let mut stats = TrialStats::default();
 
-    for trial_idx in 0..n_trials {
-        let trial_seed = seed.wrapping_add(trial_idx as u64);
-        let mut session = LectureSession::new(lecture, trial_seed, max_steps_per_trial, agent);
+    for trial_idx in 0..cfg.n_trials {
+        let trial_seed = cfg.seed.wrapping_add(trial_idx as u64);
+        let mut session = LectureSession::new(lecture, trial_seed, cfg.max_steps_per_trial, agent)
+            .with_max_agent_actions(cfg.max_agent_actions);
         while !session.is_finished() {
             session.step(agent);
         }

@@ -1,6 +1,13 @@
+use std::time::Duration;
+
 use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
-use botbowl_curriculum::run_trials;
+use botbowl_curriculum::{run_trials_cfg, TrialConfig};
 use botbowl_mcts::{MctsBot, SearchBudget};
+
+// TODO(mattias): tune. Placeholder ≈ the cost of the old 1000
+// iters/move (0.15–0.7 s/search measured on GetTheBallMedium).
+const SEARCH_TIME: Duration = Duration::from_millis(300);
+const MAX_AGENT_ACTIONS: u32 = 25;
 
 /// Plan 010 (Track A.alt) lifts this from 0.00 to ≈1.00: `score_leaf`
 /// now forward-simulates through mid-procedure engine work (Move
@@ -13,12 +20,21 @@ use botbowl_mcts::{MctsBot, SearchBudget};
 #[ignore = "bot benchmark — run with --ignored"]
 fn mcts_solves_get_the_ball_easy() {
     let lecture = GetTheBallEasy::new();
-    let mut agent = MctsBot::new(SearchBudget::Iterations(1000)).with_workers(1);
-    let stats = run_trials(&lecture, &mut agent, 50, 0xF00D_9012, 400);
+    let mut agent = MctsBot::new(SearchBudget::Time(SEARCH_TIME)).with_workers(1);
+    let stats = run_trials_cfg(
+        &lecture,
+        &mut agent,
+        TrialConfig {
+            n_trials: 50,
+            seed: 0xF00D_9012,
+            max_steps_per_trial: 400,
+            max_agent_actions: Some(MAX_AGENT_ACTIONS),
+        },
+    );
 
     let rate = stats.success_rate();
     eprintln!(
-        "GetTheBallEasy MCTS (PUCT + priors, 1000 iters/move): \
+        "GetTheBallEasy MCTS (PUCT + priors, {SEARCH_TIME:?}/move, ≤{MAX_AGENT_ACTIONS} agent actions): \
          trials={} successes={} failures={} timeouts={} rate={:.4}",
         stats.trials, stats.successes, stats.failures, stats.timeouts, rate
     );

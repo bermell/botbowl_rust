@@ -667,15 +667,15 @@ enum CachedTree {
 pub enum SearchBudget {
     /// Run exactly this many `tree.step()` calls, split across workers.
     Iterations(usize),
-    /// Run all workers for this many whole seconds, then stop.
-    Seconds(u64),
+    /// Run all workers for this wall-clock duration, then stop.
+    Time(Duration),
 }
 
 pub struct MctsBot {
     pub budget: SearchBudget,
     /// Number of worker threads driving `tree.step()`. For
     /// `SearchBudget::Iterations` the total step count is split across
-    /// them; for `SearchBudget::Seconds` every worker runs until the
+    /// them; for `SearchBudget::Time` every worker runs until the
     /// time limit fires. Tests that need deterministic results should
     /// pin this to 1 via [`with_workers`].
     pub n_workers: usize,
@@ -903,14 +903,14 @@ impl Bot for MctsBot {
                             }
                         });
                     }
-                    SearchBudget::Seconds(secs) => {
+                    SearchBudget::Time(limit) => {
                         let stop = AtomicBool::new(false);
                         let stop_ref = &stop;
                         std::thread::scope(|s| {
                             std::thread::Builder::new()
                                 .name("mcts-timer".into())
                                 .spawn_scoped(s, || {
-                                    std::thread::sleep(Duration::from_secs(secs));
+                                    std::thread::sleep(limit);
                                     stop_ref.store(true, Ordering::Relaxed);
                                 })
                                 .expect("failed to spawn MCTS timer thread");
@@ -937,7 +937,7 @@ impl Bot for MctsBot {
                     let denom = (hits + misses).max(1);
                     let budget_label = match budget {
                         SearchBudget::Iterations(n) => format!("{n}"),
-                        SearchBudget::Seconds(s) => format!("~{} ({}s)", hits + misses, s),
+                        SearchBudget::Time(limit) => format!("~{} ({limit:?})", hits + misses),
                     };
                     eprintln!(
                         "MCTS_STATS mode={} iters={} workers={} reg_len={} hits={} misses={} reuse={:.4}",

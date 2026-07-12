@@ -1,17 +1,33 @@
+use std::time::Duration;
+
 use botbowl_curriculum::lectures::score_td::ScoreTdEasy;
-use botbowl_curriculum::run_trials;
+use botbowl_curriculum::{run_trials_cfg, TrialConfig};
 use botbowl_mcts::{MctsBot, SearchBudget};
+
+// TODO(mattias): tune. Placeholder ≈ the cost of the old 1000
+// iters/move (0.15–0.7 s/search measured on GetTheBallMedium).
+const SEARCH_TIME: Duration = Duration::from_millis(300);
+const MAX_AGENT_ACTIONS: u32 = 25;
 
 #[test]
 #[ignore = "bot benchmark — run with --ignored"]
 fn mcts_lifts_random_baseline() {
     let lecture = ScoreTdEasy::new();
-    let mut agent = MctsBot::new(SearchBudget::Iterations(1000)).with_workers(1);
-    let stats = run_trials(&lecture, &mut agent, 50, 0xCAFE_1234, 400);
+    let mut agent = MctsBot::new(SearchBudget::Time(SEARCH_TIME)).with_workers(1);
+    let stats = run_trials_cfg(
+        &lecture,
+        &mut agent,
+        TrialConfig {
+            n_trials: 50,
+            seed: 0xCAFE_1234,
+            max_steps_per_trial: 400,
+            max_agent_actions: Some(MAX_AGENT_ACTIONS),
+        },
+    );
 
     let rate = stats.success_rate();
     eprintln!(
-        "ScoreTdEasy MCTS (PUCT + priors, 1000 iters/move): \
+        "ScoreTdEasy MCTS (PUCT + priors, {SEARCH_TIME:?}/move, ≤{MAX_AGENT_ACTIONS} agent actions): \
          trials={} successes={} failures={} timeouts={} rate={:.4}",
         stats.trials, stats.successes, stats.failures, stats.timeouts, rate
     );

@@ -3,7 +3,7 @@ pub mod lectures;
 pub mod runner;
 
 pub use lecture::{Difficulty, Lecture, LectureContext, LectureStatus};
-pub use runner::{run_trials, LectureSession, TrialStats};
+pub use runner::{run_trials, run_trials_cfg, LectureSession, TrialConfig, TrialStats};
 
 use lectures::get_the_ball::{GetTheBallEasy, GetTheBallHard, GetTheBallMedium};
 use lectures::score_td::{ScoreTdEasy, ScoreTdMedium};
