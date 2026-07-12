@@ -51,7 +51,7 @@ impl Half {
             KOWakeUp::new(),
         ];
 
-        game_state.ball = BallState::OffPitch;
+        game_state.set_ball(BallState::OffPitch);
         game_state.unfield_all_players().unwrap();
 
         ProcState::NotDoneNewProcs(procs)

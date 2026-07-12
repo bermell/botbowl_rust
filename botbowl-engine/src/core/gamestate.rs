@@ -4,6 +4,7 @@ use itertools::Itertools;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::{
     cmp::{max, min},
     collections::HashSet,
@@ -203,6 +204,7 @@ impl GameStateBuilder {
             away: TeamState::new(),
             board: Default::default(),
             ball: BallState::OffPitch,
+            bounce_squares: SmallVec::new(),
             dugout_players: Default::default(),
             proc_stack: Vec::new(),
             //new_procs: VecDeque::new(),
@@ -278,7 +280,7 @@ impl GameStateBuilder {
         state.set_dice_mode(DiceMode::default());
         // Drop the ball before clearing players: a receiver may have caught the
         // kick, and unfield_player refuses to remove the ball carrier.
-        state.ball = BallState::OffPitch;
+        state.set_ball(BallState::OffPitch);
         state.clear_all_players().unwrap();
 
         for position in self.home_players.iter() {
@@ -292,11 +294,11 @@ impl GameStateBuilder {
         }
 
         if let Some(pos) = self.ball_pos {
-            state.ball = match state.get_player_at(pos) {
+            state.set_ball(match state.get_player_at(pos) {
                 None => BallState::OnGround(pos),
                 Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id),
                 _ => panic!(),
-            }
+            })
         }
         // decrease turn counter before calling endturn twice
         // (need to call end turn here to refresh available actions)
@@ -433,6 +435,15 @@ pub struct GameState {
     dugout_players: [Option<DugoutPlayer>; 2 * ROSTER_PER_TEAM],
     board: FullPitch<Option<PlayerID>>,
     pub ball: BallState,
+    /// Squares the ball has already occupied during the current in-air
+    /// bounce / throw-in sequence. Maintained exclusively through
+    /// `set_ball`: every `InAir(pos)` transition appends `pos`, and any
+    /// transition to a settled state (`OnGround` / `Carried` / `OffPitch`)
+    /// clears it. Invariant: non-empty *only* while `ball` is `InAir`.
+    /// Its purpose is to let the MCTS search skip bounce directions that
+    /// lead back to a square the ball has already bounced from.
+    #[serde(default)]
+    pub bounce_squares: SmallVec<[Position; 8]>,
     proc_stack: Vec<AnyProc>,
     pub available_actions: Box<AvailableActions>,
     /// Reusable backing storage for `MoveAction`/`BlockAction`'s path
@@ -507,6 +518,7 @@ impl Clone for GameState {
             dugout_players: self.dugout_players.clone(),
             board: self.board,
             ball: self.ball,
+            bounce_squares: self.bounce_squares.clone(),
             proc_stack: self.proc_stack.clone(),
             available_actions: self.available_actions.clone(),
             path_buffer,
@@ -585,6 +597,12 @@ impl std::hash::Hash for GameState {
                 p.x.hash(h);
                 p.y.hash(h);
             }
+        }
+        // Two in-air states with different already-bounced-through squares are
+        // distinct search situations (they permit different next bounces).
+        for p in &self.bounce_squares {
+            p.x.hash(h);
+            p.y.hash(h);
         }
 
         // Dice mode + procedure-stack-top discriminator. The full
@@ -923,6 +941,20 @@ impl GameState {
             target.add_modifer(-1);
         }
         Ok(target)
+    }
+
+    /// Sets the ball state while maintaining `bounce_squares`. Every
+    /// `InAir(pos)` transition records `pos` as a square the ball has
+    /// occupied this bounce/throw-in sequence; settling the ball
+    /// (`OnGround` / `Carried` / `OffPitch`) clears the record. All engine
+    /// ball transitions must go through this method rather than assigning
+    /// `self.ball` directly, or the invariant breaks.
+    pub fn set_ball(&mut self, ball: BallState) {
+        match ball {
+            BallState::InAir(pos) => self.bounce_squares.push(pos),
+            _ => self.bounce_squares.clear(),
+        }
+        self.ball = ball;
     }
 
     pub fn get_ball_position(&self) -> Option<Position> {

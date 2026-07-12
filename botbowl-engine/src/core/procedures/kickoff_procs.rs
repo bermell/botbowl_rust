@@ -46,7 +46,7 @@ impl Procedure for Kickoff {
         // flung out of bounds on narrow tiers (no-op on the full pitch).
         let len = (len_roll as Coord).min(game_state.board_dims.max_scatter());
         let ball_pos = self.aim + Direction::from(dir_roll) * len;
-        game_state.ball = BallState::InAir(ball_pos);
+        game_state.set_ball(BallState::InAir(ball_pos));
         if game_state.board_dims.kickoff_table_enabled() {
             ProcState::DoneNew(KickoffTable::new())
         } else {
@@ -143,7 +143,8 @@ impl Procedure for ChangingWeather {
                 }
             }
             ProcInput::Roll(RollResult::D8(d8)) => {
-                game_state.ball = BallState::InAir(game_state.get_ball_position().unwrap() + Direction::from(d8));
+                let scattered = game_state.get_ball_position().unwrap() + Direction::from(d8);
+                game_state.set_ball(BallState::InAir(scattered));
                 ProcState::Done
             }
             _ => panic!("Unexpected input {:?}", input),

@@ -86,7 +86,7 @@ impl Push {
         if game_state.is_out(last_push_to) {
             let id = game_state.get_player_id_at(last_push_to).unwrap();
             if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
-                game_state.ball = BallState::InAir(last_push_from);
+                game_state.set_ball(BallState::InAir(last_push_from));
                 procs.push(ball_procs::ThrowIn::new(last_push_from));
             }
             procs.push(casualty_procs::Injury::new_crowd(id));
@@ -204,7 +204,7 @@ impl Procedure for KnockDown {
         let armor_proc = casualty_procs::Armor::new(self.id);
 
         if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
-            game_state.ball = BallState::InAir(player_position);
+            game_state.set_ball(BallState::InAir(player_position));
             ProcState::DoneNewProcs(vec![ball_procs::Bounce::new(), armor_proc])
         } else {
             ProcState::DoneNew(armor_proc)

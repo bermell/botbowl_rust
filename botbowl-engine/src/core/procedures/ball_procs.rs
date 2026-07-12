@@ -34,7 +34,7 @@ impl SimpleProc for PickupProc {
     }
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
-        game_state.ball = BallState::Carried(self.id);
+        game_state.set_ball(BallState::Carried(self.id));
         // The active player just picked up the ball this activation; they are
         // owed one follow-up move action (the pathfinder stops a non-carrier's
         // path at the ball, so they need a fresh carrier-routed path to run).
@@ -94,13 +94,13 @@ impl Procedure for Bounce {
                 ))
             } else {
                 //will run bounce again
-                game_state.ball = BallState::InAir(new_pos);
+                game_state.set_ball(BallState::InAir(new_pos));
                 ProcState::NotDone
             }
         } else if game_state.is_out(new_pos) {
             ProcState::DoneNew(ThrowIn::new(current_ball_pos))
         } else {
-            game_state.ball = BallState::OnGround(new_pos);
+            game_state.set_ball(BallState::OnGround(new_pos));
             ProcState::Done
         }
     }
@@ -174,7 +174,7 @@ impl Procedure for ThrowIn {
                     ProcState::DoneNew(Catch::new(player.id, game_state.get_catch_target(player.id).unwrap()))
                 }
                 _ => {
-                    game_state.ball = BallState::InAir(target);
+                    game_state.set_ball(BallState::InAir(target));
                     ProcState::DoneNew(Bounce::new())
                 }
             }
@@ -209,7 +209,7 @@ impl SimpleProc for Catch {
     }
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
-        game_state.ball = BallState::Carried(self.id);
+        game_state.set_ball(BallState::Carried(self.id));
         let player = game_state.get_player_unsafe(self.id);
         if player.position.x == game_state.get_endzone_x(player.stats.team) {
             game_state.info.handle_td_by = Some(self.id);
@@ -235,7 +235,7 @@ impl Touchback {
 impl Procedure for Touchback {
     fn step(&mut self, game_state: &mut GameState, action: ProcInput) -> ProcState {
         if let ProcInput::Action(Action::Positional(_, position)) = action {
-            game_state.ball = BallState::Carried(game_state.get_player_id_at(position).unwrap());
+            game_state.set_ball(BallState::Carried(game_state.get_player_id_at(position).unwrap()));
             ProcState::Done
         } else {
             let team = other_team(game_state.info.kicking_this_drive);
@@ -438,7 +438,7 @@ impl Procedure for DeflectOrResolve {
             let id = game_state.get_player_id_at(pos).unwrap();
             ProcState::DoneNew(Deflect::new(id, target, failed_deflect_proc))
         } else {
-            game_state.ball = BallState::InAir(self.to);
+            game_state.set_ball(BallState::InAir(self.to));
             ProcState::DoneNew(failed_deflect_proc)
         }
         //PASSING INTERFERENCE
@@ -492,7 +492,7 @@ impl SimpleProc for Deflect {
     }
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
-        game_state.ball = BallState::InAir(game_state.get_player_unsafe(self.id).position);
+        game_state.set_ball(BallState::InAir(game_state.get_player_unsafe(self.id).position));
         let mut catch_target = game_state.get_catch_target(self.id).unwrap();
         vec![Catch::new(self.id, *catch_target.add_modifer(-1))]
     }
@@ -525,8 +525,68 @@ mod tests {
         state.step_simple(SimpleAT::DontUseReroll);
 
         assert!(matches!(state.ball, BallState::OnGround(pos) if pos == ball_pos + direction));
+        // The ball settled on the ground, so the bounce-square record is cleared.
+        assert!(state.bounce_squares.is_empty());
 
         Ok(())
+    }
+
+    #[test]
+    fn set_ball_tracks_only_in_air_squares() {
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((1, 1))).build();
+        let carrier = state.get_player_id_at(Position::new((1, 1))).unwrap();
+        assert!(state.bounce_squares.is_empty());
+
+        // Each in-air transition appends the square it moved to.
+        let a = Position::new((5, 5));
+        let b = Position::new((5, 6));
+        state.set_ball(BallState::InAir(a));
+        state.set_ball(BallState::InAir(b));
+        assert_eq!(state.bounce_squares.as_slice(), &[a, b]);
+
+        // Settling on the ground clears the record...
+        state.set_ball(BallState::OnGround(b));
+        assert!(state.bounce_squares.is_empty());
+
+        // ...and so does being caught / off the pitch.
+        state.set_ball(BallState::InAir(a));
+        assert_eq!(state.bounce_squares.as_slice(), &[a]);
+        state.set_ball(BallState::Carried(carrier));
+        assert!(state.bounce_squares.is_empty());
+
+        state.set_ball(BallState::InAir(a));
+        state.set_ball(BallState::OffPitch);
+        assert!(state.bounce_squares.is_empty());
+    }
+
+    #[test]
+    fn bounce_through_occupied_square_is_recorded_then_cleared() {
+        // Ball fails to be picked up and bounces onto a prone (can't-catch)
+        // team-mate's square before bouncing again onto empty ground. The
+        // intermediate occupied square must be recorded while the ball is
+        // in the air, then cleared once it lands.
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let occupied = ball_pos + Direction::from(D8::One); // first bounce lands here
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(occupied)
+            .add_ball_pos(ball_pos)
+            .build();
+        // Knock the occupant down so it can't catch — forces a second bounce.
+        let occupant = state.get_player_id_at(occupied).unwrap();
+        state.get_mut_player_unsafe(occupant).status = PlayerStatus::Down;
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fix_d6(2); // fail pickup (3+)
+        state.step_positional(PosAT::Move, ball_pos);
+        state.fix_d8(D8::One as u8); // bounce onto the prone player's square
+        state.fix_d8(D8::Two as u8); // bounce again onto empty ground
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        // Landed on the ground → record cleared.
+        assert!(matches!(state.ball, BallState::OnGround(_)));
+        assert!(state.bounce_squares.is_empty());
     }
 
     #[test]

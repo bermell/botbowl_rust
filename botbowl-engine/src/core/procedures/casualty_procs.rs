@@ -73,7 +73,7 @@ impl Procedure for Ejection {
     fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         let position = game_state.get_player_unsafe(self.id).position;
         let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
-            game_state.ball = BallState::InAir(position);
+            game_state.set_ball(BallState::InAir(position));
             ProcState::DoneNew(ball_procs::Bounce::new())
         } else {
             ProcState::Done
