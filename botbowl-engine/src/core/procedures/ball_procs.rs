@@ -218,6 +218,19 @@ impl SimpleProc for Catch {
         Some(Skill::Catch)
     }
 
+    /// The ball is in the catcher's square for the attempt — a failed
+    /// catch bounces from *there*. Bounce/ThrowIn place it before
+    /// pushing this proc (and then this is a no-op); pass, handoff and
+    /// deflect paths reach here with the ball still tracked at its
+    /// origin, so this is the single point that enforces the invariant
+    /// for every catch site.
+    fn on_start(&self, game_state: &mut GameState) {
+        let pos = game_state.get_player_unsafe(self.id).position;
+        if game_state.ball != BallState::InAir(pos) {
+            game_state.set_ball(BallState::InAir(pos));
+        }
+    }
+
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.set_ball(BallState::Carried(self.id));
         let player = game_state.get_player_unsafe(self.id);

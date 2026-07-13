@@ -12,6 +12,12 @@ use super::AnyProc;
 pub trait SimpleProc {
     fn d6_target(&self) -> D6Target; //called immidiately before
     fn reroll_skill(&self) -> Option<Skill>;
+    /// Called exactly once, when the procedure first takes the stack —
+    /// before its roll is requested. For state the roll's outcome handlers
+    /// depend on regardless of pass/fail (e.g. `Catch` moves the ball to
+    /// the catcher's square so a failed catch bounces from there).
+    /// Default: no-op.
+    fn on_start(&self, game_state: &mut GameState) {}
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         Vec::new()
     }
@@ -58,6 +64,7 @@ where
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {
             ProcInput::Nothing => {
+                self.proc.on_start(game_state);
                 return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));
             }
             ProcInput::Roll(RollResult::Pass) => return ProcState::from(self.proc.apply_success(game_state)),

@@ -569,6 +569,59 @@ mod tests {
         assert_eq!(state.get_player_unsafe(id).position.distance_to(&target_pos), 1);
         assert_eq!(state.get_player_unsafe(victim_id).status, PlayerStatus::Stunned);
     }
+    /// The ball is in the receiver's square during a handoff catch
+    /// attempt — a failed catch bounces from *their* square, not from
+    /// the giver's (same invariant as bounce/throw-in catches).
+    #[test]
+    fn handoff_failed_catch_bounces_from_receiver_square() {
+        let start_pos = Position::new((2, 1));
+        let target_pos = Position::new((5, 5));
+        let bounce_dir = Direction::up();
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .add_ball_pos(start_pos)
+            .build();
+
+        state.step_positional(PosAT::StartHandoff, start_pos);
+        state.fix_d6(1); // receiver fails the catch
+        state.step_positional(PosAT::Handoff, target_pos);
+
+        state.fix_d8_direction(bounce_dir);
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        assert_eq!(
+            state.ball,
+            BallState::OnGround(target_pos + bounce_dir),
+            "failed handoff catch must bounce from the receiver's square"
+        );
+    }
+
+    /// Same invariant for a pass whose deflect attempt failed: the ball
+    /// reaches the target square, so the target's failed catch bounces
+    /// from there — not from the thrower (where the ball was last
+    /// tracked before the deflect branch).
+    #[test]
+    fn pass_failed_deflect_then_failed_catch_bounces_from_target() {
+        let (mut state, _, target_pos, _) = setup_simple_pass(true, 4);
+        let bounce_dir = Direction::up();
+        state.fix_d6(6); // pass
+        state.fix_d6(1); // deflect fails
+        state.step_positional(PosAT::Pass, target_pos);
+
+        state.fix_d6(1); // target fails the catch
+        state.step_simple(SimpleAT::DontUseReroll); // decline the deflect reroll
+
+        state.fix_d8_direction(bounce_dir);
+        state.step_simple(SimpleAT::DontUseReroll); // decline the catch reroll
+
+        assert_eq!(
+            state.ball,
+            BallState::OnGround(target_pos + bounce_dir),
+            "failed pass-target catch must bounce from the target square"
+        );
+    }
+
     #[test]
     fn double_gfi_handoff_with_incremental_steps() {
         let start_pos = Position::new((10, 1));
