@@ -85,11 +85,17 @@ impl Procedure for Bounce {
             return ProcState::DoneNew(Touchback::new());
         }
 
-        if let Some(player) = game_state.get_player_at(new_pos) {
-            if player.can_catch() {
+        if let Some((catcher_id, can_catch)) = game_state.get_player_at(new_pos).map(|p| (p.id, p.can_catch())) {
+            if can_catch {
+                // The ball is in the catcher's square while they attempt
+                // the catch — a failed catch bounces on from *their*
+                // square. (Also records the square in `bounce_squares`,
+                // which keeps recurring bounce states distinct for the
+                // MCTS search graph.)
+                game_state.set_ball(BallState::InAir(new_pos));
                 ProcState::DoneNew(Catch::new_with_kick_arg(
-                    player.id,
-                    game_state.get_catch_target(player.id).unwrap(),
+                    catcher_id,
+                    game_state.get_catch_target(catcher_id).unwrap(),
                     self.kick,
                 ))
             } else {
@@ -169,9 +175,13 @@ impl Procedure for ThrowIn {
 
             ProcState::NeedRoll(RequestedRoll::ThrowIn)
         } else {
-            match game_state.get_player_at(target) {
-                Some(player) if player.can_catch() => {
-                    ProcState::DoneNew(Catch::new(player.id, game_state.get_catch_target(player.id).unwrap()))
+            match game_state.get_player_at(target).map(|p| (p.id, p.can_catch())) {
+                Some((catcher_id, true)) => {
+                    // Same as the Bounce → Catch hand-off: the ball is in
+                    // the catcher's square for the attempt, so a failed
+                    // catch bounces from there.
+                    game_state.set_ball(BallState::InAir(target));
+                    ProcState::DoneNew(Catch::new(catcher_id, game_state.get_catch_target(catcher_id).unwrap()))
                 }
                 _ => {
                     game_state.set_ball(BallState::InAir(target));
@@ -587,6 +597,80 @@ mod tests {
         // Landed on the ground → record cleared.
         assert!(matches!(state.ball, BallState::OnGround(_)));
         assert!(state.bounce_squares.is_empty());
+    }
+
+    /// A ball that bounces onto a standing player is momentarily in that
+    /// player's square while they attempt the catch — so a *failed* catch
+    /// bounces on from the catcher's square, not from wherever the ball
+    /// bounced in from. (Also load-bearing for MCTS: without the ball
+    /// moving, a throw-in ⇄ failed-catch circuit reproduces a byte-equal
+    /// GameState and recombination turns the search graph cyclic.)
+    #[test]
+    fn failed_catch_bounces_from_catcher_square() {
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let dir = Direction::from(D8::One);
+        let catcher_pos = ball_pos + dir;
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(catcher_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fix_d6(2); // fail pickup (3+)
+        state.step_positional(PosAT::Move, ball_pos);
+
+        state.fix_d8(D8::One as u8); // bounce onto the standing team-mate
+        state.fix_d6(1); // they fail the catch
+        state.step_simple(SimpleAT::DontUseReroll); // decline the pickup reroll
+
+        state.fix_d8(D8::One as u8); // bounce on from the catcher's square
+        state.step_simple(SimpleAT::DontUseReroll); // decline the catch reroll
+
+        assert!(
+            matches!(state.ball, BallState::OnGround(pos) if pos == catcher_pos + dir),
+            "failed catch must bounce from the catcher's square, got {:?}",
+            state.ball
+        );
+    }
+
+    /// Same rule for a throw-in that lands on a player: the ball is in
+    /// their square for the catch attempt, and a failed catch bounces
+    /// from there.
+    #[test]
+    fn throw_in_onto_catcher_bounces_from_catcher_square() {
+        let ball_pos = Position::new((5, 1)); // on the top edge
+        let start_pos = Position::new((5, 4));
+        let up = Direction::up();
+        // ThrowIn from y==1 with D3::One goes direction (1,1); distance is
+        // capped 2d6 — fix 1+1 = 2 → lands at ball_pos + (2,2).
+        let catcher_pos = ball_pos + (2, 2);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(catcher_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fix_d6(2); // fail pickup (3+)
+        state.step_positional(PosAT::Move, ball_pos);
+
+        state.fix_d8(D8::from(up) as u8); // bounce over the edge — out of bounds
+        state.fix_d3(1); // throw-in direction (1,1)
+        state.fix_d6(1); // throw-in distance...
+        state.fix_d6(1); // ...1+1 = 2 → lands on the catcher
+        state.fix_d6(1); // catcher fails the catch
+        state.step_simple(SimpleAT::DontUseReroll); // decline the pickup reroll
+
+        state.fix_d8(D8::from(up) as u8); // bounce on from the catcher's square
+        state.step_simple(SimpleAT::DontUseReroll); // decline the catch reroll
+
+        assert!(
+            matches!(state.ball, BallState::OnGround(pos) if pos == catcher_pos + up),
+            "throw-in catch failure must bounce from the catcher's square, got {:?}",
+            state.ball
+        );
     }
 
     #[test]
