@@ -41,6 +41,13 @@ fn mcts_lifts_random_baseline() {
     //   against a tighter reply. Net positive trade (GetTheBallEasy
     //   went 0.00 → 1.00, Medium 0.00 → ~0.35), but the dip is real.
     //   Threshold lowered to 0.65 to absorb concurrent-search variance.
+    // - Plan 018 (8d81444) silently collapsed this to ~0.04: a post-TD
+    //   state is pending-roll (next kickoff's Deviate) AND past the
+    //   horizon, so it was neither scored nor expandable — TDs became
+    //   invisible to backprop. Fixed 2026-07-13 (score_leaf carve-out
+    //   for past-horizon pending-roll states, terminal re-descent
+    //   backprop in recon_mcts, FPU for unexplored children, Q-based
+    //   root pick, StartFoul pruning): ~0.96 measured.
     assert!(
         rate >= 0.65,
         "MCTS bot success rate {:.4} below 0.65 — priors/pruning regression",

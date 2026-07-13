@@ -461,13 +461,27 @@ impl GameDynamics for BloodBowlDynamics {
         // by negating Q before adding the exploration bonus.
         let _ = parent_node_state; // no longer needed for priors; kept in case future rules want it.
         let home_perspective = *parent_player == BbPlayer::Home;
+        // FPU (first-play urgency): unexplored children are estimated at
+        // the parent's own Q, seen from the descending player's side. See
+        // `puct_value` for why `Q = 0` is not a usable default here. A
+        // parent with no score yet (fresh root) falls back to 0 — every
+        // child is unexplored there, so the anchor cancels out anyway.
+        let fpu = parent_score
+            .map(|s| {
+                if home_perspective {
+                    s.score as f32
+                } else {
+                    -(s.score as f32)
+                }
+            })
+            .unwrap_or(0.0);
         let pick = scores_and_actions
             .clone()
             .into_iter()
             .map(|(q, a)| {
                 let action = a.deref().clone();
                 let p = action.prior_f32().unwrap_or(1.0);
-                let v = puct_value(q.as_ref(), parent_visits, p, home_perspective);
+                let v = puct_value(q.as_ref(), parent_visits, p, home_perspective, fpu);
                 (v, action)
             })
             .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
@@ -591,7 +605,20 @@ impl GameDynamics for BloodBowlDynamics {
         //      state, but such states are unexpandable and rare; the
         //      principled fix is to advance through them in
         //      `apply_action`'s quiescent loop (future work).
-        if state.pending_roll.is_some() {
+        // …with one carve-out: "expanded, not scored" only works when the
+        // node actually gets expanded. A pending-roll state that is past
+        // the horizon (or game over) is *terminal* to `available_actions`
+        // — it will never get roll-outcome children, so leaving it
+        // unscored makes it invisible to backprop. This is exactly where
+        // every in-search touchdown lands (TD → engine advances to the
+        // next kickoff → pauses on the kickoff Deviate roll, and the
+        // score change has tripped the horizon), so without this
+        // carve-out no TD value can ever reach the root. Mirrors the
+        // terminal checks at the top of `available_actions`; `horizon`
+        // is constant per search, so this stays a pure function of
+        // (state, anchor).
+        let past_horizon = self.horizon.is_some_and(|anchor| anchor.diverged(state));
+        if state.pending_roll.is_some() && !state.info.game_over && !past_horizon {
             return None; // chance node — expanded, not scored
         }
         Some(BbScore {
@@ -605,16 +632,21 @@ impl GameDynamics for BloodBowlDynamics {
 
 /// PUCT(a) = Q(a) + c · P(a) · √N(parent) / (1 + N(a))
 ///
-/// Unexplored children (`score == None`) have `Q = 0` and `N(a) = 0`, so
-/// their value collapses to `c · P · √N(parent)` — ranked purely by
-/// prior. This replaces the pure-UCT `f32::INFINITY` sentinel for
-/// unexplored children; high-prior unexplored children are still
-/// preferred, but low-prior unexplored children no longer crowd out
-/// well-scored explored siblings.
-fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_perspective: bool) -> f32 {
+/// Unexplored children (`score == None`) have `N(a) = 0` and their `Q`
+/// is estimated by `fpu` (first-play urgency): the *parent's* Q from the
+/// descending player's perspective. `leaf_score` carries a large,
+/// mostly-constant offset (ball control ±500 dominates every in-turn
+/// state), so estimating an unexplored child at `Q = 0` buries it ~500
+/// points below any explored sibling — the exploration term
+/// `c·P·√N(parent)` only closes that gap at `N(parent) > (offset/cP)²`
+/// (≈110 visits at prior 5), which starves wide fans of exploration.
+/// Anchoring at the parent's Q makes "unexplored" mean "about as good as
+/// this position" instead of "worthless", so the prior-scaled bonus
+/// ranks unexplored children against explored ones on equal footing.
+fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_perspective: bool, fpu: f32) -> f32 {
     let parent_term = parent_visits.max(1.0).sqrt();
     match score {
-        None => PUCT_C * prior * parent_term,
+        None => fpu + PUCT_C * prior * parent_term,
         Some(s) => {
             let v = s.visits.load(Ordering::Relaxed) as f32;
             // Plan 015 Step 5 — virtual loss subtracted *after* the
@@ -1061,13 +1093,27 @@ impl Bot for MctsBot {
                 eprintln!("   visits={v:5} q={s:6} {a:?}");
             }
         }
+        // Pick by aggregated Q (from the agent's perspective), with
+        // visits as the tie-break; unscored children rank below every
+        // scored one. Q is a minimax aggregate (Home max / Away min /
+        // chance expectation), so it is the principled root decision
+        // value. Most-visited — the classic robust-child rule — is NOT
+        // reliable here: descents that end on already-terminal nodes
+        // bump visit counters without contributing new information, so
+        // raw visit counts over-weight whichever path saturated first
+        // (observed picking a q=469 GFI gamble over a q=525 safe move,
+        // and picking arbitrarily when no child had been visited).
+        let q_sign: i64 = match agent_team {
+            TeamType::Home => 1,
+            TeamType::Away => -1,
+        };
         let best = move_info
             .iter()
             .max_by_key(|(_, info)| {
                 info.score
                     .as_ref()
-                    .map(|s| s.visits.load(Ordering::Relaxed))
-                    .unwrap_or(0)
+                    .map(|s| (1i64, q_sign * s.score, s.visits.load(Ordering::Relaxed) as i64))
+                    .unwrap_or((0, 0, 0))
             })
             .expect("root must offer at least one action");
         match &best.0 {
@@ -1184,6 +1230,47 @@ mod tests {
         );
     }
 
+    /// Plan 018 leaves pending-roll (chance) states unscored because
+    /// their value comes from expanding their roll-outcome children —
+    /// but a pending-roll state that is already past the horizon is
+    /// terminal to `available_actions` and never gets those children.
+    /// It must be scored or it becomes a backprop dead end. This is
+    /// where every in-search touchdown lands (TD → next kickoff →
+    /// pending Deviate + score change tripped the horizon), so an
+    /// unscored dead end here makes TDs invisible to the search.
+    #[test]
+    fn score_leaf_scores_pending_roll_state_past_horizon() {
+        use botbowl_engine::core::dices::RequestedRoll;
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::{Position, TeamType};
+
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        state.pending_roll = Some(RequestedRoll::D8);
+        let anchor = HorizonAnchor::capture(&state, TeamType::Home);
+        let dynamics = BloodBowlDynamics {
+            horizon: Some(anchor),
+            virtual_loss: 0,
+        };
+
+        // Within the horizon: a chance node, expanded not scored.
+        assert!(
+            dynamics.score_leaf(None, &BbPlayer::Chance, &state).is_none(),
+            "in-horizon pending-roll states stay unscored (plan 018)"
+        );
+
+        // Past the horizon (a touchdown has been scored since the
+        // anchor): terminal — must carry a score.
+        state.home.score += 1;
+        let score = dynamics
+            .score_leaf(None, &BbPlayer::Chance, &state)
+            .expect("past-horizon pending-roll state must be scored");
+        assert!(
+            score.score >= 1000,
+            "the touchdown must dominate the leaf score, got {}",
+            score.score
+        );
+    }
+
     #[test]
     fn puct_mirrors_for_away_player() {
         let a = BbScore {
@@ -1201,18 +1288,58 @@ mod tests {
         let parent_visits = 100.0;
         let prior = 0.5;
 
-        let va_home = puct_value(Some(&a), parent_visits, prior, true);
-        let vb_home = puct_value(Some(&b), parent_visits, prior, true);
+        let va_home = puct_value(Some(&a), parent_visits, prior, true, 0.0);
+        let vb_home = puct_value(Some(&b), parent_visits, prior, true, 0.0);
         assert!(
             va_home > vb_home,
             "Home should rank +50 above -50 (va={va_home}, vb={vb_home})"
         );
 
-        let va_away = puct_value(Some(&a), parent_visits, prior, false);
-        let vb_away = puct_value(Some(&b), parent_visits, prior, false);
+        let va_away = puct_value(Some(&a), parent_visits, prior, false, 0.0);
+        let vb_away = puct_value(Some(&b), parent_visits, prior, false, 0.0);
         assert!(
             vb_away > va_away,
             "Away should rank -50 above +50 (va={va_away}, vb={vb_away})"
+        );
+    }
+
+    /// FPU regression guard: leaf scores carry a ~+520 constant offset
+    /// (ball control + carrier distance), so with a Q=0 estimate an
+    /// unexplored child could never compete with an explored ~525
+    /// sibling until √N(parent) grew past the offset (N > ~110). With
+    /// FPU anchored at the parent's Q, an unexplored same-prior sibling
+    /// must outrank an explored child whose Q merely matches the parent.
+    #[test]
+    fn fpu_keeps_unexplored_children_competitive() {
+        let explored = BbScore {
+            visits: AtomicU32::new(30),
+            score: 525,
+            node_kind: BbPlayer::Home,
+            virtual_loss: AtomicI32::new(0),
+        };
+        let parent_visits = 100.0;
+        let prior = 5.0;
+        let fpu = 525.0; // parent Q, Home perspective
+
+        let v_explored = puct_value(Some(&explored), parent_visits, prior, true, fpu);
+        let v_unexplored = puct_value(None, parent_visits, prior, true, fpu);
+        assert!(
+            v_unexplored > v_explored,
+            "unexplored (={v_unexplored}) must beat an explored parent-level sibling (={v_explored})"
+        );
+
+        // But a genuinely better explored child (a found touchdown)
+        // still dominates the unexplored pool.
+        let td = BbScore {
+            visits: AtomicU32::new(30),
+            score: 1069,
+            node_kind: BbPlayer::Home,
+            virtual_loss: AtomicI32::new(0),
+        };
+        let v_td = puct_value(Some(&td), parent_visits, prior, true, fpu);
+        assert!(
+            v_td > v_unexplored,
+            "a found TD (={v_td}) must outrank unexplored siblings (={v_unexplored})"
         );
     }
 }
