@@ -1748,9 +1748,22 @@ where
                     }
                 }
                 Children::None => {
-                    // Currently the implementation assumes that the score of a `Terminal` node is
-                    // immutable even if the selection path leads there repeatedly
-                    // Node::backprop_scores(&node);
+                    // A terminal node's own score is immutable, but the
+                    // descent that led here bumped visit counters along the
+                    // path (`GD::select_node` is expected to record the
+                    // chosen child). Without a backprop those bumps never
+                    // reach the ancestors' aggregated scores, so the
+                    // selection statistics freeze and every subsequent
+                    // descent deterministically replays the same terminal
+                    // path — wasting the entire step budget once the
+                    // explored region is saturated with terminals. Seeding
+                    // a backprop at the terminal re-aggregates the path's
+                    // visits upward (the walk continues past the seed
+                    // unconditionally, see `Node::backprop_scores`), which
+                    // keeps `N(parent)` growing and lets selection rotate
+                    // to unexplored siblings.
+                    drop(children_rlk);
+                    Node::backprop_scores(&node);
                     return None;
                 }
             }
