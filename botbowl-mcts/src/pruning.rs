@@ -14,6 +14,7 @@
 //! |-----------------------------|------------------------|
 //! | `Simple(EndPlayerTurn)`     | P1                     |
 //! | `Positional(StartHandoff)`  | P7                     |
+//! | `Positional(StartFoul)`     | P9                     |
 //! | `Positional(Move)`          | P2/P3, P4, P5, P8      |
 //! | everything else             | *(none)*               |
 
@@ -28,6 +29,7 @@ pub fn should_prune(state: &GameState, action: &EngineAction) -> bool {
         EngineAction::Positional(PosAT::StartHandoff, pos) => prune_start_handoff_pass(state, *pos),
         EngineAction::Positional(PosAT::StartPass, pos) => prune_start_handoff_pass(state, *pos),
         EngineAction::Positional(PosAT::StartBlitz, _) => prune_start_blitz(state),
+        EngineAction::Positional(PosAT::StartFoul, _) => prune_start_foul(state),
         EngineAction::Positional(PosAT::Move, pos) => prune_move_action(state, *pos),
         _ => false,
     }
@@ -72,6 +74,23 @@ fn prune_start_blitz(state: &GameState) -> bool {
     !state
         .get_players_on_pitch_in_team(other_team(agent_team))
         .any(|p| p.status == PlayerStatus::Up)
+}
+
+/// **P9** — a Foul activation is useless when the opponent has no
+/// prone/stunned player on the pitch: there is nothing to foul, so the
+/// activation degenerates into a plain move that dodges P8's move
+/// collapse (the engine re-offers the full move fan after every foul
+/// move). The curriculum's opponent-free lectures hit this constantly —
+/// the bot activated its carrier as a fouler and wandered. Mirrors P5's
+/// no-standing-opponent rule for `StartBlitz`.
+fn prune_start_foul(state: &GameState) -> bool {
+    let agent_team = match state.get_active_teamtype() {
+        Some(team) => team,
+        None => return false,
+    };
+    !state
+        .get_players_on_pitch_in_team(other_team(agent_team))
+        .any(|p| p.status != PlayerStatus::Up)
 }
 
 /// **P2 / P3** — when the active player was activated with `StartPass` or
@@ -196,12 +215,17 @@ fn prune_start_handoff_pass_without_recipient(state: &GameState, candidate_pos: 
 /// states, keeping this rule pure on `(state, action)` and
 /// recombination-safe.
 ///
-/// Scoped to `StartMove`, which also covers the post-blitz state (the engine
+/// Scoped to `StartMove` — which also covers the post-blitz state (the engine
 /// flips `player_action_type` to `StartMove` once a blitz block resolves —
-/// `block_procs.rs:336`). Pass/handoff/foul follow-through is handled by
-/// P2–P4; the pre-block blitz move is handled by P5.
+/// `block_procs.rs:336`) — and `StartFoul`, whose pre-foul movement loops
+/// through the same re-offer-everything cycle as a plain move (one path-style
+/// move already reaches any square adjacent to the foul victim). Pass/handoff
+/// follow-through is handled by P2–P4; the pre-block blitz move by P5.
 fn prune_redundant_move_after_first(state: &GameState) -> bool {
-    if state.info.player_action_type != Some(PosAT::StartMove) {
+    if !matches!(
+        state.info.player_action_type,
+        Some(PosAT::StartMove) | Some(PosAT::StartFoul)
+    ) {
         return false;
     }
     let active = match state.get_active_player() {
@@ -670,6 +694,62 @@ mod tests {
     }
 
     // --- P7: StartHandoff requires at least one recipient teammate --
+
+    // --- P9: StartFoul requires a prone/stunned opponent ---------------
+
+    #[test]
+    fn start_foul_pruned_when_all_opponents_standing() {
+        let state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(Position::new((20, 10)))
+            .build();
+        let a = EA::Positional(PosAT::StartFoul, Position::new((5, 5)));
+        assert!(should_prune(&state, &a));
+    }
+
+    #[test]
+    fn start_foul_pruned_when_no_opponent_on_pitch() {
+        let state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        let a = EA::Positional(PosAT::StartFoul, Position::new((5, 5)));
+        assert!(should_prune(&state, &a));
+    }
+
+    #[test]
+    fn start_foul_allowed_when_opponent_is_down() {
+        let opp_pos = Position::new((7, 7));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(opp_pos)
+            .build();
+        state.get_mut_player_at_unsafe(opp_pos).status = PlayerStatus::Down;
+        let a = EA::Positional(PosAT::StartFoul, Position::new((5, 5)));
+        assert!(!should_prune(&state, &a));
+    }
+
+    // --- P8 extension: foul movement collapses after the first move ----
+
+    #[test]
+    fn foul_move_after_first_move_is_pruned() {
+        let home_pos = Position::new((5, 5));
+        let opp_pos = Position::new((8, 8));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(opp_pos)
+            .build();
+        state.get_mut_player_at_unsafe(opp_pos).status = PlayerStatus::Down;
+
+        check_prune_and_step(&mut state, EA::Positional(PosAT::StartFoul, home_pos));
+
+        // First positioning move — allowed (moves == 0 so P8 stays out).
+        let first = EA::Positional(PosAT::Move, Position::new((7, 7)));
+        assert!(!should_prune(&state, &first));
+        check_prune_and_step(&mut state, first);
+
+        // A second wander move is redundant (a path move already reaches
+        // any square), so P8 collapses it. The foul itself must survive.
+        assert_is_pruned_positional(&state, PosAT::Move, Position::new((6, 6)));
+        assert!(!should_prune(&state, &EA::Positional(PosAT::Foul, opp_pos)));
+    }
 
     #[test]
     fn start_handoff_pruned_when_no_teammate_exists() {
