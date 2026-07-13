@@ -4,9 +4,9 @@ use botbowl_curriculum::lectures::score_td::ScoreTdEasy;
 use botbowl_curriculum::{run_trials_cfg, TrialConfig};
 use botbowl_mcts::{MctsBot, SearchBudget};
 
-// TODO(mattias): tune. Placeholder ≈ the cost of the old 1000
-// iters/move (0.15–0.7 s/search measured on GetTheBallMedium).
-const SEARCH_TIME: Duration = Duration::from_millis(300);
+// Tuned 2026-07-13: 150 ms/move measured 0.96, same as 300 ms —
+// half the suite wall-clock for free.
+const SEARCH_TIME: Duration = Duration::from_millis(150);
 const MAX_AGENT_ACTIONS: u32 = 25;
 
 #[test]
@@ -47,10 +47,12 @@ fn mcts_lifts_random_baseline() {
     //   invisible to backprop. Fixed 2026-07-13 (score_leaf carve-out
     //   for past-horizon pending-roll states, terminal re-descent
     //   backprop in recon_mcts, FPU for unexplored children, Q-based
-    //   root pick, StartFoul pruning): ~0.96 measured.
+    //   root pick, StartFoul pruning): 0.96 measured at both 300 ms and
+    //   150 ms. Threshold raised to 0.85 ≈ 3σ below that (50 trials,
+    //   σ≈0.03) so it trips on real regressions again.
     assert!(
-        rate >= 0.65,
-        "MCTS bot success rate {:.4} below 0.65 — priors/pruning regression",
+        rate >= 0.85,
+        "MCTS bot success rate {:.4} below 0.85 — priors/pruning regression",
         rate
     );
 }

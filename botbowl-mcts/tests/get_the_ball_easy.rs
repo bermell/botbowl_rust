@@ -4,9 +4,9 @@ use botbowl_curriculum::lectures::get_the_ball::GetTheBallEasy;
 use botbowl_curriculum::{run_trials_cfg, TrialConfig};
 use botbowl_mcts::{MctsBot, SearchBudget};
 
-// TODO(mattias): tune. Placeholder ≈ the cost of the old 1000
-// iters/move (0.15–0.7 s/search measured on GetTheBallMedium).
-const SEARCH_TIME: Duration = Duration::from_millis(300);
+// Tuned 2026-07-13: 150 ms/move measured 1.00, same as 300 ms —
+// half the suite wall-clock for free.
+const SEARCH_TIME: Duration = Duration::from_millis(150);
 const MAX_AGENT_ACTIONS: u32 = 25;
 
 /// Plan 010 (Track A.alt) lifts this from 0.00 to ≈1.00: `score_leaf`
@@ -40,10 +40,12 @@ fn mcts_solves_get_the_ball_easy() {
     );
 
     // Random baseline is in the 0.5–50% band; the ×10 pickup prior
-    // *should* make this near-trivial once the v2 fast-forward lands.
+    // makes this near-trivial. Measured 1.00 at both 300 ms and 150 ms
+    // (2026-07-13 search fixes); threshold 0.90 leaves noise headroom
+    // while still tripping on any real regression.
     assert!(
-        rate >= 0.70,
-        "MCTS bot success rate {:.4} below 0.70 on GetTheBallEasy",
+        rate >= 0.90,
+        "MCTS bot success rate {:.4} below 0.90 on GetTheBallEasy",
         rate
     );
 }
