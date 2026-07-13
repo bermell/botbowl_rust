@@ -418,14 +418,21 @@ impl GameDynamics for BloodBowlDynamics {
             }
         };
 
-        // Chance node: pick the outcome whose visit count is furthest
-        // below its expected count under the action's probability
-        // distribution. Score for outcome i = `p_i · (N_parent + 1) - N_i`;
-        // we pick the argmax. This makes the empirical visit ratio
-        // converge to the real probability distribution as N grows.
-        // The previous `min_by(visits)` was probability-blind and
-        // would over-sample low-probability outcomes (e.g. on a 5/6
-        // GFI it sampled failures 5× more often than they should be).
+        // Chance node: unscored outcomes first (highest probability
+        // first among them), then the outcome whose visit count is
+        // furthest below its expected count under the action's
+        // probability distribution — score for outcome i =
+        // `p_i · (N_parent + 1) - N_i`, pick the argmax. The deficit
+        // rule makes the empirical visit ratio converge to the real
+        // probability distribution as N grows. (The previous
+        // `min_by(visits)` was probability-blind and would over-sample
+        // low-probability outcomes — e.g. on a 5/6 GFI it sampled
+        // failures 5× more often than they should be.)
+        //
+        // The unscored-first tier exists because `backprop_scores`
+        // withholds the chance node's expectation until every outcome
+        // is scored (see the completeness gate there): sweeping the
+        // outcomes as fast as possible is what closes that window.
         // `BbAction::Chance` carries `prob_bits`; `Player` variants
         // never appear here (we're under `pending_roll.is_some()`).
         if parent_node_state.pending_roll.is_some() {
@@ -434,6 +441,7 @@ impl GameDynamics for BloodBowlDynamics {
                 .clone()
                 .into_iter()
                 .map(|(q, a)| {
+                    let unscored = q.as_ref().as_ref().is_none();
                     let v = q
                         .as_ref()
                         .as_ref()
@@ -442,9 +450,12 @@ impl GameDynamics for BloodBowlDynamics {
                     let action = a.deref().clone();
                     let prob = action.prob_f32().unwrap_or(0.0);
                     let deficit = prob * total - v;
-                    (deficit, action)
+                    ((unscored, deficit), action)
                 })
-                .max_by(|(da, _), (db, _)| da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|((ua, da), _), ((ub, db), _)| {
+                    ua.cmp(ub)
+                        .then(da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
+                })
                 .expect("chance node must have at least one outcome");
             bump_chosen(&pick.1, 0);
             return pick.1;
@@ -538,12 +549,25 @@ impl GameDynamics for BloodBowlDynamics {
             if total_visits == 0 {
                 return None;
             }
-            // Normalise in case some outcomes haven't been visited yet.
-            let avg = if total_prob > 0.0 {
-                weighted_sum / total_prob
-            } else {
-                0.0
-            };
+            // Completeness gate: emit the expectation only once every
+            // outcome is scored (enumeration normalises probabilities to
+            // sum to 1, so scored-probability mass ≈ 1 ⟺ complete).
+            // recon_mcts filters unscored children out of this iterator,
+            // so a partial sum is the only completeness signal we get.
+            // The previous behaviour — normalising over whatever was
+            // scored — reported the expectation *conditioned on the
+            // sampled outcomes*: a 1-GFI touchdown whose Fail branch
+            // hadn't resolved yet backpropped a risk-free 1000, exactly
+            // the plan-018 over-valuation this chance-node design exists
+            // to prevent. While incomplete the node stays unscored
+            // (`update_score` keeps the previous value on None) and the
+            // parent's FPU treats it as unexplored; the select branch
+            // above sweeps unscored outcomes first to keep that window
+            // short.
+            if total_prob < 0.999 {
+                return None;
+            }
+            let avg = weighted_sum / total_prob;
             return Some(BbScore {
                 visits: AtomicU32::new(total_visits),
                 score: avg as i64,
@@ -1228,6 +1252,73 @@ mod tests {
             !still_kick_receive,
             "post-apply: kick/receive should have been scripted-through too"
         );
+    }
+
+    /// The chance-node expectation must not be emitted while outcomes
+    /// are missing: normalising over the sampled subset reports the
+    /// value *conditioned on those outcomes* — a 1-GFI touchdown whose
+    /// Fail branch hasn't resolved backprops a risk-free 1000.
+    #[test]
+    fn chance_backprop_waits_for_all_outcomes() {
+        use botbowl_engine::core::dices::RollResult;
+
+        let dynamics = BloodBowlDynamics::default();
+        let pass = BbAction::chance(RollResult::Pass, 5.0 / 6.0);
+        let fail = BbAction::chance(RollResult::Fail, 1.0 / 6.0);
+
+        // Only the Pass outcome scored (5/6 of the mass): no aggregate.
+        let pass_score = child(1000, 3);
+        let partial: Vec<(&BbScore, &BbAction)> = vec![(&pass_score, &pass)];
+        assert!(
+            dynamics.backprop_scores(&BbPlayer::Chance, None, partial).is_none(),
+            "incomplete outcome set must not emit an expectation"
+        );
+
+        // Both outcomes scored: exact probability-weighted expectation.
+        let fail_score = child(-200, 1);
+        let complete: Vec<(&BbScore, &BbAction)> = vec![(&pass_score, &pass), (&fail_score, &fail)];
+        let result = dynamics
+            .backprop_scores(&BbPlayer::Chance, None, complete)
+            .expect("complete outcome set must emit");
+        let expected = (5.0 / 6.0 * 1000.0 + 1.0 / 6.0 * -200.0) as i64;
+        assert!(
+            (result.score - expected).abs() <= 1,
+            "expected ≈{expected} (f32 prob round-trip may truncate by 1), got {}",
+            result.score
+        );
+        assert_eq!(result.visits.load(Ordering::Relaxed), 4);
+        assert_eq!(result.node_kind, BbPlayer::Chance);
+    }
+
+    /// Chance selection sweeps unscored outcomes before rebalancing
+    /// visited ones — that is what closes the completeness gate above.
+    /// The visit-deficit rule alone would keep hammering a
+    /// high-probability scored outcome at high parent visit counts.
+    #[test]
+    fn chance_select_prefers_unscored_outcomes() {
+        use botbowl_engine::core::dices::{D6Target, RequestedRoll, RollResult};
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::Position;
+
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        state.pending_roll = Some(RequestedRoll::D6PassFail(D6Target::TwoPlus));
+
+        let pass = BbAction::chance(RollResult::Pass, 5.0 / 6.0);
+        let fail = BbAction::chance(RollResult::Fail, 1.0 / 6.0);
+        let pass_score = Some(child(1000, 1));
+        let fail_score: Option<BbScore> = None; // unscored placeholder
+        let parent = child(1000, 100); // high parent visits → deficit rule alone would pick Pass
+
+        let children: Vec<(&Option<BbScore>, &BbAction)> = vec![(&pass_score, &pass), (&fail_score, &fail)];
+        let dynamics = BloodBowlDynamics::default();
+        let picked = dynamics.select_node(
+            Some(&parent),
+            &BbPlayer::Chance,
+            &state,
+            SelectNodeState::Explore,
+            children,
+        );
+        assert_eq!(picked, fail, "the unscored outcome must be swept first");
     }
 
     /// Plan 018 leaves pending-roll (chance) states unscored because
