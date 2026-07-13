@@ -642,6 +642,14 @@ where
     children: RwLock<Children<I, A, ArcWrap<Self>>>,
     registry: Arc<RwLock<HashSet<WeakWrap<Self>>>>,
     registered: AtomicBool,
+    /// Monotonic (false → true): the node's subtree is fully explored —
+    /// the node is terminal (`Children::None`), or every child is
+    /// solved. A solved node's aggregated score is final, so selection
+    /// skips solved children (descending them can't produce new
+    /// information) and a solved *root* makes `Tree::step` a no-op.
+    /// Set in `step_into` / `enumerate_placeholders` for terminals and
+    /// propagated upward by `Node::backprop_scores`.
+    solved: AtomicBool,
     game_dynamics: Arc<GD>,
     // Use `fn() -> M` in `PhantomData` because it is covariant over `M` like `M` itself (which
     // requires drop check because it suggests ownership) or `*const  M` (which is not `Send`);
@@ -677,6 +685,7 @@ where
             children: RwLock::new(Children::NewLeaf),
             registry,
             registered: AtomicBool::new(false),
+            solved: AtomicBool::new(false),
             game_dynamics,
             _marker: PhantomData,
         };
@@ -705,6 +714,7 @@ where
                 children: RwLock::new(Children::NewLeaf),
                 registry,
                 registered: AtomicBool::new(false),
+                solved: AtomicBool::new(false),
                 game_dynamics,
                 _marker: PhantomData,
             }),
@@ -735,6 +745,7 @@ where
                 children: RwLock::new(Children::NewLeaf),
                 registry,
                 registered: AtomicBool::new(false),
+                solved: AtomicBool::new(false),
                 game_dynamics,
                 _marker: PhantomData,
             }),
@@ -1005,13 +1016,20 @@ where
             if updated {
                 n_updates += 1;
             }
+            // Solvedness rides the same walk: a node whose children are
+            // all solved has a final aggregate and leaves the selectable
+            // set. Newly-solved nodes must push their parents even when
+            // their aggregate value didn't change — the *flag* is the
+            // new information.
+            let newly_solved = node.try_mark_solved();
             // Walk past the seed unconditionally: the seed's score was just
             // assigned externally (`GD::score_leaf` on a fresh leaf whose
             // children are unscored placeholders), so its own `update_score`
             // has nothing to aggregate and returns false — but its parents
             // still need to observe the new score. Interior nodes propagate
-            // only when their aggregate actually changed.
-            if updated || node_ptr == seed_ptr {
+            // only when their aggregate actually changed (or they just
+            // became solved).
+            if updated || newly_solved || node_ptr == seed_ptr {
                 node.parents.read().unwrap().iter().for_each(|(_, p)| {
                     let parent_ptr: *const Node<GD, S, P, A, Q, I, M> = p.as_ptr();
                     if visited.insert(parent_ptr) {
@@ -1024,6 +1042,28 @@ where
         }
 
         n_updates
+    }
+
+    /// Mark this node solved if it isn't already and its children prove
+    /// it: terminal (`Children::None`), or a fully-enumerated `Branch`
+    /// whose every child is solved. Returns true only on the transition
+    /// (idempotent, monotone false → true). `NewLeaf` / `BranchWip`
+    /// nodes are never solved — they still have unexpanded structure.
+    fn try_mark_solved(&self) -> bool {
+        if self.solved.load(Ordering::Acquire) {
+            return false;
+        }
+        let children_rlk = self.children.read().unwrap();
+        let provable = match *children_rlk {
+            Children::None => true,
+            Children::Branch(ref map) => !map.is_empty() && map.values().all(|c| c.solved.load(Ordering::Acquire)),
+            _ => false,
+        };
+        drop(children_rlk);
+        if provable {
+            self.solved.store(true, Ordering::Release);
+        }
+        provable
     }
 
     #[allow(dead_code)]
@@ -1573,6 +1613,13 @@ where
     fn step(&self) -> Option<S> {
         let _prune_rlk = self.prune_lock.read().unwrap();
         let node = ArcNode::clone(&*self.root.read().unwrap());
+        // Solved root: the whole reachable game space has been explored
+        // and every aggregate is final — a descent cannot produce new
+        // information. Return without descending (callers can also poll
+        // `SearchTree::is_solved` to stop their step loop entirely).
+        if node.solved.load(Ordering::Acquire) {
+            return None;
+        }
         let state = node.get_state();
         self.step_into(state, node)
     }
@@ -1701,6 +1748,17 @@ where
                     self.make_branch(&node_state, &node);
                 }
                 Children::Branch(ref map) => {
+                    // Solved children are excluded from selection (their
+                    // subtrees are fully explored — descending them can't
+                    // change any aggregate). If that leaves nothing, every
+                    // child is solved and this node is solved too: mark it
+                    // and backprop so the flag propagates toward the root.
+                    if map.values().all(|c| c.solved.load(Ordering::Acquire)) {
+                        drop(children_rlk);
+                        node.solved.store(true, Ordering::Release);
+                        Node::backprop_scores(&node);
+                        return None;
+                    }
                     let action = Self::select_node(self, &node, &node_state, map, SelectNodeState::Explore);
 
                     // get the selected child node, calculate its state, and keep recursing
@@ -1762,7 +1820,14 @@ where
                     // unconditionally, see `Node::backprop_scores`), which
                     // keeps `N(parent)` growing and lets selection rotate
                     // to unexplored siblings.
+                    //
+                    // Terminals are also the base case of the solved
+                    // lattice: marking the node solved lets the backprop
+                    // walk propagate "all children solved ⇒ parent
+                    // solved" up the DAG, removing exhausted subtrees
+                    // from future selection entirely.
                     drop(children_rlk);
+                    node.solved.store(true, Ordering::Release);
                     Node::backprop_scores(&node);
                     return None;
                 }
@@ -1777,7 +1842,26 @@ where
         children: &HashMap<A, ArcNode<GD, S, P, A, Q, I, M>>,
         purpose: SelectNodeState,
     ) -> A {
-        let scores_and_actions = children.iter().map(|(a, child)| {
+        // Hide solved children from the game-dynamics selector: their
+        // subtrees are fully explored, so descending them cannot change
+        // any aggregate — offering them just wastes the step. Snapshot
+        // the unsolved set up front so `GD::select_node`'s re-iteration
+        // (the iterator is `Clone`) sees a stable view even if a
+        // concurrent worker solves a child mid-call; if everything is
+        // solved (racy callers), fall back to the full set rather than
+        // hand the selector an empty iterator.
+        let included: Vec<(&A, &ArcNode<GD, S, P, A, Q, I, M>)> = {
+            let live: Vec<_> = children
+                .iter()
+                .filter(|(_, child)| !child.solved.load(Ordering::Acquire))
+                .collect();
+            if live.is_empty() {
+                children.iter().collect()
+            } else {
+                live
+            }
+        };
+        let scores_and_actions = included.iter().map(|&(a, child)| {
             // Taking a standard shared reference to the score will not compile because the
             // `Ref<'a,T>` would go out of scope at the end of the closure, and the lifetime of the
             // return value of `<Ref<'a,T> as Deref>::deref` is tied to the lifetime of the
@@ -2221,6 +2305,15 @@ where
         Arc::clone(&self.game_dynamics)
     }
 
+    /// True once the entire reachable search space below the current root
+    /// has been explored: every leaf is terminal and every aggregate is
+    /// final. From then on `step()` returns immediately without
+    /// descending — callers driving a step loop (especially wall-clock
+    /// budgets) should poll this and stop early.
+    pub fn is_solved(&self) -> bool {
+        self.root.read().unwrap().solved.load(Ordering::Acquire)
+    }
+
     /// Look up a node in the transposition table by `(player, state)`.
     ///
     /// Returns the live `ArcNode` if a node with this player + state is registered, regardless of
@@ -2240,6 +2333,7 @@ where
                 children: RwLock::new(Children::NewLeaf),
                 registry: Arc::clone(&self.registry),
                 registered: AtomicBool::new(false),
+                solved: AtomicBool::new(false),
                 game_dynamics: Arc::clone(&self.game_dynamics),
                 _marker: PhantomData,
             }),
