@@ -984,6 +984,11 @@ impl Bot for MctsBot {
                                     .name(format!("mcts-worker-{w}"))
                                     .spawn_scoped(s, move || {
                                         for _ in 0..iters {
+                                            // Solved tree: every aggregate is final,
+                                            // further steps are no-ops — stop early.
+                                            if tree.is_solved() {
+                                                break;
+                                            }
                                             tree.step();
                                         }
                                     })
@@ -995,10 +1000,20 @@ impl Bot for MctsBot {
                         let stop = AtomicBool::new(false);
                         let stop_ref = &stop;
                         std::thread::scope(|s| {
+                            let timer_tree = Arc::clone(&tree);
                             std::thread::Builder::new()
                                 .name("mcts-timer".into())
-                                .spawn_scoped(s, || {
-                                    std::thread::sleep(limit);
+                                .spawn_scoped(s, move || {
+                                    // Poll rather than one long sleep: a solved
+                                    // tree ends the search immediately instead of
+                                    // idling out the rest of the budget (the scope
+                                    // joins this thread, so its sleep is part of
+                                    // get_action's wall time).
+                                    let deadline = std::time::Instant::now() + limit;
+                                    let tick = Duration::from_millis(2).min(limit);
+                                    while std::time::Instant::now() < deadline && !timer_tree.is_solved() {
+                                        std::thread::sleep(tick);
+                                    }
                                     stop_ref.store(true, Ordering::Relaxed);
                                 })
                                 .expect("failed to spawn MCTS timer thread");
@@ -1009,6 +1024,13 @@ impl Bot for MctsBot {
                                     .name(format!("mcts-worker-{w}"))
                                     .spawn_scoped(s, move || {
                                         while !stop_ref.load(Ordering::Relaxed) {
+                                            // Solved tree: every aggregate is final,
+                                            // further steps are no-ops — stop early
+                                            // instead of spinning out the wall-clock
+                                            // budget.
+                                            if tree.is_solved() {
+                                                break;
+                                            }
                                             tree.step();
                                         }
                                     })
