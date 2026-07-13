@@ -185,8 +185,12 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
             direction: D3::One,
             distance: Sum2D6::Two,
         },
-        RequestedRoll::FoulArmor(..) => RollResult::FoulArmor {
-            broken: false,
+        // Scripted as a fixed roll-of-3 against the target: armour holds
+        // for any realistic AV, but a weak (already-broken) 3+ target
+        // still cascades into the (scripted, Stunned) injury roll — see
+        // the `foul_armor_*` tests below, which pin this asymmetry.
+        RequestedRoll::FoulArmor(target) => RollResult::FoulArmor {
+            broken: target.is_success(Sum2D6::Three),
             ejected: false,
         },
         RequestedRoll::FoulInjury(..) => RollResult::FoulInjury {
