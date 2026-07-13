@@ -228,7 +228,7 @@ impl GameDynamics for BloodBowlDynamics {
 
         // Chance node: enumerate roll outcomes.
         if state.pending_roll.is_some() {
-            let outcomes = roll_outcomes::enumerate(state.pending_roll.as_ref().unwrap());
+            let outcomes = roll_outcomes::enumerate(state, state.pending_roll.as_ref().unwrap());
             return Some(outcomes.into_iter().map(|a| (BbPlayer::Chance, a)).collect());
         }
 
