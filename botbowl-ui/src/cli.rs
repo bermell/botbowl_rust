@@ -18,6 +18,55 @@ pub enum Command {
     /// Watch a bot play one trial of a curriculum lecture; the UI stops on
     /// pass/fail and leaves the final state on screen.
     Curriculum(CurriculumArgs),
+    /// Generate MCTS training data (states + search distributions + values)
+    /// and write it as JSONL trajectories. Headless.
+    Dataset(DatasetArgs),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
+pub enum DatasetMode {
+    /// MctsBot vs MctsBot, full games. Samples both teams' decisions.
+    #[default]
+    SelfPlay,
+    /// MctsBot plays a curriculum lecture against a RandomBot opponent.
+    Curriculum,
+}
+
+#[derive(Args, Debug)]
+pub struct DatasetArgs {
+    /// What to generate.
+    #[arg(long, value_enum, default_value_t = DatasetMode::SelfPlay)]
+    pub mode: DatasetMode,
+    /// Output JSONL file; one trajectory per line, appended by default.
+    #[arg(long, default_value = "dataset.jsonl")]
+    pub out: String,
+    /// Truncate the output file before writing instead of appending.
+    #[arg(long, default_value_t = false)]
+    pub truncate: bool,
+    /// Number of games (self-play) or lecture trials (curriculum) to run.
+    #[arg(long, default_value_t = 1)]
+    pub games: u32,
+    /// Base RNG seed; game/trial `i` uses `seed + i`.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// MCTS budget: search iterations per move (ignored if --mcts-time-ms set).
+    #[arg(long, default_value_t = 1000)]
+    pub mcts_iters: usize,
+    /// MCTS budget in milliseconds per move; overrides --mcts-iters when set.
+    #[arg(long)]
+    pub mcts_time_ms: Option<u64>,
+    /// Worker threads for the MCTS bot.
+    #[arg(long, default_value_t = 1)]
+    pub mcts_workers: usize,
+    /// Safety cap on micro-steps per game/trial.
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    /// (curriculum mode) Lecture name, e.g. "Score TD" (case-insensitive).
+    #[arg(long)]
+    pub lecture: Option<String>,
+    /// (curriculum mode) Lecture difficulty.
+    #[arg(long, value_enum, default_value_t = CliDifficulty::Easy)]
+    pub difficulty: CliDifficulty,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

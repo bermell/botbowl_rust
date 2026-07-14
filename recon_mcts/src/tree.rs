@@ -310,6 +310,14 @@ pub struct NodeInfo<S, P, Q> {
     pub n_parents: usize,
     /// The number of direct child `Node`s this `Node has.
     pub n_children: Status<usize>,
+    /// Whether this `Node`'s subtree is fully solved (terminal, or every
+    /// child solved). A solved node's aggregated `score` is final (exact
+    /// minimax within the search horizon), and it is skipped by
+    /// selection — so its `score.visits` freezes while unsolved siblings
+    /// keep accruing. Consumers building AlphaZero-style policy targets
+    /// from visit counts must read this: raw visits are not a valid
+    /// posterior over solved children.
+    pub solved: bool,
 }
 
 use state_memory::StateMemory;
@@ -1224,6 +1232,7 @@ where
             state: self.state.read().unwrap().clone(),
             n_parents: self.parents.read().unwrap().len(),
             n_children: Status::from_children(&*self.children.read().unwrap(), HashMap::len),
+            solved: self.solved.load(Ordering::Relaxed),
         }
     }
 }

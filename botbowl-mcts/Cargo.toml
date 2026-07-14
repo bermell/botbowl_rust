@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
 recon_mcts = { version = "0.1.0", path = "../recon_mcts/", features = ["lockref-guard"] }
 
 [features]

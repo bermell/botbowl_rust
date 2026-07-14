@@ -1,0 +1,10 @@
+[package]
+name = "botbowl-data"
+version = "0.1.0"
+edition = "2021"
+description = "Training-data schema + JSONL persistence for Blood Bowl MCTS self-play (states, search distributions, values, provenance metadata)."
+
+[dependencies]
+botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

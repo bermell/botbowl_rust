@@ -116,3 +116,31 @@ Given these constraints we have many options, here are a few that can be evaluat
 Scoring the leaf node on who scores at the end of the drive isn't necessarily counting towards winning the game. A
 skilled human can easily exploit this behaviour to do a 2-1 grind. But it's a lot easier to train a network this way so
 we'll start there.
+
+## Caveat (2026-07-13): solved-subtree pruning distorts visit counts — don't train π on raw N
+
+This plan states that "the network priors will estimate the visit counts of the children of a node
+after mcts search". Since commit `bc687b9`, that statement is no longer safe to implement literally:
+`recon_mcts` marks exhausted subtrees **solved** (terminal, or all children solved) and removes them
+from selection. A solved child's visit count *freezes* while unsolved siblings keep accruing — and
+the child that solves fastest is frequently the *best* one (a touchdown move solves in ~10 descents
+at Q≈1000 while mediocre siblings keep collecting visits). Under solved pruning, `N(a)` at the root
+means "exploration effort spent", not "posterior preference"; the best move can have the lowest
+visit count. This distortion applies even when the root itself never solves (typical for full-size
+games) — any partially solved root child skews the distribution. Action *selection* is unaffected
+(`MctsBot` picks by aggregated Q, which over a solved subtree is exact minimax), but AlphaZero-style
+policy targets `π ∝ N` would be actively wrong.
+
+When building the self-play data generator, read the solved flag instead of blindly normalising
+visits (expose per-child solvedness through `get_next_move_info` at that point):
+
+1. **Root solved** → one-hot (or low-temperature softmax) over the exact child Q values. A solved
+   root is a proven position; the sharp target is correct — arguably better supervision than a
+   fuzzy visit distribution. (Alternatively: skip solved-root positions as policy samples entirely;
+   they are trivially decided.)
+2. **Root partially solved** → hybrid target: visits for unsolved children; for solved children,
+   substitute a pseudo-count (at minimum: if the solved child is the argmax-Q child, give it at
+   least the max sibling visit count).
+
+Upside for the value head: solved nodes carry *exact* minimax values within the horizon — a
+gold-standard value target, cleaner than bootstrapping from the game/drive outcome.

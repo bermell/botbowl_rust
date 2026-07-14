@@ -18,10 +18,11 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use botbowl_data::{ChildStat, Sample};
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
-use recon_mcts::{GameDynamics, GetState, SearchTree, SelectNodeState, StoreState, Tree, TreeAlias};
+use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, Status, StoreState, Tree, TreeAlias};
 
 use crate::action::{BbAction, BbPlayer};
 use crate::priors::prior_for_engine_action;
@@ -453,8 +454,7 @@ impl GameDynamics for BloodBowlDynamics {
                     ((unscored, deficit), action)
                 })
                 .max_by(|((ua, da), _), ((ub, db), _)| {
-                    ua.cmp(ub)
-                        .then(da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
+                    ua.cmp(ub).then(da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
                 })
                 .expect("chance node must have at least one outcome");
             bump_chosen(&pick.1, 0);
@@ -844,8 +844,23 @@ impl MctsBot {
     }
 }
 
-impl Bot for MctsBot {
-    fn get_action(&mut self, state: &GameState) -> EngineAction {
+/// Raw search output for one decision, shared by [`MctsBot::get_action`]
+/// and [`MctsBot::get_action_with_record`]. Holds the root children with
+/// their per-child stats, the root aggregate, and which team was to move.
+type BbNodeInfo = NodeInfo<GameState, BbPlayer, BbScore>;
+
+struct SearchResult {
+    move_info: Vec<(BbAction, BbNodeInfo)>,
+    root_info: BbNodeInfo,
+    agent_team: TeamType,
+}
+
+impl MctsBot {
+    /// Run one search from `state` and return the raw tree output (root
+    /// children + root aggregate). Handles tree reuse/caching internally;
+    /// callers turn the result into an action ([`MctsBot::get_action`]) or
+    /// a training sample ([`MctsBot::get_action_with_record`]).
+    fn run_search(&mut self, state: &GameState) -> SearchResult {
         // Clone the state and turn on roll-by-roll stepping for the
         // search. `DiceMode::RegisterRolls` keeps `pending_roll` visible
         // on post-action states, so pickup / dodge / GFI rolls become
@@ -1093,18 +1108,22 @@ impl Bot for MctsBot {
                 let move_info = tree
                     .get_next_move_info()
                     .expect("MCTS tree has no move info at root");
-                (move_info, tree)
+                // Root aggregate (Q / visits / solved) captured before the
+                // tree is handed to the cache — the record needs it and
+                // the tree is moved out below.
+                let root_info = tree.get_root_info();
+                (move_info, root_info, tree)
             }};
         }
 
-        let (move_info, cache_after) = match memory_mode {
+        let (move_info, root_info, cache_after) = match memory_mode {
             MemoryMode::GetState => {
-                let (mi, t) = run_with_marker!(GetState, "get", GetState);
-                (mi, CachedTree::GetState(t))
+                let (mi, ri, t) = run_with_marker!(GetState, "get", GetState);
+                (mi, ri, CachedTree::GetState(t))
             }
             MemoryMode::StoreState => {
-                let (mi, t) = run_with_marker!(StoreState, "store", StoreState);
-                (mi, CachedTree::StoreState(t))
+                let (mi, ri, t) = run_with_marker!(StoreState, "store", StoreState);
+                (mi, ri, CachedTree::StoreState(t))
             }
         };
         // Stash the tree for the next `get_action`. Reuse-disabled bots
@@ -1121,6 +1140,16 @@ impl Bot for MctsBot {
             self.last_anchor = None;
         }
 
+        SearchResult {
+            move_info,
+            root_info,
+            agent_team,
+        }
+    }
+
+    /// Pick the root child to play from a completed search. See the
+    /// comment inside for why this is aggregated-Q, not most-visited.
+    fn pick_best_action(move_info: &[(BbAction, BbNodeInfo)], agent_team: TeamType) -> EngineAction {
         if std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1") {
             let mut infos: Vec<_> = move_info
                 .iter()
@@ -1168,6 +1197,71 @@ impl Bot for MctsBot {
                 panic!("root selected a chance action — root must be a player turn");
             }
         }
+    }
+
+    /// Like [`Bot::get_action`], but also returns a training [`Sample`]:
+    /// the decision node, the chosen action, and the raw per-child search
+    /// stats (visits / Q / prior / solved) plus the root aggregate. The
+    /// returned action is identical to what `get_action` would play — this
+    /// method just additionally harvests the search tree before it drops.
+    ///
+    /// `outcome_value` on the sample is left `None`; backfill it at the end
+    /// of the trajectory (see [`botbowl_data::Trajectory::backfill_outcome_value`]).
+    pub fn get_action_with_record(&mut self, state: &GameState) -> (EngineAction, Sample) {
+        let result = self.run_search(state);
+        let action = Self::pick_best_action(&result.move_info, result.agent_team);
+
+        let children = result
+            .move_info
+            .iter()
+            .filter_map(|(a, info)| {
+                // Only player edges are training targets; chance edges are
+                // search-internal roll outcomes, not agent decisions.
+                let engine_action = match a {
+                    BbAction::Player { action, .. } => *action,
+                    BbAction::Chance { .. } => return None,
+                };
+                let (visits, q) = info
+                    .score
+                    .as_ref()
+                    .map(|s| (s.visits.load(Ordering::Relaxed), Some(s.score)))
+                    .unwrap_or((0, None));
+                Some(ChildStat {
+                    action: engine_action,
+                    visits,
+                    q,
+                    prior: a.prior_f32(),
+                    solved: info.solved,
+                    terminal: matches!(info.n_children, Status::Terminal),
+                })
+            })
+            .collect();
+
+        let (root_visits, root_value) = result
+            .root_info
+            .score
+            .as_ref()
+            .map(|s| (s.visits.load(Ordering::Relaxed), Some(s.score)))
+            .unwrap_or((0, None));
+
+        let sample = Sample {
+            state: state.clone(),
+            to_move: result.agent_team.into(),
+            chosen_action: action,
+            children,
+            root_value,
+            root_visits,
+            root_solved: result.root_info.solved,
+            outcome_value: None,
+        };
+        (action, sample)
+    }
+}
+
+impl Bot for MctsBot {
+    fn get_action(&mut self, state: &GameState) -> EngineAction {
+        let result = self.run_search(state);
+        Self::pick_best_action(&result.move_info, result.agent_team)
     }
 }
 

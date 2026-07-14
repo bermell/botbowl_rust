@@ -7,11 +7,13 @@ edition = "2021"
 
 [dependencies]
 botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
+botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
 botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
 botbowl-mcts = { version = "0.1.0", path = "../botbowl-mcts/" }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.27.0"
 rand = "0.8.5"
+rand_chacha = "0.3"
 ratatui = "0.25.0"
 
 [dev-dependencies]
