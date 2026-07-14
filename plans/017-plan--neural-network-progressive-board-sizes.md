@@ -120,3 +120,25 @@ solvedness through `get_next_move_info` at that point):
 
 Upside for the value head: solved nodes carry _exact_ minimax values within the horizon — a gold-standard value target,
 cleaner than bootstrapping from the game/drive outcome.
+
+## Caveat (2026-07-14): `z_home` is the final scoreline, not the drive outcome — fix in the data generator
+
+This plan defines the value as "which team scores at the end of the **drive**: -1 opponent, 0 no score, 1 one-self".
+What `botbowl-data` actually backfills today is `Outcome::z_home = clamp(final home_score − away_score, -1, 1)` — the
+sign of the **absolute final scoreline**, broadcast to every sample in the trajectory. The two coincide only for
+trajectories that start 0–0 and span a single drive (true for the current curriculum lectures, so nothing is broken
+yet). They diverge as soon as trajectories start from a non-level score or span multiple drives:
+
+- Home leads 1–0, the drive ends scoreless → sample target is `+1`, but the drive outcome is `0`.
+- Home leads 1–0 and scores again → still `+1` after the clamp; the net can never learn that scoring another TD beats
+  sitting on the lead.
+
+This also puts the value head in a different frame from the search: `score_leaf`'s exact-value carve-out for
+known-outcome leaves (commit `8e68560`) and `leaf_score`'s ranking both work in **Δ-score since the root anchor**,
+i.e. drive-relative. A net trained on final-scoreline sign feeds the search values in a conflicting frame.
+
+**When building the self-play data generator:** backfill `outcome_value` per-sample as the score delta from the sample
+to the end of *its drive* (Home-centric; `targets::value_target` already handles the mover sign-flip), instead of
+broadcasting one game-final `z`. No test will catch this if forgotten — it silently poisons the value head. At the same
+time, consider the solved-root upside above: for solved roots, `root_value` is an exact minimax value within the
+horizon and a strictly better value target than any outcome bootstrap.
