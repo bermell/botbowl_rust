@@ -32,8 +32,8 @@ def compute_losses(model, batch, device):
     return policy_loss, value_loss, acc
 
 
-def train(dims_dir, epochs=20, batch_size=32, lr=1e-3, limit=None, out=None, onnx=None, device="cpu"):
-    ds = PreparedDataset(dims_dir)
+def train(dims_dir, epochs=20, batch_size=32, lr=1e-3, limit=None, out=None, onnx=None, device="cpu", augment=True):
+    ds = PreparedDataset(dims_dir, augment=augment)
     if limit is not None:
         # Overfit smoke: restrict to the first `limit` samples.
         ds.spatial = ds.spatial[:limit]
@@ -80,6 +80,7 @@ def main():
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--limit", type=int, default=None, help="overfit only the first N samples")
+    ap.add_argument("--no-augment", action="store_true", help="disable random y-flip augmentation")
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
     args = ap.parse_args()
@@ -91,6 +92,7 @@ def main():
         limit=args.limit,
         out=args.out,
         onnx=args.onnx,
+        augment=not args.no_augment,
     )
 
 

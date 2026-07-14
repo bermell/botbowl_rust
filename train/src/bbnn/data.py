@@ -13,8 +13,31 @@ import torch
 from torch.utils.data import Dataset
 
 
+def flip_y(spatial, actions):
+    """Apply Blood Bowl's left-right symmetry: mirror the board across its
+    long axis, i.e. flip the tensor H dim (= engine y). The x-mirror is NOT
+    a symmetry — x is the attacking direction, already spent on the
+    Home/Away canonicalisation in `botbowl-nn/src/perspective.rs`.
+
+    Value, global features and simple-action logits (channel spatial max)
+    are invariant; positional action cells flip their y. Works on a single
+    sample ``(C, H, W)`` / ``(K, 4)`` or a batch ``(N, C, H, W)`` /
+    ``(N, K, 4)``.
+    """
+    h = spatial.shape[-2]
+    flipped = spatial.flip(-2)
+    actions = actions.clone()
+    positional = actions[..., 3] == 0
+    actions[..., 1] = torch.where(positional, (h - 1) - actions[..., 1], actions[..., 1])
+    return flipped, actions
+
+
 class PreparedDataset(Dataset):
-    def __init__(self, dims_dir):
+    """``augment=True`` applies a random y-flip per sample per access —
+    fresh flips every epoch, nothing duplicated on disk."""
+
+    def __init__(self, dims_dir, augment=False):
+        self.augment = augment
         d = Path(dims_dir)
         self.spatial = np.load(d / "spatial.npy")            # (N, C, H, W) f32
         self.global_ = np.load(d / "global.npy")             # (N, F) f32
@@ -33,12 +56,16 @@ class PreparedDataset(Dataset):
 
     def __getitem__(self, i):
         lo, hi = int(self.offsets[i]), int(self.offsets[i + 1])
+        spatial = torch.from_numpy(self.spatial[i]).float()
+        actions = torch.from_numpy(self.actions[lo:hi]).long()         # (K_i, 4)
+        if self.augment and torch.rand(()) < 0.5:
+            spatial, actions = flip_y(spatial, actions)
         return {
-            "spatial": torch.from_numpy(self.spatial[i]).float(),
+            "spatial": spatial,
             "global": torch.from_numpy(self.global_[i]).float(),
             "value": torch.tensor([self.value[i]], dtype=torch.float32),
             "chosen": int(self.chosen[i]),
-            "actions": torch.from_numpy(self.actions[lo:hi]).long(),   # (K_i, 4)
+            "actions": actions,
             "policy": torch.from_numpy(self.policy[lo:hi]).float(),    # (K_i,)
         }
 

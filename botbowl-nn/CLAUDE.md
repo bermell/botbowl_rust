@@ -12,6 +12,8 @@ Shapes: spatial `C=37` planes × `H` × `W`, global `F=15`, policy head `A=30`. 
 
 `mover_for(state)` = `available_actions.team.unwrap_or(team_turn)`. Everything perspective-dependent — the encoder, the action↔cell map, the value sign — routes through here. **Canonical view: the mover attacks toward `x=1`.** `Home` already does (`endzone_x(Home)==1`) → encoded verbatim; `Away` is **x-mirrored** (`x → (width-1)-x`, no y-flip; involutive). The network's value `v` is **mover-centric** (`+1` = team-to-move winning); Home-centric is recovered by flipping sign for an `Away` mover.
 
+The game's *other* mirror — across the pitch's long axis, `y → (H-1)-y` — IS a true symmetry (left/right of the attacking direction are interchangeable) and is exploited as **train-time random y-flip augmentation** in `train/src/bbnn/data.py` (`flip_y`; positional action cells flip y, simple/channel-max logits and value are invariant). The x-mirror is *not* a symmetry — it swaps attacking directions and is already spent on the canonicalisation above.
+
 ## Action ↔ policy cell (`actions.rs`)
 
 Exhaustive matches pin `PosAT → 0..14`, `SimpleAT → 14..30`. Adding an engine action variant is a **compile error here** — a deliberate trip-wire forcing a schema bump. Positional actions target one canonicalised cell `(channel, y, x)`; simple actions have no cell and their logit is the channel-wide spatial **max**.
