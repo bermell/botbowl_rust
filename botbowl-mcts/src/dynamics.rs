@@ -116,6 +116,18 @@ impl HorizonAnchor {
         }
     }
 
+    /// Has either team scored since the anchor was captured?
+    pub fn score_changed(&self, state: &GameState) -> bool {
+        state.home.score != self.home_score || state.away.score != self.away_score
+    }
+
+    /// Home-centric score change since the anchor: `Δhome − Δaway`. The
+    /// horizon treats any score change as terminal, so within one search
+    /// at most one team can have scored → this is `-1`, `0`, or `+1`.
+    pub fn score_delta(&self, state: &GameState) -> i64 {
+        (state.home.score as i64 - self.home_score as i64) - (state.away.score as i64 - self.away_score as i64)
+    }
+
     /// Has the state moved past the horizon? True ⇒ treat as terminal.
     pub fn diverged(&self, state: &GameState) -> bool {
         if state.info.game_over {
@@ -674,7 +686,24 @@ impl GameDynamics for BloodBowlDynamics {
         }
         let score = match &self.evaluator {
             Evaluator::Heuristic => leaf_score(state),
-            Evaluator::Nn(nn) => nn.value_home_i64(state),
+            // Exact-outcome carve-out: once someone has scored since the
+            // anchor (or the game has ended), the drive outcome is *known*
+            // — exactly the value the net is trained to predict. Asking
+            // the NN here would (a) replace a gold-standard target with an
+            // estimate that recon_mcts then freezes into solved subtrees
+            // as exact minimax, and (b) query the net out-of-distribution:
+            // training samples are decision states, never post-TD kickoff
+            // states. Δscore *since the anchor* (not absolute `leaf_score`)
+            // keeps the value on the NN's drive-relative scale — absolute
+            // score would offset these leaves by the root score against
+            // every NN-scored sibling. Without an anchor (direct `Tree`
+            // callers; `MctsBot` always sets one) the NN scores everything.
+            Evaluator::Nn(nn) => match &self.horizon {
+                Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                    anchor.score_delta(state).clamp(-1, 1) * 1000
+                }
+                _ => nn.value_home_i64(state),
+            },
         };
         Some(BbScore {
             visits: AtomicU32::new(1),
