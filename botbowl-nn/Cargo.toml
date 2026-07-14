@@ -1,0 +1,20 @@
+[package]
+name = "botbowl-nn"
+version = "0.1.0"
+edition = "2021"
+description = "Neural-network feature encoder, offline prepare step, and tract-onnx inference evaluator for Blood Bowl MCTS (plan 017)."
+
+[dependencies]
+botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
+tract-onnx = "0.21"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
+
+[[bin]]
+name = "prepare"
+path = "src/bin/prepare.rs"

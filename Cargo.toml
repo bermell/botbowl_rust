@@ -6,6 +6,7 @@ members = [
     "botbowl-mcts",
     "botbowl-ui",
     "botbowl-data",
+    "botbowl-nn",
 ]
 # recon_mcts is its own nested workspace (library + tests/nim, the latter
 # compiled with `test_internals` by default). Exclude it so it stays a

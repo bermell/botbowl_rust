@@ -1,5 +1,13 @@
 # Training neural network on progressively bigger boards
 
+> **Status (2026-07-14): implementation started** — the pipeline in `plans/017.b detailed-plan.md` is built:
+> new `botbowl-nn` crate (shared encoder, `prepare` bin, tract-onnx `NnEvaluator`), the `train/` PyTorch project
+> (trainer + ONNX export + committed parity fixture), and NN wiring into `botbowl-mcts` (`Evaluator::Nn`,
+> `MctsBot::with_evaluator`). Encoder/target/npy/parity/prepare/NN-evaluator tests are green; an end-to-end smoke
+> (`botbowl-mcts/tests/nn_bot.rs`, `#[ignore]`d, gated on `BLOOD_NN_MODEL`) confirms an NN-backed bot plays legal
+> Blood Bowl through the real search. Real data-generation *strategy* and progressive-board training are the next
+> steps (still design-open).
+
 We currently have a heuristic to evaluate leaf nodes and a simple scripted thing for action priors. In this idea we do
 what alpha zero did and have a neural network calculate the priors and the leaf node values.
 

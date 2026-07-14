@@ -8,4 +8,4 @@ pub mod score;
 pub mod scripted;
 
 pub use action::{BbAction, BbPlayer};
-pub use dynamics::{BloodBowlDynamics, MctsBot, SearchBudget};
+pub use dynamics::{BloodBowlDynamics, Evaluator, MctsBot, SearchBudget};

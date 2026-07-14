@@ -22,6 +22,7 @@ use botbowl_data::{ChildStat, Sample};
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
+use botbowl_nn::eval::NnEvaluator;
 use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, Status, StoreState, Tree, TreeAlias};
 
 use crate::action::{BbAction, BbPlayer};
@@ -134,12 +135,29 @@ impl HorizonAnchor {
     }
 }
 
+/// The leaf value function + prior source. `Heuristic` is the scripted
+/// baseline (`leaf_score` / `prior_for_engine_action`); `Nn` swaps in a
+/// frozen ONNX network (plan 017). A frozen deterministic CPU net is a
+/// pure function of state, so it preserves the recombination-purity
+/// invariant. NN priors **replace** scripted priors (no blending — there
+/// is no principled common scale). The default stays `Heuristic`, so all
+/// existing behaviour is byte-identical.
+#[derive(Debug, Clone, Default)]
+pub enum Evaluator {
+    #[default]
+    Heuristic,
+    Nn(Arc<NnEvaluator>),
+}
+
 /// `horizon` (None by default for backwards compatibility) bounds the
 /// search depth — `available_actions` returns None as soon as a state
 /// has diverged past the anchor. `MctsBot::get_action` always sets a
 /// horizon; only direct callers (benches, tests that drive `Tree`
 /// without `MctsBot`) see the unbounded form.
-#[derive(Debug, Clone, Copy)]
+///
+/// Not `Copy`: `Evaluator::Nn` carries an `Arc`. It is cloned once per
+/// search when `run_search` builds the `gd` (cheap — an `Arc` bump).
+#[derive(Debug, Clone)]
 pub struct BloodBowlDynamics {
     pub horizon: Option<HorizonAnchor>,
     /// Plan 015 Step 5 — magnitude of the transient `BbScore.virtual_loss`
@@ -148,6 +166,9 @@ pub struct BloodBowlDynamics {
     /// to disable. Honoured per-search; `MctsBot::new` resolves it from
     /// `BLOOD_MCTS_VIRTUAL_LOSS`.
     pub virtual_loss: i32,
+    /// Value/prior source. `Heuristic` (default) reproduces the scripted
+    /// bot exactly; `Nn` routes priors + leaf value through the network.
+    pub evaluator: Evaluator,
 }
 
 impl Default for BloodBowlDynamics {
@@ -155,6 +176,7 @@ impl Default for BloodBowlDynamics {
         Self {
             horizon: None,
             virtual_loss: DEFAULT_VIRTUAL_LOSS,
+            evaluator: Evaluator::default(),
         }
     }
 }
@@ -270,12 +292,17 @@ impl GameDynamics for BloodBowlDynamics {
             );
             filtered = raw_actions;
         }
+        // Priors: the heuristic computes one per action; the NN does a
+        // single forward over the whole (already-pruned) legal set and
+        // gathers per-action logits. NN priors *replace* scripted priors.
+        let priors: Vec<f32> = match &self.evaluator {
+            Evaluator::Heuristic => filtered.iter().map(|a| prior_for_engine_action(state, *a)).collect(),
+            Evaluator::Nn(nn) => nn.priors(state, &filtered),
+        };
         let actions: Vec<(BbPlayer, BbAction)> = filtered
             .into_iter()
-            .map(|a| {
-                let prior = prior_for_engine_action(state, a);
-                (mcts_player, BbAction::player(a, prior))
-            })
+            .zip(priors)
+            .map(|(a, prior)| (mcts_player, BbAction::player(a, prior)))
             .collect();
         if actions.is_empty() {
             None
@@ -645,9 +672,13 @@ impl GameDynamics for BloodBowlDynamics {
         if state.pending_roll.is_some() && !state.info.game_over && !past_horizon {
             return None; // chance node — expanded, not scored
         }
+        let score = match &self.evaluator {
+            Evaluator::Heuristic => leaf_score(state),
+            Evaluator::Nn(nn) => nn.value_home_i64(state),
+        };
         Some(BbScore {
             visits: AtomicU32::new(1),
-            score: leaf_score(state),
+            score,
             node_kind: player_for_state(state),
             virtual_loss: AtomicI32::new(0),
         })
@@ -793,6 +824,10 @@ pub struct MctsBot {
     /// at `::new` (default 30, `0` disables). Threaded into
     /// `BloodBowlDynamics.virtual_loss` per `get_action`.
     virtual_loss: i32,
+    /// Value/prior source threaded into `BloodBowlDynamics` each
+    /// `get_action`. Default `Heuristic` → byte-identical to the scripted
+    /// baseline; `with_evaluator` swaps in a frozen NN (plan 017).
+    evaluator: Evaluator,
 }
 
 impl MctsBot {
@@ -814,7 +849,16 @@ impl MctsBot {
             cached_tree: None,
             last_anchor: None,
             virtual_loss,
+            evaluator: Evaluator::default(),
         }
+    }
+
+    /// Swap the scripted heuristic for a frozen NN evaluator (plan 017).
+    /// The `Arc` is shared across all search workers. Leaving this unset
+    /// keeps the default heuristic behaviour.
+    pub fn with_evaluator(mut self, evaluator: Arc<NnEvaluator>) -> Self {
+        self.evaluator = Evaluator::Nn(evaluator);
+        self
     }
 
     pub fn with_workers(mut self, n_workers: usize) -> Self {
@@ -906,6 +950,7 @@ impl MctsBot {
                 Some(HorizonAnchor::capture(&root_state, agent_team))
             },
             virtual_loss: self.virtual_loss,
+            evaluator: self.evaluator.clone(),
         };
         // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
         // workers (e.g. `expand_bench_main`) force single-thread for
@@ -1457,6 +1502,7 @@ mod tests {
         let dynamics = BloodBowlDynamics {
             horizon: Some(anchor),
             virtual_loss: 0,
+            ..Default::default()
         };
 
         // Within the horizon: a chance node, expanded not scored.
