@@ -94,6 +94,7 @@ fn main() {
     let mut total_read = 0usize;
     let mut total_kept = 0usize;
     let mut total_skipped_policy = 0usize;
+    let mut total_skipped_value = 0usize;
     let mut total_below_min = 0usize;
 
     for input in &args.inputs {
@@ -119,7 +120,7 @@ fn main() {
                     None => {
                         // Value target missing (outcome not backfilled) — the
                         // value head needs it, so drop the sample.
-                        total_skipped_policy += 1;
+                        total_skipped_value += 1;
                         continue;
                     }
                 };
@@ -230,7 +231,8 @@ fn main() {
 
     println!(
         "prepare done: read {total_read} samples, kept {total_kept} \
-         (dropped {total_below_min} below min-root-visits, {total_skipped_policy} without a target) \
+         (dropped {total_below_min} below min-root-visits, {total_skipped_policy} without a policy target, \
+         {total_skipped_value} without a value target) \
          across {} board-dims group(s)",
         groups.len()
     );

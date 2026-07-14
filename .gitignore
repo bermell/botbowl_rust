@@ -1,3 +1,5 @@
 /target
 /data
 /models
+__pycache__/
+train/.venv
