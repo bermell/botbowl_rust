@@ -1,3 +1,4 @@
+use botbowl_curriculum::RandomStartConfig;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
@@ -21,6 +22,9 @@ pub enum Command {
     /// Generate MCTS training data (states + search distributions + values)
     /// and write it as JSONL trajectories. Headless.
     Dataset(DatasetArgs),
+    /// Interactively tune random-start placement biases: space generates a
+    /// new state, 1-9 select a bias variable, up/down adjust it, q quits.
+    Placement(PlacementArgs),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
@@ -30,6 +34,68 @@ pub enum DatasetMode {
     SelfPlay,
     /// MctsBot plays a curriculum lecture against a RandomBot opponent.
     Curriculum,
+    /// Like self-play, but each game starts from a randomized mid-game state
+    /// (biased player placement, random half/turn/score) instead of kickoff.
+    RandomStart,
+}
+
+/// Placement bias variables for random-start state generation (plan 019).
+/// Defaults mirror `RandomStartConfig::default()` — keep them in sync.
+#[derive(Args, Debug, Clone, Copy)]
+pub struct BiasArgs {
+    /// Per-square decay toward the ball (pocket players; line players' y). 1.0 = off.
+    #[arg(long, default_value_t = 1.25)]
+    pub ball_distance: f32,
+    /// Per-square decay toward the team's front column for line players. 1.0 = off.
+    #[arg(long, default_value_t = 1.8)]
+    pub front_line: f32,
+    /// Multiplier for squares adjacent to an already-placed teammate. 1.0 = neutral.
+    #[arg(long, default_value_t = 1.5)]
+    pub mark_teammate: f32,
+    /// Multiplier for squares adjacent to an already-placed opponent. 1.0 = neutral.
+    #[arg(long, default_value_t = 1.5)]
+    pub mark_opponent: f32,
+    /// Multiplier for squares between own endzone and closest opponent. 1.0 = neutral.
+    #[arg(long, default_value_t = 1.5)]
+    pub own_side: f32,
+    /// Sharpens (<1) or flattens (>1) the square distribution.
+    #[arg(long, default_value_t = 1.0)]
+    pub temperature: f32,
+    /// Probability that the ball starts carried by a player.
+    #[arg(long, default_value_t = 0.75)]
+    pub carried_prob: f32,
+    /// Fraction of each team assigned to the line (front brawl) role.
+    #[arg(long, default_value_t = 0.45)]
+    pub line_fraction: f32,
+    /// Fraction of each team assigned to the pocket (near-ball) role; rest are wide.
+    #[arg(long, default_value_t = 0.25)]
+    pub pocket_fraction: f32,
+}
+
+impl BiasArgs {
+    pub fn to_config(&self) -> RandomStartConfig {
+        RandomStartConfig {
+            ball_distance: self.ball_distance,
+            front_line: self.front_line,
+            mark_teammate: self.mark_teammate,
+            mark_opponent: self.mark_opponent,
+            own_side: self.own_side,
+            temperature: self.temperature,
+            carried_prob: self.carried_prob,
+            line_fraction: self.line_fraction,
+            pocket_fraction: self.pocket_fraction,
+            board_dims: None,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct PlacementArgs {
+    /// Base RNG seed; regeneration `i` uses `seed + i`.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    #[command(flatten)]
+    pub bias: BiasArgs,
 }
 
 #[derive(Args, Debug)]
@@ -67,6 +133,9 @@ pub struct DatasetArgs {
     /// (curriculum mode) Lecture difficulty.
     #[arg(long, value_enum, default_value_t = CliDifficulty::Easy)]
     pub difficulty: CliDifficulty,
+    /// (random-start mode) Placement bias variables.
+    #[command(flatten)]
+    pub bias: BiasArgs,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

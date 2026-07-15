@@ -22,10 +22,12 @@ use std::time::Duration;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
-use botbowl_curriculum::{available_lectures, make_lecture, Difficulty, LectureContext, LectureStatus};
+use botbowl_curriculum::{
+    available_lectures, generate_random_start, make_lecture, Difficulty, LectureContext, LectureStatus,
+};
 use botbowl_data::{DatasetWriter, Outcome, Sample, Trajectory, TrajectoryMeta};
 use botbowl_engine::bots::{Bot, RandomBot};
-use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameStateBuilder};
+use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::TeamType;
 use botbowl_mcts::{MctsBot, SearchBudget};
 
@@ -51,6 +53,7 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
         let seed = args.seed.wrapping_add(g as u64);
         let traj = match args.mode {
             DatasetMode::SelfPlay => Some(self_play_trajectory(&args, seed)),
+            DatasetMode::RandomStart => Some(random_start_trajectory(&args, seed)),
             DatasetMode::Curriculum => match curriculum_trajectory(&args, seed) {
                 Ok(t) => t,
                 Err(e) => {
@@ -100,31 +103,26 @@ fn budget_label(args: &DatasetArgs) -> String {
     }
 }
 
-/// One full MctsBot-vs-MctsBot game, sampling both teams' decisions.
-fn self_play_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
-    let mut state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
-    state.set_seed(seed);
-    state.set_dice_mode(DiceMode::RollDice);
-    state.set_logging_state(false);
-
+/// Play `state` to completion with MctsBot on both teams, sampling both
+/// teams' decisions.
+fn mcts_vs_mcts_samples(state: &mut GameState, args: &DatasetArgs, seed: u64) -> Vec<Sample> {
     let mut home = make_mcts(args);
     let mut away = make_mcts(args);
     home.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xA));
     away.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xB));
 
-    let board_dims = state.board_dims;
     let mut samples: Vec<Sample> = Vec::new();
     let mut steps = 0u32;
 
     while !state.info.game_over && steps < args.max_steps {
         let action = match state.available_actions.team {
             Some(TeamType::Home) => {
-                let (a, s) = home.get_action_with_record(&state);
+                let (a, s) = home.get_action_with_record(state);
                 samples.push(s);
                 a
             }
             Some(TeamType::Away) => {
-                let (a, s) = away.get_action_with_record(&state);
+                let (a, s) = away.get_action_with_record(state);
                 samples.push(s);
                 a
             }
@@ -135,6 +133,18 @@ fn self_play_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
         state.step(action).expect("engine step failed during self-play");
         steps += 1;
     }
+    samples
+}
+
+/// One full MctsBot-vs-MctsBot game, from kickoff.
+fn self_play_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
+    let mut state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
+    state.set_seed(seed);
+    state.set_dice_mode(DiceMode::RollDice);
+    state.set_logging_state(false);
+
+    let board_dims = state.board_dims;
+    let samples = mcts_vs_mcts_samples(&mut state, args, seed);
 
     let label = budget_label(args);
     let meta = TrajectoryMeta::new("self-play", board_dims)
@@ -142,6 +152,43 @@ fn self_play_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
         .with_seed(seed)
         .with_extra("mode", "self-play")
         .with_extra("max_steps", args.max_steps.to_string());
+    let outcome = Outcome::from_state(&state, None);
+    Trajectory::new(meta, samples, outcome)
+}
+
+/// One MctsBot-vs-MctsBot game from a randomized mid-game state (plan 019).
+fn random_start_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
+    let cfg = args.bias.to_config();
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut state = generate_random_start(&cfg, &mut rng);
+    state.set_logging_state(false);
+
+    let board_dims = state.board_dims;
+    let (start_half, start_home_turn, start_away_turn) =
+        (state.info.half, state.info.home_turn, state.info.away_turn);
+    let start_score = format!("{}-{}", state.home.score, state.away.score);
+    let samples = mcts_vs_mcts_samples(&mut state, args, seed);
+
+    let label = budget_label(args);
+    let bias = &args.bias;
+    let meta = TrajectoryMeta::new("random-start", board_dims)
+        .with_bots(label.clone(), label)
+        .with_seed(seed)
+        .with_extra("mode", "random-start")
+        .with_extra("max_steps", args.max_steps.to_string())
+        .with_extra("ball_distance", bias.ball_distance.to_string())
+        .with_extra("front_line", bias.front_line.to_string())
+        .with_extra("mark_teammate", bias.mark_teammate.to_string())
+        .with_extra("mark_opponent", bias.mark_opponent.to_string())
+        .with_extra("own_side", bias.own_side.to_string())
+        .with_extra("temperature", bias.temperature.to_string())
+        .with_extra("carried_prob", bias.carried_prob.to_string())
+        .with_extra("line_fraction", bias.line_fraction.to_string())
+        .with_extra("pocket_fraction", bias.pocket_fraction.to_string())
+        .with_extra("start_half", start_half.to_string())
+        .with_extra("start_home_turn", start_home_turn.to_string())
+        .with_extra("start_away_turn", start_away_turn.to_string())
+        .with_extra("start_score", start_score);
     let outcome = Outcome::from_state(&state, None);
     Trajectory::new(meta, samples, outcome)
 }

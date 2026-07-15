@@ -766,6 +766,18 @@ impl GameState {
         self.dice_mode = mode;
     }
 
+    /// Relabel the in-progress half as `half` (1 or 2), dropping any pending
+    /// unstarted half so the game ends when this half's turns run out. For
+    /// scenario/training-state generators; the turn counters are untouched.
+    pub fn set_half(&mut self, half: u8) {
+        debug_assert!(half == 1 || half == 2);
+        self.info.half = half;
+        if half == 2 {
+            self.proc_stack
+                .retain(|p| !matches!(p, AnyProc::Half(h) if !h.started));
+        }
+    }
+
     fn fixes_mut(&mut self) -> &mut FixedDice {
         match &mut self.dice_mode {
             DiceMode::FixedDice(fixes) => fixes,
@@ -1554,6 +1566,35 @@ mod gamestate_tests {
     use std::{collections::HashSet, io::Write, iter::repeat_with};
 
     use super::GameStateBuilder;
+
+    #[test]
+    fn set_half_relabels_and_drops_pending_half() {
+        use crate::core::procedures::AnyProc;
+        use crate::core::table::SimpleAT;
+
+        let mut state = GameStateBuilder::new()
+            .set_state(BuilderState::Turn { turn: 1 })
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(Position::new((10, 5)))
+            .build();
+        assert_eq!(state.info.half, 1);
+
+        state.set_half(2);
+        assert_eq!(state.info.half, 2);
+        let half_procs = state.proc_stack.iter().filter(|p| matches!(p, AnyProc::Half(_))).count();
+        assert_eq!(half_procs, 1, "the pending unstarted half should be dropped");
+
+        // Ending every remaining turn must now end the game — no second-half
+        // kickoff in between. From (home 1, away 0) that is 15 end-turns to
+        // reach 8/8, after which GameOver runs.
+        let mut guard = 0;
+        while !state.info.game_over {
+            state.step_simple(SimpleAT::EndTurn);
+            guard += 1;
+            assert!(guard <= 16, "game did not end after the relabeled half");
+        }
+        assert_eq!(state.info.half, 2);
+    }
 
     #[test]
     fn symmetric_interception_positions() {

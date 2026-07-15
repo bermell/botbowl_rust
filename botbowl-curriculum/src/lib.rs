@@ -1,8 +1,12 @@
 pub mod lecture;
 pub mod lectures;
+pub mod random_start;
 pub mod runner;
 
 pub use lecture::{Difficulty, Lecture, LectureContext, LectureStatus};
+pub use random_start::{
+    generate_random_start, RandomStartConfig, BIAS_MAX, BIAS_MIN, DECAY_MAX, DECAY_MIN, TEMP_MAX, TEMP_MIN,
+};
 pub use runner::{run_trials, run_trials_cfg, LectureSession, TrialConfig, TrialStats};
 
 use lectures::get_the_ball::{GetTheBallEasy, GetTheBallHard, GetTheBallMedium};
