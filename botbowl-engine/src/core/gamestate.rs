@@ -749,6 +749,13 @@ impl GameState {
         self.proc_stack.last().map(|p| p.name())
     }
 
+    /// Read-only peek at the procedure on top of the stack, for callers
+    /// (e.g. the MCTS roll-outcome scripting) that need the procedure's
+    /// data, not just the name `proc_stack_top` gives.
+    pub fn proc_stack_peek(&self) -> Option<&AnyProc> {
+        self.proc_stack.last()
+    }
+
     pub fn dice_mode(&self) -> &DiceMode {
         &self.dice_mode
     }

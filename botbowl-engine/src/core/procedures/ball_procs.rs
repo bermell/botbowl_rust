@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, D3, D6};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
 use crate::core::model::{
@@ -146,6 +146,18 @@ impl ThrowIn {
         };
         Direction::from(directions[dice as usize - 1])
     }
+
+    /// The square this throw-in roll would land on (before occupancy is
+    /// considered): `from + direction * min(distance, max_scatter)`. Pure.
+    /// Used by the MCTS scripted-outcome picker to choose a roll that keeps
+    /// the ball in bounds — an out-of-bounds landing re-requests the roll,
+    /// which under a deterministic scripted pick can loop forever on small
+    /// boards.
+    pub fn target_square(&self, direction: D3, distance: Sum2D6, dims: BoardDims) -> Position {
+        let dir = self.get_throw_in_direction(direction, dims);
+        let length = (distance as i8).min(dims.max_scatter());
+        self.from + dir * length
+    }
 }
 impl Procedure for ThrowIn {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
@@ -262,11 +274,21 @@ impl Procedure for Touchback {
             ProcState::Done
         } else {
             let team = other_team(game_state.info.kicking_this_drive);
-            let mut aa = AvailableActions::new(team);
             let positions: Vec<_> = game_state
                 .get_players_on_pitch_in_team(team)
                 .map(|p| p.position)
                 .collect();
+            if positions.is_empty() {
+                // Nobody can take the touchback (all receivers off the
+                // pitch — routine in 2-player small-board games). An empty
+                // `NeedAction` would deadlock every consumer, so drop the
+                // ball in the middle of the receiving half and let it
+                // bounce from there.
+                let aim = game_state.get_best_kickoff_aim_for(team);
+                game_state.set_ball(BallState::InAir(aim));
+                return ProcState::DoneNew(Bounce::new());
+            }
+            let mut aa = AvailableActions::new(team);
             aa.insert_positional(PosAT::SelectPosition, positions);
             ProcState::NeedAction(aa)
         }
@@ -528,6 +550,36 @@ mod tests {
     use crate::core::model::*;
     use crate::core::table::*;
     use crate::core::{gamestate::GameStateBuilder, model::Position, table::PosAT};
+
+    /// A touchback with no receiving player on the pitch (all injured/KO'd
+    /// — routine in 2-player small-board games) must not emit an empty
+    /// `NeedAction`: an action request with zero legal actions deadlocks
+    /// every consumer (bots, MCTS marks the node terminal). The ball is
+    /// dropped in the receiving half and bounces instead.
+    #[test]
+    fn touchback_with_no_receivers_drops_ball_in_receiving_half() {
+        use crate::core::procedures::ball_procs::{Bounce, Touchback};
+        use crate::core::procedures::AnyProc;
+
+        // Home kicks, Away receives — and Away has nobody on the pitch.
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((2, 2))).build();
+        state.info.kicking_this_drive = TeamType::Home;
+
+        let mut proc = Touchback {};
+        let result = proc.step(&mut state, ProcInput::Nothing);
+
+        let aim = state.get_best_kickoff_aim_for(TeamType::Away);
+        assert!(
+            matches!(state.ball, BallState::InAir(pos) if pos == aim),
+            "ball must be dropped at the receiving half's aim square, got {:?}",
+            state.ball
+        );
+        assert!(
+            matches!(result, ProcState::DoneNew(AnyProc::Bounce(Bounce { .. }))),
+            "touchback must resolve into a bounce, got {:?}",
+            result
+        );
+    }
 
     #[test]
     fn pickup_fail_and_bounce() -> Result<()> {

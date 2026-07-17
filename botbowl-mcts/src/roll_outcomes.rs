@@ -1,6 +1,7 @@
 use botbowl_engine::core::dices::{BlockDice, Coin, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8};
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Direction, Position};
+use botbowl_engine::core::procedures::AnyProc;
 
 use crate::action::BbAction;
 
@@ -46,8 +47,36 @@ pub fn enumerate(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
             ]
         }
         RequestedRoll::D8 => enumerate_d8(state),
+        RequestedRoll::ThrowIn => vec![throw_in_outcome(state)],
         _ => vec![BbAction::chance(scripted_result(req), 1.0)],
     }
+}
+
+/// The single scripted throw-in child, picked so the ball lands **in
+/// bounds**. A constant (direction, distance) can land straight back out
+/// on small boards; the engine then re-requests the roll from the new
+/// boundary square, and on a 3-row pitch those re-request states oscillate
+/// between two positions — identical states recur and the search DAG gets
+/// a genuine cycle (recon_mcts panics). Reading the `ThrowIn` proc's data
+/// keeps this a pure function of `state`, same as `bounce_outcomes`.
+fn throw_in_outcome(state: &GameState) -> BbAction {
+    let scripted = |direction, distance| BbAction::chance(RollResult::ThrowIn { direction, distance }, 1.0);
+    let Some(AnyProc::ThrowIn(throw_in)) = state.proc_stack_peek() else {
+        // Not actually mid-throw-in (dummy states in tests): keep the old
+        // constant short throw.
+        return scripted(D3::One, Sum2D6::Two);
+    };
+    // Shortest distance first; some direction at distance 2 always lands
+    // in bounds on any legal board (straight-in exists in every direction
+    // triple and the playable cross-axis is ≥ 3).
+    for distance in [Sum2D6::Two, Sum2D6::Three, Sum2D6::Four] {
+        for direction in [D3::One, D3::Two, D3::Three] {
+            if !state.is_out(throw_in.target_square(direction, distance, state.board_dims)) {
+                return scripted(direction, distance);
+            }
+        }
+    }
+    scripted(D3::One, Sum2D6::Two)
 }
 
 /// The single scripted D8 outcome (bounce/scatter direction "up"), used
@@ -179,12 +208,6 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
         // Scatter = three D8 directions. Pick the same direction each
         // time; the engine treats the sequence as separate bounces.
         RequestedRoll::Scatter => RollResult::Scatter(d8_up(), d8_up(), d8_up()),
-        // ThrowIn = D3 direction + 2D6 distance. Pick low values for a
-        // short throw-in.
-        RequestedRoll::ThrowIn => RollResult::ThrowIn {
-            direction: D3::One,
-            distance: Sum2D6::Two,
-        },
         // Scripted as a fixed roll-of-3 against the target: armour holds
         // for any realistic AV, but a weak (already-broken) 3+ target
         // still cascades into the (scripted, Stunned) injury roll — see
@@ -217,8 +240,8 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
         RequestedRoll::Sum2D6ThreeOutcomes(_, _) => RollResult::Pass,
         RequestedRoll::Coin => RollResult::Coin(Coin::Heads),
 
-        RequestedRoll::D6PassFail(_) | RequestedRoll::Sum2D6PassFail(_) => unreachable!(
-            "scripted_result: pass/fail rolls are branched by enumerate, not scripted: {:?}",
+        RequestedRoll::D6PassFail(_) | RequestedRoll::Sum2D6PassFail(_) | RequestedRoll::ThrowIn => unreachable!(
+            "scripted_result: pass/fail and throw-in rolls are handled by enumerate, not scripted: {:?}",
             req
         ),
     }
@@ -489,6 +512,46 @@ mod tests {
                 direction: D3::One,
                 distance: Sum2D6::Two,
             }
+        );
+    }
+
+    /// The scripted throw-in must resolve in one roll. If it lands out of
+    /// bounds the engine re-requests the roll from the new boundary square,
+    /// and under a deterministic scripted pick those re-request states
+    /// oscillate between two positions on a 3-row board — identical states
+    /// recur and the search DAG gets a genuine cycle (recon_mcts panics).
+    #[test]
+    fn throw_in_scripted_outcome_lands_in_bounds_on_small_board() {
+        use botbowl_engine::core::model::BoardDims;
+
+        // Runtime 10x5 board (playable 8x3, the smallest training tier).
+        // Ball on the bottom edge (max_y = 3); a failed pickup bounces it
+        // straight off the pitch → ThrowIn from (7, 3). The old constant
+        // (D3::One, distance 2) pick targets (9, 1) — out of bounds.
+        let ball_pos = Position::new((7, 3));
+        let start_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(BoardDims::new(10, 5, 2))
+            .add_home_player(start_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+        state.set_dice_mode(DiceMode::RegisterRolls);
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::StartMove, start_pos)));
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::Move, ball_pos)));
+        state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Fail));
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)));
+        state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::D8(D8::from(Direction::down()))));
+        assert_eq!(state.proc_stack_top(), Some("ThrowIn"), "expected to be mid-throw-in");
+        assert_eq!(state.pending_roll, Some(RequestedRoll::ThrowIn));
+
+        let outcomes = enumerate(&state, &RequestedRoll::ThrowIn);
+        assert_eq!(outcomes.len(), 1, "throw-in stays a single scripted child");
+        assert!(probs_sum_to_one(&outcomes));
+        state.step_with_roll_or_action(SomeProcInput::Roll(result_of(&outcomes[0])));
+        assert_ne!(
+            state.pending_roll,
+            Some(RequestedRoll::ThrowIn),
+            "scripted throw-in landed out of bounds and re-requested the roll — cycle risk"
         );
     }
 
