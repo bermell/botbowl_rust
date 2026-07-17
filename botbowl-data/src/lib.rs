@@ -136,8 +136,10 @@ pub struct Sample {
     /// target should be a sharp/one-hot over child Q, not a visit softmax).
     pub root_solved: bool,
     /// Ground-truth value target, **backfilled at trajectory end**: the
-    /// eventual outcome from Home's perspective in `[-1, 1]` (see
-    /// [`Outcome::z_home`]). `None` before backfilling.
+    /// outcome of this sample's *drive* from Home's perspective in
+    /// `[-1, 1]` — the score delta to the next score change (or the
+    /// trajectory end), see [`Trajectory::backfill_outcome_value`].
+    /// `None` before backfilling.
     #[serde(default)]
     pub outcome_value: Option<f32>,
 }
@@ -150,8 +152,9 @@ pub struct Outcome {
     pub winner: Option<Team>,
     pub game_over: bool,
     /// Outcome from Home's perspective in `[-1, 1]`: `+1` Home ahead at the
-    /// end of the trajectory, `-1` Away ahead, `0` level. This is the
-    /// AlphaZero-style `z` target broadcast to every sample.
+    /// end of the trajectory, `-1` Away ahead, `0` level. Trajectory-level
+    /// descriptor only — per-sample value targets are drive-relative and
+    /// live in [`Sample::outcome_value`] (they are **not** this broadcast).
     pub z_home: f32,
     /// If the trajectory came from a curriculum lecture, its terminal
     /// status (`"Success"` / `"Failure"` / `"InProgress"`); else `None`.
@@ -281,13 +284,36 @@ impl Trajectory {
         t
     }
 
-    /// Broadcast the trajectory outcome (`z_home`) onto every sample's
-    /// `outcome_value`. Called by [`Trajectory::new`]; exposed for callers
-    /// that mutate samples after construction.
+    /// Backfill each sample's `outcome_value` with the outcome of *its
+    /// drive*: the Home-centric score delta from the sample's state to the
+    /// first subsequent score change — or to the trajectory's final score
+    /// if no one scored again — clamped to `[-1, 1]`. Called by
+    /// [`Trajectory::new`]; exposed for callers that mutate samples after
+    /// construction.
+    ///
+    /// Deliberately **not** the broadcast final-scoreline `z_home` (plan
+    /// 017 caveat 2026-07-14): trajectories starting from a non-level
+    /// score, or spanning several drives, would otherwise label every
+    /// sample with the wrong target — and the search consumes values in a
+    /// drive-relative frame (`HorizonAnchor::score_delta`), so the value
+    /// head must be trained in that same frame.
     pub fn backfill_outcome_value(&mut self) {
-        let z = self.outcome.z_home;
-        for s in &mut self.samples {
-            s.outcome_value = Some(z);
+        fn score_of(s: &GameState) -> (u8, u8) {
+            (s.home.score, s.away.score)
+        }
+        let final_score = (self.outcome.home_score, self.outcome.away_score);
+        // Walk backwards keeping the score at the end of the drive the
+        // current sample belongs to: the score right after the first
+        // change following it, defaulting to the trajectory's end.
+        let mut drive_end = final_score;
+        for i in (0..self.samples.len()).rev() {
+            let cur = score_of(&self.samples[i].state);
+            let next = self.samples.get(i + 1).map_or(final_score, |s| score_of(&s.state));
+            if next != cur {
+                drive_end = next;
+            }
+            let dv = (drive_end.0 as f32 - cur.0 as f32) - (drive_end.1 as f32 - cur.1 as f32);
+            self.samples[i].outcome_value = Some(dv.clamp(-1.0, 1.0));
         }
     }
 }
@@ -430,6 +456,52 @@ mod tests {
         };
         let traj = Trajectory::new(meta, vec![dummy_sample()], outcome);
         assert_eq!(traj.samples[0].outcome_value, Some(1.0));
+    }
+
+    fn dummy_sample_with_score(home: u8, away: u8) -> Sample {
+        let mut s = dummy_sample();
+        s.state.home.score = home;
+        s.state.away.score = away;
+        s
+    }
+
+    #[test]
+    fn outcome_value_is_drive_relative_not_final_scoreline() {
+        let dims = sample_state().board_dims;
+        let meta = || TrajectoryMeta::new("random-start", dims).with_bots("mcts", "mcts");
+
+        // Non-level start, scoreless to the end: the final-scoreline z is
+        // +1 but no drive produced a score → every target must be 0.
+        let outcome = Outcome {
+            home_score: 1,
+            away_score: 0,
+            winner: Some(Team::Home),
+            game_over: true,
+            z_home: 1.0,
+            lecture_status: None,
+        };
+        let traj = Trajectory::new(meta(), vec![dummy_sample_with_score(1, 0)], outcome);
+        assert_eq!(traj.samples[0].outcome_value, Some(0.0));
+
+        // Two drives: Home scores after sample 1 (0-0 → 1-0), Away scores
+        // after sample 3 (1-0 → 1-1). Targets follow each sample's drive.
+        let outcome = Outcome {
+            home_score: 1,
+            away_score: 1,
+            winner: None,
+            game_over: true,
+            z_home: 0.0,
+            lecture_status: None,
+        };
+        let samples = vec![
+            dummy_sample_with_score(0, 0),
+            dummy_sample_with_score(0, 0),
+            dummy_sample_with_score(1, 0),
+            dummy_sample_with_score(1, 0),
+        ];
+        let traj = Trajectory::new(meta(), samples, outcome);
+        let values: Vec<f32> = traj.samples.iter().map(|s| s.outcome_value.unwrap()).collect();
+        assert_eq!(values, vec![1.0, 1.0, -1.0, -1.0]);
     }
 
     #[test]

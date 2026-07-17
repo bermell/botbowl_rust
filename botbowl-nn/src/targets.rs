@@ -117,9 +117,10 @@ pub fn policy_target(sample: &Sample, solved_root: SolvedRootPolicy) -> Option<P
     Some(PolicyTarget { probs: counts })
 }
 
-/// Value target `v1`: the trajectory outcome `z` (Home-centric, `[-1,1]`)
-/// re-signed into the mover's frame, matching the network's mover-centric
-/// `v`. `None` before the trajectory outcome is backfilled.
+/// Value target `v1`: the sample's backfilled drive outcome (Home-centric,
+/// `[-1,1]`, see `Trajectory::backfill_outcome_value`) re-signed into the
+/// mover's frame, matching the network's mover-centric `v`. `None` before
+/// the outcome is backfilled.
 pub fn value_target(sample: &Sample) -> Option<f32> {
     sample.outcome_value.map(|z| match sample.to_move {
         Team::Home => z,

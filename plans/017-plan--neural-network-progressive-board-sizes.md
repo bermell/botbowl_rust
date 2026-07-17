@@ -123,6 +123,11 @@ cleaner than bootstrapping from the game/drive outcome.
 
 ## Caveat (2026-07-14): `z_home` is the final scoreline, not the drive outcome — fix in the data generator
 
+> **Fixed 2026-07-17:** `Trajectory::backfill_outcome_value` now backfills each sample with its *drive*
+> outcome (Home-centric score delta to the next score change, clamped to [-1, 1]) instead of broadcasting
+> the final-scoreline `z_home`. `prepare`'s `NN_SCHEMA_VERSION` bumped to 2 — batches prepared at v1 have
+> the poisoned value target and must be regenerated.
+
 This plan defines the value as "which team scores at the end of the **drive**: -1 opponent, 0 no score, 1 one-self".
 What `botbowl-data` actually backfills today is `Outcome::z_home = clamp(final home_score − away_score, -1, 1)` — the
 sign of the **absolute final scoreline**, broadcast to every sample in the trajectory. The two coincide only for

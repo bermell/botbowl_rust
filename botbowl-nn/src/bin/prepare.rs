@@ -35,7 +35,10 @@ use botbowl_nn::targets::{policy_target, value_target, SolvedRootPolicy};
 
 /// Layout schema version — bump when the tensor layout / channel meaning
 /// changes so a stale prepared dir can be rejected.
-const NN_SCHEMA_VERSION: u32 = 1;
+// v2: value target became the drive-relative outcome (per-sample backfill
+// in `Trajectory::backfill_outcome_value`) instead of the broadcast
+// final-scoreline z — batches prepared at v1 are not comparable.
+const NN_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {
@@ -211,7 +214,7 @@ fn main() {
             "policy_channels": POLICY_CHANNELS,
             "spatial_channel_names": channel_names,
             "global_feature_names": feature_names,
-            "value_target": "mover_signed_z",
+            "value_target": "mover_signed_drive_outcome",
             "solved_root_policy": format!("{solved_root:?}"),
             "min_root_visits": args.min_root_visits,
             "num_samples": n,
