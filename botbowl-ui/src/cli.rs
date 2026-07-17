@@ -27,6 +27,18 @@ pub enum Command {
     Placement(PlacementArgs),
 }
 
+/// Leaf-value source for the MCTS bot during data generation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
+pub enum CliEvaluator {
+    /// Shaped scripted heuristic (`leaf_score`: score + ball control +
+    /// carrier distance).
+    #[default]
+    Heuristic,
+    /// Pure touchdown reward (-1/0/+1 on the drive's score change, no
+    /// shaping). For small boards where a TD fits inside the search horizon.
+    PureTd,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
 pub enum DatasetMode {
     /// MctsBot vs MctsBot, full games. Samples both teams' decisions.
@@ -136,6 +148,9 @@ pub struct DatasetArgs {
     /// (random-start mode) Placement bias variables.
     #[command(flatten)]
     pub bias: BiasArgs,
+    /// Leaf-value source for the MCTS bot.
+    #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
+    pub evaluator: CliEvaluator,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

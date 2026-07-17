@@ -31,7 +31,7 @@ use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameSta
 use botbowl_engine::core::model::TeamType;
 use botbowl_mcts::{MctsBot, SearchBudget};
 
-use crate::cli::{CliDifficulty, DatasetArgs, DatasetMode};
+use crate::cli::{CliDifficulty, CliEvaluator, DatasetArgs, DatasetMode};
 
 // Mirror the seed-mixing constants in `botbowl-curriculum`'s runner so a
 // curriculum dataset trial is reproducible against `run_trials` for the
@@ -93,13 +93,21 @@ fn make_mcts(args: &DatasetArgs) -> MctsBot {
         Some(ms) => SearchBudget::Time(Duration::from_millis(ms)),
         None => SearchBudget::Iterations(args.mcts_iters),
     };
-    MctsBot::new(budget).with_workers(args.mcts_workers)
+    let bot = MctsBot::new(budget).with_workers(args.mcts_workers);
+    match args.evaluator {
+        CliEvaluator::Heuristic => bot,
+        CliEvaluator::PureTd => bot.with_pure_td(),
+    }
 }
 
 fn budget_label(args: &DatasetArgs) -> String {
+    let eval = match args.evaluator {
+        CliEvaluator::Heuristic => "heuristic",
+        CliEvaluator::PureTd => "pure-td",
+    };
     match args.mcts_time_ms {
-        Some(ms) => format!("mcts(time={ms}ms,workers={})", args.mcts_workers),
-        None => format!("mcts(iters={},workers={})", args.mcts_iters, args.mcts_workers),
+        Some(ms) => format!("mcts(time={ms}ms,workers={},eval={eval})", args.mcts_workers),
+        None => format!("mcts(iters={},workers={},eval={eval})", args.mcts_iters, args.mcts_workers),
     }
 }
 

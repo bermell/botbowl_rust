@@ -158,6 +158,14 @@ impl HorizonAnchor {
 pub enum Evaluator {
     #[default]
     Heuristic,
+    /// Pure touchdown reward, no shaping: leaves score `-1000`/`0`/`+1000`
+    /// by the Home-centric score change since the horizon anchor. Priors
+    /// stay scripted. Only viable where a TD is usually reachable within
+    /// the search horizon (small boards) — on the full board almost every
+    /// leaf is 0 and the search has no gradient. Matches the drive-relative
+    /// frame the NN value head is trained on, so gen-0 data carries no
+    /// shaping bias for later NN generations to unlearn.
+    PureTd,
     Nn(Arc<NnEvaluator>),
 }
 
@@ -308,7 +316,9 @@ impl GameDynamics for BloodBowlDynamics {
         // single forward over the whole (already-pruned) legal set and
         // gathers per-action logits. NN priors *replace* scripted priors.
         let priors: Vec<f32> = match &self.evaluator {
-            Evaluator::Heuristic => filtered.iter().map(|a| prior_for_engine_action(state, *a)).collect(),
+            Evaluator::Heuristic | Evaluator::PureTd => {
+                filtered.iter().map(|a| prior_for_engine_action(state, *a)).collect()
+            }
             Evaluator::Nn(nn) => nn.priors(state, &filtered),
         };
         let actions: Vec<(BbPlayer, BbAction)> = filtered
@@ -686,6 +696,17 @@ impl GameDynamics for BloodBowlDynamics {
         }
         let score = match &self.evaluator {
             Evaluator::Heuristic => leaf_score(state),
+            // Pure TD reward: the Home-centric score change since the
+            // anchor, ±1000 on the leaf_score scale, 0 everywhere else.
+            // Anchor-relative (not absolute scoreline) because random-start
+            // games begin at arbitrary scores — an absolute delta would put
+            // a constant nonzero offset on every leaf. Without an anchor
+            // (direct `Tree` callers; `MctsBot` always sets one) fall back
+            // to the absolute clamped delta so terminal states still rank.
+            Evaluator::PureTd => match &self.horizon {
+                Some(anchor) => anchor.score_delta(state).clamp(-1, 1) * 1000,
+                None => (state.home.score as i64 - state.away.score as i64).clamp(-1, 1) * 1000,
+            },
             // Exact-outcome carve-out: once someone has scored since the
             // anchor (or the game has ended), the drive outcome is *known*
             // — exactly the value the net is trained to predict. Asking
@@ -890,6 +911,15 @@ impl MctsBot {
         self
     }
 
+    /// Swap the scripted heuristic for the unshaped pure-TD leaf value
+    /// (`Evaluator::PureTd`). Priors stay scripted. Intended for small-board
+    /// training-data generation where a touchdown is reachable within the
+    /// search horizon from almost every state.
+    pub fn with_pure_td(mut self) -> Self {
+        self.evaluator = Evaluator::PureTd;
+        self
+    }
+
     pub fn with_workers(mut self, n_workers: usize) -> Self {
         self.n_workers = n_workers.max(1);
         self
@@ -1046,6 +1076,7 @@ impl MctsBot {
                 } else {
                     None
                 };
+                let was_reused = reused.is_some();
                 let tree = match reused {
                     Some(t) => t,
                     None => Arc::new(Tree::new(gd, $marker, root_player, root_state)),
@@ -1179,9 +1210,12 @@ impl MctsBot {
                         $mode_label, n_nodes, max_depth, buckets
                     );
                 }
-                let move_info = tree
-                    .get_next_move_info()
-                    .expect("MCTS tree has no move info at root");
+                let move_info = tree.get_next_move_info().unwrap_or_else(|| {
+                    panic!(
+                        "MCTS tree has no move info at root (reused={was_reused}): root_info={:#?}",
+                        tree.get_root_info()
+                    )
+                });
                 // Root aggregate (Q / visits / solved) captured before the
                 // tree is handed to the cache — the record needs it and
                 // the tree is moved out below.
@@ -1551,6 +1585,43 @@ mod tests {
             "the touchdown must dominate the leaf score, got {}",
             score.score
         );
+    }
+
+    #[test]
+    fn pure_td_leaf_is_anchor_relative_sign_only() {
+        use botbowl_engine::core::dices::RequestedRoll;
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::{Position, TeamType};
+
+        // Non-level starting score (random-start games do this): the
+        // anchor absorbs it, so in-horizon leaves score 0, not +1000.
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        state.home.score = 2;
+        state.away.score = 1;
+        let anchor = HorizonAnchor::capture(&state, TeamType::Home);
+        let dynamics = BloodBowlDynamics {
+            horizon: Some(anchor),
+            virtual_loss: 0,
+            evaluator: Evaluator::PureTd,
+        };
+
+        let score = dynamics
+            .score_leaf(None, &BbPlayer::Home, &state)
+            .expect("player-decision leaf must be scored");
+        assert_eq!(score.score, 0, "no score change since anchor → 0, regardless of scoreline");
+
+        // In-horizon chance node: still expanded-not-scored (plan 018).
+        let mut pending = state.clone();
+        pending.pending_roll = Some(RequestedRoll::D8);
+        assert!(dynamics.score_leaf(None, &BbPlayer::Chance, &pending).is_none());
+
+        // Home TD since the anchor → +1000; Away TD → -1000.
+        let mut home_td = pending.clone();
+        home_td.home.score += 1;
+        assert_eq!(dynamics.score_leaf(None, &BbPlayer::Chance, &home_td).unwrap().score, 1000);
+        let mut away_td = pending;
+        away_td.away.score += 2; // clamp: multi-TD delta still ±1000
+        assert_eq!(dynamics.score_leaf(None, &BbPlayer::Chance, &away_td).unwrap().score, -1000);
     }
 
     #[test]
