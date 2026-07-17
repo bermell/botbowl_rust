@@ -64,8 +64,13 @@ impl Push {
 
         if !free_squares.is_empty() {
             PushSquares::FreeSquares(free_squares)
-        } else if push_squares.iter().any(|&pos| game_state.is_out(pos)) {
-            PushSquares::Crowd(push_squares.pop().unwrap())
+        } else if let Some(&oob) = push_squares.iter().rev().find(|&&pos| game_state.is_out(pos)) {
+            // The victim goes into the crowd through a square that is
+            // actually out of bounds — preferring the straight-ahead square
+            // (last in the list). The straight square can be in bounds but
+            // occupied while only a diagonal is out; blindly popping the
+            // last candidate would move the victim onto an occupied square.
+            PushSquares::Crowd(oob)
         } else {
             PushSquares::ChainPush(push_squares)
         }
@@ -459,6 +464,50 @@ mod tests {
             })
         ));
     }
+    /// Sideline sandwich: victim pushed along the sideline into a standing
+    /// player, with the straight-ahead square occupied and only a *diagonal*
+    /// square out of bounds. The crowd push must send the victim through
+    /// the OOB square — not "the last candidate in the list" (the occupied
+    /// straight square), which panics `move_player`. Constant on small
+    /// boards (3 playable rows), reachable on the full pitch as here.
+    #[test]
+    fn crowd_push_picks_the_oob_square_not_the_occupied_straight_one() {
+        let attacker_pos = Position::new((5, 1));
+        let victim_pos = Position::new((6, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(victim_pos)
+            .add_away_player(Position::new((7, 1))) // straight push square: occupied
+            .add_home_player(Position::new((7, 2))) // diagonal in-bounds square: occupied
+            .build();
+
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, victim_pos);
+        state.step_simple(SimpleAT::SelectPush);
+
+        state.fix_d6(1); // crowd injury roll...
+        state.fix_d6(1); // ...stunned → reserves box
+        state.step_positional(PosAT::FollowUp, victim_pos);
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(
+            state.get_player_at(Position::new((7, 1))).is_some(),
+            "the straight-ahead blocker must not be displaced"
+        );
+        assert!(matches!(
+            state.get_dugout().next(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Reserves,
+                stats: PlayerStats {
+                    team: TeamType::Away,
+                    ..
+                },
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn blitz() {
         let start_pos = Position::new((2, 1));
