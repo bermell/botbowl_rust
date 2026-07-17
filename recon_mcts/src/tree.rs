@@ -650,6 +650,13 @@ where
     children: RwLock<Children<I, A, ArcWrap<Self>>>,
     registry: Arc<RwLock<HashSet<WeakWrap<Self>>>>,
     registered: AtomicBool,
+    /// Monotonic (false → true): this node has been unlinked from the
+    /// graph (parents' child maps, children's parent sets, registry) by
+    /// `on_drop`'s iterative teardown. Checked at `on_drop` entry so the
+    /// wrapper drop of an already-detached node is a no-op — that is what
+    /// lets the teardown loop drop arbitrarily deep subtrees at constant
+    /// stack depth instead of recursing per child.
+    detached: AtomicBool,
     /// Monotonic (false → true): the node's subtree is fully explored —
     /// the node is terminal (`Children::None`), or every child is
     /// solved. A solved node's aggregated score is final, so selection
@@ -693,6 +700,7 @@ where
             children: RwLock::new(Children::NewLeaf),
             registry,
             registered: AtomicBool::new(false),
+            detached: AtomicBool::new(false),
             solved: AtomicBool::new(false),
             game_dynamics,
             _marker: PhantomData,
@@ -722,6 +730,7 @@ where
                 children: RwLock::new(Children::NewLeaf),
                 registry,
                 registered: AtomicBool::new(false),
+                detached: AtomicBool::new(false),
                 solved: AtomicBool::new(false),
                 game_dynamics,
                 _marker: PhantomData,
@@ -753,6 +762,7 @@ where
                 children: RwLock::new(Children::NewLeaf),
                 registry,
                 registered: AtomicBool::new(false),
+                detached: AtomicBool::new(false),
                 solved: AtomicBool::new(false),
                 game_dynamics,
                 _marker: PhantomData,
@@ -1260,6 +1270,49 @@ where
     P: Hash + PartialEq<P>,
 {
     fn on_drop(self_arc: &ArcWrap<Self>) {
+        // Already unlinked by the iterative teardown loop below (we detach
+        // pending descendants *before* their wrapper drops) — nothing to do.
+        if self_arc.detached.swap(true, Ordering::Relaxed) {
+            return;
+        }
+
+        // Iterative subtree teardown. Letting each drained child's
+        // `ArcWrap` drop inline recurses (drop → on_drop → drain → drop …)
+        // one stack frame per DAG level, which overflows the stack on deep
+        // graphs (a Blood Bowl small-board search builds multi-thousand-
+        // node chains). Instead: detach this node, collecting its dying
+        // children into an explicit worklist, then keep detaching pending
+        // nodes off the worklist. Their wrappers drop at loop scope with
+        // `detached` already set, so the nested `on_drop` returns
+        // immediately.
+        let mut pending: Vec<ArcWrap<Self>> = Vec::new();
+        Self::detach(self_arc, &mut pending);
+        while let Some(c) = pending.pop() {
+            // Same gate as `ArcWrap::drop`: only the last reference tears
+            // the node down. (A concurrent registry upgrade can bump the
+            // count; the node is then torn down whenever its real last
+            // wrapper drops, `detached` still being false.)
+            if Arc::strong_count(&c.inner) == 1 && !c.detached.swap(true, Ordering::Relaxed) {
+                Self::detach(&c, &mut pending);
+            }
+        }
+    }
+}
+
+impl<GD, S, P, A, Q, I, M> Node<GD, S, P, A, Q, I, M>
+where
+    Self: StateMemory,
+    GD: GameDynamics<Player = P, State = S, Action = A>,
+    A: Hash + Eq,
+    S: Hash + PartialEq<S> + Clone,
+    P: Hash + PartialEq<P>,
+{
+    /// Unlink `self_arc` from the graph — the single-node body of
+    /// [`OnDrop::on_drop`]. Drained children that this call holds the last
+    /// reference to are pushed onto `pending` for the caller's worklist
+    /// instead of being dropped (and hence recursively torn down) inline;
+    /// children with other holders drop inline as a plain decrement.
+    fn detach(self_arc: &ArcWrap<Self>, pending: &mut Vec<ArcWrap<Self>>) {
         if let Some(children) = self_arc.children.read().unwrap().as_map() {
             if !children.is_empty() && self_arc.state.read().unwrap().is_none() {
                 // the orphan must have a state because it is needed when the orphan's children
@@ -1315,6 +1368,21 @@ where
                     ",
                     &*c.inner, &**self_arc,
                 );
+
+                // Only a child we hold the *last* reference to joins the
+                // teardown worklist (see `on_drop`) — it was fully prepared
+                // above (state materialised, our parent edge removed) and
+                // nothing else can reach it. A child with other holders
+                // must instead drop inline: parking it in `pending` would
+                // inflate its strong count past the `== 1` checks its
+                // *other* dying parents rely on to materialise its state
+                // before removing their edge (diamond shapes), leaving a
+                // registered node with no state and no parents. Inline
+                // drop of a count > 1 wrapper is a plain decrement — no
+                // recursion.
+                if Arc::strong_count(&c.inner) == 1 {
+                    pending.push(c);
+                }
             }
         }
 
@@ -2342,6 +2410,7 @@ where
                 children: RwLock::new(Children::NewLeaf),
                 registry: Arc::clone(&self.registry),
                 registered: AtomicBool::new(false),
+                detached: AtomicBool::new(false),
                 solved: AtomicBool::new(false),
                 game_dynamics: Arc::clone(&self.game_dynamics),
                 _marker: PhantomData,
