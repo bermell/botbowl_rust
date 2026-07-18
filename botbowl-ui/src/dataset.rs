@@ -131,13 +131,16 @@ fn budget_label(args: &DatasetArgs) -> String {
     }
 }
 
-/// Play `state` to completion with MctsBot on both teams, sampling both
-/// teams' decisions.
+/// Play `state` with MctsBot on both teams, sampling both teams'
+/// decisions, until game over, the step cap, or `stop(state)` — the
+/// latter lets random-start mode end the trajectory at the end of the
+/// current drive instead of playing the game out.
 fn mcts_vs_mcts_samples(
     state: &mut GameState,
     args: &DatasetArgs,
     nn: Option<&Arc<NnEvaluator>>,
     seed: u64,
+    stop: impl Fn(&GameState) -> bool,
 ) -> Vec<Sample> {
     let mut home = make_mcts(args, nn);
     let mut away = make_mcts(args, nn);
@@ -147,7 +150,7 @@ fn mcts_vs_mcts_samples(
     let mut samples: Vec<Sample> = Vec::new();
     let mut steps = 0u32;
 
-    while !state.info.game_over && steps < args.max_steps {
+    while !state.info.game_over && !stop(state) && steps < args.max_steps {
         let action = match state.available_actions.team {
             Some(TeamType::Home) => {
                 let (a, s) = home.get_action_with_record(state);
@@ -177,7 +180,7 @@ fn self_play_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, seed:
     state.set_logging_state(false);
 
     let board_dims = state.board_dims;
-    let samples = mcts_vs_mcts_samples(&mut state, args, nn, seed);
+    let samples = mcts_vs_mcts_samples(&mut state, args, nn, seed, |_| false);
 
     let label = budget_label(args);
     let meta = TrajectoryMeta::new("self-play", board_dims)
@@ -189,9 +192,19 @@ fn self_play_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, seed:
     Trajectory::new(meta, samples, outcome)
 }
 
-/// One MctsBot-vs-MctsBot game from a randomized mid-game state (plan 019).
+/// One MctsBot-vs-MctsBot **drive** from a randomized mid-game state
+/// (plan 019): the trajectory ends when either team scores, the half
+/// ends, or the game ends — never plays into the next drive. Everything
+/// after the drive resolves would be downstream of self-play (correlated
+/// states, bot-chosen kickoff formations) instead of the diverse random
+/// placement this mode exists to provide (plan 020).
 fn random_start_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, seed: u64) -> Trajectory {
-    let cfg = args.bias.to_config();
+    let mut cfg = args.bias.to_config();
+    // Alternate the placement temperature per game so the corpus mixes
+    // sharp (clustered) and flat (scattered) player distributions.
+    if seed % 2 == 1 {
+        cfg.temperature = args.bias.temperature2;
+    }
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut state = generate_random_start(&cfg, &mut rng);
     state.set_logging_state(false);
@@ -199,8 +212,11 @@ fn random_start_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, se
     let board_dims = state.board_dims;
     let (start_half, start_home_turn, start_away_turn) =
         (state.info.half, state.info.home_turn, state.info.away_turn);
-    let start_score = format!("{}-{}", state.home.score, state.away.score);
-    let samples = mcts_vs_mcts_samples(&mut state, args, nn, seed);
+    let (start_home_score, start_away_score) = (state.home.score, state.away.score);
+    let start_score = format!("{start_home_score}-{start_away_score}");
+    let samples = mcts_vs_mcts_samples(&mut state, args, nn, seed, |s| {
+        s.home.score != start_home_score || s.away.score != start_away_score || s.info.half != start_half
+    });
 
     let label = budget_label(args);
     let bias = &args.bias;
@@ -214,7 +230,9 @@ fn random_start_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, se
         .with_extra("mark_teammate", bias.mark_teammate.to_string())
         .with_extra("mark_opponent", bias.mark_opponent.to_string())
         .with_extra("own_side", bias.own_side.to_string())
-        .with_extra("temperature", bias.temperature.to_string())
+        .with_extra("temperature", cfg.temperature.to_string())
+        .with_extra("temperature2", bias.temperature2.to_string())
+        .with_extra("drive_bounded", "true".to_string())
         .with_extra("carried_prob", bias.carried_prob.to_string())
         .with_extra("line_fraction", bias.line_fraction.to_string())
         .with_extra("pocket_fraction", bias.pocket_fraction.to_string())

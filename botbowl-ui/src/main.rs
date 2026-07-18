@@ -1,5 +1,6 @@
 mod curriculum;
 mod dataset;
+mod eval;
 mod live;
 mod placement;
 mod replay;
@@ -17,6 +18,7 @@ fn main() -> io::Result<()> {
         cli::Command::Snapshot(args) => botbowl_ui::snapshot::run(args),
         cli::Command::Curriculum(args) => curriculum::run(args),
         cli::Command::Dataset(args) => dataset::run(args),
+        cli::Command::Eval(args) => eval::run(args),
         cli::Command::Placement(args) => placement::run(args),
     }
 }

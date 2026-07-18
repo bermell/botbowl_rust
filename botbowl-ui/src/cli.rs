@@ -22,6 +22,8 @@ pub enum Command {
     /// Generate MCTS training data (states + search distributions + values)
     /// and write it as JSONL trajectories. Headless.
     Dataset(DatasetArgs),
+    /// Evaluate a bot: lecture battery + fixed-opponent ladder (plan 020).
+    Eval(EvalArgs),
     /// Interactively tune random-start placement biases: space generates a
     /// new state, 1-9 select a bias variable, up/down adjust it, q quits.
     Placement(PlacementArgs),
@@ -60,10 +62,10 @@ pub enum DatasetMode {
 #[derive(Args, Debug, Clone, Copy)]
 pub struct BiasArgs {
     /// Per-square decay toward the ball (pocket players; line players' y). 1.0 = off.
-    #[arg(long, default_value_t = 1.25)]
+    #[arg(long, default_value_t = 1.30)]
     pub ball_distance: f32,
     /// Per-square decay toward the team's front column for line players. 1.0 = off.
-    #[arg(long, default_value_t = 1.8)]
+    #[arg(long, default_value_t = 2.20)]
     pub front_line: f32,
     /// Multiplier for squares adjacent to an already-placed teammate. 1.0 = neutral.
     #[arg(long, default_value_t = 1.5)]
@@ -75,13 +77,18 @@ pub struct BiasArgs {
     #[arg(long, default_value_t = 1.5)]
     pub own_side: f32,
     /// Sharpens (<1) or flattens (>1) the square distribution.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 0.60)]
     pub temperature: f32,
+    /// Second temperature: every other game uses this instead of
+    /// --temperature, so the corpus mixes sharp and flat placements.
+    /// Set equal to --temperature to disable the alternation.
+    #[arg(long, default_value_t = 1.5)]
+    pub temperature2: f32,
     /// Probability that the ball starts carried by a player.
     #[arg(long, default_value_t = 0.75)]
     pub carried_prob: f32,
     /// Fraction of each team assigned to the line (front brawl) role.
-    #[arg(long, default_value_t = 0.45)]
+    #[arg(long, default_value_t = 0.80)]
     pub line_fraction: f32,
     /// Fraction of each team assigned to the pocket (near-ball) role; rest are wide.
     #[arg(long, default_value_t = 0.25)]
@@ -158,6 +165,48 @@ pub struct DatasetArgs {
     /// Path to a frozen ONNX model (required with --evaluator nn).
     #[arg(long)]
     pub model: Option<String>,
+}
+
+/// Report-card evaluation of one candidate bot (plan 020).
+#[derive(Args, Debug)]
+pub struct EvalArgs {
+    /// Leaf-value source for the candidate MCTS bot.
+    #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
+    pub evaluator: CliEvaluator,
+    /// Path to a frozen ONNX model (required with --evaluator nn/nn-value).
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Candidate search iterations per move.
+    #[arg(long, default_value_t = 1000)]
+    pub mcts_iters: usize,
+    /// Worker threads for MCTS bots (candidate and ladder opponent).
+    #[arg(long, default_value_t = 1)]
+    pub mcts_workers: usize,
+    /// Trials per lecture × difficulty cell.
+    #[arg(long, default_value_t = 100)]
+    pub trials: u32,
+    /// Games per ladder opponent (half as Home, half as Away).
+    #[arg(long, default_value_t = 50)]
+    pub games: u32,
+    /// Base seed: lecture trials and game pairs are derived from it, so two
+    /// candidates run with the same seed face identical situations.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Safety cap on micro-steps per ladder game.
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    /// MCTS budget for the mcts-heuristic ladder rung (defaults to --mcts-iters).
+    #[arg(long)]
+    pub opponent_iters: Option<usize>,
+    /// Skip the lecture battery.
+    #[arg(long, default_value_t = false)]
+    pub skip_lectures: bool,
+    /// Skip the opponent ladder.
+    #[arg(long, default_value_t = false)]
+    pub skip_ladder: bool,
+    /// Write the report as JSON here.
+    #[arg(long)]
+    pub out: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

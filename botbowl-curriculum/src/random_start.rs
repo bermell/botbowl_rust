@@ -65,17 +65,20 @@ pub struct RandomStartConfig {
 }
 
 // Keep in sync with the clap defaults on `BiasArgs` in botbowl-ui.
+// Values tuned 2026-07-18 with the placement visualizer (plan 020);
+// generation alternates temperature 0.6 / 1.5 per game — 0.6 is the
+// sharp default here, the flat 1.5 comes from `BiasArgs::temperature2`.
 impl Default for RandomStartConfig {
     fn default() -> Self {
         Self {
-            ball_distance: 1.25,
-            front_line: 1.8,
+            ball_distance: 1.30,
+            front_line: 2.20,
             mark_teammate: 1.5,
             mark_opponent: 1.5,
             own_side: 1.5,
-            temperature: 1.0,
+            temperature: 0.6,
             carried_prob: 0.75,
-            line_fraction: 0.45,
+            line_fraction: 0.80,
             pocket_fraction: 0.25,
             board_dims: None,
         }
