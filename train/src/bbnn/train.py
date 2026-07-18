@@ -116,6 +116,9 @@ def train(
             if best_val is None or vv < best_val:
                 best_val, best_epoch = vv, epoch
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                # Persist immediately — a killed run keeps its best net.
+                if out:
+                    torch.save(best_state, out)
                 line += "  *"
         print(line)
 

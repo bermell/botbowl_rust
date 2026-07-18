@@ -39,7 +39,10 @@ class PreparedDataset(Dataset):
     def __init__(self, dims_dir, augment=False):
         self.augment = augment
         d = Path(dims_dir)
-        self.spatial = np.load(d / "spatial.npy")            # (N, C, H, W) f32
+        # Memory-mapped: at ~20 KB/sample the spatial planes outgrow RAM
+        # long before anything else (520k samples ≈ 10 GB); the OS pages
+        # slices in on demand. `__getitem__` copies its slice out.
+        self.spatial = np.load(d / "spatial.npy", mmap_mode="r")  # (N, C, H, W) f32
         self.global_ = np.load(d / "global.npy")             # (N, F) f32
         self.value = np.load(d / "value.npy")                # (N,) f32
         self.chosen = np.load(d / "chosen.npy")              # (N,) i64
@@ -56,7 +59,9 @@ class PreparedDataset(Dataset):
 
     def __getitem__(self, i):
         lo, hi = int(self.offsets[i]), int(self.offsets[i + 1])
-        spatial = torch.from_numpy(self.spatial[i]).float()
+        # np.array copies the slice out of the read-only mmap (from_numpy
+        # rejects non-writable arrays).
+        spatial = torch.from_numpy(np.array(self.spatial[i])).float()
         actions = torch.from_numpy(self.actions[lo:hi]).long()         # (K_i, 4)
         if self.augment and torch.rand(()) < 0.5:
             spatial, actions = flip_y(spatial, actions)
