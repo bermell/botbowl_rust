@@ -70,6 +70,24 @@ Key learnings:
    2. Solved-root exact value targets (plan 017's gold-standard note): use `root_value` where `root_solved`, drive outcome otherwise — cuts label noise where the search proved the answer.
    3. Light regularization (weight decay) to push the early-stopping point later; consider mixing the 8x3 corpus into training (multi-dims batches) against the possession-overvaluation bias.
 
+### Result of the data scaling (`gen0c`, 2026-07-18): val metric moved, play strength did not
+
+~4.8k games → 520,462 prepared samples (three shards truncated by an OOM kill — `spatial.npy` is 10 GB on a 16 GB machine; trainer now mmaps it and persists the best checkpoint to disk on every improvement). Best val value-MSE **0.359 @ epoch 5** (vs 0.405 at 91.6k samples). But the eval arms are flat vs gen0b: nn 1.25, nn-value 1.58 TDs/game (gen0b: 1.50 / 1.67; 12-game arms have ±~0.5 noise).
+
+**Learning: val-MSE gains have decoupled from on-pitch strength.** The residual value error is probably not the kind data volume fixes:
+   - *Label-noise floor*: drive outcomes under 1000-iter play are inherently stochastic; Bayes-optimal MSE on this target is well above 0. We may be approaching it.
+   - *Calibration mismatch is baked into the labels*: "possession → usually scores" is TRUE under heuristic play (2.9 TDs/game) — the net learns the teacher's conditional, which breaks under its own (different) play. More heuristic data reinforces the same conditional. This is the covariate-shift argument for moving toward on-policy (mixed / self-play) data rather than more teacher data.
+
+Next levers, reordered accordingly: **(a) head-to-head A-vs-B harness** (real strength measurement + bigger arms before any further conclusions), **(b) solved-root exact value targets**, **(c) mixed-corpus generation** (heuristic + nn games) to start closing the on-policy gap — see the gen-1 switch criteria below.
+
+### Gen-1 switch criteria (agreed 2026-07-18)
+
+Switch generation from heuristic to the net (or start shifting the mix) when, on the current tier:
+1. **Head-to-head NN bot ≥ ~50% vs the heuristic bot** (alternating Home/Away, 50+ games) — build the harness first; and
+2. **Self-play data health:** ≥ ~2 TDs/game and ≤ ~25% scoreless in NN-vs-NN games (keeps value-target classes balanced).
+
+Parity suffices — don't wait for dominance: at parity, self-play data is no worse per game and strictly better in kind (on-policy, bias-free). Below parity, run mixed generations (e.g. 60/40 heuristic/nn, shifting per generation). Per-generation promotion gate once the loop runs: new net vs previous net ≥ 55%.
+
 ## Next-next steps (decision points after the above)
 
 - **Better value targets:** plan 017 flags solved-root exact values as gold-standard. Blend: use `root_value` for solved roots, drive outcome otherwise. Reduces bootstrap noise where the search *proved* the answer.
