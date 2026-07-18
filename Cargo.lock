@@ -241,6 +241,7 @@ dependencies = [
  "botbowl-data",
  "botbowl-engine",
  "botbowl-mcts",
+ "botbowl-nn",
  "clap",
  "crossterm",
  "insta",

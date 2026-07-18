@@ -17,6 +17,7 @@
 //! ```
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rand::SeedableRng;
@@ -30,6 +31,7 @@ use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::TeamType;
 use botbowl_mcts::{MctsBot, SearchBudget};
+use botbowl_nn::eval::NnEvaluator;
 
 use crate::cli::{CliDifficulty, CliEvaluator, DatasetArgs, DatasetMode};
 
@@ -40,6 +42,20 @@ const OPPONENT_SEED_MIX: u64 = 0xA5A5_A5A5_A5A5_A5A5;
 const AGENT_SEED_MIX: u64 = 0x5A5A_5A5A_5A5A_5A5A;
 
 pub fn run(args: DatasetArgs) -> io::Result<()> {
+    // Load the ONNX evaluator once; every bot in every game shares the
+    // Arc (the net is frozen — pure function of state).
+    let nn: Option<Arc<NnEvaluator>> = match args.evaluator {
+        CliEvaluator::Nn => {
+            let path = args.model.as_deref().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--evaluator nn requires --model PATH")
+            })?;
+            let eval = NnEvaluator::from_path(path)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("failed to load {path}: {e}")))?;
+            Some(Arc::new(eval))
+        }
+        _ => None,
+    };
+
     let mut writer = if args.truncate {
         DatasetWriter::create(&args.out)?
     } else {
@@ -52,9 +68,9 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
     for g in 0..args.games {
         let seed = args.seed.wrapping_add(g as u64);
         let traj = match args.mode {
-            DatasetMode::SelfPlay => Some(self_play_trajectory(&args, seed)),
-            DatasetMode::RandomStart => Some(random_start_trajectory(&args, seed)),
-            DatasetMode::Curriculum => match curriculum_trajectory(&args, seed) {
+            DatasetMode::SelfPlay => Some(self_play_trajectory(&args, nn.as_ref(), seed)),
+            DatasetMode::RandomStart => Some(random_start_trajectory(&args, nn.as_ref(), seed)),
+            DatasetMode::Curriculum => match curriculum_trajectory(&args, nn.as_ref(), seed) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("{e}");
@@ -88,7 +104,7 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
     Ok(())
 }
 
-fn make_mcts(args: &DatasetArgs) -> MctsBot {
+fn make_mcts(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
     let budget = match args.mcts_time_ms {
         Some(ms) => SearchBudget::Time(Duration::from_millis(ms)),
         None => SearchBudget::Iterations(args.mcts_iters),
@@ -97,13 +113,15 @@ fn make_mcts(args: &DatasetArgs) -> MctsBot {
     match args.evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
+        CliEvaluator::Nn => bot.with_evaluator(Arc::clone(nn.expect("nn evaluator loaded in run()"))),
     }
 }
 
 fn budget_label(args: &DatasetArgs) -> String {
     let eval = match args.evaluator {
-        CliEvaluator::Heuristic => "heuristic",
-        CliEvaluator::PureTd => "pure-td",
+        CliEvaluator::Heuristic => "heuristic".to_string(),
+        CliEvaluator::PureTd => "pure-td".to_string(),
+        CliEvaluator::Nn => format!("nn:{}", args.model.as_deref().unwrap_or("?")),
     };
     match args.mcts_time_ms {
         Some(ms) => format!("mcts(time={ms}ms,workers={},eval={eval})", args.mcts_workers),
@@ -113,9 +131,14 @@ fn budget_label(args: &DatasetArgs) -> String {
 
 /// Play `state` to completion with MctsBot on both teams, sampling both
 /// teams' decisions.
-fn mcts_vs_mcts_samples(state: &mut GameState, args: &DatasetArgs, seed: u64) -> Vec<Sample> {
-    let mut home = make_mcts(args);
-    let mut away = make_mcts(args);
+fn mcts_vs_mcts_samples(
+    state: &mut GameState,
+    args: &DatasetArgs,
+    nn: Option<&Arc<NnEvaluator>>,
+    seed: u64,
+) -> Vec<Sample> {
+    let mut home = make_mcts(args, nn);
+    let mut away = make_mcts(args, nn);
     home.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xA));
     away.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xB));
 
@@ -145,14 +168,14 @@ fn mcts_vs_mcts_samples(state: &mut GameState, args: &DatasetArgs, seed: u64) ->
 }
 
 /// One full MctsBot-vs-MctsBot game, from kickoff.
-fn self_play_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
+fn self_play_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, seed: u64) -> Trajectory {
     let mut state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
     state.set_seed(seed);
     state.set_dice_mode(DiceMode::RollDice);
     state.set_logging_state(false);
 
     let board_dims = state.board_dims;
-    let samples = mcts_vs_mcts_samples(&mut state, args, seed);
+    let samples = mcts_vs_mcts_samples(&mut state, args, nn, seed);
 
     let label = budget_label(args);
     let meta = TrajectoryMeta::new("self-play", board_dims)
@@ -165,7 +188,7 @@ fn self_play_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
 }
 
 /// One MctsBot-vs-MctsBot game from a randomized mid-game state (plan 019).
-fn random_start_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
+fn random_start_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, seed: u64) -> Trajectory {
     let cfg = args.bias.to_config();
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut state = generate_random_start(&cfg, &mut rng);
@@ -175,7 +198,7 @@ fn random_start_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
     let (start_half, start_home_turn, start_away_turn) =
         (state.info.half, state.info.home_turn, state.info.away_turn);
     let start_score = format!("{}-{}", state.home.score, state.away.score);
-    let samples = mcts_vs_mcts_samples(&mut state, args, seed);
+    let samples = mcts_vs_mcts_samples(&mut state, args, nn, seed);
 
     let label = budget_label(args);
     let bias = &args.bias;
@@ -202,7 +225,11 @@ fn random_start_trajectory(args: &DatasetArgs, seed: u64) -> Trajectory {
 }
 
 /// One curriculum lecture trial: MctsBot agent vs RandomBot opponent.
-fn curriculum_trajectory(args: &DatasetArgs, seed: u64) -> Result<Option<Trajectory>, String> {
+fn curriculum_trajectory(
+    args: &DatasetArgs,
+    nn: Option<&Arc<NnEvaluator>>,
+    seed: u64,
+) -> Result<Option<Trajectory>, String> {
     let name = args
         .lecture
         .as_deref()
@@ -233,7 +260,7 @@ fn curriculum_trajectory(args: &DatasetArgs, seed: u64) -> Result<Option<Traject
 
     let mut opponent = RandomBot::new();
     opponent.set_seed(ChaCha8Rng::seed_from_u64(seed ^ OPPONENT_SEED_MIX));
-    let mut agent = make_mcts(args);
+    let mut agent = make_mcts(args, nn);
     agent.set_seed(ChaCha8Rng::seed_from_u64(seed ^ AGENT_SEED_MIX));
 
     let board_dims = state.board_dims;

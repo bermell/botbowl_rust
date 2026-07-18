@@ -37,6 +37,8 @@ pub enum CliEvaluator {
     /// Pure touchdown reward (-1/0/+1 on the drive's score change, no
     /// shaping). For small boards where a TD fits inside the search horizon.
     PureTd,
+    /// Frozen ONNX network for leaf values and priors (requires --model).
+    Nn,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
@@ -151,6 +153,9 @@ pub struct DatasetArgs {
     /// Leaf-value source for the MCTS bot.
     #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
     pub evaluator: CliEvaluator,
+    /// Path to a frozen ONNX model (required with --evaluator nn).
+    #[arg(long)]
+    pub model: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
