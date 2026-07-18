@@ -32,7 +32,33 @@ def compute_losses(model, batch, device):
     return policy_loss, value_loss, acc
 
 
-def train(dims_dir, epochs=20, batch_size=32, lr=1e-3, limit=None, out=None, onnx=None, device="cpu", augment=True):
+def evaluate(model, loader, device):
+    """Mean policy loss / value MSE / top-1 over a held-out loader."""
+    model.eval()
+    tot_p = tot_v = tot_a = 0.0
+    nb = 0
+    with torch.no_grad():
+        for batch in loader:
+            pl, vl, acc = compute_losses(model, batch, device)
+            tot_p += pl.item()
+            tot_v += vl.item()
+            tot_a += acc.item()
+            nb += 1
+    return tot_p / nb, tot_v / nb, tot_a / nb
+
+
+def train(
+    dims_dir,
+    epochs=20,
+    batch_size=32,
+    lr=1e-3,
+    limit=None,
+    out=None,
+    onnx=None,
+    device="cpu",
+    augment=True,
+    val_dir=None,
+):
     ds = PreparedDataset(dims_dir, augment=augment)
     if limit is not None:
         # Overfit smoke: restrict to the first `limit` samples.
@@ -42,6 +68,18 @@ def train(dims_dir, epochs=20, batch_size=32, lr=1e-3, limit=None, out=None, onn
         ds.chosen = ds.chosen[:limit]
         ds.offsets = ds.offsets[: limit + 1]
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
+
+    # Held-out set: must be prepared from *disjoint games* (hold out whole
+    # generation shards) — samples within a game are consecutive states, so
+    # a sample-level split leaks. No augmentation on the val pass.
+    val_loader = None
+    if val_dir is not None:
+        val_loader = DataLoader(
+            PreparedDataset(val_dir, augment=False),
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=collate,
+        )
 
     model = BBNet().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -59,10 +97,14 @@ def train(dims_dir, epochs=20, batch_size=32, lr=1e-3, limit=None, out=None, onn
             tot_v += vl.item()
             tot_a += acc.item()
             nb += 1
-        print(
+        line = (
             f"epoch {epoch:3d}  policy_loss {tot_p / nb:.4f}  "
             f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}"
         )
+        if val_loader is not None:
+            vp, vv, va = evaluate(model, val_loader, device)
+            line += f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
+        print(line)
 
     if out:
         torch.save(model.state_dict(), out)
@@ -81,6 +123,7 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--limit", type=int, default=None, help="overfit only the first N samples")
     ap.add_argument("--no-augment", action="store_true", help="disable random y-flip augmentation")
+    ap.add_argument("--val-data", default=None, help="held-out prepared dims dir (disjoint games!)")
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
     args = ap.parse_args()
@@ -93,6 +136,7 @@ def main():
         out=args.out,
         onnx=args.onnx,
         augment=not args.no_augment,
+        val_dir=args.val_data,
     )
 
 

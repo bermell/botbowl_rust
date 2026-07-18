@@ -39,6 +39,8 @@ pub enum CliEvaluator {
     PureTd,
     /// Frozen ONNX network for leaf values and priors (requires --model).
     Nn,
+    /// Hybrid diagnostic: NN leaf values, scripted priors (requires --model).
+    NnValue,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]

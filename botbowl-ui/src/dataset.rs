@@ -45,9 +45,9 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
     // Load the ONNX evaluator once; every bot in every game shares the
     // Arc (the net is frozen — pure function of state).
     let nn: Option<Arc<NnEvaluator>> = match args.evaluator {
-        CliEvaluator::Nn => {
+        CliEvaluator::Nn | CliEvaluator::NnValue => {
             let path = args.model.as_deref().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "--evaluator nn requires --model PATH")
+                io::Error::new(io::ErrorKind::InvalidInput, "--evaluator nn/nn-value requires --model PATH")
             })?;
             let eval = NnEvaluator::from_path(path)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("failed to load {path}: {e}")))?;
@@ -114,6 +114,7 @@ fn make_mcts(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
         CliEvaluator::Nn => bot.with_evaluator(Arc::clone(nn.expect("nn evaluator loaded in run()"))),
+        CliEvaluator::NnValue => bot.with_nn_value(Arc::clone(nn.expect("nn evaluator loaded in run()"))),
     }
 }
 
@@ -122,6 +123,7 @@ fn budget_label(args: &DatasetArgs) -> String {
         CliEvaluator::Heuristic => "heuristic".to_string(),
         CliEvaluator::PureTd => "pure-td".to_string(),
         CliEvaluator::Nn => format!("nn:{}", args.model.as_deref().unwrap_or("?")),
+        CliEvaluator::NnValue => format!("nn-value:{}", args.model.as_deref().unwrap_or("?")),
     };
     match args.mcts_time_ms {
         Some(ms) => format!("mcts(time={ms}ms,workers={},eval={eval})", args.mcts_workers),
