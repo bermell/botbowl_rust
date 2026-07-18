@@ -84,6 +84,15 @@ def train(
     model = BBNet().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
+    # Early stopping via best-checkpoint restore: the value head starts
+    # memorizing trajectories within a handful of epochs (plan 020 probe:
+    # val optimum at epoch 3–6 while train loss keeps falling), so we keep
+    # the weights from the best val value-MSE epoch and restore them at
+    # the end rather than trusting the final epoch.
+    best_val = None
+    best_epoch = None
+    best_state = None
+
     for epoch in range(epochs):
         model.train()
         tot_p = tot_v = tot_a = 0.0
@@ -104,7 +113,15 @@ def train(
         if val_loader is not None:
             vp, vv, va = evaluate(model, val_loader, device)
             line += f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
+            if best_val is None or vv < best_val:
+                best_val, best_epoch = vv, epoch
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                line += "  *"
         print(line)
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"restored best-val weights: epoch {best_epoch} (val_value {best_val:.4f})")
 
     if out:
         torch.save(model.state_dict(), out)
