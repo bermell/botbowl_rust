@@ -29,7 +29,9 @@ Training (10 epochs, best-val restore): optimum at **epoch 2, val value-MSE 0.39
 |---|---|---|---|
 | mcts(heuristic) — reference | 1.00 (TD 147:1) | 0.37 (TD 57:93) | 0.40 (mirror) |
 | **mcts(nn-value: bbnet_14x7_db)** | 1.00 (TD 154:1) | **0.50** (TD 88:77) | **0.93** (W28 D0 L2, TD 97:22) |
-| mcts(nn: bbnet_14x7_db) | *crashed mid-run — see open issues* | | |
+| mcts(nn: bbnet_14x7_db) | 0.97 (TD 132:0) | 0.43 (TD 74:41) | **0.87** (W26 D3 L1, TD 73:11) |
+
+(The `nn` card is from the re-run — the first attempt crashed; see open issues. Learned priors are now only a mild drag vs scripted (−6/−7 pts), consistent with "priors lag the value head by one generation"; nn-value remains the gen-1 generator.)
 
 Attribution (all stacked in one generation, same architecture and search): drive-bounded labels (a sample's target is exactly its own drive, no cross-drive bleed, no post-TD formation states), tuned biases + temperature mixing (more realistic and more varied positions), best-val early stopping (plan 020's single biggest lever), and per-drive value backfill (plan 020, already in).
 
@@ -43,7 +45,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 
 ## Open issues
 
-1. **Engine OOB panic under NN priors** (`gamestate.rs:903`, `board[pos]` with y=9 on a 9-high board): only the full-`nn` card crashed; `nn-value` (scripted priors) is unaffected. Some code path indexes occupancy without a bounds check, reached only under NN-prior action distributions (passes suspected — scripted priors avoid what NN priors explore). Backtrace reproduction in flight. **Fix before gen-1** even though gen-1 can run on nn-value: it's a latent correctness hole, and gen-2+ wants NN priors.
+1. **Engine OOB panic under NN priors** (`gamestate.rs:903`, `board[pos]` with y=9 on a 9-high board): hit once during the first full-`nn` card; did **not** reproduce in the 30-game re-run — a rare board-edge state (nondeterministic search order decides whether it's reached). A looped crash hunt with backtraces is the way to catch it (seeds don't pin games — see auto-memory). Not blocking gen-1 on nn-value, but a latent correctness hole to close.
 2. **Lectures are full-pitch-only** (hard-coded coordinates up to x=25/y=13) → the battery is skipped entirely on 14x7. Board-relative lecture setups would make the battery live on every tier.
 3. **Shard shortfall**: ~7.8k of the planned 9.6k games materialized (some shards ended early; same OOM-adjacent machine pressure as plan 020's kills is suspected). Non-blocking — corpus is healthy — but shard logs deserve a look before the next big run.
 
