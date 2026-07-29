@@ -85,7 +85,23 @@ impl Procedure for Bounce {
             return ProcState::DoneNew(Touchback::new());
         }
 
-        if let Some((catcher_id, can_catch)) = game_state.get_player_at(new_pos).map(|p| (p.id, p.can_catch())) {
+        // Out-of-bounds must be checked *before* occupancy: `new_pos` can
+        // be past the physical board when the ball bounces outward from a
+        // square on the border ring (deviating kicks / scatter sequences
+        // leave it there transiently), and `get_player_at` indexes the
+        // array directly. Order is otherwise equivalent — border and OOB
+        // squares never hold players.
+        if game_state.is_out(new_pos) {
+            // The throw-in origin must be on the pitch; if the ball was
+            // itself on the ring, walk back along the bounce direction
+            // (mirrors ThrowIn's own OOB re-request handling).
+            let mut from = current_ball_pos;
+            let direction = Direction::from(dice);
+            while game_state.is_out(from) {
+                from -= direction;
+            }
+            ProcState::DoneNew(ThrowIn::new(from))
+        } else if let Some((catcher_id, can_catch)) = game_state.get_player_at(new_pos).map(|p| (p.id, p.can_catch())) {
             if can_catch {
                 // The ball is in the catcher's square while they attempt
                 // the catch — a failed catch bounces on from *their*
@@ -103,8 +119,6 @@ impl Procedure for Bounce {
                 game_state.set_ball(BallState::InAir(new_pos));
                 ProcState::NotDone
             }
-        } else if game_state.is_out(new_pos) {
-            ProcState::DoneNew(ThrowIn::new(current_ball_pos))
         } else {
             game_state.set_ball(BallState::OnGround(new_pos));
             ProcState::Done
@@ -550,6 +564,45 @@ mod tests {
     use crate::core::model::*;
     use crate::core::table::*;
     use crate::core::{gamestate::GameStateBuilder, model::Position, table::PosAT};
+
+    /// A bounce outward from a square on the border ring must not index
+    /// past the physical board: `is_out` has to be checked before
+    /// occupancy (`board[new_pos]`). The ball sits on the ring
+    /// transiently (deviating kicks, scatter sequences); bouncing outward
+    /// from there computed `board[y+1]` one past the array — caught on
+    /// the 14x7 training board under NN-guided search (gamestate.rs:903).
+    /// The resulting throw-in origin must also be walked back onto the
+    /// pitch, or `get_throw_in_direction` panics on the ring square.
+    #[test]
+    fn bounce_off_border_square_throws_in_without_indexing_oob() {
+        use crate::core::dices::{RollResult, Sum2D6, D3};
+        use crate::core::procedures::ball_procs::Bounce;
+        use crate::core::procedures::AnyProc;
+
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((2, 2))).build();
+        let dims = state.board_dims;
+        let border_pos = Position::new((5, dims.height - 1)); // bottom border ring
+        state.set_ball(BallState::InAir(border_pos));
+
+        let AnyProc::Bounce(mut proc) = Bounce::new() else { unreachable!() };
+        let result = proc.step(
+            &mut state,
+            ProcInput::Roll(RollResult::D8(D8::from(Direction::down()))),
+        );
+        let ProcState::DoneNew(AnyProc::ThrowIn(mut throw_in)) = result else {
+            panic!("outward bounce from the border must resolve to a throw-in, got {result:?}");
+        };
+
+        // The throw-in origin must be on the pitch: resolving a roll walks
+        // `get_throw_in_direction`, which panics on a ring square.
+        let _ = throw_in.step(
+            &mut state,
+            ProcInput::Roll(RollResult::ThrowIn {
+                direction: D3::One,
+                distance: Sum2D6::Two,
+            }),
+        );
+    }
 
     /// A touchback with no receiving player on the pitch (all injured/KO'd
     /// — routine in 2-player small-board games) must not emit an empty
