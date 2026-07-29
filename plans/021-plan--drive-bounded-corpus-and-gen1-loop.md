@@ -45,7 +45,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 
 ## Open issues
 
-1. **Engine OOB panic under NN priors** (`gamestate.rs:903`, `board[pos]` with y=9 on a 9-high board): hit once during the first full-`nn` card; did **not** reproduce in the 30-game re-run — a rare board-edge state (nondeterministic search order decides whether it's reached). A looped crash hunt with backtraces is the way to catch it (seeds don't pin games — see auto-memory). Not blocking gen-1 on nn-value, but a latent correctness hole to close.
+1. **Engine OOB panic under NN priors** — ✅ **FIXED (commit `d386dc0`)**. The looped crash hunt caught it: `Bounce::step` checked occupancy (`board[new_pos]`, raw physical index) *before* `is_out`, so a ball bouncing outward from a border-ring square (deviating kicks / scatter leave it there transiently) indexed one row past the array. Also fixed the follow-on: the throw-in origin is now walked back onto the pitch (ThrowIn's direction table panics on ring squares). Regression test: `bounce_off_border_square_throws_in_without_indexing_oob`. The bug existed on the full pitch too — third instance of "the small board is a fuzzer."
 2. **Lectures are full-pitch-only** (hard-coded coordinates up to x=25/y=13) → the battery is skipped entirely on 14x7. Board-relative lecture setups would make the battery live on every tier.
 3. **Shard shortfall**: ~7.8k of the planned 9.6k games materialized (some shards ended early; same OOM-adjacent machine pressure as plan 020's kills is suspected). Non-blocking — corpus is healthy — but shard logs deserve a look before the next big run.
 
