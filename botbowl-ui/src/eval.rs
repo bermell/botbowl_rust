@@ -65,6 +65,13 @@ struct LadderRow {
     tds_against: u32,
     unfinished: u32,
     win_rate: f64,
+    /// Per-side split (games alternate Home/Away): a Home/Away asymmetry
+    /// cancels out of `win_rate` but shows up here (plan 021 open issue 5,
+    /// the 0.40 mirror anomaly).
+    wins_as_home: u32,
+    losses_as_home: u32,
+    wins_as_away: u32,
+    losses_as_away: u32,
 }
 
 #[derive(Serialize, Debug)]
@@ -79,9 +86,9 @@ struct Report {
     ladder: Vec<LadderRow>,
 }
 
-fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
-    let bot = MctsBot::new(SearchBudget::Iterations(args.mcts_iters)).with_workers(args.mcts_workers);
-    match args.evaluator {
+fn make_bot(evaluator: CliEvaluator, nn: Option<&Arc<NnEvaluator>>, iters: usize, workers: usize) -> MctsBot {
+    let bot = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(workers);
+    match evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
         CliEvaluator::Nn => bot.with_evaluator(Arc::clone(nn.expect("nn loaded"))),
@@ -89,12 +96,35 @@ fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
     }
 }
 
-fn candidate_label(args: &EvalArgs) -> String {
-    match args.evaluator {
+fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
+    make_bot(args.evaluator, nn, args.mcts_iters, args.mcts_workers)
+}
+
+fn evaluator_label(evaluator: CliEvaluator, model: Option<&str>) -> String {
+    match evaluator {
         CliEvaluator::Heuristic => "mcts(heuristic)".to_string(),
         CliEvaluator::PureTd => "mcts(pure-td)".to_string(),
-        CliEvaluator::Nn => format!("mcts(nn:{})", args.model.as_deref().unwrap_or("?")),
-        CliEvaluator::NnValue => format!("mcts(nn-value:{})", args.model.as_deref().unwrap_or("?")),
+        CliEvaluator::Nn => format!("mcts(nn:{})", model.unwrap_or("?")),
+        CliEvaluator::NnValue => format!("mcts(nn-value:{})", model.unwrap_or("?")),
+    }
+}
+
+fn candidate_label(args: &EvalArgs) -> String {
+    evaluator_label(args.evaluator, args.model.as_deref())
+}
+
+/// Load the ONNX evaluator an nn/nn-value bot needs; `None` otherwise.
+/// `missing_msg` is the error when the model path flag wasn't given.
+fn load_nn(evaluator: CliEvaluator, model: Option<&str>, missing_msg: &str) -> io::Result<Option<Arc<NnEvaluator>>> {
+    match evaluator {
+        CliEvaluator::Nn | CliEvaluator::NnValue => {
+            let path = model
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, missing_msg.to_string()))?;
+            let eval = NnEvaluator::from_path(path)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("failed to load {path}: {e}")))?;
+            Ok(Some(Arc::new(eval)))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -160,10 +190,17 @@ fn run_ladder_rung(
         if !finished {
             row.unfinished += 1;
         }
+        let home = candidate_team == TeamType::Home;
         match cand.cmp(&opp) {
-            std::cmp::Ordering::Greater => row.wins += 1,
+            std::cmp::Ordering::Greater => {
+                row.wins += 1;
+                if home { row.wins_as_home += 1 } else { row.wins_as_away += 1 }
+            }
             std::cmp::Ordering::Equal => row.draws += 1,
-            std::cmp::Ordering::Less => row.losses += 1,
+            std::cmp::Ordering::Less => {
+                row.losses += 1;
+                if home { row.losses_as_home += 1 } else { row.losses_as_away += 1 }
+            }
         }
         eprint!("\r  vs {name}: {}/{} (W{} D{} L{})", g + 1, args.games, row.wins, row.draws, row.losses);
     }
@@ -177,16 +214,20 @@ fn run_ladder_rung(
 }
 
 pub fn run(args: EvalArgs) -> io::Result<()> {
-    let nn: Option<Arc<NnEvaluator>> = match args.evaluator {
-        CliEvaluator::Nn | CliEvaluator::NnValue => {
-            let path = args.model.as_deref().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "--evaluator nn/nn-value requires --model PATH")
-            })?;
-            let eval = NnEvaluator::from_path(path)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("failed to load {path}: {e}")))?;
-            Some(Arc::new(eval))
-        }
-        _ => None,
+    let nn = load_nn(
+        args.evaluator,
+        args.model.as_deref(),
+        "--evaluator nn/nn-value requires --model PATH",
+    )?;
+    // Load the --vs-evaluator opponent's net up front so a bad path fails
+    // before hours of fixed-rung games.
+    let vs_nn = match args.vs_evaluator {
+        Some(vs) => load_nn(
+            vs,
+            args.vs_model.as_deref(),
+            "--vs-evaluator nn/nn-value requires --vs-model PATH",
+        )?,
+        None => None,
     };
 
     let mut lectures: Vec<LectureRow> = Vec::new();
@@ -246,16 +287,24 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
     let mut ladder: Vec<LadderRow> = Vec::new();
     if !args.skip_ladder {
         eprintln!("== opponent ladder ({} games per rung) ==", args.games);
-        ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", || {
-            Box::new(RandomBot::new())
-        }));
-        ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", || {
-            Box::new(ScriptedBot::new())
-        }));
         let opp_iters = args.opponent_iters.unwrap_or(args.mcts_iters);
-        ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", || {
-            Box::new(MctsBot::new(SearchBudget::Iterations(opp_iters)).with_workers(args.mcts_workers))
-        }));
+        if !args.skip_fixed_rungs {
+            ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", || {
+                Box::new(RandomBot::new())
+            }));
+            ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", || {
+                Box::new(ScriptedBot::new())
+            }));
+            ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", || {
+                Box::new(MctsBot::new(SearchBudget::Iterations(opp_iters)).with_workers(args.mcts_workers))
+            }));
+        }
+        if let Some(vs) = args.vs_evaluator {
+            let label = format!("vs:{}", evaluator_label(vs, args.vs_model.as_deref()));
+            ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, || {
+                Box::new(make_bot(vs, vs_nn.as_ref(), opp_iters, args.mcts_workers))
+            }));
+        }
     }
 
     let report = Report {
@@ -282,12 +331,16 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
     }
     for r in &report.ladder {
         println!(
-            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  TD {}:{}{}",
+            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}{}",
             r.opponent,
             r.win_rate,
             r.wins,
             r.draws,
             r.losses,
+            r.wins_as_home,
+            r.losses_as_home,
+            r.wins_as_away,
+            r.losses_as_away,
             r.tds_for,
             r.tds_against,
             if r.unfinished > 0 {

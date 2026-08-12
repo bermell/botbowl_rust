@@ -53,7 +53,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 
 1. **Fix the y=9 OOB panic** (backtrace → guard → regression test), then re-run the full-`nn` report card — completes the nn vs nn-value comparison on the new net.
 2. **Mirror-match sanity run** (heuristic vs heuristic, 100 games) to settle the 0.40 anomaly before trusting fine-grained ladder deltas.
-3. **Start the gen-1 loop on 14x7** with `nn-value` as the generator:
+3. **Start the gen-1 loop on 14x7** with `nn-value` as the generator: → **automated as `plans/022-plan--weekend-training-loop.md`** (`scripts/train_loop.sh`, net-vs-net eval rung, promotion gate, mirror-match pre-flight).
    - Generate a drive-bounded corpus with `--evaluator nn-value --model bbnet_14x7_db.onnx` (mixed with ~30–40% heuristic games as hedge, per plan 020's mixed-transition design).
    - Train gen-1 net (best-val restore, val = fresh held-out shard from the *new* corpus).
    - Report card vs: heuristic reference, gen-0 net (`bbnet_14x7_db`), ScriptedBot. **Promotion gate: ≥55% vs gen-0 net.**

@@ -204,6 +204,18 @@ pub struct EvalArgs {
     /// Skip the opponent ladder.
     #[arg(long, default_value_t = false)]
     pub skip_ladder: bool,
+    /// Extra ladder rung: an arbitrary MCTS opponent with this leaf-value
+    /// source (e.g. the previous generation's net, for promotion gates).
+    /// Runs at --opponent-iters (defaults to --mcts-iters).
+    #[arg(long, value_enum)]
+    pub vs_evaluator: Option<CliEvaluator>,
+    /// ONNX model for the --vs-evaluator opponent (required for nn/nn-value).
+    #[arg(long)]
+    pub vs_model: Option<String>,
+    /// Skip the fixed rungs (random/scripted/mcts-heuristic), keeping only
+    /// the --vs-evaluator rung. E.g. mirror matches and promotion gates.
+    #[arg(long, default_value_t = false)]
+    pub skip_fixed_rungs: bool,
     /// Write the report as JSON here.
     #[arg(long)]
     pub out: Option<String>,
