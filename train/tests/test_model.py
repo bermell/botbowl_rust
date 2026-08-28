@@ -69,3 +69,33 @@ def test_overfit_tiny_random_batch_drives_policy_loss_down():
         if first is None:
             first = pl.item()
     assert pl.item() < first * 0.5, f"policy loss did not drop: {first} -> {pl.item()}"
+
+
+def test_resolve_device_cpu_and_auto_never_raise():
+    """`auto` must always yield a usable device, and `cpu` must stay cpu.
+
+    The training host's GPU is sm_61 while some torch wheels only ship sm_75+
+    kernels, so `auto` has to survive a CUDA build that advertises a device it
+    cannot actually launch on.
+    """
+    from bbnn.train import resolve_device
+
+    assert resolve_device("cpu").type == "cpu"
+
+    dev = resolve_device("auto")
+    assert dev.type in ("cpu", "cuda")
+    # Whatever it picked must genuinely run a kernel.
+    x = torch.zeros(4, 4, device=dev)
+    assert (x @ x).sum().item() == 0.0
+
+
+def test_resolve_device_explicit_cuda_is_never_a_silent_cpu_fallback():
+    """An explicit --device cuda must either work or fail loudly — never CPU."""
+    from bbnn.train import resolve_device
+
+    try:
+        dev = resolve_device("cuda")
+    except RuntimeError as e:
+        assert "unusable" in str(e)
+    else:
+        assert dev.type == "cuda"

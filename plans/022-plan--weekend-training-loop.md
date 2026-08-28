@@ -62,6 +62,40 @@ Per generation: generation ~6–10 h (nn-value ≈ 30–70 s/game, heuristic sha
 - If gens repeatedly reject: suspects are (a) 30-game gate noise (17/30 needed), (b) self-play data collapsing in variety (check TDs/drive and scoreless % in shard logs vs the 0.79/21% gen-0 baselines), (c) champion-relative labels drifting — consider merging corpora across generations before retraining.
 - Mirror-match verdict (runs/loop14x7/mirror.json, Home/Away split): if a real side bias shows, every ladder number inherits it — audit before fine-grained cross-gen comparisons.
 
+## Linux training host (added 2026-08-28)
+
+The loop was authored on macOS; it now also runs on the Linux box, which is the GPU
+training host (the Mac has no usable GPU). Changes to `scripts/train_loop.sh` and the
+trainer, all no-ops on macOS:
+
+- **Gen-0 bootstrap.** `models/` is gitignored, so a fresh clone has no
+  `bbnet_14x7_db.onnx` and the loop died on the champion check. It now builds its own
+  initial champion when none exists: heuristic-only corpus across all 8 shards, the same
+  train/val shard split, best-val training, promoted with no gate (no incumbent to beat).
+  Bootstrap seeds use `G=0` — disjoint from every generation. Skipped entirely when a
+  champion is present, so hand-copying the original `.onnx` still works and just skips it.
+  Sized by `BOOTSTRAP_GAMES_PER_SHARD` (defaults to `GAMES_PER_SHARD`).
+- **Sleep inhibition**: `caffeinate` on macOS, `systemd-inhibit` on Linux.
+- **`df -g` → `free_gb()`**: GNU `df` rejects `-g`, so the disk-free field in the generate
+  status line was silently empty on Linux.
+- **`TRAIN_DEVICE`** (default `auto`) passed to the trainer as `--device`.
+- **`CARGO_TARGET_DIR` defaults to `target/14x7`**: board size is a build-time env var, so
+  the 14x7 binaries and a default-board `cargo test --workspace` were evicting each other
+  from a shared target dir and forcing a full rebuild on every switch.
+
+**GPU note (the trap worth remembering).** The default PyPI `torch==2.13.0+cu130` ships
+sm_75+ kernels; the host's GTX 1060 is sm_61. `torch.cuda.is_available()` returns **True**
+and every kernel launch then fails with `no kernel image is available for execution on the
+device`. `train/pyproject.toml` now pins torch to PyTorch's **cu126** index for Linux only
+(`marker = "sys_platform == 'linux'"`), so macOS keeps the PyPI wheel; cu126 is the same
+torch 2.13.0 and its sm_60 cubins are forward-compatible with Pascal 6.1. Because
+`is_available()` is not a usable capability check here, `bbnn.train.resolve_device()`
+probes with a real kernel launch: `auto` falls back to CPU with a printed reason, an
+explicit `--device cuda` raises rather than silently training on CPU.
+
+Validated end-to-end with tiny knobs in a scratch `RUN_DIR`/`MODEL_DIR`: bootstrap → gen01
+→ eval → PROMOTED (exit 0), plus a resume run that skipped every completed phase.
+
 ## Cross-references
 
 - plan 021 — the regime this automates (§Next steps 3), gate definition, gen-0 baselines.

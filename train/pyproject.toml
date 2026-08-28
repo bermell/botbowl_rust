@@ -9,6 +9,22 @@ dependencies = [
     "onnx>=1.16",
 ]
 
+# --- CUDA wheel selection -----------------------------------------------------
+# The default PyPI torch wheel is built for CUDA 13 and ships kernels for sm_75+
+# only. The Linux training host's GPU (GTX 1060) is sm_61 (Pascal), so with the
+# PyPI build `torch.cuda.is_available()` reports True but every kernel launch
+# fails with "no kernel image is available for execution on the device".
+# The cu126 build of the *same* torch version still includes sm_61, so on Linux
+# we pull torch from PyTorch's cu126 index. macOS keeps the PyPI wheel (the
+# cu126 index has no macOS wheels).
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+
 [dependency-groups]
 dev = ["pytest>=8"]
 

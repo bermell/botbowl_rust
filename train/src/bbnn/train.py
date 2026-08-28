@@ -18,6 +18,48 @@ from .export import export_onnx
 from .model import BBNet, masked_policy_logits
 
 
+def resolve_device(spec="auto"):
+    """Map a --device spec to a torch device that can actually run kernels.
+
+    `torch.cuda.is_available()` is not sufficient: a CUDA build whose kernels
+    were compiled for newer architectures than the installed GPU still reports
+    True, and only fails at the first kernel launch (the training host's
+    GTX 1060 is sm_61; the PyPI cu130 wheel ships sm_75+). So we probe with a
+    real launch and synchronize to surface the error here rather than mid-epoch.
+
+    "auto" falls back to CPU with a printed reason; an explicit "cuda" raises,
+    because silently training on CPU when the user asked for GPU is worse than
+    stopping.
+    """
+    if spec == "cpu":
+        return torch.device("cpu")
+
+    want = "cuda" if spec == "auto" else spec
+    if not want.startswith("cuda"):
+        return torch.device(want)
+
+    def _fail(reason):
+        if spec == "auto":
+            print(f"device: falling back to cpu ({reason})")
+            return torch.device("cpu")
+        raise RuntimeError(f"--device {spec} requested but unusable: {reason}")
+
+    if not torch.cuda.is_available():
+        return _fail("torch.cuda.is_available() is False")
+    try:
+        dev = torch.device(want)
+        probe = torch.zeros(8, 8, device=dev)
+        (probe @ probe).sum().item()
+        torch.cuda.synchronize(dev)
+    except Exception as e:  # noqa: BLE001 - any launch failure means unusable
+        first = (str(e).splitlines() or [""])[0]
+        return _fail(f"{type(e).__name__}: {first}")
+    name = torch.cuda.get_device_name(dev)
+    cc = ".".join(str(x) for x in torch.cuda.get_device_capability(dev))
+    print(f"device: {dev} ({name}, sm_{cc.replace('.', '')})")
+    return dev
+
+
 def compute_losses(model, batch, device):
     spatial = batch["spatial"].to(device)
     global_ = batch["global"].to(device)
@@ -55,7 +97,7 @@ def train(
     limit=None,
     out=None,
     onnx=None,
-    device="cpu",
+    device="auto",
     augment=True,
     val_dir=None,
 ):
@@ -81,6 +123,7 @@ def train(
             collate_fn=collate,
         )
 
+    device = resolve_device(device) if isinstance(device, str) else device
     model = BBNet().to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -126,6 +169,10 @@ def train(
         model.load_state_dict(best_state)
         print(f"restored best-val weights: epoch {best_epoch} (val_value {best_val:.4f})")
 
+    # Export/serialize from CPU: `export_onnx` traces with CPU dummy inputs,
+    # and a .pt of CUDA tensors would pin the checkpoint to a GPU host.
+    model = model.to("cpu")
+
     if out:
         torch.save(model.state_dict(), out)
         print(f"saved weights → {out}")
@@ -146,6 +193,11 @@ def main():
     ap.add_argument("--val-data", default=None, help="held-out prepared dims dir (disjoint games!)")
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
+    ap.add_argument(
+        "--device",
+        default="auto",
+        help="auto (default; cuda if it can actually run kernels, else cpu), cpu, cuda, cuda:N",
+    )
     args = ap.parse_args()
     train(
         args.data,
@@ -157,6 +209,7 @@ def main():
         onnx=args.onnx,
         augment=not args.no_augment,
         val_dir=args.val_data,
+        device=args.device,
     )
 
 

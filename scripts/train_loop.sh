@@ -10,7 +10,12 @@
 #   On a failed gate the champion stays the generator and the loop continues
 #   with fresh seeds; the rejected net + report stay on disk.
 #
-# Launch (survives logout, prevents sleep — script re-execs under caffeinate):
+# On a host with no champion yet (models/ is gitignored, so a fresh clone has
+# none), a one-off gen-0 bootstrap runs first: a heuristic-only corpus, prepared
+# and trained the same way, becomes the initial champion. Skipped when one exists.
+#
+# Launch (survives logout, prevents sleep — the script re-execs itself under
+# caffeinate on macOS, systemd-inhibit on Linux):
 #   nohup scripts/train_loop.sh > /dev/null 2>&1 &
 # Monitor over ssh:
 #   tail -f runs/loop14x7/status.md          # one line per phase
@@ -23,10 +28,16 @@
 
 set -u
 
-# Keep the machine awake for the whole run.
-if [ -z "${TRAIN_LOOP_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null 2>&1; then
-    export TRAIN_LOOP_CAFFEINATED=1
-    exec caffeinate -is "$0" "$@"
+# Keep the machine awake for the whole run. macOS uses caffeinate, Linux uses
+# systemd-inhibit; on a host with neither we just run (and may be suspended).
+if [ -z "${TRAIN_LOOP_NOSLEEP:-}" ]; then
+    export TRAIN_LOOP_NOSLEEP=1
+    if command -v caffeinate >/dev/null 2>&1; then
+        exec caffeinate -is "$0" "$@"
+    elif command -v systemd-inhibit >/dev/null 2>&1; then
+        exec systemd-inhibit --what=sleep:idle --who="train_loop.sh" \
+            --why="botbowl generation loop" --mode=block "$0" "$@"
+    fi
 fi
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,6 +53,9 @@ EVAL_GAMES="${EVAL_GAMES:-30}"              # per ladder rung, paired Home/Away
 MIRROR_GAMES="${MIRROR_GAMES:-100}"         # pre-flight heuristic mirror match
 EPOCHS="${EPOCHS:-10}"
 GATE="${GATE:-0.55}"                        # promotion: win_rate vs champion
+TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
+BOOTSTRAP_GAMES_PER_SHARD="${BOOTSTRAP_GAMES_PER_SHARD:-$GAMES_PER_SHARD}"
+                                            # gen-0 corpus when no champion exists
 INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
                                             # (old corpora used 8e5.. and 2e6..)
@@ -54,8 +68,14 @@ HEUR_SHARDS="5 6 7"         # heuristic hedge (~37% of games)
 TRAIN_SHARDS="0 1 2 3 5 6"
 VAL_SHARDS="4 7"            # held out whole: one nn shard + one heuristic shard
 
-UI="$REPO/target/release/botbowl-ui"
-PREPARE="$REPO/target/release/prepare"
+# Board size is a *build-time* choice (botbowl-engine/build.rs), so the 14x7
+# binaries and a default-board `cargo test --workspace` would otherwise evict
+# each other from a shared target dir and force a full rebuild on every switch.
+# Nested under /target so the existing .gitignore entry still covers it.
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target/14x7}"
+export CARGO_TARGET_DIR
+UI="$CARGO_TARGET_DIR/release/botbowl-ui"
+PREPARE="$CARGO_TARGET_DIR/release/prepare"
 PY="$REPO/train/.venv/bin/python"
 SUMMARY="$REPO/scripts/eval_summary.py"
 
@@ -74,12 +94,26 @@ check_stop() {
     fi
 }
 champion() { cat "$CHAMPION_FILE"; }
+# Free disk in GiB. `df -g` is macOS-only; -BG/-k are the portable GNU spellings.
+free_gb() {
+    if df -BG . >/dev/null 2>&1; then
+        df -BG . | awk 'NR==2{gsub(/G/,"",$4); print $4"G"}'
+    else
+        df -k . | awk 'NR==2{printf "%dG", $4/1048576}'
+    fi
+}
 
 [ -f "$CHAMPION_FILE" ] || echo "$INIT_CHAMPION" > "$CHAMPION_FILE"
-[ -f "$(champion)" ] || die "champion model not found: $(champion)"
 [ -x "$PY" ] || die "trainer venv python not found: $PY"
+# NB: the champion file may point at a model that does not exist yet — the gen-0
+# bootstrap below creates one. The hard check lives after that block.
 
-status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), champion $(basename "$(champion)"), ${GAMES_PER_SHARD}x8 games/gen, gate $GATE, max $MAX_GENS gens"
+if [ -f "$(champion)" ]; then
+    CHAMP_DESC="champion $(basename "$(champion)")"
+else
+    CHAMP_DESC="no champion yet — will bootstrap gen-0 from a heuristic corpus"
+fi
+status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gate $GATE, max $MAX_GENS gens"
 
 # ---- build ------------------------------------------------------------------
 log "building release binaries (14x7)"
@@ -105,6 +139,87 @@ if [ ! -e "$RUN_DIR/.mirror.done" ]; then
     touch "$RUN_DIR/.mirror.done"
 fi
 
+# ---- gen-0 bootstrap --------------------------------------------------------
+# The loop needs a champion to generate from, but `models/` is gitignored, so a
+# fresh clone has none. Rather than making a hand-copied .onnx a hard
+# prerequisite, build one here the same way plan 020/021 built the original: a
+# heuristic-only corpus (the teacher), prepared with the same train/val shard
+# split, trained with best-val restore. Skipped entirely when a champion exists,
+# so hosts that already have one are unaffected.
+if [ ! -f "$(champion)" ]; then
+    check_stop "before gen-0 bootstrap"
+    GEN_DIR="$RUN_DIR/gen00"
+    MODEL="$MODEL_DIR/bbnet_14x7_gen00"
+    mkdir -p "$GEN_DIR"
+    status "gen-0 bootstrap: $(basename "$(champion)") not found — building a champion from a heuristic corpus"
+
+    if [ ! -e "$GEN_DIR/.generated" ]; then
+        SECONDS=0
+        status "gen00 generate: 8x$BOOTSTRAP_GAMES_PER_SHARD heuristic games, disk free $(free_gb)"
+        PIDS=""
+        for K in $NN_SHARDS $HEUR_SHARDS; do
+            SEED=$((SEED_BASE + K * 100000))     # G=0 — disjoint from every gen
+            "$UI" dataset --mode random-start --games "$BOOTSTRAP_GAMES_PER_SHARD" \
+                --seed "$SEED" --mcts-iters "$MCTS_ITERS" --evaluator heuristic \
+                --truncate --out "$GEN_DIR/shard$K.jsonl" \
+                > "$GEN_DIR/shard$K.log" 2>&1 &
+            PIDS="$PIDS $!:$K"
+        done
+        for P in $PIDS; do
+            PID="${P%%:*}"; K="${P##*:}"
+            if ! wait "$PID"; then
+                log "WARN: gen00 shard$K generator exited nonzero (partial shard kept)"
+            fi
+        done
+        GAMES=0
+        for K in $NN_SHARDS $HEUR_SHARDS; do
+            [ -s "$GEN_DIR/shard$K.jsonl" ] || die "gen00 shard$K.jsonl empty/missing — see shard$K.log"
+            GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
+        done
+        status "gen00 generate done ($((SECONDS / 60)) min): $GAMES/$((BOOTSTRAP_GAMES_PER_SHARD * 8)) games"
+        touch "$GEN_DIR/.generated"
+    fi
+
+    if [ ! -e "$GEN_DIR/.prepared" ]; then
+        SECONDS=0
+        TRAIN_IN=""; VAL_IN=""
+        for K in $TRAIN_SHARDS; do TRAIN_IN="$TRAIN_IN $GEN_DIR/shard$K.jsonl"; done
+        for K in $VAL_SHARDS; do VAL_IN="$VAL_IN $GEN_DIR/shard$K.jsonl"; done
+        # shellcheck disable=SC2086
+        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" >> "$LOG" 2>&1 \
+            || die "gen00 prepare (train) failed"
+        # shellcheck disable=SC2086
+        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" >> "$LOG" 2>&1 \
+            || die "gen00 prepare (val) failed"
+        status "gen00 prepare done ($((SECONDS / 60)) min)"
+        touch "$GEN_DIR/.prepared"
+    fi
+    DIMS_TRAIN=$(ls -d "$GEN_DIR"/prepared_train/dims_* 2>/dev/null | head -1)
+    DIMS_VAL=$(ls -d "$GEN_DIR"/prepared_val/dims_* 2>/dev/null | head -1)
+    [ -n "$DIMS_TRAIN" ] && [ -n "$DIMS_VAL" ] || die "gen00 prepared dims dirs missing"
+
+    if [ ! -e "$GEN_DIR/.trained" ]; then
+        SECONDS=0
+        if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
+                --epochs "$EPOCHS" --device "$TRAIN_DEVICE" \
+                --out "$MODEL.pt" --onnx "$MODEL.onnx" \
+                > "$GEN_DIR/train.log" 2>&1; then
+            die "gen00 training failed — see train.log"
+        fi
+        BEST=$(grep 'restored best-val weights' "$GEN_DIR/train.log" | tail -1)
+        status "gen00 train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}"
+        touch "$GEN_DIR/.trained"
+    fi
+    [ -f "$MODEL.onnx" ] || die "gen00 onnx export missing: $MODEL.onnx"
+
+    # No promotion gate: with no incumbent, this net *is* the champion. Its
+    # strength is measured by gen01's report card against the fixed rungs.
+    echo "$MODEL.onnx" > "$CHAMPION_FILE"
+    status "gen-0 bootstrap done: champion is now $(basename "$MODEL.onnx")"
+fi
+
+[ -f "$(champion)" ] || die "champion model not found: $(champion)"
+
 # ---- generation loop ----------------------------------------------------------
 G=1
 while [ "$G" -le "$MAX_GENS" ]; do
@@ -118,7 +233,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ ! -e "$GEN_DIR/.generated" ]; then
         SECONDS=0
         CHAMP="$(champion)"
-        status "$GG generate: 8x$GAMES_PER_SHARD games (nn-value: $(basename "$CHAMP") + heuristic hedge), disk free $(df -g . | awk 'NR==2{print $4}')G"
+        status "$GG generate: 8x$GAMES_PER_SHARD games (nn-value: $(basename "$CHAMP") + heuristic hedge), disk free $(free_gb)"
         PIDS=""
         for K in $NN_SHARDS $HEUR_SHARDS; do
             SEED=$((SEED_BASE + G * 1000000 + K * 100000))
@@ -173,7 +288,8 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ ! -e "$GEN_DIR/.trained" ]; then
         SECONDS=0
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
-                --epochs "$EPOCHS" --out "$MODEL.pt" --onnx "$MODEL.onnx" \
+                --epochs "$EPOCHS" --device "$TRAIN_DEVICE" \
+                --out "$MODEL.pt" --onnx "$MODEL.onnx" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "$GG training failed — see train.log"
         fi
