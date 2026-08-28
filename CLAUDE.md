@@ -32,6 +32,11 @@ cargo run -p botbowl-ui -- live      # also: snapshot --seed 0 --step 0 | curric
 
 recon_mcts (cd into `recon_mcts/` first): `cargo test`, and `cargo fmt` is **required** after edits (enforced by `.cursor/rules`). Demo bins live in `tests/nim/` (see its CLAUDE.md).
 
+## Git workflow
+
+- **Commit directly to `master`.** No feature branch or PR needed for ordinary work — this is a solo repo and the history is linear.
+- **Always commit before starting a training/generation run.** The generator stamps the current commit hash into every corpus it writes (and into `runs/*/status.md`), so launching from a dirty tree produces `<hash>-dirty` stamps that cannot be resolved back to the code that produced the data. Commit first, then launch.
+
 ## Cross-cutting invariants
 
 These can be violated from any crate, so they live here; the detail behind each is in the owning crate's CLAUDE.md.
