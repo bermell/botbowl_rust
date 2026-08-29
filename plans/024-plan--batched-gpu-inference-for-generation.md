@@ -165,24 +165,108 @@ Shared-memory rings would get this to ~5 µs and are not worth the complexity un
 
 ## The design
 
+### Two nets at once — where multi-model is, and is not, needed
+
+**Not needed for generation.** The 8 generate shards each use exactly one net: 5 × `nn-value` with the current
+champion, 3 × heuristic with no net at all (`scripts/train_loop.sh:238-249`). One net per process, one net for
+the whole phase — Stages 1–4a are untouched by anything in this section.
+
+**Needed for eval.** The promotion gate runs two *different* nets inside a *single* process:
+
+```sh
+botbowl-ui eval --evaluator nn-value --model <candidate>.onnx \
+                --vs-evaluator nn-value --vs-model <champion>.onnx   # train_loop.sh:309-312
+```
+
+`eval::run` loads both up front — the candidate's at `botbowl-ui/src/eval.rs:220` and the opponent's `vs_nn` at
+`eval.rs:224` — and the `vs:` rung alternates the two bots inside every game (`eval.rs:302-306`, via
+`run_ladder_rung` at `eval.rs:169`). That is exactly the phase Stage 4b wants to move onto the server, so the
+server must serve two nets at once before Stage 4b can land.
+
+Two ways to do that:
+
+**(A) One server, many models** — a `model_id` in the protocol, a model registry in the server, batch key
+`(model_id, h, w)`, per-model canary.
+**(B) Two server processes**, one per model, with a second socket path and a second CLI flag
+(`--nn-server` / `--vs-nn-server`).
+
+Two things do *not* separate them, and should not be used to argue either way:
+
+- **Batch sizes come out the same.** Samples cannot be batched across different weights, so a single
+  multi-model server still forms one batch *per model*. The two bots alternate turns inside a game, so each net
+  sees roughly half the in-flight streams under either design: `--parallel-games 32` means ~16 streams per net
+  either way. Nobody should expect (A) to produce bigger batches — it does not.
+- **VRAM.** The tower is ~0.5 M params (single-digit MB) at ~0.13 GFLOP/forward; two CUDA contexts at ~300 MB
+  each is entirely affordable on a 6 GB card. The VRAM argument in §A is about *eight* in-process contexts and
+  does not carry over to two server processes.
+
+What genuinely separates them:
+
+| | (A) one server, many models | (B) one server per model |
+|---|---|---|
+| batch size per net | ~half the streams | ~half the streams (**same**) |
+| GPU scheduling | two graphs, one context, one stream — no context switching | the driver **time-slices** between two processes' contexts |
+| Stage 5 supervision | one lifecycle to start / canary / health-check / restart / reap | two of everything, plus a new partial-failure state (one up, one down) |
+| client config | one `--nn-server`; each `NnEvaluator` names its own model at handshake | a second flag, and a rule for which bot uses which socket |
+| protocol / server cost | `model_id`, a registry, an eviction policy | none |
+| future | serves a ladder against several past champions unchanged | one process per champion |
+
+**Recommendation: (A), one server with a model registry.** Two reasons, in order of weight.
+
+First, **GPU context-switching lands precisely on the term this plan exists to minimise.** The throughput model
+below shows the entire outcome hinges on `F`, the fixed per-batch cost — at `F = 4.2 ms` the whole exercise is a
+regression at every affordable stream count. Without MPS (not set up here, and its Pascal support would be one
+more pinned dependency), two processes submitting work to one GPU are time-sliced by the driver, and every slice
+boundary is charged to `F` on a workload whose batches are only ~2 ms long. The magnitude is unmeasured — and
+that is the point: (B) puts an unmeasured cost into the one variable we cannot afford to guess at, while (A)
+provably has none.
+
+Second, **Stage 5's supervision is where the operational risk lives.** The loop treats a dead shard as a warning
+but a dead server as a corpus-wide failure; (B) doubles that surface and adds a partial-failure state, for no
+compensating benefit.
+
+(A)'s cost is real but bounded: one protocol field, a registry, and an eviction policy. Eviction is nearly
+trivial at this scale — the eval phase needs exactly two models live — so LRU with `--max-models` (default 4)
+and a refusal to evict a model that has a live connection is a dozen lines. And it is the design that
+generalises for free to plan 022's "After the weekend" strength ladder, where one candidate is evaluated against
+several past generations in a single run.
+
 ### Wire protocol (`botbowl-nn/src/remote.rs`, new; `scripts/nn_server.py`, new)
 
-Length-prefixed little-endian frames on a `SOCK_STREAM` UDS. One request, one response, per connection —
-each client thread owns its own connection, so no request IDs and no multiplexing are needed.
+Length-prefixed little-endian frames on a `SOCK_STREAM` UDS. One request, one response, per connection — each
+client thread owns its own connection, so no request IDs and no multiplexing are needed. A connection is
+**bound to one model at handshake**, which is what makes the per-model canary below meaningful.
 
 ```
 handshake (client → server):  magic "BBNN" | u16 version | u16 C | u16 F
-handshake (server → client):  u16 status | u16 h | u16 w | f32 canary_value | f32[A*h*w] canary_policy
-request:   u32 len | u16 flags(want_policy) | u16 h | u16 w | f32[C*h*w] spatial | f32[F] global
+                              | u16 path_len | utf8 model_path
+handshake (server → client):  u16 status | u16 model_id | u16 h | u16 w
+                              | f32 canary_value | f32[A*h*w] canary_policy
+request:   u32 len | u16 model_id | u16 flags(want_policy) | u16 h | u16 w
+                  | f32[C*h*w] spatial | f32[F] global
 response:  u32 len | f32 value | [f32[A*h*w] policy if requested]
 ```
 
-**The canary handshake is the safety interlock.** The server runs a fixed, deterministic input (the committed
-`tests/fixtures/parity_9x16_*.npy` tensors) at startup and returns the result. The client runs the *same* input
-through tract using the `--model` ONNX it was given and compares to `< 1e-3`. A mismatch means the server is
-serving a different net, a different tier, or broken kernels — and the client **aborts loudly** rather than
-generating a corpus labelled by the wrong network. This single check catches the most dangerous silent failure
-this plan introduces.
+`model_path` is the same `--model` / `--vs-model` string the Rust side was handed; the server resolves it to its
+`.pt` sibling (both are exported side by side by the loop's train phase), loads it on first use, and returns a
+stable `model_id`. Two clients naming the same path share one loaded module and one batch queue. `model_id` is
+echoed on every request only so the server can key the batch without a per-connection lookup — the client never
+chooses it, and the server drops any connection whose request `model_id` disagrees with its handshake.
+
+**The canary handshake is the safety interlock, and it is per-model.** For each model it loads, the server runs
+a fixed, deterministic input (the committed `tests/fixtures/parity_9x16_*.npy` tensors) and returns *that
+model's* result on *that connection's* handshake. The client runs the same input through tract using the ONNX
+path it was given and compares to `< 1e-3`. Because the connection is bound to one model, there is exactly one
+right answer to compare against. A mismatch means the server resolved the path to different weights, a different
+tier, or broken kernels — and the client **aborts loudly** rather than producing a corpus, or a promotion-gate
+verdict, labelled with the wrong network.
+
+This is why model identity belongs in the **handshake** and not only in the request. A single global canary over
+a per-request model id would validate one net and then silently vouch for the other — and the promotion gate is
+exactly where that failure is undetectable: serve the champion's weights to the candidate's bot and you get a
+plausible ~0.50 win rate, the gate says REJECTED, the champion stays, and nothing in the report card looks
+wrong. This check is still the most valuable thing in the protocol; it just has to be per-connection to mean
+anything.
 
 ### Server loop: opportunistic batching, no timeout
 
@@ -201,7 +285,10 @@ tract*. Greedy draining self-regulates instead — batch size grows exactly as f
 requests accumulate during the previous forward. `MAX_BATCH` (default 64) bounds tail latency. A `--max-wait-us`
 knob exists but defaults to **0**.
 
-Requests are grouped by `(h, w)`; in practice one tier is active at a time, so this is a single bucket.
+Requests are grouped by **`(model_id, h, w)`** and one queue is drained per iteration. During generation there
+is exactly one key; during eval there are two (candidate and champion) and the loop alternates between them —
+which is also why each net sees only ~half the streams (§Two nets at once). One tier is active at a time, so
+`(h, w)` is effectively constant and the key is really just the model.
 
 ### Client-side changes are contained to one file
 
@@ -224,7 +311,11 @@ enum Backend {
   17 KB to 4 B.
 - Construction: `NnEvaluator::from_path_with_server(path, Option<&Path>)`, plus a `--nn-server PATH` flag on
   `dataset` and `eval` (`botbowl-ui/src/cli.rs:125,172`) and a `BLOOD_NN_SERVER` env fallback matching the
-  repo's `BLOOD_MCTS_*` convention. **Default is `None` ⇒ tract.**
+  repo's `BLOOD_MCTS_*` convention. **Default is `None` ⇒ tract.** `path` doubles as the tract fallback model
+  *and* as the identity sent at handshake, so `eval::run`'s two evaluators (`eval.rs:220`, `eval.rs:224`) each
+  open their own connection, name their own model, and get their own canary — over a **single** `--nn-server`
+  socket, with no second CLI flag. That is design (A)'s payoff at the call site: `load_nn` (`eval.rs:118`) gains
+  one argument and nothing else in `eval.rs` changes.
 - Each thread gets its own connection via a `thread_local!` socket, so the client is `Sync` without a lock and
   B2's parallel games each hold an independent stream.
 
@@ -297,21 +388,29 @@ Test: a unit test asserting the counter increments once per `forward_raw`.
 
 ### Stage 1 — protocol, client, fallback (CPU server; no GPU involved)
 
-Build `botbowl-nn/src/remote.rs`, `scripts/nn_server.py --device cpu`, the canary handshake, `--nn-server`, and
-the tract fallback path. **Verifying the plumbing without the GPU as a confound is the whole point of this
-stage.** Expected speed: none (slightly slower than tract).
+Build `botbowl-nn/src/remote.rs`, `scripts/nn_server.py --device cpu`, the per-model canary handshake,
+`--nn-server`, and the tract fallback path. **Verifying the plumbing without the GPU as a confound is the whole
+point of this stage.** Expected speed: none (slightly slower than tract).
+
+**Ship `model_path` / `model_id` in the frames from day one, but let the server's registry be capacity-1.**
+Generation shards use one net each, so single-model is sufficient through Stage 4a; carrying the field from the
+start costs a handful of bytes and avoids a protocol version bump — and, more importantly, avoids the temptation
+to bolt on a global canary that would have to be redesigned in Stage 4b anyway.
 Tests:
 - `remote_matches_tract_on_fixture` — env-gated on `BLOOD_NN_SERVER`, `#[ignore]`d otherwise; the parity
   fixture through the client vs through tract, `< 1e-3`.
 - `remote_falls_back_to_tract_when_server_absent` — point `--nn-server` at a dead path; assert results are
   bit-identical to tract and that one warning was emitted.
-- `canary_mismatch_aborts` — serve a different net; assert the client refuses to start.
+- `canary_mismatch_aborts` — serve a different net than `--model` names; assert the client refuses to start.
+- `request_model_id_mismatch_drops_connection` — a request whose `model_id` disagrees with the handshake is
+  rejected (guards against a server-side routing bug once the registry grows in Stage 4b).
 - Round-trip latency printed by the profile counter; **exit criterion: IPC overhead < 150 µs**.
 
 ### Stage 2 — CUDA backend + opportunistic batching (the first real speedup)
 
 `--device cuda`, TorchScript trace, warm-up over the expected `(h, w)` and batch buckets, pinned host staging
-buffers, greedy drain loop, `MAX_BATCH`. Run the existing 8 shards for one generation.
+buffers, greedy drain loop, `MAX_BATCH`. Run the existing 8 shards for one generation — **still one model**: the
+generate phase never needs two, so multi-model stays out of the stage where GPU risk is being retired.
 **Expected: 1.2–3.4× depending on `F`** (row 1 of the table). Report `F` and `g` from the fit above.
 **Falsified if:** measured throughput is below the `F` the micro-benchmark predicted — that means IPC or the
 server's Python loop, not the GPU, is the cost, and the next move is the shared-memory ring, not Stage 3.
@@ -321,9 +420,9 @@ composition or arrival order", and it should run against a live server in CI-on-
 
 ### Stage 3 — drive `F` down (only if Stage 2's fit shows `F > 1 ms`)
 
-CUDA graph capture per `(h, w, batch-bucket)` with buckets `{1,2,4,8,16,32,64}`, requests padded up to the next
-bucket and the padding rows discarded. Graphs eliminate per-op launch and Python dispatch entirely, which is the
-suspected content of `F`. Note this makes batch size a *bucket*, which strengthens rather than weakens the
+CUDA graph capture per `(model_id, h, w, batch-bucket)` with buckets `{1,2,4,8,16,32,64}`, requests padded up
+to the next bucket and the padding rows discarded. Graphs eliminate per-op launch and Python dispatch entirely,
+which is the suspected content of `F`. Note this makes batch size a *bucket*, which strengthens rather than weakens the
 batch-invariance property (a fixed graph per bucket is deterministic).
 **Expected: `F` → ~0.2–0.4 ms ⇒ 3.4× at N=8.** Avoid `torch.compile`/Triton — Pascal support is marginal and the
 payoff over a traced graph is small for a 6-block tower.
@@ -334,19 +433,31 @@ payoff over a traced graph is small for a 6-block tower.
   150–200 games; fix the seed stride (`G*1e7`); update `TRAIN_SHARDS`/`VAL_SHARDS` to hold out ~4 whole shards
   keeping the nn/heuristic val mix plan 022 specified. Gated on Stage 0b's RSS number: at 200 MB/shard, 32
   shards = 6.4 GB and fits; at 500 MB it does not, and the fallback is 16 shards (4.3× → 2.9× at `F=0.3`).
-- **4b (eval, ~60 lines):** `--parallel-games N` over `eval::run_ladder_rung`'s loop
-  (`botbowl-ui/src/eval.rs:181`), with a `Mutex<LadderRow>` accumulator. Without this the eval phase is a
-  single stream and the server makes it *slower*; with it, the 2–4 h eval phase gets the same multiplier.
-  Test: `parallel_games_matches_sequential` — same seeds, `--parallel-games 1` vs `4`, assert identical
-  per-game results (each game is fully independent given its seed).
-- **Expected combined with Stage 3: 4–5×** (`N=32`, `F=0.3 ms` cell). Falsified if per-shard RSS or the OOM
-  killer bites first, or if `D_cpu` is larger than 58.4 µs (Stage 0 measures it directly).
+- **4b (eval: multi-model server + parallel games).** Two changes, and this is the stage that needs them:
+  1. **Server registry grows past one model** (design (A) above): `(model_id, h, w)` batch keys, on-demand
+     load from `model_path`, LRU eviction at `--max-models 4`, never evicting a model with a live connection.
+  2. `--parallel-games N` over `eval::run_ladder_rung`'s loop (`botbowl-ui/src/eval.rs:181`), with a
+     `Mutex<LadderRow>` accumulator, plus the same flag on `dataset` (`dataset.rs:68`) for symmetry.
+  Without (2) the eval phase is a **single** stream and the server makes it *slower* than tract; without (1)
+  the vs-rung cannot use the server at all, since candidate and champion live in one process.
+  **Read the throughput table at `N/2` for this phase**: the two nets alternate turns, so `--parallel-games 32`
+  puts eval in the `N=16` row (~4.3× at `F=0.3 ms`), not the `N=32` row. That is a property of having two sets
+  of weights, not of the server design — design (B) gives exactly the same halving.
+  Tests: `parallel_games_matches_sequential` — same seeds, `--parallel-games 1` vs `4`, assert identical
+  per-game results (each game is fully independent given its seed); `two_models_one_socket` — two
+  `NnEvaluator`s over one socket, each matching its *own* tract reference on the fixture and each receiving a
+  *distinct* canary, so a cross-wired registry fails the test rather than the promotion gate.
+- **Expected combined with Stage 3: 4–5× for generation** (`N=32`, `F=0.3 ms` cell), **~4× for eval**
+  (`N=16` row, per the halving above). Falsified if per-shard RSS or the OOM killer bites first, or if `D_cpu`
+  is larger than 58.4 µs (Stage 0 measures it directly).
 
 ### Stage 5 — wire it into the loop, with supervision
 
-`scripts/train_loop.sh` starts `nn_server.py` before the generate phase, health-checks it (canary), passes
+`scripts/train_loop.sh` starts **one** `nn_server.py` before the generate phase, health-checks it, passes
 `--nn-server` to the nn shards, restarts it up to N times if it dies, and tears it down before the train phase
-so training gets the whole card. `GEN_SERVER=off` disables the whole path — the loop must remain runnable
+so training gets the whole card. The eval phase restarts the same single server and passes `--nn-server` to
+`botbowl-ui eval`, which serves both the candidate and the champion from it — one lifecycle for both phases,
+which is design (A)'s second payoff. `NN_SERVER=off` disables the whole path; the loop must remain runnable
 exactly as today.
 
 ## Invariants this must not break
@@ -400,7 +511,8 @@ tract one. **Stage 4's acceptance test is exactly that** — one 300-game shard 
   generation when 31 of 32 shards have finished. Mitigation: the client falls back to tract when the server
   reports a rolling mean batch size < 2 (server pushes the hint in the response header). Cheap; add only if
   Stage 4 measurement shows the tail costs anything.
-- **GPU OOM on 6 GB.** Unlikely (model ~2 MB, activations at batch 64 ≈ 50 MB, context ~300 MB), but real if a
+- **GPU OOM on 6 GB.** Unlikely (model ~2 MB — two or four loaded is still noise — activations at batch 64
+  ≈ 50 MB, context ~300 MB), but real if a
   future tier (20x11, 26x15) is combined with a large `MAX_BATCH`. Guard: cap `MAX_BATCH` and set
   `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`; the loop tears the server down before the train phase so
   the two never contend.
@@ -411,7 +523,14 @@ tract one. **Stage 4's acceptance test is exactly that** — one 300-game shard 
   with the `lockref-guard` feature in debug first.
 - **Latency spikes** from cuDNN autotune or Python GC on the first request of a shape: warm every
   `(h, w) × bucket` at startup before accepting connections; `gc.freeze()` after warm-up.
-- **Wrong model served.** Covered by the canary handshake, which aborts rather than degrades.
+- **Wrong model served, or cross-talk between the two eval nets.** The per-model canary catches a wrong
+  resolution at handshake; the `model_id` echo check catches a server-side routing bug at request time. Both
+  abort rather than degrade. This is the failure that would otherwise corrupt a promotion-gate verdict
+  invisibly, so it gets two independent guards rather than one.
+- **Model-registry thrash / eviction.** Only reachable once the registry is multi-model (Stage 4b). Policy:
+  `--max-models 4`, LRU, never evict a model that has a live connection, and log every load and eviction. The
+  eval phase holds exactly two live, so eviction should never fire; if the log shows it firing, something is
+  opening connections it should be reusing.
 
 ## sm_61 is old: what is and is not worth doing
 
@@ -440,13 +559,19 @@ tract one. **Stage 4's acceptance test is exactly that** — one 300-game shard 
    ceiling is lower.
 5. Whether **UDS IPC really costs < 150 µs** under 32 concurrent clients on 4 cores, or whether the server's
    Python accept/read loop becomes the bottleneck and forces a shared-memory ring.
+6. **The cost of GPU context-switching between two processes is unmeasured** — it is the main argument against
+   design (B), and it is an argument from risk, not from data. If (A)'s registry ever turns out to be more
+   trouble than it is worth, the honest next step is to measure it (two concurrent single-model servers vs one
+   two-model server, same total stream count, compare fitted `F`) rather than to re-litigate it on principle.
 
 None of 1–5 requires building anything beyond Stage 0's counter and a standalone benchmark script.
 
 ## Cross-references
 
 - plan 022 — the loop this speeds up: shard layout (`scripts/train_loop.sh`), the seed scheme, the dead-shard
-  warning semantics, and the cu126/sm_61 trap that makes the Python sidecar the cheap option.
+  warning semantics, the cu126/sm_61 trap that makes the Python sidecar the cheap option, and the **net-vs-net
+  eval rung** (`--vs-evaluator` / `--vs-model`) that puts two models in one process and forces the multi-model
+  design. Its "After the weekend" strength-ladder idea is the reason (A) is preferred over (B).
 - plan 021 — the corpus health statistics (0.79 TDs/drive, 21% scoreless, 37.2 samples/drive, 31/34/35 value
   split) that Stage 4's distributional acceptance test compares against.
 - plan 020 — "NN generation cost (~2–4× heuristic) if gen-2 wants 10k+ games" under §Next-next; also the
