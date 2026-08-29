@@ -41,7 +41,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 2. **The value head alone carries the win**: the 93% is `nn-value` — scripted priors, NN values. Consistent with plan 020's hybrid diagnosis (priors were never the problem).
 3. **The eval harness pays for itself immediately** — the same net that looked mediocre under 12-game TDs/game noise is unambiguously strong under 30 paired ladder games; and the reference card exposed real anomalies (below) that free-play stats hid.
 4. **ScriptedBot is the strongest fixed opponent** (beats heuristic-MCTS 18–11; the new net only reaches 0.50 vs it). It should be treated as the real ladder bar, and it's a candidate data source if we ever want a stronger teacher.
-5. **Heuristic mirror match came out 0.40, not ~0.50** — n=30 noise, or a genuine Home/Away asymmetry (kicking rules, coin-toss scripting). Worth a 100-game mirror run to settle; a real asymmetry would bias every ladder number by side.
+5. **Heuristic mirror match came out 0.40, not ~0.50** — ✅ **SETTLED: it is a genuine Home/Away asymmetry, not noise.** The plan-022 pre-flight ran the 100-game mirror (2026-08-28): the physical Home team took **0.645 of points (W57 D15 L28)**, p ≈ 0.003 clustered on the 50 seed-pairs. Two engine bugs verified by code reading — a kickoff-aim off-by-one (the only x-asymmetric expression in the engine) and an inverted post-touchdown kickoff that makes the *scorer* receive again. In-drive play is exonerated at n=4800. Full record, including what was ruled out and the deferred experiments: **`plans/023-idea--home-away-side-bias.md`**.
 
 ## Open issues
 
@@ -65,7 +65,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 - **Board-relative lecture setups** — makes the battery live on small tiers; also unlocks lecture-based *capability* tracking per generation.
 - **Solved-root exact value targets** (still pending from plan 020; may matter less now that labels are drive-pure, but cheap to test).
 - **Scripted-bot rung analysis**: why does it beat heuristic-MCTS? Its TD-attempt thresholding may encode play patterns worth stealing for priors.
-- **Home/Away asymmetry audit** if the mirror run confirms bias.
+- **Home/Away asymmetry audit** — mirror run confirmed the bias; audit done, fixes and follow-up experiments tracked in `plans/023-idea--home-away-side-bias.md`.
 - **8x3 loop closure**: the small board never got its gen-1 (pure-td data → net → self-play); cheap to run end-to-end as a full-loop rehearsal.
 - **Next tier (20x11, 7 players)** once the 14x7 loop shows compounding gains; expect a new bug harvest (every new board size is a fuzzing campaign).
 - **MA as curriculum knob**; **weight decay** to push the early-stop point later; **NN generation cost** (~2–4× heuristic) if gen-2 wants 10k+ games.

@@ -60,7 +60,8 @@ Per generation: generation ~6–10 h (nn-value ≈ 30–70 s/game, heuristic sha
 - The `status.md` PROMOTED/REJECTED trail + per-gen `report.json` (fixed seed 0, fixed rungs) is the strength ladder — plot win rates by generation.
 - If gens promote: revisit NN priors (`--evaluator nn` vs `nn-value` card on the newest champion, plan 021 §Next steps 4).
 - If gens repeatedly reject: suspects are (a) 30-game gate noise (17/30 needed), (b) self-play data collapsing in variety (check TDs/drive and scoreless % in shard logs vs the 0.79/21% gen-0 baselines), (c) champion-relative labels drifting — consider merging corpora across generations before retraining.
-- Mirror-match verdict (runs/loop14x7/mirror.json, Home/Away split): if a real side bias shows, every ladder number inherits it — audit before fine-grained cross-gen comparisons.
+- Mirror-match verdict (runs/loop14x7/mirror.json, Home/Away split): **a real side bias showed** — Home took 0.645 of points over 100 games (p ≈ 0.003). Every ladder number inherits it, so audit before fine-grained cross-gen comparisons. Aggregate `win_rate` still cancels it (rungs are paired Home/Away), so the promotion gate stays valid. Investigation, verified bugs and deferred tests: `plans/023-idea--home-away-side-bias.md`.
+- Note when reading any report card: the aggregate `win_rate` and the `TD x:y` column are **candidate-relative and pooled across sides**, so neither can reveal a side bias — only the Home/Away split can, and the side-relative TD split is not currently recorded at all.
 
 ## Linux training host (added 2026-08-28)
 
