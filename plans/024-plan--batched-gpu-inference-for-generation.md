@@ -1,9 +1,16 @@
 # Batched GPU inference for self-play generation
 
-**Status:** Proposed (drafted 2026-08-29, while the plan-022 loop is mid-`gen01 eval`). Data generation is the
-dominant cost of the training loop — `gen01` spent **863 min** generating and **10 min** training — and it is
-CPU-bound on single-sample `tract` inference. This plan makes NN leaf evaluation batched and GPU-resident.
-Nothing here is built yet; Stage 0 is a measurement that gates the rest.
+**Status:** Stages 0–2 **built and measured** (2026-08-30, branch `worktree-agent-a6f225f66905a936a`); stages
+3–5 not started. Data generation is the dominant cost of the training loop — `gen01` spent **863 min**
+generating and **10 min** training — and it is CPU-bound on single-sample `tract` inference. This plan makes NN
+leaf evaluation batched and GPU-resident.
+
+**Stage 0's gate passed: the measured inference share is 0.853** (gate was ≥ 0.70), so the premise holds. What
+Stage 2 then found is that the sidecar's *fixed per-batch cost* `F` lands at ~0.95 ms in a tight loop and
+~1.5 ms inside the server loop — the `F = 1.0`–`2.0 ms` columns of the table below, where 8 shards buy roughly
+nothing. **At today's shard count the sidecar is a wash, and the plan's own thesis — "`F` and `N` matter more
+than the GPU does" — is what the measurement confirms.** The payoff is real but it is all in stages 3 and 4.
+See §Measured results at the end.
 
 ## Why: generation is 12.5× more expensive than it needs to be
 
@@ -55,6 +62,10 @@ Expected output line (new, from Stage 0): `NN_PROFILE forwards=27931 total_ms=72
 
 **Gate: proceed only if `share ≥ 0.70`.** Below that, the rest of this plan buys at most 1.4× and should be
 dropped in favour of cheaper generation (fewer iters, more heuristic hedge shards).
+
+> **Measured 2026-08-30 — gate passed at 0.853.** The counter is now in `NnEvaluator` (`FORWARDS` /
+> `FORWARD_NANOS`, always on; `BLOOD_NN_PROFILE` only controls printing) and `dataset::run` prints the line per
+> game and at exit. Numbers and the cross-check are in §Measured results.
 
 ## Two things must change, and they are independent
 
@@ -350,6 +361,11 @@ Read this table as the plan's thesis: **`F` and `N` matter more than the GPU doe
 exercise is a wash or a regression at every shard count we can afford; at `F = 0.3 ms` and 32 streams it is
 ~5× — near the theoretical ceiling. Hence the stage order: get `F` small, then get `N` large.
 
+> **Measured 2026-08-30: `F = 0.95 ms` in a tight loop, `1.26–1.64 ms` inside the server loop; `g = 22.7 µs`.**
+> That is the `F = 1.0`–`2.0 ms` columns, and the 8-shard A/B came in at **1.33×** — squarely between those two
+> cells' 1.9× and 1.2×. The model's shape is right and its thesis is confirmed: `g` turned out **3× better**
+> than assumed and it changed nothing, because the GPU was never the constraint. Details in §Measured results.
+
 **The `F` measurements we have are mutually inconsistent and must be re-taken.** batch 1 = 4209 µs and batch 32
 = 2174 µs cannot both hold for a fixed per-batch cost: 32 × 68 µs already accounts for the entire batch-32
 number, implying `F ≈ 0`, while batch 1 implies `F ≈ 4.1 ms`. The likely explanation is that the batch-1 figure
@@ -378,7 +394,7 @@ for b in (1,2,4,8,16,32,64):
 Each stage is independently verifiable and independently revertible. Stages 0–2 land no behaviour change on the
 default (tract) path.
 
-### Stage 0 — confirm the ceiling (half a day, no architecture)
+### Stage 0 — confirm the ceiling (half a day, no architecture) — **done, gate passed at 0.853**
 
 `BLOOD_NN_PROFILE=1` counters in `NnEvaluator` (`AtomicU64` forward count + total nanos), printed per game by
 `dataset::run` (`botbowl-ui/src/dataset.rs:80`). Run the two 20-game probes above.
@@ -386,7 +402,7 @@ default (tract) path.
 **Exit criterion:** inference share ≥ 0.70 and forwards/game within ~2× of the predicted 28k. **If not, stop.**
 Test: a unit test asserting the counter increments once per `forward_raw`.
 
-### Stage 1 — protocol, client, fallback (CPU server; no GPU involved)
+### Stage 1 — protocol, client, fallback (CPU server; no GPU involved) — **done**
 
 Build `botbowl-nn/src/remote.rs`, `scripts/nn_server.py --device cpu`, the per-model canary handshake,
 `--nn-server`, and the tract fallback path. **Verifying the plumbing without the GPU as a confound is the whole
@@ -406,7 +422,14 @@ Tests:
   rejected (guards against a server-side routing bug once the registry grows in Stage 4b).
 - Round-trip latency printed by the profile counter; **exit criterion: IPC overhead < 150 µs**.
 
-### Stage 2 — CUDA backend + opportunistic batching (the first real speedup)
+> **Built, all tests green on a CPU and a CUDA server.** Two deviations: (1) the three protocol tests run
+> against an **in-process fake server** so they need no Python and pass on a Mac, with the live-server versions
+> env-gated beside them; (2) `canary_mismatch_aborts` is asserted at *construction* (`from_path_with_server`
+> returns `Err`) rather than as a process abort, which is testable — a mismatch discovered later, on a new
+> connection, still exits the process. **IPC came in at ~190 µs, over the 150 µs criterion**; accepted, because
+> it is 7% of a forward against an `F` of 1.5 ms, so the shared-memory ring would be optimising the wrong term.
+
+### Stage 2 — CUDA backend + opportunistic batching (the first real speedup) — **done, 1.33×**
 
 `--device cuda`, TorchScript trace, warm-up over the expected `(h, w)` and batch buckets, pinned host staging
 buffers, greedy drain loop, `MAX_BATCH`. Run the existing 8 shards for one generation — **still one model**: the
@@ -418,7 +441,18 @@ Tests: `batch_invariance` — the same input evaluated alone and padded into a b
 must agree to `< 1e-5`. This is the test that protects "batching must not make results depend on batch
 composition or arrival order", and it should run against a live server in CI-on-the-Linux-host only.
 
-### Stage 3 — drive `F` down (only if Stage 2's fit shows `F > 1 ms`)
+> **Built as described, with two deviations, both deliberate.** Pinned staging buffers were **not** built: the
+> per-stage counters show H2D+stack costs 294 µs of a 1676 µs batch while `module()` costs 1248 µs, so pinning
+> attacks the wrong term. And the batch-invariance test is an end-to-end one against a live server (24 threads,
+> each sample compared to its own batch-1 result) rather than a padded synthetic batch — same property, but it
+> also exercises the queue and the arrival-order path.
+>
+> **Not falsified, but close to the line it warns about.** Measured 1.33× against a fit-implied ~1.5× at
+> `mean_batch = 3.4`. The gap is the server's own Python loop, exactly as the falsification clause anticipated —
+> but the stage breakdown puts it inside `module()` (dispatch + launch), not in IPC, so the next move is
+> **Stage 3 as written**, not the shared-memory ring.
+
+### Stage 3 — drive `F` down (only if Stage 2's fit shows `F > 1 ms`) — **required: `F` fitted at 0.95 ms tight-loop, 1.5 ms in-server**
 
 CUDA graph capture per `(model_id, h, w, batch-bucket)` with buckets `{1,2,4,8,16,32,64}`, requests padded up
 to the next bucket and the padding rows discarded. Graphs eliminate per-op launch and Python dispatch entirely,
@@ -486,6 +520,12 @@ exactly as today.
 2. **batch invariance** (Stage 2), `< 1e-5`.
 3. `value_home_i64` agreement across backends on ~200 sampled states: `|Δ| ≤ 2` on the ±1000 scale and identical
    sign. This is the assertion that actually matters for search behaviour, since the value is cast to `i64`.
+
+> **Status after stage 2:** (1) and (2) are built and green (`tests/remote.rs`); `tests/parity.rs` is untouched
+> at 1e-4 as required. **(3) is not built** — the fixture-level agreement is ~1e-5, an order below the `|Δ| ≤ 2`
+> that ±1000 scaling would need to break, so it was not the risk worth spending the stage on. It should land
+> with Stage 4's distributional acceptance test, where sampled *states* (rather than a fixed tensor) start
+> mattering.
 
 **Bit-identical reproduction of old corpora is explicitly not a goal, and is already unattainable**: plan 020
 records that MctsBot games are not reproducible from seeds at all, because `recon_mcts`'s std `HashMap`s
@@ -565,6 +605,119 @@ tract one. **Stage 4's acceptance test is exactly that** — one 300-game shard 
    two-model server, same total stream count, compare fitted `F`) rather than to re-litigate it on principle.
 
 None of 1–5 requires building anything beyond Stage 0's counter and a standalone benchmark script.
+
+> **Resolved 2026-08-30:** #1 measured at **0.853** (and cross-checked by the subtraction, 0.851). #2 fitted at
+> **`F = 0.95 ms` / `g = 22.7 µs`**, 1.5 ms in-server — Stage 3 is required. #3 per-shard RSS **~290 MB**, so 32
+> shards is tight on 15 GB and 16–24 is the safe read. #4 `D_cpu` measured at **62 µs** aggregated (derived
+> 58.4), so the 6.6–6.8× ceiling stands. #5 IPC is **~190 µs** and the Python loop *does* become the wall, but
+> above ~16 streams and after `F`, not before it. #6 (two-process context switching) remains unmeasured, and
+> stays unmeasured while the registry is capacity-1.
+
+## Measured results (stages 0–2, 2026-08-30)
+
+Linux host, 14x7 tier (encoded 37×9×16), `models/bbnet_14x7_gen01.{onnx,pt}`, `--mcts-iters 1000`, release
+build. **Caveat on every wall clock below: another agent held three `botbowl-ui eval` processes at ~90% CPU
+throughout, so 3 of the 4 physical cores were not ours.** The Stage-0 *share* is a ratio measured inside one
+process and is robust to that; the Stage-2 arms are reported as a same-conditions A/B, not as absolutes.
+
+### Stage 0 — the ceiling is real. Gate ≥ 0.70, **measured 0.853**
+
+| arm | games | decisions | wall | forwards | in `forward_raw` | share |
+|---|---|---|---|---|---|---|
+| `nn-value` | 12 | 390 | 769.0 s | 226,923 | 656.2 s | **0.853** |
+| `heuristic` | 20 | 523 | 153.7 s | 0 | — | — |
+
+- **Direct** (the counter divided by wall, which the plan could not do before): 656.2/769.0 = **0.853** against
+  the predicted 0.848. **Amdahl ceiling 6.8×.**
+- **The subtraction now cross-checks it, which is the part that was assumed rather than known.** nn
+  1971.7 ms/decision − heuristic 293.9 ms/decision = 0.851. So "nn and heuristic search cost the same per
+  decision" (uncertainty #1 — *everything in this plan is downstream of this number*) holds to 0.2 points.
+- **582 forwards/decision** (18,910/game) vs ~754 predicted — inside the "within ~2×" exit criterion and the
+  right shape (one `score_leaf` per materialised node, minus registry hits and chance nodes).
+- **`D_cpu` measured, not derived:** (769.0 − 656.2)/226,923 = **497 µs** of non-inference CPU per forward per
+  process = 62 µs over 8 shards, vs the derived 58.4 µs (uncertainty #4 — the 6.6× ceiling survives).
+- **Stage 0b:** per-shard RSS **~290 MB**, so 32 shards ≈ 9 GB on a 15 GB box. Tight; 16–24 is the safe read.
+- `mean_us = 2892` per tract forward (vs 2611 quoted here) — the contended box.
+
+### Stage 1 — protocol, client, fallback
+
+`botbowl-nn/src/remote.rs` + `scripts/nn_server.py`, debugged against a **CPU** server exactly as intended.
+Six tests in `botbowl-nn/tests/remote.rs`; the three that use an in-process fake server run everywhere with no
+Python, the three `live_*` ones skip unless `BLOOD_NN_SERVER`/`BLOOD_NN_MODEL` are set, and all six passed
+against the real sidecar on **both** `--device cpu` and `--device cuda`:
+
+- `remote_matches_tract_on_fixture`, `canary_mismatch_refuses_to_start`,
+  `remote_falls_back_to_tract_when_server_absent` (**bit-identical** to tract, one warning),
+  `live_server_matches_tract` (the real net: torch `.pt` vs tract `.onnx` < 1e-3 — the interlock doing its job),
+  `live_server_drops_connection_on_model_id_mismatch`, `live_server_is_batch_invariant`.
+- **374,815 consecutive remote forwards with `fell_back_to_tract=0`** in the Stage-2 arm.
+- **IPC overhead ≈ 190 µs**, above the < 150 µs exit criterion but not the problem: client-observed 2888 µs vs
+  server-accounted 2702 µs (queue 1097 + batch 1605) under the 8-shard arm. It is 7% of a forward against an
+  `F` of 1.5 ms, so the shared-memory ring stays unbuilt.
+
+### Stage 2 — CUDA, and the `F` that decides everything
+
+`nn_server.py --bench --device cuda` (warmed, TorchScript-frozen, one `synchronize()` per batch):
+
+| batch | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|---|
+| µs/batch | 997 | 1232 | 1088 | 1139 | 1125 | 1384 | 2589 |
+| µs/sample | 997 | 616 | 272 | 142 | 70 | 43 | 40 |
+
+**Fit: `F = 953 µs/batch`, `g = 22.7 µs/sample`.**
+
+1. **Both prior `F` numbers were wrong, and the truth is in between.** The 4209 µs batch-1 figure was indeed an
+   unwarmed artefact — warmed, batch 1 costs 997 µs. But `F ≈ 0` was equally wrong: `F` is ~1 ms. Meanwhile
+   `g = 22.7 µs` is **3× better** than the 68 µs assumed, and it changed nothing — confirming the plan's thesis
+   that the GPU was never the constraint.
+2. **Inside the server loop `F` is 1.26–1.68 ms**, and the new per-stage counters say where it goes:
+   `batch = 1676 µs (stage 294 + fwd 1248 + post 135)`. The **fixed cost lives inside `module()`** — Python/ATen
+   dispatch and ~40 kernel launches for a 6-block tower — not in the H2D staging (294 µs, part of which is the
+   `np.stack`) and not in the socket writes (135 µs). **That is exactly what Stage 3's CUDA graphs eliminate,
+   and it is why pinned staging buffers were left unbuilt: they attack the 294 µs term, not the 1248 µs one.**
+
+**End-to-end A/B, 8 shards × 2 games, back to back under identical contention:**
+
+| arm | forwards | wall | aggregate | mean latency/forward |
+|---|---|---|---|---|
+| tract (today) | 367,485 | 419.8 s | 875 /s | 4531 µs |
+| `--nn-server` CUDA | 374,815 | 321.2 s | **1167 /s** | **2888 µs** |
+
+**1.33× throughput, 1.57× latency** — between the table's `F = 1.0 ms` (1.9×) and `F = 2.0 ms` (1.2×) cells, as
+the fit predicts. It also used **~2.4 cores against tract's ~5.4**, which matters on a 4-core box but is not
+throughput. Server-side during that arm: `mean_batch = 3.4` — **8 shards do not offer 8 concurrent requests**,
+because a shard spends `D_cpu` searching between forwards and, starved of CPU, rather more than that.
+
+**Server ceiling vs stream count** (`nn_server.py --loadgen N`, zero-think-time clients — the search taken out,
+to answer "what could the server deliver if Stage 4 raised `N`?"):
+
+| streams | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| forwards/s | 756 | 791 | 1279 | 2170 | 3861 | **6038** |
+
+Still climbing at 32 (mean batch ≈ 25 there). **6038/s is 2.3× this plan's unloaded 2600/s tract baseline and
+6.9× the 875/s tract actually managed under the same contention** — so the server is not the wall at N=8; the
+offered concurrency is. Note the curve is measured with a *Python* load generator on a busy box, so it is a
+floor, not a ceiling. Above ~16 streams the per-request Python work in the connection threads (recv →
+`frombuffer` → `queue.put`, then one `sendall` each) starts competing for the GIL, and that — not the GPU — is
+the next wall after `F`.
+
+**Batch invariance holds** (`live_server_is_batch_invariant`): 24 threads, different inputs, each compared to
+its own batch-1 reference — agreement < 1e-5 on CUDA. Batch composition does not leak into a result, so the
+recombination-purity argument survives in practice and not only in principle.
+
+### What this means for stages 3–5
+
+- **Stage 3 is not optional, it is the stage.** `F > 1 ms` was the plan's own trigger, and the stage breakdown
+  says the cost is precisely the launch/dispatch that CUDA graphs remove. Do it before anything else.
+- **Stage 4a is the other half**, and the loadgen curve is the evidence it will pay: at 8 streams the server is
+  idle a third of the time waiting for work. Remember the seed-stride bug (`G*1e7`) blocks it at K ≥ 10.
+- **Do not ship `--nn-server` into `train_loop.sh` yet.** 1.33× does not justify a new single point of failure
+  in a 14-hour generation; the fallback works, but the operational surface is not worth it until stages 3+4
+  land the 3–5×.
+- One avoidable cost found on the way: `MctsBot` spawns its workers per decision (`thread::scope`), and
+  connections are `thread_local!`, so a shard opens **a connection per decision**. Harmless at ~4/s, but a
+  connection pool keyed on the socket rather than the thread would remove it.
 
 ## Cross-references
 

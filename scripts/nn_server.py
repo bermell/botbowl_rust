@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import itertools
 import os
 import queue
 import signal
@@ -64,6 +65,8 @@ FLAG_WANT_POLICY = 1
 FIXTURES = REPO / "botbowl-nn" / "tests" / "fixtures"
 CANARY_H, CANARY_W = 9, 16
 BUCKETS = (1, 2, 4, 8, 16, 32, 64)
+
+HANDSHAKES = itertools.count()
 
 STATUS_OK = 0
 STATUS_BAD_MAGIC = 1
@@ -431,7 +434,14 @@ class Connection:
             struct.pack("<HHHHI", STATUS_OK, self.model.model_id, CANARY_H, CANARY_W, len(self.model.canary))
             + self.model.canary
         )
-        log(f"connection bound to model_id={self.model.model_id} ({path})")
+        # `MctsBot` spawns its worker threads per decision (`thread::scope`
+        # in `dynamics.rs`), and connections are thread-local, so a shard
+        # opens roughly one connection per decision — a few per second, not
+        # one per process. Log the first few and then only every 1000th, or
+        # the log is nothing but handshakes.
+        n = next(HANDSHAKES)
+        if n < 4 or n % 1000 == 0:
+            log(f"connection #{n} bound to model_id={self.model.model_id} ({path})")
         return True
 
     def _reject(self, status: int, msg: str) -> bool:
@@ -445,7 +455,6 @@ class Connection:
         try:
             if not self.handshake():
                 return
-            c_h_w = None
             while self.alive:
                 head = self.recv_exact(4)
                 if head is None:
@@ -466,8 +475,8 @@ class Connection:
                 if length != want:
                     log(f"request is {length} B, expected {want} B for {h}x{w} — dropping connection")
                     break
-                if c_h_w != (h, w):
-                    c_h_w = (h, w)
+                # Zero-copy view straight onto the frame we just read; the
+                # only copy is the `np.stack` the batcher does.
                 flat = np.frombuffer(body, dtype="<f4", count=n_spatial + GLOBAL_FEATURES, offset=8)
                 self.q.put(
                     Request(
