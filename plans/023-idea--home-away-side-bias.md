@@ -118,6 +118,109 @@ setup asymmetry from bot behaviour entirely, and random bots are fast. If the
 bias survives there, it is purely engine/setup and every search-side hypothesis
 below can be dropped.
 
+## Result (2026-08-30, part 2): the ladder without search — rung 1 and rung 2
+
+Instrument: `botbowl-ui eval` gained `--candidate-bot mcts|scripted|random`,
+`--rungs a,b,c` and `--per-game-out PATH` (commit `74c0a37`), so
+`run_ladder_rung` — still the only bot-vs-bot win-rate instrument — can seat a
+non-search bot and log **side-relative** results per game. That closes deferred
+item 5. All runs below are the 14x7 tier (`BOARD_SIZE_W=14 BOARD_SIZE_H=7
+BOARD_PLAYERS=4`), full games from `CoinToss`.
+
+**Read the counting note first.** `ScriptedBot` is deterministic, so the two
+games of a seed-pair are the *same physical game* played twice with the
+candidate label swapped (verified: 800/800 pairs identical). Scripted numbers
+below are therefore de-duplicated to one game per seed. `RandomBot` is not
+deterministic, so its games all count.
+
+| rung | n (decided) | Home | Away | Home share | z | p |
+|---|---|---|---|---|---|---|
+| **1.** scripted mirror, as shipped | 344 | 39 | 305 | **0.113** | −14.3 | <1e-40 |
+| 1b. scripted mirror, tie-break flipped | 341 | 315 | 26 | **0.924** | +15.6 | <1e-40 |
+| 1c. scripted mirror, **fixed** | 613 | 326 | 287 | 0.532 | +1.58 | 0.11 |
+| **2.** random mirror | 3605 | 1750 | 1855 | **0.485** | −1.75 | 0.08 |
+| 3. MCTS heuristic mirror, **200** iters | 251 | 133 | 118 | 0.530 | +0.95 | 0.34 |
+| (for reference) MCTS heuristic, 1000 iters | ~258 | 176 | 82 | 0.682 | +5.9 | <1e-8 |
+
+### Rung 1 — the bias survives without search, but it is a *different* bias
+
+`ScriptedBot` vs `ScriptedBot` gives the **Away** team 305 of 344 decided games
+(0.113 Home share, z = −14.3), and side TDs 787:1439. Opposite sign to the MCTS
+Home bias and five times the magnitude — so this is not the same phenomenon,
+and rung 1 does **not** transfer the MCTS finding to the engine.
+
+It localises to one line. `AvailableActions` is sorted ascending by absolute
+`(PosAT, x, y)` (`gamestate.rs`'s `get_all_actions`), `ScriptedBot` had no
+branch for `PosAT::SelectPosition`, so the **touchback receiver** fell through
+to `first_legal_simple_or_any` → the lowest-x receiver, for *both* teams. Home
+attacks toward x=1, so that is Home's most exposed player, on the line of
+scrimmage; for Away it is the safest deep one. Flipping every tie-break in the
+bot to "take the last" flips the result to 0.924 (row 1b) — a clean bracket
+around the cause. Handling `SelectPosition` relative to the team's own
+attacking direction (commit `dcc578c`, with a mirror-invariance regression
+test) lands it at 0.532, n.s., and raises the mirror's TD rate from 5.6 to 9.0
+per game — deep-carrier is simply the better play here.
+
+**Consequence for the ladder:** every report card's `scripted` rung was, until
+this fix, an opponent that played one side far better than the other. The
+aggregate `win_rate` still cancelled it (sides alternate), but the rung was
+noisier and weaker than it looked.
+
+### Rung 2 — random mirror is null, and that is the load-bearing result
+
+20 000 `RandomBot` vs `RandomBot` games at 14x7: 1750 Home wins, 1855 Away,
+16 395 draws. Home share **0.485**, z = −1.75 — 95% CI [0.469, 0.501]. Random
+bots *do* score here (0.21 TDs/game, 3605 decided games), so the instrument is
+weak per game but well powered in aggregate, and its interval excludes 0.67 by
+more than 5σ and excludes 0.113 completely.
+
+Conditioning on the coin toss shows the machinery behaving exactly as it
+should: the **receiving** team wins more, whichever side it is (Away receives:
+1008−753; Home receives: 997−847), and the coin itself is fair (9933 / 10067).
+
+**There is no engine-, rules- or setup-level side bias of the observed
+magnitude.** Combined with rung 1's localisation to a bot-side tie-break, and
+with the earlier n=4800 in-drive null, the engine is now exonerated from three
+independent directions.
+
+### Rung 3 is therefore live — and the bias is search-*budget* dependent
+
+The same instrument, same board, heuristic MCTS mirror at **200** iterations:
+Home 133, Away 118, share 0.530 (z = +0.95, n=300 games / 150 seed-pairs;
+pair-clustered t = +0.94). At **1000** iterations the same match-up gives
+0.667–0.709 across three runs. A bias that appears only as the search deepens
+cannot be a property of the rules — it is a property of the search.
+
+That points squarely at **H-c**: the search's chance models were written in
+board coordinates. `throw_in_outcome` took the first in-bounds `D3`, and
+`D3::One` is `(1, ±1)` on a y-sideline, so both bots believed sideline throw-ins
+always travel toward +x (Away's attacking direction); `bounce_outcomes`
+collapsed the out-of-bounds directions to `oob.first()` in `ALL_DIRECTIONS`
+order, which starts with `dx = +1`, and that representative fixes the square
+the throw-in is taken from. Both now prefer the axis-aligned exit (`dx == 0`,
+else `dy == 0`), which maps onto itself under `x -> width-1-x` (commit
+`316dbca`). A first attempt that fanned the throw-in uniformly over D3 was
+reverted: it grew the search tree enough to break `solved_early_stop`'s budget.
+
+RESULT_PLACEHOLDER
+
+### What this rules in and out
+
+- **Out:** the engine's rules, geometry, setup, kickoff and coin-toss
+  machinery, at any magnitude near the measured effect (rung 2, plus rung 1c
+  and the n=4800 in-drive null).
+- **Out:** "some bot bug that happens to favour Home" as a general explanation
+  — the *scripted* bot's side bug favours Away.
+- **In:** a search-side mechanism, active only at higher iteration counts.
+- **General lesson, now with two instances:** any deterministic choice made in
+  **absolute board coordinates** — action ordering, an outcome representative,
+  a "first legal" fallback — is a side bias waiting to happen, because the two
+  teams attack in opposite x directions. Plan 023 originally cleared tie-breaks
+  because MCTS's children live in a `HashMap`; that is true of MCTS's *tree*,
+  but not of the bots and models that read `get_all_actions()` or
+  `ALL_DIRECTIONS` directly. Prefer mirror-invariance property tests
+  (`x -> width-1-x` + team swap) over pinning the current value.
+
 ## Open hypotheses and the experiments that would settle them
 
 **H-a — The instrument's pairing shares the coin toss.** MCTS models the coin as always-Heads (`roll_outcomes.rs:33-53` routes `RequestedRoll::Coin` to `scripted_result` → `Coin::Heads` with probability 1.0 at `:214`), so the Away bot's call is *deterministic*, not a tie-break. Both games of a seed-pair therefore share the coin result, the toss winner, and **who receives** — so the Home/Away split is confounded with the receiving side, on 50 coin draws rather than 100. Quantitatively **insufficient** to explain the effect on its own (it would need Home to have received in ~35-45 of 50 seeds, a 2.8-5.6σ deviation for a fair coin), but it widens the error bars.
