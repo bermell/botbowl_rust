@@ -58,7 +58,13 @@ game_state.info.kickoff_by_team = Some(other_team(game_state.get_player_unsafe(s
 This is **side-symmetric on its own**, so it cannot *cause* a Home bias. It matters twice over anyway:
 
 - It makes scoring self-reinforcing, which is the only mechanism that plausibly turns B1's small per-kickoff edge into a 14.5-point win-rate swing.
-- Independently, it is a **training-data quality bug**: every corpus to date (plans 020, 021, and the 022 loop) was generated under a snowballing-possession rule. The pair correlation in the mirror data implies the receiving side is worth **δ ≈ 0.37 in points** (receiver takes ~68%), a very large possession advantage consistent with the snowball.
+- It corrupts **evaluation**, not the drive-bounded training corpus. **Correction (verified 2026-08-30):** an earlier draft of this plan claimed B2 was a training-data quality bug affecting "every corpus to date". That is **false for the drive-bounded corpora** (plan 021 onward, including every generation of the 022 loop). The stop predicate at `botbowl-ui/src/dataset.rs:218` ends the episode *the instant the score changes*:
+  ```rust
+  s.home.score != start_home_score || s.away.score != start_away_score || s.info.half != start_half
+  ```
+  so the post-touchdown kickoff is never played inside a training episode. Combined with random-start building at `Turn{turn:1}` and never running a coin toss (zero `"Kickoff"` events in any shard), **neither B1 nor B2 touches the drive-bounded corpus.** The claim does hold for plan 020's full-game corpora.
+- What is compromised instead is the **control signal**: every ladder rung, report card and promotion gate is a full game from `CoinToss`, so all of them are measured under both bugs. Both nets face the same distorted rules, so a gate comparison is *fair* — but B2 amplifies small edges into large win-rate gaps, which systematically over-rewards whoever scores first and biases selection toward that style. Treat pre-fix strength numbers as measured in a slightly different game, and re-run any gate you intend to rely on.
+- The pair correlation in the mirror data implies the receiving side is worth **δ ≈ 0.37 in points** (receiver takes ~68%), a very large possession advantage consistent with the snowball.
 
 ## Ruled out, with evidence (negative results worth keeping)
 

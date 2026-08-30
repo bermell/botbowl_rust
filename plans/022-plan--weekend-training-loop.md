@@ -55,6 +55,45 @@ Per generation: generation ~6–10 h (nn-value ≈ 30–70 s/game, heuristic sha
 - Any prepare/train/eval failure writes a `FATAL:` line to `status.md` and exits; relaunching resumes from the failed phase.
 - Dry-run validated 2026-08-12: full loop (mirror → generate → prepare → train → eval → gate) plus resume-skip, with tiny knobs in a scratch `RUN_DIR`.
 
+## Run 1 (2026-08-28 → 08-30): paused after gen02 training, deliberately
+
+First real run of the loop, on the Linux host. Bootstrapped its own gen-0 (no
+`bbnet_14x7_db.onnx` on this machine), then two full generations.
+
+| | mirror | gen00 | gen01 | gen02 |
+|---|---|---|---|---|
+| generate | — | 69 min (heuristic) | 863 min | 697 min |
+| train (best val_value) | — | 0.4080 @ ep 4 | 0.3909 @ ep 1 | 0.3970 @ ep 2 |
+| eval | 117 min | — | 690 min | **not run** |
+
+gen01 report card (30 games/rung, seed 0 — comparable to plan 021's tables):
+random 1.00, scripted 0.80, mcts-heuristic 0.90, **vs gen00 0.60 ⇒ PROMOTED**.
+Against plan 021's `bbnet_14x7_db` reference (1.00 / 0.50 / 0.93) that is a clear
+gain on the scripted rung and level on the teacher, with zero losses to it — so
+the from-scratch bootstrap reached the reference net's class in two generations.
+
+**Why it was paused rather than left running.** The pre-flight mirror match found
+a real side bias, and the investigation (`plans/023-idea--home-away-side-bias.md`)
+verified two engine bugs in the kickoff path. They do **not** touch the
+drive-bounded training corpus, but they *do* affect every full game — which is
+every ladder rung and every promotion gate. Continuing would have produced more
+generations whose promote/reject decisions were measured under rules about to
+change, at ~26 h per datapoint. Two cheaper things wanted the idle machine first:
+`plans/025-plan--search-budget-convergence.md` (~40 min, and may cut `MCTS_ITERS`
+2-3x for the price of changing a constant) and plan 023's deferred mirror re-runs.
+
+**State at the pause.** Champion is `bbnet_14x7_gen01.onnx` (gen02 was trained but
+never gated). All three nets are in `models/`. Markers: gen00/01/02 all have
+`.generated .prepared .trained`; only gen01 has `.evaluated`. gen02's eval was
+killed mid-flight and left no `report.json`, so it re-runs on resume — which is
+what we want, since a post-fix gate is the trustworthy one.
+
+**To resume:** `rm runs/loop14x7/STOP` first (a `STOP` file is in place, so a
+relaunch exits immediately otherwise), then `nohup scripts/train_loop.sh &`.
+Completed phases are skipped. Note that after fixing the `kicking_first_half`
+train/eval mismatch (plan 023) the existing corpora become stale and the run
+should start from a fresh `RUN_DIR` instead.
+
 ## After the weekend
 
 - The `status.md` PROMOTED/REJECTED trail + per-gen `report.json` (fixed seed 0, fixed rungs) is the strength ladder — plot win rates by generation.
