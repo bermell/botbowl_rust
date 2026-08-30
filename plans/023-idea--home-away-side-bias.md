@@ -1,6 +1,16 @@
 # Home/Away side bias: what the 100-game mirror match found
 
-**Status:** Investigation done (2026-08-28/29), fixes and follow-up tests not yet complete. Closes plan 021 open issue 5 — the mirror anomaly is **real**, not n=30 noise. Two engine bugs were verified by code reading; the causal chain from them to the measured effect is *not* established, and the deferred experiments below are what would settle it.
+**Status:** Open — cause still unknown, but the search space of causes is now
+small. Closes plan 021 open issue 5: the mirror anomaly is **real** (~450 games
+across four independent runs, 0.667-0.709 Home share at 1000 iterations,
+p <= 0.002 each). Four candidate causes have been fixed and *each measured not
+to move it*: B1 kickoff aim, B1b receiving-team argument, B2 inverted
+post-touchdown kickoff (`4ccbce2`), H-c non-mirror-invariant throw-in/bounce
+models (`316dbca`). Two side biases found along the way *were* localised and
+fixed: `ScriptedBot`'s touchback tie-break (`dcc578c`, an Away bias of 0.113)
+and the instrument's inability to see side-relative results at all (`ae43fa2`,
+`80175cf`). **The live lead is that the bias is search-budget dependent**:
+absent at 200 iterations, 2:1 at 1000. Start there — see "Result part 2".
 
 Investigated read-only while the plan-022 weekend loop was running (all 4 physical cores busy), so nothing here involved a build, a test run, or a simulated game. Everything below came from reading code and from data already on disk.
 
@@ -121,7 +131,7 @@ below can be dropped.
 ## Result (2026-08-30, part 2): the ladder without search — rung 1 and rung 2
 
 Instrument: `botbowl-ui eval` gained `--candidate-bot mcts|scripted|random`,
-`--rungs a,b,c` and `--per-game-out PATH` (commit `74c0a37`), so
+`--rungs a,b,c` and `--per-game-out PATH` (commit `ae43fa2`), so
 `run_ladder_rung` — still the only bot-vs-bot win-rate instrument — can seat a
 non-search bot and log **side-relative** results per game. That closes deferred
 item 5. All runs below are the 14x7 tier (`BOARD_SIZE_W=14 BOARD_SIZE_H=7
@@ -140,7 +150,8 @@ deterministic, so its games all count.
 | 1c. scripted mirror, **fixed** | 613 | 326 | 287 | 0.532 | +1.58 | 0.11 |
 | **2.** random mirror | 3605 | 1750 | 1855 | **0.485** | −1.75 | 0.08 |
 | 3. MCTS heuristic mirror, **200** iters | 251 | 133 | 118 | 0.530 | +0.95 | 0.34 |
-| (for reference) MCTS heuristic, 1000 iters | ~258 | 176 | 82 | 0.682 | +5.9 | <1e-8 |
+| 3b. MCTS heuristic mirror, **1000** iters, H-c fixed | 150 | 100 | 50 | **0.667** | +4.08 | 4e-5 |
+| (for reference) MCTS heuristic, 1000 iters, pre-fix ×3 | 258 | 176 | 82 | 0.682 | +5.9 | <1e-8 |
 
 ### Rung 1 — the bias survives without search, but it is a *different* bias
 
@@ -202,7 +213,31 @@ else `dy == 0`), which maps onto itself under `x -> width-1-x` (commit
 `316dbca`). A first attempt that fanned the throw-in uniformly over D3 was
 reverted: it grew the search tree enough to break `solved_early_stop`'s budget.
 
-RESULT_PLACEHOLDER
+**Measured, and H-c is refuted.** 180 games, heuristic mirror, 1000 iterations,
+14x7, *with* the H-c fix (`316dbca`): Home 100, Away 50, draw 30 —
+**0.667** Home share, z = +4.08; pair-clustered over the 90 seed-pairs,
+t = +4.14. Side TDs 490:314 (0.609, z = +6.2). Against the pooled pre-fix
+1000-iteration baseline (176-82, 0.682) that is a change of −0.016, z = −0.32:
+**no effect at all**. Both coin-toss conditions carry it (kicking-first-half
+Home: 53-24; Away: 47-26), so it is not a receive effect.
+
+So the mirror-invariance fix was worth making but is *not* the mechanism, and
+the score is now: B1, B1b, B2 and H-c all refuted as causes.
+
+What the 180 games *do* establish, on the same instrument as the 200-iteration
+run above:
+
+- **The effect reproduces cleanly at 1000 iterations on fresh seeds** (0.667,
+  z = +4.1) — a fourth independent replication, now ~450 games total, all
+  landing 0.667–0.709.
+- **It is budget-dependent.** 0.530 at 200 iterations vs 0.667 at 1000, on the
+  same board, bots and instrument: z = +2.65 between the two, p = 0.008. This
+  is the sharpest handle anyone has had on the phenomenon, and it is a cheap
+  one — 200-iteration games run at ~11 s against ~77 s.
+- **Home out-scores Away, it does not merely out-convert.** 490 TDs to 314. A
+  win-conversion story (e.g. clock or turn order at the half boundary) does not
+  fit.
+
 
 ### What this rules in and out
 
@@ -227,15 +262,42 @@ RESULT_PLACEHOLDER
 
 **H-b — Residual: the effect is genuine but smaller than measured.** z ≈ 3.0 on a single 100-game instrument, in an analysis that went looking for exactly this pattern. Given B1's small first-order magnitude and arguable sign, "real but ~2× smaller, with B1 + the B2 snowball supplying part of it" is the most defensible reading until reproduced.
 
-**H-c — MCTS's kickoff/throw-in models are not mirror-invariant.** `roll_outcomes.rs:65-81` collapses a throw-in to one deterministic outcome, trying `D3::One` first; for a y-sideline throw-in `get_throw_in_direction` (`ball_procs.rs:154-157`) maps `D3::One → (1, ±1)`, so **both bots believe sideline throw-ins always travel toward +x** (Away's attacking direction). Likewise `bounce_outcomes` collapses OOB directions to `oob.first()` in `ALL_DIRECTIONS` order, preferring +x (`:150-152`), and `Deviate` is modelled as `(D6::One, up)`. These are in-drive phenomena and so are largely excluded by the n=4800 null — but they are genuine non-mirror-invariant modelling assumptions and worth fixing on their own merits (a D3-uniform or side-relative representative).
+**H-c — MCTS's kickoff/throw-in models are not mirror-invariant. REFUTED as
+the cause (2026-08-30), fixed anyway in `316dbca`; see the rung-3 result
+above.** Original statement: `roll_outcomes.rs:65-81` collapses a throw-in to one deterministic outcome, trying `D3::One` first; for a y-sideline throw-in `get_throw_in_direction` (`ball_procs.rs:154-157`) maps `D3::One → (1, ±1)`, so **both bots believe sideline throw-ins always travel toward +x** (Away's attacking direction). Likewise `bounce_outcomes` collapses OOB directions to `oob.first()` in `ALL_DIRECTIONS` order, preferring +x (`:150-152`), and `Deviate` is modelled as `(D6::One, up)`. These are in-drive phenomena and so are largely excluded by the n=4800 null — but they are genuine non-mirror-invariant modelling assumptions and worth fixing on their own merits (a D3-uniform or side-relative representative).
 
 ### Deferred tests, cheapest first (all need the machine idle)
 
 1. **Re-run the same 100-game mirror with a different `--seed` base** (~2h). The single most informative experiment: it tests H-a and H-b simultaneously. If the split reproduces near 57-28, it is mechanistic; if it moves wildly, it was seed-set luck.
 2. **Run the mirror at `BOARD_SIZE_W=16` — no patch required** (~2h). At engine width 18 the buggy formula is *accidentally* mirror-symmetric (`w/4` = 4, `3w/4` = 13, and `17-4` = 13 ✓). If the bias collapses at 16x7 but persists at 14x7, B1 is confirmed as the source. Confounded by the board-size change, but zero patch risk.
-3. **`RandomBot` vs `RandomBot` full-game mirror.** Isolates rules/setup asymmetry from bot behaviour entirely — if the bias survives with no search at all, it is pure engine.
+3. ~~**`RandomBot` vs `RandomBot` full-game mirror.**~~ **Done** (20 000 games): null, 0.485. See "Result part 2", rung 2.
 4. **After fixing B1 and B2, re-run the mirror.** Expect both the TD rate (currently 4.2/game) and the side split to move. Fix and measure them *separately* — B2 changes the scoring dynamics of every game, so bundling them makes the result uninterpretable.
-5. **Close the instrument gap**: record side-relative TDs, `kicking_first_half`, the coin-toss winner and the kick/receive choice per game in the eval report, so the next mirror can distinguish a scoring-rate bias from a win-conversion bias. Currently impossible — see trap 1 above.
+5. ~~**Close the instrument gap**~~ **Done** (`ae43fa2`, `80175cf`): `LadderRow` carries `tds_by_home`/`tds_by_away`, `--per-game-out` logs side-relative scores and `kicking_first_half` per game, and `eval_summary.py` prints the side-centric split. The coin-toss *winner* and the kick/receive *choice* are still not recorded.
+
+## What to try next (2026-08-30, in priority order)
+
+1. **Bisect the budget.** 200 iterations is clean and 1000 is 2:1; ~100 games at
+   400 and at 700 (roughly 30 and 55 minutes on 3 cores) would say whether the
+   effect switches on sharply or scales with depth. A threshold implicates
+   something that only deep search reaches (the half boundary, the second
+   drive); smooth scaling implicates a bias the search *amplifies*.
+2. **Instrument the drive, not the game.** Home out-scores Away 490:314 in full
+   games, but heuristic MCTS from random-start mid-drive states is symmetric at
+   n=4800. The difference is everything between the kickoff and the first
+   decision of the drive. Log per *drive*: who kicked, where the ball landed,
+   who ended up carrying, and who scored. That interval is now small enough to
+   inspect directly.
+3. **Property-test the pieces rather than reading them.** `leaf_score` is
+   antisymmetric by inspection, MCTS's perspective handling is symmetric by
+   inspection, and `ScriptedBot` looked side-agnostic by inspection too — right
+   up until a 400-game mirror said 0.113. A `mirror(state)` helper (reflect x,
+   swap teams) would turn all of these into one-line assertions:
+   `leaf_score(mirror(s)) == -leaf_score(s)`, `search(mirror(s)) ==
+   mirror(search(s))` at a fixed seed. That helper is the single highest-value
+   piece of infrastructure left here.
+4. **Suspects not yet excluded**: the search's always-Heads coin model
+   (`scripted.rs`, only Away ever calls the toss); tree reuse across moves; the
+   pruning rules under deeper search; the second-half kickoff swap.
 
 ## A separate finding: the gen-0 net is side-miscalibrated
 
