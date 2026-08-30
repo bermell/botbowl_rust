@@ -9,10 +9,23 @@ use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameStateBuilder;
 use botbowl_engine::core::model::{Action, BoardDims, Position, TEAM_SIZE};
 use botbowl_engine::core::table::PosAT;
-use botbowl_mcts::{MctsBot, SearchBudget};
+use botbowl_mcts::{MctsBot, PuctMode, SearchBudget};
 
 #[test]
 fn solved_search_returns_well_before_the_time_budget() {
+    run_solved_early_stop(PuctMode::raw());
+}
+
+/// Same scenario under the normalised selection rule (plan 026). A cheap,
+/// fast canary that the new mode still converges an exhaustible tree and still
+/// terminates — run this before spending the benchmark suite's wall clock on a
+/// `c` sweep. A `c` far too high shows up here first.
+#[test]
+fn solved_search_returns_early_under_normalised_puct() {
+    run_solved_early_stop(PuctMode::normalised(1.0));
+}
+
+fn run_solved_early_stop(puct: PuctMode) {
     // 16x9 engine board (14x7 playable), same small tier as the engine's
     // runtime-dims tests. Skip if compiled capacity is smaller.
     const W: i8 = 16;
@@ -38,7 +51,7 @@ fn solved_search_returns_well_before_the_time_budget() {
     state.set_dice_mode(botbowl_engine::core::gamestate::DiceMode::RollDice);
 
     const BUDGET: Duration = Duration::from_secs(5);
-    let mut bot = MctsBot::new(SearchBudget::Time(BUDGET)).with_workers(1);
+    let mut bot = MctsBot::new(SearchBudget::Time(BUDGET)).with_workers(1).with_puct(puct);
 
     // Drive the turn: activation first, then the move. Every search over
     // this position exhausts the tree, so each get_action must come back

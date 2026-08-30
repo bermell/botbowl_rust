@@ -70,6 +70,7 @@ fn nn_score_leaf_uses_exact_value_for_known_outcomes() {
         horizon: Some(anchor),
         virtual_loss: 0,
         evaluator: Evaluator::Nn(nn),
+        ..Default::default()
     };
 
     // Home TD since the anchor, engine paused on the kickoff roll — the

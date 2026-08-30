@@ -40,6 +40,91 @@ use crate::scripted;
 /// visits — verified empirically against the existing UCT baseline test.
 const PUCT_C: f32 = 10.0;
 
+/// Default `c` for [`PuctMode::NormalisedQ`]. In the normalised frame the
+/// child-Q spread is 1.0 by construction and priors sum to 1, so `c` is
+/// AlphaZero's `c_puct` up to the range convention (`[0,1]` here vs
+/// `[-1,1]` there). Seeded from the Raw-equivalence identity
+/// `c_norm = PUCT_C * sum(p) / D`, which at a median node
+/// (`sum(p)` ~ 22, `D` ~ 200) gives ~1.1 — measure before trusting.
+const DEFAULT_PUCT_C_NORMALISED: f32 = 1.0;
+
+/// Lower bound on the per-node Q range used as the normalisation
+/// denominator. Two jobs:
+///
+/// 1. **Divide-by-zero guard** — `BbScore.score` is `i64`, so a real
+///    range is either 0 or >= 1; the floor is the only thing that ever
+///    applies below 1.
+/// 2. **Anti-amplification** — without it, a node whose children differ
+///    only by `score.rs`'s carrier-distance tier (±26) would have a few
+///    points of positional drift stretched across the full decision
+///    range, making meaningless differences look decisive. 50 is one
+///    ball-control step (`score::ball_control_value` × 10) — the
+///    smallest difference that reflects a change of game situation
+///    rather than drift.
+const DEFAULT_Q_RANGE_FLOOR: f32 = 50.0;
+
+/// Raw leaf-score points corresponding to one full normalised range,
+/// used to express `virtual_loss` in the normalised frame. Chosen so the
+/// shipped default (30, [`DEFAULT_VIRTUAL_LOSS`]) costs 0.1 of a node's
+/// decision range whatever that range's raw size. `0` still disables
+/// exactly. This is the one constant here with no measurement behind it.
+const NORM_VL_REFERENCE: f32 = 300.0;
+
+/// Selection-rule variant. `Raw` is the historical formula and the
+/// default; `NormalisedQ` maps sibling Q into `[0,1]` and priors onto the
+/// simplex before adding the exploration bonus, so `c` means the same
+/// thing in a node whose children span 6 points as in one spanning 1058
+/// (the measured p10..max spread of the top-two Q gap — plan 025).
+///
+/// **Selection-only.** `score_leaf`, `backprop_scores`, `ChildStat.q` and
+/// `Sample::root_value` all stay in raw Home-centric leaf-score units, so
+/// training targets are untouched. Do not normalise backprop: that would
+/// break the horizon carve-out and the NN value bridge at once.
+///
+/// `c` lives inside each variant so "normalised mode still carrying the
+/// Raw constant" is unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PuctMode {
+    /// Historical behaviour: `Q_raw + c * P * sqrt(N) / (1 + n)`.
+    Raw { c: f32 },
+    /// `Qhat + c * (P / sum P) * sqrt(N) / (1 + n)` with `Qhat` in `[0,1]`.
+    NormalisedQ { c: f32, range_floor: f32 },
+}
+
+impl Default for PuctMode {
+    fn default() -> Self {
+        PuctMode::Raw { c: PUCT_C }
+    }
+}
+
+impl PuctMode {
+    /// Historical selection rule at the shipped constant.
+    pub fn raw() -> Self {
+        PuctMode::Raw { c: PUCT_C }
+    }
+
+    /// Normalised selection at `c`, with the default range floor.
+    pub fn normalised(c: f32) -> Self {
+        PuctMode::NormalisedQ {
+            c,
+            range_floor: DEFAULT_Q_RANGE_FLOOR,
+        }
+    }
+
+    /// Short descriptor for corpus/report provenance. Selection changes
+    /// `visits`, which is the raw material for the offline policy target
+    /// (`botbowl-data`), so corpora from different modes must never be
+    /// silently mixed.
+    pub fn label(&self) -> String {
+        match self {
+            PuctMode::Raw { c } => format!("puct=raw(c={c})"),
+            PuctMode::NormalisedQ { c, range_floor } => {
+                format!("puct=norm(c={c},floor={range_floor})")
+            }
+        }
+    }
+}
+
 /// MCTS workers spawned by `MctsBot::get_action` get an explicit
 /// 16 MB stack instead of the OS-default ~2 MB. Sized for headroom
 /// against the recursive `Node::get_state` and `Arc<Node>` drop
@@ -194,6 +279,10 @@ pub struct BloodBowlDynamics {
     /// Value/prior source. `Heuristic` (default) reproduces the scripted
     /// bot exactly; `Nn` routes priors + leaf value through the network.
     pub evaluator: Evaluator,
+    /// Selection rule + exploration constant. Per-search rather than a
+    /// module constant so two bots with different settings can play each
+    /// other inside one process — the head-to-head this exists for.
+    pub puct: PuctMode,
 }
 
 impl Default for BloodBowlDynamics {
@@ -202,6 +291,7 @@ impl Default for BloodBowlDynamics {
             horizon: None,
             virtual_loss: DEFAULT_VIRTUAL_LOSS,
             evaluator: Evaluator::default(),
+            puct: PuctMode::default(),
         }
     }
 }
@@ -540,17 +630,63 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             })
             .unwrap_or(0.0);
-        let pick = scores_and_actions
-            .clone()
-            .into_iter()
-            .map(|(q, a)| {
-                let action = a.deref().clone();
-                let p = action.prior_f32().unwrap_or(1.0);
-                let v = puct_value(q.as_ref(), parent_visits, p, home_perspective, fpu);
-                (v, action)
-            })
-            .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
-            .expect("player node must have at least one action");
+        let pick = match self.puct {
+            // Raw: the historical expression, with `c` substituted for the
+            // module constant. Same ops in the same order, so at c == PUCT_C
+            // this is bit-identical f32 output.
+            PuctMode::Raw { c } => scores_and_actions
+                .clone()
+                .into_iter()
+                .map(|(q, a)| {
+                    let action = a.deref().clone();
+                    let p = action.prior_f32().unwrap_or(1.0);
+                    let v = puct_value(q.as_ref(), parent_visits, p, home_perspective, fpu, c);
+                    (v, action)
+                })
+                .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
+                .expect("player node must have at least one action"),
+
+            PuctMode::NormalisedQ { c, range_floor } => {
+                // PASS 1 — build the frame. Structurally identical to
+                // `bump_chosen` above: the `(q, a)` binding drops at the end
+                // of every loop body, so at most one `lockref::Ref` is ever
+                // alive and the plan-013 wait-graph cycle cannot form. This
+                // adds sequential acquire/release cycles, never nesting.
+                let mut lo = f32::INFINITY;
+                let mut hi = f32::NEG_INFINITY;
+                let mut prior_sum = 0.0f32;
+                for (q, a) in scores_and_actions.clone().into_iter() {
+                    prior_sum += a.deref().prior_f32().unwrap_or(1.0);
+                    if let Some(s) = q.as_ref() {
+                        // Flip FIRST, then min/max. The perspective flip is
+                        // order-reversing, so taking min/max on the
+                        // Home-centric score and negating afterwards would
+                        // silently swap lo and hi at every Away node.
+                        let qp = if home_perspective {
+                            s.score as f32
+                        } else {
+                            -(s.score as f32)
+                        };
+                        lo = lo.min(qp);
+                        hi = hi.max(qp);
+                    }
+                }
+                let frame = QFrame::new(lo, hi, prior_sum, fpu, c, range_floor, self.virtual_loss);
+
+                // PASS 2 — the existing scalar-collapsing map, unchanged in shape.
+                scores_and_actions
+                    .clone()
+                    .into_iter()
+                    .map(|(q, a)| {
+                        let action = a.deref().clone();
+                        let p = action.prior_f32().unwrap_or(1.0);
+                        let v = puct_value_normalised(q.as_ref(), parent_visits, p, home_perspective, fpu, &frame);
+                        (v, action)
+                    })
+                    .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
+                    .expect("player node must have at least one action")
+            }
+        };
         bump_chosen(&pick.1, self.virtual_loss);
         pick.1
     }
@@ -742,6 +878,82 @@ impl GameDynamics for BloodBowlDynamics {
 
 /// PUCT(a) = Q(a) + c · P(a) · √N(parent) / (1 + N(a))
 ///
+/// Per-node normalisation frame for [`PuctMode::NormalisedQ`]. Built by one
+/// scalar-extracting pass over the children in `select_node`; every field is
+/// already in the *descending player's* perspective.
+#[derive(Debug, Clone, Copy)]
+struct QFrame {
+    /// Min over scored siblings; falls back to `fpu` when none is scored.
+    lo: f32,
+    /// `(hi - lo).max(range_floor)` — never zero, never negative.
+    denom: f32,
+    /// Sum of priors over every offered child. `1.0` if that sum is zero.
+    prior_sum: f32,
+    c: f32,
+    /// `virtual_loss / NORM_VL_REFERENCE`.
+    vl_norm: f32,
+}
+
+impl QFrame {
+    fn new(lo: f32, hi: f32, prior_sum: f32, fpu: f32, c: f32, range_floor: f32, virtual_loss: i32) -> Self {
+        let (lo, denom) = if lo <= hi {
+            (lo, (hi - lo).max(range_floor))
+        } else {
+            // No scored sibling yet — anchor the frame on the parent's Q so
+            // every child normalises to 0 and the prior-scaled bonus decides,
+            // which is what Raw does here too (a constant cancels under argmax).
+            (fpu, range_floor)
+        };
+        QFrame {
+            lo,
+            denom,
+            prior_sum: if prior_sum > 0.0 { prior_sum } else { 1.0 },
+            c,
+            vl_norm: virtual_loss as f32 / NORM_VL_REFERENCE,
+        }
+    }
+
+    #[inline]
+    fn norm(&self, q: f32) -> f32 {
+        ((q - self.lo) / self.denom).clamp(0.0, 1.0)
+    }
+}
+
+/// PUCT with the Q term mapped into `[0,1]` against the sibling range and
+/// priors mapped onto the simplex, so `c` carries one meaning across states.
+///
+/// Two deliberate departures from pure affine invariance:
+/// - `denom` is floored at `range_floor`, so a node whose children differ only
+///   by positional drift is *not* stretched to full scale;
+/// - virtual loss is subtracted in normalised units, so it always costs the
+///   same fraction of the decision range. It is applied *after* the clamp and
+///   is deliberately **not** re-clamped: `vl` accumulates per concurrent
+///   descent, and clamping at 0 would hide the 2nd and 3rd worker's penalties.
+fn puct_value_normalised(
+    score: Option<&BbScore>,
+    parent_visits: f32,
+    prior: f32,
+    home_perspective: bool,
+    fpu: f32,
+    frame: &QFrame,
+) -> f32 {
+    let parent_term = parent_visits.max(1.0).sqrt();
+    let p = prior / frame.prior_sum;
+    match score {
+        None => frame.norm(fpu) + frame.c * p * parent_term,
+        Some(s) => {
+            let v = s.visits.load(Ordering::Relaxed) as f32;
+            let q = if home_perspective {
+                s.score as f32
+            } else {
+                -(s.score as f32)
+            };
+            let vl = s.virtual_loss.load(Ordering::Relaxed) as f32 * frame.vl_norm;
+            (frame.norm(q) - vl) + frame.c * p * parent_term / (1.0 + v)
+        }
+    }
+}
+
 /// Unexplored children (`score == None`) have `N(a) = 0` and their `Q`
 /// is estimated by `fpu` (first-play urgency): the *parent's* Q from the
 /// descending player's perspective. `leaf_score` carries a large,
@@ -753,10 +965,17 @@ impl GameDynamics for BloodBowlDynamics {
 /// Anchoring at the parent's Q makes "unexplored" mean "about as good as
 /// this position" instead of "worthless", so the prior-scaled bonus
 /// ranks unexplored children against explored ones on equal footing.
-fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_perspective: bool, fpu: f32) -> f32 {
+fn puct_value(
+    score: Option<&BbScore>,
+    parent_visits: f32,
+    prior: f32,
+    home_perspective: bool,
+    fpu: f32,
+    c: f32,
+) -> f32 {
     let parent_term = parent_visits.max(1.0).sqrt();
     match score {
-        None => fpu + PUCT_C * prior * parent_term,
+        None => fpu + c * prior * parent_term,
         Some(s) => {
             let v = s.visits.load(Ordering::Relaxed) as f32;
             // Plan 015 Step 5 — virtual loss subtracted *after* the
@@ -772,7 +991,7 @@ fn puct_value(score: Option<&BbScore>, parent_visits: f32, prior: f32, home_pers
             } else {
                 -(s.score as f32)
             };
-            (q_perspective - vl) + PUCT_C * prior * parent_term / (1.0 + v)
+            (q_perspective - vl) + c * prior * parent_term / (1.0 + v)
         }
     }
 }
@@ -883,6 +1102,10 @@ pub struct MctsBot {
     /// `get_action`. Default `Heuristic` → byte-identical to the scripted
     /// baseline; `with_evaluator` swaps in a frozen NN (plan 017).
     evaluator: Evaluator,
+    /// Selection rule + exploration constant, threaded into
+    /// `BloodBowlDynamics.puct` per `get_action`. Resolved from
+    /// `BLOOD_MCTS_PUCT_MODE` / `_C` / `_RANGE_FLOOR` at `::new`.
+    puct: PuctMode,
 }
 
 impl MctsBot {
@@ -896,6 +1119,19 @@ impl MctsBot {
             Some(s) => s.parse::<i32>().unwrap_or(DEFAULT_VIRTUAL_LOSS),
             None => DEFAULT_VIRTUAL_LOSS,
         };
+        // Resolve the mode *before* `c`, so `BLOOD_MCTS_PUCT_MODE=normalised`
+        // alone can never leave the Raw constant (10) sitting in the
+        // normalised frame — where it would be ~10x too explorative.
+        let env_f32 = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<f32>().ok());
+        let puct = match std::env::var("BLOOD_MCTS_PUCT_MODE").ok().as_deref() {
+            Some("normalised") | Some("normalized") | Some("norm") => PuctMode::NormalisedQ {
+                c: env_f32("BLOOD_MCTS_PUCT_C").unwrap_or(DEFAULT_PUCT_C_NORMALISED),
+                range_floor: env_f32("BLOOD_MCTS_PUCT_RANGE_FLOOR").unwrap_or(DEFAULT_Q_RANGE_FLOOR),
+            },
+            _ => PuctMode::Raw {
+                c: env_f32("BLOOD_MCTS_PUCT_C").unwrap_or(PUCT_C),
+            },
+        };
         Self {
             budget,
             n_workers,
@@ -905,6 +1141,7 @@ impl MctsBot {
             last_anchor: None,
             virtual_loss,
             evaluator: Evaluator::default(),
+            puct,
         }
     }
 
@@ -954,6 +1191,14 @@ impl MctsBot {
     /// disabled (`0`) or aggressive (`100`) settings.
     pub fn with_virtual_loss(mut self, virtual_loss: i32) -> Self {
         self.virtual_loss = virtual_loss;
+        self
+    }
+
+    /// Override the selection rule / exploration constant. Prefer this to
+    /// the env vars when A/B-ing: `MctsBot::new` reads the environment, so
+    /// a stray `BLOOD_MCTS_PUCT_*` would silently move every arm at once.
+    pub fn with_puct(mut self, puct: PuctMode) -> Self {
+        self.puct = puct;
         self
     }
 }
@@ -1021,6 +1266,7 @@ impl MctsBot {
             },
             virtual_loss: self.virtual_loss,
             evaluator: self.evaluator.clone(),
+            puct: self.puct,
         };
         // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
         // workers (e.g. `expand_bench_main`) force single-thread for
@@ -1614,6 +1860,7 @@ mod tests {
             horizon: Some(anchor),
             virtual_loss: 0,
             evaluator: Evaluator::PureTd,
+            ..Default::default()
         };
 
         let score = dynamics
@@ -1652,15 +1899,15 @@ mod tests {
         let parent_visits = 100.0;
         let prior = 0.5;
 
-        let va_home = puct_value(Some(&a), parent_visits, prior, true, 0.0);
-        let vb_home = puct_value(Some(&b), parent_visits, prior, true, 0.0);
+        let va_home = puct_value(Some(&a), parent_visits, prior, true, 0.0, PUCT_C);
+        let vb_home = puct_value(Some(&b), parent_visits, prior, true, 0.0, PUCT_C);
         assert!(
             va_home > vb_home,
             "Home should rank +50 above -50 (va={va_home}, vb={vb_home})"
         );
 
-        let va_away = puct_value(Some(&a), parent_visits, prior, false, 0.0);
-        let vb_away = puct_value(Some(&b), parent_visits, prior, false, 0.0);
+        let va_away = puct_value(Some(&a), parent_visits, prior, false, 0.0, PUCT_C);
+        let vb_away = puct_value(Some(&b), parent_visits, prior, false, 0.0, PUCT_C);
         assert!(
             vb_away > va_away,
             "Away should rank -50 above +50 (va={va_away}, vb={vb_away})"
@@ -1685,8 +1932,8 @@ mod tests {
         let prior = 5.0;
         let fpu = 525.0; // parent Q, Home perspective
 
-        let v_explored = puct_value(Some(&explored), parent_visits, prior, true, fpu);
-        let v_unexplored = puct_value(None, parent_visits, prior, true, fpu);
+        let v_explored = puct_value(Some(&explored), parent_visits, prior, true, fpu, PUCT_C);
+        let v_unexplored = puct_value(None, parent_visits, prior, true, fpu, PUCT_C);
         assert!(
             v_unexplored > v_explored,
             "unexplored (={v_unexplored}) must beat an explored parent-level sibling (={v_explored})"
@@ -1700,10 +1947,301 @@ mod tests {
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
         };
-        let v_td = puct_value(Some(&td), parent_visits, prior, true, fpu);
+        let v_td = puct_value(Some(&td), parent_visits, prior, true, fpu, PUCT_C);
         assert!(
             v_td > v_unexplored,
             "a found TD (={v_td}) must outrank unexplored siblings (={v_unexplored})"
         );
+
+        // This second assert is a CALIBRATION BOUND, not an invariant, and it
+        // is stated here so a future `c` change fails informatively instead of
+        // as an inscrutable float comparison. With this fixture:
+        //     v_td         = 1069 + 50c/31
+        //     v_unexplored =  525 + 50c
+        // so the ordering holds iff 544 > 48.387c, i.e. c < 11.243.
+        // (It holds at all only because the fixture's fpu=525 is *below* the TD
+        // child — a stale-low parent Q. With the self-consistent fpu that
+        // `backprop_scores` produces, fpu == hi, and unexplored beats every
+        // explored sibling for all c > 0. See `raw_fpu_beats_..._for_any_c`.)
+        const C_MAX_FOR_THIS_FIXTURE: f32 = 11.243;
+        assert!(
+            PUCT_C < C_MAX_FOR_THIS_FIXTURE,
+            "PUCT_C={PUCT_C} inverts the TD/unexplored ordering for this fixture (bound {C_MAX_FOR_THIS_FIXTURE})"
+        );
+    }
+
+    /// The c-free half of the fixture above: at equal prior and `fpu >= q`, an
+    /// unexplored child outranks an explored sibling for *any* positive `c`,
+    /// because the bonus is larger by `(1 - 1/(1+n))` and the Q term already
+    /// favours it. Swept, so no future exploration constant can trip it.
+    #[test]
+    fn raw_fpu_beats_parent_level_sibling_for_any_c() {
+        for c in [0.0f32, 0.5, 1.0, 2.0, 10.0, 50.0, 300.0] {
+            for (q, n) in [(525i64, 30u32), (400, 1), (525, 200)] {
+                let explored = BbScore {
+                    visits: AtomicU32::new(n),
+                    score: q,
+                    node_kind: BbPlayer::Home,
+                    virtual_loss: AtomicI32::new(0),
+                };
+                let fpu = 525.0;
+                let ve = puct_value(Some(&explored), 100.0, 5.0, true, fpu, c);
+                let vu = puct_value(None, 100.0, 5.0, true, fpu, c);
+                assert!(vu >= ve, "c={c} q={q} n={n}: unexplored {vu} < explored {ve}");
+            }
+        }
+    }
+
+    /// The mirror test's normalised twin. This is the regression guard for the
+    /// flip-before-min/max ordering: taking min/max on the Home-centric score
+    /// and negating afterwards swaps `lo`/`hi` at Away nodes, which silently
+    /// inverts every Away selection.
+    #[test]
+    fn normalised_puct_mirrors_for_away_player() {
+        let a = BbScore { visits: AtomicU32::new(10), score: 50, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+        let b = BbScore { visits: AtomicU32::new(10), score: -50, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+
+        // Home frame: lo=-50, hi=+50 after the flip (identity).
+        let fh = QFrame::new(-50.0, 50.0, 1.0, 0.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+        let va = puct_value_normalised(Some(&a), 100.0, 0.5, true, 0.0, &fh);
+        let vb = puct_value_normalised(Some(&b), 100.0, 0.5, true, 0.0, &fh);
+        assert!(va > vb, "Home should rank +50 above -50 (va={va}, vb={vb})");
+
+        // Away frame: the flip maps {+50,-50} to {-50,+50}, so lo/hi are the
+        // same pair — computed flip-first, as `select_node` does.
+        let fa = QFrame::new(-50.0, 50.0, 1.0, 0.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+        let va2 = puct_value_normalised(Some(&a), 100.0, 0.5, false, 0.0, &fa);
+        let vb2 = puct_value_normalised(Some(&b), 100.0, 0.5, false, 0.0, &fa);
+        assert!(vb2 > va2, "Away should rank -50 above +50 (va={va2}, vb={vb2})");
+    }
+
+    /// **The point of the whole change.** Rescaling every child's Q by a
+    /// positive affine map must not change what the search picks. Raw fails
+    /// this (see the negative control below); NormalisedQ must not.
+    #[test]
+    fn normalised_puct_is_invariant_to_affine_rescaling() {
+        // Range comfortably above the floor, so the floor is not what is being
+        // tested here (that is `normalised_range_floor_...`).
+        let base: [i64; 3] = [0, 400, 1000];
+        let priors = [1.0f32, 5.0, 0.2];
+        for home in [true, false] {
+            for (alpha, beta) in [(1i64, 0i64), (2, 1000), (8, -700)] {
+                let mut picks = Vec::new();
+                for scale in [false, true] {
+                    let scores: Vec<i64> = base
+                        .iter()
+                        .map(|q| if scale { alpha * q + beta } else { *q })
+                        .collect();
+                    let flip = |q: i64| if home { q as f32 } else { -(q as f32) };
+                    let lo = scores.iter().map(|q| flip(*q)).fold(f32::INFINITY, f32::min);
+                    let hi = scores.iter().map(|q| flip(*q)).fold(f32::NEG_INFINITY, f32::max);
+                    let frame = QFrame::new(lo, hi, priors.iter().sum(), lo, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+                    let best = scores
+                        .iter()
+                        .zip(priors.iter())
+                        .enumerate()
+                        .map(|(i, (q, p))| {
+                            let sc = BbScore { visits: AtomicU32::new(7), score: *q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                            (i, puct_value_normalised(Some(&sc), 100.0, *p, home, lo, &frame))
+                        })
+                        .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
+                        .unwrap()
+                        .0;
+                    picks.push(best);
+                }
+                assert_eq!(picks[0], picks[1], "home={home} alpha={alpha} beta={beta}: argmax moved under affine rescaling");
+            }
+        }
+    }
+
+    /// Negative control proving the test above measures something real: the
+    /// Raw rule *does* change its mind under a pure rescaling of Q.
+    #[test]
+    fn raw_puct_is_not_invariant_to_affine_rescaling() {
+        // High prior on the *low*-Q child, so growing the Q gap can overtake it.
+        // (With the prior on the high-Q child, that child wins at every scale
+        // and the control proves nothing — which is how this test first failed.)
+        let priors = [20.0f32, 1.0];
+        let pick = |alpha: i64| {
+            [0i64, 30]
+                .iter()
+                .zip(priors.iter())
+                .enumerate()
+                .map(|(i, (q, p))| {
+                    let sc = BbScore { visits: AtomicU32::new(1), score: alpha * q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                    (i, puct_value(Some(&sc), 100.0, *p, true, 0.0, PUCT_C))
+                })
+                .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
+                .unwrap()
+                .0
+        };
+        assert_ne!(pick(1), pick(100), "Raw was expected to be scale-sensitive — if this fails the control is broken, not the code");
+    }
+
+    /// The floor stops a node whose children differ only by positional drift
+    /// from having that drift stretched to the full decision range.
+    #[test]
+    fn normalised_range_floor_prevents_noise_amplification() {
+        let pick = |scores: [i64; 3]| {
+            let priors = [1.0f32, 1.0, 10.0]; // child 2 is the domain-good one
+            let lo = scores.iter().map(|q| *q as f32).fold(f32::INFINITY, f32::min);
+            let hi = scores.iter().map(|q| *q as f32).fold(f32::NEG_INFINITY, f32::max);
+            let frame = QFrame::new(lo, hi, priors.iter().sum(), lo, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+            scores
+                .iter()
+                .zip(priors.iter())
+                .enumerate()
+                .map(|(i, (q, p))| {
+                    // 50 visits each: past the first-visit sweep, where the
+                    // Q term is what apportions further visits. At 1 visit the
+                    // bonus swamps everything in both regimes and the test
+                    // measures nothing.
+                    let sc = BbScore { visits: AtomicU32::new(50), score: *q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                    (i, puct_value_normalised(Some(&sc), 400.0, *p, true, lo, &frame))
+                })
+                .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
+                .unwrap()
+                .0
+        };
+        // Drift-sized spread (below the 50 floor): the prior should still lead.
+        assert_eq!(pick([6, 3, 0]), 2, "below the floor, a 6-point spread must not out-vote a 10x prior");
+        // Real spread: Q leads despite the weaker prior.
+        assert_eq!(pick([600, 300, 0]), 0, "above the floor, a 600-point lead must win");
+    }
+
+    /// Virtual loss costs the same fraction of the decision range whatever the
+    /// node's raw scale — the dual of the invariance property, and the thing a
+    /// raw 30-point penalty gets catastrophically wrong on a 6-point range.
+    #[test]
+    fn normalised_virtual_loss_is_a_fixed_fraction_of_the_range() {
+        for (lo, hi) in [(0.0f32, 6.0f32), (0.0, 1058.0)] {
+            let frame = QFrame::new(lo, hi, 1.0, lo, 1.0, DEFAULT_Q_RANGE_FLOOR, DEFAULT_VIRTUAL_LOSS);
+            let mk = |vl: i32| BbScore { visits: AtomicU32::new(5), score: hi as i64, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(vl) };
+            let v0 = puct_value_normalised(Some(&mk(0)), 100.0, 1.0, true, lo, &frame);
+            let v1 = puct_value_normalised(Some(&mk(1)), 100.0, 1.0, true, lo, &frame);
+            let v3 = puct_value_normalised(Some(&mk(3)), 100.0, 1.0, true, lo, &frame);
+            assert!((v0 - v1 - 0.1).abs() < 1e-5, "range {lo}..{hi}: one VL should cost 0.1, got {}", v0 - v1);
+            // Accumulates linearly and is NOT re-clamped, so concurrent
+            // descents past the first stay visible.
+            assert!((v0 - v3 - 0.3).abs() < 1e-5, "range {lo}..{hi}: three VL should cost 0.3, got {}", v0 - v3);
+        }
+    }
+
+    /// Degenerate frames must stay finite, and a fresh node (nothing scored)
+    /// must pick exactly what Raw picks — a constant cancels under argmax.
+    #[test]
+    fn normalised_frame_degenerate_cases() {
+        let priors = [1.0f32, 10.0, 0.2];
+        // No scored sibling: lo=+inf, hi=-inf -> frame anchors on fpu.
+        let frame = QFrame::new(f32::INFINITY, f32::NEG_INFINITY, priors.iter().sum(), 525.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+        assert!(frame.denom >= DEFAULT_Q_RANGE_FLOOR && frame.denom.is_finite());
+        let norm_pick = priors
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, puct_value_normalised(None, 100.0, *p, true, 525.0, &frame)))
+            .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
+            .unwrap()
+            .0;
+        let raw_pick = priors
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, puct_value(None, 100.0, *p, true, 525.0, PUCT_C)))
+            .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(norm_pick, raw_pick, "a fresh node must rank identically in both modes");
+
+        // All children equal (range 0) and a single child: finite, no NaN.
+        for (lo, hi) in [(42.0f32, 42.0f32), (7.0, 7.0)] {
+            let f = QFrame::new(lo, hi, 1.0, lo, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+            let sc = BbScore { visits: AtomicU32::new(3), score: lo as i64, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+            let v = puct_value_normalised(Some(&sc), 100.0, 1.0, true, lo, &f);
+            assert!(v.is_finite(), "range {lo}..{hi} produced {v}");
+            assert!((f.norm(lo) - 0.0).abs() < 1e-6);
+        }
+    }
+
+    /// A stale-high parent Q must not let unexplored children run away with
+    /// the node. Clamping is what makes the frame robust to that.
+    #[test]
+    fn normalised_fpu_outside_child_range_is_clamped() {
+        let frame = QFrame::new(0.0, 100.0, 11.0, 10_000.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+        assert!((frame.norm(10_000.0) - 1.0).abs() < 1e-6, "fpu above hi must clamp to 1.0");
+        assert!((frame.norm(-9_000.0) - 0.0).abs() < 1e-6, "fpu below lo must clamp to 0.0");
+        // What clamping actually buys: a stale-high parent Q confers *no* Q
+        // advantage over the best explored sibling. Both land on 1.0, so the
+        // Q terms cancel and only priors and visits separate them.
+        //
+        // Unclamped, `norm(10_000)` would be 100.0 against a range of 100 —
+        // putting unexplored children a hundred range-units clear and making
+        // selection permanently first-play for the rest of the node's life.
+        assert!(
+            (frame.norm(10_000.0) - frame.norm(100.0)).abs() < 1e-6,
+            "a stale-high fpu must not outrank the best explored sibling on Q"
+        );
+        assert!((10_000.0 - frame.lo) / frame.denom > 50.0, "fixture must be genuinely stale for the clamp to matter");
+
+        // NOTE deliberately not asserted: that an explored child outranks an
+        // unexplored one here. With the self-consistent `fpu == hi` that
+        // `backprop_scores` produces, an unexplored child ties on Q and wins on
+        // the bonus, for all c > 0, in BOTH modes -- the first-visit sweep is
+        // breadth-first by construction. That is FPU with no *reduction*
+        // (Leela/KataGo subtract `c_fpu * sqrt(sum visited priors)`), which is
+        // only expressible once Q is normalised. Successor experiment, not this
+        // change -- see `raw_fpu_beats_parent_level_sibling_for_any_c`.
+    }
+
+    /// Priors are renormalised in-node, so scaling every prior by a constant
+    /// changes nothing. Without this `c` would still absorb the branching
+    /// factor, which is the same disease in a different variable.
+    #[test]
+    fn normalised_priors_are_renormalised_within_the_node() {
+        let scores = [0i64, 400, 1000];
+        let base = [1.0f32, 5.0, 0.2];
+        let pick = |k: f32| {
+            let priors: Vec<f32> = base.iter().map(|p| p * k).collect();
+            let frame = QFrame::new(0.0, 1000.0, priors.iter().sum(), 0.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+            scores
+                .iter()
+                .zip(priors.iter())
+                .enumerate()
+                .map(|(i, (q, p))| {
+                    let sc = BbScore { visits: AtomicU32::new(4), score: *q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                    (i, puct_value_normalised(Some(&sc), 100.0, *p, true, 0.0, &frame))
+                })
+                .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
+                .unwrap()
+                .0
+        };
+        assert_eq!(pick(1.0), pick(37.0), "scaling every prior must not move the argmax");
+    }
+
+    /// Guards the refactor itself: `puct_value(.., PUCT_C)` must reproduce the
+    /// historical `PUCT_C * prior * parent_term` expression exactly, bit for
+    /// bit. This is the only thing standing between the parameterisation and a
+    /// silent change to every result committed so far.
+    #[test]
+    fn raw_mode_is_bit_identical_to_the_historical_formula() {
+        for (score, visits, prior, parent_visits, fpu) in [
+            (525i64, 30u32, 5.0f32, 100.0f32, 525.0f32),
+            (-1069, 1, 0.2, 1.0, 0.0),
+            (0, 7, 1.0, 1000.0, -50.0),
+            (1058, 512, 10.0, 16000.0, 1058.0),
+        ] {
+            let s = BbScore { visits: AtomicU32::new(visits), score, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+            let parent_term = parent_visits.max(1.0).sqrt();
+            let expected_some = (score as f32 - 0.0) + PUCT_C * prior * parent_term / (1.0 + visits as f32);
+            let expected_none = fpu + PUCT_C * prior * parent_term;
+            assert_eq!(
+                puct_value(Some(&s), parent_visits, prior, true, fpu, PUCT_C).to_bits(),
+                expected_some.to_bits(),
+                "explored branch drifted for score={score} visits={visits}"
+            );
+            assert_eq!(
+                puct_value(None, parent_visits, prior, true, fpu, PUCT_C).to_bits(),
+                expected_none.to_bits(),
+                "unexplored branch drifted for prior={prior}"
+            );
+        }
     }
 }
