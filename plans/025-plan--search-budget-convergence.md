@@ -196,10 +196,38 @@ experiment says where to aim it (500 vs 1000, not 4000).
 
 ### Follow-up questions this raises
 
-1. **Is tie-breaking the whole story?** If so, a deterministic tie-break (or
-   averaging the visit distribution over k independent short searches) would cut
-   label noise far more cheaply than any budget change. Averaging 2x500 instead
-   of 1x1000 is the same compute and should strictly reduce variance.
+1. **Average k independent short searches instead of one long one — measured,
+   not speculative (2026-08-30).** At identical compute, averaging the visit
+   distributions of 2x500 beats a single 1x1000, against a held-out third run:
+
+   | label recipe | cost | TV vs held-out | top-1 vs held-out |
+   |---|---|---|---|
+   | 1 x 500 (single) | 500 | 0.2701 | 0.65 |
+   | **avg of 2 x 500** | **1000** | **0.2374** | **0.68** |
+   | 1 x 1000 (single) | 1000 | 0.2818 | 0.67 |
+
+   ~16% less label noise for the same compute. **Why more iterations cannot do
+   this:** PUCT is self-reinforcing — among tied children, whichever takes an
+   early lead attracts more visits, widening the lead. Tie-break noise is
+   *amplified* by depth, not averaged away. It is a Polya urn: running one urn
+   longer converges to a *random* limit, not the mean. Within a tree, iterations
+   are positively correlated (same early lead); across trees they are
+   independent, so averaging cuts variance as 1/k.
+
+   The independence assumption is confirmed by the numbers: if noise were fully
+   independent, avg-of-2 vs a held-out single should sit at sqrt(0.75) = 0.866 of
+   the single-run distance, predicting 0.2339 against 0.2374 measured — within
+   1.5%. Note the gain is in distribution *shape* (TV 0.282 -> 0.237), not argmax
+   (0.67 -> 0.68), which is what the cross-entropy policy loss actually consumes.
+
+   Untested: play strength (two 500-searches may pick worse moves than one
+   1000-search), the interaction with anchor-gated tree reuse
+   (`dynamics.rs:1051`), and the optimal k. Implementation is contained — call
+   `get_action_with_record` k times in the dataset generator and merge child
+   visits by action; `botbowl-mcts` is untouched.
+
+   A deterministic tie-break would attack the same root cause differently and is
+   worth comparing.
 2. **Should the policy target be softened?** A sharp label that is 45% likely to
    name a different action on a re-run may be worse than an explicitly softened
    one. Temperature on the visit distribution is a one-line change with a
