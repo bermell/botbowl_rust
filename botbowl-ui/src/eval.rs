@@ -28,7 +28,7 @@ use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::TeamType;
 use botbowl_engine::scripted_bot::ScriptedBot;
-use botbowl_mcts::{MctsBot, SearchBudget};
+use botbowl_mcts::{MctsBot, PuctMode, SearchBudget};
 use botbowl_nn::eval::NnEvaluator;
 
 use crate::cli::{CliEvaluator, EvalArgs};
@@ -86,8 +86,29 @@ struct Report {
     ladder: Vec<LadderRow>,
 }
 
-fn make_bot(evaluator: CliEvaluator, nn: Option<&Arc<NnEvaluator>>, iters: usize, workers: usize) -> MctsBot {
-    let bot = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(workers);
+/// Resolve a `(mode, c)` pair into a `PuctMode`. Panics on an unknown mode
+/// rather than silently running the wrong arm of a multi-hour head-to-head.
+fn puct_of(mode: &str, c: Option<f32>) -> PuctMode {
+    match mode {
+        "raw" => match c {
+            Some(c) => PuctMode::Raw { c },
+            None => PuctMode::raw(),
+        },
+        "normalised" | "normalized" | "norm" => PuctMode::normalised(c.unwrap_or(1.0)),
+        other => panic!("--puct-mode: expected `raw` or `normalised`, got `{other}`"),
+    }
+}
+
+fn make_bot(
+    evaluator: CliEvaluator,
+    nn: Option<&Arc<NnEvaluator>>,
+    iters: usize,
+    workers: usize,
+    puct: PuctMode,
+) -> MctsBot {
+    let bot = MctsBot::new(SearchBudget::Iterations(iters))
+        .with_workers(workers)
+        .with_puct(puct);
     match evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
@@ -97,7 +118,13 @@ fn make_bot(evaluator: CliEvaluator, nn: Option<&Arc<NnEvaluator>>, iters: usize
 }
 
 fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
-    make_bot(args.evaluator, nn, args.mcts_iters, args.mcts_workers)
+    make_bot(
+        args.evaluator,
+        nn,
+        args.mcts_iters,
+        args.mcts_workers,
+        puct_of(&args.puct_mode, args.puct_c),
+    )
 }
 
 fn evaluator_label(evaluator: CliEvaluator, model: Option<&str>) -> String {
@@ -288,6 +315,12 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
     if !args.skip_ladder {
         eprintln!("== opponent ladder ({} games per rung) ==", args.games);
         let opp_iters = args.opponent_iters.unwrap_or(args.mcts_iters);
+        // Opponent defaults to the candidate's rule, so existing invocations
+        // are unchanged; setting either --vs-puct-* makes it a rule head-to-head.
+        let opp_puct = puct_of(
+            args.vs_puct_mode.as_deref().unwrap_or(&args.puct_mode),
+            args.vs_puct_c.or(args.puct_c),
+        );
         if !args.skip_fixed_rungs {
             ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", || {
                 Box::new(RandomBot::new())
@@ -296,13 +329,21 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                 Box::new(ScriptedBot::new())
             }));
             ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", || {
-                Box::new(MctsBot::new(SearchBudget::Iterations(opp_iters)).with_workers(args.mcts_workers))
+                Box::new(
+                    MctsBot::new(SearchBudget::Iterations(opp_iters))
+                        .with_workers(args.mcts_workers)
+                        .with_puct(opp_puct),
+                )
             }));
         }
         if let Some(vs) = args.vs_evaluator {
-            let label = format!("vs:{}", evaluator_label(vs, args.vs_model.as_deref()));
+            let label = format!(
+                "vs:{} [{}]",
+                evaluator_label(vs, args.vs_model.as_deref()),
+                opp_puct.label()
+            );
             ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, || {
-                Box::new(make_bot(vs, vs_nn.as_ref(), opp_iters, args.mcts_workers))
+                Box::new(make_bot(vs, vs_nn.as_ref(), opp_iters, args.mcts_workers, opp_puct))
             }));
         }
     }

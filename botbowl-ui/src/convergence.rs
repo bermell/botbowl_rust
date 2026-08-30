@@ -41,7 +41,7 @@ use botbowl_data::{ChildStat, Team};
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{DiceMode, GameState};
 use botbowl_engine::core::model::Action as EngineAction;
-use botbowl_mcts::{MctsBot, SearchBudget};
+use botbowl_mcts::{MctsBot, PuctMode, SearchBudget};
 use botbowl_nn::eval::NnEvaluator;
 
 use crate::cli::{CliEvaluator, ConvergenceArgs};
@@ -55,6 +55,10 @@ struct Row<'a> {
     state_seed: u64,
     repeat: u32,
     budget: usize,
+    /// Which selection rule produced this row. Rows are pooled by
+    /// `state_seed`, so without an arm key two arms sharing a seed base merge
+    /// silently and the sweep measures nothing.
+    puct: &'a str,
     /// Stratification keys (constant per state, repeated for convenience).
     n_legal_actions: usize,
     half: u8,
@@ -71,8 +75,29 @@ struct Row<'a> {
     elapsed_ms: u64,
 }
 
+/// Resolve `--puct-mode` / `--puct-c` / `--puct-range-floor` into a `PuctMode`.
+/// Panics on an unknown mode rather than silently sweeping the wrong arm.
+fn puct_from_args(args: &ConvergenceArgs) -> PuctMode {
+    match args.puct_mode.as_str() {
+        "raw" => match args.puct_c {
+            Some(c) => PuctMode::Raw { c },
+            None => PuctMode::raw(),
+        },
+        "normalised" | "normalized" | "norm" => {
+            let base = PuctMode::normalised(args.puct_c.unwrap_or(1.0));
+            match (base, args.puct_range_floor) {
+                (PuctMode::NormalisedQ { c, .. }, Some(f)) => PuctMode::NormalisedQ { c, range_floor: f },
+                (m, _) => m,
+            }
+        }
+        other => panic!("--puct-mode: expected `raw` or `normalised`, got `{other}`"),
+    }
+}
+
 fn make_bot(args: &ConvergenceArgs, nn: Option<&Arc<NnEvaluator>>, budget: usize) -> MctsBot {
-    let bot = MctsBot::new(SearchBudget::Iterations(budget)).with_workers(args.mcts_workers);
+    let bot = MctsBot::new(SearchBudget::Iterations(budget))
+        .with_workers(args.mcts_workers)
+        .with_puct(puct_from_args(args));
     match args.evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
@@ -110,6 +135,8 @@ pub fn run(args: ConvergenceArgs) -> io::Result<()> {
         _ => None,
     };
 
+    let puct_label = puct_from_args(&args).label();
+    eprintln!("selection rule: {puct_label}");
     let mut out = std::fs::File::create(&args.out)?;
     let started = Instant::now();
     let total_cells = args.states as u64 * args.repeats as u64 * budgets.len() as u64;
@@ -156,6 +183,7 @@ pub fn run(args: ConvergenceArgs) -> io::Result<()> {
                     state_seed,
                     repeat,
                     budget,
+                    puct: &puct_label,
                     n_legal_actions: sample.children.len(),
                     half: state.info.half,
                     home_turn: state.info.home_turn,

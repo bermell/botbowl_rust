@@ -62,6 +62,16 @@ pub struct ConvergenceArgs {
     /// Output JSONL path.
     #[arg(long, default_value = "convergence.jsonl")]
     pub out: String,
+    /// PUCT selection rule: `raw` (shipped) or `normalised` (plan 026).
+    #[arg(long, default_value = "raw")]
+    pub puct_mode: String,
+    /// PUCT exploration constant. Defaults per mode: 10 for `raw`, 1 for
+    /// `normalised` (the scales are not comparable — see PuctMode).
+    #[arg(long)]
+    pub puct_c: Option<f32>,
+    /// Range floor for `--puct-mode normalised`.
+    #[arg(long)]
+    pub puct_range_floor: Option<f32>,
     /// Random-start placement biases (defaults match generation).
     #[command(flatten)]
     pub bias: BiasArgs,
@@ -250,6 +260,19 @@ pub struct EvalArgs {
     /// ONNX model for the --vs-evaluator opponent (required for nn/nn-value).
     #[arg(long)]
     pub vs_model: Option<String>,
+    /// Candidate PUCT selection rule: `raw` or `normalised` (plan 026).
+    #[arg(long, default_value = "raw")]
+    pub puct_mode: String,
+    /// Candidate PUCT exploration constant (default: 10 raw / 1 normalised).
+    #[arg(long)]
+    pub puct_c: Option<f32>,
+    /// Opponent PUCT rule; defaults to the candidate's. Set this to run a
+    /// selection-rule head-to-head in one process.
+    #[arg(long)]
+    pub vs_puct_mode: Option<String>,
+    /// Opponent PUCT constant; defaults to the candidate's.
+    #[arg(long)]
+    pub vs_puct_c: Option<f32>,
     /// Skip the fixed rungs (random/scripted/mcts-heuristic), keeping only
     /// the --vs-evaluator rung. E.g. mirror matches and promotion gates.
     #[arg(long, default_value_t = false)]
