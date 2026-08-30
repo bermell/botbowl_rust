@@ -15,11 +15,15 @@
 //! - [`targets`] — policy/value training targets built from the raw
 //!   search stats (plan 017 §caveat).
 //! - [`npy`] — a minimal hand-rolled `.npy` v1 writer/reader.
-//! - [`eval`] — `NnEvaluator`: tract-onnx inference for priors + value.
+//! - [`eval`] — `NnEvaluator`: tract-onnx inference for priors + value,
+//!   with an optional batched remote backend.
+//! - [`remote`] — client for the batching inference sidecar
+//!   (`scripts/nn_server.py`, plan 024).
 
 pub mod actions;
 pub mod encode;
 pub mod eval;
 pub mod npy;
 pub mod perspective;
+pub mod remote;
 pub mod targets;

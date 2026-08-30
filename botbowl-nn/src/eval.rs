@@ -1,5 +1,5 @@
 //! `NnEvaluator` — frozen ONNX inference (tract, pure-Rust CPU) for MCTS
-//! priors and leaf value.
+//! priors and leaf value, with an optional batched remote backend.
 //!
 //! The model has dynamic `H`/`W`; tract needs them concrete to optimise,
 //! so we build one runnable plan per `(H, W)` on first use and cache it
@@ -16,12 +16,25 @@
 //! `v ∈ [-1, 1]`, sign-flipped to Home-centric and rescaled `× 1000` to
 //! match `leaf_score`'s TD = ±1000 scale.
 //!
-//! A frozen, deterministic CPU network is a **pure function of state**, so
-//! it satisfies the recombination-purity invariant.
+//! A frozen, deterministic network is a **pure function of state**, so it
+//! satisfies the recombination-purity invariant — that holds for the
+//! remote backend too (the server is a pure function; see plan 024
+//! §Invariants for why batch composition does not leak into the result).
+//!
+//! **Backends** (plan 024). [`Backend::Tract`] is the default and the
+//! reference. [`Backend::Remote`] forwards to `scripts/nn_server.py` over
+//! a Unix socket so inference can be batched across the generation
+//! loop's shard processes — and always carries a tract fallback, so a
+//! dead or wedged server makes a shard slow rather than broken. Only
+//! [`NnEvaluator::forward_raw`] and its value-only sibling dispatch;
+//! everything above them is backend-agnostic, so no call site in
+//! `botbowl-mcts` changes and nothing becomes async.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, TeamType};
@@ -30,32 +43,42 @@ use tract_onnx::prelude::*;
 use crate::actions::action_cell;
 use crate::encode::{encode, Encoded, GLOBAL_FEATURES, SPATIAL_CHANNELS};
 use crate::perspective::mover_for;
+use crate::remote::RemoteClient;
 
 type Runnable = TypedRunnableModel<TypedModel>;
 
-/// Frozen ONNX value/policy network. `Send + Sync` — safe to share across
-/// MCTS worker threads via `Arc`.
-pub struct NnEvaluator {
+/// Process-wide forward-pass counters (plan 024 Stage 0). Every forward
+/// bumps both, whatever the backend — the counters are what turn
+/// "generation is inference-bound" from a derivation into a measurement.
+/// Cost is one `Instant::now()` pair and two relaxed atomic adds against
+/// a ~2.6 ms forward: unmeasurable, so they are always on and
+/// `BLOOD_NN_PROFILE` only controls *printing*.
+static FORWARDS: AtomicU64 = AtomicU64::new(0);
+static FORWARD_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// `(forwards, total nanoseconds)` spent in NN forwards so far.
+pub fn profile_counters() -> (u64, u64) {
+    (FORWARDS.load(Ordering::Relaxed), FORWARD_NANOS.load(Ordering::Relaxed))
+}
+
+/// Whether `BLOOD_NN_PROFILE` asks for the profile line to be printed.
+pub fn profile_enabled() -> bool {
+    std::env::var("BLOOD_NN_PROFILE").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
+/// tract-onnx CPU inference: the default backend, the numerics reference
+/// (`tests/parity.rs`), and the fallback for every remote failure.
+pub struct TractBackend {
     /// Parsed model with symbolic `H`/`W`; concretised per board size.
     proto: InferenceModel,
     /// Runnable plans keyed by `(h, w)`.
     cache: Mutex<HashMap<(usize, usize), Arc<Runnable>>>,
 }
 
-impl std::fmt::Debug for NnEvaluator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NnEvaluator{{..}}")
-    }
-}
-
-impl NnEvaluator {
-    /// Load an ONNX model from `path`. The graph must have inputs
-    /// `spatial (N,C,H,W)` + `global (N,F)` and outputs `policy (N,A,H,W)`
-    /// + `value (N,1)` (see `train/src/bbnn/export.py`).
-    pub fn from_path(path: impl AsRef<Path>) -> TractResult<Self> {
-        let proto = tract_onnx::onnx().model_for_path(path)?;
-        Ok(NnEvaluator {
-            proto,
+impl TractBackend {
+    fn from_path(path: impl AsRef<Path>) -> TractResult<Self> {
+        Ok(TractBackend {
+            proto: tract_onnx::onnx().model_for_path(path)?,
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -77,11 +100,7 @@ impl NnEvaluator {
         Ok(arc)
     }
 
-    /// Run one forward pass on already-encoded raw tensors. Returns the
-    /// flat policy map (`A*H*W`, C-major/row-major) and the raw value
-    /// output (`value[0]`). Exposed for the parity test; production paths
-    /// go through [`priors`](Self::priors) / [`value_home_i64`](Self::value_home_i64).
-    pub fn forward_raw(&self, spatial: &[f32], global: &[f32], h: usize, w: usize) -> (Vec<f32>, f32) {
+    fn forward(&self, spatial: &[f32], global: &[f32], h: usize, w: usize) -> (Vec<f32>, f32) {
         let runnable = self.runnable_for(h, w).expect("build runnable");
         let spatial_t = Tensor::from_shape(&[1, SPATIAL_CHANNELS, h, w], spatial).expect("spatial tensor shape");
         let global_t = Tensor::from_shape(&[1, GLOBAL_FEATURES], global).expect("global tensor shape");
@@ -97,9 +116,113 @@ impl NnEvaluator {
         let value = out[1].as_slice::<f32>().expect("value f32")[0];
         (policy, value)
     }
+}
 
-    fn forward(&self, enc: &Encoded) -> (Vec<f32>, f32) {
-        self.forward_raw(&enc.spatial, &enc.global, enc.h, enc.w)
+/// Where a forward is actually executed. `Remote` always owns a `Tract`
+/// fallback — that is what keeps "a dead server is a slow shard, not a
+/// dead shard" true by construction.
+pub enum Backend {
+    Tract(TractBackend),
+    Remote { client: RemoteClient, fallback: TractBackend },
+}
+
+/// Frozen value/policy network. `Send + Sync` — safe to share across MCTS
+/// worker threads via `Arc`.
+pub struct NnEvaluator {
+    backend: Backend,
+}
+
+impl std::fmt::Debug for NnEvaluator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.backend {
+            Backend::Tract(_) => write!(f, "NnEvaluator{{tract}}"),
+            Backend::Remote { client, .. } => write!(f, "NnEvaluator{{remote: {client:?}}}"),
+        }
+    }
+}
+
+impl NnEvaluator {
+    /// Load an ONNX model from `path` and run it on the CPU with tract.
+    /// The graph must have inputs `spatial (N,C,H,W)` + `global (N,F)`
+    /// and outputs `policy (N,A,H,W)` + `value (N,1)` (see
+    /// `train/src/bbnn/export.py`).
+    pub fn from_path(path: impl AsRef<Path>) -> TractResult<Self> {
+        Ok(NnEvaluator {
+            backend: Backend::Tract(TractBackend::from_path(path)?),
+        })
+    }
+
+    /// Like [`from_path`](Self::from_path), but when `server` is `Some`,
+    /// route forwards to the batching sidecar listening on that socket,
+    /// keeping tract as the fallback.
+    ///
+    /// `path` does double duty: it is the tract fallback model *and* the
+    /// identity sent at handshake, so the server can resolve its own
+    /// `.pt` sibling and return a canary this client can check against
+    /// its own tract result. Two evaluators in one process (the eval
+    /// phase's candidate and champion) each name their own model over the
+    /// same socket.
+    ///
+    /// Errors only if the ONNX fails to load or the canary disagrees. An
+    /// unreachable server is *not* an error: it warns and uses tract.
+    pub fn from_path_with_server(path: impl AsRef<Path>, server: Option<&Path>) -> TractResult<Self> {
+        let path = path.as_ref();
+        let tract = TractBackend::from_path(path)?;
+        let Some(socket) = server else {
+            return Ok(NnEvaluator {
+                backend: Backend::Tract(tract),
+            });
+        };
+        // Our own answer on the canary input, via the very ONNX the
+        // caller named. Uncounted: this is not a search forward.
+        let (cs, cg) = crate::remote::canary_input();
+        let (policy, value) = tract.forward(&cs, &cg, crate::remote::CANARY_H, crate::remote::CANARY_W);
+        let client = RemoteClient::new(socket, &path.to_string_lossy(), (value, policy))
+            .map_err(|e| TractError::msg(e.to_string()))?;
+        Ok(NnEvaluator {
+            backend: Backend::Remote { client, fallback: tract },
+        })
+    }
+
+    /// `(served remotely, fell back to tract)`, or `None` on the pure
+    /// tract backend.
+    pub fn remote_stats(&self) -> Option<(u64, u64)> {
+        match &self.backend {
+            Backend::Tract(_) => None,
+            Backend::Remote { client, .. } => Some((client.served_count(), client.fallback_count())),
+        }
+    }
+
+    /// Run one forward pass on already-encoded raw tensors. Returns the
+    /// flat policy map (`A*H*W`, C-major/row-major) and the raw value
+    /// output (`value[0]`). Exposed for the parity test; production paths
+    /// go through [`priors`](Self::priors) / [`value_home_i64`](Self::value_home_i64).
+    pub fn forward_raw(&self, spatial: &[f32], global: &[f32], h: usize, w: usize) -> (Vec<f32>, f32) {
+        self.forward_counted(spatial, global, h, w, true)
+    }
+
+    /// The counted dispatch point. `want_policy = false` lets the remote
+    /// backend send back 4 bytes instead of 17 KB — which is the whole
+    /// response under `nn-value`, the generator's evaluator.
+    fn forward_counted(
+        &self,
+        spatial: &[f32],
+        global: &[f32],
+        h: usize,
+        w: usize,
+        want_policy: bool,
+    ) -> (Vec<f32>, f32) {
+        let t0 = Instant::now();
+        let out = match &self.backend {
+            Backend::Tract(t) => t.forward(spatial, global, h, w),
+            Backend::Remote { client, fallback } => match client.forward(spatial, global, h, w, want_policy) {
+                Ok(out) => out,
+                Err(_) => fallback.forward(spatial, global, h, w),
+            },
+        };
+        FORWARDS.fetch_add(1, Ordering::Relaxed);
+        FORWARD_NANOS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        out
     }
 
     /// Priors for a node's already-filtered legal actions. One forward
@@ -110,7 +233,7 @@ impl NnEvaluator {
             return Vec::new();
         }
         let enc = encode(state);
-        let (policy, _v) = self.forward(&enc);
+        let (policy, _v) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, true);
         let plane = enc.h * enc.w;
         let mover = enc.mover;
         let dims = state.board_dims;
@@ -139,8 +262,8 @@ impl NnEvaluator {
     /// network emits a mover-centric `v ∈ [-1, 1]`; we clamp, flip sign
     /// for an Away mover, and rescale.
     pub fn value_home_i64(&self, state: &GameState) -> i64 {
-        let enc = encode(state);
-        let (_policy, v) = self.forward(&enc);
+        let enc: Encoded = encode(state);
+        let (_policy, v) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, false);
         let v = v.clamp(-1.0, 1.0);
         let home_centric = match mover_for(state) {
             TeamType::Home => v,

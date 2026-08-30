@@ -18,7 +18,7 @@
 
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -49,7 +49,8 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
             let path = args.model.as_deref().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "--evaluator nn/nn-value requires --model PATH")
             })?;
-            let eval = NnEvaluator::from_path(path)
+            let server = crate::cli::nn_server_path(args.nn_server.as_deref());
+            let eval = NnEvaluator::from_path_with_server(path, server.as_deref())
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("failed to load {path}: {e}")))?;
             Some(Arc::new(eval))
         }
@@ -64,6 +65,11 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
 
     let mut total_samples = 0usize;
     let mut written = 0u32;
+    // Plan 024 Stage 0: wall clock of the whole generation loop, against
+    // which the NN forward counters give the inference share directly
+    // (no cross-arm subtraction needed).
+    let t_start = Instant::now();
+    let (fw0, ns0) = botbowl_nn::eval::profile_counters();
 
     for g in 0..args.games {
         let seed = args.seed.wrapping_add(g as u64);
@@ -92,9 +98,40 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
             );
             writer.write(&traj)?;
             writer.flush()?;
+            if botbowl_nn::eval::profile_enabled() {
+                let (fw, ns) = botbowl_nn::eval::profile_counters();
+                println!(
+                    "    NN_PROFILE game forwards={} inference_ms={} elapsed_ms={}",
+                    fw - fw0,
+                    (ns - ns0) / 1_000_000,
+                    t_start.elapsed().as_millis()
+                );
+            }
         }
     }
 
+    if botbowl_nn::eval::profile_enabled() {
+        let (fw, ns) = botbowl_nn::eval::profile_counters();
+        let (forwards, nanos) = (fw - fw0, ns - ns0);
+        let wall_ms = t_start.elapsed().as_secs_f64() * 1e3;
+        let total_ms = nanos as f64 / 1e6;
+        let mean_us = if forwards > 0 { nanos as f64 / forwards as f64 / 1e3 } else { 0.0 };
+        println!(
+            "NN_PROFILE forwards={forwards} total_ms={total_ms:.0} mean_us={mean_us:.0} \
+wall_ms={wall_ms:.0} share={:.3} games={written} forwards_per_game={:.0} \
+forwards_per_decision={:.1}",
+            if wall_ms > 0.0 { total_ms / wall_ms } else { 0.0 },
+            if written > 0 { forwards as f64 / written as f64 } else { 0.0 },
+            if total_samples > 0 { forwards as f64 / total_samples as f64 } else { 0.0 },
+        );
+    }
+
+    if let Some((served, fell_back)) = nn.as_ref().and_then(|n| n.remote_stats()) {
+        println!(
+            "NN_SERVER served={served} fell_back_to_tract={fell_back}{}",
+            if fell_back > 0 { "  <-- the server was unreachable for some forwards" } else { "" }
+        );
+    }
     println!(
         "wrote {written} trajectories / {total_samples} samples to {} (commit {}{})",
         args.out,

@@ -224,6 +224,12 @@ pub struct DatasetArgs {
     /// Path to a frozen ONNX model (required with --evaluator nn).
     #[arg(long)]
     pub model: Option<String>,
+    /// Unix socket of a batched inference sidecar (`scripts/nn_server.py`,
+    /// plan 024). Unset (the default) means tract on the CPU, exactly as
+    /// before; falls back to tract if the server is unreachable. Env
+    /// fallback: BLOOD_NN_SERVER (the repo's BLOOD_* convention).
+    #[arg(long)]
+    pub nn_server: Option<String>,
 }
 
 /// Report-card evaluation of one candidate bot (plan 020).
@@ -235,6 +241,12 @@ pub struct EvalArgs {
     /// Path to a frozen ONNX model (required with --evaluator nn/nn-value).
     #[arg(long)]
     pub model: Option<String>,
+    /// Unix socket of a batched inference sidecar (`scripts/nn_server.py`,
+    /// plan 024). Unset (the default) means tract on the CPU, exactly as
+    /// before; falls back to tract if the server is unreachable. Env
+    /// fallback: BLOOD_NN_SERVER (the repo's BLOOD_* convention).
+    #[arg(long)]
+    pub nn_server: Option<String>,
     /// Candidate search iterations per move.
     #[arg(long, default_value_t = 1000)]
     pub mcts_iters: usize,
@@ -304,6 +316,16 @@ pub struct EvalArgs {
     /// side-relative scores and who kicked off in half 1 (plan 023).
     #[arg(long)]
     pub per_game_out: Option<String>,
+}
+
+/// Resolve the inference-sidecar socket: the `--nn-server` flag, else the
+/// `BLOOD_NN_SERVER` env var (the repo's `BLOOD_*` convention), else
+/// `None` — which keeps tract-on-CPU the default everywhere.
+pub fn nn_server_path(flag: Option<&str>) -> Option<std::path::PathBuf> {
+    flag.map(str::to_string)
+        .or_else(|| std::env::var("BLOOD_NN_SERVER").ok())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

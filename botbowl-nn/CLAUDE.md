@@ -30,6 +30,16 @@ Exhaustive matches pin `PosAT → 0..14`, `SimpleAT → 14..30`. Adding an engin
 
 `NnEvaluator::from_path` loads ONNX; the model has dynamic `H`/`W`, so we build one tract runnable **per `(H,W)`** on first use and cache it (board dims are constant per game → one entry). `priors(state, &actions)` = one forward, gather per-legal-action logits (positional cell / simple channel-max), softmax in Rust, **rescale ×`len`** so mean prior ≈ 1.0. `value_home_i64(state)` = mover-centric `v`, clamped to `[-1,1]`, sign-flipped Home-centric, **×1000** (matches `leaf_score`'s TD = ±1000). A frozen deterministic CPU net is a **pure function of state** → recombination-safe. The ×1000 and ×K rescales are calibration bridges coupled to `PUCT_C`/`leaf_score` in `botbowl-mcts`.
 
+## remote (`remote.rs`) — the batched sidecar backend (plan 024)
+
+`NnEvaluator` has two backends. **tract is the default and the numerics reference**; `Backend::Remote` forwards to `scripts/nn_server.py` over a Unix socket and **always carries a tract fallback**, so an absent/dead/wedged server makes a shard *slow*, never broken (one `NN_SERVER_FALLBACK` warning, count printed at exit). Turn it on with `--nn-server PATH` on `dataset`/`eval`, or `BLOOD_NN_SERVER`; unset ⇒ byte-identical to before, no GPU, no new Cargo dependency, works on a Mac.
+
+- `forward_raw` (+ the value-only sibling) is the **single dispatch point** — `priors`, `value_home_i64` and both `botbowl-mcts/src/dynamics.rs` call sites are untouched and nothing is async. `value_home_i64` sets `want_policy = false`, cutting the response from 17 KB to 4 B (that's the generator's whole traffic).
+- **The canary handshake is a safety interlock, not a smoke test.** A connection is bound to one model; the server returns *that model's* result on the committed `parity_9x16_*` fixture and the client compares to its own tract answer at `< 1e-3`, aborting the process on mismatch. Serving the wrong weights is otherwise undetectable — it produces a plausible corpus, or a plausible promotion-gate verdict, labelled with the wrong net. The `model_id` echo check on every request is the second, independent guard.
+- One connection per (thread, evaluator) via `thread_local!`, so the client is `Sync` without a lock and the eval phase's two nets share one socket without cross-talk.
+- Numerics: torch-CUDA vs tract agree to ~1e-5 in practice; the contract is `< 1e-3` for remote-vs-tract and `< 1e-5` for batch invariance (`tests/remote.rs`). `tests/parity.rs` keeps its 1e-4 tract-vs-PyTorch assertion **unchanged** — tract is still the reference.
+- `BLOOD_NN_PROFILE=1` prints `NN_PROFILE forwards=… share=…` per game and at exit: the forward counter that measured the 85% inference share behind plan 024.
+
 ## Parity fixture
 
 `tests/fixtures/tiny.onnx` + `parity_{h}x{w}_*.npy` are **committed** (built by `train/src/bbnn/fixture.py`). `tests/parity.rs` (not `#[ignore]`d) asserts tract == PyTorch to `< 1e-4` at two board sizes — this is what de-risks tract op coverage (Expand/Shape broadcast, ReduceMean, BN fold, dynamic axes). Rebuild the fixture after any `model.py` architecture change: `cd train && uv run python -m bbnn.fixture`.

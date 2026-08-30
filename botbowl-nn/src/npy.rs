@@ -101,6 +101,12 @@ impl Npy {
 pub fn read(path: impl AsRef<Path>) -> io::Result<Npy> {
     let mut buf = Vec::new();
     File::open(path)?.read_to_end(&mut buf)?;
+    parse(&buf)
+}
+
+/// Parse `.npy` v1.0 bytes already in memory (used for the canary
+/// fixture, which is `include_bytes!`-embedded in the remote client).
+pub fn parse(buf: &[u8]) -> io::Result<Npy> {
     if buf.len() < 10 || &buf[..6] != MAGIC {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a .npy file"));
     }

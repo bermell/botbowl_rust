@@ -161,12 +161,20 @@ fn candidate_label(args: &EvalArgs) -> String {
 
 /// Load the ONNX evaluator an nn/nn-value bot needs; `None` otherwise.
 /// `missing_msg` is the error when the model path flag wasn't given.
-fn load_nn(evaluator: CliEvaluator, model: Option<&str>, missing_msg: &str) -> io::Result<Option<Arc<NnEvaluator>>> {
+fn load_nn(
+    evaluator: CliEvaluator,
+    model: Option<&str>,
+    missing_msg: &str,
+    server: Option<&std::path::Path>,
+) -> io::Result<Option<Arc<NnEvaluator>>> {
     match evaluator {
         CliEvaluator::Nn | CliEvaluator::NnValue => {
             let path = model
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, missing_msg.to_string()))?;
-            let eval = NnEvaluator::from_path(path)
+            // Each evaluator names its own model at handshake and gets its
+            // own canary, so the candidate and the champion can share one
+            // socket with no chance of being cross-wired.
+            let eval = NnEvaluator::from_path_with_server(path, server)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("failed to load {path}: {e}")))?;
             Ok(Some(Arc::new(eval)))
         }
@@ -291,10 +299,12 @@ fn run_ladder_rung(
 }
 
 pub fn run(args: EvalArgs) -> io::Result<()> {
+    let server = crate::cli::nn_server_path(args.nn_server.as_deref());
     let nn = load_nn(
         args.evaluator,
         args.model.as_deref(),
         "--evaluator nn/nn-value requires --model PATH",
+        server.as_deref(),
     )?;
     // Load the --vs-evaluator opponent's net up front so a bad path fails
     // before hours of fixed-rung games.
@@ -303,6 +313,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             vs,
             args.vs_model.as_deref(),
             "--vs-evaluator nn/nn-value requires --vs-model PATH",
+            server.as_deref(),
         )?,
         None => None,
     };
