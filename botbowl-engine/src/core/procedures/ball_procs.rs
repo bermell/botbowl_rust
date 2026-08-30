@@ -298,7 +298,9 @@ impl Procedure for Touchback {
                 // `NeedAction` would deadlock every consumer, so drop the
                 // ball in the middle of the receiving half and let it
                 // bounce from there.
-                let aim = game_state.get_best_kickoff_aim_for(team);
+                // `get_best_kickoff_aim_for` takes the *kicking* team; `team` here is
+                // the receiver, so passing it aimed at the wrong half (plan 023 B1).
+                let aim = game_state.get_best_kickoff_aim_for(game_state.info.kicking_this_drive);
                 game_state.set_ball(BallState::InAir(aim));
                 return ProcState::DoneNew(Bounce::new());
             }
@@ -324,7 +326,11 @@ impl Procedure for Touchdown {
             if carrier_id == self.id {
                 game_state.get_mut_team_from_player(self.id).unwrap().score += 1;
                 game_state.get_mut_player_unsafe(self.id).used = true;
-                game_state.info.kickoff_by_team = Some(other_team(game_state.get_player_unsafe(self.id).stats.team));
+                // The scoring team kicks off to its opponent. Setting this to
+                // the conceding team makes scoring self-reinforcing (the scorer
+                // receives again), which compounds any per-kickoff edge into a
+                // large win-rate gap — plan 023 B2.
+                game_state.info.kickoff_by_team = Some(game_state.get_player_unsafe(self.id).stats.team);
             }
         }
 
@@ -621,10 +627,21 @@ mod tests {
         let mut proc = Touchback {};
         let result = proc.step(&mut state, ProcInput::Nothing);
 
-        let aim = state.get_best_kickoff_aim_for(TeamType::Away);
+        // Assert the *property* the test is named for. This previously computed
+        // its expectation as `get_best_kickoff_aim_for(TeamType::Away)` — the
+        // receiving team — which is the same argument mix-up the production code
+        // had (the function takes the *kicking* team), so it asserted the ball
+        // landed in the KICKING team's half while claiming to check the
+        // receiving one. See plan 023 B1.
+        let expected = state.get_best_kickoff_aim_for(TeamType::Home); // Home kicks
         assert!(
-            matches!(state.ball, BallState::InAir(pos) if pos == aim),
-            "ball must be dropped at the receiving half's aim square, got {:?}",
+            matches!(state.ball, BallState::InAir(pos) if pos == expected),
+            "ball must be dropped at the receiving half's aim square ({expected:?}), got {:?}",
+            state.ball
+        );
+        assert!(
+            matches!(state.ball, BallState::InAir(pos) if state.board_dims.is_on_team_side(pos, TeamType::Away)),
+            "Away receives, so the ball must land in Away's half, got {:?}",
             state.ball
         );
         assert!(

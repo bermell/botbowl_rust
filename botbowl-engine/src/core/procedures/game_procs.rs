@@ -602,7 +602,11 @@ mod tests {
     #[test]
     fn start_of_game() {
         // Pins the full-board kickoff dice script (scatter up 5, fixed bounce
-        // landing at (23, 2)); only meaningful on the default 28x17 pitch.
+        // landing at (22, 2)); only meaningful on the default 28x17 pitch.
+        // The landing moved one column (23 -> 22) when the Away kickoff aim was
+        // corrected from 21 to 20 (the mirror of Home's 7) — plan 023 B1. This
+        // is a golden-value pin of a dice script, so a one-column shift here is
+        // the expected consequence of that fix, not a regression.
         crate::skip_if_board_smaller_than!(28, 17);
         let mut state: GameState = GameStateBuilder::new_start_of_game();
 
@@ -638,7 +642,7 @@ mod tests {
 
         let ball_pos = state.get_ball_position().unwrap();
         assert!(matches!(state.ball, BallState::OnGround(_)));
-        assert_eq!(ball_pos, Position::new((23, 2)));
+        assert_eq!(ball_pos, Position::new((22, 2)));
     }
     #[test]
     fn turn_order() -> Result<()> {
@@ -685,6 +689,31 @@ mod tests {
         assert_eq!(state.away.score, 0);
         assert_eq!(state.get_players_on_pitch().count(), 0);
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
+    }
+
+    /// Real Blood Bowl: the team that just scored kicks off to its opponent.
+    ///
+    /// Getting this backwards makes scoring self-reinforcing — the scorer
+    /// receives again, so possession snowballs and any small per-kickoff edge
+    /// compounds into a large win-rate gap (plan 023 B2).
+    #[test]
+    fn scorer_kicks_off_after_touchdown() {
+        let start_pos = Position::new((2, 1));
+        let td_pos = Position::new((1, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(start_pos)
+            .build();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, td_pos);
+
+        assert_eq!(state.home.score, 1, "Home scored");
+        assert_eq!(
+            state.info.kicking_this_drive,
+            TeamType::Home,
+            "the scoring team kicks off the next drive"
+        );
     }
 
     #[test]

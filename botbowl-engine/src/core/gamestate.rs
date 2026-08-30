@@ -840,12 +840,22 @@ impl GameState {
         }
     }
 
-    pub fn get_best_kickoff_aim_for(&self, team: TeamType) -> Position {
+    /// Where `kicking_team`'s kickoff aims: the centre of the *receiving*
+    /// half. Note the argument is the team that **kicks**, not the receiver.
+    ///
+    /// The Away branch is written as the mirror of the Home one rather than as
+    /// `3w/4`, which is one column too deep at every width divisible by 4 (28
+    /// and 16 included) and gave the two sides materially different kickoffs
+    /// — see plan 023 B1. `w - 1 - w/4` is mirror-symmetric by construction at
+    /// every width, which is the invariant
+    /// `kickoff_aim_is_centre_of_receiving_half_and_mirror_symmetric` pins.
+    pub fn get_best_kickoff_aim_for(&self, kicking_team: TeamType) -> Position {
         let w = self.board_dims.width;
         let mid_y = self.board_dims.height / 2 - 1;
-        match team {
-            TeamType::Home => Position::new((w / 4, mid_y)),
-            TeamType::Away => Position::new((w * 3 / 4, mid_y)),
+        let away_half_centre = w / 4;
+        match kicking_team {
+            TeamType::Home => Position::new((away_half_centre, mid_y)),
+            TeamType::Away => Position::new((w - 1 - away_half_centre, mid_y)),
         }
     }
 
@@ -1719,18 +1729,43 @@ mod gamestate_tests {
         }
     }
 
+    /// The kickoff aim must be the centre of the *receiving* half, and the two
+    /// branches must be exact mirrors of each other.
+    ///
+    /// This asserts the *property*, not the formula. The previous version of
+    /// this test restated `WIDTH_ / 4` and `WIDTH_ * 3 / 4` verbatim, so it
+    /// pinned the off-by-one it was supposed to catch (plan 023 B1): at every
+    /// width divisible by 4, `3w/4` is one column deeper than the mirror of
+    /// `w/4`, which handed the receiving team a systematically different
+    /// kickoff depending on which side it was.
     #[test]
-    fn kickoff_position() {
-        use crate::core::model::{HEIGHT_, WIDTH_};
+    fn kickoff_aim_is_centre_of_receiving_half_and_mirror_symmetric() {
+        use crate::core::model::TeamType;
         let state = GameStateBuilder::new().build();
+        let dims = state.board_dims;
+        let home_kicks = state.get_best_kickoff_aim_for(TeamType::Home);
+        let away_kicks = state.get_best_kickoff_aim_for(TeamType::Away);
+
+        assert_eq!(home_kicks.y, away_kicks.y, "both aims sit on the same row");
         assert_eq!(
-            state.get_best_kickoff_aim_for(crate::core::model::TeamType::Home),
-            Position::new((WIDTH_ / 4, HEIGHT_ / 2 - 1))
+            away_kicks.x,
+            dims.width - 1 - home_kicks.x,
+            "aims must mirror under x -> width-1-x (got home {} / away {} on width {})",
+            home_kicks.x,
+            away_kicks.x,
+            dims.width
         );
-        assert_eq!(
-            state.get_best_kickoff_aim_for(crate::core::model::TeamType::Away),
-            Position::new((WIDTH_ * 3 / 4, HEIGHT_ / 2 - 1))
+
+        // The ball is kicked *into the receiving team's half*.
+        assert!(
+            dims.is_on_team_side(home_kicks, TeamType::Away),
+            "Home's kick must land in Away's half, got {home_kicks:?}"
         );
+        assert!(
+            dims.is_on_team_side(away_kicks, TeamType::Home),
+            "Away's kick must land in Home's half, got {away_kicks:?}"
+        );
+        assert!(!dims.is_out(home_kicks) && !dims.is_out(away_kicks), "aims are in bounds");
     }
 
     #[test]
