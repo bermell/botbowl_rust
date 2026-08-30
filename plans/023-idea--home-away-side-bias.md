@@ -81,6 +81,43 @@ This is **side-symmetric on its own**, so it cannot *cause* a Home bias. It matt
 
 **"`kickoff_by_team` survives the half boundary, giving a duplicate kickoff to open half 2."** Checked and **false**. In `Half::step` (`game_procs.rs`), `self.kickoff = info.kickoff_by_team.take()` runs in the `else` branch *before* the `home_turn == 8 && away_turn == 8` early return, so the flag is cleared and the pending kickoff is discarded with the proc. `Half::new(2)`'s `!started` branch then sets its own single kickoff. No duplicate.
 
+## Result (2026-08-30): the fixes landed, and the bias did NOT move
+
+B1, B1b and B2 are fixed (commit `4ccbce2`, with property tests replacing the two
+tests that had encoded the same mistakes). Two 100-game heuristic-vs-heuristic
+matches run *after* the fixes measure the side split as follows — Home-side wins
+are `wins_as_home + losses_as_away`:
+
+| run | Home | Away | Home share | z | p |
+|---|---|---|---|---|---|
+| pre-fix mirror (this plan) | 57 | 28 | 0.671 | +3.15 | 0.0017 |
+| post-fix, norm c=1 vs raw c=10 | 58 | 29 | **0.667** | +3.11 | 0.0019 |
+| post-fix, raw c=30 vs raw c=10 | 61 | 25 | **0.709** | +3.88 | 0.0001 |
+
+**The kickoff fixes did not reduce the Home advantage at all** (0.671 -> 0.667).
+The `norm c=1` row is the cleaner of the two comparisons: that configuration is a
+dead heat in strength against the baseline (0.517, p=0.75), so it functions as a
+mirror match for side purposes.
+
+Consequences:
+
+- **H1 (the kickoff-aim off-by-one) is refuted as the cause.** It was a real bug —
+  verified by reading and by the Monte-Carlo table above — but it is not what
+  produces the Home advantage. The measured effect it could produce was always
+  small and of ambiguous sign; that caution was warranted.
+- **H-b (a fluke, or an effect much smaller than measured) is now dead.** Three
+  independent runs totalling ~270 games all land at 0.67-0.71 with p <= 0.002.
+  The effect is real and roughly 2:1.
+- B2 remains a genuine rules bug worth having fixed (the scorer now kicks off, so
+  scoring is no longer self-reinforcing) — it just was not the side-bias
+  mechanism, being side-symmetric, exactly as this plan predicted.
+
+**The cheapest next test is now deferred item 3, and it is cheap: a RandomBot
+vs RandomBot full-game mirror.** With no search involved it isolates rules and
+setup asymmetry from bot behaviour entirely, and random bots are fast. If the
+bias survives there, it is purely engine/setup and every search-side hypothesis
+below can be dropped.
+
 ## Open hypotheses and the experiments that would settle them
 
 **H-a — The instrument's pairing shares the coin toss.** MCTS models the coin as always-Heads (`roll_outcomes.rs:33-53` routes `RequestedRoll::Coin` to `scripted_result` → `Coin::Heads` with probability 1.0 at `:214`), so the Away bot's call is *deterministic*, not a tie-break. Both games of a seed-pair therefore share the coin result, the toss winner, and **who receives** — so the Home/Away split is confounded with the receiving side, on 50 coin draws rather than 100. Quantitatively **insufficient** to explain the effect on its own (it would need Home to have received in ~35-45 of 50 seeds, a 2.8-5.6σ deviation for a fair coin), but it widens the error bars.
