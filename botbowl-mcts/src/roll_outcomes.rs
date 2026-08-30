@@ -53,12 +53,27 @@ pub fn enumerate(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
 }
 
 /// The single scripted throw-in child, picked so the ball lands **in
-/// bounds**. A constant (direction, distance) can land straight back out
-/// on small boards; the engine then re-requests the roll from the new
-/// boundary square, and on a 3-row pitch those re-request states oscillate
-/// between two positions — identical states recur and the search DAG gets
-/// a genuine cycle (recon_mcts panics). Reading the `ThrowIn` proc's data
-/// keeps this a pure function of `state`, same as `bounce_outcomes`.
+/// bounds** and so that the choice *mirrors with the board*.
+///
+/// The in-bounds part is load-bearing for termination: a constant
+/// (direction, distance) can land straight back out on small boards; the
+/// engine then re-requests the roll from the new boundary square, and on a
+/// 3-row pitch those re-request states oscillate between two positions —
+/// identical states recur and the search DAG gets a genuine cycle
+/// (recon_mcts panics).
+///
+/// The *direction* part is plan 023's H-c. The old pick walked the D3
+/// values in order and took the first that stayed in bounds; the engine's
+/// table (`ThrowIn::get_throw_in_direction`) lists `D3::One` first, which
+/// on a y-sideline is `(1, ±1)` — so both bots believed sideline throw-ins
+/// always travel toward +x, i.e. always toward Away's end zone. That is a
+/// modelling assumption in *board* coordinates: it flatters one side's
+/// plans and punishes the other's. Preferring the axis-aligned throw
+/// instead (`dx == 0`, else `dy == 0`) is invariant under
+/// `x -> width-1-x`, so the modelled throw-in mirrors with the position.
+///
+/// Reading the `ThrowIn` proc's data keeps this a pure function of
+/// `state`, same as `bounce_outcomes`.
 fn throw_in_outcome(state: &GameState) -> BbAction {
     let scripted = |direction, distance| BbAction::chance(RollResult::ThrowIn { direction, distance }, 1.0);
     let Some(AnyProc::ThrowIn(throw_in)) = state.proc_stack_peek() else {
@@ -70,13 +85,27 @@ fn throw_in_outcome(state: &GameState) -> BbAction {
     // in bounds on any legal board (straight-in exists in every direction
     // triple and the playable cross-axis is ≥ 3).
     for distance in [Sum2D6::Two, Sum2D6::Three, Sum2D6::Four] {
-        for direction in [D3::One, D3::Two, D3::Three] {
-            if !state.is_out(throw_in.target_square(direction, distance, state.board_dims)) {
-                return scripted(direction, distance);
-            }
+        let pick = [D3::One, D3::Two, D3::Three]
+            .into_iter()
+            .filter(|&direction| !state.is_out(throw_in.target_square(direction, distance, state.board_dims)))
+            .min_by_key(|&direction| axis_rank(throw_in.get_throw_in_direction(direction, state.board_dims)));
+        if let Some(direction) = pick {
+            return scripted(direction, distance);
         }
     }
     scripted(D3::One, Sum2D6::Two)
+}
+
+/// Ranks a direction by how axis-aligned it is, preferring `dx == 0`.
+/// Both `dx == 0` and `dy == 0` map onto themselves as *classes* under
+/// `x -> width-1-x`, so a choice made with this key mirrors with the
+/// board, unlike one made in `ALL_DIRECTIONS` / `D3` order (plan 023 H-c).
+fn axis_rank(dir: Direction) -> u8 {
+    match (dir.dx == 0, dir.dy == 0) {
+        (true, _) => 0,
+        (_, true) => 1,
+        _ => 2,
+    }
 }
 
 /// The single scripted D8 outcome (bounce/scatter direction "up"), used
@@ -147,7 +176,7 @@ fn bounce_outcomes(state: &GameState) -> Vec<BbAction> {
         for d8 in empty {
             outcomes.push(BbAction::chance(RollResult::D8(d8), P_EACH));
         }
-        if let Some(&rep) = oob.first() {
+        if let Some(rep) = oob_representative(&oob) {
             outcomes.push(BbAction::chance(RollResult::D8(rep), P_EACH * oob.len() as f32));
         }
     } else {
@@ -169,6 +198,27 @@ fn bounce_outcomes(state: &GameState) -> Vec<BbAction> {
 
     renormalize(&mut outcomes);
     outcomes
+}
+
+/// The single direction that stands for "the ball went out here".
+///
+/// The collapse itself is deliberate (we only care that a throw-in
+/// happens, not which edge it crossed) but the *choice* of representative
+/// is not free: it fixes the square the throw-in is taken from. The old
+/// `oob.first()` took it in `ALL_DIRECTIONS` order, which starts with
+/// `dx = +1` — so a ball leaving by the left wall was modelled as exiting
+/// diagonally while its mirror image at the right wall exited straight
+/// out. That is a modelling assumption in *board* coordinates, and it
+/// biases the search for one side (plan 023, H-c).
+///
+/// Preferring the axis-aligned exit fixes it: `dx == 0` (straight out over
+/// a sideline) is invariant under `x -> width-1-x`, and `dy == 0` maps
+/// onto itself under the same reflection, so the representative always
+/// mirrors with the position. A rectangular board's out-of-bounds set
+/// always contains one of the two, so the fallback is unreachable in
+/// practice.
+fn oob_representative(oob: &[D8]) -> Option<D8> {
+    oob.iter().min_by_key(|d8| axis_rank(Direction::from(**d8))).copied()
 }
 
 /// Scale the probabilities of a set of chance children so they sum to 1,
@@ -388,7 +438,9 @@ mod tests {
     }
 
     /// All out-of-bounds directions collapse into a *single* throw-in
-    /// child whose probability is weighted by how many rolls go OOB.
+    /// child whose probability is weighted by how many rolls go OOB — and
+    /// the representative is the axis-aligned exit, not `ALL_DIRECTIONS`'
+    /// first (plan 023, H-c: that one always leaned +x).
     #[test]
     fn bounce_collapses_out_of_bounds_into_one_child() {
         // Ball against the left wall (x == 1): the three left-ward
@@ -404,6 +456,7 @@ mod tests {
         assert_eq!(oob.len(), 1, "3 OOB directions must collapse to 1 child, got {:?}", targets);
         assert_eq!(targets.len(), 6, "5 empty squares + 1 collapsed OOB");
         assert!(probs_sum_to_one(&outcomes));
+        assert_eq!(*oob[0], Position::new((0, 5)), "the representative must be the straight-out exit");
 
         // The collapsed child carries 3/8 (three OOB rolls), the settling
         // children 1/8 each — no renormalisation needed since 5/8+3/8 = 1.
@@ -413,6 +466,31 @@ mod tests {
             .and_then(|a| a.prob_f32())
             .unwrap();
         assert!((oob_prob - 3.0 / 8.0).abs() < 1e-5, "expected 3/8 for OOB, got {}", oob_prob);
+    }
+
+    /// The set of children must be mirror-invariant: reflecting the ball
+    /// across the pitch's long axis must reflect the outcome set exactly.
+    /// `oob.first()` failed this — it preferred +x at both walls.
+    #[test]
+    fn bounce_outcomes_are_mirror_invariant() {
+        let mirror = |p: Position, w: Coord| Position::new((w - 1 - p.x, p.y));
+        let mut state = GameStateBuilder::new().build();
+        let w = state.board_dims.width;
+
+        let left = Position::new((1, 5));
+        state.set_ball(BallState::InAir(left));
+        let mut left_targets: Vec<Position> = target_squares(&bounce_outcomes(&state), left)
+            .into_iter()
+            .map(|p| mirror(p, w))
+            .collect();
+
+        let right = mirror(left, w);
+        state.set_ball(BallState::InAir(right));
+        let mut right_targets = target_squares(&bounce_outcomes(&state), right);
+
+        left_targets.sort_by_key(|p| (p.x, p.y));
+        right_targets.sort_by_key(|p| (p.x, p.y));
+        assert_eq!(left_targets, right_targets);
     }
 
     /// When the ball can settle, squares occupied by players are dropped
@@ -515,13 +593,16 @@ mod tests {
         );
     }
 
-    /// The scripted throw-in must resolve in one roll. If it lands out of
+    /// Every throw-in child must resolve in one roll. If one lands out of
     /// bounds the engine re-requests the roll from the new boundary square,
-    /// and under a deterministic scripted pick those re-request states
-    /// oscillate between two positions on a 3-row board — identical states
-    /// recur and the search DAG gets a genuine cycle (recon_mcts panics).
+    /// and those re-request states oscillate between two positions on a
+    /// 3-row board — identical states recur and the search DAG gets a
+    /// genuine cycle (recon_mcts panics). The children must also cover the
+    /// whole in-bounds D3 triple uniformly, not just its first member:
+    /// `D3::One` is `(1, ±1)` on a y-sideline, so preferring it made both
+    /// bots believe throw-ins always travel toward +x (plan 023, H-c).
     #[test]
-    fn throw_in_scripted_outcome_lands_in_bounds_on_small_board() {
+    fn throw_in_outcome_lands_in_bounds_and_mirrors() {
         use botbowl_engine::core::model::BoardDims;
 
         // Runtime 10x5 board (playable 8x3, the smallest training tier).
@@ -547,6 +628,18 @@ mod tests {
         let outcomes = enumerate(&state, &RequestedRoll::ThrowIn);
         assert_eq!(outcomes.len(), 1, "throw-in stays a single scripted child");
         assert!(probs_sum_to_one(&outcomes));
+
+        // Mirror-invariance: the modelled throw-in must be the straight-in
+        // one (dx == 0 off a y-sideline), not `D3::One`'s +x diagonal.
+        let RollResult::ThrowIn { direction, .. } = result_of(&outcomes[0]) else {
+            panic!("expected a ThrowIn result")
+        };
+        let Some(AnyProc::ThrowIn(throw_in)) = state.proc_stack_peek() else {
+            panic!("expected to be mid-throw-in")
+        };
+        let dir = throw_in.get_throw_in_direction(direction, state.board_dims);
+        assert_eq!(dir.dx, 0, "throw-in direction leans along x: {dir:?}");
+
         state.step_with_roll_or_action(SomeProcInput::Roll(result_of(&outcomes[0])));
         assert_ne!(
             state.pending_roll,

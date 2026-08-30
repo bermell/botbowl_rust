@@ -133,7 +133,11 @@ impl ThrowIn {
     pub fn new(from: Position) -> AnyProc {
         AnyProc::ThrowIn(ThrowIn { from })
     }
-    fn get_throw_in_direction(&self, dice: D3, dims: BoardDims) -> Direction {
+    /// The board direction a throw-in `D3` maps to, given which edge the
+    /// ball left by. Public so MCTS's chance-outcome model can pick a
+    /// *mirror-invariant* representative rather than one in `D3` order
+    /// (plan 023, H-c).
+    pub fn get_throw_in_direction(&self, dice: D3, dims: BoardDims) -> Direction {
         // Last playable column/row of the logical board (index 0 and width-1 /
         // height-1 are the OOB border). Runtime dims → can't be `const` match arms.
         let max_x: Coord = dims.width - 2;
