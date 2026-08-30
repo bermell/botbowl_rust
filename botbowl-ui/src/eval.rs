@@ -31,7 +31,7 @@ use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_mcts::{MctsBot, PuctMode, SearchBudget};
 use botbowl_nn::eval::NnEvaluator;
 
-use crate::cli::{CliEvaluator, EvalArgs};
+use crate::cli::{CliCandidateBot, CliEvaluator, EvalArgs};
 
 /// Max micro-steps per lecture trial (mirrors the curriculum CLI default).
 const LECTURE_MAX_STEPS: u32 = 2000;
@@ -72,6 +72,11 @@ struct LadderRow {
     losses_as_home: u32,
     wins_as_away: u32,
     losses_as_away: u32,
+    /// Side-relative TD totals (not candidate-relative): closes the
+    /// instrument gap noted in plan 023 — `tds_for/against` are pooled over
+    /// both sides and so are balanced by construction in a mirror.
+    tds_by_home: u32,
+    tds_by_away: u32,
 }
 
 #[derive(Serialize, Debug)]
@@ -127,6 +132,16 @@ fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
     )
 }
 
+/// The bot in the candidate seat. `Mcts` is the report card's normal
+/// candidate; the other two exist to take search out of the picture.
+fn make_candidate_bot(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> Box<dyn Bot> {
+    match args.candidate_bot {
+        CliCandidateBot::Mcts => Box::new(make_candidate(args, nn)),
+        CliCandidateBot::Scripted => Box::new(ScriptedBot::new()),
+        CliCandidateBot::Random => Box::new(RandomBot::new()),
+    }
+}
+
 fn evaluator_label(evaluator: CliEvaluator, model: Option<&str>) -> String {
     match evaluator {
         CliEvaluator::Heuristic => "mcts(heuristic)".to_string(),
@@ -137,7 +152,11 @@ fn evaluator_label(evaluator: CliEvaluator, model: Option<&str>) -> String {
 }
 
 fn candidate_label(args: &EvalArgs) -> String {
-    evaluator_label(args.evaluator, args.model.as_deref())
+    match args.candidate_bot {
+        CliCandidateBot::Mcts => evaluator_label(args.evaluator, args.model.as_deref()),
+        CliCandidateBot::Scripted => "scripted".to_string(),
+        CliCandidateBot::Random => "random".to_string(),
+    }
 }
 
 /// Load the ONNX evaluator an nn/nn-value bot needs; `None` otherwise.
@@ -158,12 +177,12 @@ fn load_nn(evaluator: CliEvaluator, model: Option<&str>, missing_msg: &str) -> i
 /// One full game from kickoff. Returns `(candidate_score, opponent_score,
 /// finished)`.
 fn play_game(
-    candidate: &mut MctsBot,
+    candidate: &mut dyn Bot,
     opponent: &mut dyn Bot,
     candidate_team: TeamType,
     seed: u64,
     max_steps: u32,
-) -> (u8, u8, bool) {
+) -> (u8, u8, bool, TeamType) {
     let mut state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
     state.set_seed(seed);
     state.set_dice_mode(DiceMode::RollDice);
@@ -183,7 +202,7 @@ fn play_game(
     }
 
     let (cand, opp) = score_for(&state, candidate_team);
-    (cand, opp, state.info.game_over)
+    (cand, opp, state.info.game_over, state.info.kicking_first_half)
 }
 
 fn score_for(state: &GameState, team: TeamType) -> (u8, u8) {
@@ -203,17 +222,48 @@ fn run_ladder_rung(
         opponent: name.to_string(),
         ..Default::default()
     };
-    let mut candidate = make_candidate(args, nn);
+    let mut candidate = make_candidate_bot(args, nn);
     let mut opponent = make_opponent();
+    // Per-game side-relative record (plan 023 deferred item 5): the pooled
+    // report line cannot distinguish a scoring-rate bias from a
+    // win-conversion one, nor see who received the opening kickoff.
+    let mut per_game = args.per_game_out.as_ref().map(|path| {
+        std::io::BufWriter::new(
+            std::fs::File::options()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("--per-game-out: cannot open"),
+        )
+    });
     for g in 0..args.games {
         // Alternate sides; the seed is shared by the mirrored game `g±1`,
         // so every candidate faces the same situations from both sides.
         let candidate_team = if g % 2 == 0 { TeamType::Home } else { TeamType::Away };
         let seed = args.seed.wrapping_add((g / 2) as u64);
-        let (cand, opp, finished) = play_game(&mut candidate, &mut *opponent, candidate_team, seed, args.max_steps);
+        let (cand, opp, finished, kicking_first_half) =
+            play_game(&mut *candidate, &mut *opponent, candidate_team, seed, args.max_steps);
+        if let Some(w) = per_game.as_mut() {
+            use std::io::Write;
+            let (h, a) = match candidate_team {
+                TeamType::Home => (cand, opp),
+                TeamType::Away => (opp, cand),
+            };
+            writeln!(
+                w,
+                r#"{{"rung":"{name}","game":{g},"seed":{seed},"candidate_team":"{candidate_team:?}","home_score":{h},"away_score":{a},"kicking_first_half":"{kicking_first_half:?}","finished":{finished}}}"#
+            )
+            .expect("per-game log write failed");
+        }
         row.games += 1;
         row.tds_for += cand as u32;
         row.tds_against += opp as u32;
+        let (home_td, away_td) = match candidate_team {
+            TeamType::Home => (cand, opp),
+            TeamType::Away => (opp, cand),
+        };
+        row.tds_by_home += home_td as u32;
+        row.tds_by_away += away_td as u32;
         if !finished {
             row.unfinished += 1;
         }
@@ -262,7 +312,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         eprintln!("== lecture battery ({} trials per cell) ==", args.trials);
         for &(name, difficulty) in available_lectures() {
             let lecture = make_lecture(name, difficulty).expect("available_lectures entry must construct");
-            let mut agent = make_candidate(&args, nn.as_ref());
+            let mut agent = make_candidate_bot(&args, nn.as_ref());
             // Lectures place players at hard-coded full-pitch coordinates;
             // on smaller compiled boards a cell can panic mid-setup. Run
             // the whole cell under catch_unwind (quiet panic hook) and
@@ -270,7 +320,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             let hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(|_| {}));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_trials(&*lecture, &mut agent, args.trials, args.seed, LECTURE_MAX_STEPS)
+                run_trials(&*lecture, &mut *agent, args.trials, args.seed, LECTURE_MAX_STEPS)
             }));
             std::panic::set_hook(hook);
             match result {
@@ -322,19 +372,31 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             args.vs_puct_c.or(args.puct_c),
         );
         if !args.skip_fixed_rungs {
-            ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", || {
-                Box::new(RandomBot::new())
-            }));
-            ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", || {
-                Box::new(ScriptedBot::new())
-            }));
-            ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", || {
-                Box::new(
-                    MctsBot::new(SearchBudget::Iterations(opp_iters))
-                        .with_workers(args.mcts_workers)
-                        .with_puct(opp_puct),
-                )
-            }));
+            let wanted: Vec<&str> = args.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+            for name in &wanted {
+                if !matches!(*name, "random" | "scripted" | "mcts-heuristic") {
+                    panic!("--rungs: expected `random`, `scripted` or `mcts-heuristic`, got `{name}`");
+                }
+            }
+            if wanted.contains(&"random") {
+                ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", || {
+                    Box::new(RandomBot::new())
+                }));
+            }
+            if wanted.contains(&"scripted") {
+                ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", || {
+                    Box::new(ScriptedBot::new())
+                }));
+            }
+            if wanted.contains(&"mcts-heuristic") {
+                ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", || {
+                    Box::new(
+                        MctsBot::new(SearchBudget::Iterations(opp_iters))
+                            .with_workers(args.mcts_workers)
+                            .with_puct(opp_puct),
+                    )
+                }));
+            }
         }
         if let Some(vs) = args.vs_evaluator {
             let label = format!(
@@ -372,7 +434,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
     }
     for r in &report.ladder {
         println!(
-            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}{}",
+            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}",
             r.opponent,
             r.win_rate,
             r.wins,
@@ -384,6 +446,8 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             r.losses_as_away,
             r.tds_for,
             r.tds_against,
+            r.tds_by_home,
+            r.tds_by_away,
             if r.unfinished > 0 {
                 format!("  [{} unfinished]", r.unfinished)
             } else {

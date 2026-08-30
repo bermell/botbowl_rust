@@ -93,6 +93,17 @@ pub enum CliEvaluator {
     NnValue,
 }
 
+/// Which bot plays the *candidate* seat in `eval`. Defaults to the MCTS bot
+/// the report card was built for; `scripted` / `random` exist to take the
+/// search out of the picture entirely (plan 023's side-bias ladder).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
+pub enum CliCandidateBot {
+    #[default]
+    Mcts,
+    Scripted,
+    Random,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Default)]
 pub enum DatasetMode {
     /// MctsBot vs MctsBot, full games. Samples both teams' decisions.
@@ -277,9 +288,22 @@ pub struct EvalArgs {
     /// the --vs-evaluator rung. E.g. mirror matches and promotion gates.
     #[arg(long, default_value_t = false)]
     pub skip_fixed_rungs: bool,
+    /// Which of the fixed rungs to run, comma-separated
+    /// (`random`, `scripted`, `mcts-heuristic`). Lets a mirror match run
+    /// exactly one rung instead of the whole ladder.
+    #[arg(long, default_value = "random,scripted,mcts-heuristic")]
+    pub rungs: String,
+    /// Which bot fills the candidate seat. `scripted`/`random` remove the
+    /// search from the picture (plan 023).
+    #[arg(long, value_enum, default_value_t = CliCandidateBot::Mcts)]
+    pub candidate_bot: CliCandidateBot,
     /// Write the report as JSON here.
     #[arg(long)]
     pub out: Option<String>,
+    /// Append one JSON line per ladder game here: seed, candidate side,
+    /// side-relative scores and who kicked off in half 1 (plan 023).
+    #[arg(long)]
+    pub per_game_out: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
