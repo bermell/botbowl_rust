@@ -126,6 +126,11 @@ fn decide(state: &GameState) -> (Action, Vec<Action>) {
         return (reroll_decision(state), vec![]);
     }
 
+    // "Pick one of your players" prompts — above all the touchback receiver.
+    if let Some(action) = pick_select_position(state) {
+        return (action, vec![]);
+    }
+
     // Push / follow-up — single positional choices.
     if let Some(action) = first_positional_for(state, PosAT::Push) {
         return (action, vec![]);
@@ -270,6 +275,39 @@ fn pick_destination(state: &GameState) -> Option<(Action, Option<Action>)> {
     }
 
     None
+}
+
+/// `PosAT::SelectPosition` — in practice the touchback receiver, i.e. who
+/// starts the drive holding the ball.
+///
+/// This *must* be decided relative to the team's own attacking direction.
+/// `AvailableActions` is sorted ascending by absolute `(x, y)`
+/// (`gamestate.rs`'s `get_all_actions`), so the old fallback ("take the first
+/// legal action") handed the ball to the lowest-x receiver for **both**
+/// teams: the most exposed player for Home, which attacks toward x=0, and the
+/// safest deep player for Away. That single non-mirror-invariant tie-break
+/// was worth a 0.11 / 0.92 swing in the Home win share of a scripted mirror
+/// match (plan 023).
+///
+/// Deepest-carrier is also simply the better play on a small board: a carrier
+/// on the line of scrimmage gets blitzed off the ball on the opponent's first
+/// turn.
+fn pick_select_position(state: &GameState) -> Option<Action> {
+    let team = my_team(state)?;
+    let endzone_x = state.get_endzone_x(team);
+    let los_y = state.board_dims.los_y_range();
+    let center_y = (*los_y.start() + *los_y.end()) / 2;
+    state
+        .get_all_actions()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::Positional(PosAT::SelectPosition, pos) => Some((action, pos)),
+            _ => None,
+        })
+        // Furthest from the endzone we attack, then closest to the centre
+        // row — both mirror-invariant under `x -> width-1-x` + team swap.
+        .max_by_key(|(_, pos)| ((endzone_x - pos.x).abs(), -(center_y - pos.y).abs()))
+        .map(|(action, _)| action)
 }
 
 fn first_positional_for(state: &GameState, at: PosAT) -> Option<Action> {
@@ -619,6 +657,49 @@ mod tests {
             "expected START_BLOCK, got {:?}",
             action
         );
+    }
+
+    /// The touchback receiver must be chosen relative to the team's own
+    /// attacking direction. `AvailableActions` is ordered by absolute
+    /// `(x, y)`, so "first legal action" used to hand Home its most exposed
+    /// player and Away its safest one — worth a 0.11 vs 0.92 Home win share
+    /// in a scripted mirror match (plan 023).
+    #[test]
+    fn touchback_receiver_choice_is_mirror_invariant() {
+        use crate::core::model::{AvailableActions, WIDTH_};
+
+        let dy = crate::core::model::HEIGHT_ / 2;
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((WIDTH_ / 2, dy)))
+            .add_home_player(Position::new((WIDTH_ / 2 + 2, dy)))
+            .add_away_player(Position::new((WIDTH_ / 2 - 1, dy)))
+            .add_away_player(Position::new((WIDTH_ / 2 - 3, dy)))
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+
+        let pick = |state: &mut GameState, team: TeamType| -> Position {
+            let positions: Vec<Position> = state
+                .get_players_on_pitch_in_team(team)
+                .map(|p| p.position)
+                .collect();
+            let mut aa = AvailableActions::new(team);
+            aa.insert_positional(PosAT::SelectPosition, positions);
+            state.available_actions = aa;
+            match decide(state).0 {
+                Action::Positional(PosAT::SelectPosition, pos) => pos,
+                other => panic!("expected a SelectPosition, got {other:?}"),
+            }
+        };
+
+        // Each team must take the receiver *furthest from the endzone it
+        // attacks*: Home attacks x=1, Away attacks x=WIDTH_-2.
+        let home_pick = pick(&mut state, TeamType::Home);
+        let away_pick = pick(&mut state, TeamType::Away);
+        assert_eq!(home_pick, Position::new((WIDTH_ / 2 + 2, dy)));
+        assert_eq!(away_pick, Position::new((WIDTH_ / 2 - 3, dy)));
+        // ...which is exactly the mirror of the other's choice.
+        assert_eq!(away_pick.x, WIDTH_ - 1 - home_pick.x);
+        assert_eq!(away_pick.y, home_pick.y);
     }
 
     /// When the only legal options are EndTurn/EndPlayerTurn, the bot ends the turn cleanly.
