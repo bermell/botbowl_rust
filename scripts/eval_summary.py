@@ -23,12 +23,20 @@ def main() -> int:
     parts = []
     vs_row = None
     for row in r["ladder"]:
+        # Home-*side* wins are wins_as_home + losses_as_away: the two home/away
+        # pairs are the same games counted from the candidate's perspective,
+        # not two independent measurements (plan 023).
+        home_side = row["wins_as_home"] + row["losses_as_away"]
+        away_side = row["losses_as_home"] + row["wins_as_away"]
+        side = ""
+        if "tds_by_home" in row:
+            side = f", side H{home_side}-{away_side} TD {row['tds_by_home']}:{row['tds_by_away']}"
         parts.append(
             f"{row['opponent']} {row['win_rate']:.2f} "
             f"(W{row['wins']} D{row['draws']} L{row['losses']} "
             f"TD {row['tds_for']}:{row['tds_against']}, "
             f"home {row['wins_as_home']}-{row['losses_as_home']} "
-            f"away {row['wins_as_away']}-{row['losses_as_away']})"
+            f"away {row['wins_as_away']}-{row['losses_as_away']}{side})"
         )
         if row["opponent"].startswith("vs:"):
             vs_row = row
