@@ -27,6 +27,44 @@ pub enum Command {
     /// Interactively tune random-start placement biases: space generates a
     /// new state, 1-9 select a bias variable, up/down adjust it, q quits.
     Placement(PlacementArgs),
+    /// Measure how the search output converges with iteration budget, to
+    /// justify `--mcts-iters` (plan 025). Headless, read-only.
+    Convergence(ConvergenceArgs),
+}
+
+/// Re-search the same random-start states at a ladder of iteration budgets and
+/// dump the raw per-child search stats for offline analysis (plan 025).
+#[derive(clap::Args, Debug, Clone)]
+pub struct ConvergenceArgs {
+    /// Number of distinct random-start states to probe.
+    #[arg(long, default_value_t = 50)]
+    pub states: u32,
+    /// Independent repeats per (state, budget) cell. >= 2 is required for the
+    /// run-to-run noise floor that makes the result interpretable.
+    #[arg(long, default_value_t = 3)]
+    pub repeats: u32,
+    /// Strictly increasing iteration budgets; the largest is the reference.
+    #[arg(long, default_value = "100,200,500,1000,2000,4000,8000,16000")]
+    pub budgets: String,
+    /// Base seed for state generation. Keep far from corpus seeds
+    /// (the loop uses 10_000_000 + gen*1e6 + shard*1e5).
+    #[arg(long, default_value_t = 90_000_000)]
+    pub seed: u64,
+    /// Worker threads per search. Keep at 1 to match generation.
+    #[arg(long, default_value_t = 1)]
+    pub mcts_workers: usize,
+    /// Leaf-value source; use the same one generation uses.
+    #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
+    pub evaluator: CliEvaluator,
+    /// ONNX model for --evaluator nn/nn-value.
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Output JSONL path.
+    #[arg(long, default_value = "convergence.jsonl")]
+    pub out: String,
+    /// Random-start placement biases (defaults match generation).
+    #[command(flatten)]
+    pub bias: BiasArgs,
 }
 
 /// Leaf-value source for the MCTS bot during data generation.

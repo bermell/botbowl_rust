@@ -1,6 +1,6 @@
 # How many MCTS iterations does the training data actually need?
 
-**Status:** Proposed (drafted 2026-08-29, while the plan-022 loop runs gen02). Needs the machine idle — it competes directly with generation for CPU. Cheap once it runs: ~40 min at 4-way parallelism for the headline number.
+**Status:** **Run 2026-08-30 — see Results below. The headline outcome is the fourth row of the outcomes table: the noise floor is large, and it *grows* with budget.** (drafted 2026-08-29, while the plan-022 loop runs gen02). Needs the machine idle — it competes directly with generation for CPU. Cheap once it runs: ~40 min at 4-way parallelism for the headline number.
 
 `MCTS_ITERS=1000` has been the generation budget since plan 020 and has never been justified by measurement. It is the single largest lever on generation cost — wall time is very close to linear in it — so being wrong in either direction is expensive:
 
@@ -92,6 +92,31 @@ The 90th percentile, not the median: under-searching a hard state biases its lab
 
 That last row is the one to watch: it is a real possible outcome, not a hedge, and it would redirect the work entirely.
 
+## Implementation note: separate runs, not snapshots (deviation, 2026-08-30)
+
+The plan above specifies snapshotting **one** long search at checkpoints, for
+~2x less compute. The implementation instead re-searches the same state once per
+budget, via the existing public `MctsBot::get_action_with_record`
+(`botbowl-mcts/src/dynamics.rs:1329`). Reasons:
+
+- Snapshotting requires threading a checkpoint sink through `run_search`'s
+  marker macro in `dynamics.rs` — the file that carries the recombination-purity
+  and plan-013 deadlock invariants. Separate runs need **zero** changes to
+  `botbowl-mcts`.
+- The statistical cost is nil *because of how the decision rule is defined*.
+  Signal is measured between independent runs anyway (checkpoint run `i` vs
+  reference run `j`, `i != j`), and so is the floor (reference run `i` vs `j`).
+  Both carry exactly one unit of run-to-run variance, so the crossing point is
+  unbiased. Snapshotting would have made signal *correlated* with the reference
+  (same tree) while the floor stayed independent — which would actually have
+  biased the comparison in favour of early convergence.
+- The compute cost is the sum of the budget ladder rather than its max: 31,800
+  vs 16,000 iterations per (state, repeat), i.e. ~2x. At ~40 min for the whole
+  sweep that is affordable.
+
+The reference budget is **16k** (16x the operating point), not 32k, which keeps
+the sweep inside the ~40 min estimate.
+
 ## Implementation sketch
 
 A new read-only subcommand — `botbowl-ui convergence` — beside `dataset` and `eval` (`botbowl-ui/src/cli.rs`). It should **not** touch `MctsBot`'s production path.
@@ -101,6 +126,91 @@ Per (state, repeat): build the tree once, then step it in segments between check
 Output one JSONL row per (state, repeat, checkpoint) carrying the full `ChildStat` vector, `root_value`, `root_visits`, `root_solved` and the stratification keys. **Persist the raw stats, not just the computed distances** — the metrics above are all recomputable offline from that, and a second question ("what about top-3 agreement?") should not require re-running the search. Analysis in `scripts/` with numpy, matching how `eval_summary.py` already post-processes `report.json`.
 
 **Cost.** ~1.95 ms/iteration under `nn-value` at this tier (2.6 ms/forward × ~0.75 forwards/iteration, both measured — see plan 024). 32k iterations ≈ 62 s per run; 50 states × 3 repeats ≈ 2.6 h single-threaded, **≈ 40 min at 4-way parallelism**. Add the heuristic control at roughly a tenth of that.
+
+## Results (2026-08-30, 52 states x 3 repeats, 14x7, gen01 champion)
+
+Ran both arms: `nn-value` with `bbnet_14x7_gen01.onnx` (48 min) and a `heuristic`
+control (7 min). Raw data in `runs/convergence/`, analysis in
+`scripts/convergence_summary.py`.
+
+**The search does not converge. Run-to-run disagreement *increases* with budget.**
+
+| budget | TV between runs | top-1 agree | peak share | | TV (heur) | top-1 (heur) |
+|---|---|---|---|---|---|---|
+| 100 | 0.193 | 0.59 | 0.449 | | 0.126 | 0.60 |
+| 200 | 0.218 | 0.64 | 0.544 | | 0.179 | 0.56 |
+| **500** | 0.257 | **0.67** | 0.629 | | 0.220 | **0.64** |
+| **1000** *(current)* | 0.287 | 0.65 | 0.667 | | 0.239 | 0.60 |
+| 2000 | 0.339 | 0.56 | 0.664 | | 0.258 | 0.53 |
+| 4000 | 0.308 | 0.57 | 0.686 | | 0.295 | 0.53 |
+| 8000 | 0.329 | 0.54 | 0.716 | | 0.325 | 0.56 |
+| 16000 | 0.383 | 0.55 | 0.742 | | 0.377 | 0.54 |
+
+Read the columns together — that is where the finding is:
+
+- **Peak share rises monotonically** (0.45 -> 0.74): more search concentrates the
+  visit distribution onto a single action. The search gets *more confident*.
+- **Top-1 agreement peaks at ~500 and then falls** (0.67 -> 0.55): it does not
+  get more *right*, it gets more confidently *different*.
+- **TV between independent runs therefore grows** (0.19 -> 0.38).
+
+At 16k, only **21 of 52 states** have all three repeats picking the same top
+action, while the mean peak share is 0.742. Sharper labels, less reproducible.
+
+**It is the search, not the net.** The heuristic control shows the same shape,
+so this is not the gen-0/gen-1 value head being miscalibrated. The mechanism is
+near-tied alternatives plus PUCT's winner-take-all dynamic: with genuinely equal
+values, whichever child takes an early lead accumulates the rest, and the lead is
+decided by `recon_mcts`'s per-process `HashMap` tie-break order (plan 020's
+non-reproducibility gotcha). More iterations *amplify* an arbitrary early lead
+rather than resolving it. This is the mechanism behind plan 020's observation
+that "84.8% of decisions have all-tied children Q".
+
+**The value estimate is stable.** `|dv|` between runs sits at 0.03-0.05 across
+every budget, flat. So the *value* signal is reproducible; only the *policy*
+label is not. Given plan 020 already found the value head to be the bottleneck,
+and the value target is the drive outcome rather than `root_value`, the noisy
+quantity is the one we were least relying on — but it is also the one the policy
+head is trained on directly.
+
+**Zero roots solved** in 52 states at any budget, so the `SolvedRootPolicy` path
+is irrelevant for random-start states at this tier.
+
+### What this means for `MCTS_ITERS`
+
+The original hypothesis — "the distribution converges early, so we are wasting
+compute" — is **refuted, but the conclusion survives in a stronger form**: the
+distribution never converges, and past ~500 iterations extra compute makes the
+policy target *worse* as a training label (equally accurate top-1, more
+confidently wrong, higher variance).
+
+**Recommendation: `MCTS_ITERS` 1000 -> 500.** Top-1 reproducibility is
+equal-or-better (0.67 vs 0.65 nn-value; 0.64 vs 0.60 heuristic), TV noise is
+lower, and generation cost halves. That is a ~2x speedup for a constant change,
+available before any of plan 024's engineering.
+
+**Caveat that this experiment cannot settle:** a lower budget also means weaker
+*play*, so the trajectory distribution changes. Label reproducibility is not the
+only axis. The equal-total-compute ablation below is what decides it; this
+experiment says where to aim it (500 vs 1000, not 4000).
+
+### Follow-up questions this raises
+
+1. **Is tie-breaking the whole story?** If so, a deterministic tie-break (or
+   averaging the visit distribution over k independent short searches) would cut
+   label noise far more cheaply than any budget change. Averaging 2x500 instead
+   of 1x1000 is the same compute and should strictly reduce variance.
+2. **Should the policy target be softened?** A sharp label that is 45% likely to
+   name a different action on a re-run may be worse than an explicitly softened
+   one. Temperature on the visit distribution is a one-line change with a
+   measurable effect on `val_top1`.
+3. **What is the label-noise ceiling on `val_top1`?** Two independent labels
+   agree ~0.65 of the time at 1000 iters. If the label distribution has modal
+   probability `p`, pairwise agreement is `sum p_i^2` and the best achievable
+   predictor accuracy is `max p_i` — so ~0.65 pairwise implies a ceiling
+   somewhere around 0.75-0.80. Training currently reaches `val_top1` ~0.50, so
+   there is real headroom; the net is **not** yet at the ceiling. Worth
+   measuring properly with more repeats before investing in policy-head capacity.
 
 ## Follow-ons this sets up
 

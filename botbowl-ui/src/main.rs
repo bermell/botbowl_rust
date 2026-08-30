@@ -1,3 +1,4 @@
+mod convergence;
 mod curriculum;
 mod dataset;
 mod eval;
@@ -20,5 +21,6 @@ fn main() -> io::Result<()> {
         cli::Command::Dataset(args) => dataset::run(args),
         cli::Command::Eval(args) => eval::run(args),
         cli::Command::Placement(args) => placement::run(args),
+        cli::Command::Convergence(args) => convergence::run(args),
     }
 }
