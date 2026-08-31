@@ -386,6 +386,16 @@ expressed in absolute board coordinates, inside the search this time.
 The `hash` arm is also a **fifth independent replication** of the effect
 itself (0.703, z = +5.3), on fresh seeds and after the B1/B1b/B2/H-c fixes.
 
+Conditioning on the coin toss kills **H-a** outright: both the effect and
+its removal appear independently in each condition, so this is not a
+receive effect and the shared coin within a seed-pair is not doing the work.
+
+| arm | Away kicks first | Home kicks first |
+|---|---|---|
+| `hash` | H62-A23, 0.729 (z = +4.23) | H59-A28, 0.678 (z = +3.32) |
+| `asc` | H40-A44, 0.476 (z = −0.44) | H40-A35, 0.533 (z = +0.58) |
+| `desc` | H61-A23, 0.726 (z = +4.15) | H59-A22, 0.728 (z = +4.11) |
+
 ### The shape of the bracket is not what a naive ordering story predicts
 
 If the shipped `hash` order were an unbiased coin between "early" and
@@ -539,6 +549,9 @@ estimator artefact.
 | tie-break `desc` | −75 |
 | tie-break `mover` (player nodes) | −55 |
 | tie-break `mover` + mirror-covariant chance order | −54 |
+| `virtual_loss=0` **and** tie-break `mover` | −129 |
+| `BLOOD_MCTS_HORIZON=off` | −72 |
+| `BLOOD_MCTS_MEMORY=get` (replay-based DAG equality) | −64 |
 | after the pathfinder fix | −65 (unchanged) |
 
 Three things follow, and they are the sharpest constraints anyone has had
@@ -553,8 +566,9 @@ here:
    The natural reading is that an over-optimistic search plays worse, so
    over-valuing Away's position makes Away play worse.
 3. **A mirror-covariant tie-break does not remove it** (−54 vs −65, and the
-   search's mirrored-root-pick agreement jumps from 48% to 78%), and neither
-   does the pathfinder fix. So ordering is a knob, not the source.
+   search's mirrored-root-pick agreement jumps from 48% to 78% at 200
+   iterations), and neither does the pathfinder fix, the horizon, or the
+   DAG-equality strategy. So ordering is a knob, not the source.
 
 ### What this rules in and out
 
@@ -565,7 +579,10 @@ here:
   source.
 - **Out:** the pathfinder route tie-break (a real bug, fixed, no effect on
   either measurement).
-- **Out:** chance-node sweep order over direction-valued outcomes.
+- **Out:** chance-node sweep order over direction-valued outcomes; the
+  search horizon (`HORIZON=off` gives −72); and `recon_mcts`'s node-equality
+  strategy (`MEMORY=get`, which replays action sequences instead of comparing
+  stored states, gives −64).
 - **In, and now the live lead:** something in the *selection / aggregation*
   layer — PUCT descent, virtual loss, the minimax/expectation backprop, the
   `recon_mcts` DAG and its `HashMap`-ordered children — that treats a
