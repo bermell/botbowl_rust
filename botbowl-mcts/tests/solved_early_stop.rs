@@ -76,7 +76,10 @@ fn run_solved_early_stop(puct: PuctMode) {
     // The exhaustive answer is a touchdown: activate the carrier, then
     // Move onto the endzone column (Q-based pick over a solved tree =
     // exact max).
-    assert_eq!(state.home.score, 1, "the solved search must convert the touchdown; actions: {actions_taken:?}");
+    assert_eq!(
+        state.home.score, 1,
+        "the solved search must convert the touchdown; actions: {actions_taken:?}"
+    );
     assert!(
         actions_taken
             .iter()

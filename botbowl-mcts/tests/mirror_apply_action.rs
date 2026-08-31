@@ -75,7 +75,10 @@ fn search_transitions_are_mirror_invariant() {
 
     // `BB_WALK_N` widens the sweep for a hunt; the committed default keeps
     // the test fast.
-    let n: u32 = std::env::var("BB_WALK_N").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
+    let n: u32 = std::env::var("BB_WALK_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(150);
     for (i, s0) in states(n, 23_040).into_iter().enumerate() {
         let mut s = s0.clone();
         let mut m = mirror_playable(&s0, dims);
@@ -123,7 +126,9 @@ fn search_transitions_are_mirror_invariant() {
 
             let (_, a) = acts.choose(&mut rng).expect("non-empty");
             let Some(am) = mirror_bb_action(dims, a) else { break };
-            let Some(next_s) = gd_s.apply_action(s.clone(), a) else { break };
+            let Some(next_s) = gd_s.apply_action(s.clone(), a) else {
+                break;
+            };
             let Some(next_m) = gd_m.apply_action(m.clone(), &am) else {
                 failures.push(format!("state {i} depth {depth}: mirror rejected {am:?}"));
                 break;
@@ -143,13 +148,18 @@ fn search_transitions_are_mirror_invariant() {
         }
     }
 
-    assert!(steps > 500, "expected a deep sweep, took only {steps} steps over {walks} walks");
+    assert!(
+        steps > 500,
+        "expected a deep sweep, took only {steps} steps over {walks} walks"
+    );
     if !failures.is_empty() {
         let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
         for f in &failures {
-            let kind = f.split(" action ").nth(1).map(|t| {
-                t.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
-            }).unwrap_or_else(|| "<no action>".into());
+            let kind = f
+                .split(" action ")
+                .nth(1)
+                .map(|t| t.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+                .unwrap_or_else(|| "<no action>".into());
             *kinds.entry(kind).or_default() += 1;
         }
         eprintln!("mismatch actions: {kinds:?}");

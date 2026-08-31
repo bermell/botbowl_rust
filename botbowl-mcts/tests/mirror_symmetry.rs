@@ -97,7 +97,11 @@ fn priors_and_pruning_are_mover_relative() {
 fn legal_action_set_mirrors_onto_itself() {
     let dims = tier();
     for (i, s) in states(150, 23_002).into_iter().enumerate() {
-        let mut expected: Vec<EngineAction> = s.get_all_actions().into_iter().map(|a| mirror_action(dims, a)).collect();
+        let mut expected: Vec<EngineAction> = s
+            .get_all_actions()
+            .into_iter()
+            .map(|a| mirror_action(dims, a))
+            .collect();
         let mut actual = s.mirrored().get_all_actions();
         expected.sort();
         actual.sort();
@@ -126,7 +130,6 @@ fn legal_action_set_mirrors_onto_itself() {
 //   cargo test --release -p botbowl-mcts --test mirror_symmetry \
 //       -- --ignored --nocapture
 
-
 fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
     let dims = tier();
     let mut sums: Vec<f64> = Vec::new();
@@ -153,11 +156,19 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
         let mut m = mirror_playable(&s, dims);
         // The rebuild must reproduce the situation exactly, or the two
         // searches are not looking at mirrored problems.
-        assert_eq!(leaf_score(&m), -leaf_score(&s), "state {i}: rebuilt mirror is not the mirror");
+        assert_eq!(
+            leaf_score(&m),
+            -leaf_score(&s),
+            "state {i}: rebuilt mirror is not the mirror"
+        );
         // The rebuild is the instrument; if it is not an exact mirror the
         // measurement below is meaningless. Compare the two states' legal
         // sets, which is the strongest cheap check available.
-        let mut expect: Vec<_> = s.get_all_actions().into_iter().map(|a| mirror_action(dims, a)).collect();
+        let mut expect: Vec<_> = s
+            .get_all_actions()
+            .into_iter()
+            .map(|a| mirror_action(dims, a))
+            .collect();
         let mut got = m.get_all_actions();
         expect.sort();
         got.sort();
@@ -230,7 +241,11 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
     println!("    mover-relative root value: Home {mh:+8.2} ± {seh:.2}   Away {ma:+8.2} ± {sea:.2}");
     for (case, v) in &by_case {
         let (m, se) = stat(v);
-        println!("    {case}: n={:3} mean {m:+8.2} ± {se:.2}  t = {:+.2}", v.len(), m / se);
+        println!(
+            "    {case}: n={:3} mean {m:+8.2} ± {se:.2}  t = {:+.2}",
+            v.len(),
+            m / se
+        );
     }
     for (turn, v) in &by_turn {
         if v.len() < 8 {
@@ -240,7 +255,11 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
         let m = v.iter().sum::<f64>() / n;
         let var = v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1.0);
         let se = (var / n).sqrt();
-        println!("    turn {turn}: n={:3} mean {m:+8.2} ± {se:.2}  t = {:+.2}", v.len(), m / se);
+        println!(
+            "    turn {turn}: n={:3} mean {m:+8.2} ± {se:.2}  t = {:+.2}",
+            v.len(),
+            m / se
+        );
     }
 }
 
@@ -256,7 +275,11 @@ fn y_control_at_budget(iters: usize, n: u32, seed: u64) {
     let mut mirrored_pick = 0usize;
     for (i, mut s) in states(n, seed).into_iter().enumerate() {
         let mut m = mirror_y_playable(&s, dims);
-        assert_eq!(leaf_score(&m), leaf_score(&s), "state {i}: y-flip changed the leaf score");
+        assert_eq!(
+            leaf_score(&m),
+            leaf_score(&s),
+            "state {i}: y-flip changed the leaf score"
+        );
         assert_eq!(
             mirror_y_fingerprint(&s, dims),
             fingerprint(&m),
@@ -299,7 +322,10 @@ fn y_control_at_budget(iters: usize, n: u32, seed: u64) {
 fn search_side_bias_by_budget() {
     // `BB_MIRROR_N` / `BB_MIRROR_BUDGETS` shrink the run for a smoke test
     // on a busy machine.
-    let n: u32 = std::env::var("BB_MIRROR_N").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+    let n: u32 = std::env::var("BB_MIRROR_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
     let budgets: Vec<usize> = match std::env::var("BB_MIRROR_BUDGETS") {
         Ok(v) => v.split(',').filter_map(|b| b.trim().parse().ok()).collect(),
         Err(_) => vec![200, 1000],

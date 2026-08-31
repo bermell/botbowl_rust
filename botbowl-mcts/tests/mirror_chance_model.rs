@@ -88,7 +88,11 @@ fn distribution(actions: &[botbowl_mcts::BbAction], mirror: bool) -> Option<Vec<
 #[test]
 fn enumerated_roll_outcomes_are_mirror_invariant() {
     let cases = pending_roll_states(150, 23_030);
-    assert!(cases.len() > 200, "expected plenty of chance nodes, got {}", cases.len());
+    assert!(
+        cases.len() > 200,
+        "expected plenty of chance nodes, got {}",
+        cases.len()
+    );
     let mut checked = 0usize;
     let mut skipped = 0usize;
     let mut by_kind: std::collections::BTreeMap<String, usize> = Default::default();
@@ -125,7 +129,10 @@ fn enumerated_roll_outcomes_are_mirror_invariant() {
 fn the_sweep_reaches_direction_rolls() {
     let cases = pending_roll_states(150, 23_031);
     let has = |p: fn(&RequestedRoll) -> bool| cases.iter().any(|(_, r)| p(r));
-    assert!(has(|r| matches!(r, RequestedRoll::D8)), "no bounce/D8 rolls in the sweep");
+    assert!(
+        has(|r| matches!(r, RequestedRoll::D8)),
+        "no bounce/D8 rolls in the sweep"
+    );
     assert!(
         cases
             .iter()

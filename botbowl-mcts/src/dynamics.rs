@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use botbowl_data::{ChildStat, Sample};
 use botbowl_engine::bots::Bot;
-use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::dices::RollResult;
+use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, Coord, SomeProcInput, TeamType};
 use botbowl_engine::core::table::{PosAT, SimpleAT};
 use botbowl_nn::eval::NnEvaluator;
@@ -518,6 +518,34 @@ fn player_for_state(state: &GameState) -> BbPlayer {
     }
 }
 
+/// The tag `available_actions` attaches to each returned action must name
+/// the player who owns the *resulting* node (recon_mcts's contract — see
+/// `tests/nim/lib.rs::available_actions`, which tags every action with the
+/// *other* player, never the current one). Plan 023: this was tagging every
+/// action with the current node's own mover (chance outcomes always
+/// `BbPlayer::Chance`, player actions always the acting team), which is
+/// only an accident of "the same team usually keeps moving" — it is wrong
+/// the instant an action resolves into a pending roll, a turnover, or (for
+/// a chance outcome) a genuine follow-up decision like a push square. That
+/// wrong tag then feeds `select_node`'s `home_perspective` and
+/// `backprop_scores`'s `want_max` *directly*, silently mis-evaluating
+/// exactly whichever physical side is `TeamType::Home` in that instance —
+/// the search would sometimes minimise a Home decision or maximise an Away
+/// one. Determining the true tag costs one extra `apply_action` per
+/// candidate (state is cheap to clone relative to correctness here, and
+/// `make_branch` was going to apply it again anyway) — accepted per this
+/// repo's "bot capability over performance" priority.
+fn peek_mover(dynamics: &BloodBowlDynamics, state: &GameState, action: &BbAction) -> BbPlayer {
+    match dynamics.apply_action(state.clone(), action) {
+        Some(next) => player_for_state(&next),
+        // `apply_action` only returns `None` for a move that turns out to
+        // be illegal once actually resolved (pathfinding etc.) — recon_mcts
+        // treats that as "not really an action" and never scores this
+        // node, so the tag is moot; `Chance` is the conservative default.
+        None => BbPlayer::Chance,
+    }
+}
+
 impl GameDynamics for BloodBowlDynamics {
     type Player = BbPlayer;
     type State = GameState;
@@ -548,18 +576,20 @@ impl GameDynamics for BloodBowlDynamics {
             }
         }
 
-        // Chance node: enumerate roll outcomes.
+        // Chance node: enumerate roll outcomes. Each outcome is tagged
+        // with *its own resulting node's* mover, not `Chance` — see
+        // `peek_mover`. Most rolls (scripted/collapsed) resolve into the
+        // same team's next decision or a pending follow-up roll; only the
+        // true pass/fail branches and turnover-causing failures actually
+        // change it, and only `peek_mover` knows which.
         if state.pending_roll.is_some() {
             let outcomes = roll_outcomes::enumerate(state, state.pending_roll.as_ref().unwrap());
-            return Some(outcomes.into_iter().map(|a| (BbPlayer::Chance, a)).collect());
+            return Some(outcomes.into_iter().map(|a| (peek_mover(self, state, &a), a)).collect());
         }
 
-        // Player node: copy engine's available actions.
-        let team = state.available_actions.team?;
-        let mcts_player = match team {
-            TeamType::Home => BbPlayer::Home,
-            TeamType::Away => BbPlayer::Away,
-        };
+        // Player node: copy engine's available actions. `team` only gates
+        // presence here — each action's own tag comes from `peek_mover`.
+        state.available_actions.team?;
         // Block-die picks and other scripted player decisions are
         // resolved inside `apply_action`'s quiescent-advance loop
         // (see `scripted::scripted_player_pick`), so MCTS never sees
@@ -600,10 +630,18 @@ impl GameDynamics for BloodBowlDynamics {
             }
             Evaluator::Nn(nn) => nn.priors(state, &filtered),
         };
+        // Tagged with the *resulting* node's mover (see `peek_mover`), not
+        // `mcts_player` (this node's own mover) — most actions keep the
+        // same team moving, but an action that resolves straight into a
+        // pending roll, a turnover, or `EndTurn` hands the tag to `Chance`
+        // or the other team instead.
         let actions: Vec<(BbPlayer, BbAction)> = filtered
             .into_iter()
             .zip(priors)
-            .map(|(a, prior)| (mcts_player, BbAction::player(a, prior)))
+            .map(|(a, prior)| {
+                let bb_action = BbAction::player(a, prior);
+                (peek_mover(self, state, &bb_action), bb_action)
+            })
             .collect();
         if actions.is_empty() {
             None
@@ -808,7 +846,11 @@ impl GameDynamics for BloodBowlDynamics {
         // For `TieBreak::Mover`: the endzone the side to move is attacking.
         let tie_frame = MoverFrame::for_team(
             parent_node_state,
-            if home_perspective { TeamType::Home } else { TeamType::Away },
+            if home_perspective {
+                TeamType::Home
+            } else {
+                TeamType::Away
+            },
         );
         // FPU (first-play urgency): unexplored children are estimated at
         // the parent's own Q, seen from the descending player's side. See
@@ -953,7 +995,12 @@ impl GameDynamics for BloodBowlDynamics {
                         BbAction::Chance { result, .. } => canonical_chance_key(result),
                         BbAction::Player { .. } => String::new(),
                     };
-                    (key, q.visits.load(Ordering::Relaxed), a.prob_f32().unwrap_or(0.0) as f64, q.score)
+                    (
+                        key,
+                        q.visits.load(Ordering::Relaxed),
+                        a.prob_f32().unwrap_or(0.0) as f64,
+                        q.score,
+                    )
                 })
                 .collect();
             terms.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2041,8 +2088,14 @@ mod tests {
         use botbowl_engine::core::dices::{D6Target, RequestedRoll, RollResult};
         use botbowl_engine::core::gamestate::GameStateBuilder;
         use botbowl_engine::core::model::Position;
-        const TEST_HOME_FRAME: MoverFrame = MoverFrame { endzone_x: 1, attacking_dx: -1 };
-        const TEST_AWAY_FRAME: MoverFrame = MoverFrame { endzone_x: 14, attacking_dx: 1 };
+        const TEST_HOME_FRAME: MoverFrame = MoverFrame {
+            endzone_x: 1,
+            attacking_dx: -1,
+        };
+        const TEST_AWAY_FRAME: MoverFrame = MoverFrame {
+            endzone_x: 14,
+            attacking_dx: 1,
+        };
 
         let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
         state.pending_roll = Some(RequestedRoll::D6PassFail(D6Target::TwoPlus));
@@ -2129,7 +2182,10 @@ mod tests {
         let score = dynamics
             .score_leaf(None, &BbPlayer::Home, &state)
             .expect("player-decision leaf must be scored");
-        assert_eq!(score.score, 0, "no score change since anchor → 0, regardless of scoreline");
+        assert_eq!(
+            score.score, 0,
+            "no score change since anchor → 0, regardless of scoreline"
+        );
 
         // In-horizon chance node: still expanded-not-scored (plan 018).
         let mut pending = state.clone();
@@ -2139,10 +2195,16 @@ mod tests {
         // Home TD since the anchor → +1000; Away TD → -1000.
         let mut home_td = pending.clone();
         home_td.home.score += 1;
-        assert_eq!(dynamics.score_leaf(None, &BbPlayer::Chance, &home_td).unwrap().score, 1000);
+        assert_eq!(
+            dynamics.score_leaf(None, &BbPlayer::Chance, &home_td).unwrap().score,
+            1000
+        );
         let mut away_td = pending;
         away_td.away.score += 2; // clamp: multi-TD delta still ±1000
-        assert_eq!(dynamics.score_leaf(None, &BbPlayer::Chance, &away_td).unwrap().score, -1000);
+        assert_eq!(
+            dynamics.score_leaf(None, &BbPlayer::Chance, &away_td).unwrap().score,
+            -1000
+        );
     }
 
     #[test]
@@ -2261,8 +2323,18 @@ mod tests {
     /// inverts every Away selection.
     #[test]
     fn normalised_puct_mirrors_for_away_player() {
-        let a = BbScore { visits: AtomicU32::new(10), score: 50, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
-        let b = BbScore { visits: AtomicU32::new(10), score: -50, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+        let a = BbScore {
+            visits: AtomicU32::new(10),
+            score: 50,
+            node_kind: BbPlayer::Home,
+            virtual_loss: AtomicI32::new(0),
+        };
+        let b = BbScore {
+            visits: AtomicU32::new(10),
+            score: -50,
+            node_kind: BbPlayer::Home,
+            virtual_loss: AtomicI32::new(0),
+        };
 
         // Home frame: lo=-50, hi=+50 after the flip (identity).
         let fh = QFrame::new(-50.0, 50.0, 1.0, 0.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
@@ -2291,10 +2363,7 @@ mod tests {
             for (alpha, beta) in [(1i64, 0i64), (2, 1000), (8, -700)] {
                 let mut picks = Vec::new();
                 for scale in [false, true] {
-                    let scores: Vec<i64> = base
-                        .iter()
-                        .map(|q| if scale { alpha * q + beta } else { *q })
-                        .collect();
+                    let scores: Vec<i64> = base.iter().map(|q| if scale { alpha * q + beta } else { *q }).collect();
                     let flip = |q: i64| if home { q as f32 } else { -(q as f32) };
                     let lo = scores.iter().map(|q| flip(*q)).fold(f32::INFINITY, f32::min);
                     let hi = scores.iter().map(|q| flip(*q)).fold(f32::NEG_INFINITY, f32::max);
@@ -2304,7 +2373,12 @@ mod tests {
                         .zip(priors.iter())
                         .enumerate()
                         .map(|(i, (q, p))| {
-                            let sc = BbScore { visits: AtomicU32::new(7), score: *q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                            let sc = BbScore {
+                                visits: AtomicU32::new(7),
+                                score: *q,
+                                node_kind: BbPlayer::Home,
+                                virtual_loss: AtomicI32::new(0),
+                            };
                             (i, puct_value_normalised(Some(&sc), 100.0, *p, home, lo, &frame))
                         })
                         .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
@@ -2312,7 +2386,10 @@ mod tests {
                         .0;
                     picks.push(best);
                 }
-                assert_eq!(picks[0], picks[1], "home={home} alpha={alpha} beta={beta}: argmax moved under affine rescaling");
+                assert_eq!(
+                    picks[0], picks[1],
+                    "home={home} alpha={alpha} beta={beta}: argmax moved under affine rescaling"
+                );
             }
         }
     }
@@ -2331,14 +2408,23 @@ mod tests {
                 .zip(priors.iter())
                 .enumerate()
                 .map(|(i, (q, p))| {
-                    let sc = BbScore { visits: AtomicU32::new(1), score: alpha * q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                    let sc = BbScore {
+                        visits: AtomicU32::new(1),
+                        score: alpha * q,
+                        node_kind: BbPlayer::Home,
+                        virtual_loss: AtomicI32::new(0),
+                    };
                     (i, puct_value(Some(&sc), 100.0, *p, true, 0.0, PUCT_C))
                 })
                 .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
                 .unwrap()
                 .0
         };
-        assert_ne!(pick(1), pick(100), "Raw was expected to be scale-sensitive — if this fails the control is broken, not the code");
+        assert_ne!(
+            pick(1),
+            pick(100),
+            "Raw was expected to be scale-sensitive — if this fails the control is broken, not the code"
+        );
     }
 
     /// The floor stops a node whose children differ only by positional drift
@@ -2359,7 +2445,12 @@ mod tests {
                     // Q term is what apportions further visits. At 1 visit the
                     // bonus swamps everything in both regimes and the test
                     // measures nothing.
-                    let sc = BbScore { visits: AtomicU32::new(50), score: *q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                    let sc = BbScore {
+                        visits: AtomicU32::new(50),
+                        score: *q,
+                        node_kind: BbPlayer::Home,
+                        virtual_loss: AtomicI32::new(0),
+                    };
                     (i, puct_value_normalised(Some(&sc), 400.0, *p, true, lo, &frame))
                 })
                 .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
@@ -2367,7 +2458,11 @@ mod tests {
                 .0
         };
         // Drift-sized spread (below the 50 floor): the prior should still lead.
-        assert_eq!(pick([6, 3, 0]), 2, "below the floor, a 6-point spread must not out-vote a 10x prior");
+        assert_eq!(
+            pick([6, 3, 0]),
+            2,
+            "below the floor, a 6-point spread must not out-vote a 10x prior"
+        );
         // Real spread: Q leads despite the weaker prior.
         assert_eq!(pick([600, 300, 0]), 0, "above the floor, a 600-point lead must win");
     }
@@ -2379,14 +2474,27 @@ mod tests {
     fn normalised_virtual_loss_is_a_fixed_fraction_of_the_range() {
         for (lo, hi) in [(0.0f32, 6.0f32), (0.0, 1058.0)] {
             let frame = QFrame::new(lo, hi, 1.0, lo, 1.0, DEFAULT_Q_RANGE_FLOOR, DEFAULT_VIRTUAL_LOSS);
-            let mk = |vl: i32| BbScore { visits: AtomicU32::new(5), score: hi as i64, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(vl) };
+            let mk = |vl: i32| BbScore {
+                visits: AtomicU32::new(5),
+                score: hi as i64,
+                node_kind: BbPlayer::Home,
+                virtual_loss: AtomicI32::new(vl),
+            };
             let v0 = puct_value_normalised(Some(&mk(0)), 100.0, 1.0, true, lo, &frame);
             let v1 = puct_value_normalised(Some(&mk(1)), 100.0, 1.0, true, lo, &frame);
             let v3 = puct_value_normalised(Some(&mk(3)), 100.0, 1.0, true, lo, &frame);
-            assert!((v0 - v1 - 0.1).abs() < 1e-5, "range {lo}..{hi}: one VL should cost 0.1, got {}", v0 - v1);
+            assert!(
+                (v0 - v1 - 0.1).abs() < 1e-5,
+                "range {lo}..{hi}: one VL should cost 0.1, got {}",
+                v0 - v1
+            );
             // Accumulates linearly and is NOT re-clamped, so concurrent
             // descents past the first stay visible.
-            assert!((v0 - v3 - 0.3).abs() < 1e-5, "range {lo}..{hi}: three VL should cost 0.3, got {}", v0 - v3);
+            assert!(
+                (v0 - v3 - 0.3).abs() < 1e-5,
+                "range {lo}..{hi}: three VL should cost 0.3, got {}",
+                v0 - v3
+            );
         }
     }
 
@@ -2396,7 +2504,15 @@ mod tests {
     fn normalised_frame_degenerate_cases() {
         let priors = [1.0f32, 10.0, 0.2];
         // No scored sibling: lo=+inf, hi=-inf -> frame anchors on fpu.
-        let frame = QFrame::new(f32::INFINITY, f32::NEG_INFINITY, priors.iter().sum(), 525.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
+        let frame = QFrame::new(
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            priors.iter().sum(),
+            525.0,
+            1.0,
+            DEFAULT_Q_RANGE_FLOOR,
+            0,
+        );
         assert!(frame.denom >= DEFAULT_Q_RANGE_FLOOR && frame.denom.is_finite());
         let norm_pick = priors
             .iter()
@@ -2417,7 +2533,12 @@ mod tests {
         // All children equal (range 0) and a single child: finite, no NaN.
         for (lo, hi) in [(42.0f32, 42.0f32), (7.0, 7.0)] {
             let f = QFrame::new(lo, hi, 1.0, lo, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
-            let sc = BbScore { visits: AtomicU32::new(3), score: lo as i64, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+            let sc = BbScore {
+                visits: AtomicU32::new(3),
+                score: lo as i64,
+                node_kind: BbPlayer::Home,
+                virtual_loss: AtomicI32::new(0),
+            };
             let v = puct_value_normalised(Some(&sc), 100.0, 1.0, true, lo, &f);
             assert!(v.is_finite(), "range {lo}..{hi} produced {v}");
             assert!((f.norm(lo) - 0.0).abs() < 1e-6);
@@ -2429,8 +2550,14 @@ mod tests {
     #[test]
     fn normalised_fpu_outside_child_range_is_clamped() {
         let frame = QFrame::new(0.0, 100.0, 11.0, 10_000.0, 1.0, DEFAULT_Q_RANGE_FLOOR, 0);
-        assert!((frame.norm(10_000.0) - 1.0).abs() < 1e-6, "fpu above hi must clamp to 1.0");
-        assert!((frame.norm(-9_000.0) - 0.0).abs() < 1e-6, "fpu below lo must clamp to 0.0");
+        assert!(
+            (frame.norm(10_000.0) - 1.0).abs() < 1e-6,
+            "fpu above hi must clamp to 1.0"
+        );
+        assert!(
+            (frame.norm(-9_000.0) - 0.0).abs() < 1e-6,
+            "fpu below lo must clamp to 0.0"
+        );
         // What clamping actually buys: a stale-high parent Q confers *no* Q
         // advantage over the best explored sibling. Both land on 1.0, so the
         // Q terms cancel and only priors and visits separate them.
@@ -2442,7 +2569,10 @@ mod tests {
             (frame.norm(10_000.0) - frame.norm(100.0)).abs() < 1e-6,
             "a stale-high fpu must not outrank the best explored sibling on Q"
         );
-        assert!((10_000.0 - frame.lo) / frame.denom > 50.0, "fixture must be genuinely stale for the clamp to matter");
+        assert!(
+            (10_000.0 - frame.lo) / frame.denom > 50.0,
+            "fixture must be genuinely stale for the clamp to matter"
+        );
 
         // NOTE deliberately not asserted: that an explored child outranks an
         // unexplored one here. With the self-consistent `fpu == hi` that
@@ -2469,7 +2599,12 @@ mod tests {
                 .zip(priors.iter())
                 .enumerate()
                 .map(|(i, (q, p))| {
-                    let sc = BbScore { visits: AtomicU32::new(4), score: *q, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+                    let sc = BbScore {
+                        visits: AtomicU32::new(4),
+                        score: *q,
+                        node_kind: BbPlayer::Home,
+                        virtual_loss: AtomicI32::new(0),
+                    };
                     (i, puct_value_normalised(Some(&sc), 100.0, *p, true, 0.0, &frame))
                 })
                 .max_by(|(_, x), (_, y)| x.partial_cmp(y).unwrap())
@@ -2491,7 +2626,12 @@ mod tests {
             (0, 7, 1.0, 1000.0, -50.0),
             (1058, 512, 10.0, 16000.0, 1058.0),
         ] {
-            let s = BbScore { visits: AtomicU32::new(visits), score, node_kind: BbPlayer::Home, virtual_loss: AtomicI32::new(0) };
+            let s = BbScore {
+                visits: AtomicU32::new(visits),
+                score,
+                node_kind: BbPlayer::Home,
+                virtual_loss: AtomicI32::new(0),
+            };
             let parent_term = parent_visits.max(1.0).sqrt();
             let expected_some = (score as f32 - 0.0) + PUCT_C * prior * parent_term / (1.0 + visits as f32);
             let expected_none = fpu + PUCT_C * prior * parent_term;
@@ -2517,8 +2657,14 @@ mod tests {
     #[test]
     fn tie_break_is_directional_on_engine_action_order() {
         use botbowl_engine::core::model::Position;
-        const TEST_HOME_FRAME: MoverFrame = MoverFrame { endzone_x: 1, attacking_dx: -1 };
-        const TEST_AWAY_FRAME: MoverFrame = MoverFrame { endzone_x: 14, attacking_dx: 1 };
+        const TEST_HOME_FRAME: MoverFrame = MoverFrame {
+            endzone_x: 1,
+            attacking_dx: -1,
+        };
+        const TEST_AWAY_FRAME: MoverFrame = MoverFrame {
+            endzone_x: 14,
+            attacking_dx: 1,
+        };
         use botbowl_engine::core::table::PosAT;
         use std::cmp::Ordering;
 
@@ -2533,16 +2679,31 @@ mod tests {
 
         // `max_by` keeps the greatest, so the preferred action must
         // compare `Greater`.
-        assert_eq!(TieBreak::Asc.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Greater);
+        assert_eq!(
+            TieBreak::Asc.cmp_actions(&low, &high, TEST_HOME_FRAME),
+            Ordering::Greater
+        );
         assert_eq!(TieBreak::Asc.cmp_actions(&high, &low, TEST_HOME_FRAME), Ordering::Less);
         assert_eq!(TieBreak::Desc.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Less);
-        assert_eq!(TieBreak::Desc.cmp_actions(&high, &low, TEST_HOME_FRAME), Ordering::Greater);
-        assert_eq!(TieBreak::Hash.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Equal);
+        assert_eq!(
+            TieBreak::Desc.cmp_actions(&high, &low, TEST_HOME_FRAME),
+            Ordering::Greater
+        );
+        assert_eq!(
+            TieBreak::Hash.cmp_actions(&low, &high, TEST_HOME_FRAME),
+            Ordering::Equal
+        );
         // `Mover` is the mirror-covariant rule: with Home's endzone at x=1
         // the low-x action is nearer, so it wins; with Away's endzone at
         // x=14 the same comparison flips. That flip is the whole point.
-        assert_eq!(TieBreak::Mover.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Greater);
-        assert_eq!(TieBreak::Mover.cmp_actions(&low, &high, TEST_AWAY_FRAME), Ordering::Less);
+        assert_eq!(
+            TieBreak::Mover.cmp_actions(&low, &high, TEST_HOME_FRAME),
+            Ordering::Greater
+        );
+        assert_eq!(
+            TieBreak::Mover.cmp_actions(&low, &high, TEST_AWAY_FRAME),
+            Ordering::Less
+        );
 
         // Chance outcomes carry no board coordinates, so no rule orders
         // them — their order has no side meaning.

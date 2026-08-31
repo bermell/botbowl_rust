@@ -148,21 +148,21 @@ fn search_mirrors_exactly_at_budget_5() {
     run_at_budget(5, 40, 24_100);
 }
 
-/// Known-open residual (plan 023, 2026-08-31 "exact equivariance" result):
-/// fails at state 13 of this seed, `StartBlock (9,6)` vs its mirror
-/// `StartBlock (6,6)`, q = -523 vs -522 (root value -522 vs +522 — the sign
-/// negation itself is exact, only this one child's magnitude is off by
-/// one). Every other root child (`StartMove` ×3, `StartBlitz` ×3, `EndTurn`)
-/// matches exactly. `RequestedRoll::BlockDice` collapses to one scripted
-/// `Pow` outcome (`roll_outcomes::enumerate`), so it is not a chance-node
-/// fan-out artefact — the divergence is somewhere in the subtree *below*
-/// the block resolution (pushback square choice, armor/injury rolls, or the
-/// next chance node down that path), not yet localised further. Ignored so
-/// `cargo test --workspace` stays green; rerun with `--ignored` to
-/// reproduce. See `debug_state_13_budget_20` for the harness that isolates
-/// it.
+/// Was a known-open residual (plan 023, 2026-08-31 "exact equivariance"
+/// result): failed at state 13, `StartBlock (9,6)` vs its mirror
+/// `StartBlock (6,6)`, q = -523 vs -522. Root-caused (2026-08-31, part 2):
+/// `available_actions` was tagging every returned action with the *current*
+/// node's own mover (chance outcomes always `BbPlayer::Chance`, player
+/// actions always the acting team) instead of the *resulting* node's mover,
+/// per recon_mcts's actual contract (`tests/nim/lib.rs` tags every action
+/// with the *other* player). That wrong tag fed `select_node`'s
+/// `home_perspective` and `backprop_scores`'s `want_max` directly — e.g. the
+/// state right after `StartBlock (9,6)`'s roll resolves to `Pow`, where the
+/// next real decision (the push square) is Home's own choice, was tagged
+/// `Chance` and evaluated as if it were Away's, silently minimising instead
+/// of maximising. Fixed via `peek_mover` (one extra `apply_action` per
+/// candidate to read the true resulting mover). Green since.
 #[test]
-#[ignore]
 fn search_mirrors_exactly_at_budget_20() {
     run_at_budget(20, 40, 24_100);
 }

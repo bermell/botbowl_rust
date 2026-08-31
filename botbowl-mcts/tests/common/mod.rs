@@ -13,7 +13,9 @@
 use botbowl_curriculum::random_start::{generate_random_start, RandomStartConfig};
 use botbowl_engine::core::dices::{RollResult, D8};
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
-use botbowl_engine::core::model::{other_team, Action as EngineAction, BallState, BoardDims, Direction, Position, TeamType};
+use botbowl_engine::core::model::{
+    other_team, Action as EngineAction, BallState, BoardDims, Direction, Position, TeamType,
+};
 use botbowl_engine::core::table::SimpleAT;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -113,7 +115,10 @@ pub fn mirror_playable(s: &GameState, dims: BoardDims) -> GameState {
     // kicking team, not from `GameInfo`. Leave it and the mirrored state
     // gives its mover two consecutive turns.
     let kicking = s.kicking_this_half().expect("a half is in progress");
-    assert!(m.set_kicking_this_half(other_team(kicking)), "mirror has no started half");
+    assert!(
+        m.set_kicking_this_half(other_team(kicking)),
+        "mirror has no started half"
+    );
     m.set_dice_mode(DiceMode::RollDice);
     m
 }
@@ -238,7 +243,7 @@ fn render(s: &GameState, mirror: Option<(BoardDims, Axis)>) -> String {
         _ => (s.home, s.away),
     };
     let ball = match s.ball {
-        BallState::Carried(id) => format!("Carried({})", player_ref(Some(id)).unwrap()),  // carrier is fielded by invariant
+        BallState::Carried(id) => format!("Carried({})", player_ref(Some(id)).unwrap()), // carrier is fielded by invariant
         BallState::OnGround(p) => format!("OnGround({:?})", pos(p)),
         BallState::InAir(p) => format!("InAir({:?})", pos(p)),
         BallState::OffPitch => "OffPitch".to_string(),

@@ -453,10 +453,19 @@ mod tests {
         let targets = target_squares(&outcomes, ball_pos);
 
         let oob: Vec<_> = targets.iter().filter(|p| state.is_out(**p)).collect();
-        assert_eq!(oob.len(), 1, "3 OOB directions must collapse to 1 child, got {:?}", targets);
+        assert_eq!(
+            oob.len(),
+            1,
+            "3 OOB directions must collapse to 1 child, got {:?}",
+            targets
+        );
         assert_eq!(targets.len(), 6, "5 empty squares + 1 collapsed OOB");
         assert!(probs_sum_to_one(&outcomes));
-        assert_eq!(*oob[0], Position::new((0, 5)), "the representative must be the straight-out exit");
+        assert_eq!(
+            *oob[0],
+            Position::new((0, 5)),
+            "the representative must be the straight-out exit"
+        );
 
         // The collapsed child carries 3/8 (three OOB rolls), the settling
         // children 1/8 each — no renormalisation needed since 5/8+3/8 = 1.
@@ -465,7 +474,11 @@ mod tests {
             .find(|a| matches!(result_of(a), RollResult::D8(d8) if state.is_out(ball_pos + Direction::from(d8))))
             .and_then(|a| a.prob_f32())
             .unwrap();
-        assert!((oob_prob - 3.0 / 8.0).abs() < 1e-5, "expected 3/8 for OOB, got {}", oob_prob);
+        assert!(
+            (oob_prob - 3.0 / 8.0).abs() < 1e-5,
+            "expected 3/8 for OOB, got {}",
+            oob_prob
+        );
     }
 
     /// The set of children must be mirror-invariant: reflecting the ball
