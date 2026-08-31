@@ -513,7 +513,13 @@ mod tests {
             PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
             PositionOrEvent::Position(Position::new((3, 1))),
             PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
-            PositionOrEvent::Position(Position::new((3, 2))),
+            // (4,2) and (3,2) are interchangeable here — same probability,
+            // same events, same remaining movement — so which one the
+            // pathfinder returns is decided by `expand_node`'s direction
+            // order. That order is now oriented by the mover's attacking
+            // direction so route choice mirrors with the board (plan 023);
+            // the probability below is the assertion that carries meaning.
+            PositionOrEvent::Position(Position::new((4, 2))),
             PositionOrEvent::Position(Position::new((4, 3))),
             PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
             PositionOrEvent::Position(Position::new((4, 4))),
@@ -576,7 +582,12 @@ mod tests {
     fn handoff_failed_catch_bounces_from_receiver_square() {
         let start_pos = Position::new((2, 1));
         let target_pos = Position::new((5, 5));
-        let bounce_dir = Direction::up();
+        // Away from the thrower: the handing player walks up to a square
+        // adjacent to the receiver, and a bounce onto *that* square would be
+        // caught rather than settling, which is not what this test is about.
+        // (Which adjacent square it stops on depends on the pathfinder's
+        // direction order — see `Direction::all_directions_toward`.)
+        let bounce_dir = Direction::down();
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
             .add_home_player(target_pos)

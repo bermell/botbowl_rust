@@ -16,41 +16,20 @@
 //! * `prior_for` and `should_prune` are exactly mover-relative,
 //! * the legal-action set mirrors onto itself.
 
-use botbowl_curriculum::random_start::{generate_random_start, RandomStartConfig};
-use botbowl_engine::core::gamestate::GameState;
-use botbowl_engine::core::model::{Action as EngineAction, BoardDims, Position};
+mod common;
+
+use botbowl_engine::bots::Bot;
+use botbowl_engine::core::model::{other_team, Action as EngineAction};
 use botbowl_mcts::pruning::should_prune;
 use botbowl_mcts::score::leaf_score;
-use botbowl_mcts::{priors, BbAction};
+use botbowl_mcts::{priors, BbAction, MctsBot, SearchBudget};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
-/// The 14x7 curriculum tier (engine 16x9), which every plan-023 mirror
-/// measurement was taken on. Pinned here rather than read from the
-/// environment so the property holds on any build.
-fn tier() -> BoardDims {
-    BoardDims::new(16, 9, 4)
-}
-
-fn states(n: u32, seed: u64) -> Vec<GameState> {
-    let cfg = RandomStartConfig {
-        board_dims: Some(tier()),
-        ..Default::default()
-    };
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    (0..n).map(|_| generate_random_start(&cfg, &mut rng)).collect()
-}
-
-fn flip(dims: BoardDims, p: Position) -> Position {
-    Position::new((dims.width - 1 - p.x, p.y))
-}
-
-fn mirror_action(dims: BoardDims, a: EngineAction) -> EngineAction {
-    match a {
-        EngineAction::Positional(at, pos) => EngineAction::Positional(at, flip(dims, pos)),
-        simple => simple,
-    }
-}
+use common::{
+    fingerprint, mirror_action, mirror_fingerprint, mirror_playable, mirror_y_action, mirror_y_fingerprint,
+    mirror_y_playable, states, tier,
+};
 
 /// `mirrored` must be its own inverse on everything it claims to cover;
 /// otherwise the tests below could pass against a map that quietly loses
@@ -147,62 +126,6 @@ fn legal_action_set_mirrors_onto_itself() {
 //   cargo test --release -p botbowl-mcts --test mirror_symmetry \
 //       -- --ignored --nocapture
 
-use botbowl_engine::bots::Bot;
-use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameStateBuilder};
-use botbowl_engine::core::model::{other_team, BallState, TeamType};
-use botbowl_engine::core::table::SimpleAT;
-use botbowl_mcts::{MctsBot, SearchBudget};
-
-/// Rebuild `s` reflected and team-swapped, through the builder, so the
-/// result has a valid procedure stack and can be played.
-fn mirror_playable(s: &GameState, dims: BoardDims) -> GameState {
-    let ball_pos = match s.ball {
-        BallState::Carried(id) => s.get_player(id).expect("carrier exists").position,
-        BallState::OnGround(p) | BallState::InAir(p) => p,
-        BallState::OffPitch => panic!("random starts always have the ball on the pitch"),
-    };
-    let mut builder = GameStateBuilder::new();
-    builder
-        .with_board_dims(dims)
-        .set_state(BuilderState::Turn { turn: 1 })
-        .add_ball_pos(flip(dims, ball_pos));
-    for p in s.get_players_on_pitch() {
-        let pos = flip(dims, p.position);
-        match p.stats.team {
-            TeamType::Home => builder.add_away_player(pos),
-            TeamType::Away => builder.add_home_player(pos),
-        };
-    }
-    let mut m = builder.build();
-    m.set_logging_state(false);
-    // The builder hands turn 1 to Home; the mirror's mover is the swap of
-    // `s`'s, so pass the turn on when `s` had Home to move.
-    if s.available_actions.team == Some(TeamType::Home) {
-        m.step_simple(SimpleAT::EndTurn);
-    }
-    m.info.home_turn = s.info.away_turn;
-    m.info.away_turn = s.info.home_turn;
-    if s.info.half == 2 {
-        m.set_half(2);
-    }
-    m.home.score = s.away.score;
-    m.away.score = s.home.score;
-    // Random starts never run a coin toss, so both of these sit at their
-    // constructed default for *both* states — which would leave the pair
-    // agreeing on who kicked instead of mirroring it. The engine reads
-    // them at the half boundary, which a turn-8 search reaches.
-    m.info.kicking_first_half = other_team(s.info.kicking_first_half);
-    m.info.kicking_this_drive = other_team(s.info.kicking_this_drive);
-    // The one that actually matters, and the one that is easiest to miss:
-    // `Half::step` decides who takes the next team turn from *its own*
-    // copy of the kicking team, not from `GameInfo`. Leave it alone and the
-    // mirrored state gives its mover two consecutive turns — worth roughly
-    // -57 leaf-score points of spurious "side bias" when measured.
-    let kicking = s.kicking_this_half().expect("a half is in progress");
-    assert!(m.set_kicking_this_half(other_team(kicking)), "mirror has no started half");
-    m.set_dice_mode(DiceMode::RollDice);
-    m
-}
 
 fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
     let dims = tier();
@@ -233,6 +156,16 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
             m.kicking_this_half().map(other_team),
             s.kicking_this_half(),
             "state {i}: rebuilt mirror does not mirror the turn order"
+        );
+        // The strongest check available: the rebuild must agree with the
+        // engine's own `mirrored()` on everything a search can read. Four
+        // "symmetric by inspection" claims have already turned out false in
+        // plan 023, so the instrument validates itself rather than being
+        // argued for.
+        assert_eq!(
+            mirror_fingerprint(&s, dims),
+            fingerprint(&m),
+            "state {i}: rebuilt mirror differs from the mirror of s"
         );
         s.set_seed(1000 + i as u64);
         m.set_seed(1000 + i as u64);
@@ -275,6 +208,52 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
     }
 }
 
+/// The y-reflection control for [`side_bias_at_budget`]. Same estimator,
+/// same states, but the symmetry used swaps nothing between the teams — so
+/// under it the expected statistic is `root_home(flip_y(s)) - root_home(s)`
+/// = 0 with no sign flip anywhere. If this row is ~0 while the x row is
+/// not, the x row is measuring a genuine Home/Away asymmetry rather than a
+/// property of the estimator.
+fn y_control_at_budget(iters: usize, n: u32, seed: u64) {
+    let dims = tier();
+    let mut diffs: Vec<f64> = Vec::new();
+    let mut mirrored_pick = 0usize;
+    for (i, mut s) in states(n, seed).into_iter().enumerate() {
+        let mut m = mirror_y_playable(&s, dims);
+        assert_eq!(leaf_score(&m), leaf_score(&s), "state {i}: y-flip changed the leaf score");
+        assert_eq!(
+            mirror_y_fingerprint(&s, dims),
+            fingerprint(&m),
+            "state {i}: the y-flipped rebuild is not the y-flip of s"
+        );
+        s.set_seed(1000 + i as u64);
+        m.set_seed(1000 + i as u64);
+        let mut bot_s = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(1);
+        let mut bot_m = MctsBot::new(SearchBudget::Iterations(iters)).with_workers(1);
+        bot_s.set_seed(ChaCha8Rng::seed_from_u64(7000 + i as u64));
+        bot_m.set_seed(ChaCha8Rng::seed_from_u64(7000 + i as u64));
+        let (a_s, rec_s) = bot_s.get_action_with_record(&s);
+        let (a_m, rec_m) = bot_m.get_action_with_record(&m);
+        if let (Some(vs), Some(vm)) = (rec_s.root_value, rec_m.root_value) {
+            diffs.push((vm - vs) as f64);
+        }
+        if mirror_y_action(dims, a_s) == a_m {
+            mirrored_pick += 1;
+        }
+    }
+    let n = diffs.len() as f64;
+    let mean = diffs.iter().sum::<f64>() / n;
+    let var = diffs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    let se = (var / n).sqrt();
+    println!(
+        "Y-CONTROL budget {iters:5}  n={:4}  mean(root_home(flip_y s) - root_home(s)) = {mean:+8.2} \
+         ± {se:.2} (se)  t = {:+.2}   mirrored root pick {mirrored_pick}/{}",
+        diffs.len(),
+        mean / se,
+        diffs.len()
+    );
+}
+
 /// Diagnostic, not an assertion: prints the search's side bias at two
 /// budgets. Plan 023's mirror-match effect is budget-dependent (0.53 at
 /// 200 iterations, 0.67 at 1000), so the two rows are the interesting
@@ -291,5 +270,8 @@ fn search_side_bias_by_budget() {
     };
     for iters in budgets {
         side_bias_at_budget(iters, n, 23_010);
+        if std::env::var("BB_MIRROR_Y").is_ok() {
+            y_control_at_budget(iters, n, 23_010);
+        }
     }
 }

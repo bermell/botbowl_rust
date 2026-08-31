@@ -281,9 +281,40 @@ const ALL_DIRECTIONS: [Direction; 8] = [
     Direction { dx: 0, dy: -1 },
     Direction { dx: -1, dy: -1 },
 ];
+/// `ALL_DIRECTIONS` reflected in x. Used by the pathfinder for players
+/// attacking the low-x endzone — see [`Direction::all_directions_toward`].
+const ALL_DIRECTIONS_MIRRORED: [Direction; 8] = [
+    Direction { dx: -1, dy: 1 },
+    Direction { dx: 0, dy: 1 },
+    Direction { dx: 1, dy: 1 },
+    Direction { dx: -1, dy: 0 },
+    Direction { dx: 1, dy: 0 },
+    Direction { dx: -1, dy: -1 },
+    Direction { dx: 0, dy: -1 },
+    Direction { dx: 1, dy: -1 },
+];
+
 impl Direction {
     pub fn all_directions_iter() -> impl Iterator<Item = &'static Direction> {
         ALL_DIRECTIONS.iter()
+    }
+
+    /// The eight directions, ordered so that steps toward `attacking_dx`
+    /// come first. `ALL_DIRECTIONS` hard-codes a preference for `dx = +1`
+    /// (every `+1` entry precedes its `-1` partner), and reflecting the list
+    /// in x gives a *permutation* of itself rather than itself. Anywhere
+    /// that order breaks a tie — the pathfinder's route choice is the live
+    /// case, see `pathing.rs::expand_node` — that preference is an absolute
+    /// board-coordinate bias, which means opposite treatment for the two
+    /// teams, since Home attacks x=1 and Away attacks x=width-2. Selecting
+    /// the order by the mover's own attacking direction makes such a
+    /// tie-break mirror-covariant instead.
+    pub fn all_directions_toward(attacking_dx: Coord) -> &'static [Direction; 8] {
+        if attacking_dx < 0 {
+            &ALL_DIRECTIONS_MIRRORED
+        } else {
+            &ALL_DIRECTIONS
+        }
     }
     pub fn all_directions_as_array() -> [Direction; 8] {
         ALL_DIRECTIONS

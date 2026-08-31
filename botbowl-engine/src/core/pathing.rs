@@ -412,6 +412,14 @@ struct GameInfo<'a> {
     teammate_catch_mod: FullPitch<Option<D6Target>>,
     ball: PathingBallState,
     start_pos: Position,
+    /// Expansion order for [`PathFinder::expand_node`], oriented by the
+    /// moving team's attacking direction. Insertion order decides which of
+    /// two otherwise-identical routes to a square survives
+    /// (`Node::is_better_than` returns `false` on a full tie), so a fixed
+    /// order would make the route choice a function of absolute x — and
+    /// therefore treat the two teams' mirror-image situations differently.
+    /// See `Direction::all_directions_toward`.
+    dir_order: &'static [Direction; 8],
     dodge_target: D6Target,
     gfi_target: D6Target,
     pickup_target: D6Target,
@@ -476,6 +484,10 @@ impl<'a> GameInfo<'a> {
             pickup_target,
             game_state,
             team: player.stats.team,
+            dir_order: Direction::all_directions_toward(
+                game_state.get_endzone_x(player.stats.team)
+                    - game_state.get_endzone_x(other_team(player.stats.team)),
+            ),
             player_action,
             id: player.id,
             teammate_catch_mod: catch_mods,
@@ -886,7 +898,9 @@ impl<'a> PathFinder<'a> {
             .map(|parent| (parent.position, self.info.tackles_zones_at(parent.position) > 0));
 
         //handle moving
-        Direction::all_directions_iter()
+        self.info
+            .dir_order
+            .iter()
             .map(|direction| node.position + *direction)
             .filter(|to_pos| !self.info.game_state.is_out(*to_pos))
             .filter(|to_pos| {
