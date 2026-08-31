@@ -21,7 +21,9 @@ use std::time::Duration;
 use botbowl_data::{ChildStat, Sample};
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::GameState;
-use botbowl_engine::core::model::{Action as EngineAction, SomeProcInput, TeamType};
+use botbowl_engine::core::dices::RollResult;
+use botbowl_engine::core::model::{Action as EngineAction, Coord, SomeProcInput, TeamType};
+use botbowl_engine::core::table::{PosAT, SimpleAT};
 use botbowl_nn::eval::NnEvaluator;
 use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, Status, StoreState, Tree, TreeAlias};
 
@@ -284,6 +286,14 @@ pub enum TieBreak {
     Asc,
     /// Prefer the action that sorts *last*.
     Desc,
+    /// Prefer the action nearest the **mover's own** attacking endzone —
+    /// the only one of these rules that is mirror-*covariant*. `Asc` and
+    /// `Desc` are deterministic but absolute, so they treat the two teams'
+    /// mirror-image situations differently by construction; this one makes
+    /// the search a deterministic, mirror-covariant function of the state,
+    /// which is what turns "is the residual asymmetry an ordering effect?"
+    /// into a decidable question.
+    Mover,
 }
 
 impl TieBreak {
@@ -293,6 +303,7 @@ impl TieBreak {
         match std::env::var("BLOOD_MCTS_TIE_BREAK").ok().as_deref() {
             Some("asc") => TieBreak::Asc,
             Some("desc") => TieBreak::Desc,
+            Some("mover") => TieBreak::Mover,
             _ => TieBreak::Hash,
         }
     }
@@ -302,6 +313,7 @@ impl TieBreak {
             TieBreak::Hash => "hash",
             TieBreak::Asc => "asc",
             TieBreak::Desc => "desc",
+            TieBreak::Mover => "mover",
         }
     }
 
@@ -309,19 +321,82 @@ impl TieBreak {
     /// `max_by`: returns `Greater` for the action this rule prefers. Only
     /// player actions carry board coordinates, so chance outcomes (whose
     /// order has no side meaning) are left to the map's own order.
-    fn cmp_actions(&self, a: &BbAction, b: &BbAction) -> std::cmp::Ordering {
+    fn cmp_actions(&self, a: &BbAction, b: &BbAction, frame: MoverFrame) -> std::cmp::Ordering {
         use std::cmp::Ordering;
-        let (x, y) = match (a, b) {
-            (BbAction::Player { action: x, .. }, BbAction::Player { action: y, .. }) => (x, y),
-            _ => return Ordering::Equal,
-        };
-        match self {
-            TieBreak::Hash => Ordering::Equal,
-            // `max_by` keeps the greatest, so "prefer the first-sorting
-            // action" means calling the smaller one greater.
-            TieBreak::Asc => y.cmp(x),
-            TieBreak::Desc => x.cmp(y),
+        match (a, b) {
+            (BbAction::Player { action: x, .. }, BbAction::Player { action: y, .. }) => match self {
+                TieBreak::Hash => Ordering::Equal,
+                // `max_by` keeps the greatest, so "prefer the first-sorting
+                // action" means calling the smaller one greater.
+                TieBreak::Asc => y.cmp(x),
+                TieBreak::Desc => x.cmp(y),
+                TieBreak::Mover => mover_key(y, frame.endzone_x).cmp(&mover_key(x, frame.endzone_x)),
+            },
+            // Chance outcomes have no board *position*, but several of them
+            // (bounce, scatter, deviate) are board *directions*, so their
+            // sweep order is directional too. Only `Mover` orders them, by
+            // the acting side's own attacking direction, so that the order
+            // reflects with the board.
+            (BbAction::Chance { result: x, .. }, BbAction::Chance { result: y, .. }) => match self {
+                TieBreak::Mover => chance_key(y, frame.attacking_dx).cmp(&chance_key(x, frame.attacking_dx)),
+                _ => Ordering::Equal,
+            },
+            _ => Ordering::Equal,
         }
+    }
+}
+
+/// The mover's geometric frame, for [`TieBreak::Mover`]: the endzone it is
+/// attacking, and the sign of x that counts as "forward" for it.
+#[derive(Debug, Clone, Copy)]
+pub struct MoverFrame {
+    endzone_x: Coord,
+    attacking_dx: i8,
+}
+
+impl MoverFrame {
+    fn for_team(state: &GameState, team: TeamType) -> Self {
+        let endzone_x = state.get_endzone_x(team);
+        let other = state.get_endzone_x(botbowl_engine::core::model::other_team(team));
+        Self {
+            endzone_x,
+            attacking_dx: if endzone_x < other { -1 } else { 1 },
+        }
+    }
+}
+
+/// Sort key for a chance outcome under [`TieBreak::Mover`]: direction-valued
+/// results are ranked by how far *forward* (toward the acting side's own
+/// endzone) they point, which reflects with the board; everything else keeps
+/// a fixed, side-agnostic order.
+fn chance_key(r: &RollResult, attacking_dx: i8) -> (i8, u8) {
+    let dx_of = |d: botbowl_engine::core::dices::D8| {
+        botbowl_engine::core::model::Direction::from(d).dx as i8 * attacking_dx
+    };
+    match r {
+        RollResult::D8(d) => (dx_of(*d), 0),
+        RollResult::Deviate(_, d) => (dx_of(*d), 1),
+        RollResult::Scatter(d, _, _) => (dx_of(*d), 2),
+        _ => (0, 3),
+    }
+}
+
+/// Sort key for [`TieBreak::Mover`]: an engine action ordered by *distance
+/// from the mover's own attacking endzone* rather than by absolute x, which
+/// is what makes it reflect with the board. `Simple` actions carry no
+/// coordinates and keep their own (side-agnostic) order, sorted after every
+/// positional one so the two classes never interleave differently on the two
+/// sides of a mirror.
+fn mover_key(a: &EngineAction, endzone_x: Coord) -> (u8, PosAT, i32, Coord, SimpleAT) {
+    match a {
+        EngineAction::Positional(at, pos) => (
+            0,
+            *at,
+            (pos.x as i32 - endzone_x as i32).abs(),
+            pos.y,
+            SimpleAT::EndTurn,
+        ),
+        EngineAction::Simple(at) => (1, PosAT::Move, 0, 0, *at),
     }
 }
 
@@ -651,6 +726,9 @@ impl GameDynamics for BloodBowlDynamics {
         // `BbAction::Chance` carries `prob_bits`; `Player` variants
         // never appear here (we're under `pending_roll.is_some()`).
         if parent_node_state.pending_roll.is_some() {
+            // No side is "to move" at a chance node; the acting team's frame
+            // is the right one, since the roll is resolving its action.
+            let tie_frame = MoverFrame::for_team(parent_node_state, parent_node_state.info.team_turn);
             let total = parent_visits + 1.0;
             let pick = scores_and_actions
                 .clone()
@@ -667,8 +745,10 @@ impl GameDynamics for BloodBowlDynamics {
                     let deficit = prob * total - v;
                     ((unscored, deficit), action)
                 })
-                .max_by(|((ua, da), _), ((ub, db), _)| {
-                    ua.cmp(ub).then(da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|((ua, da), aa), ((ub, db), ab)| {
+                    ua.cmp(ub)
+                        .then(da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
+                        .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
                 })
                 .expect("chance node must have at least one outcome");
             bump_chosen(&pick.1, 0);
@@ -686,6 +766,11 @@ impl GameDynamics for BloodBowlDynamics {
         // by negating Q before adding the exploration bonus.
         let _ = parent_node_state; // no longer needed for priors; kept in case future rules want it.
         let home_perspective = *parent_player == BbPlayer::Home;
+        // For `TieBreak::Mover`: the endzone the side to move is attacking.
+        let tie_frame = MoverFrame::for_team(
+            parent_node_state,
+            if home_perspective { TeamType::Home } else { TeamType::Away },
+        );
         // FPU (first-play urgency): unexplored children are estimated at
         // the parent's own Q, seen from the descending player's side. See
         // `puct_value` for why `Q = 0` is not a usable default here. A
@@ -716,7 +801,7 @@ impl GameDynamics for BloodBowlDynamics {
                 .max_by(|(va, aa), (vb, ab)| {
                     va.partial_cmp(vb)
                         .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| self.tie_break.cmp_actions(aa, ab))
+                        .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
                 })
                 .expect("player node must have at least one action"),
 
@@ -760,7 +845,7 @@ impl GameDynamics for BloodBowlDynamics {
                     .max_by(|(va, aa), (vb, ab)| {
                         va.partial_cmp(vb)
                             .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| self.tie_break.cmp_actions(aa, ab))
+                            .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
                     })
                     .expect("player node must have at least one action")
             }
@@ -1603,7 +1688,12 @@ impl MctsBot {
 
     /// Pick the root child to play from a completed search. See the
     /// comment inside for why this is aggregated-Q, not most-visited.
-    fn pick_best_action(move_info: &[(BbAction, BbNodeInfo)], agent_team: TeamType, tie_break: TieBreak) -> EngineAction {
+    fn pick_best_action(
+        move_info: &[(BbAction, BbNodeInfo)],
+        agent_team: TeamType,
+        tie_break: TieBreak,
+        root_frame: MoverFrame,
+    ) -> EngineAction {
         if std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1") {
             let mut infos: Vec<_> = move_info
                 .iter()
@@ -1636,6 +1726,7 @@ impl MctsBot {
             TeamType::Home => 1,
             TeamType::Away => -1,
         };
+        let tie_frame = root_frame;
         let key = |info: &BbNodeInfo| {
             info.score
                 .as_ref()
@@ -1647,7 +1738,7 @@ impl MctsBot {
             .max_by(|(aa, ia), (ab, ib)| {
                 key(ia)
                     .cmp(&key(ib))
-                    .then_with(|| tie_break.cmp_actions(aa, ab))
+                    .then_with(|| tie_break.cmp_actions(aa, ab, tie_frame))
             })
             .expect("root must offer at least one action");
         match &best.0 {
@@ -1668,7 +1759,12 @@ impl MctsBot {
     /// of the trajectory (see [`botbowl_data::Trajectory::backfill_outcome_value`]).
     pub fn get_action_with_record(&mut self, state: &GameState) -> (EngineAction, Sample) {
         let result = self.run_search(state);
-        let action = Self::pick_best_action(&result.move_info, result.agent_team, self.tie_break);
+        let action = Self::pick_best_action(
+            &result.move_info,
+            result.agent_team,
+            self.tie_break,
+            MoverFrame::for_team(state, result.agent_team),
+        );
 
         let children = result
             .move_info
@@ -1720,7 +1816,12 @@ impl MctsBot {
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
         let result = self.run_search(state);
-        Self::pick_best_action(&result.move_info, result.agent_team, self.tie_break)
+        Self::pick_best_action(
+            &result.move_info,
+            result.agent_team,
+            self.tie_break,
+            MoverFrame::for_team(state, result.agent_team),
+        )
     }
 }
 
@@ -1874,6 +1975,8 @@ mod tests {
         use botbowl_engine::core::dices::{D6Target, RequestedRoll, RollResult};
         use botbowl_engine::core::gamestate::GameStateBuilder;
         use botbowl_engine::core::model::Position;
+        const TEST_HOME_FRAME: MoverFrame = MoverFrame { endzone_x: 1, attacking_dx: -1 };
+        const TEST_AWAY_FRAME: MoverFrame = MoverFrame { endzone_x: 14, attacking_dx: 1 };
 
         let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
         state.pending_roll = Some(RequestedRoll::D6PassFail(D6Target::TwoPlus));
@@ -2348,6 +2451,8 @@ mod tests {
     #[test]
     fn tie_break_is_directional_on_engine_action_order() {
         use botbowl_engine::core::model::Position;
+        const TEST_HOME_FRAME: MoverFrame = MoverFrame { endzone_x: 1, attacking_dx: -1 };
+        const TEST_AWAY_FRAME: MoverFrame = MoverFrame { endzone_x: 14, attacking_dx: 1 };
         use botbowl_engine::core::table::PosAT;
         use std::cmp::Ordering;
 
@@ -2362,18 +2467,23 @@ mod tests {
 
         // `max_by` keeps the greatest, so the preferred action must
         // compare `Greater`.
-        assert_eq!(TieBreak::Asc.cmp_actions(&low, &high), Ordering::Greater);
-        assert_eq!(TieBreak::Asc.cmp_actions(&high, &low), Ordering::Less);
-        assert_eq!(TieBreak::Desc.cmp_actions(&low, &high), Ordering::Less);
-        assert_eq!(TieBreak::Desc.cmp_actions(&high, &low), Ordering::Greater);
-        assert_eq!(TieBreak::Hash.cmp_actions(&low, &high), Ordering::Equal);
+        assert_eq!(TieBreak::Asc.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Greater);
+        assert_eq!(TieBreak::Asc.cmp_actions(&high, &low, TEST_HOME_FRAME), Ordering::Less);
+        assert_eq!(TieBreak::Desc.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Less);
+        assert_eq!(TieBreak::Desc.cmp_actions(&high, &low, TEST_HOME_FRAME), Ordering::Greater);
+        assert_eq!(TieBreak::Hash.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Equal);
+        // `Mover` is the mirror-covariant rule: with Home's endzone at x=1
+        // the low-x action is nearer, so it wins; with Away's endzone at
+        // x=14 the same comparison flips. That flip is the whole point.
+        assert_eq!(TieBreak::Mover.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Greater);
+        assert_eq!(TieBreak::Mover.cmp_actions(&low, &high, TEST_AWAY_FRAME), Ordering::Less);
 
         // Chance outcomes carry no board coordinates, so no rule orders
         // them — their order has no side meaning.
         let c1 = BbAction::chance(botbowl_engine::core::dices::RollResult::Pass, 0.5);
         let c2 = BbAction::chance(botbowl_engine::core::dices::RollResult::Fail, 0.5);
-        assert_eq!(TieBreak::Asc.cmp_actions(&c1, &c2), Ordering::Equal);
-        assert_eq!(TieBreak::Desc.cmp_actions(&c1, &c2), Ordering::Equal);
+        assert_eq!(TieBreak::Asc.cmp_actions(&c1, &c2, TEST_HOME_FRAME), Ordering::Equal);
+        assert_eq!(TieBreak::Desc.cmp_actions(&c1, &c2, TEST_HOME_FRAME), Ordering::Equal);
     }
 
     /// The default must stay the shipped behaviour: nothing in production

@@ -73,7 +73,10 @@ fn search_transitions_are_mirror_invariant() {
     let mut walks = 0usize;
     let mut failures: Vec<String> = Vec::new();
 
-    for (i, s0) in states(150, 23_040).into_iter().enumerate() {
+    // `BB_WALK_N` widens the sweep for a hunt; the committed default keeps
+    // the test fast.
+    let n: u32 = std::env::var("BB_WALK_N").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
+    for (i, s0) in states(n, 23_040).into_iter().enumerate() {
         let mut s = s0.clone();
         let mut m = mirror_playable(&s0, dims);
         s.set_dice_mode(DiceMode::RegisterRolls);

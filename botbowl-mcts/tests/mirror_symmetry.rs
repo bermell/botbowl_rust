@@ -19,7 +19,7 @@
 mod common;
 
 use botbowl_engine::bots::Bot;
-use botbowl_engine::core::model::{other_team, Action as EngineAction};
+use botbowl_engine::core::model::{other_team, Action as EngineAction, TeamType};
 use botbowl_mcts::pruning::should_prune;
 use botbowl_mcts::score::leaf_score;
 use botbowl_mcts::{priors, BbAction, MctsBot, SearchBudget};
@@ -138,6 +138,17 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
     // early-turn state never leaves the drive. If the asymmetry lives in
     // one stratum, that localises it.
     let mut by_turn: std::collections::BTreeMap<u8, Vec<f64>> = Default::default();
+    // Split by which side is to move in `s`. `mirror_playable` reaches the
+    // two cases by different routes (only one of them steps an extra
+    // `EndTurn`), and `random_start` always makes Home the turn leader, so
+    // a construction artefact would show up as the two halves disagreeing.
+    // A genuine side effect shows the same value in both.
+    let mut by_case: std::collections::BTreeMap<&'static str, Vec<f64>> = Default::default();
+    // Mover-relative root values, pooled by the mover's side. The statistic
+    // is exactly `mean(home) - mean(away)`; printing the levels says whether
+    // the gap is Home being pessimistic or Away optimistic.
+    let mut r_home: Vec<f64> = Vec::new();
+    let mut r_away: Vec<f64> = Vec::new();
     for (i, mut s) in states(n, seed).into_iter().enumerate() {
         let mut m = mirror_playable(&s, dims);
         // The rebuild must reproduce the situation exactly, or the two
@@ -180,6 +191,18 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
             sums.push((vs + vm) as f64);
             let turn = s.info.home_turn.max(s.info.away_turn);
             by_turn.entry(turn).or_default().push((vs + vm) as f64);
+            let s_is_home = s.available_actions.team == Some(TeamType::Home);
+            by_case
+                .entry(if s_is_home { "s=Home-to-move" } else { "s=Away-to-move" })
+                .or_default()
+                .push((vs + vm) as f64);
+            if s_is_home {
+                r_home.push(vs as f64);
+                r_away.push(-vm as f64);
+            } else {
+                r_away.push(-vs as f64);
+                r_home.push(vm as f64);
+            }
             pairs += 1;
         }
         if mirror_action(dims, a_s) == a_m {
@@ -196,6 +219,19 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
         mean / se,
         sums.len()
     );
+    let stat = |v: &Vec<f64>| {
+        let n = v.len() as f64;
+        let m = v.iter().sum::<f64>() / n;
+        let var = v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1.0);
+        (m, (var / n).sqrt())
+    };
+    let (mh, seh) = stat(&r_home);
+    let (ma, sea) = stat(&r_away);
+    println!("    mover-relative root value: Home {mh:+8.2} ± {seh:.2}   Away {ma:+8.2} ± {sea:.2}");
+    for (case, v) in &by_case {
+        let (m, se) = stat(v);
+        println!("    {case}: n={:3} mean {m:+8.2} ± {se:.2}  t = {:+.2}", v.len(), m / se);
+    }
     for (turn, v) in &by_turn {
         if v.len() < 8 {
             continue;
