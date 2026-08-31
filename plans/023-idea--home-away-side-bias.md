@@ -1,18 +1,37 @@
 # Home/Away side bias: what the 100-game mirror match found
 
-**Status:** Open — cause still unknown, but the search space of causes is now
-small. Closes plan 021 open issue 5: the mirror anomaly is **real** (~450 games
-across four independent runs, 0.667-0.709 Home share at 1000 iterations,
-p <= 0.002 each). Four candidate causes have been fixed and *each measured not
-to move it*: B1 kickoff aim, B1b receiving-team argument, B2 inverted
-post-touchdown kickoff (`4ccbce2`), H-c non-mirror-invariant throw-in/bounce
-models (`316dbca`). Two side biases found along the way *were* localised and
-fixed: `ScriptedBot`'s touchback tie-break (`dcc578c`, an Away bias of 0.113)
-and the instrument's inability to see side-relative results at all (`ae43fa2`,
-`80175cf`). **The live lead is that the bias is search-budget dependent**:
-absent at 200 iterations, 2:1 at 1000. Start there — see "Result part 2".
+**Status:** Open, but no longer blind. Closes plan 021 open issue 5: the mirror
+anomaly is **real** (~650 games across five independent runs, 0.667-0.727 Home
+share at 1000 iterations). Five candidate *causes* have been fixed and each
+measured not to move it: B1 kickoff aim, B1b receiving-team argument, B2
+inverted post-touchdown kickoff (`4ccbce2`), H-c non-mirror-invariant
+throw-in/bounce models (`316dbca`), and the pathfinder's route tie-break
+(`21c2e09`). Two side biases *were* localised and fixed: `ScriptedBot`'s
+touchback tie-break (`dcc578c`, an Away bias of 0.113) and the instrument's
+inability to see side-relative results (`ae43fa2`, `80175cf`).
 
-Investigated read-only while the plan-022 weekend loop was running (all 4 physical cores busy), so nothing here involved a build, a test run, or a simulated game. Everything below came from reading code and from data already on disk.
+**Two things changed on 2026-08-31** (see the two "Result (2026-08-31)"
+sections):
+
+1. **Action ordering is a causal lever.** Forcing the search's exact-tie
+   tie-break to "prefer the lowest-x action" takes the mirror-match Home share
+   from **0.703 to 0.503** (z = −3.7 against the shipped arm, −4.15 against the
+   opposite direction). Whether it is *the* cause or a compensating knob is the
+   open question; do not ship it (it is itself an absolute-coordinate rule).
+2. **The bias is measurable without games.** A paired mirror probe on the
+   search's root value reads −65 ± 5 (t = −12) at 1000 iterations, 0 at small
+   budgets, and **exactly 0 under the y-reflection control**. That turns a
+   2-hour 200-game experiment into a 10-minute one, and it has already
+   exonerated the entire state-transition and evaluation pipeline by property
+   test: `leaf_score`, priors, pruning, the legal-action set, the engine's
+   transitions, movement routes, the chance model, and `apply_action` at depth.
+
+The live lead is now the **selection / aggregation layer** (PUCT descent,
+virtual loss, minimax backprop, the `recon_mcts` DAG). The next step is to
+property-test it the way the transition layer now is.
+
+Everything before the 2026-08-31 sections was investigated read-only while the
+plan-022 weekend loop was running, from code reading and data already on disk.
 
 ## The measurement
 
@@ -298,6 +317,282 @@ above.** Original statement: `roll_outcomes.rs:65-81` collapses a throw-in to on
 4. **Suspects not yet excluded**: the search's always-Heads coin model
    (`scripted.rs`, only Away ever calls the toss); tree reuse across moves; the
    pruning rules under deeper search; the second-half kickoff swap.
+
+## Result (2026-08-31): action ordering **is** a lever — and a big one
+
+Hypothesis under test: `AvailableActions` / `get_all_actions()` is sorted
+ascending by `(PosAT, x, y)` (`gamestate.rs`'s `get_all_actions`), so
+"earlier in the list" means "lower x", which is *directionally meaningful and
+opposite for the two sides*. The earlier dismissal (see "Ruled out") argued
+that MCTS's children live in a `HashMap` whose `RandomState` randomises
+iteration order, so `select_node`'s `max_by` cannot drift in +x. That
+argument is about *whether the shipped code has a directional preference*.
+It says nothing about whether a directional preference **would matter**, and
+that is the testable question.
+
+### The instrument
+
+`BLOOD_MCTS_TIE_BREAK` (commit `cc37aac`, `TieBreak` in `dynamics.rs`) adds a
+deterministic tie-break to `select_node` (both PUCT arms) and to
+`pick_best_action`, applied *after* the value comparison so it only decides
+exact ties:
+
+- `hash` — **shipped behaviour**: `cmp_actions` returns `Equal`, so `max_by`
+  keeps whichever child the children `HashMap` yielded last. Arbitrary,
+  randomised per process.
+- `asc` — prefer the action that sorts **first** in `(PosAT, x, y)`: "take
+  the lowest-x option", for both teams.
+- `desc` — prefer the action that sorts **last**: "take the highest-x option",
+  for both teams.
+- `mover` (added later, `4539280`) — prefer the action nearest the **mover's
+  own** attacking endzone; the only one of the four that is
+  mirror-*covariant*, and therefore the only one that could ship.
+
+`asc` and `desc` bracket the largest side bias any in-search ordering
+preference can produce, which is what makes a mirror match between them
+decisive. That the lever has bite was checked first on the cheap
+`convergence` probe: repeat-to-repeat agreement on the root pick at 1000
+iterations rises from **26/40** under `hash` to **39/40** under `asc`, so
+ties really are what decides the shipped search's run-to-run
+nondeterminism; and `asc` and `desc` disagree with each other on the root
+pick in 39 of 80 cells.
+
+### The measurement
+
+Heuristic MCTS mirror match, 1000 iterations, 14x7 tier
+(`BOARD_SIZE_W=14 BOARD_SIZE_H=7 BOARD_PLAYERS=4`), full games from
+`CoinToss`, three arms on the **same two seed bases** (500000 / 600000, 100
+games each) so the arms face identical situations. Home-side wins counted
+per game from `--per-game-out` (`home_score` vs `away_score`), so the
+`wins_as_home + losses_as_away` trap cannot bite. `t` is on the 100
+independent seed-pairs.
+
+| arm | decided | Home | Away | draw | Home share | z | pair t | side TD H:A |
+|---|---|---|---|---|---|---|---|---|
+| `hash` (shipped) | 172 | 121 | 51 | 28 | **0.703** | +5.34 | +5.46 | 527:344 (0.605) |
+| `asc` (prefer low x) | 159 | 80 | 79 | 41 | **0.503** | +0.08 | +0.07 | 339:353 (0.490) |
+| `desc` (prefer high x) | 165 | 120 | 45 | 35 | **0.727** | +5.84 | +5.55 | 450:272 (0.623) |
+
+- `asc` − `desc` = **−0.224**, z = −4.15, p ≈ 3e-5 (95% CI −0.330 .. −0.118).
+- `asc` − `hash` = −0.200, z = −3.72, p ≈ 2e-4.
+- `desc` − `hash` = +0.024, z = +0.5, n.s.
+
+**Ordering is causal.** Changing nothing but the direction in which the
+search breaks exact ties moves the mirror-match Home share from 0.70 to
+0.50, and takes the side TD split with it (0.605 → 0.490). This is the same
+shape as `ScriptedBot`'s touchback tie-break, one level up: a preference
+expressed in absolute board coordinates, inside the search this time.
+
+The `hash` arm is also a **fifth independent replication** of the effect
+itself (0.703, z = +5.3), on fresh seeds and after the B1/B1b/B2/H-c fixes.
+
+### The shape of the bracket is not what a naive ordering story predicts
+
+If the shipped `hash` order were an unbiased coin between "early" and
+"late", `hash` would sit near 0.5 and `asc`/`desc` would bracket it. Instead
+`hash` ≈ `desc` ≈ 0.71 and `asc` ≈ 0.50: the shipped arbitrary order behaves
+like *prefer high x*, and only the low-x preference removes the bias. Two
+readings survive that, and they are not yet separated:
+
+1. **The bias is not created by the tie-break; the tie-break is a knob on
+   it.** `asc` happens to sit at the setting where the two sides' play is
+   balanced. Then the underlying cause is still unidentified, and `asc` is a
+   compensation, not a fix — and being an absolute-coordinate rule it would
+   be tuned to this board and would not survive a mirror.
+2. `hash` order is not neutral in effect. `max_by` keeps the *last* maximum,
+   and hashing is arbitrary but *fixed per process*; if the value ties that
+   matter are concentrated in a few recurring action shapes, an arbitrary
+   order can behave systematically. This is testable by re-running `hash`
+   across many processes, which the four historical replications
+   (0.667–0.709 in four separate invocations) argue against.
+
+Reading 1 is the more likely one, and it is why `TieBreak::Mover` exists:
+being mirror-covariant, it cannot compensate for a side bias, so a `mover`
+arm separates "the tie-break was the cause" (expect ≈ 0.5) from "`asc` is a
+compensating knob" (expect ≈ 0.7). See "The mover arm" below.
+
+## Result (2026-08-31): a `mirror(state)` helper, and what it turned into assertions
+
+Plan 023's own next-step list called a `mirror(state)` helper "the single
+highest-value piece of infrastructure left here". It now exists, and it has
+already paid for itself twice.
+
+`GameState::mirrored()` (`gamestate.rs`) reflects a state about the board's
+vertical midline (`x -> width-1-x`) and swaps the benches: players, board
+index, ball, bounce squares, both `TeamState`s, the team-typed `GameInfo`
+fields, `available_actions` (via `AvailableActions::mirrored`), and the live
+`Half` procedure's kicking team. Out of scope and documented as such: the
+rest of the procedure stack (so the result must not be *stepped*) and path
+offerings (their `Node` chains carry their own positions).
+
+For things that must be stepped — a search — `botbowl-mcts/tests/common/`
+carries `mirror_playable`, which rebuilds a random-start state reflected and
+team-swapped through `GameStateBuilder`, plus `fingerprint` /
+`mirror_fingerprint`: an ID-free rendering of everything a bot can read off
+a state, and the same rendering of its mirror computed field-by-field from
+the original. Every test below asserts the rebuild equals the mirror on that
+fingerprint before it measures anything, so the instrument validates itself.
+
+What that established (all in `botbowl-mcts/tests/`, all green):
+
+| property | file | coverage |
+|---|---|---|
+| `leaf_score(mirror s) == -leaf_score(s)` | `mirror_symmetry.rs` | 300 states |
+| `prior_for` and `should_prune` are mover-relative | `mirror_symmetry.rs` | ~thousands of (state, action) pairs |
+| the legal-action set mirrors | `mirror_symmetry.rs` | 150 states |
+| `mirror(step(s,a,r)) == step(mirror s, mirror a, mirror r)` | `mirror_transitions.rs` | 2123 engine transitions, dice pinned |
+| movement **routes** mirror | `mirror_transitions.rs` | 25121 risky routes |
+| `roll_outcomes::enumerate` mirrors as a distribution | `mirror_chance_model.rs` | 3919 chance nodes (134 D8 bounces, 43 deviates) |
+| the *search's* `available_actions` + `apply_action` mirror at depth | `mirror_apply_action.rs` | ~60k steps over 4000 lockstep walks |
+
+The last row is the strong one: it covers priors (compared via
+`BbAction`'s `prior_bits`), pruning (via the enumerated sets), the scripted
+quiescent picks and `sole_legal_action`, and the composition of all of them
+to the full depth of a search horizon. So **the entire state-transition and
+evaluation pipeline the search is built from is now property-tested
+mirror-exact**, which is a much stronger statement than the three
+"symmetric by inspection" claims it replaces.
+
+### Two more absolute-coordinate bugs, found by these tests
+
+**The pathfinder's route tie-break** (`21c2e09`) — the fourth instance of
+this plan's general lesson, and the one with real gameplay consequences.
+`Move(dest)` names a destination, not a route. When two routes tie on
+everything `Node::is_better_than` compares (probability, block dice, foul
+target, remaining movement, cumulative distance) it returns `false`, so the
+winner is whichever node reached the square *first*, i.e. whichever
+direction came first in `expand_node`'s iteration over `ALL_DIRECTIONS`.
+That list is `(1,1), (0,1), (-1,1), (1,0), (-1,0), (1,-1), (0,-1), (-1,-1)`:
+every `dx = +1` entry precedes its `dx = -1` partner, and reflecting the
+list in x gives a permutation of itself rather than itself. **On a tie the
+pathfinder stepped toward +x — Away's attacking direction — for both
+teams.**
+
+Destinations and probabilities were unaffected, which is why it survived: a
+risk-free reroute is invisible. It becomes visible the moment the route
+crosses a tackle zone, because the two mirrored players then dodge from
+*different squares* — exposed to different opponents, and on a failure
+landing in different places. Measured: **1080 of 25121 risky routes (4.3%)**
+did not mirror, and 31 of 2353 steps of a mirrored MCTS `apply_action` walk
+diverged. `Direction::all_directions_toward(attacking_dx)` now picks the
+expansion order from the mover's own attacking direction; both counts are 0
+after the fix. Two engine tests had pinned the old arbitrary route
+(`one_long_path`, `handoff_failed_catch_bounces_from_receiver_square`) — the
+same "tautological test" pattern this plan flagged for `kickoff_position`;
+both now assert the meaningful thing instead.
+
+**Mirroring a state must mirror the turn order** (`58773f3`) — a bug in the
+*instrument*, recorded because it cost a wrong reading. `Half::step` picks
+the next team turn from its **own** `kicking_this_half` field, not from
+`GameInfo`: `other(kicking)` when the two turn counters are level,
+`kicking` otherwise. A mirror that swaps every team-typed field of
+`GameInfo` therefore still leaves the alternation pointing at the original
+kicking team, and the mirrored state quietly hands its mover two
+consecutive turns. The first version of the search-symmetry probe below
+measured a large asymmetry that was entirely this artefact.
+
+## Result (2026-08-31): the search's *value* is side-asymmetric, and the estimator is clean
+
+`mirror_symmetry.rs::search_side_bias_by_budget` (`#[ignore]`d; run with
+`--ignored --nocapture`) searches `s` and `mirror_playable(s)` at a fixed
+budget and reports
+
+```text
+mean( root_value(s) + root_value(mirror s) )
+```
+
+`root_value` is Home-centric, so for an equivariant search the two are exact
+negatives and the sum is 0. Algebraically the sum equals
+`R(the Home-to-move member) - R(the Away-to-move member)` where `R` is the
+mover-relative root value, so it measures *how much more optimistic the
+search is for an Away mover than for a Home mover in the mirrored
+position*. It needs no games, so it is cheap enough to ablate.
+
+**It is exactly 0 at small budgets and grows with search depth** (n=300,
+default settings):
+
+| budget | 2 | 5 | 20 | 50 | 200 | 1000 |
+|---|---|---|---|---|---|---|
+| mean sum | +0.00 | +0.5 | −1.9 | −9.7 | −34.5 | −65.5 |
+
+At n=800 and 1000 iterations: **−65.5 ± 5.4, t = −12.1**, present in every
+turn stratum (−45 to −70 for turns 1–7, −125 at turn 8) and the same in both
+halves of the `s`-is-Home-to-move / `s`-is-Away-to-move split (−62 and −75,
+each t ≈ −9), so it is not an artefact of the two construction routes.
+
+**The control that makes it worth believing.** Blood Bowl is also symmetric
+under the **y** reflection (top-for-bottom, teams unchanged), a symmetry that
+involves no Home/Away labels at all. The same estimator on the same states
+under that map reads **+3.0 ± 3.5 (t = +0.9)** at 200 iterations and
+**−0.3 ± 3.0 (t = −0.1)** at 1000. So the estimator returns zero on a board
+symmetry and −65 on the side symmetry: this is a Home/Away effect, not an
+estimator artefact.
+
+**Ablations at 1000 iterations** (n=400–800):
+
+| arm | mean sum |
+|---|---|
+| default | −65 |
+| `virtual_loss=0` | −136 |
+| `puct=normalised c=1` | −33 |
+| tie-break `asc` | −52 |
+| tie-break `desc` | −75 |
+| tie-break `mover` (player nodes) | −55 |
+| tie-break `mover` + mirror-covariant chance order | −54 |
+| after the pathfinder fix | −65 (unchanged) |
+
+Three things follow, and they are the sharpest constraints anyone has had
+here:
+
+1. **The exploration rule modulates it strongly** — virtual loss halves it,
+   normalised-Q halves it the other way. That is the signature of an
+   asymmetry the *search dynamics* amplify, not a constant offset.
+2. **Tie-break direction modulates it, in the same order as the game
+   results** (`asc` −52 → 0.503 Home, `hash` −65 → 0.703, `desc` −75 →
+   0.727): more Away-favouring value asymmetry goes with *more Home wins*.
+   The natural reading is that an over-optimistic search plays worse, so
+   over-valuing Away's position makes Away play worse.
+3. **A mirror-covariant tie-break does not remove it** (−54 vs −65, and the
+   search's mirrored-root-pick agreement jumps from 48% to 78%), and neither
+   does the pathfinder fix. So ordering is a knob, not the source.
+
+### What this rules in and out
+
+- **Out, now by property test rather than by reading:** `leaf_score`,
+  `prior_for`, `should_prune`, the legal-action set, the engine's transition
+  function, movement routes, the search's chance-outcome model, and the whole
+  `available_actions` + `apply_action` pipeline at depth. None of them is the
+  source.
+- **Out:** the pathfinder route tie-break (a real bug, fixed, no effect on
+  either measurement).
+- **Out:** chance-node sweep order over direction-valued outcomes.
+- **In, and now the live lead:** something in the *selection / aggregation*
+  layer — PUCT descent, virtual loss, the minimax/expectation backprop, the
+  `recon_mcts` DAG and its `HashMap`-ordered children — that treats a
+  Home-to-move root differently from the mirrored Away-to-move root. Every
+  Home/Away branch in that layer (`home_perspective`, `want_max`, `q_sign`,
+  the FPU flip) reads symmetric; four such readings have now been wrong, so
+  the next step is to make them assertions.
+
+### Next steps, in priority order
+
+1. **Property-test the selection and backprop layer**, the way the
+   transition layer now is. The natural assertion:
+   `search(mirror s) == mirror(search s)` **exactly**, at a fixed budget,
+   under `TieBreak::Mover` and with a deterministic hasher — which means
+   giving `recon_mcts`'s children map a fixed `BuildHasher` behind a test
+   feature. Without that, the residual `HashMap` nondeterminism makes exact
+   equality untestable and we are stuck doing statistics on a value that
+   should be provable. **This is the highest-value item left.**
+2. **Measure the `mover` arm in games** (in flight; see below). It separates
+   "the tie-break was the cause" from "`asc` is a compensating knob".
+3. **Do not ship `asc`.** It removes the measured bias but is an
+   absolute-coordinate rule: it is tuned to this board's geometry and would
+   itself fail a mirror-invariance test. `Mover` is the shape a fix has to
+   have.
+4. **Re-run the ladder rungs after any of this lands.** Every report card,
+   promotion gate and champion decision to date was measured under a search
+   whose two sides play at measurably different strength.
 
 ## A separate finding: the gen-0 net is side-miscalibrated
 
