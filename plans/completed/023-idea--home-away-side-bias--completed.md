@@ -1,8 +1,18 @@
 # Home/Away side bias: what the 100-game mirror match found
 
-**Status:** Open, but no longer blind. Closes plan 021 open issue 5: the mirror
-anomaly is **real** (~650 games across five independent runs, 0.667-0.727 Home
-share at 1000 iterations). Five candidate *causes* have been fixed and each
+**Status: CLOSED (2026-08-31).** Root cause found, fixed (`e107f06`), and
+confirmed by three independent instruments: exact search-mirror equality,
+the paired value-probe (-65, t=-12.1 → -0.05, t=-0.01), and a 100-game
+game-level mirror match under the exact shipped configuration (0.667-0.709
+Home share, z=+3.1 to +5.9 → **0.523, z=+0.43**). See the final "Confirmed
+(2026-08-31, ~4h56m after launch)" section near the end of this document
+for the closing verdict. Eleven other candidate causes were investigated
+and fixed along the way without moving the effect (see below) — real bugs
+worth having fixed, but not this one.
+
+Kept for the historical record: closes plan 021 open issue 5. The mirror
+anomaly was **real** (~650 games across five independent runs, 0.667-0.727
+Home share at 1000 iterations). Five candidate *causes* were fixed and each
 measured not to move it: B1 kickoff aim, B1b receiving-team argument, B2
 inverted post-touchdown kickoff (`4ccbce2`), H-c non-mirror-invariant
 throw-in/bounce models (`316dbca`), and the pathfinder's route tie-break
@@ -859,18 +869,68 @@ this repo's bot-capability-over-performance priority; not benchmarked.
    (`recon_mcts/`) both fully green after the fix; no other test needed
    updated behaviour.
 
-**Still open at commit time:** a real 100-game `mcts-heuristic` mirror
-match under the shipped `Hash` tie-break (seed base 800000, 1000
-iterations) was launched in the background to confirm the game-level Home
-win-rate (0.667–0.727 across five prior replications, this plan's
-headline number) collapses the way the value-probe already has. Results
-to be appended here once it completes — the value-probe's own history
-in this plan (exactly 0 at low budgets, growing to -65 at 1000 over five
-separate ablations that all failed to move it) makes a null game-level
-result the expected outcome, but this plan has been burned before by an
-instrument that looked decisive and wasn't (H1's "clean" Monte Carlo
-table, refuted by measurement), so it is being checked rather than
-assumed.
+**Confirmed (2026-08-31, ~4h56m after launch):** the 100-game
+`mcts-heuristic` mirror match under the shipped `Hash` tie-break (seed
+base 800000, 1000 iterations, commit `3962f9d` base — pre-`peek_mover`
+binary was already rebuilt with the fix at launch since `e107f06`
+predates the run) landed at **win_rate 0.50 (W50 D12 L38)**,
+`[home 27-19 away 23-19]`. Re-expressed side-centrically (the plan's own
+counting method — home-side wins = `wins_as_home + losses_as_away`):
+**46 Home, 42 Away, 12 draws, n=88 decided, Home share 0.523, z = +0.43,
+p ≈ 0.67.** Side TDs 204:205 (0.497), also flat.
+
+That is indistinguishable from 0.500 and a world away from every pre-fix
+replication of this effect: 0.671, 0.667, 0.709, 0.682, 0.703 (z = +3.1 to
++5.9 each, ~650 games total). The z = +0.43 result sits squarely inside
+the null distribution the `Hash` tie-break's own residual randomness
+predicts (part 1's `asc`/`desc` bracket showed `Hash` alone is worth up to
+±0.11 of Home share from tie noise), so there is nothing left here to
+explain.
+
+**Verdict: the mover-tagging bug (`e107f06`) was the cause of the
+Home/Away side bias.** All three instruments now agree — exact search
+equivariance under `Mover`, the paired value-probe collapsing from -65
+(t=-12.1) to -0.05 (t=-0.01) under `Hash`, and now the game-level Home
+share collapsing from 0.667-0.709 to 0.523 (z=+0.43) under the exact
+shipped configuration this plan started from. Twelve candidate causes
+were investigated across the life of this plan (B1, B1b, B2, H-a, H-b,
+H-c, the pathfinder tie-break, the scripted touchback tie-break, the
+selection-layer tie-break/ordering knob, `chance_key`'s missing `dy`,
+backprop's float-order truncation, and finally the mover-tagging bug) —
+eleven were real bugs or real levers and none of them moved the aggregate
+effect; the twelfth did, completely. **Plan 023 is closed.**
+
+### What made this one different
+
+Every prior candidate in this plan was *side-symmetric noise dressed as
+asymmetry* — a real bug that, when fixed, left the measured effect
+statistically untouched because the effect was never downstream of it.
+The mover-tagging bug is different in kind: it fed the wrong team
+identity directly into `select_node`'s `home_perspective` and
+`backprop_scores`'s `want_max` at (per the root-cause fork's estimate)
+almost every node one step past a dice roll — i.e. it wasn't producing a
+side-asymmetric *decision rule*, it was silently telling the search to
+**minimize instead of maximize** for whichever physical side happened to
+be Home at that node, systematically. That is large enough and structural
+enough to produce a 12-sigma value-probe effect and a 0.67-0.71 win-rate
+effect from a single site, which is exactly what collapsing both to
+consistent-with-zero in one fix confirms.
+
+### What is now owed to every number measured before this fix
+
+Every ladder rung, report card, promotion gate, and champion decision
+prior to `e107f06` was measured under a search that played its two sides
+at genuinely different strength (not merely a fair-but-noisy comparison —
+see "What this rules in/out" above: the mechanism biased the search's own
+value estimate, not just game outcomes). Per item 4 of the plan's own
+priority list: **re-run any gate or comparison whose result is still
+being relied on.** The gen-0 net side-miscalibration finding (P(Home
+scores) = 0.318, z=-4.8, see "A separate finding" above) should be
+re-measured against a corpus generated post-fix before drawing further
+conclusions from it — it may have been partly downstream of this bug
+(the net trained on search-generated targets) rather than purely the
+`kicking_first_half`/`kicking_this_drive` constant-default issue
+originally proposed there.
 
 ## Cross-references
 
