@@ -676,6 +676,99 @@ state.info.away_turn = if active == TeamType::Home { turn - 1 } else { turn };
 
 **Home is always the turn leader**, so a Home-active drive has one more team-turn before half-end than an Away-active drive at the same `turn`. Visible directly in the no-score rates (18.0% Home-active vs 21.8% Away-active), and the effect flips *Away*-positive at the clock edge (turn 8: P(Home) = 0.360, 392/592 no-score). Per-shard differentials flip sign (+26, +22, −40, +17, +44, +11, +41, +4), ruling out a seeding artefact.
 
+## Result (2026-08-31, part 3): exact search-mirror equivariance — one real bug found and fixed, the aggregate bias unmoved
+
+Executed the plan's own top-priority next step: turn `search(mirror s) ==
+mirror(search s)` into a provable assertion instead of a statistical one.
+
+**Infrastructure.** `recon_mcts` gained an opt-in `deterministic_hash`
+feature (`Cargo.toml`, `src/tree.rs`): behind it, the children `HashMap`
+inside `Node`/`Children::Branch` uses `BuildHasherDefault<DefaultHasher>`
+(a fixed-seed hasher) instead of the per-process-random `RandomState`, so
+iteration order is reproducible across runs given the same insertion
+sequence. `botbowl-mcts/Cargo.toml` unions it in for test targets only via
+a `[dev-dependencies]` override on the same path dependency (resolver
+`"2"` keeps this out of the production lib build). New exact-equality
+tests live in `botbowl-mcts/tests/mirror_search_exact.rs`: build a state
+and `mirror_playable(s)`, run both with `.with_workers(1)` (no thread
+scheduling nondeterminism) and `TieBreak::Mover`, and assert the root pick,
+root value (exact negation), root visits, and every root child's
+(visits, q, solved) match exactly after mirroring.
+
+**Two real bugs found and fixed**, both instances of the plan's standing
+lesson ("any deterministic choice made in absolute board coordinates is a
+side bias waiting to happen") one level deeper than rung 3's fix:
+
+1. **`chance_key` (the `Mover` tie-break's ordering for chance-node
+   selection) omitted `dy`.** Three of `ALL_DIRECTIONS`' eight entries
+   share any given `dx` (e.g. `dx=+1`: `(1,1)`, `(1,0)`, `(1,-1)`), so
+   those three tied under `Mover` and fell through to `recon_mcts`'s
+   arbitrary children-map order during PUCT descent at chance nodes —
+   which subset of tied outcomes gets explored first, and therefore which
+   ones accrue visits at a small budget, is not guaranteed to correspond
+   between a state and its mirror. `dy` passes through x-mirroring
+   unchanged (only `dx` negates), so ordering by it directly is itself
+   mirror-covariant. Fixed by extending the key to `(dx, dy, tag)`.
+2. **`backprop_scores`'s chance-node expectation summed in `HashMap`
+   order.** `weighted_sum: f64 += prob * q.score` accumulated over
+   `child_scores_and_actions` in whatever order `recon_mcts` handed them
+   back — a function of each action's hash, which is unrelated between a
+   state and its mirror (mirroring negates every direction-valued
+   outcome's x-component, scrambling the hash). f64 addition is not
+   associative, so the final `avg as i64` truncation could land on
+   opposite sides of an integer boundary for mirrored searches. Caught
+   directly: budget-20 exact-equality run on state 13 of a 40-state batch
+   failed with `StartBlock (9,6)` q = **-523** vs its mirror
+   `StartBlock (6,6)` q = **-522** — every other root child (`StartMove`
+   ×3, `StartBlitz` ×3, `EndTurn`) matched exactly. Fixed by sorting into
+   `canonical_chance_key` (every `Direction` field folded through `|dx|`,
+   everything else raw) before summing — collapsing each `(Q, A)` pair to
+   plain data first, since holding two `lockref::Ref`s across a sort
+   deadlocks under the `lockref-guard` contention check (plan 013).
+
+**Result: `search_mirrors_exactly_at_budget_2` and `..._5` are now exactly
+green** (40 states, `TieBreak::Mover`, `deterministic_hash`) — the search
+is provably equivariant at these budgets, not just measured symmetric.
+**`..._20` still fails**, same state, same child (`StartBlock`, now off by
+one *elsewhere* in that subtree — `RequestedRoll::BlockDice` collapses to
+one scripted `Pow` outcome, so the divergence is not the block-dice roll
+itself but something below it: a pushback-square choice, an armor/injury
+roll, or a further chance node down that path, not yet localised). Marked
+`#[ignore]` with the repro pinned in a doc comment rather than left red.
+
+**The aggregate value-probe bias is unmoved by either fix.**
+`search_side_bias_by_budget` at 1000 iterations, `TieBreak::Mover`, n=300
+(fresh seed base 23_010, post-fix build): **-61.3 ± 7.1, t = -8.6** —
+statistically indistinguishable from the pre-fix `Mover` reading of -54 to
+-65 in the 2026-08-31 part-1 ablation table. Both bugs found here are
+real, worth having fixed, and demonstrated by the exact-equality harness
+to matter at small budgets — but they are not the mechanism behind the
+aggregate search-value asymmetry, the same shape of result as H1 (the
+kickoff-aim bug), H-c (the throw-in/bounce models) and the pathfinder tie-
+break before them: real, fixed, measured to not move the headline number.
+
+**Where this leaves the search:** the exact-equality harness is now
+real infrastructure — `mirror_search_exact.rs` plus the
+`deterministic_hash` feature — and it works: it found two genuine bugs by
+proof rather than by statistics, in under an hour, that five prior
+statistical ablations (asc/desc/mover tie-breaks, virtual-loss=0,
+normalised-Q, horizon=off, `MEMORY=get`) had not surfaced. The residual
+`..._20` failure is the next concrete, reproducible lead — smaller in
+scope than "the selection/backprop layer" (the prior framing), now
+"whatever is below a `StartBlock` resolution in this one traced case."
+Given the aggregate bias's magnitude (-61) and this bug's demonstrated
+size (±1 on one child at budget 20), plausible reads are (a) there are
+several more bugs of this exact shape stacking up across deeper subtrees,
+or (b) the dominant mechanism is structurally different from a
+tie-break/summation-order bug — e.g. genuine, non-arbitrary PUCT float
+divergence from FPU/prior computation once two mirrored subtrees' visit
+counts diverge even slightly (which the −65 → −136 virtual-loss=0 ablation
+and the −33 normalised-Q ablation both suggest: the *exploration dynamics*
+modulate the effect strongly, which a single-cause tie-break bug would
+not do). Continuing to bisect the `..._20` failure with the harness now in
+hand — rather than further global ablations — is the highest-value next
+step; not attempted further here given the scope of one session.
+
 ## Cross-references
 
 - plan 021 open issue 5 — the 0.40 mirror anomaly this closes; and its "Home/Away asymmetry audit" next step.

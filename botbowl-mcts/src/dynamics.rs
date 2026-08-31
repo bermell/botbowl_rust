@@ -369,15 +369,54 @@ impl MoverFrame {
 /// results are ranked by how far *forward* (toward the acting side's own
 /// endzone) they point, which reflects with the board; everything else keeps
 /// a fixed, side-agnostic order.
-fn chance_key(r: &RollResult, attacking_dx: i8) -> (i8, u8) {
-    let dx_of = |d: botbowl_engine::core::dices::D8| {
-        botbowl_engine::core::model::Direction::from(d).dx as i8 * attacking_dx
+///
+/// `dy` was originally left out: three of `ALL_DIRECTIONS`' eight entries
+/// share any given `dx` (e.g. dx=+1: `(1,1)`, `(1,0)`, `(1,-1)`), so those
+/// three tied under `Mover` and fell through to whatever order
+/// `recon_mcts`'s children map yielded — the same "absolute-coordinate tie"
+/// bug class this plan has caught four times before, just one level
+/// deeper. `dy` passes through x-mirroring unchanged (only `dx` negates),
+/// so ordering by it directly is itself mirror-covariant and breaks the tie
+/// the same way on both sides of a mirror.
+fn chance_key(r: &RollResult, attacking_dx: i8) -> (i8, i8, u8) {
+    let dir_of = |d: botbowl_engine::core::dices::D8| botbowl_engine::core::model::Direction::from(d);
+    let dx_of = |d: botbowl_engine::core::dices::D8| dir_of(d).dx as i8 * attacking_dx;
+    match r {
+        RollResult::D8(d) => (dx_of(*d), dir_of(*d).dy, 0),
+        RollResult::Deviate(_, d) => (dx_of(*d), dir_of(*d).dy, 1),
+        RollResult::Scatter(d, _, _) => (dx_of(*d), dir_of(*d).dy, 2),
+        _ => (0, 0, 3),
+    }
+}
+
+/// A total, deterministic ordering key for a chance node's `RollResult`
+/// children that is invariant under x-mirroring: every `Direction`-valued
+/// field is folded through `|dx|` (mirroring only negates `dx`; `dy` passes
+/// through unchanged), so the corresponding outcome in a mirrored search
+/// sorts to the identical key. Every other field is already mirror-invariant
+/// verbatim (no field but a direction carries absolute-x information), so
+/// folding only those and keeping the rest raw is sufficient for a match
+/// between a state and its mirror — see `backprop_scores`'s chance branch,
+/// the only caller.
+fn canonical_chance_key(r: &RollResult) -> String {
+    let d8 = |d: botbowl_engine::core::dices::D8| {
+        let dir = botbowl_engine::core::model::Direction::from(d);
+        format!("({},{})", dir.dx.unsigned_abs(), dir.dy)
     };
     match r {
-        RollResult::D8(d) => (dx_of(*d), 0),
-        RollResult::Deviate(_, d) => (dx_of(*d), 1),
-        RollResult::Scatter(d, _, _) => (dx_of(*d), 2),
-        _ => (0, 3),
+        RollResult::BlockDice(dice) => format!("BlockDice{dice:?}"),
+        RollResult::Coin(c) => format!("Coin{c:?}"),
+        RollResult::Pass => "Pass".to_string(),
+        RollResult::Fail => "Fail".to_string(),
+        RollResult::FoulArmor { broken, ejected } => format!("FoulArmor{broken}{ejected}"),
+        RollResult::FoulInjury { outcome, ejected } => format!("FoulInjury{outcome:?}{ejected}"),
+        RollResult::MiddleOutcome => "MiddleOutcome".to_string(),
+        RollResult::D6(d) => format!("D6{d:?}"),
+        RollResult::D8(d) => format!("D8{}", d8(*d)),
+        RollResult::Deviate(d6, d8v) => format!("Deviate{d6:?}{}", d8(*d8v)),
+        RollResult::Scatter(a, b, c) => format!("Scatter{}{}{}", d8(*a), d8(*b), d8(*c)),
+        RollResult::Sum2D6(s) => format!("Sum2D6{s:?}"),
+        RollResult::ThrowIn { direction, distance } => format!("ThrowIn{direction:?}{distance:?}"),
     }
 }
 
@@ -889,13 +928,40 @@ impl GameDynamics for BloodBowlDynamics {
             let mut total_visits: u32 = 0;
             let mut weighted_sum: f64 = 0.0;
             let mut total_prob: f64 = 0.0;
-            for (q, a) in child_scores_and_actions.into_iter() {
-                let v = q.visits.load(Ordering::Relaxed);
+            // `recon_mcts` hands children back in its own `HashMap`
+            // iteration order, which is a function of the *action's* hash —
+            // unrelated between a state and its mirror, since mirroring
+            // negates every direction-valued outcome's x-component. f64
+            // addition is not associative, so summing in that order made
+            // this expectation, and the `avg as i64` truncation below,
+            // side-dependent: an exact search-mirror assertion caught a
+            // truncation-boundary flip (-523 vs -522) from this at budget
+            // 20 (plan 023). Sorting into a key that is itself
+            // mirror-*covariant* (`canonical_chance_key` folds every
+            // Direction field through `|dx|`, which mirroring leaves
+            // unchanged) makes the summation order — and therefore the
+            // truncated result — identical between a search and its mirror.
+            //
+            // Collapse each (Q, A) pair to plain data immediately — do not
+            // hold `Q`/`A` (`lockref::Ref`s) across the sort, which would
+            // pull a second `Ref` while the first is alive and deadlock
+            // under contention (plan 013, `lockref-guard`).
+            let mut terms: Vec<(String, u32, f64, i64)> = child_scores_and_actions
+                .into_iter()
+                .map(|(q, a)| {
+                    let key = match a.deref() {
+                        BbAction::Chance { result, .. } => canonical_chance_key(result),
+                        BbAction::Player { .. } => String::new(),
+                    };
+                    (key, q.visits.load(Ordering::Relaxed), a.prob_f32().unwrap_or(0.0) as f64, q.score)
+                })
+                .collect();
+            terms.sort_by(|a, b| a.0.cmp(&b.0));
+            for (_, v, prob, score) in terms.into_iter() {
                 if v == 0 {
                     continue;
                 }
-                let prob = a.prob_f32().unwrap_or(0.0) as f64;
-                weighted_sum += prob * q.score as f64;
+                weighted_sum += prob * score as f64;
                 total_prob += prob;
                 total_visits += v;
             }

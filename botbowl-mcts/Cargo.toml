@@ -23,3 +23,7 @@ expand_bench = []
 botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
 rand = "0.8"
 rand_chacha = "0.3"
+# Unions with the `dependencies` recon_mcts feature set for test targets only
+# (resolver = "2" keeps this out of the lib build) — plan 023's exact-equality
+# search-mirror test needs reproducible children-map iteration order.
+recon_mcts = { version = "0.1.0", path = "../recon_mcts/", features = ["deterministic_hash"] }
