@@ -859,6 +859,33 @@ impl AvailableActions {
             out.push(Action::Simple(*at));
         }
     }
+    /// Companion to [`crate::core::gamestate::GameState::mirrored`]:
+    /// reflect every positional offering about `x -> width-1-x` and hand
+    /// the decision to the other team. Simple actions carry no
+    /// coordinates, so they survive unchanged.
+    ///
+    /// Path offerings are dropped (`has_paths` cleared) — their `Node`
+    /// chains live on `GameState` and carry their own positions. See the
+    /// scope note on `GameState::mirrored`.
+    pub fn mirrored(&self, width: Coord) -> AvailableActions {
+        let positional = self.positional.as_ref().map(|src| {
+            let mut dst: FullPitch<SmallVecPosAT> = Default::default();
+            for (pos, sv) in src.iter_position() {
+                if sv.is_empty() {
+                    continue;
+                }
+                dst[Position::new((width - 1 - pos.x, pos.y))] = sv.clone();
+            }
+            dst
+        });
+        AvailableActions {
+            team: self.team.map(other_team),
+            simple: self.simple.clone(),
+            positional,
+            has_paths: false,
+        }
+    }
+
     pub fn insert_simple(&mut self, action_type: SimpleAT) {
         assert!(self.team.is_some());
         self.simple.insert(action_type);

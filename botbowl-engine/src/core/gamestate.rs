@@ -1368,6 +1368,85 @@ impl GameState {
         self.path_buffer.as_mut().and_then(|buf| buf[pos].take())
     }
 
+    /// Reflect the whole situation about the board's vertical midline
+    /// (`x -> width-1-x`) **and** swap Home for Away — "the same position
+    /// seen from the other bench".
+    ///
+    /// Blood Bowl is symmetric under this map: Home attacks `x = 1` and
+    /// Away attacks `x = width - 2`, so a correct, side-agnostic agent
+    /// must value `s` and `s.mirrored()` as exact opposites. That turns
+    /// three claims plan 023 had to make by *reading* code ("`leaf_score`
+    /// is antisymmetric", "priors are mover-relative", "pruning has no
+    /// side logic") into one-line assertions. Reading has been wrong
+    /// about this twice already — `ScriptedBot`'s touchback tie-break and
+    /// the throw-in/bounce models both "looked symmetric".
+    ///
+    /// **Scope, deliberately narrow.** Everything a leaf evaluator, a
+    /// prior, a pruning rule or `get_all_actions` reads is mirrored:
+    /// fielded players (position + team), the board index, the ball, both
+    /// `TeamState`s, the team-typed and per-team fields of `GameInfo`, and
+    /// `available_actions`. Two things are *not*:
+    ///
+    /// - the **procedure stack**, so the result must not be stepped; and
+    /// - **path offerings** (`available_actions.has_paths` /
+    ///   `path_buffer`), whose `Node` chains carry their own positions.
+    ///   They are dropped, and `has_paths` is cleared, so a mirrored
+    ///   state's `get_all_actions()` never contains path-style actions.
+    ///   Compare like with like: mirror both sides, or filter paths out.
+    ///
+    /// Test/analysis helper — nothing in the engine's play path calls it.
+    pub fn mirrored(&self) -> GameState {
+        let width = self.board_dims.width;
+        let flip = |p: Position| Position::new((width - 1 - p.x, p.y));
+
+        let mut out = self.clone();
+
+        // Players: reflect the position, change bench.
+        for slot in out.fielded_players.iter_mut() {
+            if let Some(player) = slot.as_mut() {
+                player.position = flip(player.position);
+                player.stats.team = other_team(player.stats.team);
+            }
+        }
+        // Rebuild the board index from the moved players rather than
+        // reflecting the array: the two must not be able to disagree.
+        out.board = Default::default();
+        for player in out.fielded_players.iter().flatten() {
+            out.board[player.position] = Some(player.id);
+        }
+
+        // Dugout players carry a team but no position.
+        for slot in out.dugout_players.iter_mut() {
+            if let Some(player) = slot.as_mut() {
+                player.stats.team = other_team(player.stats.team);
+            }
+        }
+
+        // The ball. `Carried(id)` needs no change — the carrier moved with
+        // the player table.
+        out.ball = match self.ball {
+            BallState::OnGround(p) => BallState::OnGround(flip(p)),
+            BallState::InAir(p) => BallState::InAir(flip(p)),
+            other => other,
+        };
+        out.bounce_squares = self.bounce_squares.iter().map(|p| flip(*p)).collect();
+
+        // Both benches swap wholesale.
+        std::mem::swap(&mut out.home, &mut out.away);
+        out.info.home_turn = self.info.away_turn;
+        out.info.away_turn = self.info.home_turn;
+        out.info.team_turn = other_team(self.info.team_turn);
+        out.info.kicking_first_half = other_team(self.info.kicking_first_half);
+        out.info.kicking_this_drive = other_team(self.info.kicking_this_drive);
+        out.info.kickoff_by_team = self.info.kickoff_by_team.map(other_team);
+        out.info.winner = self.info.winner.map(other_team);
+
+        out.available_actions = Box::new(self.available_actions.mirrored(width));
+        out.path_buffer = None;
+
+        out
+    }
+
     /// Gather every legal action — simple, positional, and path-style. Sorts
     /// at the end because `AvailableActions::simple` is a `HashSet` whose
     /// iteration order is randomized per run, and `RandomBot::get_action`
