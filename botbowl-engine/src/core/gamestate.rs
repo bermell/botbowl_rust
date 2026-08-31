@@ -1368,6 +1368,36 @@ impl GameState {
         self.path_buffer.as_mut().and_then(|buf| buf[pos].take())
     }
 
+    /// Which team kicked off this half, as the **live `Half` procedure**
+    /// records it. This is not the same thing as `info.kicking_first_half`:
+    /// `Half::step` uses its own copy to decide who takes the next team
+    /// turn (`next_team = other(kicking_this_half)` when the two turn
+    /// counters are level, `kicking_this_half` otherwise), so it is what
+    /// actually fixes the *turn order*. `None` if no half is in progress.
+    pub fn kicking_this_half(&self) -> Option<TeamType> {
+        self.proc_stack.iter().rev().find_map(|p| match p {
+            AnyProc::Half(h) if h.started => Some(h.kicking_this_half),
+            _ => None,
+        })
+    }
+
+    /// Companion setter for [`GameState::kicking_this_half`]. Needed by
+    /// [`GameState::mirrored`] and by anything else that reflects a state:
+    /// swapping only the team-typed fields of `GameInfo` leaves the turn
+    /// alternation pointing at the wrong team, which silently hands one
+    /// side two consecutive turns. Returns whether a started half was found.
+    pub fn set_kicking_this_half(&mut self, team: TeamType) -> bool {
+        for p in self.proc_stack.iter_mut().rev() {
+            if let AnyProc::Half(h) = p {
+                if h.started {
+                    h.kicking_this_half = team;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Reflect the whole situation about the board's vertical midline
     /// (`x -> width-1-x`) **and** swap Home for Away — "the same position
     /// seen from the other bench".
@@ -1440,6 +1470,13 @@ impl GameState {
         out.info.kicking_this_drive = other_team(self.info.kicking_this_drive);
         out.info.kickoff_by_team = self.info.kickoff_by_team.map(other_team);
         out.info.winner = self.info.winner.map(other_team);
+
+        // The live `Half` proc's own copy of the kicking team drives the
+        // turn alternation; leaving it alone would make the mirror hand one
+        // side two turns in a row.
+        if let Some(kicking) = self.kicking_this_half() {
+            out.set_kicking_this_half(other_team(kicking));
+        }
 
         out.available_actions = Box::new(self.available_actions.mirrored(width));
         out.path_buffer = None;

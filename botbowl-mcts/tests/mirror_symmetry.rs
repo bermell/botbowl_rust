@@ -149,7 +149,7 @@ fn legal_action_set_mirrors_onto_itself() {
 
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameStateBuilder};
-use botbowl_engine::core::model::{BallState, TeamType};
+use botbowl_engine::core::model::{other_team, BallState, TeamType};
 use botbowl_engine::core::table::SimpleAT;
 use botbowl_mcts::{MctsBot, SearchBudget};
 
@@ -187,6 +187,19 @@ fn mirror_playable(s: &GameState, dims: BoardDims) -> GameState {
     }
     m.home.score = s.away.score;
     m.away.score = s.home.score;
+    // Random starts never run a coin toss, so both of these sit at their
+    // constructed default for *both* states — which would leave the pair
+    // agreeing on who kicked instead of mirroring it. The engine reads
+    // them at the half boundary, which a turn-8 search reaches.
+    m.info.kicking_first_half = other_team(s.info.kicking_first_half);
+    m.info.kicking_this_drive = other_team(s.info.kicking_this_drive);
+    // The one that actually matters, and the one that is easiest to miss:
+    // `Half::step` decides who takes the next team turn from *its own*
+    // copy of the kicking team, not from `GameInfo`. Leave it alone and the
+    // mirrored state gives its mover two consecutive turns — worth roughly
+    // -57 leaf-score points of spurious "side bias" when measured.
+    let kicking = s.kicking_this_half().expect("a half is in progress");
+    assert!(m.set_kicking_this_half(other_team(kicking)), "mirror has no started half");
     m.set_dice_mode(DiceMode::RollDice);
     m
 }
@@ -196,11 +209,31 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
     let mut sums: Vec<f64> = Vec::new();
     let mut mirrored_pick = 0usize;
     let mut pairs = 0usize;
+    // Stratified by how close the state is to the end of the half. The
+    // search's horizon is "until the mover's next turn", so a turn-8 state
+    // runs past the half boundary and into the kickoff machinery, while an
+    // early-turn state never leaves the drive. If the asymmetry lives in
+    // one stratum, that localises it.
+    let mut by_turn: std::collections::BTreeMap<u8, Vec<f64>> = Default::default();
     for (i, mut s) in states(n, seed).into_iter().enumerate() {
         let mut m = mirror_playable(&s, dims);
         // The rebuild must reproduce the situation exactly, or the two
         // searches are not looking at mirrored problems.
         assert_eq!(leaf_score(&m), -leaf_score(&s), "state {i}: rebuilt mirror is not the mirror");
+        // The rebuild is the instrument; if it is not an exact mirror the
+        // measurement below is meaningless. Compare the two states' legal
+        // sets, which is the strongest cheap check available.
+        let mut expect: Vec<_> = s.get_all_actions().into_iter().map(|a| mirror_action(dims, a)).collect();
+        let mut got = m.get_all_actions();
+        expect.sort();
+        got.sort();
+        assert_eq!(expect, got, "state {i}: rebuilt mirror offers different actions");
+        // Turn order has to mirror too, not just the board.
+        assert_eq!(
+            m.kicking_this_half().map(other_team),
+            s.kicking_this_half(),
+            "state {i}: rebuilt mirror does not mirror the turn order"
+        );
         s.set_seed(1000 + i as u64);
         m.set_seed(1000 + i as u64);
 
@@ -212,6 +245,8 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
         let (a_m, rec_m) = bot_m.get_action_with_record(&m);
         if let (Some(vs), Some(vm)) = (rec_s.root_value, rec_m.root_value) {
             sums.push((vs + vm) as f64);
+            let turn = s.info.home_turn.max(s.info.away_turn);
+            by_turn.entry(turn).or_default().push((vs + vm) as f64);
             pairs += 1;
         }
         if mirror_action(dims, a_s) == a_m {
@@ -228,6 +263,16 @@ fn side_bias_at_budget(iters: usize, n: u32, seed: u64) {
         mean / se,
         sums.len()
     );
+    for (turn, v) in &by_turn {
+        if v.len() < 8 {
+            continue;
+        }
+        let n = v.len() as f64;
+        let m = v.iter().sum::<f64>() / n;
+        let var = v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (n - 1.0);
+        let se = (var / n).sqrt();
+        println!("    turn {turn}: n={:3} mean {m:+8.2} ± {se:.2}  t = {:+.2}", v.len(), m / se);
+    }
 }
 
 /// Diagnostic, not an assertion: prints the search's side bias at two
