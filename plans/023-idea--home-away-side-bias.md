@@ -13,11 +13,14 @@ inability to see side-relative results (`ae43fa2`, `80175cf`).
 **Two things changed on 2026-08-31** (see the two "Result (2026-08-31)"
 sections):
 
-1. **Action ordering is a causal lever.** Forcing the search's exact-tie
-   tie-break to "prefer the lowest-x action" takes the mirror-match Home share
-   from **0.703 to 0.503** (z = −3.7 against the shipped arm, −4.15 against the
-   opposite direction). Whether it is *the* cause or a compensating knob is the
-   open question; do not ship it (it is itself an absolute-coordinate rule).
+1. **Action ordering is a large lever but not the cause.** Forcing the
+   search's exact-tie tie-break to "prefer the lowest-x action" takes the
+   mirror-match Home share from **0.703 to 0.503** (z = −3.7); forcing the
+   *mirror-covariant* version of the same rule leaves it at 0.633 (z = −0.45
+   against a matched control). So the hypothesis is refuted as a cause and the
+   low-x arm is a compensation, not a fix — do not ship it. What it leaves is a
+   sharp contradiction: with a covariant tie-break and a pipeline that is now
+   property-tested mirror-exact, the mirror match should read 0.500.
 2. **The bias is measurable without games.** A paired mirror probe on the
    search's root value reads −65 ± 5 (t = −12) at 1000 iterations, 0 at small
    budgets, and **exactly 0 under the y-reflection control**. That turns a
@@ -377,11 +380,13 @@ independent seed-pairs.
 - `asc` − `hash` = −0.200, z = −3.72, p ≈ 2e-4.
 - `desc` − `hash` = +0.024, z = +0.5, n.s.
 
-**Ordering is causal.** Changing nothing but the direction in which the
-search breaks exact ties moves the mirror-match Home share from 0.70 to
-0.50, and takes the side TD split with it (0.605 → 0.490). This is the same
-shape as `ScriptedBot`'s touchback tie-break, one level up: a preference
-expressed in absolute board coordinates, inside the search this time.
+**Ordering moves the bias, by a lot.** Changing nothing but the direction in
+which the search breaks exact ties moves the mirror-match Home share from
+0.70 to 0.50, and takes the side TD split with it (0.605 → 0.490). This is
+the same shape as `ScriptedBot`'s touchback tie-break, one level up: a
+preference expressed in absolute board coordinates, inside the search this
+time. **It is not, however, the cause** — see "The `mover` arm" below, where
+the mirror-covariant version of the same rule leaves the bias untouched.
 
 The `hash` arm is also a **fifth independent replication** of the effect
 itself (0.703, z = +5.3), on fresh seeds and after the B1/B1b/B2/H-c fixes.
@@ -396,30 +401,61 @@ receive effect and the shared coin within a seed-pair is not doing the work.
 | `asc` | H40-A44, 0.476 (z = −0.44) | H40-A35, 0.533 (z = +0.58) |
 | `desc` | H61-A23, 0.726 (z = +4.15) | H59-A22, 0.728 (z = +4.11) |
 
-### The shape of the bracket is not what a naive ordering story predicts
+### The `mover` arm: ordering is a knob, **not** the cause
 
-If the shipped `hash` order were an unbiased coin between "early" and
-"late", `hash` would sit near 0.5 and `asc`/`desc` would bracket it. Instead
-`hash` ≈ `desc` ≈ 0.71 and `asc` ≈ 0.50: the shipped arbitrary order behaves
-like *prefer high x*, and only the low-x preference removes the bias. Two
-readings survive that, and they are not yet separated:
+The bracket's shape is not what a naive ordering story predicts. If the
+shipped `hash` order were an unbiased coin between "early" and "late",
+`hash` would sit near 0.5 and `asc`/`desc` would bracket it. Instead
+`hash` ≈ `desc` ≈ 0.71 and only the low-x preference moves anything. That
+leaves two readings — "the tie-break is the cause and `asc` is the fix"
+versus "the tie-break is a knob and `asc` is a compensation" — and
+`TieBreak::Mover` separates them, because a *mirror-covariant* rule cannot
+by construction create or cancel a side bias.
 
-1. **The bias is not created by the tie-break; the tie-break is a knob on
-   it.** `asc` happens to sit at the setting where the two sides' play is
-   balanced. Then the underlying cause is still unidentified, and `asc` is a
-   compensation, not a fix — and being an absolute-coordinate rule it would
-   be tuned to this board and would not survive a mirror.
-2. `hash` order is not neutral in effect. `max_by` keeps the *last* maximum,
-   and hashing is arbitrary but *fixed per process*; if the value ties that
-   matter are concentrated in a few recurring action shapes, an arbitrary
-   order can behave systematically. This is testable by re-running `hash`
-   across many processes, which the four historical replications
-   (0.667–0.709 in four separate invocations) argue against.
+Fourth arm, same instrument, fresh seed bases (700000 / 710000 / 720000,
+50 games each), on a build that also carries the pathfinder fix, with a
+matched `hash` control on the identical seeds:
 
-Reading 1 is the more likely one, and it is why `TieBreak::Mover` exists:
-being mirror-covariant, it cannot compensate for a side bias, so a `mover`
-arm separates "the tie-break was the cause" (expect ≈ 0.5) from "`asc` is a
-compensating knob" (expect ≈ 0.7). See "The mover arm" below.
+| arm | decided | Home | Away | draw | Home share | z | pair t | side TD |
+|---|---|---|---|---|---|---|---|---|
+| `mover` (mirror-covariant) | 109 | 69 | 40 | 41 | **0.633** | +2.78 | +2.49 | 286:211 (0.575) |
+| `hash` control | 124 | 82 | 42 | 26 | 0.661 | +3.59 | +3.74 | 380:305 (0.555) |
+
+`mover` − `hash` = **−0.028**, z = −0.45, 95% CI [−0.151, +0.095]. **The
+mirror-covariant tie-break leaves the bias intact.**
+
+So the verdict on the hypothesis this experiment was built for:
+
+- **Action-enumeration ordering is refuted as the *cause*.** Making the
+  search's tie-break mirror-covariant — the only version of the rule that
+  could be responsible for a side bias — changes nothing.
+- **It is confirmed as a large *lever*.** `asc` really does take the mirror
+  match from 0.70 to 0.50 (z = −3.7), and `desc` really is +0.22 above it. A
+  directional tie-break inside the search is worth ±0.11 of Home share, so
+  this family of bug stays dangerous even though it is not the culprit here.
+- `asc` is therefore a **compensation, not a fix**, and must not ship: it is
+  an absolute-coordinate rule, tuned to this board's geometry, and would
+  itself fail a mirror-invariance test.
+- Note the direction, worth remembering: "prefer the option toward *your own*
+  attacking endzone" (which `asc` is, for Home) makes that side play
+  **worse**, not better. The same sign shows up in the value probe below —
+  `asc` is the arm where the search is *least* Away-optimistic and Home wins
+  *least*. Optimism and strength run opposite here.
+- **The most useful thing the `mover` arm establishes is a contradiction to
+  chase.** Under `mover` the tie-break is mirror-covariant and the whole
+  transition + evaluation pipeline is property-tested mirror-exact (next
+  section), so the search *ought* to be equivariant and the mirror match
+  *ought* to read 0.500. It reads 0.633 at z = +2.8. Something in the
+  selection/aggregation layer is still not covariant — residual candidates:
+  chance-outcome ties `mover` does not order (three directions share each
+  `dx`), the `HashMap` order that survives wherever `cmp_actions` returns
+  `Equal`, and order-dependent f64 rounding in the chance-node expectation
+  (`weighted_sum` accumulates in map order).
+- Caveat on cross-arm comparison: `asc` (0.503) and `mover` (0.633) have
+  almost the same value-probe reading (−52 and −54), so **the value probe does
+  not predict the win rate across arms**. They are two related but distinct
+  measurements; do not treat either as a proxy for the other.
+
 
 ## Result (2026-08-31): a `mirror(state)` helper, and what it turned into assertions
 
@@ -594,15 +630,18 @@ here:
 ### Next steps, in priority order
 
 1. **Property-test the selection and backprop layer**, the way the
-   transition layer now is. The natural assertion:
+   transition layer now is — and note the `mover` arm makes this a
+   *contradiction*, not merely a gap: an equivariant pipeline plus a
+   covariant tie-break should give 0.500 and gives 0.633. The natural
+   assertion:
    `search(mirror s) == mirror(search s)` **exactly**, at a fixed budget,
    under `TieBreak::Mover` and with a deterministic hasher — which means
    giving `recon_mcts`'s children map a fixed `BuildHasher` behind a test
    feature. Without that, the residual `HashMap` nondeterminism makes exact
    equality untestable and we are stuck doing statistics on a value that
    should be provable. **This is the highest-value item left.**
-2. **Measure the `mover` arm in games** (in flight; see below). It separates
-   "the tie-break was the cause" from "`asc` is a compensating knob".
+2. ~~**Measure the `mover` arm in games.**~~ **Done** — 0.633, indistinguishable
+   from a matched `hash` control (z = -0.45). Ordering is a knob, not the cause.
 3. **Do not ship `asc`.** It removes the measured bias but is an
    absolute-coordinate rule: it is tuned to this board's geometry and would
    itself fail a mirror-invariance test. `Mover` is the shape a fix has to
