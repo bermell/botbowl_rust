@@ -23,6 +23,15 @@ two_player = []
 # materialises Refs into a Vec, which is benign there.
 lockref-guard = []
 
+# Opt-in: makes the children `HashMap` inside `Node`/`Children::Branch` use a
+# fixed-seed hasher instead of the per-process-random default, so iteration
+# order (and therefore any downstream `HashMap`-order tie-break) is
+# reproducible across runs given the same insertion sequence. Never enable in
+# production — it exists purely so tests can assert exact tree equality
+# instead of doing statistics on values that should be provable (plan 023,
+# botbowl_rust).
+deterministic_hash = []
+
 # Tests are in a separate workspace so they can be compiled with feature
 # `test_internals` by default.  Because the tests require a considerable amount
 # of setup code which also serves as good api demonstration, this set-up allows

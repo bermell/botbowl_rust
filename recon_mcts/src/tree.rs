@@ -13,6 +13,17 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
+/// The `BuildHasher` used for a node's children map. Behind `deterministic_hash`
+/// this is a fixed-seed hasher (`DefaultHasher`'s seed is constant, unlike
+/// `RandomState`'s per-process seed), so children iteration order — and
+/// anything downstream that breaks ties on it — is reproducible across runs
+/// given the same insertion sequence. Never enabled in production; see the
+/// feature doc-comment in `Cargo.toml`.
+#[cfg(not(feature = "deterministic_hash"))]
+type ChildHasher = std::collections::hash_map::RandomState;
+#[cfg(feature = "deterministic_hash")]
+type ChildHasher = std::hash::BuildHasherDefault<DefaultHasher>;
+
 /// Convenience type alias.
 pub type TreeAlias<GD, M> = Tree<NodeAlias<GD, M>, GD>;
 
@@ -284,7 +295,7 @@ pub enum Status<T> {
 }
 
 impl<T> Status<T> {
-    fn from_children<I, A, N>(c: &Children<I, A, N>, f: impl FnOnce(&HashMap<A, N>) -> T) -> Self {
+    fn from_children<I, A, N>(c: &Children<I, A, N>, f: impl FnOnce(&HashMap<A, N, ChildHasher>) -> T) -> Self {
         match c {
             Children::NewLeaf => Status::Pending,
             Children::BranchWip(h) => Status::ActionWip(f(h.scored_ref())),
@@ -468,12 +479,12 @@ enum Children<I, A, N> {
     NewLeaf,
     #[allow(dead_code)]
     BranchWip(BranchWip<I, A, N>),
-    Branch(HashMap<A, N>),
+    Branch(HashMap<A, N, ChildHasher>),
     None,
 }
 
 impl<I, A, N> Children<I, A, N> {
-    fn as_map(&self) -> Option<&HashMap<A, N>> {
+    fn as_map(&self) -> Option<&HashMap<A, N, ChildHasher>> {
         match self {
             Children::BranchWip(h) => Some(h.scored_ref()),
             Children::Branch(h) => Some(h),
@@ -481,7 +492,7 @@ impl<I, A, N> Children<I, A, N> {
         }
     }
 
-    fn as_map_mut(&mut self) -> Option<&mut HashMap<A, N>> {
+    fn as_map_mut(&mut self) -> Option<&mut HashMap<A, N, ChildHasher>> {
         match self {
             Children::BranchWip(h) => Some(h.scored_mut()),
             Children::Branch(h) => Some(h),
@@ -504,6 +515,7 @@ mod branch_wip {
     // completion (if they are not able to steal any of the work) without holding a reference to
     // `BranchWip` (which would require maintaining a lock)
 
+    use super::ChildHasher;
     use std::cmp::Eq;
     use std::collections::HashMap;
     use std::hash::Hash;
@@ -539,7 +551,7 @@ mod branch_wip {
     pub(crate) struct BranchWip<I, A, N> {
         unscored: I,
         unscored_done: bool,
-        scored: Option<HashMap<A, N>>,
+        scored: Option<HashMap<A, N, ChildHasher>>,
         scores_pending: usize,
         notifier: Arc<Notifier>,
     }
@@ -550,17 +562,17 @@ mod branch_wip {
             Self {
                 unscored,
                 unscored_done: false,
-                scored: Some(HashMap::new()),
+                scored: Some(HashMap::default()),
                 scores_pending: 0,
                 notifier: Arc::new(Notifier::new()),
             }
         }
 
-        pub fn scored_ref(&self) -> &HashMap<A, N> {
+        pub fn scored_ref(&self) -> &HashMap<A, N, ChildHasher> {
             self.scored.as_ref().unwrap()
         }
 
-        pub fn scored_mut(&mut self) -> &mut HashMap<A, N> {
+        pub fn scored_mut(&mut self) -> &mut HashMap<A, N, ChildHasher> {
             self.scored.as_mut().unwrap()
         }
 
@@ -604,7 +616,7 @@ mod branch_wip {
             self.scores_pending -= 1;
         }
 
-        pub fn take_scored(&mut self) -> Option<HashMap<A, N>> {
+        pub fn take_scored(&mut self) -> Option<HashMap<A, N, ChildHasher>> {
             self.scored.take()
         }
 
@@ -1916,7 +1928,7 @@ where
         &self,
         parent_node: &ArcNode<GD, S, P, A, Q, I, M>,
         parent_node_state: &S,
-        children: &HashMap<A, ArcNode<GD, S, P, A, Q, I, M>>,
+        children: &HashMap<A, ArcNode<GD, S, P, A, Q, I, M>, ChildHasher>,
         purpose: SelectNodeState,
     ) -> A {
         // Hide solved children from the game-dynamics selector: their
@@ -2101,7 +2113,7 @@ where
         let players_actions = self.game_dynamics.available_actions(&parent_node.player, parent_state);
         match players_actions {
             Some(player_acts) => {
-                let mut map = HashMap::new();
+                let mut map: HashMap<A, ArcNode<GD, S, P, A, Q, I, M>, ChildHasher> = HashMap::default();
                 for (p, a) in player_acts {
                     let placeholder = Node::new_placeholder(parent_node, p, a.clone());
                     map.insert(a, placeholder);
