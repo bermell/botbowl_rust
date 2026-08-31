@@ -259,6 +259,72 @@ pub enum Evaluator {
     NnValue(Arc<NnEvaluator>),
 }
 
+/// How `select_node` (and the root pick) resolve an exact tie between
+/// two equally-valued actions — plan 023's ordering experiment.
+///
+/// The default, `Hash`, is the shipped behaviour: children live in a
+/// `HashMap` keyed by `BbAction`, so `max_by` walks them in an order
+/// randomised per process by std's `RandomState`, and the winner among
+/// equals is arbitrary. `Asc` / `Desc` replace that with a *deterministic*
+/// tie-break on the engine action's own `(PosAT, x, y)` order — the same
+/// order `GameState::get_all_actions` sorts into.
+///
+/// This is a **measurement instrument, not a feature**: because Home
+/// attacks toward x=1 and Away toward x=width-2, "always prefer the
+/// lowest x among ties" is directionally opposite for the two sides, so
+/// `Asc` and `Desc` bracket the largest side bias any action-ordering
+/// preference inside the search could produce. If a mirror match does
+/// not move between them, ordering is exonerated. Leave it at `Hash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TieBreak {
+    /// Arbitrary (whatever the children `HashMap` yields last). Shipped.
+    #[default]
+    Hash,
+    /// Prefer the action that sorts *first* in `(PosAT, x, y)` order.
+    Asc,
+    /// Prefer the action that sorts *last*.
+    Desc,
+}
+
+impl TieBreak {
+    /// Resolve from `BLOOD_MCTS_TIE_BREAK` (`hash` | `asc` | `desc`).
+    /// Unknown values fall back to the shipped `Hash`.
+    pub fn from_env() -> Self {
+        match std::env::var("BLOOD_MCTS_TIE_BREAK").ok().as_deref() {
+            Some("asc") => TieBreak::Asc,
+            Some("desc") => TieBreak::Desc,
+            _ => TieBreak::Hash,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            TieBreak::Hash => "hash",
+            TieBreak::Asc => "asc",
+            TieBreak::Desc => "desc",
+        }
+    }
+
+    /// Comparator fragment applied *after* the value comparison inside a
+    /// `max_by`: returns `Greater` for the action this rule prefers. Only
+    /// player actions carry board coordinates, so chance outcomes (whose
+    /// order has no side meaning) are left to the map's own order.
+    fn cmp_actions(&self, a: &BbAction, b: &BbAction) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let (x, y) = match (a, b) {
+            (BbAction::Player { action: x, .. }, BbAction::Player { action: y, .. }) => (x, y),
+            _ => return Ordering::Equal,
+        };
+        match self {
+            TieBreak::Hash => Ordering::Equal,
+            // `max_by` keeps the greatest, so "prefer the first-sorting
+            // action" means calling the smaller one greater.
+            TieBreak::Asc => y.cmp(x),
+            TieBreak::Desc => x.cmp(y),
+        }
+    }
+}
+
 /// `horizon` (None by default for backwards compatibility) bounds the
 /// search depth — `available_actions` returns None as soon as a state
 /// has diverged past the anchor. `MctsBot::get_action` always sets a
@@ -283,6 +349,9 @@ pub struct BloodBowlDynamics {
     /// module constant so two bots with different settings can play each
     /// other inside one process — the head-to-head this exists for.
     pub puct: PuctMode,
+    /// Plan 023 instrument: how exact ties are broken in `select_node`
+    /// and at the root. `Hash` (default) is the shipped behaviour.
+    pub tie_break: TieBreak,
 }
 
 impl Default for BloodBowlDynamics {
@@ -292,6 +361,7 @@ impl Default for BloodBowlDynamics {
             virtual_loss: DEFAULT_VIRTUAL_LOSS,
             evaluator: Evaluator::default(),
             puct: PuctMode::default(),
+            tie_break: TieBreak::default(),
         }
     }
 }
@@ -643,7 +713,11 @@ impl GameDynamics for BloodBowlDynamics {
                     let v = puct_value(q.as_ref(), parent_visits, p, home_perspective, fpu, c);
                     (v, action)
                 })
-                .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|(va, aa), (vb, ab)| {
+                    va.partial_cmp(vb)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| self.tie_break.cmp_actions(aa, ab))
+                })
                 .expect("player node must have at least one action"),
 
             PuctMode::NormalisedQ { c, range_floor } => {
@@ -683,7 +757,11 @@ impl GameDynamics for BloodBowlDynamics {
                         let v = puct_value_normalised(q.as_ref(), parent_visits, p, home_perspective, fpu, &frame);
                         (v, action)
                     })
-                    .max_by(|(va, _), (vb, _)| va.partial_cmp(vb).unwrap_or(std::cmp::Ordering::Equal))
+                    .max_by(|(va, aa), (vb, ab)| {
+                        va.partial_cmp(vb)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| self.tie_break.cmp_actions(aa, ab))
+                    })
                     .expect("player node must have at least one action")
             }
         };
@@ -1106,6 +1184,9 @@ pub struct MctsBot {
     /// `BloodBowlDynamics.puct` per `get_action`. Resolved from
     /// `BLOOD_MCTS_PUCT_MODE` / `_C` / `_RANGE_FLOOR` at `::new`.
     puct: PuctMode,
+    /// Plan 023 ordering instrument. Resolved from `BLOOD_MCTS_TIE_BREAK`
+    /// at `::new`; see [`TieBreak`]. Production leaves this at `Hash`.
+    tie_break: TieBreak,
 }
 
 impl MctsBot {
@@ -1142,6 +1223,7 @@ impl MctsBot {
             virtual_loss,
             evaluator: Evaluator::default(),
             puct,
+            tie_break: TieBreak::from_env(),
         }
     }
 
@@ -1199,6 +1281,12 @@ impl MctsBot {
     /// a stray `BLOOD_MCTS_PUCT_*` would silently move every arm at once.
     pub fn with_puct(mut self, puct: PuctMode) -> Self {
         self.puct = puct;
+        self
+    }
+
+    /// Override the env-var default for the plan-023 tie-break instrument.
+    pub fn with_tie_break(mut self, tie_break: TieBreak) -> Self {
+        self.tie_break = tie_break;
         self
     }
 }
@@ -1267,6 +1355,7 @@ impl MctsBot {
             virtual_loss: self.virtual_loss,
             evaluator: self.evaluator.clone(),
             puct: self.puct,
+            tie_break: self.tie_break,
         };
         // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
         // workers (e.g. `expand_bench_main`) force single-thread for
@@ -1514,7 +1603,7 @@ impl MctsBot {
 
     /// Pick the root child to play from a completed search. See the
     /// comment inside for why this is aggregated-Q, not most-visited.
-    fn pick_best_action(move_info: &[(BbAction, BbNodeInfo)], agent_team: TeamType) -> EngineAction {
+    fn pick_best_action(move_info: &[(BbAction, BbNodeInfo)], agent_team: TeamType, tie_break: TieBreak) -> EngineAction {
         if std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1") {
             let mut infos: Vec<_> = move_info
                 .iter()
@@ -1547,13 +1636,18 @@ impl MctsBot {
             TeamType::Home => 1,
             TeamType::Away => -1,
         };
+        let key = |info: &BbNodeInfo| {
+            info.score
+                .as_ref()
+                .map(|s| (1i64, q_sign * s.score, s.visits.load(Ordering::Relaxed) as i64))
+                .unwrap_or((0, 0, 0))
+        };
         let best = move_info
             .iter()
-            .max_by_key(|(_, info)| {
-                info.score
-                    .as_ref()
-                    .map(|s| (1i64, q_sign * s.score, s.visits.load(Ordering::Relaxed) as i64))
-                    .unwrap_or((0, 0, 0))
+            .max_by(|(aa, ia), (ab, ib)| {
+                key(ia)
+                    .cmp(&key(ib))
+                    .then_with(|| tie_break.cmp_actions(aa, ab))
             })
             .expect("root must offer at least one action");
         match &best.0 {
@@ -1574,7 +1668,7 @@ impl MctsBot {
     /// of the trajectory (see [`botbowl_data::Trajectory::backfill_outcome_value`]).
     pub fn get_action_with_record(&mut self, state: &GameState) -> (EngineAction, Sample) {
         let result = self.run_search(state);
-        let action = Self::pick_best_action(&result.move_info, result.agent_team);
+        let action = Self::pick_best_action(&result.move_info, result.agent_team, self.tie_break);
 
         let children = result
             .move_info
@@ -1626,7 +1720,7 @@ impl MctsBot {
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
         let result = self.run_search(state);
-        Self::pick_best_action(&result.move_info, result.agent_team)
+        Self::pick_best_action(&result.move_info, result.agent_team, self.tie_break)
     }
 }
 
@@ -2243,5 +2337,50 @@ mod tests {
                 "unexplored branch drifted for prior={prior}"
             );
         }
+    }
+
+    /// Plan 023: the tie-break instrument must be *directional* — `Asc`
+    /// prefers the action that sorts first in the engine's own
+    /// `(PosAT, x, y)` order, `Desc` the last, and `Hash` neither. Since
+    /// Home attacks toward x=1 and Away toward x=width-2, that direction
+    /// is what makes the two arms bracket the largest possible
+    /// ordering-induced side bias.
+    #[test]
+    fn tie_break_is_directional_on_engine_action_order() {
+        use botbowl_engine::core::model::Position;
+        use botbowl_engine::core::table::PosAT;
+        use std::cmp::Ordering;
+
+        let low = BbAction::player(EngineAction::Positional(PosAT::Move, Position::new((3, 4))), 1.0);
+        let high = BbAction::player(EngineAction::Positional(PosAT::Move, Position::new((11, 4))), 1.0);
+        // Sanity: the engine sorts these ascending by x.
+        assert!(matches!(
+            EngineAction::Positional(PosAT::Move, Position::new((3, 4)))
+                .cmp(&EngineAction::Positional(PosAT::Move, Position::new((11, 4)))),
+            Ordering::Less
+        ));
+
+        // `max_by` keeps the greatest, so the preferred action must
+        // compare `Greater`.
+        assert_eq!(TieBreak::Asc.cmp_actions(&low, &high), Ordering::Greater);
+        assert_eq!(TieBreak::Asc.cmp_actions(&high, &low), Ordering::Less);
+        assert_eq!(TieBreak::Desc.cmp_actions(&low, &high), Ordering::Less);
+        assert_eq!(TieBreak::Desc.cmp_actions(&high, &low), Ordering::Greater);
+        assert_eq!(TieBreak::Hash.cmp_actions(&low, &high), Ordering::Equal);
+
+        // Chance outcomes carry no board coordinates, so no rule orders
+        // them — their order has no side meaning.
+        let c1 = BbAction::chance(botbowl_engine::core::dices::RollResult::Pass, 0.5);
+        let c2 = BbAction::chance(botbowl_engine::core::dices::RollResult::Fail, 0.5);
+        assert_eq!(TieBreak::Asc.cmp_actions(&c1, &c2), Ordering::Equal);
+        assert_eq!(TieBreak::Desc.cmp_actions(&c1, &c2), Ordering::Equal);
+    }
+
+    /// The default must stay the shipped behaviour: nothing in production
+    /// may quietly acquire a deterministic, board-coordinate tie-break.
+    #[test]
+    fn tie_break_defaults_to_hash() {
+        assert_eq!(TieBreak::default(), TieBreak::Hash);
+        assert_eq!(BloodBowlDynamics::default().tie_break, TieBreak::Hash);
     }
 }
