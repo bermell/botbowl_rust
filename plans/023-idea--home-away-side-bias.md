@@ -769,6 +769,109 @@ not do). Continuing to bisect the `..._20` failure with the harness now in
 hand — rather than further global ablations — is the highest-value next
 step; not attempted further here given the scope of one session.
 
+## Result (2026-08-31, part 3): found it — `available_actions` mistagged the mover after every roll
+
+The `..._20` residual left by part 2 localised to `StartBlock (9,6)` vs its
+mirror, q = -523 vs -522 — one child, off by one, at budget 20. Tracing
+every `select_node` decision in that specific search (temporary
+`eprintln!` instrumentation, removed before commit) found the actual
+mechanism directly: the node chosen right after `StartBlock`'s block-die
+roll resolves to `Pow` — where the real next decision is **the push
+square**, Home's own choice — was being selected with
+`parent_player == BbPlayer::Chance`, not `BbPlayer::Home`. `select_node`'s
+`home_perspective = (*parent_player == BbPlayer::Home)` was therefore
+`false`, so the search **minimised** Home's own push-square value instead
+of maximising it.
+
+**Root cause.** `recon_mcts`'s actual contract (`recon_mcts/tests/nim/lib.rs`,
+the reference two-player implementation) is that `available_actions`
+tags each returned action with the player who owns **the resulting
+child**, not the current node — Nim's own impl tags every action `P2`
+when called as `P1` and vice versa, because turn always alternates there.
+`recon_mcts::create_scored_child` takes that tag straight from
+`available_actions` and stores it as the **child's own** `.player`
+(`tree.rs::make_branch` → `Node::new_child(parent_node, p, ...)`), which
+later becomes `parent_player`/`player` in every subsequent
+`select_node`/`backprop_scores` call on that child.
+
+`botbowl-mcts`'s `available_actions` (`dynamics.rs`) got this backwards in
+both branches:
+- the chance branch tagged **every** roll outcome `BbPlayer::Chance`
+  unconditionally (`outcomes.into_iter().map(|a| (BbPlayer::Chance, a))`)
+  — correct only when the outcome resolves into *another* pending roll,
+  which is the exception, not the rule;
+- the player branch tagged every action with `mcts_player`, the *current*
+  state's own mover (`state.available_actions.team`) — correct only when
+  the action doesn't trigger a roll, a turnover, or `EndTurn`.
+
+So almost every node **one step past a dice roll** — a push square, a
+follow-up move continuation, anything that isn't itself another roll —
+inherited a stale tag. Whenever that stale tag read `Chance` (the common
+case) or the wrong team, `select_node`'s `home_perspective` and
+`backprop_scores`'s `want_max` (`*player == BbPlayer::Home`) used it
+directly, mis-evaluating exactly whichever physical side happened to be
+`TeamType::Home` at that node — sometimes minimising a Home decision,
+sometimes maximising an Away one that should have been minimised. This is
+the same "absolute-coordinate" bug family this plan has now caught seven
+times (kickoff aim, `ScriptedBot`'s touchback tie-break, the throw-in/
+bounce model, the pathfinder route tie-break, the chance-key `dy` omission,
+the backprop summation order, and now this) — except this one lives in the
+selection/backprop layer itself, which is exactly where the mirror-value
+probe said to keep looking.
+
+**Fix** (`e107f06`): `peek_mover(dynamics, state, action)` — clone the
+state, actually call `apply_action`, and tag with `player_for_state` of
+the *real* resulting state, for every action in both branches. Costs one
+extra `apply_action` per candidate during expansion (`make_branch` was
+going to call it again anyway to materialise the child) — accepted per
+this repo's bot-capability-over-performance priority; not benchmarked.
+
+**Confirmation, in three independent instruments:**
+
+1. **Exact equality.** `search_mirrors_exactly_at_budget_20` — previously
+   `#[ignore]`d with the pinned `-523` vs `-522` repro — is now exactly
+   green (un-ignored) and stays green at budget 200. `debug_state_13_budget_20`
+   now prints `StartBlock (9,6) q=Some(-522)` against the mirror's
+   `q=Some(522)` — an exact negation, not an off-by-one.
+2. **The paired value-probe, the load-bearing measurement.**
+   `search_side_bias_by_budget` at 1000 iterations, n=300 (fresh seed base
+   23,010):
+   | tie-break | mean(root_home(s)+root_home(mirror s)) | mirrored root-pick agreement |
+   |---|---|---|
+   | `Mover` (pre-fix, part 1) | -54 to -65 | not measured at this budget |
+   | `Mover` (post-fix) | **+0.00 ± 0.00, t = NaN (exact)** | **300/300** |
+   | `Hash` / shipped default (pre-fix, part 1) | -65.5 ± 5.4, t = -12.1 | 26/40 at 200 iters |
+   | `Hash` / shipped default (post-fix) | **-0.05 ± 5.52, t = -0.01** | **206/300** |
+
+   Under `Mover` the fix makes the search **exactly** equivariant — every
+   one of 300 mirrored pairs picked the exact mirrored root action, and the
+   mover-relative root value is bit-identical between sides (Home
+   +181.20 ± 79.76, Away +181.20 ± 79.76 — not just close, the same
+   printed value). Under the shipped `Hash` tie-break — not mirror-
+   covariant by construction, so exact equality was never on the table
+   there — the aggregate collapses from a 12-sigma effect to consistent
+   with zero, and root-pick agreement more than doubles. The remaining
+   per-stratum noise under `Hash` (e.g. turn 8: -50.7 ± 19.3, t = -2.63) is
+   `Hash`'s already-documented tie-break randomness (part 1's `asc`/`desc`
+   bracket, ±0.11 of Home share) doing what it always does on exact ties —
+   not evidence of a remaining bug.
+3. **`cargo test --workspace`** (repo root) and **`cargo test`**
+   (`recon_mcts/`) both fully green after the fix; no other test needed
+   updated behaviour.
+
+**Still open at commit time:** a real 100-game `mcts-heuristic` mirror
+match under the shipped `Hash` tie-break (seed base 800000, 1000
+iterations) was launched in the background to confirm the game-level Home
+win-rate (0.667–0.727 across five prior replications, this plan's
+headline number) collapses the way the value-probe already has. Results
+to be appended here once it completes — the value-probe's own history
+in this plan (exactly 0 at low budgets, growing to -65 at 1000 over five
+separate ablations that all failed to move it) makes a null game-level
+result the expected outcome, but this plan has been burned before by an
+instrument that looked decisive and wasn't (H1's "clean" Monte Carlo
+table, refuted by measurement), so it is being checked rather than
+assumed.
+
 ## Cross-references
 
 - plan 021 open issue 5 — the 0.40 mirror anomaly this closes; and its "Home/Away asymmetry audit" next step.
