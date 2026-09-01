@@ -206,10 +206,16 @@ fn live_server_matches_tract() {
     assert_eq!(remote.remote_stats().unwrap().1, 0, "no fallbacks");
 }
 
-/// Batch invariance (plan 024 Stage 2): a sample's result must not depend
-/// on who it was batched with. 24 threads hammer the server with
-/// *different* inputs; each compares against its own single-threaded
-/// reference taken before the storm.
+/// Batch invariance (plan 024 Stage 2, and the guard on Stage 3's graph
+/// padding): a sample's result must not depend on who it was batched with,
+/// nor on how far its batch was padded up to a bucket. 24 threads hammer
+/// the server with *different* inputs; each compares every response
+/// against its own single-threaded reference taken before the storm.
+///
+/// This is the test that makes the recombination-purity argument true in
+/// practice rather than only on paper, and the one that would catch a
+/// BatchNorm left in train mode — the single change that would make a
+/// padding row leak into a real one.
 #[test]
 fn live_server_is_batch_invariant() {
     let Some((socket, model)) = live_server() else {
@@ -219,34 +225,42 @@ fn live_server_is_batch_invariant() {
     let remote = Arc::new(NnEvaluator::from_path_with_server(&model, Some(&socket)).expect("handshake"));
     let (cs, cg) = canary_input();
 
-    // Reference: one thread, so batch 1.
-    let refs: Vec<f32> = (0..24)
-        .map(|k| {
-            let s = perturb(&cs, k);
-            remote.forward_raw(&s, &cg, CANARY_H, CANARY_W).1
-        })
-        .collect();
+    // Reference: one thread, no concurrency, so every batch is size 1.
+    let refs: Arc<Vec<f32>> = Arc::new(
+        (0..24)
+            .map(|k| {
+                let s = perturb(&cs, k);
+                remote.forward_raw(&s, &cg, CANARY_H, CANARY_W).1
+            })
+            .collect(),
+    );
 
     let mut handles = Vec::new();
     for k in 0..24u32 {
         let remote = Arc::clone(&remote);
+        let refs = Arc::clone(&refs);
         let cs = cs.clone();
         let cg = cg.clone();
         handles.push(thread::spawn(move || {
             let s = perturb(&cs, k);
+            let want = refs[k as usize];
+            // Track the largest *deviation from the reference*, not the
+            // largest value: a net whose values happen to be negative
+            // would make `max(0.0, v)` return 0 no matter what the server
+            // said, and the assertion would be vacuous.
             let mut worst = 0.0f32;
             for _ in 0..40 {
                 let (_p, v) = remote.forward_raw(&s, &cg, CANARY_H, CANARY_W);
-                worst = worst.max(v);
+                worst = worst.max((v - want).abs());
             }
             worst
         }));
     }
     for (k, h) in handles.into_iter().enumerate() {
-        let v = h.join().unwrap();
+        let d = h.join().unwrap();
         assert!(
-            (v - refs[k]).abs() < 1e-5,
-            "sample {k}: batched {v} vs alone {} — batch composition leaked into the result",
+            d < 1e-5,
+            "sample {k}: max |Δ| {d} vs its batch-1 reference {} — batch composition leaked into the result",
             refs[k]
         );
     }
@@ -309,4 +323,64 @@ fn live_server_drops_connection_on_model_id_mismatch() {
         Ok(n) => panic!("server answered {n} bytes instead of dropping the connection"),
         Err(e) => panic!("expected clean EOF, got {e}"),
     }
+}
+
+/// Model identity is the *weights file*, not the string the client sent.
+///
+/// A shard launched from the repo root names `models/x.onnx`; one launched
+/// anywhere else names the absolute path. They are the same net and must
+/// get the same `model_id` and the same batch queue. Keying the registry
+/// on the raw string instead fails silently in whichever direction the
+/// capacity happens to allow: at `--max-models 1` the second spelling is
+/// rejected and that shard runs its whole generation on tract, and above 1
+/// the weights load twice and each copy sees half the batch. Both show up
+/// only as lost speed, which is why this is a test and not a comment.
+#[test]
+fn live_server_identifies_a_model_by_its_weights_not_its_path_string() {
+    let Some((socket, model)) = live_server() else {
+        eprintln!("skipped: set BLOOD_NN_SERVER and BLOOD_NN_MODEL to run against a live sidecar");
+        return;
+    };
+    let canonical = std::fs::canonicalize(&model).expect("model path exists");
+    // Same file, three spellings the loop could plausibly produce.
+    let detour = canonical.parent().unwrap().join("..").join("models").join(canonical.file_name().unwrap());
+    let spellings = [canonical.clone(), detour, PathBuf::from("models").join(canonical.file_name().unwrap())];
+
+    let mut ids = Vec::new();
+    for p in &spellings {
+        let ev = NnEvaluator::from_path_with_server(&canonical, Some(&socket)).expect("handshake + canary");
+        // Force a forward so a rejected handshake shows up as a fallback.
+        let (cs, cg) = canary_input();
+        ev.forward_raw(&cs, &cg, CANARY_H, CANARY_W);
+        let (served, fell_back) = ev.remote_stats().unwrap();
+        assert_eq!(fell_back, 0, "spelling {p:?} was not served remotely — registry keyed on the string?");
+        assert!(served > 0, "spelling {p:?} served nothing");
+        ids.push(handshake_model_id(&socket, p));
+    }
+    assert!(
+        ids.windows(2).all(|w| w[0] == w[1]),
+        "same weights got different model_ids {ids:?} — the registry split one net across batch queues"
+    );
+}
+
+/// Handshake by hand and return the `model_id` the server assigned.
+fn handshake_model_id(socket: &Path, model: &Path) -> u16 {
+    let mut s = UnixStream::connect(socket).expect("connect");
+    let path = model.to_string_lossy();
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&MAGIC);
+    frame.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    frame.extend_from_slice(&(SPATIAL_CHANNELS as u16).to_le_bytes());
+    frame.extend_from_slice(&(GLOBAL_FEATURES as u16).to_le_bytes());
+    frame.extend_from_slice(&(path.len() as u16).to_le_bytes());
+    frame.extend_from_slice(path.as_bytes());
+    s.write_all(&frame).unwrap();
+    let mut head = [0u8; 12];
+    s.read_exact(&mut head).unwrap();
+    let status = u16::from_le_bytes([head[0], head[1]]);
+    let len = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
+    let mut payload = vec![0u8; len];
+    s.read_exact(&mut payload).unwrap();
+    assert_eq!(status, 0, "handshake rejected for {model:?}: {}", String::from_utf8_lossy(&payload));
+    u16::from_le_bytes([head[2], head[3]])
 }

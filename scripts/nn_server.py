@@ -33,6 +33,14 @@ Design notes worth keeping in mind before editing:
   net each. `model_path`/`model_id` are on the wire from day one so the
   multi-model registry the eval phase needs (Stage 4b) is a server-side
   change only, with no protocol bump.
+* **CUDA graphs are the point, not an optimisation (Stage 3).** This
+  model is tiny (0.48 M params, 0.13 GFLOP) and the GPU is never the
+  constraint: at batch 1 a traced module costs ~870 us end to end, of
+  which ~70 us is arithmetic. The rest is ATen dispatch and ~40 kernel
+  launches — the `F` term the plan's throughput model turns on. A
+  captured graph replays the whole tower as one launch, which is why
+  `F` falls from ~560 us to ~210 us and batch-1 latency roughly halves.
+  Graphs need static shapes, so batches are padded up to a bucket.
 """
 
 from __future__ import annotations
@@ -64,7 +72,13 @@ PROTOCOL_VERSION = 1
 FLAG_WANT_POLICY = 1
 FIXTURES = REPO / "botbowl-nn" / "tests" / "fixtures"
 CANARY_H, CANARY_W = 9, 16
-BUCKETS = (1, 2, 4, 8, 16, 32, 64)
+# Batch buckets for CUDA graph capture. A graph is a fixed shape, so a
+# batch of 9 runs as a padded 12 and the padding rows are discarded.
+# Fine-grained at the bottom because that is where the offered batch
+# actually lands (measured mean_batch 3.4 at 8 shards) *and* where a
+# graph saves the most; coarse at the top, where the GPU is doing real
+# work and one more launch is noise.
+BUCKETS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64)
 
 HANDSHAKES = itertools.count()
 
@@ -96,6 +110,16 @@ class Model:
 class Registry:
     """Resolves a client's `--model` string to loaded weights.
 
+    **Identity is the resolved `.pt` file, not the string the client sent.**
+    Two clients naming the same weights differently — `models/x.onnx` from
+    a shard launched at the repo root and `/abs/path/models/x.onnx` from
+    one launched elsewhere — must share one entry, one `model_id` and one
+    batch queue. Keying on the raw string instead is silently expensive in
+    both directions: at capacity 1 the second spelling is *rejected* and
+    that shard falls back to tract for its whole run (one warning line,
+    12.5x slower); once the cap is raised it loads the same net twice and
+    splits the batch in half, which is invisible except as lost speed.
+
     Capacity is 1 for now (Stage 1): every generation shard names the same
     champion, so one entry serves them all, and a second *different* model
     is a configuration error worth refusing loudly rather than a case to
@@ -107,48 +131,61 @@ class Registry:
         self.device = device
         self.capacity = capacity
         self.jit = jit
-        self.by_path: dict[str, Model] = {}
+        self.by_weights: dict[str, Model] = {}
         self.lock = threading.Lock()
 
     def get(self, path: str) -> Model:
+        # Resolve outside the lock: it touches the filesystem, and a bad
+        # path should raise without blocking other handshakes.
+        pt = resolve_weights(path)
+        key = str(pt)
         with self.lock:
-            if path in self.by_path:
-                return self.by_path[path]
-            if len(self.by_path) >= self.capacity:
+            if key in self.by_weights:
+                return self.by_weights[key]
+            if len(self.by_weights) >= self.capacity:
                 raise RuntimeError(
                     f"registry full ({self.capacity}): already serving "
-                    f"{list(self.by_path)} — Stage 4b raises --max-models"
+                    f"{[m.path for m in self.by_weights.values()]} — Stage 4b raises --max-models"
                 )
-            model = self._load(path, model_id=len(self.by_path))
-            self.by_path[path] = model
+            model = self._load(pt, path, model_id=len(self.by_weights))
+            self.by_weights[key] = model
             return model
 
-    def _load(self, path: str, model_id: int) -> Model:
-        pt = resolve_weights(path)
+    def _load(self, pt: Path, path: str, model_id: int) -> Model:
         t0 = time.perf_counter()
         module = BBNet()
         state = torch.load(pt, map_location="cpu", weights_only=True)
         module.load_state_dict(state)
+        # `.eval()` is load-bearing, not hygiene: it is what freezes
+        # BatchNorm onto its running statistics, and therefore what makes a
+        # sample's result independent of the rest of its batch. Batching
+        # and graph padding are both unsound without it.
         module.eval().to(self.device)
         module = maybe_trace(module, self.device, self.jit)
         canary = compute_canary(module, self.device)
-        log(f"loaded model_id={model_id} {path} → {pt.name} in {time.perf_counter() - t0:.1f}s")
-        return Model(model_id=model_id, path=path, module=module, canary=canary)
+        log(f"loaded model_id={model_id} {path} → {pt} in {time.perf_counter() - t0:.1f}s")
+        return Model(model_id=model_id, path=pt.name, module=module, canary=canary)
 
 
 def resolve_weights(path: str) -> Path:
-    """`models/bbnet_14x7_gen01.onnx` → `models/bbnet_14x7_gen01.pt`.
+    """`models/bbnet_14x7_gen01.onnx` → the absolute `…/bbnet_14x7_gen01.pt`.
 
     The loop's train phase exports both side by side; the client names the
     ONNX (which is also its tract fallback) and the server consumes the
     trainer's own `.pt`, so there is no third implementation of BBNet and
     no new numerics surface.
+
+    Always returns a fully resolved absolute path, because the result is
+    the registry's identity key (see `Registry`) — a relative path, a
+    `..`, and a symlink to the same weights must all collapse to one.
     """
     p = Path(path)
     if p.suffix != ".pt":
         p = p.with_suffix(".pt")
-    if not p.is_absolute():
-        p = (REPO / p).resolve() if not p.exists() else p.resolve()
+    if not p.is_absolute() and not p.exists():
+        # A relative path is the client's cwd first, the repo root second.
+        p = REPO / p
+    p = p.resolve()
     if not p.exists():
         raise FileNotFoundError(f"no weights at {p} (from client model path {path!r})")
     return p
@@ -238,6 +275,158 @@ class Request:
         return (self.model.model_id, self.h, self.w)
 
 
+def bucket_list(max_batch: int) -> list[int]:
+    """The buckets a server with this `--max-batch` can ever be asked for."""
+    bs = [b for b in BUCKETS if b < max_batch]
+    bs.append(max_batch)
+    return bs
+
+
+class EagerRunner:
+    """Stage-2 behaviour: stack, H2D, call the module, D2H. No padding.
+
+    Still the path for `--device cpu` and for `--graphs off`, and the
+    fallback whenever a graph cannot be captured.
+    """
+
+    def __init__(self, module, device: str):
+        self.module = module
+        self.device = device
+        self.bucket = 0  # "no padding" — reported in the stats histogram
+
+    def run(self, batch: list["Request"], want_policy: bool):
+        t0 = time.perf_counter()
+        spatial = np.stack([r.spatial for r in batch])
+        global_ = np.stack([r.global_ for r in batch])
+        with torch.no_grad():
+            s = torch.from_numpy(spatial).to(self.device, non_blocking=True)
+            g = torch.from_numpy(global_).to(self.device, non_blocking=True)
+            t1 = time.perf_counter()
+            policy, value = self.module(s, g)
+            # `.cpu()` is the sync point, so `fwd` below is real end-to-end
+            # GPU time and not just the launch. Only pay the 17 KB/sample
+            # readback when somebody asked for the policy — `nn-value` (the
+            # generator) never does.
+            values = value.reshape(-1).cpu().numpy().astype(np.float32)
+            policies = policy.reshape(len(batch), -1).cpu().numpy().astype(np.float32) if want_policy else None
+        return values, policies, int((t1 - t0) * 1e9), int((time.perf_counter() - t1) * 1e9)
+
+
+class GraphRunner:
+    """One CUDA graph captured for a fixed `(module, bucket, h, w)`.
+
+    Padding is safe because the tower is *sample-independent*: convolutions
+    and linears act per row, and BatchNorm is in **eval** mode, so it uses
+    the frozen running statistics rather than the batch's. That is the
+    whole reason a result cannot depend on batch composition, and it is
+    what `live_server_is_batch_invariant` pins. If BatchNorm were ever left
+    in train mode, padding rows would leak into real ones and that test is
+    what would catch it.
+    """
+
+    def __init__(self, module, bucket: int, h: int, w: int, device: str):
+        self.bucket, self.h, self.w = bucket, h, w
+        self.dev_s = torch.zeros(bucket, SPATIAL_CHANNELS, h, w, device=device)
+        self.dev_g = torch.zeros(bucket, GLOBAL_FEATURES, device=device)
+        # Persistent pinned staging. Under Stage 2 the H2D term was 294 us
+        # of a 1676 us batch and pinning was correctly judged not worth it;
+        # once graphs take the batch down to ~400 us it is a third of the
+        # cost, so it is worth it now. `.numpy()` aliases the pinned
+        # storage, so filling a row is a plain memcpy with no allocation.
+        self.host_s = torch.zeros(bucket, SPATIAL_CHANNELS, h, w).pin_memory()
+        self.host_g = torch.zeros(bucket, GLOBAL_FEATURES).pin_memory()
+        self.np_s = self.host_s.numpy()
+        self.np_g = self.host_g.numpy()
+        # Capture must not record cuDNN autotune or lazy allocator work, so
+        # warm on a side stream first — this is required, not defensive.
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream), torch.no_grad():
+            for _ in range(3):
+                module(self.dev_s, self.dev_g)
+        torch.cuda.current_stream().wait_stream(stream)
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph), torch.no_grad():
+            self.policy, self.value = module(self.dev_s, self.dev_g)
+
+    def run(self, batch: list["Request"], want_policy: bool):
+        t0 = time.perf_counter()
+        n = len(batch)
+        for i, r in enumerate(batch):
+            self.np_s[i] = r.spatial
+            self.np_g[i] = r.global_
+        self.dev_s.copy_(self.host_s, non_blocking=True)
+        self.dev_g.copy_(self.host_g, non_blocking=True)
+        t1 = time.perf_counter()
+        self.graph.replay()
+        # Slice before `.cpu()`: the padding rows are computed (they are in
+        # the graph) but never copied back and never sent.
+        values = self.value.reshape(-1)[:n].cpu().numpy().astype(np.float32)
+        policies = self.policy.reshape(self.bucket, -1)[:n].cpu().numpy().astype(np.float32) if want_policy else None
+        return values, policies, int((t1 - t0) * 1e9), int((time.perf_counter() - t1) * 1e9)
+
+
+class RunnerPool:
+    """Chooses how to run a batch: a captured graph if one fits, else eager.
+
+    Keyed `(model_id, h, w, bucket)`. Capture is lazy and happens on the
+    batcher thread, so a graph is always replayed by the thread that
+    recorded it; the first batch of an unseen bucket pays ~50 ms once. A
+    bucket whose capture fails is remembered as failed and falls through to
+    eager forever, so a torch/driver that cannot capture degrades to
+    Stage-2 speed rather than to a dead server.
+    """
+
+    def __init__(self, device: str, max_batch: int, enabled: bool):
+        self.device = device
+        self.max_batch = max_batch
+        self.enabled = enabled and device == "cuda"
+        self.buckets = bucket_list(max_batch)
+        self.graphs: dict = {}
+        self.eager: dict = {}
+        self.failed: set = set()
+
+    def _bucket_for(self, n: int) -> int:
+        for b in self.buckets:
+            if b >= n:
+                return b
+        return self.buckets[-1]
+
+    def get(self, model: Model, h: int, w: int, n: int):
+        if not self.enabled:
+            return self.eager.setdefault(model.model_id, EagerRunner(model.module, self.device))
+        bucket = self._bucket_for(n)
+        key = (model.model_id, h, w, bucket)
+        runner = self.graphs.get(key)
+        if runner is not None:
+            return runner
+        if key in self.failed:
+            return self.eager.setdefault(model.model_id, EagerRunner(model.module, self.device))
+        try:
+            t0 = time.perf_counter()
+            runner = GraphRunner(model.module, bucket, h, w, self.device)
+            log(
+                f"captured graph model_id={model.model_id} {h}x{w} bucket={bucket} "
+                f"in {time.perf_counter() - t0:.2f}s "
+                f"(vram reserved {torch.cuda.memory_reserved() / 1e6:.0f} MB)"
+            )
+        except Exception as e:  # pragma: no cover - driver/torch dependent
+            log(f"graph capture failed for {h}x{w} bucket={bucket} ({e!r}) — eager for this bucket")
+            self.failed.add(key)
+            return self.eager.setdefault(model.model_id, EagerRunner(model.module, self.device))
+        self.graphs[key] = runner
+        return runner
+
+    def prewarm(self, model: Model, sizes: list[tuple[int, int]]) -> None:
+        """Capture every `(h, w) × bucket` up front, so no client ever pays
+        a capture and the first measured batches are not outliers."""
+        if not self.enabled:
+            return
+        for (h, w) in sizes:
+            for b in self.buckets:
+                self.get(model, h, w, b)
+
+
 @dataclass
 class Stats:
     """Where a batch's wall time actually goes.
@@ -252,15 +441,17 @@ class Stats:
 
     batches: int = 0
     samples: int = 0
+    padded: int = 0
     forward_ns: int = 0
     stage_ns: int = 0
     post_ns: int = 0
     queue_ns: int = 0
     hist: dict = field(default_factory=dict)
 
-    def record(self, n: int, forward_ns: int, stage_ns: int, post_ns: int, queue_ns: int) -> None:
+    def record(self, n: int, bucket: int, forward_ns: int, stage_ns: int, post_ns: int, queue_ns: int) -> None:
         self.batches += 1
         self.samples += n
+        self.padded += max(bucket, n) - n
         self.forward_ns += forward_ns
         self.stage_ns += stage_ns
         self.post_ns += post_ns
@@ -276,8 +467,12 @@ class Stats:
         per_sample = total_ns / max(self.samples, 1) / 1e3
         q_us = self.queue_ns / max(self.samples, 1) / 1e3
         top = sorted(self.hist.items())[:8]
+        # `pad` is the share of rows the GPU computed and threw away — the
+        # price of a fixed-shape graph. It should stay well under 1, or the
+        # bucket ladder is too coarse for the offered batch distribution.
+        pad = self.padded / max(self.samples, 1)
         return (
-            f"batches={self.batches} samples={self.samples} mean_batch={mean_batch:.2f} "
+            f"batches={self.batches} samples={self.samples} mean_batch={mean_batch:.2f} pad={pad:.2f} "
             f"batch={us(total_ns):.0f}us (stage {us(self.stage_ns):.0f} + fwd {us(self.forward_ns):.0f} "
             f"+ post {us(self.post_ns):.0f}) {per_sample:.0f}us/sample queue={q_us:.0f}us/sample "
             f"hist={top}"
@@ -289,16 +484,39 @@ class Batcher(threading.Thread):
     piled up during the previous forward, run it, write the responses.
     """
 
-    def __init__(self, q: queue.Queue, device: str, max_batch: int, max_wait_us: int, stats: Stats):
+    def __init__(
+        self,
+        q: queue.Queue,
+        device: str,
+        max_batch: int,
+        max_wait_us: int,
+        stats: Stats,
+        pool: RunnerPool,
+        prewarm: tuple[Model, list[tuple[int, int]]] | None = None,
+    ):
         super().__init__(daemon=True, name="batcher")
         self.q = q
         self.device = device
         self.max_batch = max_batch
         self.max_wait_us = max_wait_us
         self.stats = stats
+        self.pool = pool
+        self.prewarm = prewarm
         self.stop = threading.Event()
+        # Main thread waits on this before it starts accepting, so no
+        # client ever races a graph capture.
+        self.ready = threading.Event()
 
     def run(self) -> None:
+        # Capture on *this* thread: a graph is then always replayed by the
+        # thread that recorded it, which sidesteps every cross-thread
+        # stream question.
+        if self.prewarm is not None:
+            model, sizes = self.prewarm
+            t0 = time.perf_counter()
+            self.pool.prewarm(model, sizes)
+            log(f"prewarmed {len(self.pool.graphs)} graphs in {time.perf_counter() - t0:.1f}s")
+        self.ready.set()
         leftover: list[Request] = []
         while not self.stop.is_set():
             if leftover:
@@ -338,32 +556,22 @@ class Batcher(threading.Thread):
     def _run_batch(self, batch: list[Request]) -> None:
         t0 = time.perf_counter()
         queue_ns = sum(int((t0 - r.t_enqueued) * 1e9) for r in batch)
-        spatial = np.stack([r.spatial for r in batch])
-        global_ = np.stack([r.global_ for r in batch])
+        first = batch[0]
         want_policy = any(r.want_policy for r in batch)
-        with torch.no_grad():
-            s = torch.from_numpy(spatial).to(self.device, non_blocking=True)
-            g = torch.from_numpy(global_).to(self.device, non_blocking=True)
-            t1 = time.perf_counter()
-            policy, value = batch[0].model.module(s, g)
-            # Only pay the 17 KB/sample device→host copy when somebody
-            # asked for the policy — `nn-value` (the generator) never does.
-            # `.cpu()` is also the sync point, so `fwd` below is the real
-            # end-to-end GPU time, not just the launch.
-            values = value.reshape(-1).cpu().numpy().astype(np.float32)
-            policies = policy.reshape(len(batch), -1).cpu().numpy().astype(np.float32) if want_policy else None
-            t2 = time.perf_counter()
+        runner = self.pool.get(first.model, first.h, first.w, len(batch))
+        values, policies, stage_ns, forward_ns = runner.run(batch, want_policy)
+        t2 = time.perf_counter()
         for i, r in enumerate(batch):
             body = values[i].tobytes()
             if r.want_policy:
                 body += policies[i].tobytes()
             r.conn.send(struct.pack("<I", len(body)) + body)
-        t3 = time.perf_counter()
         self.stats.record(
             len(batch),
-            forward_ns=int((t2 - t1) * 1e9),
-            stage_ns=int((t1 - t0) * 1e9),
-            post_ns=int((t3 - t2) * 1e9),
+            bucket=runner.bucket,
+            forward_ns=forward_ns,
+            stage_ns=stage_ns,
+            post_ns=int((time.perf_counter() - t2) * 1e9),
             queue_ns=queue_ns,
         )
 
@@ -505,7 +713,7 @@ def warm(registry: Registry, model: Model, sizes: list[tuple[int, int]], max_bat
     cuDNN autotune and the first allocations are not charged to a client.
     """
     t0 = time.perf_counter()
-    buckets = [b for b in BUCKETS if b <= max_batch] or [1]
+    buckets = bucket_list(max_batch)
     with torch.no_grad():
         for (h, w) in sizes:
             for b in buckets:
@@ -517,38 +725,77 @@ def warm(registry: Registry, model: Model, sizes: list[tuple[int, int]], max_bat
     log(f"warmed {sizes} × {buckets} in {time.perf_counter() - t0:.1f}s")
 
 
-def bench(registry: Registry, model: Model, sizes: list[tuple[int, int]], iters: int = 200) -> None:
+def bench(registry: Registry, model: Model, sizes: list[tuple[int, int]], max_batch: int, iters: int = 200) -> None:
     """Sweep batch sizes and fit `t(b) = F + g·b` (plan 024 §Throughput model).
 
     `F`, the fixed per-batch cost, is the number the whole plan turns on:
     at `F = 4.2 ms` a server is a regression at every stream count we can
-    afford; at `F = 0.3 ms` it is ~5x. Measured warmed, so cuDNN autotune
-    is not charged to the fit, and with one `synchronize()` per *batch*
-    (not per op), which is what the server actually pays.
+    afford; at `F = 0.3 ms` it is ~5x.
+
+    **Each iteration ends in a device→host read**, exactly as a served
+    batch does. That matters: without it the loop only measures how fast
+    launches can be *queued*, which pipelines across iterations and
+    understates a batch's real latency by roughly a third. The Stage-2
+    fit was taken that way and read `g` about 30% low.
+
+    Reports the eager/traced path and, on CUDA, the captured-graph path
+    side by side, since the gap between them is Stage 3's whole claim.
     """
     device = registry.device
+    buckets = bucket_list(max_batch)
     for (h, w) in sizes:
         rows = []
-        with torch.no_grad():
-            for b in BUCKETS:
-                s = torch.zeros(b, SPATIAL_CHANNELS, h, w, device=device)
-                g = torch.zeros(b, GLOBAL_FEATURES, device=device)
-                for _ in range(50):
-                    model.module(s, g)
-                if device == "cuda":
-                    torch.cuda.synchronize()
-                t0 = time.perf_counter()
-                for _ in range(iters):
-                    model.module(s, g)
-                if device == "cuda":
-                    torch.cuda.synchronize()
-                dt = (time.perf_counter() - t0) / iters * 1e6
-                rows.append((b, dt))
-                log(f"bench {h}x{w} batch {b:3d}: {dt:8.0f} us/batch  {dt / b:7.1f} us/sample")
+        eager = EagerRunner(model.module, device)
+        graphs = RunnerPool(device, max_batch, enabled=True)
+        for b in buckets:
+            reqs = fake_batch(model, b, h, w)
+            te = time_runner(eager, reqs, device, iters)
+            row = [b, te, float("nan")]
+            if device == "cuda":
+                tg = time_runner(graphs.get(model, h, w, b), reqs, device, iters)
+                row[2] = tg
+            rows.append(tuple(row))
+            log(
+                f"bench {h}x{w} batch {b:3d}: eager {row[1]:7.0f} us/batch "
+                f"({row[1] / b:6.1f} us/sample)   graph {row[2]:7.0f} us/batch ({row[2] / b:6.1f} us/sample)"
+            )
         bs = np.array([r[0] for r in rows], dtype=np.float64)
-        ts = np.array([r[1] for r in rows], dtype=np.float64)
-        gg, ff = np.polyfit(bs, ts, 1)
-        log(f"fit {h}x{w}: F = {ff:.0f} us/batch, g = {gg:.1f} us/sample  (device={device})")
+        for label, col in (("eager", 1), ("graph", 2)):
+            ts = np.array([r[col] for r in rows], dtype=np.float64)
+            if np.isnan(ts).any():
+                continue
+            gg, ff = np.polyfit(bs, ts, 1)
+            log(f"fit {h}x{w} {label}: F = {ff:.0f} us/batch, g = {gg:.1f} us/sample  (device={device})")
+
+
+def fake_batch(model: Model, n: int, h: int, w: int) -> list["Request"]:
+    """`n` synthetic requests, so a runner can be timed off the wire."""
+    rng = np.random.default_rng(0)
+    return [
+        Request(
+            conn=None,
+            model=model,
+            h=h,
+            w=w,
+            want_policy=False,
+            spatial=rng.standard_normal((SPATIAL_CHANNELS, h, w), dtype=np.float32),
+            global_=rng.standard_normal(GLOBAL_FEATURES, dtype=np.float32),
+        )
+        for _ in range(n)
+    ]
+
+
+def time_runner(runner, reqs: list["Request"], device: str, iters: int) -> float:
+    for _ in range(30):
+        runner.run(reqs, False)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        runner.run(reqs, False)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    return (time.perf_counter() - t0) / iters * 1e6
 
 
 def loadgen(sock_path: str, model_path: str, streams: int, seconds: float) -> None:
@@ -635,6 +882,13 @@ def main() -> int:
     )
     ap.add_argument("--max-models", type=int, default=1, help="registry capacity (Stage 1: 1)")
     ap.add_argument("--jit", default="auto", choices=("auto", "off"))
+    ap.add_argument(
+        "--graphs",
+        default="auto",
+        choices=("auto", "off"),
+        help="CUDA graph capture per batch bucket (Stage 3). DEFAULT auto — it roughly halves batch-1 "
+        "latency and cuts F from ~560us to ~210us. `off` reverts to the Stage-2 eager path.",
+    )
     ap.add_argument("--warm-sizes", default=f"{CANARY_H}x{CANARY_W}", help="comma-separated HxW to warm")
     ap.add_argument("--torch-threads", type=int, default=None)
     ap.add_argument("--stats-every", type=float, default=60.0, help="seconds between stats lines (0 = off)")
@@ -673,11 +927,24 @@ def main() -> int:
             return 1
         if args.device == "cuda":
             log(f"cuda device: {torch.cuda.get_device_name(0)} (torch {torch.__version__})")
-        bench(registry, registry.get(args.model), parse_sizes(args.warm_sizes))
+        bench(registry, registry.get(args.model), parse_sizes(args.warm_sizes), args.max_batch)
         return 0
+
+    sizes = parse_sizes(args.warm_sizes)
+    pool = RunnerPool(args.device, args.max_batch, enabled=args.graphs == "auto")
+    prewarm = None
     if args.model:
         model = registry.get(args.model)
-        warm(registry, model, parse_sizes(args.warm_sizes), args.max_batch)
+        warm(registry, model, sizes, args.max_batch)
+        prewarm = (model, sizes)
+
+    q: queue.Queue = queue.Queue()
+    stats = Stats()
+    batcher = Batcher(q, args.device, args.max_batch, args.max_wait_us, stats, pool, prewarm)
+    batcher.start()
+    # Capture happens on the batcher thread; don't take a connection until
+    # it is done, or the first client eats a multi-second capture storm.
+    batcher.ready.wait()
     gc.collect()
     gc.freeze()
 
@@ -687,11 +954,6 @@ def main() -> int:
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(path)
     listener.listen(128)
-
-    q: queue.Queue = queue.Queue()
-    stats = Stats()
-    batcher = Batcher(q, args.device, args.max_batch, args.max_wait_us, stats)
-    batcher.start()
 
     stopping = threading.Event()
 
@@ -716,7 +978,10 @@ def main() -> int:
     dev = args.device
     if dev == "cuda":
         log(f"cuda device: {torch.cuda.get_device_name(0)} (torch {torch.__version__})")
-    log(f"listening on {path} device={dev} max_batch={args.max_batch} max_wait_us={args.max_wait_us}")
+    log(
+        f"listening on {path} device={dev} max_batch={args.max_batch} "
+        f"max_wait_us={args.max_wait_us} graphs={len(pool.graphs)}"
+    )
 
     conns = 0
     while not stopping.is_set():
