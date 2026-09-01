@@ -39,6 +39,9 @@ Exhaustive matches pin `PosAT → 0..14`, `SimpleAT → 14..30`. Adding an engin
 - One connection per (thread, evaluator) via `thread_local!`, so the client is `Sync` without a lock and the eval phase's two nets share one socket without cross-talk.
 - Numerics: torch-CUDA vs tract agree to ~1e-5 in practice; the contract is `< 1e-3` for remote-vs-tract and `< 1e-5` for batch invariance (`tests/remote.rs`). `tests/parity.rs` keeps its 1e-4 tract-vs-PyTorch assertion **unchanged** — tract is still the reference.
 - `BLOOD_NN_PROFILE=1` prints `NN_PROFILE forwards=… share=…` per game and at exit: the forward counter that measured the 85% inference share behind plan 024.
+- **Model identity, server-side, is the resolved `.pt` file — never the client's path string.** Two spellings of one net (`models/x.onnx` vs an absolute path) must share a `model_id` and a batch queue; keying on the string rejects the second spelling at `--max-models 1`, or loads the net twice and halves the batch above 1. Both fail silently, as lost speed. Pinned by `live_server_identifies_a_model_by_its_weights_not_its_path_string`.
+- **Batches are padded up to a CUDA-graph bucket, which is sound only because BatchNorm is in `eval` mode** — rows are independent, so a padding row cannot reach a real one. `live_server_is_batch_invariant` is what pins that, and it is the test to check first if anyone ever touches `.eval()` or the graph pool. It compares `max |v − reference|`; an earlier version compared `max(0.0, v)` and was vacuous for any net with negative values.
+- Throughput: `--nn-server --parallel-games 4` measured **3.79× end-to-end** against tract, at **4.3× less CPU per forward** (plan 024 §Measured results, stages 3–5). tract is internally multi-threaded and was the CPU hog, not just the latency.
 
 ## Parity fixture
 

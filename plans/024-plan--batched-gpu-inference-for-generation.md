@@ -1,16 +1,22 @@
 # Batched GPU inference for self-play generation
 
-**Status:** Stages 0–2 **built and measured** (2026-08-30, branch `worktree-agent-a6f225f66905a936a`); stages
-3–5 not started. Data generation is the dominant cost of the training loop — `gen01` spent **863 min**
-generating and **10 min** training — and it is CPU-bound on single-sample `tract` inference. This plan makes NN
-leaf evaluation batched and GPU-resident.
+**Status: DONE — stages 0–5 built and measured** (0–2 on 2026-08-30, 3–5 on 2026-09-01). Data generation is the
+dominant cost of the training loop — `gen01` spent **863 min** generating and **10 min** training — and it was
+CPU-bound on single-sample `tract` inference. NN leaf evaluation is now batched and GPU-resident, and
+`scripts/train_loop.sh` uses it by default (`NN_SERVER=off` reverts).
 
-**Stage 0's gate passed: the measured inference share is 0.853** (gate was ≥ 0.70), so the premise holds. What
-Stage 2 then found is that the sidecar's *fixed per-batch cost* `F` lands at ~0.95 ms in a tight loop and
-~1.5 ms inside the server loop — the `F = 1.0`–`2.0 ms` columns of the table below, where 8 shards buy roughly
-nothing. **At today's shard count the sidecar is a wash, and the plan's own thesis — "`F` and `N` matter more
-than the GPU does" — is what the measurement confirms.** The payoff is real but it is all in stages 3 and 4.
-See §Measured results at the end.
+**Headline: 3.79× end-to-end**, on *fewer* CPU cores than the baseline. Back-to-back, 8 shards × 4 games:
+
+| arm | wall | cores | fw/s | s/game | µs CPU/forward |
+|---|---|---|---|---|---|
+| tract (the old loop) | 317.8 s | 5.3 | 1164 | 9.93 | 4543 |
+| `--nn-server` | 123.9 s | 2.4 | 2364 | 3.87 | 1017 |
+| `--nn-server --parallel-games 4` | **83.8 s** | 4.3 | **4051** | **2.62** | **1065** |
+
+The plan's own thesis held at every stage: **`F` and `N` mattered, the GPU never did.** Stage 2 (`F` ≈ 1.5 ms
+in-server) bought only 1.33×; Stage 3 cut `F` to 314 µs and took it to 3.3×; Stage 4 raised the offered
+concurrency and took it to 3.8×. `g`, the marginal GPU cost, came in 3× better than assumed and changed
+nothing at any point. See §Measured results (stages 0–2) and §Measured results (stages 3–5).
 
 ## Why: generation is 12.5× more expensive than it needs to be
 
@@ -452,7 +458,7 @@ composition or arrival order", and it should run against a live server in CI-on-
 > but the stage breakdown puts it inside `module()` (dispatch + launch), not in IPC, so the next move is
 > **Stage 3 as written**, not the shared-memory ring.
 
-### Stage 3 — drive `F` down (only if Stage 2's fit shows `F > 1 ms`) — **required: `F` fitted at 0.95 ms tight-loop, 1.5 ms in-server**
+### Stage 3 — drive `F` down — **done: `F` 931 → 314 µs**
 
 CUDA graph capture per `(model_id, h, w, batch-bucket)` with buckets `{1,2,4,8,16,32,64}`, requests padded up
 to the next bucket and the padding rows discarded. Graphs eliminate per-op launch and Python dispatch entirely,
@@ -461,7 +467,7 @@ batch-invariance property (a fixed graph per bucket is deterministic).
 **Expected: `F` → ~0.2–0.4 ms ⇒ 3.4× at N=8.** Avoid `torch.compile`/Triton — Pascal support is marginal and the
 payoff over a traced graph is small for a 6-block tower.
 
-### Stage 4 — raise the stream count (the multiplier)
+### Stage 4 — raise the stream count (the multiplier) — **done: `--parallel-games`, 4a measured, 4b partly**
 
 - **4a (generation, zero Rust):** `NN_SHARDS`/`HEUR_SHARDS` from 8 shards × 600 games to 24–32 shards ×
   150–200 games; fix the seed stride (`G*1e7`); update `TRAIN_SHARDS`/`VAL_SHARDS` to hold out ~4 whole shards
@@ -485,7 +491,7 @@ payoff over a traced graph is small for a 6-block tower.
   (`N=16` row, per the halving above). Falsified if per-shard RSS or the OOM killer bites first, or if `D_cpu`
   is larger than 58.4 µs (Stage 0 measures it directly).
 
-### Stage 5 — wire it into the loop, with supervision
+### Stage 5 — wire it into the loop, with supervision — **done**
 
 `scripts/train_loop.sh` starts **one** `nn_server.py` before the generate phase, health-checks it, passes
 `--nn-server` to the nn shards, restarts it up to N times if it dies, and tears it down before the train phase
@@ -718,6 +724,120 @@ recombination-purity argument survives in practice and not only in principle.
 - One avoidable cost found on the way: `MctsBot` spawns its workers per decision (`thread::scope`), and
   connections are `thread_local!`, so a shard opens **a connection per decision**. Harmless at ~4/s, but a
   connection pool keyed on the socket rather than the thread would remove it.
+
+## Measured results (stages 3–5, 2026-09-01)
+
+Same host, 14x7 tier, `--mcts-iters 1000`, release build, `--evaluator nn-value`. **Caveat: Chrome held
+~1.3–1.7 cores throughout, in every arm.** All comparisons are back-to-back under that same load, so the
+ratios hold; the absolutes would be better on a dedicated box. The champion nets were deleted in the plan-023
+reset, so these runs use a **random-weights** `bbnet_14x7_bench.{pt,onnx}` — irrelevant to timing (the tower
+shape is what costs), and it turned out to be the thing that exposed the vacuous test in Stage 3 below.
+
+Arms are reproducible with `scripts/nn_throughput_probe.sh <arm> <shards> <games/shard> [extra]`.
+
+### Stage 3 — CUDA graphs. `F` 931 → 314 µs
+
+`nn_server.py --bench --device cuda`, warmed, **each iteration ending in the device→host read a served batch
+actually pays**:
+
+| batch | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|---|
+| eager µs/batch | 873 | 1133 | 1143 | 1265 | 1518 | 1878 | 3346 |
+| **graph** µs/batch | **408** | **443** | **482** | **578** | **921** | **1614** | **2998** |
+
+**Fit: eager `F = 931 µs`, `g = 34.9 µs`; graph `F = 314 µs`, `g = 40.9 µs`.**
+
+- **Stage 2's `F = 953 µs` tight-loop figure was right, and its `g = 22.7 µs` was not.** Stage 2's bench
+  synchronised once per *sweep*, not per batch, so launches pipelined across iterations and `g` read ~30% low.
+  Fixed; the eager column above now agrees with what Stage 2 measured *inside* the server loop.
+- Graphs are worth **2.1× at batch 1 and ~1.1× at batch 32**. That is the right shape and the reason they were
+  the correct stage: a graph buys launch overhead, and at small batch launch overhead is all there is. Our
+  batches *are* small (below).
+- 12 graphs cost **396 MB of VRAM** and **0.4 s** to capture. Capture happens on the batcher thread before the
+  listener opens.
+
+Server ceiling (`--loadgen`, zero think time), against Stage 2 on the same script:
+
+| streams | 1 | 2 | 4 | 8 | 16 | 32 | 48 |
+|---|---|---|---|---|---|---|---|
+| stage 2 | 756 | 791 | 1279 | 2170 | 3861 | 6038 | — |
+| **stage 3** | **1792** | **1976** | **3363** | **5012** | **6816** | **7994** | **8413** |
+
+### Stage 4 — the offered concurrency was the wall, and it still is
+
+With `F` at 314 µs the server drains faster than 8 shards can fill it: during the 8-shard arm
+`mean_batch = 1.77`, and **47k of 83k batches were size one**. The sidecar was idle waiting for work. Three
+ways to raise `N` were measured rather than argued:
+
+| mechanism | µs CPU/forward as N rises | verdict |
+|---|---|---|
+| **`--parallel-games` P=3/4/6** | 1073 / 1090 / 1128 | **built.** Flat — parallel games are free per unit of work |
+| **more shards 8/16/24** | 999 / 1103 / 1102 | works, free, but 24 shards = 5.1 GB of 7 available |
+| **`--mcts-workers` W=1/2/4/8** | **1043 / 1132 / 1204 / 1231** | **rejected.** Monotone tax, and it changes the search |
+
+- **`--mcts-workers` is the one arm that costs something per unit of work** — +18% CPU/forward at W=8. It buys
+  wall clock while cores sit idle and loses once they do not, *and* virtual loss changes which leaves get
+  expanded. So option C stays rejected, but now on this host's data rather than plan 015's extrapolation.
+- **`--parallel-games` beats more shards on RAM, not on speed.** At 24 streams they are within noise
+  (8×P=3: 3.21 s/game; 24 shards: 3.07–3.47 s/game) — but one is 8 processes and the other is 24. Per-shard
+  RSS is ~238 MB, so sharding alone caps out near 24–32 on this box; `--parallel-games` reaches the same
+  concurrency in a third of the processes and keeps going.
+- **P = 4 is the peak here** (2.62–2.68 s/game); P = 6 is past it (3.49).
+
+**The CPU is now the binding constraint, and that is the real result.** tract is internally multi-threaded and
+was burning **6679 µs of CPU per forward**, saturating 5.3–7.2 of this box's 8 logical (4 physical) cores. The
+sidecar cuts that to **~1065 µs, a 4.3× reduction**, which is why the fast arm is also the one that leaves
+cores free. The Amdahl ceiling of 6.6–6.8× is a *CPU* ceiling; at 3.79× there is headroom left, and the
+loadgen curve says the server is not what is holding it (8413 forwards/s available against 4051 delivered).
+
+### Stage 5 — in the loop
+
+`train_loop.sh` starts one server before generate, waits for the socket (which appears only after the graph
+captures, so it is the right readiness signal), passes `--nn-server --parallel-games 4` **to the nn shards
+only** — a heuristic shard has no NN call to batch and extra games there would just take cores from the shards
+that do — and tears it down before train. A `trap` covers every exit path so no run leaves 400 MB of VRAM
+behind. `NN_SERVER=off` restores the old behaviour exactly.
+
+The failure mode that needed attention is not a crash but a *silence*: a shard whose server never came up
+falls back to tract, finishes correctly, and is merely 4× slower. The phase now greps `NN_SERVER_FALLBACK`
+and says so in `status.md`.
+
+### Three bugs found, all of the silent kind
+
+1. **The registry keyed models on the client's raw path string.** `models/x.onnx` and `/abs/…/models/x.onnx`
+   were two different models. At the then-default `--max-models 1` the second spelling was *rejected*, and
+   that shard would have run its whole generation on tract behind one warning line; above 1 it loads the same
+   weights twice and each copy sees half the batch. Both present only as lost speed. Identity is now the
+   resolved `.pt`; `live_server_identifies_a_model_by_its_weights_not_its_path_string` pins it. This is
+   exactly the shape of mistake `train_loop.sh` would make, since it passes `$CHAMP` as an absolute path while
+   a hand-started server is usually given a relative one.
+2. **`live_server_is_batch_invariant` was vacuous.** It tracked `worst = worst.max(v)` from `0.0` — the
+   largest *value*, not the largest deviation — so for any net whose values are negative it returned `0` and
+   compared `0` against the reference. It had been passing for that reason, not because batching was
+   invariant. It now tracks `max |v − reference|` and passes non-vacuously (`mean_batch 13.2, pad 0.11` during
+   the storm). A random-weights net is what exposed it.
+3. **A pre-existing flaky panic in the generator at the default 28x17 board.** `recon_mcts/src/tree.rs`
+   "could not remove dropped node as child's parents", in ~2 runs of 3, reproduced with **no new flag
+   involved**:
+   `botbowl-ui dataset --mode random-start --games 12 --seed 7700 --mcts-iters 8 --evaluator heuristic`.
+   **It did not reproduce at the 14x7 tier** (6/6 clean at 8 iters, 3/3 at 1000), so the training loop is not
+   exposed — but it is a real latent bug and it is unowned. `botbowl-ui/tests/parallel_games.rs` skips above
+   20 board-width for this reason and records the repro.
+
+### What is left
+
+- **Stage 4b's second half: `--parallel-games` for `eval::run_ladder_rung`.** The multi-model registry is
+  done and verified (two nets over one socket get distinct `model_id`s and distinct canaries; two spellings of
+  one net collapse to one), so the server side is ready. The Rust side is not: `run_ladder_rung` builds its
+  bots once per rung and `dyn Bot` has no `Send` bound, so bots must move inside the worker threads, with a
+  `Mutex<LadderRow>` and a `Mutex` on the per-game writer. Until then the loop deliberately does **not** pass
+  `--nn-server` to `eval`, because a single-stream eval would be *slower* on the sidecar than on tract.
+- **The distributional acceptance test** (one 300-game shard each way, comparing TDs/drive, scoreless
+  fraction, samples/drive and the value-target split against plan 021's baselines) has **not** been run —
+  there is no trained champion to run it with since the plan-023 reset. It should gate the first real
+  generation that uses the sidecar.
+- **The connection-per-decision churn** noted after Stage 2 is still there and still not worth fixing:
+  amortised over ~580 forwards per decision it is under 10 µs/forward.
 
 ## Cross-references
 

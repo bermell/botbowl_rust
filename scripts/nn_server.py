@@ -29,10 +29,10 @@ Design notes worth keeping in mind before editing:
   client compares against its own tract result and refuses to run on a
   mismatch. That is what stops a corpus — or a promotion-gate verdict —
   from being labelled with the wrong network.
-* **Capacity-1 registry (plan 024 Stage 1).** Generation shards use one
-  net each. `model_path`/`model_id` are on the wire from day one so the
-  multi-model registry the eval phase needs (Stage 4b) is a server-side
-  change only, with no protocol bump.
+* **Model identity is the resolved weights file, not the client's path
+  string.** Two spellings of one net must share a `model_id` and a batch
+  queue; see `Registry`. `--max-models` (4) bounds the registry and
+  nothing is evicted.
 * **CUDA graphs are the point, not an optimisation (Stage 3).** This
   model is tiny (0.48 M params, 0.13 GFLOP) and the GPU is never the
   constraint: at batch 1 a traced module costs ~870 us end to end, of
@@ -120,11 +120,21 @@ class Registry:
     12.5x slower); once the cap is raised it loads the same net twice and
     splits the batch in half, which is invisible except as lost speed.
 
-    Capacity is 1 for now (Stage 1): every generation shard names the same
-    champion, so one entry serves them all, and a second *different* model
-    is a configuration error worth refusing loudly rather than a case to
-    silently support. Stage 4b raises the cap and adds LRU eviction for
-    the eval phase's candidate-vs-champion pair.
+    Capacity is `--max-models` (default 4), which covers generation (one
+    champion) and the eval phase's candidate-vs-champion pair with room
+    for a small strength ladder. Two clients naming the same weights share
+    one entry, one `model_id` and one batch queue; samples cannot be
+    batched across different weights, so a second model means a second
+    batch key, not a bigger batch.
+
+    **Nothing is evicted.** LRU was the plan's suggestion, and it is the
+    wrong trade here: a `model_id` is also the key of that model's
+    captured CUDA graphs, which are owned by the batcher thread, so
+    evicting from a connection thread would either leak ~400 MB of VRAM
+    per evicted model or need cross-thread graph teardown — real
+    complexity on a path that cannot fire when the cap is 4 and the eval
+    phase holds 2. Exceeding the cap is a loud refusal instead, and the
+    fix is to raise the flag.
     """
 
     def __init__(self, device: str, capacity: int, jit: str):
@@ -145,7 +155,7 @@ class Registry:
             if len(self.by_weights) >= self.capacity:
                 raise RuntimeError(
                     f"registry full ({self.capacity}): already serving "
-                    f"{[m.path for m in self.by_weights.values()]} — Stage 4b raises --max-models"
+                    f"{[m.path for m in self.by_weights.values()]} — raise --max-models"
                 )
             model = self._load(pt, path, model_id=len(self.by_weights))
             self.by_weights[key] = model
@@ -880,7 +890,13 @@ def main() -> int:
         help="spin this long for more requests before running a batch. DEFAULT 0 — a timer makes the "
         "server slower than tract whenever few shards are active; greedy draining self-regulates.",
     )
-    ap.add_argument("--max-models", type=int, default=1, help="registry capacity (Stage 1: 1)")
+    ap.add_argument(
+        "--max-models",
+        type=int,
+        default=4,
+        help="registry capacity. 1 net for generation, 2 for the eval phase's candidate-vs-champion; "
+        "nothing is evicted, so exceeding this is a refusal, not a stall.",
+    )
     ap.add_argument("--jit", default="auto", choices=("auto", "off"))
     ap.add_argument(
         "--graphs",
