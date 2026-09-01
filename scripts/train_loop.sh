@@ -57,6 +57,14 @@ TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda
 BOOTSTRAP_GAMES_PER_SHARD="${BOOTSTRAP_GAMES_PER_SHARD:-$GAMES_PER_SHARD}"
                                             # gen-0 corpus when no champion exists
 INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
+# Plan 024: batched GPU inference. `off` keeps the loop exactly as it was
+# (tract on the CPU, no Python, no GPU during generate). Measured on this
+# host at 8 shards x 4 parallel games: 2.62 s/game against tract's 9.93,
+# i.e. 3.8x, using 4.3 cores against 5.3.
+NN_SERVER="${NN_SERVER:-on}"                # on|off
+NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
+PARALLEL_GAMES="${PARALLEL_GAMES:-4}"       # concurrent games per nn shard
+NN_SERVER_RESTARTS="${NN_SERVER_RESTARTS:-3}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
                                             # (old corpora used 8e5.. and 2e6..)
 RUN_DIR="${RUN_DIR:-$REPO/runs/loop14x7}"   # override both for dry runs so a
@@ -102,6 +110,49 @@ free_gb() {
         df -k . | awk 'NR==2{printf "%dG", $4/1048576}'
     fi
 }
+
+# ---- nn sidecar lifecycle (plan 024 Stage 5) --------------------------------
+# One server for the whole phase, torn down before the train phase so the
+# trainer gets the whole card. A dead server is *not* fatal: the Rust client
+# falls back to tract, so a shard gets slower but still finishes, which
+# preserves the loop's existing "a dead shard is a warning" semantics.
+NN_SERVER_PID=""
+nn_server_start() {
+    [ "$NN_SERVER" = "on" ] || return 0
+    local model="$1"
+    [ -f "${model%.onnx}.pt" ] || {
+        status "WARN: no ${model%.onnx}.pt beside the champion — sidecar needs the trainer's own weights; running on tract"
+        return 0
+    }
+    rm -f "$NN_SOCKET"
+    "$PY" "$REPO/scripts/nn_server.py" --socket "$NN_SOCKET" --device cuda \
+        --model "$model" --stats-every 300 >> "$RUN_DIR/nn_server.log" 2>&1 &
+    NN_SERVER_PID=$!
+    # Warm-up loads the net, traces it and captures 12 CUDA graphs; the
+    # socket only appears once the batcher is ready, so waiting for the
+    # socket is exactly the right readiness signal.
+    local i=0
+    while [ ! -S "$NN_SOCKET" ]; do
+        i=$((i + 1))
+        if [ "$i" -gt 120 ] || ! kill -0 "$NN_SERVER_PID" 2>/dev/null; then
+            status "WARN: nn_server did not come up in ${i}s — see nn_server.log; shards will use tract"
+            NN_SERVER_PID=""
+            return 0
+        fi
+        sleep 1
+    done
+    status "nn_server up (pid $NN_SERVER_PID, $(basename "$model"), socket $NN_SOCKET)"
+}
+nn_server_stop() {
+    [ -n "$NN_SERVER_PID" ] || return 0
+    kill "$NN_SERVER_PID" 2>/dev/null
+    wait "$NN_SERVER_PID" 2>/dev/null
+    status "nn_server stopped (pid $NN_SERVER_PID)"
+    NN_SERVER_PID=""
+    rm -f "$NN_SOCKET"
+}
+# Never leave a server (and its 400 MB of VRAM) behind on any exit path.
+trap nn_server_stop EXIT INT TERM
 
 [ -f "$CHAMPION_FILE" ] || echo "$INIT_CHAMPION" > "$CHAMPION_FILE"
 [ -x "$PY" ] || die "trainer venv python not found: $PY"
@@ -233,12 +284,23 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ ! -e "$GEN_DIR/.generated" ]; then
         SECONDS=0
         CHAMP="$(champion)"
-        status "$GG generate: 8x$GAMES_PER_SHARD games (nn-value: $(basename "$CHAMP") + heuristic hedge), disk free $(free_gb)"
+        nn_server_start "$CHAMP"
+        # Only the nn shards talk to the sidecar, and only they get
+        # parallel games: a heuristic shard has no NN call to batch, so
+        # extra games there would just take cores away from the ones that
+        # do. `--nn-server` is harmless if the server never came up (the
+        # client falls back to tract and warns once).
+        if [ -n "$NN_SERVER_PID" ]; then
+            NN_EXTRA="--nn-server $NN_SOCKET --parallel-games $PARALLEL_GAMES"
+        else
+            NN_EXTRA=""
+        fi
+        status "$GG generate: 8x$GAMES_PER_SHARD games (nn-value: $(basename "$CHAMP")${NN_EXTRA:+ via sidecar x$PARALLEL_GAMES} + heuristic hedge), disk free $(free_gb)"
         PIDS=""
         for K in $NN_SHARDS $HEUR_SHARDS; do
             SEED=$((SEED_BASE + G * 1000000 + K * 100000))
             case " $NN_SHARDS " in
-                *" $K "*) EV_ARGS="--evaluator nn-value --model $CHAMP" ;;
+                *" $K "*) EV_ARGS="--evaluator nn-value --model $CHAMP $NN_EXTRA" ;;
                 *)        EV_ARGS="--evaluator heuristic" ;;
             esac
             # shellcheck disable=SC2086
@@ -254,6 +316,13 @@ while [ "$G" -le "$MAX_GENS" ]; do
                 log "WARN: $GG shard$K generator exited nonzero (partial shard kept)"
             fi
         done
+        # A shard that silently ran on tract all generation is the failure
+        # this phase can otherwise hide: it finishes, its corpus is
+        # correct, and it is just 4x slower. Surface it.
+        FELL_BACK=$(grep -l 'NN_SERVER_FALLBACK' "$GEN_DIR"/shard*.log 2>/dev/null | wc -l)
+        [ "$FELL_BACK" -eq 0 ] || status "WARN: $GG had $FELL_BACK shard(s) fall back to tract — see shard*.log and nn_server.log"
+        # The trainer needs the whole card; never let the two contend.
+        nn_server_stop
         GAMES=0
         for K in $NN_SHARDS $HEUR_SHARDS; do
             [ -s "$GEN_DIR/shard$K.jsonl" ] || die "$GG shard$K.jsonl empty/missing — see shard$K.log"

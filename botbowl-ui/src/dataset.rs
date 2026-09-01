@@ -17,7 +17,8 @@
 //! ```
 
 use std::io;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand::SeedableRng;
@@ -41,6 +42,95 @@ use crate::cli::{CliDifficulty, CliEvaluator, DatasetArgs, DatasetMode};
 const OPPONENT_SEED_MIX: u64 = 0xA5A5_A5A5_A5A5_A5A5;
 const AGENT_SEED_MIX: u64 = 0x5A5A_5A5A_5A5A_5A5A;
 
+/// Game workers only orchestrate — the search runs on `MctsBot`'s own
+/// threads — but they do build a `GameState` on the stack, so match the
+/// engine's generous convention rather than the 2 MB default.
+const GAME_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+/// What the parallel game workers share.
+struct RunState {
+    /// One JSONL line per trajectory. `serde_json` writes straight into
+    /// the `BufWriter`, so concurrent writes would interleave *within* a
+    /// line, not merely reorder lines — this lock is load-bearing.
+    writer: Mutex<DatasetWriter>,
+    /// Work is handed out one game at a time rather than in static
+    /// chunks: random-start games differ several-fold in length, so a
+    /// fixed split would leave workers idle at the tail.
+    next_game: AtomicU32,
+    total_samples: AtomicUsize,
+    written: AtomicU32,
+    /// Set when a worker hits a fatal configuration error (a bad lecture
+    /// name), so its peers stop instead of repeating the same failure
+    /// once per remaining game.
+    stop: AtomicBool,
+    per_game_profile: bool,
+}
+
+/// Pull games off `state.next_game` until they run out.
+///
+/// Line order in the output is no longer game order once `parallel > 1`.
+/// That is safe: every consumer is line-oriented (`prepare` streams the
+/// JSONL) and each trajectory carries its own seed in `TrajectoryMeta`,
+/// so a run is still fully identifiable — but it does mean two runs of
+/// the same command produce the same *set* of lines in a different order.
+fn run_games(
+    args: &DatasetArgs,
+    nn: Option<&Arc<NnEvaluator>>,
+    state: &RunState,
+    t_start: Instant,
+    fw0: u64,
+    ns0: u64,
+) -> io::Result<()> {
+    loop {
+        if state.stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let g = state.next_game.fetch_add(1, Ordering::Relaxed);
+        if g >= args.games {
+            return Ok(());
+        }
+        let seed = args.seed.wrapping_add(g as u64);
+        let traj = match args.mode {
+            DatasetMode::SelfPlay => Some(self_play_trajectory(args, nn, seed)),
+            DatasetMode::RandomStart => Some(random_start_trajectory(args, nn, seed)),
+            DatasetMode::Curriculum => match curriculum_trajectory(args, nn, seed) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("{e}");
+                    state.stop.store(true, Ordering::Relaxed);
+                    return Ok(());
+                }
+            },
+        };
+        let Some(traj) = traj else { continue };
+        state.total_samples.fetch_add(traj.samples.len(), Ordering::Relaxed);
+        let done = state.written.fetch_add(1, Ordering::Relaxed) + 1;
+        println!(
+            "[{}/{}] seed={seed} samples={} z_home={:+} score={}-{}",
+            done,
+            args.games,
+            traj.samples.len(),
+            traj.outcome.z_home,
+            traj.outcome.home_score,
+            traj.outcome.away_score,
+        );
+        {
+            let mut w = state.writer.lock().expect("writer mutex");
+            w.write(&traj)?;
+            w.flush()?;
+        }
+        if state.per_game_profile {
+            let (fw, ns) = botbowl_nn::eval::profile_counters();
+            println!(
+                "    NN_PROFILE game forwards={} inference_ms={} elapsed_ms={}",
+                fw - fw0,
+                (ns - ns0) / 1_000_000,
+                t_start.elapsed().as_millis()
+            );
+        }
+    }
+}
+
 pub fn run(args: DatasetArgs) -> io::Result<()> {
     // Load the ONNX evaluator once; every bot in every game shares the
     // Arc (the net is frozen — pure function of state).
@@ -57,58 +147,73 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
         _ => None,
     };
 
-    let mut writer = if args.truncate {
+    let writer = if args.truncate {
         DatasetWriter::create(&args.out)?
     } else {
         DatasetWriter::append(&args.out)?
     };
 
-    let mut total_samples = 0usize;
-    let mut written = 0u32;
     // Plan 024 Stage 0: wall clock of the whole generation loop, against
     // which the NN forward counters give the inference share directly
     // (no cross-arm subtraction needed).
     let t_start = Instant::now();
     let (fw0, ns0) = botbowl_nn::eval::profile_counters();
 
-    for g in 0..args.games {
-        let seed = args.seed.wrapping_add(g as u64);
-        let traj = match args.mode {
-            DatasetMode::SelfPlay => Some(self_play_trajectory(&args, nn.as_ref(), seed)),
-            DatasetMode::RandomStart => Some(random_start_trajectory(&args, nn.as_ref(), seed)),
-            DatasetMode::Curriculum => match curriculum_trajectory(&args, nn.as_ref(), seed) {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("{e}");
-                    return Ok(());
-                }
-            },
-        };
-        if let Some(traj) = traj {
-            total_samples += traj.samples.len();
-            written += 1;
-            println!(
-                "[{}/{}] seed={seed} samples={} z_home={:+} score={}-{}",
-                g + 1,
-                args.games,
-                traj.samples.len(),
-                traj.outcome.z_home,
-                traj.outcome.home_score,
-                traj.outcome.away_score,
-            );
-            writer.write(&traj)?;
-            writer.flush()?;
-            if botbowl_nn::eval::profile_enabled() {
-                let (fw, ns) = botbowl_nn::eval::profile_counters();
-                println!(
-                    "    NN_PROFILE game forwards={} inference_ms={} elapsed_ms={}",
-                    fw - fw0,
-                    (ns - ns0) / 1_000_000,
-                    t_start.elapsed().as_millis()
+    // Plan 024 Stage 4: games are embarrassingly parallel — each one
+    // builds its own `GameState`, its own bots and its own RNG from its
+    // own seed — so running several at once costs nothing in search
+    // fidelity and is the only way a *single* process (the eval phase, or
+    // a RAM-bound generate phase) can offer the sidecar more than one
+    // concurrent request. See `run_games`.
+    let parallel = args.parallel_games.clamp(1, args.games.max(1)) as usize;
+    let state = RunState {
+        writer: Mutex::new(writer),
+        next_game: AtomicU32::new(0),
+        total_samples: AtomicUsize::new(0),
+        written: AtomicU32::new(0),
+        stop: AtomicBool::new(false),
+        // The forward counters are process-global, so a per-game delta is
+        // only meaningful while one game runs at a time.
+        per_game_profile: botbowl_nn::eval::profile_enabled() && parallel == 1,
+    };
+
+    if parallel == 1 {
+        run_games(&args, nn.as_ref(), &state, t_start, fw0, ns0)?;
+    } else {
+        println!("running {parallel} games in parallel ({} concurrent inference streams)", parallel);
+        let mut errs: Vec<io::Error> = Vec::new();
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for i in 0..parallel {
+                let st = &state;
+                let args = &args;
+                let nn = nn.as_ref();
+                handles.push(
+                    std::thread::Builder::new()
+                        .name(format!("game-{i}"))
+                        .stack_size(GAME_STACK_SIZE)
+                        .spawn_scoped(s, move || run_games(args, nn, st, t_start, fw0, ns0))
+                        .expect("spawn game worker"),
                 );
             }
+            for h in handles {
+                match h.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => errs.push(e),
+                    Err(_) => errs.push(io::Error::other("a game worker panicked")),
+                }
+            }
+        });
+        if let Some(e) = errs.into_iter().next() {
+            return Err(e);
         }
     }
+
+    let total_samples = state.total_samples.load(Ordering::Relaxed);
+    let written = state.written.load(Ordering::Relaxed);
+    // Every game already flushed under the lock; drop it here anyway so
+    // the file is closed before the summary line claims it was written.
+    drop(state.writer);
 
     if botbowl_nn::eval::profile_enabled() {
         let (fw, ns) = botbowl_nn::eval::profile_counters();

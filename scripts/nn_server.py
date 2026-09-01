@@ -891,6 +891,13 @@ def main() -> int:
     )
     ap.add_argument("--warm-sizes", default=f"{CANARY_H}x{CANARY_W}", help="comma-separated HxW to warm")
     ap.add_argument("--torch-threads", type=int, default=None)
+    ap.add_argument(
+        "--switch-interval",
+        type=float,
+        default=0.0005,
+        help="sys.setswitchinterval. DEFAULT 0.5ms, well below Python's 5ms default: a connection "
+        "thread must not sit on the GIL ten times longer than the batch it is feeding.",
+    )
     ap.add_argument("--stats-every", type=float, default=60.0, help="seconds between stats lines (0 = off)")
     ap.add_argument(
         "--bench",
@@ -919,6 +926,12 @@ def main() -> int:
     if args.torch_threads:
         torch.set_num_threads(args.torch_threads)
     torch.backends.cudnn.benchmark = True
+    # One connection thread per client thread, all of them doing a 21 KB
+    # `recv_into` and a `queue.put` under the GIL, plus the batcher. At the
+    # 5 ms default a thread that wants the GIL can wait 5 ms for it, which
+    # is an order of magnitude longer than the ~500 us batch it is waiting
+    # behind.
+    sys.setswitchinterval(args.switch_interval)
 
     registry = Registry(args.device, args.max_models, args.jit)
     if args.bench:

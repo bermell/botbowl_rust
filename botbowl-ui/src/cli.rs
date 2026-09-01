@@ -206,6 +206,16 @@ pub struct DatasetArgs {
     /// Worker threads for the MCTS bot.
     #[arg(long, default_value_t = 1)]
     pub mcts_workers: usize,
+    /// Games to play concurrently in this process (plan 024 Stage 4).
+    ///
+    /// Games are independent — own state, own bots, own seed — so this
+    /// changes nothing about the search; it only raises how many
+    /// inference requests are in flight at once, which is what a batched
+    /// `--nn-server` needs to fill a batch. Prefer more shard processes
+    /// when RAM allows; use this when it does not, or in a single-process
+    /// phase. Output line order stops matching game order above 1.
+    #[arg(long, default_value_t = 1)]
+    pub parallel_games: u32,
     /// Safety cap on micro-steps per game/trial.
     #[arg(long, default_value_t = 100_000)]
     pub max_steps: u32,
