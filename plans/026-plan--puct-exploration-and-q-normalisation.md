@@ -60,4 +60,4 @@ While testing, a unit test asserted something **false**: that an explored child 
 
 - plan 025 — the non-convergence finding this set out to explain, and the averaging trick that stands regardless.
 - plan 023 — the side-bias investigation, whose kickoff fixes these runs incidentally falsified as the cause (see its Result section).
-- `runs/puct/` — sweep JSONL, per-arm logs, and the two head-to-head reports.
+- `runs/puct/` — sweep JSONL, per-arm logs, and the two head-to-head reports. **Deleted 2026-09-01** along with the rest of the plan-023 investigation's raw data (see that plan's postscript) — these runs predate the `e107f06` mover-tagging fix, so their exploration-constant conclusions were measured under the buggy search and the now-retired `gen01` champion; treat as provisional until re-checked post-fix.

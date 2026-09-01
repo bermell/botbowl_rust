@@ -131,7 +131,12 @@ Output one JSONL row per (state, repeat, checkpoint) carrying the full `ChildSta
 
 Ran both arms: `nn-value` with `bbnet_14x7_gen01.onnx` (48 min) and a `heuristic`
 control (7 min). Raw data in `runs/convergence/`, analysis in
-`scripts/convergence_summary.py`.
+`scripts/convergence_summary.py`. **Raw data deleted 2026-09-01** along
+with the rest of the plan-023 investigation's runs — this measurement
+used the `gen01` champion under the pre-`e107f06` buggy search, and
+`gen01` itself has since been retired for learned side-miscalibration
+(see plan 023's postscript), so the non-convergence finding below should
+be treated as provisional until re-checked post-fix.
 
 **The search does not converge. Run-to-run disagreement *increases* with budget.**
 
