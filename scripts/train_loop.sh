@@ -72,6 +72,12 @@ NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
 # Plans 020/021 record real OOM kills here, so 2 it is. Raise it on a box
 # with more RAM: the throughput sweep peaked at 4.
 PARALLEL_GAMES="${PARALLEL_GAMES:-2}"
+# Same knob for the eval phase, tuned separately. Eval has the box to
+# itself (no generate shards competing), but each rung worker holds *two*
+# MCTS trees — candidate and opponent — against a dataset worker's one, so
+# the per-unit memory is roughly double. 4 workers ~ 8 trees, which is the
+# same tree count the generate phase carries across all its shards.
+EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-4}"
 NN_SERVER_RESTARTS="${NN_SERVER_RESTARTS:-3}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
                                             # (old corpora used 8e5.. and 2e6..)
@@ -392,14 +398,39 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ ! -e "$GEN_DIR/.evaluated" ]; then
         SECONDS=0
         CHAMP="$(champion)"
-        status "$GG eval: $EVAL_GAMES games/rung (random, scripted, mcts-heuristic, vs $(basename "$CHAMP"))"
+        # Eval is a *single* process running full games, so before plan 024
+        # Stage 4b it used one core and took 117-690 min (plan 022's own
+        # numbers) — which, with generate now ~4x faster, made it the
+        # loop's dominant phase. Two changes fix that, and both are needed:
+        # --parallel-games gives the process more than one stream, and only
+        # then is --nn-server worth pointing at it (at one stream a
+        # batching server is slower than tract). The candidate and the
+        # champion share the one socket: each names its own model at
+        # handshake and gets its own canary, so they cannot be cross-wired.
+        #
+        # A rung holds two bots per worker (candidate + opponent) against
+        # dataset's one, so this is deliberately below the generate phase's
+        # concurrency even though eval has the box to itself.
+        nn_server_start "$CHAMP"
+        if [ -n "$NN_SERVER_PID" ]; then
+            EVAL_EXTRA="--nn-server $NN_SOCKET --parallel-games $EVAL_PARALLEL_GAMES"
+        else
+            EVAL_EXTRA="--parallel-games $EVAL_PARALLEL_GAMES"
+        fi
+        status "$GG eval: $EVAL_GAMES games/rung x$EVAL_PARALLEL_GAMES (random, scripted, mcts-heuristic, vs $(basename "$CHAMP"))"
+        # shellcheck disable=SC2086
         if ! "$UI" eval --evaluator nn-value --model "$MODEL.onnx" \
                 --mcts-iters "$MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
                 --skip-lectures \
                 --vs-evaluator nn-value --vs-model "$CHAMP" \
+                $EVAL_EXTRA \
                 --out "$GEN_DIR/report.json" > "$GEN_DIR/eval.log" 2>&1; then
+            nn_server_stop
             die "$GG eval failed — see eval.log"
         fi
+        grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/eval.log" \
+            && status "WARN: $GG eval fell back to tract — see eval.log and nn_server.log"
+        nn_server_stop
         touch "$GEN_DIR/.evaluated"
     else
         SECONDS=0

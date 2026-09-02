@@ -263,6 +263,18 @@ pub struct EvalArgs {
     /// Worker threads for MCTS bots (candidate and ladder opponent).
     #[arg(long, default_value_t = 1)]
     pub mcts_workers: usize,
+    /// Ladder games to play concurrently within a rung (plan 024 Stage 4b).
+    ///
+    /// Rung games are independent — own state, own bots, own seed derived
+    /// from the game index — so this changes nothing about a result. It is
+    /// what makes the eval phase, previously the loop's one wholly serial
+    /// phase, use the machine; and it is a precondition for pointing
+    /// `--nn-server` at eval, since a single stream is *slower* on a
+    /// batching server than on tract. Note a rung holds two bots per
+    /// worker (candidate + opponent), so memory grows about twice as fast
+    /// per unit as `dataset --parallel-games`.
+    #[arg(long, default_value_t = 1)]
+    pub parallel_games: u32,
     /// Trials per lecture × difficulty cell.
     #[arg(long, default_value_t = 100)]
     pub trials: u32,

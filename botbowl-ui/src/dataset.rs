@@ -44,8 +44,9 @@ const AGENT_SEED_MIX: u64 = 0x5A5A_5A5A_5A5A_5A5A;
 
 /// Game workers only orchestrate — the search runs on `MctsBot`'s own
 /// threads — but they do build a `GameState` on the stack, so match the
-/// engine's generous convention rather than the 2 MB default.
-const GAME_STACK_SIZE: usize = 16 * 1024 * 1024;
+/// engine's generous convention rather than the 2 MB default. Shared with
+/// `eval`'s rung workers, which do the same job.
+pub(crate) const GAME_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 /// What the parallel game workers share.
 struct RunState {

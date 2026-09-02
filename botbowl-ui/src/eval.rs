@@ -17,7 +17,8 @@
 //! across generations.
 
 use std::io;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -32,6 +33,7 @@ use botbowl_mcts::{MctsBot, PuctMode, SearchBudget};
 use botbowl_nn::eval::NnEvaluator;
 
 use crate::cli::{CliCandidateBot, CliEvaluator, EvalArgs};
+use crate::dataset::GAME_STACK_SIZE;
 
 /// Max micro-steps per lecture trial (mirrors the curriculum CLI default).
 const LECTURE_MAX_STEPS: u32 = 2000;
@@ -220,22 +222,29 @@ fn score_for(state: &GameState, team: TeamType) -> (u8, u8) {
     }
 }
 
+/// What the parallel rung workers share. Every `LadderRow` field is a
+/// commutative counter, so one `Mutex` around the whole row is both
+/// correct and cheap — a rung game takes seconds, the lock is held for
+/// microseconds.
+struct RungState {
+    row: Mutex<LadderRow>,
+    /// Handed out one game at a time. Full games vary several-fold in
+    /// length, so a static split would idle workers at the tail.
+    next_game: AtomicU32,
+    /// `writeln!` of a whole JSONL line must be atomic against its peers.
+    per_game: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
+}
+
 fn run_ladder_rung(
     args: &EvalArgs,
     nn: Option<&Arc<NnEvaluator>>,
     name: &str,
-    mut make_opponent: impl FnMut() -> Box<dyn Bot>,
+    make_opponent: impl Fn() -> Box<dyn Bot> + Sync,
 ) -> LadderRow {
-    let mut row = LadderRow {
-        opponent: name.to_string(),
-        ..Default::default()
-    };
-    let mut candidate = make_candidate_bot(args, nn);
-    let mut opponent = make_opponent();
     // Per-game side-relative record (plan 023 deferred item 5): the pooled
     // report line cannot distinguish a scoring-rate bias from a
     // win-conversion one, nor see who received the opening kickoff.
-    let mut per_game = args.per_game_out.as_ref().map(|path| {
+    let per_game = args.per_game_out.as_ref().map(|path| {
         std::io::BufWriter::new(
             std::fs::File::options()
                 .create(true)
@@ -244,34 +253,98 @@ fn run_ladder_rung(
                 .expect("--per-game-out: cannot open"),
         )
     });
-    for g in 0..args.games {
+    let state = RungState {
+        row: Mutex::new(LadderRow { opponent: name.to_string(), ..Default::default() }),
+        next_game: AtomicU32::new(0),
+        per_game: Mutex::new(per_game),
+    };
+
+    // Plan 024 Stage 4b. Eval was the loop's one wholly serial phase, and
+    // once generation got ~4x faster it became the dominant one (plan 022
+    // measured 117-690 min against a generate phase now near 200). A rung
+    // game is independent of its siblings — own `GameState`, own bots, own
+    // seed derived from `g` — so this changes nothing about a result, only
+    // how many run at once. It is also what lets the eval phase use
+    // `--nn-server` at all: at one stream a batching server is *slower*
+    // than tract.
+    let parallel = args.parallel_games.clamp(1, args.games.max(1)) as usize;
+    if parallel == 1 {
+        run_rung_games(args, nn, name, &make_opponent, &state);
+    } else {
+        eprintln!("  vs {name}: {parallel} games in parallel");
+        std::thread::scope(|s| {
+            for i in 0..parallel {
+                let st = &state;
+                let mk = &make_opponent;
+                std::thread::Builder::new()
+                    .name(format!("rung-{i}"))
+                    .stack_size(GAME_STACK_SIZE)
+                    .spawn_scoped(s, move || run_rung_games(args, nn, name, mk, st))
+                    .expect("spawn rung worker");
+            }
+        });
+    }
+    eprintln!();
+
+    let mut row = state.row.into_inner().expect("row mutex");
+    row.win_rate = if row.games > 0 {
+        row.wins as f64 / row.games as f64
+    } else {
+        0.0
+    };
+    row
+}
+
+/// Play rung games off the shared counter until they run out.
+///
+/// Bots are built **here**, per worker, and never leave this thread —
+/// which is what makes this sound despite `dyn Bot` having no `Send`
+/// bound. It also matches the sequential behaviour: bots were already
+/// reused across the games of a rung, and `MctsBot`'s cached tree is
+/// discarded anyway when the horizon anchor fails to match at a new
+/// game's kickoff.
+fn run_rung_games(
+    args: &EvalArgs,
+    nn: Option<&Arc<NnEvaluator>>,
+    name: &str,
+    make_opponent: &(impl Fn() -> Box<dyn Bot> + Sync),
+    state: &RungState,
+) {
+    let mut candidate = make_candidate_bot(args, nn);
+    let mut opponent = make_opponent();
+    loop {
+        let g = state.next_game.fetch_add(1, Ordering::Relaxed);
+        if g >= args.games {
+            return;
+        }
         // Alternate sides; the seed is shared by the mirrored game `g±1`,
         // so every candidate faces the same situations from both sides.
+        // Both are pure functions of `g`, so which worker picks up which
+        // game cannot change the pairing.
         let candidate_team = if g % 2 == 0 { TeamType::Home } else { TeamType::Away };
         let seed = args.seed.wrapping_add((g / 2) as u64);
         let (cand, opp, finished, kicking_first_half) =
             play_game(&mut *candidate, &mut *opponent, candidate_team, seed, args.max_steps);
-        if let Some(w) = per_game.as_mut() {
+
+        let (h, a) = match candidate_team {
+            TeamType::Home => (cand, opp),
+            TeamType::Away => (opp, cand),
+        };
+        if let Some(w) = state.per_game.lock().expect("per-game mutex").as_mut() {
             use std::io::Write;
-            let (h, a) = match candidate_team {
-                TeamType::Home => (cand, opp),
-                TeamType::Away => (opp, cand),
-            };
             writeln!(
                 w,
                 r#"{{"rung":"{name}","game":{g},"seed":{seed},"candidate_team":"{candidate_team:?}","home_score":{h},"away_score":{a},"kicking_first_half":"{kicking_first_half:?}","finished":{finished}}}"#
             )
             .expect("per-game log write failed");
         }
+
+        let mut row = state.row.lock().expect("row mutex");
         row.games += 1;
         row.tds_for += cand as u32;
         row.tds_against += opp as u32;
-        let (home_td, away_td) = match candidate_team {
-            TeamType::Home => (cand, opp),
-            TeamType::Away => (opp, cand),
-        };
-        row.tds_by_home += home_td as u32;
-        row.tds_by_away += away_td as u32;
+        row.tds_by_home += h as u32;
+        row.tds_by_away += a as u32;
         if !finished {
             row.unfinished += 1;
         }
@@ -287,15 +360,8 @@ fn run_ladder_rung(
                 if home { row.losses_as_home += 1 } else { row.losses_as_away += 1 }
             }
         }
-        eprint!("\r  vs {name}: {}/{} (W{} D{} L{})", g + 1, args.games, row.wins, row.draws, row.losses);
+        eprint!("\r  vs {name}: {}/{} (W{} D{} L{})", row.games, args.games, row.wins, row.draws, row.losses);
     }
-    eprintln!();
-    row.win_rate = if row.games > 0 {
-        row.wins as f64 / row.games as f64
-    } else {
-        0.0
-    };
-    row
 }
 
 pub fn run(args: EvalArgs) -> io::Result<()> {
