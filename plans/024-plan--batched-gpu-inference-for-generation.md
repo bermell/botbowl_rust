@@ -824,6 +824,32 @@ and says so in `status.md`.
    exposed — but it is a real latent bug and it is unowned. `botbowl-ui/tests/parallel_games.rs` skips above
    20 board-width for this reason and records the repro.
 
+### Postscript (2026-09-02): the baseline moved, the ratios did not
+
+The first post-reset `gen00` bootstrap runs at **18.8 s/game per shard**, against plan 022's reference of
+**6.9** — 2.7× slower, on the *heuristic* path, which nothing in this plan touches. Measured on a quiet box
+with the 8 shards saturating it (769% CPU), so it is not contention.
+
+It is not a regression, and the corpus says so. Against plan 021's health baselines:
+
+| | measured (310 drives) | plan 021 baseline |
+|---|---|---|
+| TDs/drive | **0.75** | 0.79 |
+| scoreless | **0.25** | 0.21 |
+| samples/drive | **26.7** | 19.6 |
+
+Outcome quality is on baseline; what changed is that a drive now takes **1.36× more decisions**. The only thing
+between the two measurements is the plan-023 work — chiefly the mover-tagging fix (`e107f06`), which corrected
+what `available_actions` reports and therefore what the search explores. A correct search doing more work per
+drive is the expected shape of that fix, and 1.36× more decisions plus a costlier decision covers the 2.7×.
+
+Two consequences for reading this document:
+
+- **The absolute "before" numbers at the top of this plan (863 min, 86.3 s/game) predate the plan-023 fix and
+  are no longer the baseline.** A generation costs more now, in both arms.
+- **Every ratio measured on 2026-09-01 is unaffected**, because both arms of every A/B ran the current code
+  back to back. The 3.79×, the `F` fit and the CPU-per-forward numbers all stand.
+
 ### What is left
 
 - **Stage 4b's second half: `--parallel-games` for `eval::run_ladder_rung`.** The multi-model registry is
