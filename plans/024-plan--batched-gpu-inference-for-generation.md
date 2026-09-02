@@ -883,14 +883,42 @@ dataset worker holds one.
   engine, so compare a sidecar corpus against a **tract corpus generated today**, not against plan 021's 19.6.
 - **The connection-per-decision churn** noted after Stage 2 is still there and still not worth fixing:
   amortised over ~580 forwards per decision it is under 10 µs/forward.
-- **The heuristic hedge shards are now the generate phase's long pole** (1800 games at 6.45 s/game aggregate
-  against the nn shards' 181 min). Inference is no longer what generation waits on. Speeding that up means
-  changing the 5 nn / 3 heuristic mix that plan 022 tuned, so it is a corpus-composition decision, not a
-  performance one.
+- ~~The heuristic hedge shards are now the generate phase's long pole.~~ **Wrong — corrected below.** That
+  claim came from a pre-launch probe run against the *random-weight* `bbnet_14x7_bench` net, and a random net's
+  near-constant values make the search behave unlike a trained one. Measured on the real `gen01` (see
+  §First production generation): the **nn shards are still the long pole**, 4.9 h against the heuristic
+  shards' 2.6 h, because nn drives are genuinely longer (27.7 samples/drive vs 23.8 here; plan 021 saw 37.2 vs
+  19.6). The lesson is narrower than the claim was: **do not characterise search *behaviour* with an untrained
+  net** — it is fine for timing the plumbing, which is all it was built for.
 - **The mirror match is a 4-hour serial pre-flight** and was skipped at 46/100 on 2026-09-02 to get the box
   onto the bootstrap (`runs/loop14x7/mirror.partial-46of100.log`). It runs `eval`, so it now inherits
   `--parallel-games` and should be re-runnable in well under an hour; `train_loop.sh` does **not** yet pass the
   flag to it.
+
+## First production generation (`gen01`, 2026-09-02) — the numbers that supersede the probes
+
+The first corpus ever generated through the sidecar, on the real `gen00` champion. **This is the
+authoritative measurement**; everything above it used either an all-nn synthetic shard mix or the
+random-weight bench net.
+
+| | measured | notes |
+|---|---|---|
+| nn shards (5, `--parallel-games 2`) | **5.88 s/game aggregate** → 3000 games in **4.9 h** | the long pole |
+| heuristic shards (3, tract) | 5.17 s/game aggregate → 1800 games in 2.6 h | finishes early, as designed |
+| `fell_back_to_tract` | **0** across all 5 shards | the interlock and the fallback path both quiet |
+| server | mean_batch **3.01**, 247 µs/sample, batch 744 µs, pad 0.05 | 928 k samples in the first 5 min |
+| GPU | 38%, 665 MiB | still not the constraint |
+| CPU / RAM | 639%, **6 GB free** | validates `PARALLEL_GAMES=2` over 4 |
+
+**gen01 generate: 863 min → ~294 min, i.e. 2.9×** — less than the 3.79× A/B, and the gap is fully accounted
+for: (i) only 5 of 8 shards use the sidecar, and the 3 heuristic ones compete for CPU, (ii) `P=2` rather than
+the throughput-optimal `P=4`, which cost ~1.34× and bought the RAM headroom, and (iii) the 863 min baseline
+predates plan 023, whose fix made the search ~1.36× busier per drive. On equal-work terms 2.9 × 1.36 ≈ 3.9×,
+which is the A/B number.
+
+Note `mean_batch` is 3.01 against the loadgen curve's ~25 at 32 streams. Ten streams is what 5 shards × P=2
+offers, and the server drains faster than they fill it — so the sidecar still has roughly 2× headroom, and it
+is the *offered concurrency*, not the GPU or the server, that bounds this. Raising it is a RAM question.
 
 ## Cross-references
 
