@@ -63,7 +63,15 @@ INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
 # i.e. 3.8x, using 4.3 cores against 5.3.
 NN_SERVER="${NN_SERVER:-on}"                # on|off
 NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
-PARALLEL_GAMES="${PARALLEL_GAMES:-4}"       # concurrent games per nn shard
+# Concurrent games per *nn* shard. RAM-bound, not speed-bound: each
+# in-flight game holds its own MCTS tree, and a tree high-waters around
+# 400-500 MB at 1000 iters on this tier. Measured over 10 min in the exact
+# production shape (5 nn + 3 heuristic + server) on this 15 GB box:
+#   P=4 -> nn shards ~8.0 GB, 10.6 GB total, only 3 GB available  <-- too tight
+#   P=2 -> ~7 GB total, 5-6 GB available, and barely slower
+# Plans 020/021 record real OOM kills here, so 2 it is. Raise it on a box
+# with more RAM: the throughput sweep peaked at 4.
+PARALLEL_GAMES="${PARALLEL_GAMES:-2}"
 NN_SERVER_RESTARTS="${NN_SERVER_RESTARTS:-3}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
                                             # (old corpora used 8e5.. and 2e6..)
