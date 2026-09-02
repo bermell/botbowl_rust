@@ -910,7 +910,48 @@ random-weight bench net.
 | GPU | 38%, 665 MiB | still not the constraint |
 | CPU / RAM | 639%, **6 GB free** | validates `PARALLEL_GAMES=2` over 4 |
 
-**gen01 generate: 863 min → ~294 min, i.e. 2.9×** — less than the 3.79× A/B, and the gap is fully accounted
+**Completed: 282 min for 4800/4800 games, no shard losses, and `fell_back_to_tract=0` on all five nn shards
+across 60.9 M remote forwards over 4.7 h.** The projection above (294 min) was within 4%. Against Run 1's
+863 min that is **3.06×**, or ~4.2× on equal-work terms once plan 023's 1.36×-busier search is accounted for.
+60.9 M consecutive forwards with not one fallback is the number to quote for the sidecar's reliability; the
+canary interlock and the tract fallback both stayed silent because neither was needed.
+
+### The next wall is the batcher thread, not the GPU (measured at the tail)
+
+Two things showed up as the phase drained, and both are worth keeping.
+
+**1. The heuristic shards were crowding out the GPU users, at a cost of ~44% of the inference rate.** They
+consume ~3/8 of the CPU and issue *zero* inference, so the nn shards were CPU-starved for the whole concurrent
+window. The server's own windowed rates show the moment they finished (14:26):
+
+| window | samples/s | batches/s | mean_batch | GPU µs/sample |
+|---|---|---|---|---|
+| 11:41→14:26 (all 8 shards) | ~3,150 | ~1,030 | 3.05 | 145 |
+| 15:41→16:06 (3 nn shards left) | ~4,600 | ~1,670 | 2.76 | 159 |
+| 16:06→16:11 (tail) | 4,335 | **1,890** | **2.29** | **192** |
+
+Rebalancing the 5/3 mix to avoid this is **not** obviously worth it: total CPU work is conserved, so
+serialising the phases mostly moves idle GPU around rather than shortening wall clock. It becomes interesting
+only once the net is large enough that GPU time is worth protecting.
+
+**2. At the tail the box is ~30% CPU and the GPU 62%, while the server process sits at 83% — which for a
+GIL-bound process means one thread, the batcher, is saturated.** So neither the CPU nor the GPU is the
+constraint there; the single-threaded Python batcher is, at ~1890 batches/s. This is exactly the wall this plan
+predicted would appear after `F` (§the loadgen curve: "above ~16 streams the per-request Python work … starts
+competing for the GIL, and that — not the GPU — is the next wall"). If it ever needs fixing, the move is more
+batcher threads or the shared-memory ring, not a faster GPU.
+
+**A corollary that makes a bigger network cheaper than the GPU headroom alone suggests:** a larger net makes
+each batch *longer on the GPU*, which lowers batches/s and therefore **relieves** the batcher thread while
+consuming idle GPU. It is an unusually clean trade — the capability lever this plan flagged in §sm_61 is worth
+more than the ~2× estimated from GPU headroom.
+
+**Reading `nvidia-smi` here:** `utilization.gpu` is a **duty cycle** — the fraction of the sampling window with
+at least one kernel resident — not throughput. A CUDA-graph replay costs almost the same at batch 1 as at
+batch 4 (408 vs 482 µs), so as the offered batch shrinks the duty cycle *rises* while useful work per sample
+falls. Do not read a rising number as more work getting done.
+
+**gen01 generate (in-flight projection): 863 min → ~294 min, i.e. 2.9×** — less than the 3.79× A/B, and the gap is fully accounted
 for: (i) only 5 of 8 shards use the sidecar, and the 3 heuristic ones compete for CPU, (ii) `P=2` rather than
 the throughput-optimal `P=4`, which cost ~1.34× and bought the RAM headroom, and (iii) the 863 min baseline
 predates plan 023, whose fix made the search ~1.36× busier per drive. On equal-work terms 2.9 × 1.36 ≈ 3.9×,
