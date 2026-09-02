@@ -281,6 +281,17 @@ pub struct EvalArgs {
     /// Games per ladder opponent (half as Home, half as Away).
     #[arg(long, default_value_t = 50)]
     pub games: u32,
+    /// Games for the `--vs-evaluator` rung only; defaults to `--games`.
+    ///
+    /// That rung is the only one a promotion gate reads, and it is the one
+    /// that needs the most games: draws are commonest against a near-equal
+    /// opponent (gen01 measured 23% vs the champion against 0–13% vs the
+    /// fixed rungs), which is exactly where the score is noisiest. The
+    /// fixed rungs are diagnostic and already decisive at 30 games
+    /// (p < 0.01), so raising them too would multiply the cost of the
+    /// cheapest information in the report card.
+    #[arg(long)]
+    pub vs_games: Option<u32>,
     /// Base seed: lecture trials and game pairs are derived from it, so two
     /// candidates run with the same seed face identical situations.
     #[arg(long, default_value_t = 0)]

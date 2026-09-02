@@ -239,6 +239,7 @@ fn run_ladder_rung(
     args: &EvalArgs,
     nn: Option<&Arc<NnEvaluator>>,
     name: &str,
+    games: u32,
     make_opponent: impl Fn() -> Box<dyn Bot> + Sync,
 ) -> LadderRow {
     // Per-game side-relative record (plan 023 deferred item 5): the pooled
@@ -267,9 +268,9 @@ fn run_ladder_rung(
     // how many run at once. It is also what lets the eval phase use
     // `--nn-server` at all: at one stream a batching server is *slower*
     // than tract.
-    let parallel = args.parallel_games.clamp(1, args.games.max(1)) as usize;
+    let parallel = args.parallel_games.clamp(1, games.max(1)) as usize;
     if parallel == 1 {
-        run_rung_games(args, nn, name, &make_opponent, &state);
+        run_rung_games(args, nn, name, games, &make_opponent, &state);
     } else {
         eprintln!("  vs {name}: {parallel} games in parallel");
         std::thread::scope(|s| {
@@ -279,7 +280,7 @@ fn run_ladder_rung(
                 std::thread::Builder::new()
                     .name(format!("rung-{i}"))
                     .stack_size(GAME_STACK_SIZE)
-                    .spawn_scoped(s, move || run_rung_games(args, nn, name, mk, st))
+                    .spawn_scoped(s, move || run_rung_games(args, nn, name, games, mk, st))
                     .expect("spawn rung worker");
             }
         });
@@ -307,6 +308,7 @@ fn run_rung_games(
     args: &EvalArgs,
     nn: Option<&Arc<NnEvaluator>>,
     name: &str,
+    games: u32,
     make_opponent: &(impl Fn() -> Box<dyn Bot> + Sync),
     state: &RungState,
 ) {
@@ -314,7 +316,7 @@ fn run_rung_games(
     let mut opponent = make_opponent();
     loop {
         let g = state.next_game.fetch_add(1, Ordering::Relaxed);
-        if g >= args.games {
+        if g >= games {
             return;
         }
         // Alternate sides; the seed is shared by the mirrored game `g±1`,
@@ -360,7 +362,7 @@ fn run_rung_games(
                 if home { row.losses_as_home += 1 } else { row.losses_as_away += 1 }
             }
         }
-        eprint!("\r  vs {name}: {}/{} (W{} D{} L{})", row.games, args.games, row.wins, row.draws, row.losses);
+        eprint!("\r  vs {name}: {}/{} (W{} D{} L{})", row.games, games, row.wins, row.draws, row.losses);
     }
 }
 
@@ -440,7 +442,11 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
 
     let mut ladder: Vec<LadderRow> = Vec::new();
     if !args.skip_ladder {
-        eprintln!("== opponent ladder ({} games per rung) ==", args.games);
+        eprintln!(
+            "== opponent ladder ({} games per rung, {} on the vs rung) ==",
+            args.games,
+            args.vs_games.unwrap_or(args.games)
+        );
         let opp_iters = args.opponent_iters.unwrap_or(args.mcts_iters);
         // Opponent defaults to the candidate's rule, so existing invocations
         // are unchanged; setting either --vs-puct-* makes it a rule head-to-head.
@@ -456,17 +462,17 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                 }
             }
             if wanted.contains(&"random") {
-                ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", || {
+                ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", args.games, || {
                     Box::new(RandomBot::new())
                 }));
             }
             if wanted.contains(&"scripted") {
-                ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", || {
+                ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", args.games, || {
                     Box::new(ScriptedBot::new())
                 }));
             }
             if wanted.contains(&"mcts-heuristic") {
-                ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", || {
+                ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", args.games, || {
                     Box::new(
                         MctsBot::new(SearchBudget::Iterations(opp_iters))
                             .with_workers(args.mcts_workers)
@@ -481,7 +487,9 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                 evaluator_label(vs, args.vs_model.as_deref()),
                 opp_puct.label()
             );
-            ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, || {
+            // The gating rung: `--vs-games` if given, else `--games`.
+            let vs_games = args.vs_games.unwrap_or(args.games);
+            ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, vs_games, || {
                 Box::new(make_bot(vs, vs_nn.as_ref(), opp_iters, args.mcts_workers, opp_puct))
             }));
         }
