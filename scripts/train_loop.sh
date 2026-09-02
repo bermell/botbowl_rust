@@ -175,7 +175,18 @@ fi
 status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gate $GATE, max $MAX_GENS gens"
 
 # ---- build ------------------------------------------------------------------
-log "building release binaries (14x7)"
+# The documented launch is `nohup scripts/train_loop.sh &`, which gets a
+# non-interactive shell — and rustup's PATH line lives in the interactive
+# part of most profiles, so `cargo` is typically *not* on PATH here even
+# though it is in the terminal you launched from. Put it back rather than
+# dying 30 seconds into a multi-day run.
+case ":$PATH:" in
+    *":$HOME/.cargo/bin:"*) ;;
+    *) [ -x "$HOME/.cargo/bin/cargo" ] && export PATH="$HOME/.cargo/bin:$PATH" ;;
+esac
+command -v cargo >/dev/null 2>&1 || die "cargo not on PATH (looked in \$HOME/.cargo/bin) — cannot build"
+
+log "building release binaries (14x7) with $(cargo --version)"
 if ! cargo build --release -p botbowl-ui -p botbowl-nn >> "$LOG" 2>&1; then
     die "cargo build failed — see loop.log"
 fi
