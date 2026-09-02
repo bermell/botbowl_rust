@@ -203,11 +203,16 @@ status "build ok"
 check_stop "before mirror match"
 if [ ! -e "$RUN_DIR/.mirror.done" ]; then
     SECONDS=0
-    status "mirror match: $MIRROR_GAMES heuristic-vs-heuristic games starting"
+    # Heuristic on both sides, so no sidecar and no --nn-server here — but
+    # it is still `eval` playing full games, and serially that is ~4 h of a
+    # single core before the loop generates anything (measured 150 s/game,
+    # 2026-09-02). It gets the same parallelism as the eval phase.
+    status "mirror match: $MIRROR_GAMES heuristic-vs-heuristic games starting (x$EVAL_PARALLEL_GAMES)"
     if ! "$UI" eval --evaluator heuristic --mcts-iters "$MCTS_ITERS" \
             --games "$MIRROR_GAMES" --seed 424242 \
             --skip-lectures --skip-fixed-rungs \
             --vs-evaluator heuristic \
+            --parallel-games "$EVAL_PARALLEL_GAMES" \
             --out "$RUN_DIR/mirror.json" > "$RUN_DIR/mirror.log" 2>&1; then
         die "mirror match failed — see mirror.log"
     fi

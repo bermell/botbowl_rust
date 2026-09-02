@@ -47,6 +47,15 @@ Layout per generation: `runs/loop14x7/genNN/` holds `shard{0..7}.{jsonl,log}`, `
 
 ## Expected wall clock (from plan 020/021 costs)
 
+> **Superseded 2026-09-02 — read plan 024 before using any number in this section or in the Run 1 table
+> below.** Two things changed underneath them. (1) Plan 024 made NN leaf evaluation batched and GPU-resident
+> and added `--parallel-games` to both `dataset` and `eval`: generation is ~3.8× faster and eval is no longer
+> serial, so "generation 6–10 h, eval 2–4 h" is no longer the shape. (2) Plan 023's mover-tagging fix
+> (`e107f06`) made the search correct and therefore busier — a drive now takes ~1.36× more decisions, so the
+> *heuristic* baseline in the Run 1 table (gen00, 69 min) is unreachable on the current engine; the same work
+> measures ~18.8 s/game per shard. The corpus health statistics are unchanged (TDs/drive 0.75 vs 0.79). Run 1's
+> numbers remain valid as history, not as expectations.
+
 Per generation: generation ~6–10 h (nn-value ≈ 30–70 s/game, heuristic shards finish early), prepare minutes, train well under an hour, eval ~2–4 h (120 full games, mostly at 1000-iter search both sides). ≈ 9–14 h/generation → **~4–5 generations over a weekend**. Disk: a few GB per generation (JSONL + npy); the script logs free disk at each generate phase.
 
 ## Failure behavior

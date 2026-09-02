@@ -225,7 +225,7 @@ What genuinely separates them:
 | GPU scheduling | two graphs, one context, one stream — no context switching | the driver **time-slices** between two processes' contexts |
 | Stage 5 supervision | one lifecycle to start / canary / health-check / restart / reap | two of everything, plus a new partial-failure state (one up, one down) |
 | client config | one `--nn-server`; each `NnEvaluator` names its own model at handshake | a second flag, and a rule for which bot uses which socket |
-| protocol / server cost | `model_id`, a registry, an eviction policy | none |
+| protocol / server cost | `model_id` + a registry (no eviction, as built) | none |
 | future | serves a ladder against several past champions unchanged | one process per champion |
 
 **Recommendation: (A), one server with a model registry.** Two reasons, in order of weight.
@@ -242,9 +242,9 @@ Second, **Stage 5's supervision is where the operational risk lives.** The loop 
 but a dead server as a corpus-wide failure; (B) doubles that surface and adds a partial-failure state, for no
 compensating benefit.
 
-(A)'s cost is real but bounded: one protocol field, a registry, and an eviction policy. Eviction is nearly
-trivial at this scale — the eval phase needs exactly two models live — so LRU with `--max-models` (default 4)
-and a refusal to evict a model that has a live connection is a dozen lines. And it is the design that
+(A)'s cost is real but bounded: one protocol field and a registry. (It turned out **not** to need an eviction
+policy — see §Failure modes; capacity 4 with a loud refusal beats LRU once graphs are attached to a
+`model_id`.) And it is the design that
 generalises for free to plan 022's "After the weekend" strength ladder, where one candidate is evaluated against
 several past generations in a single run.
 
@@ -467,7 +467,7 @@ batch-invariance property (a fixed graph per bucket is deterministic).
 **Expected: `F` → ~0.2–0.4 ms ⇒ 3.4× at N=8.** Avoid `torch.compile`/Triton — Pascal support is marginal and the
 payoff over a traced graph is small for a 6-block tower.
 
-### Stage 4 — raise the stream count (the multiplier) — **done: `--parallel-games`, 4a measured, 4b partly**
+### Stage 4 — raise the stream count (the multiplier) — **done, 4a and 4b**
 
 - **4a (generation, zero Rust):** `NN_SHARDS`/`HEUR_SHARDS` from 8 shards × 600 games to 24–32 shards ×
   150–200 games; fix the seed stride (`G*1e7`); update `TRAIN_SHARDS`/`VAL_SHARDS` to hold out ~4 whole shards
@@ -475,7 +475,7 @@ payoff over a traced graph is small for a 6-block tower.
   shards = 6.4 GB and fits; at 500 MB it does not, and the fallback is 16 shards (4.3× → 2.9× at `F=0.3`).
 - **4b (eval: multi-model server + parallel games).** Two changes, and this is the stage that needs them:
   1. **Server registry grows past one model** (design (A) above): `(model_id, h, w)` batch keys, on-demand
-     load from `model_path`, LRU eviction at `--max-models 4`, never evicting a model with a live connection.
+     load from `model_path`, `--max-models 4`. **Built, minus the eviction — see §Failure modes.**
   2. `--parallel-games N` over `eval::run_ladder_rung`'s loop (`botbowl-ui/src/eval.rs:181`), with a
      `Mutex<LadderRow>` accumulator, plus the same flag on `dataset` (`dataset.rs:68`) for symmetry.
   Without (2) the eval phase is a **single** stream and the server makes it *slower* than tract; without (1)
@@ -573,10 +573,12 @@ tract one. **Stage 4's acceptance test is exactly that** — one 300-game shard 
   resolution at handshake; the `model_id` echo check catches a server-side routing bug at request time. Both
   abort rather than degrade. This is the failure that would otherwise corrupt a promotion-gate verdict
   invisibly, so it gets two independent guards rather than one.
-- **Model-registry thrash / eviction.** Only reachable once the registry is multi-model (Stage 4b). Policy:
-  `--max-models 4`, LRU, never evict a model that has a live connection, and log every load and eviction. The
-  eval phase holds exactly two live, so eviction should never fire; if the log shows it firing, something is
-  opening connections it should be reusing.
+- **Model-registry thrash / eviction. Designed out — `--max-models 4` and nothing is ever evicted.** LRU was
+  this plan's suggestion and it was the wrong trade, for a reason only visible after Stage 3: a `model_id` is
+  also the key of that model's captured CUDA graphs, and those are owned by the batcher thread. Evicting from a
+  connection thread would either leak ~400 MB of VRAM per evicted model or need cross-thread graph teardown —
+  real complexity guarding a path that cannot fire when the cap is 4 and the eval phase holds 2. Over the cap
+  is a loud refusal, and the fix is to raise the flag. Every load is logged.
 
 ## sm_61 is old: what is and is not worth doing
 
@@ -850,20 +852,45 @@ Two consequences for reading this document:
 - **Every ratio measured on 2026-09-01 is unaffected**, because both arms of every A/B ran the current code
   back to back. The 3.79×, the `F` fit and the CPU-per-forward numbers all stand.
 
+### Stage 4b — eval, done the same day, because it became the bottleneck
+
+Speeding generation up ~4× promoted **eval** to the loop's dominant phase: a single process playing full games
+one at a time, on one core of eight, at plan 022's measured **117–690 min** against a generate phase now near
+200. So `run_ladder_rung` got the same treatment as `dataset`, and the loop's eval phase now starts the sidecar
+too — which is the first phase that actually *needs* the multi-model registry, since candidate and champion
+live in one process and share one socket.
+
+Both halves are required together and neither works alone: without `--parallel-games` the phase offers one
+stream, and a batching server at one stream is slower than tract.
+
+**Unlike `dataset`, this one asserts exact equivalence — and that assertion is load-bearing.** `play_game`
+seeds both bots from the game index, and `ScriptedBot`/`RandomBot` honour a seed, so a scripted-vs-random rung
+is a pure function of `(seed, index)`. `--parallel-games 1` and `4` produce byte-identical per-game rows *and*
+an identical `LadderRow`. The row is what the promotion gate reads: a lost counter update would silently turn
+a REJECTED into a PROMOTED and would be invisible everywhere else. `dataset` cannot have this test because it
+always drives `MctsBot` (plan 020: not seed-reproducible).
+
+`EVAL_PARALLEL_GAMES` is a separate knob from `PARALLEL_GAMES` and is set relative to the box differently: eval
+has no generate shards competing, but a rung worker holds **two** MCTS trees (candidate + opponent) where a
+dataset worker holds one.
+
 ### What is left
 
-- **Stage 4b's second half: `--parallel-games` for `eval::run_ladder_rung`.** The multi-model registry is
-  done and verified (two nets over one socket get distinct `model_id`s and distinct canaries; two spellings of
-  one net collapse to one), so the server side is ready. The Rust side is not: `run_ladder_rung` builds its
-  bots once per rung and `dyn Bot` has no `Send` bound, so bots must move inside the worker threads, with a
-  `Mutex<LadderRow>` and a `Mutex` on the per-game writer. Until then the loop deliberately does **not** pass
-  `--nn-server` to `eval`, because a single-stream eval would be *slower* on the sidecar than on tract.
 - **The distributional acceptance test** (one 300-game shard each way, comparing TDs/drive, scoreless
   fraction, samples/drive and the value-target split against plan 021's baselines) has **not** been run —
-  there is no trained champion to run it with since the plan-023 reset. It should gate the first real
-  generation that uses the sidecar.
+  there was no trained champion after the plan-023 reset. It should gate the first real generation that uses
+  the sidecar, i.e. `gen01`. Note the postscript above: `samples/drive` has moved to ~26.7 on the current
+  engine, so compare a sidecar corpus against a **tract corpus generated today**, not against plan 021's 19.6.
 - **The connection-per-decision churn** noted after Stage 2 is still there and still not worth fixing:
   amortised over ~580 forwards per decision it is under 10 µs/forward.
+- **The heuristic hedge shards are now the generate phase's long pole** (1800 games at 6.45 s/game aggregate
+  against the nn shards' 181 min). Inference is no longer what generation waits on. Speeding that up means
+  changing the 5 nn / 3 heuristic mix that plan 022 tuned, so it is a corpus-composition decision, not a
+  performance one.
+- **The mirror match is a 4-hour serial pre-flight** and was skipped at 46/100 on 2026-09-02 to get the box
+  onto the bootstrap (`runs/loop14x7/mirror.partial-46of100.log`). It runs `eval`, so it now inherits
+  `--parallel-games` and should be re-runnable in well under an hour; `train_loop.sh` does **not** yet pass the
+  flag to it.
 
 ## Cross-references
 
