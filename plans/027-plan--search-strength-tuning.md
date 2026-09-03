@@ -104,6 +104,8 @@ clock before it changes production.
 | E2b | 2000 vs 1000 iters | 60 | **0.508** | W24 D13 L23, TD 185:180 | dead even. Doubling the budget buys nothing. |
 | E2d | 500 vs 250 iters | 60 | **0.517** | W26 D10 L24, TD 183:173 | dead even |
 | E2a | 1000 vs 500 iters | 60 | **0.575** | W30 D9 L21, TD 209:182 | the only budget arm with a signal — z=+1.15, p≈0.25 |
+| E1b | learned vs scripted priors, 200 iters | 76 | **0.539** | W35 D12 L29, TD 214:203 | second independent sample, same direction |
+| **E1 pooled** | learned vs scripted priors, 200 iters | **100** | **0.555** | W47 D17 L36 | z=+1.1, p≈0.27 — consistent, not established |
 
 ### E2b — doubling the budget does nothing (2026-09-03, 120 min)
 
@@ -169,18 +171,35 @@ E2d's side split is the giveaway: candidate **10-17 as Home, 16-7 as Away**.
 The side is worth more than the parameter under test. Pooling every eval report
 on disk (`scripts/side_bias_summary.py`):
 
+Current pooled figures (updated as arms land — the numbers below moved once,
+see the shrinkage note):
+
 | subset | n decided | Away share | 95% CI | z |
 |---|---|---|---|---|
-| all rows | 562 | 55.7% | [51.6, 59.7] | +2.70 |
-| informative rows only¹ | 445 | 56.9% | [52.2, 61.4] | +2.89 |
-| mirror-like arms | 116 | **62.1%** | [53.0, 70.4] | +2.60 |
+| all rows | 677 | 55.1% | [51.3, 58.8] | +2.65 |
+| informative rows only¹ | 560 | 55.9% | [51.8, 60.0] | +2.79 |
+| mirror-like arms | 231 | 57.1% | [50.7, 63.4] | +2.17 |
 
 ¹ A shutout carries no side signal — beating `random` 30-0 gives a 15/15 split
 by construction, not by balance — so those rows are excluded.
 
-**Every parameter arm so far has come back ~0.50. The side you play is worth
-~0.07-0.12.** For "what makes a strong bot", that ordering matters more than
-any single arm: we have been tuning the small knobs.
+**Shrinkage note, recorded because the first read was worse than the second.**
+At n=116 the mirror-like subset showed **62.1%** and I reported it as such. At
+n=231 it is 57.1%, and its CI now only just excludes 50%. Classic small-sample
+regression, and a reminder that the subset with the most interesting number is
+also the one with the fewest games. The pooled figures are the ones to quote.
+
+**How it compares to the parameter arms.** The side is worth ~0.055-0.07 over
+even. That is *comparable to* the largest parameter effect measured (E2a's
+1000 v 500 at 0.575) and much larger than the rest, which sit at 0.008-0.017.
+The real asymmetry is in the evidence, not the effect size: the side estimate
+pools 677 games and reaches z=+2.65, while every parameter arm rests on 60 games
+and none exceeds z=+1.2. We can say the side effect is real; we cannot yet say
+that of any parameter.
+
+An earlier draft of this section said the side bias "dwarfs every parameter".
+With E2a in hand and the mirror subset shrunk, that is too strong — the correct
+claim is that it is the only effect here we have actually established.
 
 ### Why it stayed hidden, and what it is *not*
 
