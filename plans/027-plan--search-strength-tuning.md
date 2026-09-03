@@ -130,6 +130,12 @@ cost. E2a (1000 v 500) now carries the most practical value in the matrix, and a
 500 v 250 arm is worth more than the planned 4000 v 2000, which after this
 result is very unlikely to show anything.
 
+> **Superseded — read the curve section below before acting on this paragraph.**
+> "Every halving is a halving of cost" was written with only the two top arms in
+> hand and does not survive E2a and E2e: the lower doublings *do* pay. This
+> section is kept as written because the sequence of reads is itself part of the
+> record.
+
 ### E2d — halving again also does nothing (2026-09-03, 58 min)
 
 500 v 250: **0.517** (W26 D10 L24, TD 183:173). So 2000 ≈ 1000 and 500 ≈ 250.
