@@ -269,12 +269,26 @@ numbers. But the report then scores every game **independently**: `LadderRow`
 holds pooled W/D/L, and nothing differences the pair. The variance reduction the
 pairing was designed to deliver is being discarded at the last step.
 
-Scoring the per-pair difference instead should materially sharpen every arm in
-this matrix, at zero extra compute. That may well be why all four budget arms
-read flat — an effect worth 0.05 is invisible to the unpaired instrument at 60
-games but not necessarily to a paired one. **This is the cheapest available
-improvement to every future measurement, including the promotion gate**, and it
-needs only `--per-game-out` (already implemented) plus a paired summary.
+Scoring the per-pair difference instead cancels the side term exactly, at zero
+extra compute (`scripts/paired_summary.py`).
+
+**How much that is worth is an open question, and less than I first claimed.**
+The saving depends on what fraction of a game's variance is *shared within a
+pair* (the situation and the coin, which the shared seed fixes) versus
+independent per-game noise (dice, per-seat bot RNG). Blood Bowl is dice-heavy,
+so the independent term is probably large. A synthetic check — 62% side effect,
+zero true skill difference, side realised independently per game — gives a
+paired SE only **1.07x** tighter, worth about 15% more games. Real data should
+do better, because a shared seed genuinely fixes the coin and the opening
+situation for both games of the pair, but "better than 1.07x" is not "material"
+until measured.
+
+So the honest claim is narrower: pairing is free, strictly correct, and removes
+a term that is currently pure noise; whether it rescues an 0.05 effect at 60
+games is unknown, and `paired_summary.py` prints both estimators side by side so
+the real ratio can be read off stream 3's data rather than assumed. Retracting
+the stronger version: this is probably *not* the reason all four budget arms read
+flat.
 
 ## Open questions this does not settle
 
