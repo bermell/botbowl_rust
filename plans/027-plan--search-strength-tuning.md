@@ -125,6 +125,81 @@ cost. E2a (1000 v 500) now carries the most practical value in the matrix, and a
 500 v 250 arm is worth more than the planned 4000 v 2000, which after this
 result is very unlikely to show anything.
 
+### E2d — halving again also does nothing (2026-09-03, 58 min)
+
+500 v 250: **0.517** (W26 D10 L24, TD 183:173). So 2000 ≈ 1000 and 500 ≈ 250.
+Note these are adjacent halvings, and adjacent ties do not compose — small
+effects can accumulate across a 4x span — which is why `e2f-1000v250` runs the
+span directly.
+
+---
+
+## The bigger finding: a Home/Away side bias that dwarfs every parameter
+
+E2d's side split is the giveaway: candidate **10-17 as Home, 16-7 as Away**.
+The side is worth more than the parameter under test. Pooling every eval report
+on disk (`scripts/side_bias_summary.py`):
+
+| subset | n decided | Away share | 95% CI | z |
+|---|---|---|---|---|
+| all rows | 562 | 55.7% | [51.6, 59.7] | +2.70 |
+| informative rows only¹ | 445 | 56.9% | [52.2, 61.4] | +2.89 |
+| mirror-like arms | 116 | **62.1%** | [53.0, 70.4] | +2.60 |
+
+¹ A shutout carries no side signal — beating `random` 30-0 gives a 15/15 split
+by construction, not by balance — so those rows are excluded.
+
+**Every parameter arm so far has come back ~0.50. The side you play is worth
+~0.07-0.12.** For "what makes a strong bot", that ordering matters more than
+any single arm: we have been tuning the small knobs.
+
+### Why it stayed hidden, and what it is *not*
+
+A candidate's win rate cannot see this. Seats alternate Home/Away (`eval.rs:329`,
+`g % 2`), so a side advantage cancels out of the headline number — which is
+exactly why every arm reads ~0.50 while the sides underneath are lopsided.
+
+It is **not** plan 021's "0.40 mirror anomaly". That is a *seat* statistic, and
+re-reading its abandoned run at 52 games (W19 D4 L29) it is 19/48 decided:
+p ≈ 0.15, not significant. It also fails to reproduce here — the candidate seat
+scored 0.508, 0.517 and 0.604 across three near-mirrors. Two different effects
+have been sharing one name.
+
+### Mechanism candidates
+
+- **Last turn.** `game_procs.rs:90`: the *receiving* team takes the first turn
+  of each round, so the *kicking* team takes the **last turn of each half**.
+  In Blood Bowl the last word is worth a lot. This is symmetric across
+  Home/Away only if the coin is fair.
+- **The toss.** `scripted.rs:40` pins the call to Heads and `:52` always
+  Receives, so the toss *loser* kicks. In eval the coin is genuinely rolled
+  (`play_game` sets `DiceMode::RollDice`), so this should be 50/50 — but it has
+  never been checked. Note `GameStateBuilder` *fixes* the coin to Heads for
+  non-CoinToss states (`gamestate.rs:238`, comment `//Away`), which is the
+  random-start path **the training corpus is generated from**.
+- **A genuine board/setup asymmetry** on 14x7 that survives conditioning on the
+  toss.
+
+A discriminating detail is already visible: **Away scores only ~53% of TDs but
+wins ~57-62% of games.** The edge is not in scoring more, it is in converting
+scores into wins — which points at *when* scores land, i.e. turn order, rather
+than at raw play strength.
+
+### How it gets resolved
+
+Stream 3 (`scripts/exp_side_bias.sh`) runs true mirrors — identical evaluator,
+identical iterations, identical horizon on both sides — with `--per-game-out`,
+which logs `kicking_first_half` per game. `scripts/kickoff_effect.py` then
+separates the three: is the coin fair, does the kicking team win more, and is
+there a residual side effect inside both toss branches. Heuristic first, since
+it needs no NN and no GPU: if the bias shows there, it is the engine or the
+board, not the net.
+
+**Why this matters beyond evaluation.** The corpus is self-play. If one side
+systematically wins, the value head learns a side-dependent prior rather than a
+position evaluation — which is precisely what plan 023's postscript describes
+when it retires `gen01` for "learned side-miscalibration".
+
 ## Open questions this does not settle
 
 - Whether any of these interact. A deeper horizon may need a different budget;
