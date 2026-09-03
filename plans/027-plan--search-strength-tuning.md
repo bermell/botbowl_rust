@@ -101,6 +101,29 @@ clock before it changes production.
 | arm | question | games | points | record | read |
 |---|---|---|---|---|---|
 | E1-200 | learned vs scripted priors, 200 iters | 24 | **0.604** | W12 D5 L7, TD 60:52 | learned priors ahead, ~1 SE — not significant, direction favourable |
+| E2b | 2000 vs 1000 iters | 60 | **0.508** | W24 D13 L23, TD 185:180 | dead even. Doubling the budget buys nothing. |
+
+### E2b — doubling the budget does nothing (2026-09-03, 120 min)
+
+0.508 against a 0.500 null with SE 0.065, and the TD totals are as level as the
+result (185:180). **Do not raise `MCTS_ITERS`.** Wall time is close to linear in
+the budget, so 2000 would have doubled a 5-hour generate phase to buy an effect
+we cannot distinguish from zero.
+
+This corroborates plan 025 from an independent direction and largely retires its
+"provisional" caveat. 025 found the *policy label* stops improving past ~500
+iterations, measured as run-to-run convergence on a retired net under the
+pre-`e107f06` search. This finds the *play* does not improve past 1000 either,
+measured as strength, post-fix, on gen03. Two different instruments, two
+different quantities, same conclusion: the search saturates well below the
+shipped budget.
+
+The open question flips direction. If 1000 is already past saturation, the
+interesting number is not how much higher we can go but **how much lower we can
+drop before strength degrades** — and every halving is a halving of generation
+cost. E2a (1000 v 500) now carries the most practical value in the matrix, and a
+500 v 250 arm is worth more than the planned 4000 v 2000, which after this
+result is very unlikely to show anything.
 
 ## Open questions this does not settle
 
