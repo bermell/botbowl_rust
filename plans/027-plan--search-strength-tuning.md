@@ -103,6 +103,7 @@ clock before it changes production.
 | E1-200 | learned vs scripted priors, 200 iters | 24 | **0.604** | W12 D5 L7, TD 60:52 | learned priors ahead, ~1 SE — not significant, direction favourable |
 | E2b | 2000 vs 1000 iters | 60 | **0.508** | W24 D13 L23, TD 185:180 | dead even. Doubling the budget buys nothing. |
 | E2d | 500 vs 250 iters | 60 | **0.517** | W26 D10 L24, TD 183:173 | dead even |
+| E2e | 250 vs 125 iters | 60 | **0.625** | W32 D11 L17, TD 171:146 | largest budget effect, z=+1.92, p≈0.055 |
 | E2a | 1000 vs 500 iters | 60 | **0.575** | W30 D9 L21, TD 209:182 | the only budget arm with a signal — z=+1.15, p≈0.25 |
 | E1b | learned vs scripted priors, 200 iters | 76 | **0.539** | W35 D12 L29, TD 214:203 | second independent sample, same direction |
 | **E1 pooled** | learned vs scripted priors, 200 iters | **100** | **0.555** | W47 D17 L36 | z=+1.1, p≈0.27 — consistent, not established |
@@ -136,32 +137,44 @@ Note these are adjacent halvings, and adjacent ties do not compose — small
 effects can accumulate across a 4x span — which is why `e2f-1000v250` runs the
 span directly.
 
-### E2a — 1000 beats 500, and the three budget arms together suggest a plateau
+### E2 — the budget curve: diminishing returns, saturating around 500-1000
 
-1000 v 500: **0.575** (W30 D9 L21, TD 209:182), the only budget arm with any
-signal — though at SE 0.065 that is z=+1.15, p≈0.25, so it is suggestive, not
-established. The three arms read together:
+Four doublings, each 60 games, each the same net on both sides:
 
-| arm | result | reading |
-|---|---|---|
-| 2000 v 1000 | 0.508 | nothing above 1000 |
-| **1000 v 500** | **0.575** | the one place search seems to pay |
-| 500 v 250 | 0.517 | nothing below 500 |
+| doubling | points | z | reading |
+|---|---|---|---|
+| 250 → 500 *(e2e: 250 v 125)* | **0.625** | +1.92 | search pays a lot down here |
+| 500 → 1000 *(e2d: 500 v 250)* | 0.517 | +0.26 | — |
+| 1000 → 2000 *(e2a: 1000 v 500)* | **0.575** | +1.15 | — |
+| 2000 → 4000 *(e2b: 2000 v 1000)* | 0.508 | +0.12 | nothing up here |
 
-Taken at face value that is a plateau with an edge near 1000: enough search to
-matter, past the point where more helps. **`MCTS_ITERS=1000` looks close to
-right** — arrived at without measurement, but not wrong.
+Read by budget rather than by arm, the shape is **diminishing returns**: the
+largest effect is at the bottom (125→250 is worth 0.625) and the smallest at the
+top (1000→2000 is worth nothing, 0.508). The two middle arms are out of order
+with each other — 0.517 then 0.575 — but they sit within ~1 SE of each other and
+of a smooth decline, so the ordering there is noise, not structure.
 
-This retracts the "halve it for free" reading I drew from E2b and E2d. Two
-adjacent ties do not license dropping the budget when the halving *between*
-them is the one that costs something. `e2f-1000v250` tests the 4x span directly
-and is the arm that settles it: if the 1000-v-500 edge is real and cumulative it
-should show up larger there; if e2f also lands near 0.50, then all four arms are
-noise around a flat response and the honest conclusion is that budget does not
-matter anywhere in 250-2000.
+**`MCTS_ITERS=1000` looks close to right.** Search clearly matters at low
+budgets and clearly stops mattering by 2000. Where exactly it flattens, between
+500 and 1000, this instrument cannot resolve.
 
-Caveat on all four: 60 games resolves ~0.13 at one SE. A true 0.55 effect is
-below this instrument's resolution, and 0.55 per generation is not nothing.
+This retracts the "halve it for free" reading I took from E2b and E2d alone. Two
+adjacent ties do not license dropping the budget when the halvings around them
+pay. `e2f-1000v250` tests the 4x span directly and is the cleanest single number
+here: if returns diminish as above, 1000 should beat 250 by roughly the compound
+of the two doublings between them, i.e. somewhere near 0.60-0.65. If e2f instead
+lands near 0.50, the whole curve is noise and budget does not matter anywhere in
+125-2000.
+
+Caveat on all of them: 60 games resolves ~0.13 at one SE, so only e2e is close
+to conventional significance, and none of these is established individually. The
+*pattern* across four arms is better evidence than any single arm.
+
+It is also worth noting this is consistent with plan 025 from yet another angle.
+025 found the policy label stops improving past ~500 iterations; the strength
+curve here flattens in the same region. Label convergence and strength
+saturation landing together is what you would expect if both are governed by the
+search running out of new information.
 
 ---
 
