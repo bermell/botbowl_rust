@@ -329,6 +329,16 @@ pub struct EvalArgs {
     /// Opponent PUCT constant; defaults to the candidate's.
     #[arg(long)]
     pub vs_puct_c: Option<f32>,
+    /// Candidate search horizon, in own-turns of lookahead. 1 (default) is
+    /// the historical horizon: the search stops once the bot's next turn
+    /// begins, i.e. one own-turn plus the opponent's reply. 2 sees a
+    /// further turn-pair. A score always stays terminal at any depth.
+    #[arg(long, default_value_t = 1)]
+    pub horizon_turns: u8,
+    /// Opponent search horizon; defaults to the candidate's. Set this to
+    /// run a horizon head-to-head in one process.
+    #[arg(long)]
+    pub vs_horizon_turns: Option<u8>,
     /// Skip the fixed rungs (random/scripted/mcts-heuristic), keeping only
     /// the --vs-evaluator rung. E.g. mirror matches and promotion gates.
     #[arg(long, default_value_t = false)]

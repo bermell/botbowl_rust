@@ -112,10 +112,12 @@ fn make_bot(
     iters: usize,
     workers: usize,
     puct: PuctMode,
+    horizon_turns: u8,
 ) -> MctsBot {
     let bot = MctsBot::new(SearchBudget::Iterations(iters))
         .with_workers(workers)
-        .with_puct(puct);
+        .with_puct(puct)
+        .with_horizon_turns(horizon_turns);
     match evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
@@ -131,6 +133,7 @@ fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
         args.mcts_iters,
         args.mcts_workers,
         puct_of(&args.puct_mode, args.puct_c),
+        args.horizon_turns,
     )
 }
 
@@ -454,6 +457,10 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             args.vs_puct_mode.as_deref().unwrap_or(&args.puct_mode),
             args.vs_puct_c.or(args.puct_c),
         );
+        // Same defaulting rule as the PUCT pair: unset means "match the
+        // candidate", so existing invocations are unchanged and setting
+        // --vs-horizon-turns alone makes it a horizon head-to-head.
+        let opp_horizon = args.vs_horizon_turns.unwrap_or(args.horizon_turns);
         if !args.skip_fixed_rungs {
             let wanted: Vec<&str> = args.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
             for name in &wanted {
@@ -476,21 +483,27 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     Box::new(
                         MctsBot::new(SearchBudget::Iterations(opp_iters))
                             .with_workers(args.mcts_workers)
-                            .with_puct(opp_puct),
+                            .with_puct(opp_puct)
+                            .with_horizon_turns(opp_horizon),
                     )
                 }));
             }
         }
         if let Some(vs) = args.vs_evaluator {
             let label = format!(
-                "vs:{} [{}]",
+                "vs:{} [{}{}]",
                 evaluator_label(vs, args.vs_model.as_deref()),
-                opp_puct.label()
+                opp_puct.label(),
+                if opp_horizon != args.horizon_turns {
+                    format!(" horizon={opp_horizon}v{}", args.horizon_turns)
+                } else {
+                    String::new()
+                }
             );
             // The gating rung: `--vs-games` if given, else `--games`.
             let vs_games = args.vs_games.unwrap_or(args.games);
             ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, vs_games, || {
-                Box::new(make_bot(vs, vs_nn.as_ref(), opp_iters, args.mcts_workers, opp_puct))
+                Box::new(make_bot(vs, vs_nn.as_ref(), opp_iters, args.mcts_workers, opp_puct, opp_horizon))
             }));
         }
     }

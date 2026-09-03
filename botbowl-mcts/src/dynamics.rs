@@ -190,16 +190,35 @@ pub struct HorizonAnchor {
     pub away_turn: u8,
     pub home_score: u8,
     pub away_score: u8,
+    /// How many of *our* turns may elapse before the state counts as
+    /// past the horizon. `1` is the historical behaviour (search stops
+    /// once the bot's next turn begins, i.e. one own-turn + one
+    /// opponent-turn lookahead); `2` lets the search see a further
+    /// turn-pair, and so on.
+    ///
+    /// A score change stays terminal at every depth. That is what keeps
+    /// [`score_delta`](Self::score_delta) in `{-1, 0, +1}`, which both
+    /// `Evaluator::PureTd` and the NN value bridge rely on; letting a
+    /// deeper search run through multiple scores would break that
+    /// invariant, so depth only extends the *turn* dimension.
+    pub turn_depth: u8,
 }
 
 impl HorizonAnchor {
+    /// Historical single-turn-pair horizon. Kept as the default so every
+    /// existing caller is bit-identical.
     pub fn capture(state: &GameState, agent_team: TeamType) -> Self {
+        Self::capture_with_depth(state, agent_team, 1)
+    }
+
+    pub fn capture_with_depth(state: &GameState, agent_team: TeamType, turn_depth: u8) -> Self {
         Self {
             agent_team,
             home_turn: state.info.home_turn,
             away_turn: state.info.away_turn,
             home_score: state.home.score,
             away_score: state.away.score,
+            turn_depth: turn_depth.max(1),
         }
     }
 
@@ -226,10 +245,13 @@ impl HorizonAnchor {
         // The agent's turn counter only advances when it's their turn
         // to play *again* — meaning the bot's turn ended, the opponent
         // played, and the bot has been handed the next turn. That's
-        // exactly "opponent's end-of-turn" per the design.
+        // exactly "opponent's end-of-turn" per the design. `turn_depth`
+        // counts how many such advances are allowed before we stop; at
+        // the default 1 this reduces to `turn > anchor_turn`, bit-for-bit
+        // the historical condition.
         match self.agent_team {
-            TeamType::Home => state.info.home_turn > self.home_turn,
-            TeamType::Away => state.info.away_turn > self.away_turn,
+            TeamType::Home => state.info.home_turn >= self.home_turn.saturating_add(self.turn_depth),
+            TeamType::Away => state.info.away_turn >= self.away_turn.saturating_add(self.turn_depth),
         }
     }
 }
@@ -1385,6 +1407,16 @@ pub struct MctsBot {
     /// Plan 023 ordering instrument. Resolved from `BLOOD_MCTS_TIE_BREAK`
     /// at `::new`; see [`TieBreak`]. Production leaves this at `Hash`.
     tie_break: TieBreak,
+    /// How many of our own turns the search may look ahead before a
+    /// state counts as terminal — see [`HorizonAnchor::turn_depth`].
+    /// Default 1 (the historical single turn-pair). Resolved from
+    /// `BLOOD_MCTS_HORIZON_TURNS` at `::new`.
+    ///
+    /// Deeper is not free: max DAG depth is roughly linear in it, and
+    /// the per-decision tree footprint with it, so raising this raises
+    /// the ~400-500 MB per-tree high-water that already sets
+    /// `--parallel-games` on this host.
+    horizon_turns: u8,
 }
 
 impl MctsBot {
@@ -1422,6 +1454,11 @@ impl MctsBot {
             evaluator: Evaluator::default(),
             puct,
             tie_break: TieBreak::from_env(),
+            horizon_turns: std::env::var("BLOOD_MCTS_HORIZON_TURNS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u8>().ok())
+                .unwrap_or(1)
+                .max(1),
         }
     }
 
@@ -1487,6 +1524,14 @@ impl MctsBot {
         self.tie_break = tie_break;
         self
     }
+
+    /// How many own-turns the search may look ahead (see
+    /// [`HorizonAnchor::turn_depth`]). `1` is the default and is
+    /// bit-identical to the historical horizon.
+    pub fn with_horizon_turns(mut self, turns: u8) -> Self {
+        self.horizon_turns = turns.max(1);
+        self
+    }
 }
 
 /// Raw search output for one decision, shared by [`MctsBot::get_action`]
@@ -1548,7 +1593,7 @@ impl MctsBot {
             horizon: if horizon_disabled {
                 None
             } else {
-                Some(HorizonAnchor::capture(&root_state, agent_team))
+                Some(HorizonAnchor::capture_with_depth(&root_state, agent_team, self.horizon_turns))
             },
             virtual_loss: self.virtual_loss,
             evaluator: self.evaluator.clone(),
@@ -1579,7 +1624,7 @@ impl MctsBot {
         let new_anchor = if horizon_disabled {
             None
         } else {
-            Some(HorizonAnchor::capture(&root_state, agent_team))
+            Some(HorizonAnchor::capture_with_depth(&root_state, agent_team, self.horizon_turns))
         };
         let anchor_matches = self.reuse_enabled && self.cached_tree.is_some() && new_anchor == self.last_anchor;
         // If anchor changed (or reuse disabled), discard the cache up
