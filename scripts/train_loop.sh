@@ -3,8 +3,9 @@
 #
 # Regime per generation (plan 021 §Next steps 3):
 #   generate (5 nn-value shards from the champion + 3 heuristic hedge shards)
-#   -> prepare (train = shards 0-3,5,6; val = shards 4,7 — one of each kind)
-#   -> train (best-val restore, ONNX export)
+#   -> prepare (train = shards 0-3,5,6; val = shards 4,7 — one of each kind,
+#      pooled across the last WINDOW_GENS generations)
+#   -> train (warm-started from the champion's .pt, best-val restore, ONNX export)
 #   -> eval report card (fixed rungs + vs current champion)
 #   -> promotion gate: points (W + D/2)/N >= 0.55 vs champion => new champion
 #   On a failed gate the champion stays the generator and the loop continues
@@ -72,6 +73,38 @@ EPOCHS="${EPOCHS:-10}"
 GATE="${GATE:-0.55}"                        # promotion: points (W+D/2)/N vs champion
                                             # (was wins/N until 2026-09-02 — see eval_summary.py)
 TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
+# How the loop compounds (added 2026-09-03, after gen02 scored 0.450 against
+# gen01 on the full 100-game rung despite a *better* val_value, 0.4026 vs
+# 0.4126). Until now every generation trained a fresh net from random init on
+# that one generation's 4800 games, so a generation was an independent draw
+# from nearly the same distribution rather than a step on top of the last —
+# promotion was a coin flip by construction. AlphaGo Zero does neither of
+# those things: it keeps a single continuously-trained net (its "generations"
+# are checkpoints of one SGD run) and samples every batch from the most
+# recent 500,000 self-play games. These two knobs are the scaled-down
+# version of both halves.
+WINDOW_GENS="${WINDOW_GENS:-3}"             # train on the last N generations' shards
+WARM_START="${WARM_START:-on}"              # seed each generation from a previous net's .pt
+# Which net to seed from, and this one is easy to get backwards. In AlphaGo
+# Zero the promotion gate decides *who generates self-play games*, not who
+# gets trained further: the training net is one unbroken SGD run that never
+# rolls back, and a rejected checkpoint still becomes the starting point of
+# the next one. Only the "best player" used for generation is gated.
+#   latest   — AGZ semantics. Training always moves forward from the last net
+#              trained, promoted or not; only generation uses the champion.
+#              A rejection costs you deployment, not the learning.
+#   champion — roll back to the last promoted net on a rejection. Safer
+#              against a generation that trains itself somewhere bad, but it
+#              restarts from the same point every time it fails, which is the
+#              stuck-in-place behaviour we are trying to get out of.
+WARM_FROM="${WARM_FROM:-latest}"
+# Warm start restores weights but not Adam's moment estimates (the .pt has to
+# stay a bare state_dict — nn_server.py loads it directly), so the first steps
+# of a warm-started run are taken with fresh moments. At the from-scratch
+# 1e-3 those steps are large enough to undo the warm start; 2e-4 is the
+# fine-tuning default that keeps it.
+WARM_LR="${WARM_LR:-2e-4}"
+SCRATCH_LR="${SCRATCH_LR:-1e-3}"            # used when there is nothing to warm-start from
 BOOTSTRAP_GAMES_PER_SHARD="${BOOTSTRAP_GAMES_PER_SHARD:-$GAMES_PER_SHARD}"
                                             # gen-0 corpus when no champion exists
 INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
@@ -123,6 +156,10 @@ mkdir -p "$RUN_DIR" "$MODEL_DIR"
 LOG="$RUN_DIR/loop.log"
 STATUS="$RUN_DIR/status.md"
 CHAMPION_FILE="$RUN_DIR/champion.txt"
+# The last net trained, promoted or not — the head of the training trajectory
+# when WARM_FROM=latest. Distinct from champion.txt, which is the last net
+# that *passed the gate* and is therefore the only one that generates games.
+LATEST_FILE="$RUN_DIR/latest_net.txt"
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 status() { echo "[$(date '+%F %T')] $*" >> "$STATUS"; log "STATUS: $*"; }
@@ -141,6 +178,46 @@ free_gb() {
     else
         df -k . | awk 'NR==2{printf "%dG", $4/1048576}'
     fi
+}
+
+# ---- sliding training window ------------------------------------------------
+# Shard files of kind `train`|`val` across the WINDOW_GENS generations ending
+# at generation $1. Generations that never finished generating are skipped
+# rather than half-included, and gen00 (the heuristic bootstrap corpus) ages
+# out on its own once the window slides past it.
+window_shards() {
+    local g="$1" kind="$2" first i k d shards out=""
+    first=$((g - WINDOW_GENS + 1))
+    [ "$first" -lt 0 ] && first=0
+    case "$kind" in
+        train) shards="$TRAIN_SHARDS" ;;
+        val)   shards="$VAL_SHARDS" ;;
+        *)     return 1 ;;
+    esac
+    for i in $(seq "$first" "$g"); do
+        d="$RUN_DIR/$(printf 'gen%02d' "$i")"
+        [ -e "$d/.generated" ] || continue
+        for k in $shards; do
+            [ -s "$d/shard$k.jsonl" ] && out="$out $d/shard$k.jsonl"
+        done
+    done
+    echo "$out"
+}
+
+# prepared_train + prepared_val run ~3.3 GB per generation at a window of one,
+# and scale with the window — 10 generations x a 3-wide window would want
+# ~100 GB against the ~91 GB free when this was written. They are fully
+# regenerable from the shards, so drop the previous generation's once the
+# current one has trained. The .prepared marker goes with them: leaving it
+# behind would make a resume skip prepare and then die on missing dims dirs.
+prune_prepared() {
+    local pg
+    pg="$RUN_DIR/$(printf 'gen%02d' "$1")"
+    [ -d "$pg" ] || return 0
+    [ -d "$pg/prepared_train" ] || [ -d "$pg/prepared_val" ] || return 0
+    rm -rf "$pg/prepared_train" "$pg/prepared_val"
+    rm -f "$pg/.prepared"
+    log "pruned prepared_* from $(basename "$pg") (regenerable from its shards)"
 }
 
 # ---- nn sidecar lifecycle (plan 024 Stage 5) --------------------------------
@@ -308,6 +385,7 @@ if [ ! -f "$(champion)" ]; then
         BEST=$(grep 'restored best-val weights' "$GEN_DIR/train.log" | tail -1)
         status "gen00 train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}"
         touch "$GEN_DIR/.trained"
+        echo "$MODEL.pt" > "$LATEST_FILE"   # head of the training trajectory
     fi
     [ -f "$MODEL.onnx" ] || die "gen00 onnx export missing: $MODEL.onnx"
 
@@ -381,38 +459,82 @@ while [ "$G" -le "$MAX_GENS" ]; do
     fi
 
     # -- 2. prepare -----------------------------------------------------------
+    # Nothing downstream of training reads prepared_*, and prune_prepared
+    # deletes them (with their marker) a generation later — so on a resume
+    # past an already-trained generation, rebuilding them would cost minutes
+    # and ~10 GB to feed a train step that is about to be skipped.
     check_stop "before $GG prepare"
-    if [ ! -e "$GEN_DIR/.prepared" ]; then
+    if [ -e "$GEN_DIR/.trained" ]; then
+        DIMS_TRAIN=""; DIMS_VAL=""
+    elif [ ! -e "$GEN_DIR/.prepared" ]; then
         SECONDS=0
-        TRAIN_IN=""; VAL_IN=""
-        for K in $TRAIN_SHARDS; do TRAIN_IN="$TRAIN_IN $GEN_DIR/shard$K.jsonl"; done
-        for K in $VAL_SHARDS; do VAL_IN="$VAL_IN $GEN_DIR/shard$K.jsonl"; done
+        # The window, not just this generation — see WINDOW_GENS. Train and
+        # val are pooled across the same span but keep the whole-shard split,
+        # so held-out games stay disjoint from trained-on games in every
+        # generation the window covers.
+        TRAIN_IN=$(window_shards "$G" train)
+        VAL_IN=$(window_shards "$G" val)
+        [ -n "$TRAIN_IN" ] && [ -n "$VAL_IN" ] || die "$GG window is empty (WINDOW_GENS=$WINDOW_GENS)"
+        WIN_GENS=$(echo "$TRAIN_IN" | tr ' ' '\n' | grep -c . )
+        status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards"
         # shellcheck disable=SC2086
         "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" >> "$LOG" 2>&1 \
             || die "$GG prepare (train) failed"
         # shellcheck disable=SC2086
         "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" >> "$LOG" 2>&1 \
             || die "$GG prepare (val) failed"
-        status "$GG prepare done ($((SECONDS / 60)) min)"
+        status "$GG prepare done ($((SECONDS / 60)) min), disk free $(free_gb)"
         touch "$GEN_DIR/.prepared"
     fi
-    DIMS_TRAIN=$(ls -d "$GEN_DIR"/prepared_train/dims_* 2>/dev/null | head -1)
-    DIMS_VAL=$(ls -d "$GEN_DIR"/prepared_val/dims_* 2>/dev/null | head -1)
-    [ -n "$DIMS_TRAIN" ] && [ -n "$DIMS_VAL" ] || die "$GG prepared dims dirs missing"
+    if [ ! -e "$GEN_DIR/.trained" ]; then
+        DIMS_TRAIN=$(ls -d "$GEN_DIR"/prepared_train/dims_* 2>/dev/null | head -1)
+        DIMS_VAL=$(ls -d "$GEN_DIR"/prepared_val/dims_* 2>/dev/null | head -1)
+        [ -n "$DIMS_TRAIN" ] && [ -n "$DIMS_VAL" ] || die "$GG prepared dims dirs missing"
+    fi
 
     # -- 3. train ---------------------------------------------------------------
     check_stop "before $GG train"
     if [ ! -e "$GEN_DIR/.trained" ]; then
         SECONDS=0
+        # Pick the .pt to warm-start from. `latest` (AGZ) continues the
+        # unbroken training trajectory; `champion` rolls back to the last
+        # promoted net. Either way the champion — not this — is what
+        # generates games, so a rejection never changes who plays.
+        # LATEST_FILE is written after every successful train below, so it
+        # survives a resume without globbing models/ and guessing.
+        TRAIN_CHAMP="$(champion)"
+        CHAMP_PT="${TRAIN_CHAMP%.onnx}.pt"
+        INIT_PT=""
+        if [ "$WARM_START" = "on" ]; then
+            if [ "$WARM_FROM" = "latest" ] && [ -s "$LATEST_FILE" ] && [ -f "$(cat "$LATEST_FILE")" ]; then
+                INIT_PT="$(cat "$LATEST_FILE")"
+            elif [ -f "$CHAMP_PT" ]; then
+                INIT_PT="$CHAMP_PT"
+            fi
+        fi
+        if [ -n "$INIT_PT" ]; then
+            INIT_ARGS="--init $INIT_PT --lr $WARM_LR"
+            WARM_NOTE="$(basename "$INIT_PT")"
+            [ "$INIT_PT" = "$CHAMP_PT" ] || WARM_NOTE="$WARM_NOTE (not the champion — WARM_FROM=$WARM_FROM)"
+            status "$GG train: warm start from $WARM_NOTE at lr $WARM_LR"
+        else
+            INIT_ARGS="--lr $SCRATCH_LR"
+            [ "$WARM_START" = "on" ] \
+                && status "WARN: $GG warm start wanted but no usable .pt (champion $CHAMP_PT) — training from random init at lr $SCRATCH_LR"
+        fi
+        # shellcheck disable=SC2086
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
-                --epochs "$EPOCHS" --device "$TRAIN_DEVICE" \
+                --epochs "$EPOCHS" --device "$TRAIN_DEVICE" $INIT_ARGS \
                 --out "$MODEL.pt" --onnx "$MODEL.onnx" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "$GG training failed — see train.log"
         fi
         BEST=$(grep 'restored best-val weights' "$GEN_DIR/train.log" | tail -1)
-        status "$GG train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}"
+        BASE=$(grep 'warm-start baseline' "$GEN_DIR/train.log" | tail -1)
+        status "$GG train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}${BASE:+ (warm-start baseline was${BASE##*val_value})}"
         touch "$GEN_DIR/.trained"
+        echo "$MODEL.pt" > "$LATEST_FILE"
+        prune_prepared "$((G - 1))"
     fi
     [ -f "$MODEL.onnx" ] || die "$GG onnx export missing: $MODEL.onnx"
 

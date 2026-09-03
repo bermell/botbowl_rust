@@ -100,6 +100,7 @@ def train(
     device="auto",
     augment=True,
     val_dir=None,
+    init=None,
 ):
     ds = PreparedDataset(dims_dir, augment=augment)
     if limit is not None:
@@ -125,6 +126,21 @@ def train(
 
     device = resolve_device(device) if isinstance(device, str) else device
     model = BBNet().to(device)
+
+    # Warm start (AlphaGo Zero keeps one continuously-trained net; generations
+    # are checkpoints of a single SGD run, not independent retrainings). We
+    # approximate that by seeding each generation from the champion's weights.
+    # strict=True on purpose: a shape mismatch means the architecture moved
+    # under us, and silently training a half-initialised net is worse than
+    # stopping. Note this restores weights only, *not* Adam's moment
+    # estimates — `out` must stay a bare state_dict because nn_server.py
+    # loads it directly. Fresh moments at the usual 1e-3 would take large
+    # first steps and undo the warm start, so callers should pass a lower
+    # --lr when using --init (train_loop.sh does).
+    if init is not None:
+        model.load_state_dict(torch.load(init, map_location=device))
+        print(f"warm start: loaded weights ← {init}")
+
     opt = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Early stopping via best-checkpoint restore: the value head starts
@@ -135,6 +151,16 @@ def train(
     best_val = None
     best_epoch = None
     best_state = None
+
+    # Score the starting point before any training. On a warm start this is
+    # the champion's own val_value on this corpus — the number every epoch
+    # below has to beat for the generation to have been worth running. It is
+    # deliberately *not* eligible for best-val restore: "restore the champion
+    # unchanged" is a no-op candidate that would burn a full eval phase to
+    # score 0.5 against itself.
+    if val_loader is not None and init is not None:
+        _, vv0, _ = evaluate(model, val_loader, device)
+        print(f"epoch  -1  (warm-start baseline)  |  val_value {vv0:.4f}")
 
     for epoch in range(epochs):
         model.train()
@@ -191,6 +217,12 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="overfit only the first N samples")
     ap.add_argument("--no-augment", action="store_true", help="disable random y-flip augmentation")
     ap.add_argument("--val-data", default=None, help="held-out prepared dims dir (disjoint games!)")
+    ap.add_argument(
+        "--init",
+        type=Path,
+        default=None,
+        help="warm start: load this .pt state_dict before training (pass a lower --lr with it)",
+    )
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
     ap.add_argument(
@@ -210,6 +242,7 @@ def main():
         augment=not args.no_augment,
         val_dir=args.val_data,
         device=args.device,
+        init=args.init,
     )
 
 
