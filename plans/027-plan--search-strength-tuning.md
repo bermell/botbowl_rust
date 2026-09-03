@@ -102,6 +102,8 @@ clock before it changes production.
 |---|---|---|---|---|---|
 | E1-200 | learned vs scripted priors, 200 iters | 24 | **0.604** | W12 D5 L7, TD 60:52 | learned priors ahead, ~1 SE — not significant, direction favourable |
 | E2b | 2000 vs 1000 iters | 60 | **0.508** | W24 D13 L23, TD 185:180 | dead even. Doubling the budget buys nothing. |
+| E2d | 500 vs 250 iters | 60 | **0.517** | W26 D10 L24, TD 183:173 | dead even |
+| E2a | 1000 vs 500 iters | 60 | **0.575** | W30 D9 L21, TD 209:182 | the only budget arm with a signal — z=+1.15, p≈0.25 |
 
 ### E2b — doubling the budget does nothing (2026-09-03, 120 min)
 
@@ -131,6 +133,33 @@ result is very unlikely to show anything.
 Note these are adjacent halvings, and adjacent ties do not compose — small
 effects can accumulate across a 4x span — which is why `e2f-1000v250` runs the
 span directly.
+
+### E2a — 1000 beats 500, and the three budget arms together suggest a plateau
+
+1000 v 500: **0.575** (W30 D9 L21, TD 209:182), the only budget arm with any
+signal — though at SE 0.065 that is z=+1.15, p≈0.25, so it is suggestive, not
+established. The three arms read together:
+
+| arm | result | reading |
+|---|---|---|
+| 2000 v 1000 | 0.508 | nothing above 1000 |
+| **1000 v 500** | **0.575** | the one place search seems to pay |
+| 500 v 250 | 0.517 | nothing below 500 |
+
+Taken at face value that is a plateau with an edge near 1000: enough search to
+matter, past the point where more helps. **`MCTS_ITERS=1000` looks close to
+right** — arrived at without measurement, but not wrong.
+
+This retracts the "halve it for free" reading I drew from E2b and E2d. Two
+adjacent ties do not license dropping the budget when the halving *between*
+them is the one that costs something. `e2f-1000v250` tests the 4x span directly
+and is the arm that settles it: if the 1000-v-500 edge is real and cumulative it
+should show up larger there; if e2f also lands near 0.50, then all four arms are
+noise around a flat response and the honest conclusion is that budget does not
+matter anywhere in 250-2000.
+
+Caveat on all four: 60 games resolves ~0.13 at one SE. A true 0.55 effect is
+below this instrument's resolution, and 0.55 per generation is not nothing.
 
 ---
 
