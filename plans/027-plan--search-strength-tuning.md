@@ -224,10 +224,57 @@ there a residual side effect inside both toss branches. Heuristic first, since
 it needs no NN and no GPU: if the bias shows there, it is the engine or the
 board, not the net.
 
-**Why this matters beyond evaluation.** The corpus is self-play. If one side
-systematically wins, the value head learns a side-dependent prior rather than a
-position evaluation — which is precisely what plan 023's postscript describes
-when it retires `gen01` for "learned side-miscalibration".
+### The corpus is NOT biased — tested and refuted
+
+The obvious worry is that self-play with a side bias teaches the value head a
+side prior rather than a position evaluation, the failure plan 023's postscript
+describes when it retires `gen01` for "learned side-miscalibration". Extra
+reason to suspect it: `--mode random-start` does **not** roll the coin. The
+builder fixes it (`gamestate.rs:238-242`), so Away kicks in *every* corpus game
+— and the kicking team owns the last turn.
+
+Checked against the `z_home` line every shard log writes per game:
+
+| gen | n | home win | away win | draw | Away share of decided |
+|---|---|---|---|---|---|
+| gen00 | 4800 | 1905 | 1965 | 930 | 50.8% |
+| gen01 | 4800 | 1893 | 1892 | 1015 | 50.0% |
+| gen02 | 4800 | 1946 | 1895 | 959 | 49.3% |
+| gen03 | 4800 | 1936 | 1878 | 986 | 49.2% |
+| gen04 | 4800 | 1901 | 1937 | 962 | 50.5% |
+| **pooled** | **24000** | 9581 | 9567 | 4852 | **49.96%** (z = −0.1) |
+
+Flat. 19,148 decided games and no detectable side effect, despite Away kicking
+in all of them. The reason is structural: random-start games are drive-bounded
+and truncated, so they never play the half — and it is the half, with its fixed
+8+8 turns and a last turn that belongs to the kicker, where the advantage
+accrues. **The bias exists only in full games from kickoff.**
+
+That is a real narrowing. It rules out board or setup geometry (which would show
+in both regimes) and points hard at turn order. It also means the corpus is
+clean, and the "biased data poisons the value head" story is refuted rather than
+merely unproven. Draw rate in the corpus is 20.2%, for reference.
+
+### What the bias actually costs us: variance, not a rigged gate
+
+Because seats alternate, the side effect cancels out of a candidate's expected
+score — the promotion gate is **unbiased**. What it does instead is inflate
+variance: a large chunk of each game's outcome is decided by which side you drew
+rather than by the parameter under test.
+
+And the harness already has the fix half-built. `eval.rs:329-330` pairs games —
+`g % 2` swaps seats while `g / 2` shares the seed, so games `2i` and `2i+1` are
+the same situation played from both sides. That is textbook common random
+numbers. But the report then scores every game **independently**: `LadderRow`
+holds pooled W/D/L, and nothing differences the pair. The variance reduction the
+pairing was designed to deliver is being discarded at the last step.
+
+Scoring the per-pair difference instead should materially sharpen every arm in
+this matrix, at zero extra compute. That may well be why all four budget arms
+read flat — an effect worth 0.05 is invisible to the unpaired instrument at 60
+games but not necessarily to a paired one. **This is the cheapest available
+improvement to every future measurement, including the promotion gate**, and it
+needs only `--per-game-out` (already implemented) plus a paired summary.
 
 ## Open questions this does not settle
 
