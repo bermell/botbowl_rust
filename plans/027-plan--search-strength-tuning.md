@@ -336,7 +336,51 @@ p ≈ 0.15, not significant. It also fails to reproduce here — the candidate s
 scored 0.508, 0.517 and 0.604 across three near-mirrors. Two different effects
 have been sharing one name.
 
-### Mechanism candidates
+### RESOLVED (provisionally): it is the net, not the engine
+
+The true mirrors settle the mechanism question, and they overturn two things I
+had written above.
+
+| mirror (identical bots both sides) | decided | Away share | receiver wins |
+|---|---|---|---|
+| **heuristic** — no NN anywhere | 107 | **50.5%** [41.0, 59.9] | 54.2% |
+| **nn-value** — same net both sides *(partial, 70/100)* | 54 | **61.1%** [47.8, 74.4] | 38.9% |
+
+**The engine is fair.** With the scripted heuristic on both sides the Home/Away
+split is 50.5%, z=+0.10 — as clean as it gets. That rules out the board, the
+setup, and the turn structure as sources of the bias.
+
+**The asymmetry arrives with the net.** The nn mirror sits at 61.1%, and the
+receiving-team advantage *inverts*: receivers win 54.2% under the heuristic (as
+Blood Bowl intuition says they should — they have the ball) and only 38.9% under
+the net. A net that systematically misjudges the receiving position is exactly
+what plan 023's postscript means by retiring `gen01` for "learned
+side-miscalibration". This is the same failure, still present in gen03.
+
+Provisional because the nn mirror is 54 decided games with CI [47.8, 74.4],
+which includes 50%. It needs its full 100 and ideally a repeat.
+
+**Two corrections to my own earlier reasoning in this document:**
+
+1. **The "last turn" mechanism is refuted.** I hypothesised that the kicking
+   team's last turn of each half was the advantage. Measured directly, the
+   *kicking* team wins 45.8% under the heuristic — receiving is the advantage,
+   which is the obvious answer in hindsight. The hypothesis was backwards.
+2. **The coin test was computed wrong.** Games come in seed pairs that share one
+   coin, so 120 games are only 60 independent draws. Per game the skew read
+   z=+2.19; per draw it is 36/60 = 60%, **z=+1.55, not significant**. Even if
+   real, a 60/40 toss with a 54% receiver edge yields only ~50.8% Away — nowhere
+   near enough to explain the pooled figure.
+
+Pair correlation also inflates the pooled side estimate, though less than I
+feared: measured on the mirror, the pair-aware SE is **1.10x** the naive one, so
+the pooled z=+3.36 is really ~3.05. The effect survives the correction.
+
+The tension left on the table: pooled across everything, Away is 55.4%
+(n=977); the heuristic mirror alone says 50.5%. Both are consistent if the bias
+is net-borne, since every arm except the heuristic mirror has a net in it.
+
+### Mechanism candidates (superseded by the mirrors above — kept for the record)
 
 - **Last turn.** `game_procs.rs:90`: the *receiving* team takes the first turn
   of each round, so the *kicking* team takes the **last turn of each half**.
