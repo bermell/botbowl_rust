@@ -101,6 +101,7 @@ def train(
     augment=True,
     val_dir=None,
     init=None,
+    select_on="value",
 ):
     ds = PreparedDataset(dims_dir, augment=augment)
     if limit is not None:
@@ -182,8 +183,22 @@ def train(
         if val_loader is not None:
             vp, vv, va = evaluate(model, val_loader, device)
             line += f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
-            if best_val is None or vv < best_val:
-                best_val, best_epoch = vv, epoch
+            # Which head decides the restore. `value` is the historical rule and
+            # was correct while the bot played `--evaluator nn-value`: priors came
+            # from the scripted heuristic, so nothing consumed the policy head and
+            # optimising it would have been optimising a dead output. Once the bot
+            # plays `--evaluator nn` the policy head drives search, and restoring
+            # on val_value alone actively discards it — plan 027 measured the two
+            # heads saturating in completely different places (value by epoch 0-2,
+            # policy still improving at epoch 9 in every generation).
+            #
+            # `combined` uses the same sum the training loss minimises. Checked
+            # against gen01-03: it picks epoch 2 for gen01 and gen02 (identical to
+            # the value-only rule) and epoch 1 rather than 0 for gen03 — a small
+            # change today that stops the rule ignoring a head that now matters.
+            criterion = vv if select_on == "value" else vp + vv
+            if best_val is None or criterion < best_val:
+                best_val, best_epoch = criterion, epoch
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 # Persist immediately — a killed run keeps its best net.
                 if out:
@@ -193,7 +208,8 @@ def train(
 
     if best_state is not None:
         model.load_state_dict(best_state)
-        print(f"restored best-val weights: epoch {best_epoch} (val_value {best_val:.4f})")
+        label = "val_value" if select_on == "value" else "val_policy+val_value"
+        print(f"restored best-val weights: epoch {best_epoch} ({label} {best_val:.4f})")
 
     # Export/serialize from CPU: `export_onnx` traces with CPU dummy inputs,
     # and a .pt of CUDA tensors would pin the checkpoint to a GPU host.
@@ -217,6 +233,14 @@ def main():
     ap.add_argument("--limit", type=int, default=None, help="overfit only the first N samples")
     ap.add_argument("--no-augment", action="store_true", help="disable random y-flip augmentation")
     ap.add_argument("--val-data", default=None, help="held-out prepared dims dir (disjoint games!)")
+    ap.add_argument(
+        "--select-on",
+        choices=["value", "combined"],
+        default="value",
+        help="best-val restore criterion: `value` (val_value alone, the historical rule, "
+             "correct only while the bot plays --evaluator nn-value and nothing consumes "
+             "the policy head) or `combined` (val_policy + val_value, the training objective)",
+    )
     ap.add_argument(
         "--init",
         type=Path,
@@ -243,6 +267,7 @@ def main():
         val_dir=args.val_data,
         device=args.device,
         init=args.init,
+        select_on=args.select_on,
     )
 
 
