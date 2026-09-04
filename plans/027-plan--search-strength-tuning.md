@@ -106,7 +106,8 @@ clock before it changes production.
 | E2e | 250 vs 125 iters | 60 | **0.625** | W32 D11 L17, TD 171:146 | largest budget effect, z=+1.92, p≈0.055 |
 | E2a | 1000 vs 500 iters | 60 | **0.575** | W30 D9 L21, TD 209:182 | the only budget arm with a signal — z=+1.15, p≈0.25 |
 | E1b | learned vs scripted priors, 200 iters | 76 | **0.539** | W35 D12 L29, TD 214:203 | second independent sample, same direction |
-| **E1 pooled** | learned vs scripted priors, 200 iters | **100** | **0.555** | W47 D17 L36 | z=+1.1, p≈0.27 — consistent, not established |
+| E1-1000 | learned vs scripted priors, **1000** iters | 60 | **0.558** | W28 D11 L21, TD 225:217 | at the production budget; same direction |
+| **E1 pooled** | learned vs scripted priors, all samples | **160** | **0.556** | W75 D28 L57 | z=+1.58, CI [0.486, 0.626] — consistent across 3 samples, not significant |
 
 ### E2b — doubling the budget does nothing (2026-09-03, 120 min)
 
@@ -142,6 +143,47 @@ result is very unlikely to show anything.
 Note these are adjacent halvings, and adjacent ties do not compose — small
 effects can accumulate across a 4x span — which is why `e2f-1000v250` runs the
 span directly.
+
+### E1 — learned priors are no longer worse than scripted, and probably better
+
+Three independent samples, two budgets, all positive:
+
+| sample | n | points | z |
+|---|---|---|---|
+| 200 iters, seed 77e6 | 24 | 0.604 | +1.02 |
+| 200 iters, seed 87e6 | 76 | 0.539 | +0.69 |
+| 1000 iters, seed 83e6 | 60 | 0.558 | +0.90 |
+| **pooled** | **160** | **0.556** | **+1.58** |
+
+Pooled: W75 D28 L57, SE 0.0356, 95% CI **[0.486, 0.626]**, or 0.568 on decided
+games alone. Still not significant — the interval includes 0.5 — but three
+independent draws landing at 0.604 / 0.539 / 0.558 is a consistent picture, and
+the 1000-iter sample is at the budget production actually uses.
+
+**The decision-relevant claim is the weaker one, and it is well supported.**
+`nn-value` was chosen because plan 020 measured learned priors as actively
+*harmful*: full-`nn` 0.75 vs `nn-value` 0.83 TDs/game, with the value head
+"steering the search away from scoring lines". That was gen-0. Three promotions
+later the sign has flipped, and even the pessimistic end of the CI (0.486) is a
+long way from the deficit that justified the original choice. **The reason
+`nn-value` exists no longer holds.**
+
+Why it matters beyond a coin-flip's worth of strength: the policy head is
+trained every generation and thrown away. Switching to `--evaluator nn` is what
+makes that training count, and it changes what else is true —
+
+- **Best-val restore would have to change.** Value-only selection is correct
+  *because* nothing consumes the policy head (see E1's framing above). Once
+  priors come from the net, restoring epoch 0 on `val_value` while `val_policy`
+  is still improving at epoch 9 becomes an active mistake. These two changes are
+  coupled and should land together.
+- It puts the head with genuine capacity headroom to work. The value head
+  saturates in 0-2 epochs on 362k samples; the policy head does not.
+
+Recommended next step, not taken tonight because it is a production change:
+a confirmatory arm at n≈200 at 1000 iters. At that size SE is ~0.032 and a true
+0.556 would clear significance; if it holds, switch the evaluator and the
+selection criterion together.
 
 ### E2 — the budget curve: diminishing returns, saturating around 500-1000
 
