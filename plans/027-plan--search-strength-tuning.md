@@ -336,7 +336,75 @@ p ≈ 0.15, not significant. It also fails to reproduce here — the candidate s
 scored 0.508, 0.517 and 0.604 across three near-mirrors. Two different effects
 have been sharing one name.
 
-### RESOLVED (provisionally): it is the net, not the engine
+### NOT RESOLVED — and the "it's the net" reading was wrong
+
+**Retraction first.** On the partial nn mirror (54 decided games, 61.1%) I wrote
+that the mirrors had isolated the bias to the network. They had not. Completed:
+
+| true mirror | decided | Away share | z |
+|---|---|---|---|
+| heuristic (no NN) | 107 | 50.5% [41.0, 59.9] | +0.10 |
+| nn-value (same net both sides) | 77 | 57.1% [46.0, 68.3] | +1.25 |
+
+A two-proportion test between them gives **z=0.89, p≈0.37** — statistically
+indistinguishable. That is the second time in one night a striking small-sample
+number regressed on more data (62.1% → 57.1% for the mirror-like pool, 61.1% →
+57.1% here). Both mirrors are individually underpowered and both are consistent
+with the pooled ~56%.
+
+**And the network is exonerated directly**, by property test rather than by
+inference. `botbowl-mcts/tests/mirror_nn_evaluator.rs` (added here) asserts what
+plan 023's suite never covered:
+
+- `value_home(mirrored(s)) == -value_home(s)`, **exactly**, over 200 states;
+- the value survives a double mirror;
+- priors are mover-relative under mirroring.
+
+All three pass on the `tiny.onnx` fixture *and* on the real `bbnet_14x7_gen03`
+champion. This is expected from the design — `perspective.rs` canonicalises
+every board into the mover-attacks-`x=1` frame, so a state and its mirror encode
+to the identical tensor and the net cannot tell Home from Away — and it is also
+why the trainer augments in y only (`data.py:18`: "The x-mirror is NOT"
+applied). But it had never been asserted, and it is now.
+
+**Where that leaves the effect.** Real in aggregate, unlocalised:
+
+| group | n decided | Away share | z |
+|---|---|---|---|
+| true mirrors | 184 | 53.3% | +0.88 |
+| other exp arms | 424 | 58.0% | +3.30 |
+| gen report cards | 329 | 55.0% | +1.82 |
+| **pooled** | **937** | **56.0%** | **+3.69** |
+
+The three groups are mutually consistent, so this reads as a uniform ~56% effect
+that only the pooled sample has the power to see — not as something specific to
+one kind of arm. After the measured 1.10x pair-correlation correction the pooled
+z is ~3.35, so it survives.
+
+Ruled out so far: the engine, board and turn structure (plan 023's fix,
+reconfirmed by tonight's heuristic mirror at 50.5%); the NN encoder, perspective,
+value and priors (new property tests, on the trained champion); the scripted
+chance-model collapse (see below); the coin (60% of 60 *independent* draws,
+z=+1.55, and a 60/40 toss with a 54% receiver edge yields only ~50.8% Away).
+
+Still open: the selection/aggregation layer under an NN evaluator specifically.
+Plan 023 localised its own bug to "PUCT descent, virtual loss, minimax backprop,
+the `recon_mcts` DAG" and `mirror_search_exact.rs` now pins that layer
+mirror-exact — but only with the heuristic evaluator. An NN-evaluator version of
+`mirror_search_exact` is the obvious next test, and it is cheap.
+
+### The scripted chance-model collapse is x-symmetric (checked)
+
+`roll_outcomes::scripted_result` collapses every bounce, scatter and deviate to
+one fixed direction, `D8::from(Direction::up())`. A directional constant is
+exactly the shape of a side bias — but `Direction::up()` is `{dx: 0, dy: -1}`,
+**pure y with zero x**, and the Home/Away mirror is the *x*-reflection (endzones
+sit at opposite x; that is why plan 023's kickoff-aim bug was `w/4` vs `3w/4`).
+So the fixed direction is sideways to the scoring axis and cannot push the ball
+toward either endzone. It breaks y-symmetry, which both sides share equally.
+`mirror_chance_model.rs` already property-tests this layer.
+
+### Superseded reading (kept for the record)
 
 The true mirrors settle the mechanism question, and they overturn two things I
 had written above.
