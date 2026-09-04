@@ -104,7 +104,8 @@ clock before it changes production.
 | E2b | 2000 vs 1000 iters | 60 | **0.508** | W24 D13 L23, TD 185:180 | dead even. Doubling the budget buys nothing. |
 | E2d | 500 vs 250 iters | 60 | **0.517** | W26 D10 L24, TD 183:173 | dead even |
 | E2e | 250 vs 125 iters | 60 | **0.625** | W32 D11 L17, TD 171:146 | largest budget effect, z=+1.92, p≈0.055 |
-| E2a | 1000 vs 500 iters | 60 | **0.575** | W30 D9 L21, TD 209:182 | the only budget arm with a signal — z=+1.15, p≈0.25 |
+| E2a | 1000 vs 500 iters | 60 | **0.575** | W30 D9 L21, TD 209:182 | z=+1.15, p≈0.25 |
+| **E2f** | **1000 vs 250 iters (4x span)** | 60 | **0.700** | W35 D14 L11, TD 213:169 | **z=+3.08, p≈0.002 — significant** |
 | E1b | learned vs scripted priors, 200 iters | 76 | **0.539** | W35 D12 L29, TD 214:203 | second independent sample, same direction |
 | E1-1000 | learned vs scripted priors, **1000** iters | 60 | **0.558** | W28 D11 L21, TD 225:217 | at the production budget; same direction |
 | **E1 pooled** | learned vs scripted priors, all samples | **160** | **0.556** | W75 D28 L57 | z=+1.58, CI [0.486, 0.626] — consistent across 3 samples, not significant |
@@ -206,6 +207,34 @@ of a smooth decline, so the ordering there is noise, not structure.
 budgets and clearly stops mattering by 2000. Where exactly it flattens, between
 500 and 1000, this instrument cannot resolve.
 
+#### E2f settles it — the 4x span is significant, the 2x above it is not
+
+1000 v 250: **0.700** (W35 D14 L11, TD 213:169), z=+3.08, **p≈0.002**. The only
+significant parameter result in the matrix.
+
+This is exactly what the diminishing-returns model predicted (0.60-0.65, and it
+came in a little above). It also explains why the individual doublings looked
+unconvincing: 250→500 and 500→1000 measured 0.517 and 0.575, each buried in
+60-game noise, but they *compose* into a large effect over the 4x span. Small
+real per-doubling gains, not noise around zero — the single-doubling arms simply
+lacked the resolution to see them.
+
+The budget answer, stated plainly:
+
+| span | points | verdict |
+|---|---|---|
+| 250 → 1000 (4x) | **0.700** | search matters, decisively |
+| 1000 → 2000 (2x) | 0.508 | nothing left |
+
+**Keep 1000. Do not raise it — 2000 buys nothing for double the generate cost.
+Do not lower it — 250 is decisively worse.** The setting was chosen without
+measurement in plan 020 and turns out to sit right at the knee of the curve.
+
+A caveat worth keeping: this is measured at one board size (14x7), with one net
+(gen03), against itself. The knee could move with board size or net strength —
+in particular a stronger net may need less search to reach the same decision,
+pushing the knee down over generations.
+
 This retracts the "halve it for free" reading I took from E2b and E2d alone. Two
 adjacent ties do not license dropping the budget when the halvings around them
 pay. `e2f-1000v250` tests the 4x span directly and is the cleanest single number
@@ -237,9 +266,9 @@ see the shrinkage note):
 
 | subset | n decided | Away share | 95% CI | z |
 |---|---|---|---|---|
-| all rows | 677 | 55.1% | [51.3, 58.8] | +2.65 |
-| informative rows only¹ | 560 | 55.9% | [51.8, 60.0] | +2.79 |
-| mirror-like arms | 231 | 57.1% | [50.7, 63.4] | +2.17 |
+| all rows | 821 | 55.4% | [52.0, 58.8] | +3.11 |
+| informative rows only¹ | 704 | 56.1% | [52.4, 59.7] | +3.24 |
+| mirror-like arms | 375 | 57.1% | [52.0, 62.0] | +2.74 |
 
 ¹ A shutout carries no side signal — beating `random` 30-0 gives a 15/15 split
 by construction, not by balance — so those rows are excluded.
