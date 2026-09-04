@@ -106,6 +106,7 @@ clock before it changes production.
 | E2e | 250 vs 125 iters | 60 | **0.625** | W32 D11 L17, TD 171:146 | largest budget effect, z=+1.92, p≈0.055 |
 | E2a | 1000 vs 500 iters | 60 | **0.575** | W30 D9 L21, TD 209:182 | z=+1.15, p≈0.25 |
 | **E2f** | **1000 vs 250 iters (4x span)** | 60 | **0.700** | W35 D14 L11, TD 213:169 | **z=+3.08, p≈0.002 — significant** |
+| E3 | horizon 2 vs 1, 500 iters | 60 | **0.392** | W18 D11 L31, TD 141:178 | deeper is *worse*, z=−1.66; confound favours the loser |
 | E1b | learned vs scripted priors, 200 iters | 76 | **0.539** | W35 D12 L29, TD 214:203 | second independent sample, same direction |
 | E1-1000 | learned vs scripted priors, **1000** iters | 60 | **0.558** | W28 D11 L21, TD 225:217 | at the production budget; same direction |
 | **E1 pooled** | learned vs scripted priors, all samples | **160** | **0.556** | W75 D28 L57 | z=+1.58, CI [0.486, 0.626] — consistent across 3 samples, not significant |
@@ -144,6 +145,38 @@ result is very unlikely to show anything.
 Note these are adjacent halvings, and adjacent ties do not compose — small
 effects can accumulate across a 4x span — which is why `e2f-1000v250` runs the
 span directly.
+
+### E3 — a deeper horizon is worse, and the confound makes it look better than it is
+
+Horizon 2 v 1, both sides gen03 `nn-value` at 500 iterations: **0.392**
+(W18 D11 L31, TD 141:178), z=−1.66, p≈0.10.
+
+The direction matters more than the significance here, because **the known
+confound favours the loser**. At equal iterations a depth-2 search spends more
+compute per iteration — deeper rollouts, more states touched — so if anything
+this arm was rigged *for* depth 2. It lost anyway. An equal-wall-clock test,
+which is the fairer comparison, would penalise depth 2 further still. So the
+honest reading is that 0.392 is an *upper* bound on depth 2's merit.
+
+Most likely mechanism: at a fixed 500 descents, a two-turn-pair tree is far
+sparser than a one-turn-pair tree. The extra depth buys nothing if every branch
+is visited a handful of times; MCTS needs visit density to produce reliable Q,
+and doubling the horizon roughly squares the reachable state space. Plan 014's
+choice of one turn-pair looks well judged.
+
+**Caveat that stops this being the last word.** `botbowl-mcts/CLAUDE.md` records
+that `PUCT_C = 10.0` "is tuned against the leaf-score magnitudes in `score.rs`
+and they are coupled — changing one without the other silently degrades search".
+Deepening the horizon changes the Q distribution the search sees, so depth 2 was
+run with an exploration constant tuned for depth 1. A fair test of deep search
+would re-tune `c` alongside it; plan 026 already found `c=30` marginally better
+than the shipped 10 at depth 1, and the right constant for depth 2 could differ
+more. This arm shows depth 2 is not free — not that deep search cannot work.
+
+Also visible: the candidate went **5-19 as Home and 13-12 as Away**. A weak arm
+and the Away advantage stacking, roughly as independent effects would predict
+(≈0.33 / ≈0.47 expected against 0.21 / 0.52 observed). Another reminder that
+side is doing a lot of work in every one of these numbers.
 
 ### E1 — learned priors are no longer worse than scripted, and probably better
 
