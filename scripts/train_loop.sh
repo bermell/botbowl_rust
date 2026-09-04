@@ -2,10 +2,11 @@
 # Weekend generation loop for the 14x7 tier (plan 022).
 #
 # Regime per generation (plan 021 §Next steps 3):
-#   generate (5 nn-value shards from the champion + 3 heuristic hedge shards)
+#   generate (5 $EVALUATOR shards from the champion + 3 heuristic hedge shards)
 #   -> prepare (train = shards 0-3,5,6; val = shards 4,7 — one of each kind,
 #      pooled across the last WINDOW_GENS generations)
-#   -> train (warm-started from the champion's .pt, best-val restore, ONNX export)
+#   -> train (warm-started from the previous net's .pt, best-val restore on
+#      $SELECT_ON, ONNX export)
 #   -> eval report card (fixed rungs + vs current champion)
 #   -> promotion gate: points (W + D/2)/N >= 0.55 vs champion => new champion
 #   On a failed gate the champion stays the generator and the loop continues
@@ -73,6 +74,21 @@ EPOCHS="${EPOCHS:-10}"
 GATE="${GATE:-0.55}"                        # promotion: points (W+D/2)/N vs champion
                                             # (was wins/N until 2026-09-02 — see eval_summary.py)
 TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
+# Which leaf/prior source the bot plays with. `nn-value` = NN leaf values but
+# *scripted* priors (dynamics.rs:258), which means the policy head is trained
+# every generation and never used to play. That choice came from plan 020,
+# which measured learned priors as actively harmful on gen-0: full-nn 0.75 vs
+# nn-value 0.83 TDs/game. Plan 027 re-measured it three promotions later across
+# 160 games at two budgets — 0.604 / 0.539 / 0.558, pooled 0.556, CI
+# [0.486, 0.626] — and the sign has flipped. The result is not significant, but
+# the claim that justified nn-value (learned priors are *worse*) no longer holds,
+# and switching is what makes the policy head count for anything.
+# Set EVALUATOR=nn-value to revert.
+EVALUATOR="${EVALUATOR:-nn}"
+# Coupled to the above, and wrong to change independently: value-only best-val
+# restore is correct exactly while nothing consumes the policy head. See
+# --select-on in bbnn/train.py.
+SELECT_ON="${SELECT_ON:-combined}"
 # How the loop compounds (added 2026-09-03, after gen02 scored 0.450 against
 # gen01 on the full 100-game rung despite a *better* val_value, 0.4026 vs
 # 0.4126). Until now every generation trained a fresh net from random init on
@@ -421,12 +437,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
         else
             NN_EXTRA=""
         fi
-        status "$GG generate: 8x$GAMES_PER_SHARD games (nn-value: $(basename "$CHAMP")${NN_EXTRA:+ via sidecar x$PARALLEL_GAMES} + heuristic hedge), disk free $(free_gb)"
+        status "$GG generate: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_EXTRA:+ via sidecar x$PARALLEL_GAMES} + heuristic hedge), disk free $(free_gb)"
         PIDS=""
         for K in $NN_SHARDS $HEUR_SHARDS; do
             SEED=$((SEED_BASE + G * 1000000 + K * 100000))
             case " $NN_SHARDS " in
-                *" $K "*) EV_ARGS="--evaluator nn-value --model $CHAMP $NN_EXTRA" ;;
+                *" $K "*) EV_ARGS="--evaluator $EVALUATOR --model $CHAMP $NN_EXTRA" ;;
                 *)        EV_ARGS="--evaluator heuristic" ;;
             esac
             # shellcheck disable=SC2086
@@ -525,6 +541,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # shellcheck disable=SC2086
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
                 --epochs "$EPOCHS" --device "$TRAIN_DEVICE" $INIT_ARGS \
+                --select-on "$SELECT_ON" \
                 --out "$MODEL.pt" --onnx "$MODEL.onnx" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "$GG training failed — see train.log"
@@ -564,11 +581,11 @@ while [ "$G" -le "$MAX_GENS" ]; do
         fi
         status "$GG eval: $EVAL_GAMES games/rung + $VS_EVAL_GAMES vs-champion, x$EVAL_PARALLEL_GAMES (random, scripted, mcts-heuristic, vs $(basename "$CHAMP"))"
         # shellcheck disable=SC2086
-        if ! "$UI" eval --evaluator nn-value --model "$MODEL.onnx" \
+        if ! "$UI" eval --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
                 --mcts-iters "$MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
                 --vs-games "$VS_EVAL_GAMES" \
                 --skip-lectures \
-                --vs-evaluator nn-value --vs-model "$CHAMP" \
+                --vs-evaluator "$EVALUATOR" --vs-model "$CHAMP" \
                 $EVAL_EXTRA \
                 --out "$GEN_DIR/report.json" > "$GEN_DIR/eval.log" 2>&1; then
             nn_server_stop
