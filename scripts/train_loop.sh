@@ -111,9 +111,17 @@ WARM_START="${WARM_START:-on}"              # seed each generation from a previo
 #              A rejection costs you deployment, not the learning.
 #   champion — roll back to the last promoted net on a rejection. Safer
 #              against a generation that trains itself somewhere bad, but it
-#              restarts from the same point every time it fails, which is the
-#              stuck-in-place behaviour we are trying to get out of.
-WARM_FROM="${WARM_FROM:-latest}"
+#              restarts from the same point every time it fails.
+#
+# Was `latest` from 2026-09-03 and produced gen03's promotion, then drifted:
+# gen04 scored 0.440 against champion gen03 and gen05, warm-started from
+# gen04, scored 0.380 — each generation continuing from the weakest net yet
+# with nothing pulling it back. AGZ can never roll back because its training
+# net keeps improving on a corpus orders of magnitude larger; at 4800
+# games/gen and a 3-gen window the head just wanders. Switched to `champion`
+# on 2026-09-05 after the second rejection. Revisit if the gate starts
+# passing consistently again — `latest` is the better idea when it works.
+WARM_FROM="${WARM_FROM:-champion}"
 # Warm start restores weights but not Adam's moment estimates (the .pt has to
 # stay a bare state_dict — nn_server.py loads it directly), so the first steps
 # of a warm-started run are taken with fresh moments. At the from-scratch
