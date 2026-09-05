@@ -96,6 +96,54 @@ one, and plan 023 already showed it does not do what the naive form appears to.
 
 ## Experiments
 
+### Stage 0 — the convergence probe: does TV shrink with budget? (run this first)
+
+Before any games: take states from the generator the corpus uses, run the
+search repeatedly at increasing budgets, and measure the total-variation
+distance between independent runs at each stage. If two runs of the same state
+do not agree more as the budget grows, the search is not converging, and no
+amount of tuning downstream of that will help.
+
+`botbowl-ui convergence` is exactly this instrument and already exists: N
+random-start states (same `random_start.rs` the corpus uses), R independent
+repeats per (state, budget) giving the run-to-run floor, budgets
+`100,200,500,1000,2000,4000,8000,16000`, seeds disjoint from corpus seeds, and
+`--puct-mode`/`--puct-c` from plan 026. Analysis in
+`scripts/convergence_summary.py`.
+
+Plan 025's answer was that TV between runs **grows** monotonically, 0.193 at
+100 iterations to 0.383 at 16000, with peak visit share rising 0.449 -> 0.742
+and top-1 agreement peaking at ~500 then falling. At 16k only 21 of 52 states
+had all three repeats agreeing on the top action. The heuristic control showed
+the same shape, so it is the search, not the net.
+
+**That result has never been confirmed on current code.** Plan 025's own status
+header marks it provisional: it ran on the retired `gen01` champion under the
+**pre-`e107f06` buggy search**, and the raw data was deleted 2026-09-01. Since
+then the side-bias root cause was fixed (plan 023), the NN evaluator changed
+(gen06 plays learned priors), and plan 027 showed strength *does* improve
+250 -> 1000 where 025's label metrics said it should not. Re-checking is
+overdue on its own merits.
+
+Two arms, and they are cheap — plan 025 measured 48 min for the `nn-value` arm
+and 7 min for the heuristic control at 4-way parallelism, against ~3h for a
+single 120-game head-to-head:
+
+| arm | config | asks |
+|---|---|---|
+| S0a | `raw c=10` (production), `nn` evaluator, gen03 | does the divergence reproduce post-fix? |
+| S0b | `norm c=1`, same states and seeds | does normalised Q make TV *fall* with budget? |
+
+**This is the right screen for F1.** Plan 026 measured normalised Q at a single
+budget (1000) and found better agreement and lower TV; what nobody has looked
+at is the *curve*. A fix that works should turn the TV line from rising to
+falling. If S0b still rises, F1 is not the fix either and B1's three hours of
+games are better spent elsewhere. If it falls, B1 becomes a confirmation rather
+than a fishing trip.
+
+Order matters here: Stage 0 costs about an hour and can redirect ~15 hours of
+game arms, so it runs before anything in A or B.
+
 Every arm is a head-to-head at equal **issued iterations**, same net both
 sides, paired Home/Away, scored with `scripts/paired_summary.py` as well as the
 pooled rule. **120 games minimum** — plan 027 established that 60 games (SE
@@ -158,10 +206,16 @@ property of the *tuning*, not of the game.
   later decisions. Ensemble members must each reuse their own tree, or reuse
   must be disabled on both sides. Whichever is chosen, report it — the "equal
   compute" claim depends on it.
-- **Cost.** ~120 games at 1000 iters is roughly 3h per arm at
-  `--parallel-games 6`. A and B together are ~15h; run them in the order above
-  and stop early if A loses decisively, since B3 and C are only interesting
-  once there is something to fix.
+- **Cost.** Stage 0 is ~1h for both arms. ~120 games at 1000 iters is roughly
+  3h per game arm at `--parallel-games 6`; A and B together are ~15h. Run
+  Stage 0 first — it is the cheapest thing here and can redirect the rest —
+  then A and B in order, stopping early if A loses decisively, since B3 and C
+  are only interesting once there is something to fix.
+- **Scheduling.** Every arm needs the box; plan 025 records that the
+  convergence probe "competes directly with generation for CPU". The training
+  loop currently runs continuously (gen06 eval, then straight into gen07), so
+  these need a deliberate pause — `touch runs/loop14x7/STOP` lands the loop at
+  the next phase boundary without discarding work, the same seam used all week.
 
 ## What would falsify the premise
 
