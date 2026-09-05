@@ -132,6 +132,42 @@ pub struct NnEvaluator {
     backend: Backend,
 }
 
+thread_local! {
+    /// Last forward on this thread, so the two heads of one state cost one
+    /// pass instead of two.
+    ///
+    /// `BBNet` emits `(policy, value)` from a shared trunk, but the search
+    /// asks for them separately: `available_actions` calls [`NnEvaluator::priors`]
+    /// at expansion (`dynamics.rs:653`) and `score_leaf` calls
+    /// [`NnEvaluator::value_home_i64`] when scoring the same node
+    /// (`dynamics.rs:1165`). Each used to re-encode the state and run a full
+    /// forward, discarding exactly the head the other one needed — so
+    /// `--evaluator nn` paid two passes per expanded node where `nn-value`
+    /// pays one. Measured cost of that waste: gen05's generate phase ran 425
+    /// min against gen04's 292 (+46%) and its eval 396 against 276 (+43%).
+    ///
+    /// The two calls land back to back on the same state, so a single slot
+    /// hits essentially always. The key is the **encoded input compared
+    /// exactly**, not a hash: a `GameState` hash collision is precisely the
+    /// bug that got `recon_mcts`'s `HashOnly` banned from this repo, and a
+    /// collision here would silently return another state's value. ~7 KB per
+    /// memcmp against a full network pass is not a close call.
+    ///
+    /// Thread-local because MCTS workers run concurrently and each descends
+    /// its own path; sharing one slot across threads would thrash it.
+    static LAST_FORWARD: std::cell::RefCell<Option<CachedForward>> = const { std::cell::RefCell::new(None) };
+}
+
+struct CachedForward {
+    spatial: Vec<f32>,
+    global: Vec<f32>,
+    /// `None` when the cached pass was value-only (the remote backend can
+    /// skip returning the policy tensor). A later `priors` call on the same
+    /// state must then re-forward rather than invent one.
+    policy: Option<Vec<f32>>,
+    value: f32,
+}
+
 impl std::fmt::Debug for NnEvaluator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.backend {
@@ -225,6 +261,46 @@ impl NnEvaluator {
         out
     }
 
+    /// One forward per state, shared by both heads. Returns
+    /// `(policy, value)`; `policy` is empty when the caller did not ask for
+    /// it and none was cached.
+    ///
+    /// Behaviour-preserving by construction: a hit is returned only when the
+    /// encoded input matches the cached one *element for element*, and the
+    /// network is deterministic, so callers see exactly the values a fresh
+    /// forward would have produced. That also keeps the recombination purity
+    /// invariant intact — priors and leaf values stay pure functions of the
+    /// state.
+    fn forward_memo(&self, enc: &Encoded, want_policy: bool) -> (Vec<f32>, f32) {
+        let hit = LAST_FORWARD.with(|slot| {
+            let slot = slot.borrow();
+            let c = slot.as_ref()?;
+            if c.spatial != enc.spatial || c.global != enc.global {
+                return None;
+            }
+            match (want_policy, &c.policy) {
+                // Asked for priors but the cached pass was value-only.
+                (true, None) => None,
+                (true, Some(p)) => Some((p.clone(), c.value)),
+                (false, _) => Some((Vec::new(), c.value)),
+            }
+        });
+        if let Some(hit) = hit {
+            return hit;
+        }
+
+        let (policy, value) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, want_policy);
+        LAST_FORWARD.with(|slot| {
+            *slot.borrow_mut() = Some(CachedForward {
+                spatial: enc.spatial.clone(),
+                global: enc.global.clone(),
+                policy: if policy.is_empty() { None } else { Some(policy.clone()) },
+                value,
+            });
+        });
+        (policy, value)
+    }
+
     /// Priors for a node's already-filtered legal actions. One forward
     /// pass; softmax over the gathered per-action logits, rescaled by the
     /// action count so the mean is ≈ 1.0.
@@ -233,7 +309,7 @@ impl NnEvaluator {
             return Vec::new();
         }
         let enc = encode(state);
-        let (policy, _v) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, true);
+        let (policy, _v) = self.forward_memo(&enc, true);
         let plane = enc.h * enc.w;
         let mover = enc.mover;
         let dims = state.board_dims;
@@ -263,7 +339,7 @@ impl NnEvaluator {
     /// for an Away mover, and rescale.
     pub fn value_home_i64(&self, state: &GameState) -> i64 {
         let enc: Encoded = encode(state);
-        let (_policy, v) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, false);
+        let (_policy, v) = self.forward_memo(&enc, false);
         let v = v.clamp(-1.0, 1.0);
         let home_centric = match mover_for(state) {
             TeamType::Home => v,
