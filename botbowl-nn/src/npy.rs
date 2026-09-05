@@ -36,36 +36,68 @@ fn header_bytes(descr: &str, shape: &[usize]) -> Vec<u8> {
     header
 }
 
-fn write_raw(path: impl AsRef<Path>, descr: &str, shape: &[usize], data: &[u8]) -> io::Result<()> {
-    let mut w = BufWriter::new(File::create(path)?);
+/// Elements converted per `write_all`. 8192 x 8 bytes = 64 KB of stack
+/// scratch — big enough that syscall overhead is irrelevant, small enough
+/// to be free.
+const CHUNK_ELEMS: usize = 8192;
+
+fn write_header(w: &mut impl Write, descr: &str, shape: &[usize]) -> io::Result<()> {
     let header = header_bytes(descr, shape);
     w.write_all(MAGIC)?;
     w.write_all(&[0x01, 0x00])?; // version 1.0
     let len = u16::try_from(header.len()).expect("npy header exceeds v1.0 u16 limit");
     w.write_all(&len.to_le_bytes())?;
-    w.write_all(&header)?;
+    w.write_all(&header)
+}
+
+fn write_raw(path: impl AsRef<Path>, descr: &str, shape: &[usize], data: &[u8]) -> io::Result<()> {
+    let mut w = BufWriter::new(File::create(path)?);
+    write_header(&mut w, descr, shape)?;
     w.write_all(data)?;
     w.flush()
 }
 
 /// Write a flat `f32` buffer with the given shape (product must equal len).
+///
+/// Converts to little-endian bytes **in fixed-size chunks** rather than
+/// materialising the whole array as a second `Vec<u8>`. That doubling is
+/// not academic at this scale: a 3-generation training window is ~353k
+/// samples x 37x9x16 f32 = 7.5 GB of `spatial`, so the old writer peaked
+/// at ~14.4 GB and the kernel OOM-killed `prepare` on 2026-09-05
+/// ("Killed process 958750 (prepare) anon-rss:14077600kB") on a 15.9 GB
+/// box. Re-running it idle peaked at 14.37 GB against 14.36 GB available —
+/// it had been fitting with no margin since the window landed.
+///
+/// Byte-for-byte identical output; only the peak allocation changes.
 pub fn write_f32(path: impl AsRef<Path>, data: &[f32], shape: &[usize]) -> io::Result<()> {
     debug_assert_eq!(shape.iter().product::<usize>(), data.len(), "shape/len mismatch");
-    let mut bytes = Vec::with_capacity(data.len() * 4);
-    for v in data {
-        bytes.extend_from_slice(&v.to_le_bytes());
+    let mut w = BufWriter::new(File::create(path)?);
+    write_header(&mut w, F4, shape)?;
+    let mut buf = [0u8; CHUNK_ELEMS * 4];
+    for chunk in data.chunks(CHUNK_ELEMS) {
+        for (i, v) in chunk.iter().enumerate() {
+            buf[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        w.write_all(&buf[..chunk.len() * 4])?;
     }
-    write_raw(path, F4, shape, &bytes)
+    w.flush()
 }
 
 /// Write a flat `i64` buffer with the given shape.
+/// Write a flat `i64` buffer. Chunked for the same reason as
+/// [`write_f32`] — `actions.npy` is `(M, 4)` with M ~5.6M rows.
 pub fn write_i64(path: impl AsRef<Path>, data: &[i64], shape: &[usize]) -> io::Result<()> {
     debug_assert_eq!(shape.iter().product::<usize>(), data.len(), "shape/len mismatch");
-    let mut bytes = Vec::with_capacity(data.len() * 8);
-    for v in data {
-        bytes.extend_from_slice(&v.to_le_bytes());
+    let mut w = BufWriter::new(File::create(path)?);
+    write_header(&mut w, I8, shape)?;
+    let mut buf = [0u8; CHUNK_ELEMS * 8];
+    for chunk in data.chunks(CHUNK_ELEMS) {
+        for (i, v) in chunk.iter().enumerate() {
+            buf[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        w.write_all(&buf[..chunk.len() * 8])?;
     }
-    write_raw(path, I8, shape, &bytes)
+    w.flush()
 }
 
 /// A parsed `.npy` file: dtype descriptor, shape, and raw payload bytes.
