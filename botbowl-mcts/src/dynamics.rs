@@ -1158,7 +1158,19 @@ impl GameDynamics for BloodBowlDynamics {
             // score would offset these leaves by the root score against
             // every NN-scored sibling. Without an anchor (direct `Tree`
             // callers; `MctsBot` always sets one) the NN scores everything.
-            Evaluator::Nn(nn) | Evaluator::NnValue(nn) => match &self.horizon {
+            // Split so `Nn` can prefetch the policy head: this scoring call
+            // runs *before* `available_actions` asks for priors on the same
+            // state, and on the remote sidecar a value-only forward returns no
+            // policy, so without the prefetch the priors call forwards again.
+            // `NnValue` takes priors from the scripted heuristic and must not
+            // pay for a policy tensor it will never read.
+            Evaluator::Nn(nn) => match &self.horizon {
+                Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                    anchor.score_delta(state).clamp(-1, 1) * 1000
+                }
+                _ => nn.value_home_i64_prefetch_policy(state),
+            },
+            Evaluator::NnValue(nn) => match &self.horizon {
                 Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
                     anchor.score_delta(state).clamp(-1, 1) * 1000
                 }

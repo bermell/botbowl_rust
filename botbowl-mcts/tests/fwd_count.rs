@@ -106,3 +106,47 @@ fn memo_does_not_resurrect_a_displaced_state() {
     assert_eq!(after - before, 1, "displaced state must be recomputed, not served stale");
     assert_eq!(va1, va2, "the network is deterministic; the memo must not change its answers");
 }
+
+/// The bug this guards against. The search scores a node before enumerating
+/// its children, so the value call lands first. A plain value call asks for
+/// no policy, so the priors call that follows must forward again; the
+/// prefetching variant warms both heads in one pass.
+///
+/// This only bites when the backend honours `want_policy`. Tract used to
+/// ignore it and hand the policy back regardless, so a tract benchmark showed
+/// the memo halving forwards while production — on the sidecar, which does
+/// honour it — saved 0.7% (gen05 eval 59,511,550 samples -> gen06 59,071,998).
+/// Both backends now behave the same, which is what makes this test mean
+/// something.
+#[test]
+fn prefetch_saves_the_second_forward_in_search_order() {
+    let _guard = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let nn = Arc::new(NnEvaluator::from_path(fixture()).expect("load tiny.onnx"));
+    let state = GameStateBuilder::new()
+        .add_home_player(Position::new((5, 5)))
+        .add_away_player(Position::new((9, 5)))
+        .build();
+    let actions = state.get_all_actions();
+    assert!(!actions.is_empty());
+
+    let other = GameStateBuilder::new()
+        .add_home_player(Position::new((3, 3)))
+        .add_away_player(Position::new((12, 6)))
+        .build();
+
+    // Search order without the prefetch: value, then priors -> two forwards.
+    let _ = nn.value_home_i64(&other); // displace the slot
+    let (b1, _) = profile_counters();
+    let _ = nn.value_home_i64(&state);
+    let _ = nn.priors(&state, &actions);
+    let (a1, _) = profile_counters();
+    assert_eq!(a1 - b1, 2, "plain value call must not warm the policy head");
+
+    // Same order, prefetching variant -> one forward.
+    let _ = nn.value_home_i64(&other); // displace again
+    let (b2, _) = profile_counters();
+    let _ = nn.value_home_i64_prefetch_policy(&state);
+    let _ = nn.priors(&state, &actions);
+    let (a2, _) = profile_counters();
+    assert_eq!(a2 - b2, 1, "prefetching value call must serve the following priors call");
+}

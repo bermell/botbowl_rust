@@ -250,7 +250,20 @@ impl NnEvaluator {
     ) -> (Vec<f32>, f32) {
         let t0 = Instant::now();
         let out = match &self.backend {
-            Backend::Tract(t) => t.forward(spatial, global, h, w),
+            // Honour `want_policy` here too. Tract used to return the policy
+            // regardless, which made the two backends disagree about what a
+            // value-only forward yields — and hid a real bug: the memo looked
+            // 2x effective on tract while saving 0.7% in production on the
+            // sidecar, which does honour it. Same semantics on both backends
+            // means a benchmark on either one means something.
+            Backend::Tract(t) => {
+                let (policy, v) = t.forward(spatial, global, h, w);
+                if want_policy {
+                    (policy, v)
+                } else {
+                    (Vec::new(), v)
+                }
+            }
             Backend::Remote { client, fallback } => match client.forward(spatial, global, h, w, want_policy) {
                 Ok(out) => out,
                 Err(_) => fallback.forward(spatial, global, h, w),
@@ -337,9 +350,42 @@ impl NnEvaluator {
     /// Home-centric leaf value in `leaf_score`'s scale (`±1000`). The
     /// network emits a mover-centric `v ∈ [-1, 1]`; we clamp, flip sign
     /// for an Away mover, and rescale.
+    /// Like [`value_home_i64`](Self::value_home_i64), but also fetches the
+    /// policy head so the priors call that follows is served from the memo.
+    ///
+    /// The search scores a node **before** it enumerates the node's children:
+    /// `score_leaf` runs first (`dynamics.rs:1165`), `available_actions` after
+    /// (`dynamics.rs:653`). Measured, not assumed — a 300-iteration
+    /// `Evaluator::Nn` search issues 482 forwards when the backend honours
+    /// `want_policy` and 242 when it does not.
+    ///
+    /// That asymmetry is the whole point of this method. `TractBackend`
+    /// ignores `want_policy` and hands back the policy regardless, so on tract
+    /// the memo hits either way; the **remote sidecar** honours it and returns
+    /// nothing, so a value-first call caches `policy: None` and the priors call
+    /// has to forward again. Production runs the sidecar, which is why the memo
+    /// alone bought 0.7% there (gen05 eval 59,511,550 samples -> gen06
+    /// 59,071,998) against the 2x a tract-only benchmark promised.
+    ///
+    /// Only `Evaluator::Nn` should call this. `Evaluator::NnValue` takes its
+    /// priors from the scripted heuristic and never asks for the policy, so
+    /// prefetching it there would add payload for nothing.
+    pub fn value_home_i64_prefetch_policy(&self, state: &GameState) -> i64 {
+        let enc: Encoded = encode(state);
+        let (_policy, v) = self.forward_memo(&enc, true);
+        self.to_home_i64(v, state)
+    }
+
     pub fn value_home_i64(&self, state: &GameState) -> i64 {
         let enc: Encoded = encode(state);
         let (_policy, v) = self.forward_memo(&enc, false);
+        self.to_home_i64(v, state)
+    }
+
+    /// Clamp, flip to Home-centric for an Away mover, rescale to
+    /// `leaf_score`'s +/-1000 band. Shared so the two value entry points
+    /// cannot drift apart.
+    fn to_home_i64(&self, v: f32, state: &GameState) -> i64 {
         let v = v.clamp(-1.0, 1.0);
         let home_centric = match mover_for(state) {
             TeamType::Home => v,
