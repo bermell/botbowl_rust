@@ -1,7 +1,9 @@
 # Should one big tree beat k small ones? (And why it currently doesn't)
 
-**Status:** Planned 2026-09-05, not yet run. Needs the box idle — every arm is
-a head-to-head of full games.
+**Status:** Stage 0 ran 2026-09-06 and **refutes the plan's own premise** — see
+Results. The search converges; plan 025's non-convergence was the pre-`e107f06`
+bug. Normalised Q is clearly *worse*. The live finding is different and better:
+the budget curve has a **flat spot at 1000-2000, not a ceiling**.
 
 ## The hygiene test, and why it matters
 
@@ -225,3 +227,88 @@ shape. That would be a clean, useful negative: it would mean the over-committing
 hurts the training target rather than the play, and the right response is to fix
 the label (soften the policy target — plan 025's follow-up 2, a one-line
 temperature change) rather than the search.
+
+
+---
+
+# Results
+
+## Stage 0 (2026-09-06, 50 states x 3 repeats, gen03, `nn` evaluator)
+
+`signal` = TV to the 16000-iteration reference; `floor` = TV between independent
+runs at 16000; `top1` = agreement with the reference's chosen action.
+
+### S0a — production `raw(c=10)`: it converges
+
+| budget | signal | ratio to floor | top1 | \|dv\| |
+|---|---|---|---|---|
+| 100 | 0.6145 | 6.41 | 0.45 | 0.2440 |
+| 200 | 0.5032 | 5.25 | 0.53 | 0.1734 |
+| 500 | 0.3952 | 4.12 | 0.61 | 0.1224 |
+| 1000 | 0.3328 | 3.47 | 0.69 | 0.1027 |
+| 2000 | 0.2874 | 3.00 | 0.67 | 0.0830 |
+| 4000 | 0.2192 | 2.29 | 0.73 | 0.0647 |
+| 8000 | 0.1591 | 1.66 | 0.82 | 0.0498 |
+| 16000 | 0.0958 | 1.00 | **0.91** | 0.0190 |
+
+Noise floor 0.0958. Signal falls monotonically to it; top-1 agreement climbs
+0.45 -> 0.91; value precision improves 13x.
+
+**Plan 025's headline is refuted on current code.** It reported top-1 agreement
+peaking at ~500 and *falling* to 0.55 by 16000, with run-to-run TV rising
+0.193 -> 0.383. Neither reproduces. Its own status header called it provisional
+(retired `gen01`, pre-`e107f06` search, raw data deleted) and it was right to:
+the search no longer amplifies an arbitrary early lead. Both of plan 025's
+headline findings have now been overturned by re-measurement — the budget
+conclusion by plan 027, the non-convergence by this.
+
+That also removes the motivation for most of this plan. There is no Polya-urn
+pathology left to fix, so F3 (FPU) and F4 (tie-break) are not worth pursuing on
+these grounds, and arms A (ensembles) are much less interesting: splitting
+compute cannot beat a tree that is converging, except through the label-shape
+effect plan 025 measured, which is a *labels* argument and belongs with the
+policy-target softening idea instead.
+
+### S0b — `normalised(c=1)`: worse, decisively
+
+| budget | signal | top1 | vs raw |
+|---|---|---|---|
+| 1000 | 0.6570 | **0.25** | raw 0.3328 / 0.69 |
+| 4000 | 0.4033 | 0.52 | raw 0.2192 / 0.73 |
+| 16000 | 0.1727 | 0.77 | raw 0.0958 / 0.91 |
+
+Noise floor 0.1727 against raw's 0.0958. At the production budget normalised Q
+agrees with deep search **0.25 of the time against raw's 0.69**.
+
+Worth understanding why plan 026 read it the other way. Its metric was
+**run-to-run** agreement (0.69 norm vs 0.60 raw at budget 1000) — whether two
+runs agree with *each other*. This measures agreement with a 16x deeper
+**reference** — whether a run is *right*. Normalised Q is more self-consistent
+and less correct: reproducibly mediocre. Plan 026's "not the fix" verdict
+stands, for a stronger reason than it had.
+
+## The live finding: a flat spot at 1000-2000, not a ceiling
+
+Lay the convergence curve against plan 027's strength arms and they agree
+exactly, which is the first time a label metric and a strength metric have
+matched in this project:
+
+| span | top1 gain (S0a) | strength (plan 027) |
+|---|---|---|
+| 250 -> 1000 | 0.53 -> 0.69 | **0.700**, p~0.002 |
+| 1000 -> 2000 | 0.69 -> 0.67 (none) | 0.508 |
+| 2000 -> 16000 | 0.67 -> **0.91** | **never measured** |
+
+Plan 027 concluded "the search saturates around 1000" from two adjacent spans.
+The curve says otherwise: 1000-2000 is a **local flat region**, and the largest
+remaining gains sit above 4000, exactly where nothing has been measured.
+
+**Prediction, and the next experiment: 8000 or 16000 iterations should beat
+1000 on strength**, despite 2000 not doing so. If it holds, the iteration
+budget is a lever again and plan 027's "keep 1000" needs qualifying to "keep
+1000 *or go far past it* — 2000 is the worst of both". This supersedes arms A
+and B as the priority.
+
+The cost is the catch: 16000 iterations is 16x generation cost, so this is a
+question about the *evaluation and analysis* budget, or about a much smaller
+number of much better games, rather than a drop-in change to the loop.
