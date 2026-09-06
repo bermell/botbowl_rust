@@ -85,7 +85,14 @@ fi
 # ---- 2. prepare the pools ---------------------------------------------------
 # name | generations
 prep_for() {
-    local name="$1" gens="$2" dir="$OUT/prep_$name" inputs="" g k
+    # NB: separate `local` statements. bash expands every argument to `local`
+    # before running it, so `local a="$1" b="$a"` sees the OLD $a — which under
+    # `set -u` is an unbound-variable error that returns non-zero from inside a
+    # command substitution, where its stderr is invisible.
+    local name="$1"
+    local gens="$2"
+    local dir="$OUT/prep_$name"
+    local inputs="" g k
     if [ -d "$dir" ]; then echo "$dir"; return 0; fi
     for g in $gens; do for k in 0 1 2 3 5 6; do inputs="$inputs $RUN_DIR/$g/shard$k.jsonl"; done; done
     # shellcheck disable=SC2086
@@ -142,7 +149,7 @@ play() {
 
 # ---- stage 1: the screen ----------------------------------------------------
 stopped && { log "STOP before stage 1"; exit 0; }
-D1_POOL=$(prep_for d1 "gen07") || die "prepare D1 failed"
+D1_POOL=$(prep_for d1 "gen07" 2>>"$LOG") || die "prepare D1 failed (see log)"
 log "D1 pool $D1_POOL"
 train_arm d1 "$D1_POOL" || die "D1 training failed"
 train_arm d3 "$D3_POOL" || die "D3 training failed"
@@ -175,7 +182,7 @@ log "=== stage 1 complete ==="
 
 # ---- stage 2: the wide arm --------------------------------------------------
 stopped && { log "STOP before stage 2"; exit 0; }
-D7_POOL=$(prep_for d7 "gen01 gen02 gen03 gen04 gen05 gen06 gen07") || die "prepare D7 failed"
+D7_POOL=$(prep_for d7 "gen01 gen02 gen03 gen04 gen05 gen06 gen07" 2>>"$LOG") || die "prepare D7 failed (see log)"
 log "D7 pool $D7_POOL ($(du -sh "$D7_POOL" | cut -f1)), disk free $(df -BG / | awk 'NR==2{print $4}')"
 train_arm d7 "$D7_POOL" || die "D7 training failed"
 B7=$(grep 'warm-start baseline' "$OUT/d7.train.log" | grep -oE 'val_value [0-9.]+')
