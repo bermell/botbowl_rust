@@ -20,9 +20,18 @@
 //! The `actions`/`policy`/`offsets` triple is a CSR encoding of the
 //! variable-length legal-action set per sample: sample `i`'s actions are
 //! rows `offsets[i]..offsets[i+1]`.
+//!
+//! **Everything sized by the corpus is streamed to disk as it is produced**
+//! ([`npy::StreamWriter`]), so peak RSS is O(1) in corpus size rather than
+//! O(corpus). It used to buffer the lot and write at the end: `spatial` is
+//! 21,312 bytes/sample, so a 3-generation window (353k samples) peaked at
+//! 7.6 GB on a 14.4 GB box and a 7-generation one would not have fit. Only
+//! the three N-sized `i64`/`f32` vectors (`value`, `chosen`, CSR `offsets`,
+//! ~20 bytes/sample together) stay in RAM; the N+1-long offsets array wants
+//! its leading zero anyway, and 825k samples is 17 MB of them.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};
 
@@ -74,18 +83,57 @@ struct Args {
     min_root_visits: u32,
 }
 
-/// Accumulates all samples that share one board shape.
-#[derive(Default)]
+/// One board shape's open output files, plus the little that must stay in RAM.
+///
+/// Created lazily on the group's first sample: the `.npy` headers are
+/// back-patched at [`DimsGroup::finish`] time, so nothing here needs to know
+/// `N` up front.
 struct DimsGroup {
+    subdir: PathBuf,
     n: usize,
-    spatial: Vec<f32>,
-    global: Vec<f32>,
+    spatial: npy::StreamWriter<f32>, // (N, C, H, W)
+    global: npy::StreamWriter<f32>,  // (N, F)
+    // CSR ragged legal actions.
+    action_rows: npy::StreamWriter<i64>, // (M, 4)
+    policy: npy::StreamWriter<f32>,      // (M,)
+    // Buffered: ~20 bytes/sample all told, and `offsets` is built by hand
+    // anyway (it is N+1 long, with a leading 0).
     value: Vec<f32>,
     chosen: Vec<i64>,
-    // CSR ragged legal actions.
-    action_rows: Vec<i64>, // flattened (M, 4)
-    policy: Vec<f32>,      // (M,)
-    offsets: Vec<i64>,     // (N+1,), starts with 0
+    offsets: Vec<i64>, // (N+1,), starts with 0
+}
+
+impl DimsGroup {
+    fn create(out: &Path, w: usize, h: usize) -> std::io::Result<Self> {
+        let subdir = out.join(format!("dims_{w}x{h}"));
+        std::fs::create_dir_all(&subdir)?;
+        Ok(Self {
+            n: 0,
+            spatial: npy::StreamWriter::create(subdir.join("spatial.npy"), &[SPATIAL_CHANNELS, h, w])?,
+            global: npy::StreamWriter::create(subdir.join("global.npy"), &[GLOBAL_FEATURES])?,
+            action_rows: npy::StreamWriter::create(subdir.join("actions.npy"), &[4])?,
+            policy: npy::StreamWriter::create(subdir.join("policy.npy"), &[])?,
+            value: Vec::new(),
+            chosen: Vec::new(),
+            offsets: vec![0],
+            subdir,
+        })
+    }
+
+    /// Back-patch the streamed headers and write the buffered arrays.
+    /// Returns `(N, M)`.
+    fn finish(self) -> std::io::Result<(usize, usize)> {
+        let n = self.spatial.finish()?;
+        assert_eq!(n, self.n, "spatial rows disagree with the sample count");
+        assert_eq!(self.global.finish()?, n, "global rows disagree with the sample count");
+        let m = self.policy.finish()?;
+        assert_eq!(self.action_rows.finish()?, m, "action rows disagree with the policy length");
+
+        npy::write_f32(self.subdir.join("value.npy"), &self.value, &[n])?;
+        npy::write_i64(self.subdir.join("chosen.npy"), &self.chosen, &[n])?;
+        npy::write_i64(self.subdir.join("action_offsets.npy"), &self.offsets, &[n + 1])?;
+        Ok((n, m))
+    }
 }
 
 fn main() {
@@ -131,22 +179,33 @@ fn main() {
                 let enc = encode(&sample.state);
                 let mover = mover_for(&sample.state);
                 let dims = sample.state.board_dims;
-                let group = groups.entry((enc.w, enc.h)).or_default();
+                // Lazy: creating the group creates its dims subdir and opens
+                // its output files, so an empty group never leaves a stub dir.
+                let group = match groups.entry((enc.w, enc.h)) {
+                    std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        std::fs::create_dir_all(&args.out).expect("create output dir");
+                        let g = DimsGroup::create(&args.out, enc.w, enc.h).expect("open dims output files");
+                        e.insert(g)
+                    }
+                };
 
-                group.spatial.extend_from_slice(&enc.spatial);
-                group.global.extend_from_slice(&enc.global);
+                group.spatial.push(&enc.spatial).expect("write spatial");
+                group.global.push(&enc.global).expect("write global");
                 group.value.push(value);
 
                 // Legal actions (CSR): one row per child, aligned to the
                 // policy-target probabilities.
                 let mut chosen_local: i64 = -1;
+                let mut m_local = 0usize;
                 for (j, cstat) in sample.children.iter().enumerate() {
                     let cell = action_cell(cstat.action, mover, dims);
-                    group.action_rows.push(cell.channel as i64);
-                    group.action_rows.push(cell.y as i64);
-                    group.action_rows.push(cell.x as i64);
-                    group.action_rows.push(cell.is_simple as i64);
-                    group.policy.push(policy.probs[j]);
+                    group
+                        .action_rows
+                        .push(&[cell.channel as i64, cell.y as i64, cell.x as i64, cell.is_simple as i64])
+                        .expect("write actions");
+                    group.policy.push(&[policy.probs[j]]).expect("write policy");
+                    m_local += 1;
                     if cstat.action == sample.chosen_action {
                         chosen_local = j as i64;
                     }
@@ -165,7 +224,8 @@ fn main() {
                 group.chosen.push(chosen_local);
 
                 group.n += 1;
-                group.offsets.push((group.policy.len()) as i64);
+                let last = *group.offsets.last().unwrap();
+                group.offsets.push(last + m_local as i64);
                 total_kept += 1;
             }
         }
@@ -176,32 +236,13 @@ fn main() {
         std::process::exit(1);
     }
 
-    std::fs::create_dir_all(&args.out).expect("create output dir");
     let channel_names = spatial_channel_names();
     let feature_names = global_feature_names();
+    let group_count = groups.len();
 
-    for ((w, h), group) in &groups {
-        let subdir = args.out.join(format!("dims_{w}x{h}"));
-        std::fs::create_dir_all(&subdir).expect("create dims subdir");
-        let n = group.n;
-        let m = group.policy.len();
-
-        npy::write_f32(
-            subdir.join("spatial.npy"),
-            &group.spatial,
-            &[n, SPATIAL_CHANNELS, *h, *w],
-        )
-        .unwrap();
-        npy::write_f32(subdir.join("global.npy"), &group.global, &[n, GLOBAL_FEATURES]).unwrap();
-        npy::write_f32(subdir.join("value.npy"), &group.value, &[n]).unwrap();
-        npy::write_i64(subdir.join("chosen.npy"), &group.chosen, &[n]).unwrap();
-        npy::write_i64(subdir.join("actions.npy"), &group.action_rows, &[m, 4]).unwrap();
-        npy::write_f32(subdir.join("policy.npy"), &group.policy, &[m]).unwrap();
-        // offsets is 0 followed by the running action-count after each sample.
-        let mut offsets = Vec::with_capacity(n + 1);
-        offsets.push(0i64);
-        offsets.extend_from_slice(&group.offsets);
-        npy::write_i64(subdir.join("action_offsets.npy"), &offsets, &[n + 1]).unwrap();
+    for ((w, h), group) in groups {
+        let subdir = group.subdir.clone();
+        let (n, m) = group.finish().expect("finalise dims output files");
 
         let manifest = serde_json::json!({
             "nn_schema_version": NN_SCHEMA_VERSION,
@@ -236,7 +277,6 @@ fn main() {
         "prepare done: read {total_read} samples, kept {total_kept} \
          (dropped {total_below_min} below min-root-visits, {total_skipped_policy} without a policy target, \
          {total_skipped_value} without a value target) \
-         across {} board-dims group(s)",
-        groups.len()
+         across {group_count} board-dims group(s)"
     );
 }
