@@ -314,6 +314,12 @@ question about the *evaluation and analysis* budget, or about a much smaller
 number of much better games, rather than a drop-in change to the loop.
 
 
+> **Follow-up:** the gate operating-characteristic check proposed here was run
+> on 2026-09-06 and cleared the gate as a cause of the plateau — the best
+> rejected net (gen07, 0.490) is below parity, so no threshold change alters any
+> historical decision. The gate is nonetheless being **dropped for throughput**;
+> see plan 030.
+
 ## Next: the high-budget strength arms (agreed 2026-09-06)
 
 The prediction to test, in priority order. Candidate at the high budget,
