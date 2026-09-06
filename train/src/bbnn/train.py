@@ -7,8 +7,10 @@ check, not a quality metric.
 """
 
 import argparse
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -16,6 +18,28 @@ from torch.utils.data import DataLoader
 from .data import PreparedDataset, collate
 from .export import export_onnx
 from .model import BBNet, masked_policy_logits
+
+
+def seed_everything(seed):
+    """Seed every RNG a training run draws from, so two runs on the same data
+    take the same trajectory.
+
+    Three consumers, all on global generators: `BBNet()`'s weight init,
+    `DataLoader(shuffle=True)`'s permutation, and the per-access random y-flip
+    augmentation in `data.py` (`torch.rand`). `random`/`numpy` are seeded too
+    because they are one import away from being drawn on.
+
+    This is deliberately *not* full determinism — no `use_deterministic_algorithms`,
+    no cuDNN flags — because non-deterministic GPU kernel reductions cost nothing
+    that matters here: what an A/B experiment needs is that its arms start from
+    the same weights and see the same batch order, so a measured difference is
+    attributable to the thing under test and not to the seed. Left unset,
+    training is non-deterministic exactly as before.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def resolve_device(spec="auto"):
@@ -102,7 +126,14 @@ def train(
     val_dir=None,
     init=None,
     select_on="value",
+    seed=None,
 ):
+    # Before anything that draws: the shuffle order, the augmentation flips,
+    # and the weight init all come off global generators.
+    if seed is not None:
+        seed_everything(seed)
+        print(f"seed: {seed}")
+
     ds = PreparedDataset(dims_dir, augment=augment)
     if limit is not None:
         # Overfit smoke: restrict to the first `limit` samples.
@@ -247,6 +278,15 @@ def main():
         default=None,
         help="warm start: load this .pt state_dict before training (pass a lower --lr with it)",
     )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="seed python/numpy/torch (default: unseeded, as before). Exists for A/B experiments: "
+             "weight init, DataLoader shuffle and the random y-flip augmentation are otherwise "
+             "different every run, so two arms that should differ only in their data also differ "
+             "by the seed, and a small measured gap cannot be attributed to either",
+    )
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
     ap.add_argument(
@@ -268,6 +308,7 @@ def main():
         device=args.device,
         init=args.init,
         select_on=args.select_on,
+        seed=args.seed,
     )
 
 
