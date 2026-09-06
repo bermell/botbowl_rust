@@ -127,6 +127,8 @@ def train(
     init=None,
     select_on="value",
     seed=None,
+    max_steps=None,
+    eval_every=None,
 ):
     # Before anything that draws: the shuffle order, the augmentation flips,
     # and the weight init all come off global generators.
@@ -194,7 +196,54 @@ def train(
         _, vv0, _ = evaluate(model, val_loader, device)
         print(f"epoch  -1  (warm-start baseline)  |  val_value {vv0:.4f}")
 
-    for epoch in range(epochs):
+    # Step-driven when --max-steps is given, epoch-driven otherwise (production).
+    #
+    # Plan 029 needs this: comparing corpora of different sizes at a fixed epoch
+    # count silently compares different amounts of gradient descent — a 7-
+    # generation pool would take 7x the updates of a 1-generation pool, so "more
+    # data wins" could just be "more updates wins". Fixing the step budget and
+    # varying only how many unique samples those steps draw from is the whole
+    # experiment. Re-iterating the DataLoader reshuffles, so an arm that makes 30
+    # passes sees 30 different orders.
+    step = 0
+    epoch = 0
+    stop = False
+    # Validating once per epoch is fatal for the same comparison: at 110k steps a
+    # 117k-sample pool yields 30 validation points and an 818k-sample pool yields
+    # 4, so best-val restore would choose from candidate sets of wildly different
+    # size — a confound inside the selection rule itself. A fixed step interval
+    # gives every arm the same number of checkpoints.
+    interval = eval_every if eval_every else None
+    best_step = None
+
+    def validate(tag):
+        """Val pass + best-checkpoint bookkeeping. Returns the printable suffix."""
+        nonlocal best_val, best_epoch, best_step, best_state
+        if val_loader is None:
+            return ""
+        vp, vv, va = evaluate(model, val_loader, device)
+        model.train()
+        suffix = f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
+        # Which head decides the restore. `value` is the historical rule and was
+        # correct while the bot played `--evaluator nn-value`: priors came from
+        # the scripted heuristic, so nothing consumed the policy head and
+        # optimising it would have been optimising a dead output. Once the bot
+        # plays `--evaluator nn` the policy head drives search, and restoring on
+        # val_value alone actively discards it — plan 027 measured the two heads
+        # saturating in completely different places (value by epoch 0-2, policy
+        # still improving at epoch 9 in every generation).
+        criterion = vv if select_on == "value" else vp + vv
+        if best_val is None or criterion < best_val:
+            best_val, best_epoch, best_step = criterion, epoch, step
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            if out:  # persist immediately — a killed run keeps its best net
+                torch.save(best_state, out)
+            suffix += "  *"
+        return suffix
+
+    while not stop:
+        if max_steps is None and epoch >= epochs:
+            break
         model.train()
         tot_p = tot_v = tot_a = 0.0
         nb = 0
@@ -203,44 +252,36 @@ def train(
             pl, vl, acc = compute_losses(model, batch, device)
             (pl + vl).backward()
             opt.step()
+            step += 1
             tot_p += pl.item()
             tot_v += vl.item()
             tot_a += acc.item()
             nb += 1
-        line = (
-            f"epoch {epoch:3d}  policy_loss {tot_p / nb:.4f}  "
-            f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}"
-        )
-        if val_loader is not None:
-            vp, vv, va = evaluate(model, val_loader, device)
-            line += f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
-            # Which head decides the restore. `value` is the historical rule and
-            # was correct while the bot played `--evaluator nn-value`: priors came
-            # from the scripted heuristic, so nothing consumed the policy head and
-            # optimising it would have been optimising a dead output. Once the bot
-            # plays `--evaluator nn` the policy head drives search, and restoring
-            # on val_value alone actively discards it — plan 027 measured the two
-            # heads saturating in completely different places (value by epoch 0-2,
-            # policy still improving at epoch 9 in every generation).
-            #
-            # `combined` uses the same sum the training loss minimises. Checked
-            # against gen01-03: it picks epoch 2 for gen01 and gen02 (identical to
-            # the value-only rule) and epoch 1 rather than 0 for gen03 — a small
-            # change today that stops the rule ignoring a head that now matters.
-            criterion = vv if select_on == "value" else vp + vv
-            if best_val is None or criterion < best_val:
-                best_val, best_epoch = criterion, epoch
-                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-                # Persist immediately — a killed run keeps its best net.
-                if out:
-                    torch.save(best_state, out)
-                line += "  *"
-        print(line)
+            if interval and step % interval == 0:
+                print(f"step {step:7d}  policy_loss {tot_p / nb:.4f}  "
+                      f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}" + validate("step"),
+                      flush=True)
+                tot_p = tot_v = tot_a = 0.0
+                nb = 0
+            if max_steps and step >= max_steps:
+                stop = True
+                break
+        if nb and not interval:
+            print(f"epoch {epoch:3d}  policy_loss {tot_p / nb:.4f}  "
+                  f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}" + validate("epoch"),
+                  flush=True)
+        epoch += 1
+        if max_steps is None and epoch >= epochs:
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state)
         label = "val_value" if select_on == "value" else "val_policy+val_value"
-        print(f"restored best-val weights: epoch {best_epoch} ({label} {best_val:.4f})")
+        # Keep the literal prefix — train_loop.sh greps it. Report the step as
+        # well as the epoch: with a fixed step budget the restored step is what
+        # says whether a data-rich arm simply trained longer before overfitting,
+        # which is a different claim from "more data taught it more" (plan 029).
+        print(f"restored best-val weights: step {best_step} epoch {best_epoch} ({label} {best_val:.4f})")
 
     # Export/serialize from CPU: `export_onnx` traces with CPU dummy inputs,
     # and a .pt of CUDA tensors would pin the checkpoint to a GPU host.
@@ -258,7 +299,24 @@ def train(
 def main():
     ap = argparse.ArgumentParser(description="Train the Blood Bowl value/policy net.")
     ap.add_argument("--data", required=True, help="prepared board-dims dir (contains spatial.npy, ...)")
-    ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--epochs", type=int, default=20, help="ignored when --max-steps is given")
+    ap.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="train for exactly N optimizer steps instead of N epochs. For comparing "
+             "corpora of different sizes: at fixed epochs a bigger pool takes "
+             "proportionally more gradient updates, so a fixed step budget is what "
+             "isolates data volume from amount-of-descent (plan 029)",
+    )
+    ap.add_argument(
+        "--eval-every",
+        type=int,
+        default=None,
+        help="validate every N steps instead of once per epoch. Required with "
+             "--max-steps: per-epoch validation gives a small pool many more "
+             "checkpoints than a large one, putting a confound inside best-val restore",
+    )
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--limit", type=int, default=None, help="overfit only the first N samples")
@@ -308,6 +366,8 @@ def main():
         device=args.device,
         init=args.init,
         select_on=args.select_on,
+        max_steps=args.max_steps,
+        eval_every=args.eval_every,
         seed=args.seed,
     )
 
