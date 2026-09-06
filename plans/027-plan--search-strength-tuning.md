@@ -1,6 +1,6 @@
 # What actually makes the search strong? Priors, budget, horizon
 
-**Status:** Running overnight 2026-09-03/04. Results filled in below as arms complete.
+**Status:** Complete. **One conclusion needs qualifying (2026-09-06):** "`MCTS_ITERS=1000` sits at the knee" was inferred from two adjacent spans, 1000->2000 = 0.508 and 250->1000 = 0.700. Plan 028's convergence curve shows 1000-2000 is a **local flat region, not a ceiling** — top-1 agreement with a deep reference goes 0.69 (1000) -> 0.67 (2000) -> 0.73 (4000) -> 0.91 (16000). The two measurements agree precisely where they overlap; the error was extrapolating a plateau from the one span that happens to be dead. Keep 1000 as the *cheap* setting, but 2000 is the worst of both worlds and budgets >=8000 are untested and predicted to win. Everything else here stands.
 
 Three search parameters have never been justified by a *strength* measurement:
 which prior source the bot plays with, how many iterations it searches, and how

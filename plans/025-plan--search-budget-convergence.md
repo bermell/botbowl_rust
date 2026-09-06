@@ -1,6 +1,17 @@
 # How many MCTS iterations does the training data actually need?
 
+**Status:** **SUPERSEDED 2026-09-06.** Both headline findings have since been overturned by re-measurement, exactly as this plan's own provisional caveat anticipated.
+
+- *"The search does not converge; run-to-run disagreement increases with budget."* **Refuted** by plan 028 Stage 0 on current code: signal to a 16000-iteration reference falls monotonically 0.6145 -> 0.0958, top-1 agreement climbs 0.45 -> 0.91, value precision improves 13x. The non-convergence was the pre-`e107f06` search, not the algorithm.
+- *"Past ~500 iterations extra compute makes the policy target worse."* **Refuted** by plan 027: strength improves 250 -> 1000 at 0.700 (p~0.002), and plan 028 shows top-1 still climbing to 16000.
+
+What survives, and it is the durable contribution: the *method*. Snapshot one long run at checkpoints, measure distance to a deep reference rather than to the previous checkpoint, and use run-to-run distance as a noise floor so "converged" is a threshold rather than an eyeball judgement. Plan 028 reused it unchanged. The ensemble result (avg of 2x500 beating 1x1000 on label TV) has not been re-checked post-fix and should not be assumed to survive either.
+
+<details><summary>Original status (2026-08-30)</summary>
+
 **Status:** **Run 2026-08-30 — see Results below. The headline outcome is the fourth row of the outcomes table: the noise floor is large, and it *grows* with budget.** (drafted 2026-08-29, while the plan-022 loop runs gen02). Needs the machine idle — it competes directly with generation for CPU. Cheap once it runs: ~40 min at 4-way parallelism for the headline number.
+
+</details>
 
 `MCTS_ITERS=1000` has been the generation budget since plan 020 and has never been justified by measurement. It is the single largest lever on generation cost — wall time is very close to linear in it — so being wrong in either direction is expensive:
 

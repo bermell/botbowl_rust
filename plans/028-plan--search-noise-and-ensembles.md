@@ -312,3 +312,71 @@ and B as the priority.
 The cost is the catch: 16000 iterations is 16x generation cost, so this is a
 question about the *evaluation and analysis* budget, or about a much smaller
 number of much better games, rather than a drop-in change to the loop.
+
+
+## Next: the high-budget strength arms (agreed 2026-09-06)
+
+The prediction to test, in priority order. Candidate at the high budget,
+opponent at 1000, same gen03 net both sides, paired Home/Away.
+
+| arm | candidate | opponent | games | est cost | asks |
+|---|---|---|---|---|---|
+| C1 | 8000 iters | 1000 | 60 | ~6.5h | top1 0.69 -> 0.82. The headline test. |
+| C2 | 16000 | 1000 | 40 | ~9h | top1 0.69 -> 0.91. Only if C1 pays. |
+
+60 games is enough here *if* the effect is the size the curve implies: plan
+027's E2f detected 0.700 at 60 games with z=+3.08 off a comparable top-1 gain
+(0.53 -> 0.69). If C1 lands ambiguously near 0.55 the answer is more games, not
+a bigger budget.
+
+**A win does not translate into a loop change on its own.** 8000 iterations is
+8x generation cost, i.e. ~34h/generation at the current shape. The realistic
+uses are (a) evaluation and gating, where quality matters more than volume,
+(b) far fewer, far better games per generation, trading corpus size for label
+quality, or (c) nothing, if the strength gain is smaller than the games it
+costs. (b) is the interesting one and it runs straight into the next section.
+
+## The data bottleneck: how to test it, and what blocks it
+
+Four consecutive generations (gen04 0.440, gen05 0.380, gen06 0.470, gen07
+0.490) have landed at parity with gen03 while *beating the fixed rungs better
+than gen03 did* — gen07's mcts-heuristic rung is 0.967 against gen03's 0.900.
+The loop is reproducing its champion, not improving on it, which is what a
+data-starved regime looks like.
+
+**The clean test is cheap and needs no new code.** Train two nets from the same
+warm start (`gen03.pt`), same epochs, same everything, differing only in corpus
+size — `WINDOW_GENS=1` (~118k samples) against `WINDOW_GENS=3` (~353k) — then
+play them head-to-head. If 3x the data wins clearly, data volume is a live lever
+on the margin we can actually afford, and the answer is more games per
+generation. If it does not, the corpus is not the binding constraint and the
+plateau is something else.
+
+Cost: one prepare (~2.4 GB peak, minutes), one train (~30 min), one 120-game
+match (~3h). Everything else already exists on disk — **all 8 generations are
+retained, 64 shards, 38,400 games, 6.4 GB**.
+
+**What blocks scaling *up*: `prepare` still holds the whole corpus in RAM.**
+Measured 21,312 B/sample of `spatial` alone, and 7.58 GiB peak at 352,710
+samples post-`67ff00a`:
+
+| window | ~samples | spatial | est. peak RSS |
+|---|---|---|---|
+| 1 | 118k | 2.3G | 2.4G |
+| 3 *(current)* | 353k | 7.0G | 7.1G |
+| 4 | 470k | 9.3G | 9.4G |
+| **6** | **705k** | **14.0G** | **14.2G** |
+| 8 | 941k | 18.7G | 18.9G |
+
+Against ~14.4 GiB available. So **`WINDOW_GENS=4` is the ceiling on this box,
+and 6 would OOM** — the same wall that killed gen06's prepare, just moved back
+one notch by the streaming-writer fix. Doubling games-per-generation hits it
+identically, since only the sample count matters.
+
+That makes a genuinely streaming `prepare` a **prerequisite for the data
+lever**, not a tidy-up. The shape: count samples in a first pass, write the
+`.npy` header, then stream rows straight to disk instead of accumulating
+`group.spatial`. Peak would drop from O(corpus) to O(1) and the window could go
+as wide as the disk allows. Worth doing before spending a generation on more
+games, because otherwise the experiment cannot be run at the size that would
+answer it.
