@@ -23,12 +23,20 @@ and the two largest findings were not on the list at all.
 
 The two unplanned findings, both from D8's counters:
 
-1. **The search never reaches a known outcome in production generation.** Over a 20-game
-   random-start run at 1000 iterations, the exact-outcome carve-out fired **zero** times. Every
-   leaf value the search backs up is an NN estimate; no terminal reward enters the tree at all.
-   (The counter is not dead — a `Score TD` lecture fires it at 1.13% of scored leaves.)
-2. **Case 4 does not exist.** `score_leaf`'s mid-procedure branch, documented as a known
-   compromise, is never taken in either workload.
+1. **Case 4 does not exist.** `score_leaf`'s mid-procedure branch, documented in its own comment as
+   a known compromise ("the principled fix is to advance through them in `apply_action`'s quiescent
+   loop"), is **never taken** — 0 of 188,110 scored leaves. The compromise costs nothing.
+2. **Terminal reward is rare and lumpy, and it is mostly `game_over`, not touchdowns.** The
+   exact-outcome carve-out fires on ~6.5% of scored leaves, but `chance_past_horizon` — the branch
+   the code comments describe as "exactly where every in-search touchdown lands" — accounts for
+   **17 of 12,289** of them. The other 12,272 are `game_over`. So the search almost never sees a
+   touchdown; when it sees a known outcome at all, it is because the game ended.
+
+> **Correction (2026-09-07).** An earlier draft of this section, written from the first three games
+> of the D8 run, claimed the carve-out fired *zero* times and that no terminal reward ever enters
+> the tree. That was a small-sample artefact: the rate is strongly game-dependent (a random start
+> late in half 2 reaches `game_over` inside the horizon; a mid-drive start does not). The corrected
+> numbers are above and in D8 below.
 
 Common inputs: `runs/loop14x7/gen0{5,6,7}/shard*.jsonl` (every `Sample` carries `state`, `children[]`
 with `visits/q/prior/solved`, `root_value`, `root_visits`, `outcome_value`), the prepared dirs, the
@@ -276,6 +284,87 @@ of children with ≤1 visit, visits of the argmax-prior child, and whether argma
 == argmax-prior in most roots → the search is following the prior, and plan 032 #3 (retune `c`,
 FPU reduction) moves up. Also gives the per-root `n_legal` distribution the α for #4 needs.
 
+### Result (2026-09-07) — **prior domination is real and large, but not the collapse the Read describes**
+
+`scripts/audit_root_priors.py`. No engine change was needed: `botbowl-ui convergence` already
+re-searches fixed random-start states and dumps every child's visits/q/**prior**. Two independent
+arms, because each answers a different question.
+
+**Raw `top_prior_share` is unreadable across strata** — with `n` children the uniform baseline is
+`1/n`, so a small root scores high mechanically. Everything below reports **lift** = share ÷ (1/n),
+where **1.0 = uniform** and higher = prior domination.
+
+**(a) Controlled paired probe** — 150 states × 2 repeats, same seeds and same gen03 net in both
+arms, only the prior source differs (`--evaluator nn` vs `nn-value`). 300 roots, fan width 11-60:
+
+| metric (1.0 = uniform) | `nn` | `nn-value` | paired diff |
+|---|---|---|---|
+| `top_prior_lift` | **5.54** | **1.08** | **+4.45 ± 0.39** |
+| `q_eq_prior_lift` | 7.06 | 1.15 | +5.91 ± 0.94 |
+| `singleton_share` (≤1 visit) | 0.087 | 0.032 | +0.055 ± 0.0065 |
+| `norm_entropy` | 0.654 | 0.724 | −0.071 ± 0.0072 |
+
+**(b) Production-scale natural A/B** — gen04 was generated with `--evaluator nn-value` and gen07
+with `nn`, off the **same champion** `bbnet_14x7_gen03.onnx` at the same 1000 iterations (D6
+confirms). Unpaired (different seed bases) but it is the real distribution of decision types,
+~23k roots per arm:
+
+| stratum | `top_prior_lift` gen04 → gen07 | `singleton_share` | `norm_entropy` |
+|---|---|---|---|
+| ≤10 | 1.09 → 1.67 | 0.068 → 0.087 | 0.434 → 0.422 |
+| 11-30 | 1.13 → **3.55** | 0.079 → 0.118 | 0.519 → 0.491 |
+| 31-60 | 3.53 → 4.10 | 0.054 → 0.068 | 0.815 → 0.808 |
+| >60 | 5.89 → **8.10** | 0.112 → **0.168** | 0.802 → 0.770 |
+| **ALL** | **1.98 → 3.11** | 0.075 → 0.103 | 0.526 → 0.510 |
+
+**The prior distributions themselves** (200k child priors per arm, production shards):
+
+| | scripted (`nn-value`) | learned (`nn`) |
+|---|---|---|
+| distinct values | **4** — `{0.2, 1.0, 5.0, 10.0}` | 185,406 (continuous) |
+| median | 1.0 | 0.83 |
+| p1 / p99 | 0.20 / 5.0 | 0.098 / 3.66 |
+| **max** | **10.0** | **57.9** |
+| p99/p1 | 25× | 37× |
+
+On the probe's *turn-start activation* roots the scripted prior degenerates further still — **two
+values, 97.7% of children at exactly 1.0**, i.e. essentially uniform. `priors.rs`'s positional
+multipliers do not apply to `Start*` actions. So on that class of root, `PUCT_C = 10` was tuned
+against **no prior shaping at all**, and `c · P · √N/(1+N)` was effectively a pure visit-count
+exploration bonus.
+
+**Read, in the plan's own terms — all three limbs fail:**
+
+- *"entropy far below `nn-value`"* — **no.** 10% lower on the probe (0.654 vs 0.724), 3% lower in
+  production (0.510 vs 0.526). Consistently lower, nowhere near "far below".
+- *"most children at exactly 1 visit"* — **no.** 8.7% (probe) / 10.3% (production). Over 90% of
+  children get a second visit.
+- *"argmax-Q == argmax-prior in most roots"* — **no.** 20% (probe) / 42% (production). Note this
+  metric is the weakest of the three anyway: a *trained* policy head should agree with the search
+  more often than a scripted one, so it conflates "the search follows the prior" with "the prior is
+  right". `singleton_share` and entropy are the discriminating measures, and they say the search is
+  not collapsed.
+
+**What is true instead.** The NN prior concentrates early visits far more than the scripted one —
+the argmax-prior child takes 5.5× its uniform share of visits against 1.1× under scripted priors on
+matched states, and 3.1× vs 2.0× across the production distribution — and it does so with a top
+tail (max 57.9) nearly 6× longer than the scripted prior's hard ceiling of 10.0. The search is
+substantially more prior-led, without starving the tail.
+
+**Decides. Plan 032 #3 (retune `PUCT_C`, add FPU reduction) is supported and stays where it is —
+but on the strength of the concentration and range change, not the collapse the item's gate was
+written around.** Its gate ("if root visit entropy under `nn` is not far below `nn-value`, drop to
+#6") reads as failed on a literal reading; that gate was mis-specified, because entropy at fixed
+budget is dominated by the visit-count term and is insensitive to exactly the change that occurred.
+Replace the gate with the measured one: **the prior's dynamic range went from a 4-level ladder
+capped at 10.0 to a continuous distribution reaching 57.9, and `c` has never been re-tuned for it.**
+
+**`n_legal` for #4's α** — production distribution, not the probe's (the probe only sees turn-start
+roots): **mean 20.2, median 6, p10 2, p90 73, max 98.** A fixed α = 10/mean = 0.49 is a poor fit to
+a distribution this bimodal; use a **per-root α = 10/n_legal** (KataGo-style) rather than one
+constant. Note also that plan 032 #7's premise, "30-100 children", describes only the top ~15% of
+roots — the median root has **6**.
+
 ## D5 — Did the warm-start fine-tunes move the champion at all?
 
 > Partly answered by plan 029 stage 3 (2026-09-07): warm-started W1/W3 restored at step 2,500 /
@@ -394,9 +483,37 @@ generator, not a trajectory. That is what makes D2's cross-generation test vacuo
 | gen06 | 28.9% | **45.0%** |
 | gen07 | 29.1% | **47.5%** |
 
-**`val_value` — the quantity best-val restore selects on — is measured on a pool that is ~45%
-scripted-heuristic play, against a 29% training mix.** That is a live confound for D5 and for plan
-029's "restored at epoch 0-1" finding, and it is a cheap fix.
+**The pool that best-val restore selects on is ~45-48% scripted-heuristic play, against a 29%
+training mix.** Holding out whole shards is right (samples within a game are correlated), and the
+`VAL_SHARDS="4 7"` comment shows the intent was for both kinds to be *represented* — the defect is
+that representation is not proportional representation.
+
+**Sized, 2026-09-07 — smaller than it first looks, and it does *not* explain the early restore.**
+Scoring each half separately (`prepare` on gen07 shard4 and shard7, then `train.py::evaluate`):
+
+| net | pool | `val_policy` | `val_value` | `val_top1` |
+|---|---|---|---|---|
+| gen03 | nn half (shard4) | 1.4243 | 0.3938 | 0.5524 |
+| gen03 | heuristic half (shard7) | **1.5577** | 0.3936 | 0.5002 |
+| gen07 | nn half | **1.3845** | 0.3892 | 0.5564 |
+| gen07 | heuristic half | **1.5611** | 0.3908 | 0.4961 |
+
+Two facts decide the reading. (1) `val_value` is **identical across the halves** (0.3938 vs
+0.3936), so the mixture is nearly invisible to the value term. (2) Over the gen07 fine-tune the net
+**improved on the nn half** (1.4243 → 1.3845) while **slightly degrading on the heuristic half**
+(1.5577 → 1.5611) — they move in opposite directions, so the mixture weight is not a harmless
+constant offset. The current pool reports roughly **half** the policy progress the deployment
+distribution (nn vs nn) actually saw.
+
+**But it is not the cause of "restores at epoch 0-1 of 10".** Across gen05/06/07, `val_policy`
+falls monotonically through epoch 9 (swing ~0.010) while `val_value` climbs 0.39 → 0.48 (swing
+~0.09). The value term dominates the combined criterion by ~9×, and it is what forces the early
+restore — so re-weighting a pool the value term cannot see would barely move the restore point.
+**The early restore is value-head overfitting**, which is what `--eval-every` addresses.
+
+So this is selection *hygiene* of modest size — it understates policy progress by about half and
+gives contradictory training signal 47.5% of the vote — not a load-bearing bug, and **not** the
+confound for D5 / plan 029's finding that an earlier draft of this section claimed.
 
 **Value-target class split.** The two halves label differently: the hedge carries ~10 points more
 label-0 mass (0.39 vs 0.29) and ~10 points less mover-`+1`. Incidental but material for D9/#11:
@@ -423,10 +540,11 @@ per-server-session, not per-shard — one server serves all five nn shards of a 
 
 **Decides.** **Plan 032 #6 (heuristic hedge ablation) clears its gate** (33% ≫ 20%) and stays in
 the queue; the by-sample number also sharpens its health check, since the hedge is where the
-label-0 mass and the Q-tie mass both concentrate. **New cheap item for #1's "also adopt now"
-list:** the val pool is 45% hedge against a 29% train mix, so best-val restore selects on a
-different distribution than it trains on — fix that before any more warm-start LR tuning. And the
-numerics path is **removed** as an explanation for the flat gate results.
+label-0 mass and the Q-tie mass both concentrate. The val/train mixture mismatch is recorded as a
+**low-priority cleanup, not an adopt-now item** — #6 would dissolve it entirely by removing the
+heuristic half, so fixing the split first would only have to be undone. If it is fixed, the cheapest
+form is to select on the nn half alone and keep shard 7 as a monitoring readout, since deployment is
+nn vs nn. And the numerics path is **removed** as an explanation for the flat gate results.
 
 ## D7 — What does y-flip augmentation cost the policy head?
 
