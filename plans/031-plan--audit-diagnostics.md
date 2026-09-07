@@ -119,6 +119,28 @@ The bare head is nearly calibrated — gap +0.031, and its slope is **1.056**, i
 *steeper* than the diagonal, not flatter. **76.4% of the search's optimism is manufactured by the
 search itself.**
 
+**Replicated on every generation the frozen gen03 net produced, and across both prior sources**
+(83,432 rows in total; each generation's shard4, all scored by `bbnet_14x7_gen03.pt`, the net that
+generated them):
+
+| gen | generator | rows | bare leaf gap | search gap | **added by search** | share |
+|---|---|---:|---:|---:|---:|---:|
+| gen04 | `nn-value` — **scripted** priors | 21,343 | +0.0671 | +0.1578 | **+0.0908** (z=50) | 57.5% |
+| gen05 | `nn` — learned priors | 21,967 | +0.0362 | +0.1226 | **+0.0865** (z=51) | 70.5% |
+| gen06 | `nn` | 21,132 | +0.0447 | +0.1391 | **+0.0944** (z=52) | 67.9% |
+| gen07 | `nn` | 18,990 | +0.0311 | +0.1319 | **+0.1008** (z=52) | 76.4% |
+
+**The added optimism is +0.086 to +0.101 everywhere, and gen04 — which used scripted priors —
+shows the same +0.091.** So it is not a prior artefact: swapping the entire prior source changes it
+by less than its spread across generations. The bare leaf gap varies more (+0.031 to +0.067)
+because the same net is being scored on four different state distributions. That is exactly the
+signature of a backup-rule effect rather than a prior or value-head effect.
+
+**Alignment is asserted, not assumed.** `prepare` drops a sample when either target is missing, and
+gen06 shard4 has exactly one such row (a root with no policy target). `read_shard` mirrors
+`targets.rs`'s drop rule and the script asserts the shard's outcomes equal `value.npy` elementwise —
+a silent one-row shift would otherwise compare one state's search against another state's leaf.
+
 By fan width, the added optimism is +0.090 (≤10), **+0.220 (11-30)**, +0.042 (31-60), +0.066
 (>60) — it peaks at *intermediate* width. That is coherent with max-over-noise rather than against
 it: at 1000 iterations a >60-child root gives each child ~1 visit so there is barely anything to

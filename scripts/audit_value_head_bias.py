@@ -72,17 +72,47 @@ def predict(dims_dir, ckpt):
     return preds, target, spatial.shape
 
 
+def kept_by_prepare(s):
+    """Mirror `prepare`'s drop rule exactly, so `.npy` row i lines up with the
+    i-th surviving sample of the shard.
+
+    `bin/prepare.rs` keeps a sample only when both targets exist:
+      - `targets.rs::value_target` → `None` iff `outcome_value` is null;
+      - `targets.rs::policy_target(.., OneHot)` → `None` iff the root has no
+        children, or (for an unsolved root) every child has zero visits. A
+        `root_solved` root always yields a one-hot, so it is never dropped for
+        zero visits.
+    Getting this wrong shifts every row after the first drop and silently
+    compares one state's search against another state's leaf — which is why
+    the caller asserts alignment against the value targets rather than
+    trusting this function.
+    """
+    if s.get("outcome_value") is None:
+        return False
+    children = s["children"]
+    if not children:
+        return False
+    if s.get("root_solved"):
+        return True
+    return sum(c["visits"] for c in children) > 0
+
+
 def read_shard(path):
-    """Mover-frame `root_value/1000`, outcome, and fan width, in file order."""
+    """Mover-frame `root_value/1000`, outcome, and fan width, in file order,
+    over exactly the samples `prepare` kept. `root_value` may be null (it is
+    not a drop reason for `prepare`); those rows carry NaN so the row count
+    still matches, and the caller's means ignore them via nan-aware reductions.
+    """
     root, outcome, fan = [], [], []
     with open(path) as f:
         for line in f:
             game = json.loads(line)
             for s in game["samples"]:
-                if s["root_value"] is None:
+                if not kept_by_prepare(s):
                     continue
                 sign = 1.0 if s["to_move"] == "Home" else -1.0
-                root.append(sign * s["root_value"] / 1000.0)
+                rv = s["root_value"]
+                root.append(np.nan if rv is None else sign * rv / 1000.0)
                 outcome.append(sign * s["outcome_value"])
                 fan.append(len(s["children"]))
     return np.clip(np.array(root), -1, 1), np.array(outcome), np.array(fan)
@@ -125,15 +155,23 @@ def main(argv):
 
     root_gap = root - t
     added = root - preds
-    print(f"\n## Search on the identical {n} rows ({shard})")
-    print(f"  bare NN leaf gap      {leaf_gap.mean():+.4f}  SE {se(leaf_gap):.4f}")
-    print(f"  1000-iter search gap  {root_gap.mean():+.4f}  SE {se(root_gap):.4f}")
-    print(f"  ** added by search ** {added.mean():+.4f}  SE {se(added):.4f}  z = {added.mean() / se(added):.1f}")
-    print(f"  share of the search's optimism created by the search: {added.mean() / root_gap.mean():.1%}")
+    # Compare the two estimators on exactly the rows where both exist, so the
+    # leaf and search columns are the same sample and their difference is the
+    # paired one.
+    ok = ~np.isnan(root)
+    dropped = n - int(ok.sum())
+    m_se = lambda x: np.nanstd(x, ddof=1) / np.sqrt(np.count_nonzero(~np.isnan(x)))  # noqa: E731
+    print(f"\n## Search on the identical {int(ok.sum())} rows ({shard})")
+    if dropped:
+        print(f"  ({dropped} row(s) excluded here: null root_value, kept by prepare so alignment holds)")
+    print(f"  bare NN leaf gap      {leaf_gap[ok].mean():+.4f}  SE {se(leaf_gap[ok]):.4f}")
+    print(f"  1000-iter search gap  {root_gap[ok].mean():+.4f}  SE {se(root_gap[ok]):.4f}")
+    print(f"  ** added by search ** {added[ok].mean():+.4f}  SE {m_se(added):.4f}  z = {added[ok].mean() / m_se(added):.1f}")
+    print(f"  share of the search's optimism created by the search: {added[ok].mean() / root_gap[ok].mean():.1%}")
 
     print(f"\n  {'fan':<8}{'n':>8}{'leaf':>10}{'search':>10}{'added':>10}")
     for lo, hi, label in BUCKETS:
-        m = (fan >= lo) & (fan <= hi)
+        m = (fan >= lo) & (fan <= hi) & ok
         if m.sum():
             print(
                 f"  {label:<8}{m.sum():>8}{leaf_gap[m].mean():>+10.4f}"

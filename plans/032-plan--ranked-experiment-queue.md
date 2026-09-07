@@ -101,7 +101,10 @@ section carries the evidence.
 
   The leaf is nearly calibrated (slope 1.056, i.e. slightly *steeper* than the diagonal).
   **76.4% of the search's optimism is manufactured by the backup**, which is exactly this item's
-  thesis. Note the plan-031 prediction of *monotone* flattening with fan width was wrong and does
+  thesis. **Replicated on all four generations of the frozen gen03 net (83,432 rows): added
+  +0.0908 / +0.0865 / +0.0944 / +0.1008 for gen04-07, every one at z ≈ 50.** gen04 used
+  **scripted** priors and shows the same +0.091, so this is not a prior artefact — swapping the
+  entire prior source moves it less than its spread across generations. Note the plan-031 prediction of *monotone* flattening with fan width was wrong and does
   not count against the item: the added optimism peaks at **intermediate** fan width (+0.220 at
   11-30 vs +0.066 at >60), which is what max-over-noise predicts once you account for fan width
   confounding with per-child depth at a fixed budget.
