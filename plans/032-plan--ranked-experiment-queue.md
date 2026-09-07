@@ -76,7 +76,13 @@ section carries the evidence.
   regime explains the plateau; #2/#3 move to the top.
 - **Also adopt now, no experiment needed:** `--eval-every` in `train_loop.sh`. Plan 029 stage 3
   found gen05-07 all restored at epoch 0-1 of 10 under per-epoch validation, i.e. the loop has
-  been shipping past-peak weights for lack of checkpoint resolution.
+  been shipping past-peak weights for lack of checkpoint resolution. **Done 2026-09-07:**
+  `EVAL_EVERY` (default 2500 steps) is passed to the warm-start `bbnn.train` call; the gen00
+  bootstrap call is unchanged.
+- **Run (launched 2026-09-07 21:51, `scripts/exp032_s1_d7_vs_gen03.sh`, out `runs/exp032/`).**
+  `runs/exp-data/d7.onnx` vs `models/bbnet_14x7_gen03.onnx`, 120 games, seed base 32000000,
+  6 parallel, GPU sidecar (`nn_server.py --device cuda`), `--per-game-out`. Pace: 12 games in
+  32 min → ~5.3 h. Result: pending.
 
 ### 2. Mean backup instead of minimax with an NN leaf
 
@@ -115,6 +121,18 @@ section carries the evidence.
   cheap check *before* spending the 120 games. If the optimism does not fall, the mechanism is
   something else and the games are not worth playing.
 - **Abandon.** Mean ≤ 0.50 vs minimax at 120 games.
+- **Implemented 2026-09-07** (`BackupMode::{Minimax, Mean}` on `BloodBowlDynamics`; env
+  `BLOOD_MCTS_BACKUP=mean`, `MctsBot::with_backup`, `eval --backup/--vs-backup`; `dataset` reads
+  the env and stamps `backup=mean` into `budget_label`). The mean is the visit-weighted mean of
+  child Q in `i128` integer arithmetic (plain mean of scored children if no child has visits), so
+  it stays deterministic and **mirror-exact**: `tests/mirror_search_exact.rs` gained mean-backup
+  arms at budget 20 (default suite) and 200 (heuristic + NN, `#[ignore]`), all green. Unit tests
+  pin order-independence and the ±negation symmetry.
+- **Run (queued behind stage 1, `scripts/exp032_s2_mean_backup.sh`).** Part A: two 150-game
+  random-start corpora on seed 32100000, `BLOOD_MCTS_BACKUP=minimax|mean`, each through
+  `audit_value_head_bias.py` — the pre-committed check that mean backup pulls the search-added
+  optimism from +0.10 toward the bare leaf's +0.03. Part B: `gen03 --backup mean` vs `gen03`
+  minimax, 120 games, seed base 32000000. Result: pending.
 
 ### 3. Re-tune `PUCT_C` under learned priors; add FPU reduction
 
@@ -151,6 +169,15 @@ section carries the evidence.
   power table: a +0.03 effect is **not resolvable at 120 games** — size the `c` sweep accordingly or
   treat it as a screen whose winner then gets a properly-sized match.
 - **Abandon.** All arms within 1 SE of each other.
+- **Implemented 2026-09-07.** FPU reduction in the Leela/KataGo form, `parent_Q − k·√(visited
+  prior share)` (`BloodBowlDynamics.fpu_reduction`, env `BLOOD_MCTS_FPU_REDUCTION`, `eval
+  --fpu-reduction/--vs-fpu-reduction`); `k = 0` is byte-identical to the shipped plain FPU. The
+  prior share is accumulated in `f64` in a fixed child order, so it is mirror-exact too (verified
+  at k=300 via `BLOOD_NN_MIRROR_FPU_K`). `--puct-c/--vs-puct-c` already existed.
+- **Run (queued behind stage 2, `scripts/exp032_s3_puct_fpu.sh`).** Four 120-game screens, gen03
+  both sides, seed base 32000000, backup rule for all arms chosen from stage 2 (mean if ≥ 0.55,
+  else minimax): `c=3 vs c=10`, `c=30 vs c=10`, `k=100 vs k=0`, `k=300 vs k=0`. Screens only —
+  a winner gets a sized match. Result: pending.
 
 ### 4. Exploration in self-play: root Dirichlet noise + visit-temperature sampling for the first k decisions of a drive
 
@@ -255,6 +282,40 @@ section carries the evidence.
   the 16k reference must beat raw visits' 0.69. No gain → drop.
 - **Cost.** ~2 h code + 1 h probe + 40 min train + 5 h games.
 - **Expected.** +0.03 to +0.08 on the policy head; compounds with #4.
+- **Gate, part 1 — offline on the existing plan-028 dump (2026-09-07, `scripts/audit_q_target.py`).**
+  No search needed: `runs/exp-conv/s0a-raw-c10.jsonl` already holds 50 states × 3 repeats at
+  budgets 100…16000 with per-child `prior`/`visits`/`q`, so any target built from the 1000-budget
+  rows can be scored against the 16k repeats (cross-repeat pairs, 300 per row). Two references:
+  *ref visits* (argmax of the 16k visit target — plan 028's statistic) and *ref played* (the 16k
+  search's `chosen_action` = argmax mover-Q — what strong play actually does, and the one a
+  policy head should imitate). Candidates from the same 1000-iteration root: `visits` (the
+  shipped target), `argmaxq` (one-hot on the played move), `cq(τ)` = softmax(ln prior + q/τ)
+  with unvisited children completed by the visit-weighted mean Q (τ in Q points, 1000 = one
+  TD), `cqv(τ)` = the same with ln(visits+1) in place of the prior.
+
+  | target | top-1 vs ref visits | top-1 vs ref played |
+  |---|---|---|
+  | visits (shipped) | 0.687 | 0.677 |
+  | argmaxq | 0.620 | 0.660 |
+  | cq(50) | 0.647 | 0.700 |
+  | **cq(100)** | **0.693** | **0.740** |
+  | cq(200) | 0.660 | 0.680 |
+  | cqv(50) | 0.680 | 0.720 |
+
+  Reading: completed-Q at τ=100 is the only candidate that beats the shipped target on *both*
+  references, +0.06 against the played move. But 50 states means that is ≈3 states changing
+  side, so it is suggestive, not a pass — and more importantly **every root in this dump has
+  4-21 legal actions** (the convergence probe samples turn-start activation roots), i.e. none of
+  it is in the >30-fan regime where D2 put the defect. The gate cannot be decided on this file.
+- **Gate, part 2 — wide-fan probe (launched 2026-09-07 22:30, `scripts/exp032_s7_widefan_probe.sh`).**
+  `botbowl-ui convergence` gained `--advance N` (play N production decisions from the random
+  start so the probed root is mid-turn) and `--min-legal M` (skip roots whose *pruned* fan —
+  measured with a 2-iteration root expansion, i.e. what the search sees — is below M). Run:
+  200 seeds, `--advance 1 --min-legal 30`, budgets 1000 + 16000, 3 repeats, gen03, raw c=10,
+  seed base 91000000. Incidental finding from the smoke run: after one activation the pruned
+  fan is **bimodal** — of 40 seeds, 16 had fan 1 (pruning collapses the move fan to a single
+  square), 14 had 2-22, and 10 (25%) had ≥30. So "wide fan" is a quarter of second decisions,
+  not the norm, and the first decision after activation is often forced. Result: pending.
 
 ### 8. Encoder additions
 
