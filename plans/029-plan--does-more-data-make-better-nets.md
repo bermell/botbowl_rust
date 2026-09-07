@@ -1,5 +1,10 @@
 # Does more data make better nets?
 
+**Status: ANSWERED — yes (2026-09-07).** Stages 1 and 2 ran overnight. Corpus
+size is worth roughly **+0.05 to +0.06 points per doubling**, mildly
+diminishing, and it is the largest effect this project has measured. Full
+results at the bottom.
+
 **Status:** Not started. Design only — no arm has been run.
 
 The loop has stopped compounding. The question this plan answers is whether the
@@ -464,3 +469,86 @@ version of the result.
   what stops it answering "what is the best net you can train on 7 generations".
 - **Absolute strength.** Everything except the one calibration match is measured
   against another arm.
+
+
+---
+
+# Results (2026-09-07)
+
+All arms: identical materialised initialisation (verified — every arm printed
+`val_value 0.6410` before training), 110,000 optimizer steps, validation every
+2,500 steps, one common holdout (gen05-07 val shards, disjoint from every arm's
+train shards), `--select-on combined`, `--lr 1e-3` from scratch.
+
+## Training
+
+| arm | generations | samples | restored step | passes at turnover | val (combined) | train time |
+|---|---|---|---|---|---|---|
+| D1 | gen07 | 116,081 | 17,500 | 4.82 | 1.8979 | 36 min |
+| D3 | gen05-07 | 350,595 | 47,500 | 4.34 | 1.8504 | 36 min |
+| D7 | gen01-07 | 830,885 | 92,500 | 3.56 | 1.8352 | 50 min |
+
+No arm was step-limited: D7 restored at 92,500 of 110,000, so it found its own
+optimum with room to spare and the fixed-step control did not disadvantage it.
+
+## Strength — the answer
+
+| arm | vs D1 | record | z | p | 95% CI |
+|---|---|---|---|---|---|
+| **D3** | **0.600** | W60 D24 L36, TD 430:364 | +2.51 | 0.012 | [0.522, 0.678] |
+| **D7** | **0.662** | W69 D21 L30, TD 459:374 | **+4.20** | **0.00003** | [0.587, 0.738] |
+
+**More data makes better nets, decisively.** D7 vs D1 is the most significant
+result this project has produced — more so than the 4x search-budget span
+(0.700, p~0.002, plan 027).
+
+Per doubling of corpus: **+0.063** (D1->D3) then **+0.050** (D3->D7). Mildly
+diminishing but nowhere near exhausted.
+
+**D7 beats D3 by +0.062, which is NOT significant on its own** (SE 0.055 on the
+difference of two independent matches, z=+1.13). The curve as a whole is solid;
+the individual step from 3 to 7 generations is only directional. The validation
+gap agrees and is similarly modest: -0.0475 for D1->D3 against -0.0152 for
+D3->D7, about a third as much per doubling.
+
+## Three caveats that bound the conclusion
+
+**1. This is from-scratch training; production warm-starts.** The plan flagged
+this in advance and it is the main obstacle to acting directly. gen03 already
+encodes gen00-02, so a champion warm-started on a narrow window has *already*
+absorbed much of what a wider window would add. It is entirely possible for
+data volume to matter this much from scratch and much less on top of a
+champion. **The production-relevant follow-up is one warm-started pair**
+(`--init gen03.pt --lr 2e-4`, D1 vs D3) before `WINDOW_GENS` is changed — two
+trains and one match, ~5h.
+
+**2. D7 mixes generating regimes.** It is the only arm spanning both, 4
+generations of `nn-value` (scripted priors) plus 3 of `nn`. So part of its edge
+may be *diversity* rather than volume, and part may be *diluted* by four
+generations of off-policy data. The M1 control in stage 3 — gen01-07
+subsampled to D1's size — separates these and is now worth running, since the
+curve rose.
+
+**3. Passes at turnover fall with pool size** (4.82, 4.34, 3.56). An earlier
+reading of the first two arms as "everything turns over at ~4.5 passes, so data
+converts linearly into useful steps" does not survive the third point. Bigger
+pools do buy more total useful steps (17.5k -> 47.5k -> 92.5k), just not
+proportionally.
+
+## Practical costs of a wider window
+
+- prepare D7: 830,885 samples, **17 GB on disk**, and 16.5 GiB of `spatial` —
+  impossible before the streaming writer (`f146409`), which is what let this
+  arm exist at all.
+- train D7: **50 min against 36** at the same step count. Page-cache thrashing:
+  random shuffle over a 17 GB mmap on a box with ~12 GB of cache. Widening the
+  window further costs wall clock beyond the data itself.
+
+## What this changes
+
+The plateau reading shifts. Four generations at parity is more consistent with
+"the corpus stopped growing" than "the net saturated" — `WINDOW_GENS` has been
+pinned at 3 since gen03, so every generation since has trained on the same
+amount of data. Combined with plan 030's gateless loop (1.7x more generations
+per day), the two levers compound: more generations produce more data, and more
+data is now known to produce better nets.
