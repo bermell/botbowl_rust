@@ -19,26 +19,30 @@ and the two largest findings were not on the list at all.
 | D5 weight movement | 2e-4 barely moves the net | it moves it **1.4-1.7× further** than the last fine-tune that *did* win a rung | **wrong, and backwards** |
 | D6 corpus composition | ~33% hedge by samples | 33% confirmed — but **29.1% of train vs 47.5% of val**; and the generator net has been **frozen at gen03 since gen04** | **confirmed + two surprises** |
 | D7 y-flip augmentation cost | "expected small" — maybe drop it from the policy loss | **`--no-augment` is worse** (+0.0092 best `val_policy`, +0.0995 by step 110k). It is regularising, not correcting | **wrong** |
-| D8 mid-procedure scoring | "below 0.1% is close" | exactly **0** of 188,110 scored leaves | **confirmed** |
+| D8 mid-procedure scoring | "below 0.1% is close" | exactly **0** of 804,757 scored leaves, and unreachable by the engine's own contract | **confirmed, and stronger** |
 | D9 NN mirror equivariance | plan 027's 56% Away share might be a bug | **green** at every budget including production 1000, fixture and champion | **not a bug** |
 | D10 pair correlation | ~1.10× SE inflation | **1.003**, CI [0.962, 1.060] — there is none | **wrong** |
 
-The two unplanned findings, both from D8's counters:
+The two unplanned findings, both from D8's counters (18 games, 1,436,287 `score_leaf` calls):
 
-1. **Case 4 does not exist.** `score_leaf`'s mid-procedure branch, documented in its own comment as
-   a known compromise ("the principled fix is to advance through them in `apply_action`'s quiescent
-   loop"), is **never taken** — 0 of 188,110 scored leaves. The compromise costs nothing.
-2. **Terminal reward is rare and lumpy, and it is mostly `game_over`, not touchdowns.** The
-   exact-outcome carve-out fires on ~6.5% of scored leaves, but `chance_past_horizon` — the branch
-   the code comments describe as "exactly where every in-search touchdown lands" — accounts for
-   **17 of 12,289** of them. The other 12,272 are `game_over`. So the search almost never sees a
-   touchdown; when it sees a known outcome at all, it is because the game ended.
+1. **Case 4 is unreachable, not merely rare.** `score_leaf`'s mid-procedure branch, documented in
+   its own comment as a known compromise, is taken **0 times in 804,757 scored leaves** — and the
+   engine's own contract explains why: `step_with_roll_or_action` loops until `NeedAction` /
+   `NeedRoll` / `GameOver`, so a state between procedure steps is never handed back. The compromise
+   costs nothing and the "principled fix" it proposes has nothing to fix.
+2. **The search almost never sees a touchdown.** The exact-outcome carve-out fires on 3.4% of
+   scored leaves, but **27,284 of 27,385 are `game_over`** and only **101** are the
+   `chance_past_horizon` branch the code comments call "exactly where every in-search touchdown
+   lands" — 0.013% of scored leaves. So effectively 100% of what the search backs up is NN estimate,
+   with almost no exact anchor to pull a maximum back toward the truth. That is the context for
+   D1's +0.10.
 
-> **Correction (2026-09-07).** An earlier draft of this section, written from the first three games
-> of the D8 run, claimed the carve-out fired *zero* times and that no terminal reward ever enters
-> the tree. That was a small-sample artefact: the rate is strongly game-dependent (a random start
-> late in half 2 reaches `game_over` inside the horizon; a mid-drive start does not). The corrected
-> numbers are above and in D8 below.
+> **Correction (2026-09-07).** Two earlier drafts of this section quoted this run at different
+> points — first "the carve-out never fires", then "6.5%" — both read off partial runs. The
+> `exact_outcome` rate is extremely lumpy (a random start late in half 2 reaches `game_over` inside
+> a 1-turn horizon; a mid-drive start never does), so it needs a run sized for it. **3.4% is an
+> order of magnitude, not an estimate.** The case-4 zero is unaffected: it is a structural result,
+> not a rate.
 
 Common inputs: `runs/loop14x7/gen0{5,6,7}/shard*.jsonl` (every `Sample` carries `state`, `children[]`
 with `visits/q/prior/solved`, `root_value`, `root_visits`, `outcome_value`), the prepared dirs, the
@@ -639,6 +643,75 @@ type never present in training.
 **Read.** Below 0.1% of forwards: close. Otherwise advance through them in `apply_action`'s
 quiescent loop.
 
+### Result (2026-09-07) — **exactly 0. The case is unreachable by construction.**
+
+`LEAF_STATS` in `dynamics.rs` (see D8's code commit) tallies `score_leaf` calls by the four cases
+its own comment documents, plus how many reached a real network forward and how many were answered
+by the exact-outcome carve-out. `leaf_case` mirrors `score_leaf`'s branching and a unit test pins
+the two together. Dumped by `BLOOD_MCTS_LEAF_STATS=1`, kept separate from `BLOOD_MCTS_STATS=1`
+because that one also walks the whole DAG for a depth histogram — more expensive than the search
+itself at 1000 iterations.
+
+Run: `dataset --mode random-start --games 20 --mcts-iters 1000 --evaluator nn --model gen03.onnx`,
+production settings. **Stopped at 18 of 20 games** — the answer was not going to change (see below).
+
+| counter | count | share |
+|---|---:|---:|
+| total `score_leaf` calls | 1,436,287 | |
+| case 1 `chance_unscored` (pending roll, in horizon) | 631,530 | 44.0% of calls |
+| **scored leaves** | **804,757** | |
+| case 3 `player_decision` | 777,372 | 96.6% of scored |
+| case 2 `terminal` (`game_over`) | 27,284 | 3.4% of scored |
+| case 1b `chance_past_horizon` | 101 | 0.013% of scored |
+| **case 4 `mid_procedure`** | **0** | **0.000%** |
+| NN forwards | 777,372 | |
+| **NN forwards on a case-4 state** | **0** | **0.000%** |
+
+**Read: 0.000% ≪ 0.1%. Closed — no action, and the "principled fix" the code comment proposes
+(advancing through them in `apply_action`'s quiescent loop) is not needed because there is nothing
+to advance through.**
+
+**Why it is zero, which is more useful than the number.** Case 4 is "no pending roll, not game
+over, and no team owns a decision". The engine cannot hand back such a state:
+`gamestate.rs::step_with_roll_or_action` is a loop over `micro_step` that only returns on
+`NeedAction`, `NeedRoll` or `GameOver`, re-entering on `RunAgain`. There is no way to observe the
+procedure stack *between* steps — the state machine always comes to rest waiting for something. On
+top of that, `apply_action`'s quiescent-advance loop walks further through any decision that is
+scripted (`scripted_player_pick`) or has a single legal action. So case 4 would require the engine
+to report `NeedAction` with `available_actions.team == None`, which no well-formed procedure
+produces. **The comment's "rare" was optimistic in the wrong direction: the case is unreachable,
+not rare.**
+
+**The counters are live, not dead.** A `Score TD` lecture — where a touchdown *is* reachable inside
+the horizon — fires the neighbouring branches: `chance_past_horizon=13`, `terminal=24`,
+`exact_outcome=37` (1.13% of scored leaves) out of 5,252 calls. So a zero in the random-start run
+is a measurement, not a broken counter.
+
+### Incidental, and the part worth carrying forward: **the search almost never sees a touchdown**
+
+`exact_outcome` — the carve-out that returns the true ±1000 instead of asking the net — fired
+27,385 times, 3.4% of scored leaves. But of those, **27,284 are `game_over` and only 101 are
+`chance_past_horizon`**, the branch the code comments call *"exactly where every in-search
+touchdown lands"*. So when the search reaches a known outcome it is almost always because the
+**game ended**, not because someone scored.
+
+Two consequences:
+
+1. **Terminal reward is negligible as a training signal inside the tree.** 101 touchdown-shaped
+   leaves in 804,757 scored ones is 0.013%. Effectively 100% of what the search backs up is NN
+   estimate, which is the context for D1's finding that the backup adds +0.10 of optimism: there
+   are almost no exact anchors to pull the maximum back toward the truth.
+2. **The rate is lumpy and this run cannot pin it down.** All 27,284 `game_over` leaves arrived in a
+   handful of games (the counter sat unchanged across several consecutive games, then jumped), and
+   the cumulative share drifted 6.5% → 4.4% → 3.4% purely as the denominator grew. That is expected
+   — a random start late in half 2 reaches game-over inside a 1-turn horizon and a mid-drive start
+   never does — but it means **3.4% is an order of magnitude, not an estimate.** If the number ever
+   matters, size a run for it; do not quote this one.
+
+> Two earlier drafts of this section quoted "the carve-out never fires" and then "6.5%", both from
+> partial runs. The lesson is in point 2: this statistic needs its own sample size, and reading it
+> off a run sized for a different question produces a different answer every time you look.
+
 ## D9 — NN-evaluator exact-mirror test
 
 **Why.** `botbowl-mcts/tests/mirror_search_exact.rs` proves search equivariance only for the
@@ -757,17 +830,54 @@ Power at `V_pair = 0.1000` (5% two-sided, 80% power): detecting 0.55 needs **628
 436; 0.58, 245; 0.60, 157. At 120 games a match has 80% power only against ~0.60 or larger, and
 even after plan 032's pre-committed 120-game extension a true 0.55 effect remains undecided.
 
-## Order and cost
+## Order and cost — estimated vs actual (2026-09-07)
 
-| step | machine time | needs |
-|---|---|---|
-| D6, D10 | minutes | shards, logs |
-| D1, D2 | ~20 min script + one pass over gen05-07 | shards |
-| D5 | 10 min | `.pt` files, train logs |
-| D3 | 15 min | one prepared dir |
-| D4 | ~30 min | gen03 net, 20 states |
-| D8 | 20 min | one counter |
-| D9 | ~2 h | test code |
-| D7 | ~75 min GPU | `arm_init.pt`, D1 pool, holdout |
+| step | estimated | **actual** | note |
+|---|---|---|---|
+| D6, D10 | minutes | ~35 s + minutes | the gen03-07 stats pass is 34 s wall over 4.0 GB, 29 MB peak RSS |
+| D1, D2 | ~20 min + one pass | same pass | D1's decisive follow-up cost a further ~5 min |
+| D5 | 10 min | ~10 min | |
+| D3 | 15 min | ~7 min | blake2b-128 over 7.5 GB of mmapped `spatial` |
+| D4 | ~30 min | ~35 min | needed **no code**: `botbowl-ui convergence` already dumps per-child priors |
+| D8 | 20 min | ~2 h 20 (stopped at 18/20 games) | the counter was 20 min; the run is the cost |
+| D9 | ~2 h | **~2 min** | 6 s on the fixture, 82 s for the production-budget arm on the champion |
+| D7 | ~75 min GPU | **~36 min** | only one arm was needed — `runs/exp-data/d1.pt` already *is* the augmented control |
 
-Write results into this file under each item, then update the ranking in plan 032.
+Two estimates were badly wrong in opposite directions, and both mistakes are worth remembering.
+**D9 was over-estimated 60×** because the estimate assumed the test had to be written from scratch;
+it was a parameterisation of an existing file. **D8 was under-estimated 7×** because the estimate
+priced the *counter* and not the *run* — instrumentation is cheap, the games that exercise it are
+not.
+
+## Artefacts
+
+Scripts, all reusable and committed under `scripts/`:
+
+| script | serves |
+|---|---|
+| `audit_corpus_stats.py` | D1, D2, D6 — streams shard JSONL one line at a time, 4 workers |
+| `audit_value_head_bias.py` | D1 follow-up — bare leaf value vs search root on identical rows |
+| `audit_root_priors.py` | D4 — root visit/prior concentration, probe dumps or corpus shards |
+| `audit_encoding_collisions.py` | D3 — byte-identical tensor groups with differing legal sets |
+| `weight_distance.py` | D5 — per-layer relative L2 between checkpoints |
+| `pair_correlation.py` | D10 — paired vs unpaired SE over `*.games.jsonl` |
+
+Data under `runs/audit031/`. Code changes: `LEAF_STATS` + `BLOOD_MCTS_LEAF_STATS` in
+`botbowl-mcts/src/dynamics.rs` (D8), `Evaluator::Nn` arms in
+`botbowl-mcts/tests/mirror_search_exact.rs` (D9).
+
+## Method notes worth keeping
+
+Three mistakes were made and caught during this audit; each one has a cheap guard.
+
+1. **Read a rate off a partial run twice and got two different answers** (D8's `exact_outcome`:
+   "zero", then 6.5%, then 3.4%). A statistic that is lumpy across games needs its own sample size;
+   a run sized for a different question will not do.
+2. **Row alignment between a prepared `.npy` dir and its source shard is not free.** `prepare` drops
+   samples with a missing target, and gen06 shard4 has exactly one. The assertion caught it; without
+   it the script would have compared one state's search against another state's leaf, silently, for
+   every row after the first drop.
+3. **A gate can be mis-specified.** D4's ("visit entropy far below the control") and D2's
+   cross-generation test both measured quantities that could not respond to the effect in question —
+   the latter because gen05-07 share one frozen generator net. Check that a gate *can* move before
+   trusting that it did not.
