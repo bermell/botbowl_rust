@@ -361,7 +361,10 @@ mod tests {
         let back = read(&path).unwrap();
         assert_eq!(back.descr, F4);
         assert_eq!(back.shape, vec![2, 2, 3]);
-        assert_eq!(back.as_f32(), vec![1.0, -2.5, 3.25, 0.0, 100.0, -0.5, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0]);
+        assert_eq!(
+            back.as_f32(),
+            vec![1.0, -2.5, 3.25, 0.0, 100.0, -0.5, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0]
+        );
         std::fs::remove_file(&path).ok();
     }
 

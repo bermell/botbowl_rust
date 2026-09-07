@@ -78,8 +78,12 @@ pub const CANARY_W: usize = 16;
 
 /// `(spatial, global)` canary input — the committed parity fixture.
 pub fn canary_input() -> (Vec<f32>, Vec<f32>) {
-    let spatial = crate::npy::parse(CANARY_SPATIAL_NPY).expect("canary spatial fixture").as_f32();
-    let global = crate::npy::parse(CANARY_GLOBAL_NPY).expect("canary global fixture").as_f32();
+    let spatial = crate::npy::parse(CANARY_SPATIAL_NPY)
+        .expect("canary spatial fixture")
+        .as_f32();
+    let global = crate::npy::parse(CANARY_GLOBAL_NPY)
+        .expect("canary global fixture")
+        .as_f32();
     (spatial, global)
 }
 
@@ -150,7 +154,11 @@ pub struct RemoteClient {
 
 impl std::fmt::Debug for RemoteClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RemoteClient{{socket: {:?}, model: {}}}", self.socket, self.model_path)
+        write!(
+            f,
+            "RemoteClient{{socket: {:?}, model: {}}}",
+            self.socket, self.model_path
+        )
     }
 }
 
@@ -209,8 +217,8 @@ impl RemoteClient {
 
     /// Open + handshake + verify the canary.
     fn open(&self) -> Result<Conn, RemoteError> {
-        let stream =
-            UnixStream::connect(&self.socket).map_err(|e| RemoteError::Unavailable(format!("{e} ({:?})", self.socket)))?;
+        let stream = UnixStream::connect(&self.socket)
+            .map_err(|e| RemoteError::Unavailable(format!("{e} ({:?})", self.socket)))?;
         stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
         stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
         let mut conn = Conn { stream, model_id: 0 };
@@ -367,14 +375,24 @@ fn exchange(
     let mut len_buf = [0u8; 4];
     conn.stream.read_exact(&mut len_buf).map_err(io_err)?;
     let len = u32::from_le_bytes(len_buf) as usize;
-    let expect = if want_policy { 4 + 4 * POLICY_CHANNELS * h * w } else { 4 };
+    let expect = if want_policy {
+        4 + 4 * POLICY_CHANNELS * h * w
+    } else {
+        4
+    };
     if len != expect {
-        return Err(RemoteError::Protocol(format!("response is {len} B, expected {expect} B")));
+        return Err(RemoteError::Protocol(format!(
+            "response is {len} B, expected {expect} B"
+        )));
     }
     let mut payload = vec![0u8; len];
     conn.stream.read_exact(&mut payload).map_err(io_err)?;
     let value = f32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-    let policy = if want_policy { decode_f32(&payload[4..]) } else { Vec::new() };
+    let policy = if want_policy {
+        decode_f32(&payload[4..])
+    } else {
+        Vec::new()
+    };
     Ok((policy, value))
 }
 

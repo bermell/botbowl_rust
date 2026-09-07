@@ -343,8 +343,17 @@ fn live_server_identifies_a_model_by_its_weights_not_its_path_string() {
     };
     let canonical = std::fs::canonicalize(&model).expect("model path exists");
     // Same file, three spellings the loop could plausibly produce.
-    let detour = canonical.parent().unwrap().join("..").join("models").join(canonical.file_name().unwrap());
-    let spellings = [canonical.clone(), detour, PathBuf::from("models").join(canonical.file_name().unwrap())];
+    let detour = canonical
+        .parent()
+        .unwrap()
+        .join("..")
+        .join("models")
+        .join(canonical.file_name().unwrap());
+    let spellings = [
+        canonical.clone(),
+        detour,
+        PathBuf::from("models").join(canonical.file_name().unwrap()),
+    ];
 
     let mut ids = Vec::new();
     for p in &spellings {
@@ -353,7 +362,10 @@ fn live_server_identifies_a_model_by_its_weights_not_its_path_string() {
         let (cs, cg) = canary_input();
         ev.forward_raw(&cs, &cg, CANARY_H, CANARY_W);
         let (served, fell_back) = ev.remote_stats().unwrap();
-        assert_eq!(fell_back, 0, "spelling {p:?} was not served remotely — registry keyed on the string?");
+        assert_eq!(
+            fell_back, 0,
+            "spelling {p:?} was not served remotely — registry keyed on the string?"
+        );
         assert!(served > 0, "spelling {p:?} served nothing");
         ids.push(handshake_model_id(&socket, p));
     }
@@ -381,6 +393,11 @@ fn handshake_model_id(socket: &Path, model: &Path) -> u16 {
     let len = u32::from_le_bytes([head[8], head[9], head[10], head[11]]) as usize;
     let mut payload = vec![0u8; len];
     s.read_exact(&mut payload).unwrap();
-    assert_eq!(status, 0, "handshake rejected for {model:?}: {}", String::from_utf8_lossy(&payload));
+    assert_eq!(
+        status,
+        0,
+        "handshake rejected for {model:?}: {}",
+        String::from_utf8_lossy(&payload)
+    );
     u16::from_le_bytes([head[2], head[3]])
 }

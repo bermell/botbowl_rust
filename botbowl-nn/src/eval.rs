@@ -123,7 +123,10 @@ impl TractBackend {
 /// dead shard" true by construction.
 pub enum Backend {
     Tract(TractBackend),
-    Remote { client: RemoteClient, fallback: TractBackend },
+    Remote {
+        client: RemoteClient,
+        fallback: TractBackend,
+    },
 }
 
 /// Frozen value/policy network. `Send + Sync` — safe to share across MCTS
@@ -216,7 +219,10 @@ impl NnEvaluator {
         let client = RemoteClient::new(socket, &path.to_string_lossy(), (value, policy))
             .map_err(|e| TractError::msg(e.to_string()))?;
         Ok(NnEvaluator {
-            backend: Backend::Remote { client, fallback: tract },
+            backend: Backend::Remote {
+                client,
+                fallback: tract,
+            },
         })
     }
 
