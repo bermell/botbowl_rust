@@ -40,7 +40,7 @@ use botbowl_nn::actions::{action_cell, POLICY_CHANNELS};
 use botbowl_nn::encode::{encode, global_feature_names, spatial_channel_names, GLOBAL_FEATURES, SPATIAL_CHANNELS};
 use botbowl_nn::npy;
 use botbowl_nn::perspective::mover_for;
-use botbowl_nn::targets::{policy_target, value_target, SolvedRootPolicy};
+use botbowl_nn::targets::{policy_target_of, value_target, PolicyTargetKind, SolvedRootPolicy};
 
 /// Layout schema version — bump when the tensor layout / channel meaning
 /// changes so a stale prepared dir can be rejected.
@@ -66,6 +66,14 @@ impl From<SolvedRootArg> for SolvedRootPolicy {
     }
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum PolicyTargetArg {
+    /// Normalised visit counts with the solved-child floor.
+    Visits,
+    /// Completed-Q: softmax(ln prior + q_mover / --tau) (plan 032 #7).
+    Cq,
+}
+
 #[derive(Parser, Debug)]
 #[command(about = "Encode JSONL trajectories into .npy training batches (plan 017).")]
 struct Args {
@@ -81,6 +89,12 @@ struct Args {
     /// Drop samples whose root received fewer than this many descents.
     #[arg(long = "min-root-visits", default_value_t = 0)]
     min_root_visits: u32,
+    /// Statistic the policy target reads on unsolved roots.
+    #[arg(long = "policy-target", value_enum, default_value = "visits")]
+    policy_target: PolicyTargetArg,
+    /// Temperature for `--policy-target cq`, in Q points (1000 = one TD).
+    #[arg(long, default_value_t = 100.0)]
+    tau: f32,
 }
 
 /// One board shape's open output files, plus the little that must stay in RAM.
@@ -127,7 +141,11 @@ impl DimsGroup {
         assert_eq!(n, self.n, "spatial rows disagree with the sample count");
         assert_eq!(self.global.finish()?, n, "global rows disagree with the sample count");
         let m = self.policy.finish()?;
-        assert_eq!(self.action_rows.finish()?, m, "action rows disagree with the policy length");
+        assert_eq!(
+            self.action_rows.finish()?,
+            m,
+            "action rows disagree with the policy length"
+        );
 
         npy::write_f32(self.subdir.join("value.npy"), &self.value, &[n])?;
         npy::write_i64(self.subdir.join("chosen.npy"), &self.chosen, &[n])?;
@@ -139,6 +157,10 @@ impl DimsGroup {
 fn main() {
     let args = Args::parse();
     let solved_root: SolvedRootPolicy = args.solved_root.into();
+    let kind = match args.policy_target {
+        PolicyTargetArg::Visits => PolicyTargetKind::Visits,
+        PolicyTargetArg::Cq => PolicyTargetKind::CompletedQ { tau: args.tau },
+    };
 
     // Keyed by (w, h) engine dims.
     let mut groups: BTreeMap<(usize, usize), DimsGroup> = BTreeMap::new();
@@ -159,7 +181,7 @@ fn main() {
                     total_below_min += 1;
                     continue;
                 }
-                let policy = match policy_target(sample, solved_root) {
+                let policy = match policy_target_of(sample, solved_root, kind) {
                     Some(p) => p,
                     None => {
                         total_skipped_policy += 1;
@@ -257,6 +279,7 @@ fn main() {
             "global_feature_names": feature_names,
             "value_target": "mover_signed_drive_outcome",
             "solved_root_policy": format!("{solved_root:?}"),
+            "policy_target": format!("{kind:?}"),
             "min_root_visits": args.min_root_visits,
             "num_samples": n,
             "num_actions": m,

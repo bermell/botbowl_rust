@@ -17,6 +17,15 @@
 //! in the *mover's* frame (`Home` maximises, `Away` minimises → negate),
 //! and the value target is mover-signed to match the network's
 //! mover-centric `v`.
+//!
+//! [`PolicyTargetKind::CompletedQ`] (plan 032 #7) is the alternative to
+//! visit counts for unsolved roots: `softmax(ln prior + q_mover / τ)`, with
+//! children the search never scored "completed" by the visit-weighted mean
+//! `Q` of the scored ones (Gumbel-MuZero's completed-Q). At 1000 iterations
+//! over a 30-100-square move fan the visit target is mostly the FPU sweep,
+//! and plan 031 D2 measured it disagreeing with the move actually played
+//! three times in four on those roots; the search's *value* information is
+//! in `Q`, which this target reads directly.
 
 use botbowl_data::{Sample, Team};
 
@@ -27,6 +36,18 @@ pub enum SolvedRootPolicy {
     OneHot,
     /// Drop the sample from the policy dataset entirely (trivially decided).
     Skip,
+}
+
+/// Which statistic the policy target reads on an unsolved root. Solved
+/// roots are one-hot on the exact argmax `Q` under every kind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PolicyTargetKind {
+    /// Normalised visit counts with the solved-child floor (the original).
+    Visits,
+    /// `softmax(ln prior + q_mover / tau)`, unscored children completed
+    /// with the visit-weighted mean `Q` of the scored ones. `tau` is in `Q`
+    /// points (one touchdown = 1000).
+    CompletedQ { tau: f32 },
 }
 
 /// Per-child policy target, aligned index-for-index to `sample.children`.
@@ -45,11 +66,20 @@ fn mover_q(q: Option<i64>, mover: Team) -> Option<i64> {
     })
 }
 
-/// Build the policy target for one decision, applying the solved-count
-/// corrections. Returns `None` when the sample should be dropped from the
-/// policy dataset (no children, all-zero counts, or a solved root under
-/// [`SolvedRootPolicy::Skip`]).
+/// Build the visit-count policy target for one decision, applying the
+/// solved-count corrections. Returns `None` when the sample should be
+/// dropped from the policy dataset (no children, all-zero counts, or a
+/// solved root under [`SolvedRootPolicy::Skip`]).
 pub fn policy_target(sample: &Sample, solved_root: SolvedRootPolicy) -> Option<PolicyTarget> {
+    policy_target_of(sample, solved_root, PolicyTargetKind::Visits)
+}
+
+/// [`policy_target`] with the unsolved-root statistic selectable.
+pub fn policy_target_of(
+    sample: &Sample,
+    solved_root: SolvedRootPolicy,
+    kind: PolicyTargetKind,
+) -> Option<PolicyTarget> {
     let n = sample.children.len();
     if n == 0 {
         return None;
@@ -89,6 +119,10 @@ pub fn policy_target(sample: &Sample, solved_root: SolvedRootPolicy) -> Option<P
         }
     }
 
+    if let PolicyTargetKind::CompletedQ { tau } = kind {
+        return completed_q_target(sample, tau);
+    }
+
     // Partially / not solved: start from raw visit counts.
     let mut counts: Vec<f32> = sample.children.iter().map(|c| c.visits as f32).collect();
 
@@ -115,6 +149,63 @@ pub fn policy_target(sample: &Sample, solved_root: SolvedRootPolicy) -> Option<P
         *c /= total;
     }
     Some(PolicyTarget { probs: counts })
+}
+
+/// `softmax(ln prior + q_mover / tau)` over the children. A child counts as
+/// scored when it has a `Q` *and* at least one visit; the rest are completed
+/// with the visit-weighted mean `Q` of the scored children (plain mean of
+/// the `Q`-bearing children if nothing was visited — the 0-visit `Q` a
+/// solved/terminal child can carry). `None` when no child has a `Q`. A
+/// missing prior is treated as `ln 1 = 0`; the prior's global scale
+/// (softmax×len for the NN, unnormalised multipliers for the heuristic)
+/// cancels in the softmax, so both evaluators' corpora are usable as-is.
+fn completed_q_target(sample: &Sample, tau: f32) -> Option<PolicyTarget> {
+    let mover = sample.to_move;
+    let qs: Vec<Option<f64>> = sample
+        .children
+        .iter()
+        .map(|c| mover_q(c.q, mover).map(|q| q as f64))
+        .collect();
+    let (mut w_sum, mut wq_sum) = (0.0f64, 0.0f64);
+    let (mut n_scored, mut q_sum) = (0usize, 0.0f64);
+    for (c, q) in sample.children.iter().zip(&qs) {
+        if let Some(q) = q {
+            n_scored += 1;
+            q_sum += q;
+            if c.visits > 0 {
+                w_sum += f64::from(c.visits);
+                wq_sum += f64::from(c.visits) * q;
+            }
+        }
+    }
+    if n_scored == 0 {
+        return None;
+    }
+    let fill = if w_sum > 0.0 {
+        wq_sum / w_sum
+    } else {
+        q_sum / n_scored as f64
+    };
+    let tau = f64::from(tau);
+    let logits: Vec<f64> = sample
+        .children
+        .iter()
+        .zip(&qs)
+        .map(|(c, q)| {
+            let q = match q {
+                Some(q) if c.visits > 0 => *q,
+                _ => fill,
+            };
+            let prior = c.prior.map_or(0.0, |p| f64::from(p.max(1e-6)).ln());
+            prior + q / tau
+        })
+        .collect();
+    let max = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let weights: Vec<f64> = logits.iter().map(|l| (l - max).exp()).collect();
+    let z: f64 = weights.iter().sum();
+    Some(PolicyTarget {
+        probs: weights.iter().map(|w| (w / z) as f32).collect(),
+    })
 }
 
 /// Value target `v1`: the sample's backfilled drive outcome (Home-centric,
@@ -250,6 +341,176 @@ mod tests {
         assert!((t.probs[0] - 60.0 / 150.0).abs() < 1e-6);
         assert!((t.probs[1] - 60.0 / 150.0).abs() < 1e-6);
         assert!((t.probs[2] - 30.0 / 150.0).abs() < 1e-6);
+    }
+
+    fn cq(sample: &Sample, tau: f32) -> Vec<f32> {
+        policy_target_of(sample, SolvedRootPolicy::OneHot, PolicyTargetKind::CompletedQ { tau })
+            .unwrap()
+            .probs
+    }
+
+    fn child_p(visits: u32, q: Option<i64>, prior: f32) -> ChildStat {
+        ChildStat {
+            prior: Some(prior),
+            ..child(visits, q, false)
+        }
+    }
+
+    #[test]
+    fn completed_q_is_softmax_of_log_prior_plus_scaled_q() {
+        // Equal priors: pure softmax(q / tau). q = 0, 100 at tau 100 →
+        // e^0 : e^1.
+        let s = sample(
+            vec![child_p(10, Some(0), 1.0), child_p(10, Some(100), 1.0)],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let p = cq(&s, 100.0);
+        let e = std::f32::consts::E;
+        assert!((p[0] - 1.0 / (1.0 + e)).abs() < 1e-6);
+        assert!((p[1] - e / (1.0 + e)).abs() < 1e-6);
+        // Equal q: the prior alone, ratio 1:3.
+        let s = sample(
+            vec![child_p(10, Some(50), 1.0), child_p(10, Some(50), 3.0)],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let p = cq(&s, 100.0);
+        assert!((p[0] - 0.25).abs() < 1e-6);
+        assert!((p[1] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn completed_q_prior_scale_cancels() {
+        let mk = |k: f32| {
+            sample(
+                vec![
+                    child_p(5, Some(0), 1.0 * k),
+                    child_p(5, Some(200), 0.5 * k),
+                    child_p(0, None, 2.0 * k),
+                ],
+                false,
+                Team::Home,
+                Some(0.0),
+            )
+        };
+        let a = cq(&mk(1.0), 100.0);
+        let b = cq(&mk(37.0), 100.0);
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).abs() < 1e-6, "{a:?} vs {b:?}");
+        }
+    }
+
+    #[test]
+    fn completed_q_fills_unvisited_with_visit_weighted_mean() {
+        // Scored: q=0 (3 visits), q=400 (1 visit) → fill = 100. The
+        // unvisited child (equal prior) must then match a visited child with
+        // q=100 exactly.
+        let s = sample(
+            vec![
+                child_p(3, Some(0), 1.0),
+                child_p(1, Some(400), 1.0),
+                child_p(0, None, 1.0),
+            ],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let s_ref = sample(
+            vec![
+                child_p(3, Some(0), 1.0),
+                child_p(1, Some(400), 1.0),
+                child_p(1, Some(100), 1.0),
+            ],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let (p, r) = (cq(&s, 100.0), cq(&s_ref, 100.0));
+        for (x, y) in p.iter().zip(&r) {
+            assert!((x - y).abs() < 1e-6, "{p:?} vs {r:?}");
+        }
+        // A 0-visit child that does carry a Q is still completed, not read.
+        let s_q0 = sample(
+            vec![
+                child_p(3, Some(0), 1.0),
+                child_p(1, Some(400), 1.0),
+                child_p(0, Some(-9000), 1.0),
+            ],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let p2 = cq(&s_q0, 100.0);
+        for (x, y) in p2.iter().zip(&r) {
+            assert!((x - y).abs() < 1e-6, "{p2:?} vs {r:?}");
+        }
+    }
+
+    #[test]
+    fn completed_q_is_in_the_movers_frame() {
+        // Home-centric q = +300 / -300. Home prefers the first, Away the
+        // second, with mirrored probabilities.
+        let kids = || vec![child_p(5, Some(300), 1.0), child_p(5, Some(-300), 1.0)];
+        let home = cq(&sample(kids(), false, Team::Home, Some(0.0)), 100.0);
+        let away = cq(&sample(kids(), false, Team::Away, Some(0.0)), 100.0);
+        assert!(home[0] > 0.99);
+        assert!(away[1] > 0.99);
+        assert!((home[0] - away[1]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn completed_q_keeps_solved_root_onehot_and_drops_unscored() {
+        let solved = sample(
+            vec![child_p(5, Some(1000), 1.0), child_p(90, Some(-200), 1.0)],
+            true,
+            Team::Home,
+            Some(1.0),
+        );
+        assert_eq!(cq(&solved, 100.0), vec![1.0, 0.0]);
+        assert!(policy_target_of(
+            &solved,
+            SolvedRootPolicy::Skip,
+            PolicyTargetKind::CompletedQ { tau: 100.0 }
+        )
+        .is_none());
+        let unscored = sample(
+            vec![child_p(0, None, 1.0), child_p(0, None, 2.0)],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        assert!(policy_target_of(
+            &unscored,
+            SolvedRootPolicy::OneHot,
+            PolicyTargetKind::CompletedQ { tau: 100.0 }
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn completed_q_sums_to_one_on_a_wide_fan() {
+        // Five visited children with Home q = 0, 50, .., 200 and 75 unvisited
+        // ones, uniform priors. Away minimises Home q, so child 0 is the
+        // best visited one; the unvisited are completed at the mean (-100
+        // in Away's frame) and so sit strictly between child 0 and child 4.
+        let kids: Vec<ChildStat> = (0..80)
+            .map(|i| child_p(if i < 5 { 20 } else { 0 }, if i < 5 { Some(i * 50) } else { None }, 1.0))
+            .collect();
+        let p = cq(&sample(kids, false, Team::Away, Some(0.0)), 100.0);
+        assert_eq!(p.len(), 80);
+        assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+        let best = p
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(best, 0);
+        assert!(p[0] > p[40] && p[40] > p[4]);
+        assert!((p[40] - p[79]).abs() < 1e-7);
     }
 
     #[test]
