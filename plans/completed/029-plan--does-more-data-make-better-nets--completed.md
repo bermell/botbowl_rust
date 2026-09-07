@@ -4,9 +4,11 @@
 worth **+0.05 to +0.06 points per doubling** — the largest effect this project
 has measured. Warm-started from the champion, the *same* 3x corpus difference is
 worth **nothing** (0.487, z=-0.30). **Do not widen `WINDOW_GENS` on the strength
-of stages 1-2.** Full results at the bottom; stage 3 is the one that decides
-production. Follow-ups (D7 vs gen03, M1, periodic from-scratch retrain,
-`--eval-every` in the loop) are ranked in plan 032.
+of stages 1-2.** Roughly three quarters of the from-scratch gain is **volume**,
+one quarter **diversity** (stage 4, M1). Full results and conclusions at the
+bottom; stage 3 is the one that decides production, and it says no. Remaining
+follow-ups (D7 vs gen03, periodic from-scratch retrain, `--eval-every` in the
+loop) are ranked in plan 032.
 
 The loop has stopped compounding. The question this plan answers is whether the
 corpus is the reason. Everything needed to answer it is already on disk: eight
@@ -624,3 +626,67 @@ i.e. their first or second checkpoint. The loop has very likely been shipping
 past-peak weights for lack of resolution, and nobody could have seen it. The new
 `--eval-every` fixes this and should be adopted in `train_loop.sh` — validate
 every few hundred steps, not once per epoch — as part of the plan-030 rebuild.
+
+
+## Stage 4 (2026-09-07) — volume, not diversity, is most of it
+
+M1: 3,612 games (116,611 samples) drawn from all seven generations by
+`head -n 86` of each of 42 train shards — D1's volume, D7's variety.
+
+| arm | isolates | points | z | p |
+|---|---|---|---|---|
+| D3 vs D1 | 3x volume, same regime | 0.600 | +2.51 | 0.012 |
+| D7 vs D1 | 7x volume **and** 7 sources | 0.662 | +4.20 | <0.001 |
+| **M1 vs D1** | **7 sources, volume fixed** | **0.546** | **+1.16** | **0.246** |
+| *derived* D7 vs M1 | **volume, diversity fixed** | *+0.117* | *+2.11* | *0.035* |
+
+Splitting D7's +0.162 edge over D1:
+
+- **diversity alone: +0.046 (28%)** — directionally positive, *not* significant
+- **volume at fixed diversity: +0.117 (72%)** — significant
+
+So sample count is the dominant term and source variety is a real but secondary
+and unproven contributor. "Generate more games" is better supported than
+"deliberately mix generations", though the two are not in conflict and a wider
+window delivers both at once.
+
+One caveat on M1's validation, which read *worse* than D1's (1.9039 vs 1.8979)
+while its games read better: the shared holdout is gen05-07, i.e. pure `nn`
+regime, and M1's pool is 4/7 `nn-value`. Part of its validation penalty is
+distribution mismatch rather than net quality. The match is unaffected — and is
+a sixth instance of validation and strength disagreeing.
+
+---
+
+# Plan 029: conclusions
+
+1. **From scratch, corpus size is the largest lever measured in this project** —
+   +0.05 to +0.06 points per doubling, mildly diminishing, D7 vs D1 at p<0.001.
+2. **Roughly three quarters of that is volume, one quarter diversity**, and only
+   the volume term is significant.
+3. **None of it transfers to the production regime.** The same 3x widening,
+   warm-started from the champion at lr 2e-4, is worth 0.487 (z=-0.30).
+   **`WINDOW_GENS` should not change on this evidence.**
+4. **Warm-started training barely moves the net at all** — turnover at step
+   2,500 and 20,000 versus 17,500-92,500 from scratch. The binding constraint in
+   production is not how much data there is; it is how far a fine-tune can
+   travel before it overfits.
+5. **Validation loss disagreed with strength in every direction it could**,
+   including on a controlled pair differing in one variable (stage 3). Use it to
+   pick a checkpoint within a run; never to choose between regimes.
+6. **A production bug fell out:** gen05-07 all restored at their first or second
+   checkpoint under per-epoch validation, so the loop has likely been shipping
+   past-peak weights. `--eval-every` fixes it; fold into the plan-030 rebuild.
+
+## The experiment this points to
+
+Conclusion 4 is the interesting one, and it is not about data. If a fine-tune
+can only travel a short distance, then eight generations of incremental
+fine-tuning may have accumulated less than one from-scratch fit on the same
+accumulated corpus. That is directly testable with assets already on disk:
+
+**`D7` vs `gen03`** — a net trained from scratch on all seven generations
+against the champion built by eight rounds of incremental warm-starting. One
+120-game match, both `.onnx` present. If D7 wins, the loop wants a periodic
+from-scratch retrain on the whole corpus, which is a larger change than any
+window setting and would also explain the plateau.
