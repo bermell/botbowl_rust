@@ -85,7 +85,12 @@ fn parallel_rungs_match_sequential_exactly() {
     let (seq_rows, seq_report) = run_rung(1, "seq", &dir);
     let (par_rows, par_report) = run_rung(4, "par", &dir);
 
-    assert_eq!(seq_rows.len(), GAMES as usize, "sequential wrote {} rows, expected {GAMES}", seq_rows.len());
+    assert_eq!(
+        seq_rows.len(),
+        GAMES as usize,
+        "sequential wrote {} rows, expected {GAMES}",
+        seq_rows.len()
+    );
     assert_eq!(
         par_rows.len(),
         seq_rows.len(),
@@ -101,9 +106,17 @@ fn parallel_rungs_match_sequential_exactly() {
     // `next_game` hand-out.
     let indices: BTreeSet<u64> = par_rows
         .iter()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("row json")["game"].as_u64().unwrap())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).expect("row json")["game"]
+                .as_u64()
+                .unwrap()
+        })
         .collect();
-    assert_eq!(indices, (0..GAMES as u64).collect::<BTreeSet<_>>(), "game indices are not 0..{GAMES}");
+    assert_eq!(
+        indices,
+        (0..GAMES as u64).collect::<BTreeSet<_>>(),
+        "game indices are not 0..{GAMES}"
+    );
 
     // And the aggregate the promotion gate reads must be identical — the
     // guard on the `LadderRow` mutex. A lost increment shows up only here.

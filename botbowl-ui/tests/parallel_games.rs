@@ -136,7 +136,12 @@ fn parallel_games_writes_every_game_exactly_once_and_never_tears_a_line() {
     }
 
     let expected: BTreeSet<u64> = (0..GAMES as u64).map(|g| SEED + g).collect();
-    assert_eq!(seeds, expected, "the set of generated seeds is not {SEED}..{}", SEED + GAMES as u64);
+    assert_eq!(
+        seeds,
+        expected,
+        "the set of generated seeds is not {SEED}..{}",
+        SEED + GAMES as u64
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -156,7 +161,11 @@ fn parallel_games_one_is_the_sequential_path() {
     let seeds: Vec<u64> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("valid JSON")["meta"]["seed"].as_u64().unwrap())
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).expect("valid JSON")["meta"]["seed"]
+                .as_u64()
+                .unwrap()
+        })
         .collect();
 
     // Sequentially, order is still game order — worth pinning, because it

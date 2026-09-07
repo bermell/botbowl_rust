@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use botbowl_data::ChildStat;
 use botbowl_engine::bots::Bot;
-use botbowl_mcts::{MctsBot, SearchBudget, TieBreak};
+use botbowl_mcts::{BackupMode, MctsBot, SearchBudget, TieBreak};
 use botbowl_nn::eval::NnEvaluator;
 
 use common::{mirror_action, mirror_playable, states, tier};
@@ -138,10 +138,11 @@ fn nn_arm() -> Arm {
     ))
 }
 
-fn bot(arm: &Arm, iters: usize) -> MctsBot {
+fn bot(arm: &Arm, iters: usize, backup: BackupMode) -> MctsBot {
     let b = MctsBot::new(SearchBudget::Iterations(iters))
         .with_workers(1)
-        .with_tie_break(TieBreak::Mover);
+        .with_tie_break(TieBreak::Mover)
+        .with_backup(backup);
     match arm {
         Arm::Heuristic => b,
         Arm::Nn(nn) => b.with_evaluator(Arc::clone(nn)),
@@ -153,14 +154,18 @@ fn run_at_budget(iters: usize, n: u32, seed: u64) {
 }
 
 fn run_arm_at_budget(arm: &Arm, iters: usize, n: u32, seed: u64) {
+    run_arm_backup_at_budget(arm, BackupMode::Minimax, iters, n, seed);
+}
+
+fn run_arm_backup_at_budget(arm: &Arm, backup: BackupMode, iters: usize, n: u32, seed: u64) {
     let dims = tier();
     for (i, mut s) in states(n, seed).into_iter().enumerate() {
         let mut m = mirror_playable(&s, dims);
         s.set_seed(1000 + i as u64);
         m.set_seed(1000 + i as u64);
 
-        let mut bot_s = bot(arm, iters);
-        let mut bot_m = bot(arm, iters);
+        let mut bot_s = bot(arm, iters, backup);
+        let mut bot_m = bot(arm, iters, backup);
         let (action_s, sample_s) = bot_s.get_action_with_record(&s);
         let (action_m, sample_m) = bot_m.get_action_with_record(&m);
 
@@ -215,6 +220,28 @@ fn search_mirrors_exactly_at_budget_20() {
 #[ignore]
 fn search_mirrors_exactly_at_budget_200() {
     run_at_budget(200, 20, 24_100);
+}
+
+/// Plan 032 #2: the mean backup accumulates `Σ visits·Q` in integers and
+/// divides once, so it must be as exactly equivariant as minimax. A red
+/// here would mean the mean depends on the order `recon_mcts` hands
+/// children back — the same class of bug the chance branch's canonical
+/// sort exists to prevent.
+#[test]
+fn mean_backup_search_mirrors_exactly_at_budget_20() {
+    run_arm_backup_at_budget(&Arm::Heuristic, BackupMode::Mean, 20, 40, 24_100);
+}
+
+#[test]
+#[ignore]
+fn mean_backup_search_mirrors_exactly_at_budget_200() {
+    run_arm_backup_at_budget(&Arm::Heuristic, BackupMode::Mean, 200, 20, 24_100);
+}
+
+#[test]
+#[ignore]
+fn nn_mean_backup_search_mirrors_exactly_at_budget_200() {
+    run_arm_backup_at_budget(&nn_arm(), BackupMode::Mean, 200, 20, 24_100);
 }
 
 // ---------------------------------------------------------------------

@@ -138,7 +138,10 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
     let nn: Option<Arc<NnEvaluator>> = match args.evaluator {
         CliEvaluator::Nn | CliEvaluator::NnValue => {
             let path = args.model.as_deref().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "--evaluator nn/nn-value requires --model PATH")
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--evaluator nn/nn-value requires --model PATH",
+                )
             })?;
             let server = crate::cli::nn_server_path(args.nn_server.as_deref());
             let eval = NnEvaluator::from_path_with_server(path, server.as_deref())
@@ -181,7 +184,10 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
     if parallel == 1 {
         run_games(&args, nn.as_ref(), &state, t_start, fw0, ns0)?;
     } else {
-        println!("running {parallel} games in parallel ({} concurrent inference streams)", parallel);
+        println!(
+            "running {parallel} games in parallel ({} concurrent inference streams)",
+            parallel
+        );
         let mut errs: Vec<io::Error> = Vec::new();
         std::thread::scope(|s| {
             let mut handles = Vec::new();
@@ -221,21 +227,37 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
         let (forwards, nanos) = (fw - fw0, ns - ns0);
         let wall_ms = t_start.elapsed().as_secs_f64() * 1e3;
         let total_ms = nanos as f64 / 1e6;
-        let mean_us = if forwards > 0 { nanos as f64 / forwards as f64 / 1e3 } else { 0.0 };
+        let mean_us = if forwards > 0 {
+            nanos as f64 / forwards as f64 / 1e3
+        } else {
+            0.0
+        };
         println!(
             "NN_PROFILE forwards={forwards} total_ms={total_ms:.0} mean_us={mean_us:.0} \
 wall_ms={wall_ms:.0} share={:.3} games={written} forwards_per_game={:.0} \
 forwards_per_decision={:.1}",
             if wall_ms > 0.0 { total_ms / wall_ms } else { 0.0 },
-            if written > 0 { forwards as f64 / written as f64 } else { 0.0 },
-            if total_samples > 0 { forwards as f64 / total_samples as f64 } else { 0.0 },
+            if written > 0 {
+                forwards as f64 / written as f64
+            } else {
+                0.0
+            },
+            if total_samples > 0 {
+                forwards as f64 / total_samples as f64
+            } else {
+                0.0
+            },
         );
     }
 
     if let Some((served, fell_back)) = nn.as_ref().and_then(|n| n.remote_stats()) {
         println!(
             "NN_SERVER served={served} fell_back_to_tract={fell_back}{}",
-            if fell_back > 0 { "  <-- the server was unreachable for some forwards" } else { "" }
+            if fell_back > 0 {
+                "  <-- the server was unreachable for some forwards"
+            } else {
+                ""
+            }
         );
     }
     println!(
@@ -268,9 +290,20 @@ fn budget_label(args: &DatasetArgs) -> String {
         CliEvaluator::Nn => format!("nn:{}", args.model.as_deref().unwrap_or("?")),
         CliEvaluator::NnValue => format!("nn-value:{}", args.model.as_deref().unwrap_or("?")),
     };
+    // `make_mcts` takes the backup rule from `BLOOD_MCTS_BACKUP` (both
+    // sides share it); stamp it into the corpus provenance when non-default
+    // so a plan-032 mean-backup corpus can never be mistaken for a
+    // minimax one.
+    let backup = match botbowl_mcts::BackupMode::from_env() {
+        botbowl_mcts::BackupMode::Minimax => String::new(),
+        b => format!(",{}", b.label()),
+    };
     match args.mcts_time_ms {
-        Some(ms) => format!("mcts(time={ms}ms,workers={},eval={eval})", args.mcts_workers),
-        None => format!("mcts(iters={},workers={},eval={eval})", args.mcts_iters, args.mcts_workers),
+        Some(ms) => format!("mcts(time={ms}ms,workers={},eval={eval}{backup})", args.mcts_workers),
+        None => format!(
+            "mcts(iters={},workers={},eval={eval}{backup})",
+            args.mcts_iters, args.mcts_workers
+        ),
     }
 }
 
@@ -353,8 +386,7 @@ fn random_start_trajectory(args: &DatasetArgs, nn: Option<&Arc<NnEvaluator>>, se
     state.set_logging_state(false);
 
     let board_dims = state.board_dims;
-    let (start_half, start_home_turn, start_away_turn) =
-        (state.info.half, state.info.home_turn, state.info.away_turn);
+    let (start_half, start_home_turn, start_away_turn) = (state.info.half, state.info.home_turn, state.info.away_turn);
     let (start_home_score, start_away_score) = (state.home.score, state.away.score);
     let start_score = format!("{start_home_score}-{start_away_score}");
     let samples = mcts_vs_mcts_samples(&mut state, args, nn, seed, |s| {

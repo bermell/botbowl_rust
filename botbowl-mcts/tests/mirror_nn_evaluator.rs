@@ -141,5 +141,8 @@ fn nn_priors_are_mover_relative() {
         }
         checked += 1;
     }
-    assert!(checked >= 20, "only {checked} states were comparable — the test is not exercising much");
+    assert!(
+        checked >= 20,
+        "only {checked} states were comparable — the test is not exercising much"
+    );
 }

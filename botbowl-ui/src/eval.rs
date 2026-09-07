@@ -29,7 +29,7 @@ use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::TeamType;
 use botbowl_engine::scripted_bot::ScriptedBot;
-use botbowl_mcts::{MctsBot, PuctMode, SearchBudget};
+use botbowl_mcts::{BackupMode, MctsBot, PuctMode, SearchBudget};
 use botbowl_nn::eval::NnEvaluator;
 
 use crate::cli::{CliCandidateBot, CliEvaluator, EvalArgs};
@@ -106,6 +106,11 @@ fn puct_of(mode: &str, c: Option<f32>) -> PuctMode {
     }
 }
 
+/// Same contract as `puct_of`: refuse to start rather than run the wrong arm.
+fn backup_of(s: &str) -> BackupMode {
+    BackupMode::parse(s).unwrap_or_else(|| panic!("--backup: expected `minimax` or `mean`, got `{s}`"))
+}
+
 fn make_bot(
     evaluator: CliEvaluator,
     nn: Option<&Arc<NnEvaluator>>,
@@ -113,11 +118,13 @@ fn make_bot(
     workers: usize,
     puct: PuctMode,
     horizon_turns: u8,
+    backup: BackupMode,
 ) -> MctsBot {
     let bot = MctsBot::new(SearchBudget::Iterations(iters))
         .with_workers(workers)
         .with_puct(puct)
-        .with_horizon_turns(horizon_turns);
+        .with_horizon_turns(horizon_turns)
+        .with_backup(backup);
     match evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
@@ -134,6 +141,7 @@ fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
         args.mcts_workers,
         puct_of(&args.puct_mode, args.puct_c),
         args.horizon_turns,
+        backup_of(&args.backup),
     )
 }
 
@@ -158,7 +166,15 @@ fn evaluator_label(evaluator: CliEvaluator, model: Option<&str>) -> String {
 
 fn candidate_label(args: &EvalArgs) -> String {
     match args.candidate_bot {
-        CliCandidateBot::Mcts => evaluator_label(args.evaluator, args.model.as_deref()),
+        CliCandidateBot::Mcts => {
+            let base = evaluator_label(args.evaluator, args.model.as_deref());
+            // Non-default search knobs go into the label so a report is
+            // self-describing (plan 032 arms differ only in these).
+            match backup_of(&args.backup) {
+                BackupMode::Minimax => base,
+                b => format!("{base} [{}]", b.label()),
+            }
+        }
         CliCandidateBot::Scripted => "scripted".to_string(),
         CliCandidateBot::Random => "random".to_string(),
     }
@@ -174,8 +190,7 @@ fn load_nn(
 ) -> io::Result<Option<Arc<NnEvaluator>>> {
     match evaluator {
         CliEvaluator::Nn | CliEvaluator::NnValue => {
-            let path = model
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, missing_msg.to_string()))?;
+            let path = model.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, missing_msg.to_string()))?;
             // Each evaluator names its own model at handshake and gets its
             // own canary, so the candidate and the champion can share one
             // socket with no chance of being cross-wired.
@@ -258,7 +273,10 @@ fn run_ladder_rung(
         )
     });
     let state = RungState {
-        row: Mutex::new(LadderRow { opponent: name.to_string(), ..Default::default() }),
+        row: Mutex::new(LadderRow {
+            opponent: name.to_string(),
+            ..Default::default()
+        }),
         next_game: AtomicU32::new(0),
         per_game: Mutex::new(per_game),
     };
@@ -357,15 +375,26 @@ fn run_rung_games(
         match cand.cmp(&opp) {
             std::cmp::Ordering::Greater => {
                 row.wins += 1;
-                if home { row.wins_as_home += 1 } else { row.wins_as_away += 1 }
+                if home {
+                    row.wins_as_home += 1
+                } else {
+                    row.wins_as_away += 1
+                }
             }
             std::cmp::Ordering::Equal => row.draws += 1,
             std::cmp::Ordering::Less => {
                 row.losses += 1;
-                if home { row.losses_as_home += 1 } else { row.losses_as_away += 1 }
+                if home {
+                    row.losses_as_home += 1
+                } else {
+                    row.losses_as_away += 1
+                }
             }
         }
-        eprint!("\r  vs {name}: {}/{} (W{} D{} L{})", row.games, games, row.wins, row.draws, row.losses);
+        eprint!(
+            "\r  vs {name}: {}/{} (W{} D{} L{})",
+            row.games, games, row.wins, row.draws, row.losses
+        );
     }
 }
 
@@ -461,6 +490,8 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         // candidate", so existing invocations are unchanged and setting
         // --vs-horizon-turns alone makes it a horizon head-to-head.
         let opp_horizon = args.vs_horizon_turns.unwrap_or(args.horizon_turns);
+        let cand_backup = backup_of(&args.backup);
+        let opp_backup = backup_of(args.vs_backup.as_deref().unwrap_or(&args.backup));
         if !args.skip_fixed_rungs {
             let wanted: Vec<&str> = args.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
             for name in &wanted {
@@ -479,23 +510,35 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                 }));
             }
             if wanted.contains(&"mcts-heuristic") {
-                ladder.push(run_ladder_rung(&args, nn.as_ref(), "mcts-heuristic", args.games, || {
-                    Box::new(
-                        MctsBot::new(SearchBudget::Iterations(opp_iters))
-                            .with_workers(args.mcts_workers)
-                            .with_puct(opp_puct)
-                            .with_horizon_turns(opp_horizon),
-                    )
-                }));
+                ladder.push(run_ladder_rung(
+                    &args,
+                    nn.as_ref(),
+                    "mcts-heuristic",
+                    args.games,
+                    || {
+                        Box::new(
+                            MctsBot::new(SearchBudget::Iterations(opp_iters))
+                                .with_workers(args.mcts_workers)
+                                .with_puct(opp_puct)
+                                .with_horizon_turns(opp_horizon)
+                                .with_backup(opp_backup),
+                        )
+                    },
+                ));
             }
         }
         if let Some(vs) = args.vs_evaluator {
             let label = format!(
-                "vs:{} [{}{}]",
+                "vs:{} [{}{}{}]",
                 evaluator_label(vs, args.vs_model.as_deref()),
                 opp_puct.label(),
                 if opp_horizon != args.horizon_turns {
                     format!(" horizon={opp_horizon}v{}", args.horizon_turns)
+                } else {
+                    String::new()
+                },
+                if opp_backup != cand_backup {
+                    format!(" {}v{}", opp_backup.label(), cand_backup.label())
                 } else {
                     String::new()
                 }
@@ -503,7 +546,15 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             // The gating rung: `--vs-games` if given, else `--games`.
             let vs_games = args.vs_games.unwrap_or(args.games);
             ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, vs_games, || {
-                Box::new(make_bot(vs, vs_nn.as_ref(), opp_iters, args.mcts_workers, opp_puct, opp_horizon))
+                Box::new(make_bot(
+                    vs,
+                    vs_nn.as_ref(),
+                    opp_iters,
+                    args.mcts_workers,
+                    opp_puct,
+                    opp_horizon,
+                    opp_backup,
+                ))
             }));
         }
     }
@@ -512,10 +563,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         candidate: candidate_label(&args),
         mcts_iters: args.mcts_iters,
         seed: args.seed,
-        board_env: format!(
-            "{:?}",
-            botbowl_engine::core::model::BoardDims::from_env()
-        ),
+        board_env: format!("{:?}", botbowl_engine::core::model::BoardDims::from_env()),
         git_commit: botbowl_data::git_commit().to_string(),
         git_dirty: botbowl_data::git_dirty(),
         lectures,
@@ -525,7 +573,10 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
     println!("\n== report card: {} ==", report.candidate);
     for l in &report.lectures {
         if l.skipped_board_too_small {
-            println!("  lecture {:24} {:8} skipped (board too small)", l.lecture, l.difficulty);
+            println!(
+                "  lecture {:24} {:8} skipped (board too small)",
+                l.lecture, l.difficulty
+            );
         } else {
             println!("  lecture {:24} {:8} {:.2}", l.lecture, l.difficulty, l.success_rate);
         }

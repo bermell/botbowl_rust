@@ -127,6 +127,60 @@ impl PuctMode {
     }
 }
 
+/// How a **player** node aggregates its children's Q in `backprop_scores`
+/// (plan 032 #2). Chance nodes always take the probability-weighted
+/// expectation regardless of this setting.
+///
+/// `Minimax` is the historical rule and the default. It is exact for the
+/// heuristic leaf, which is a deterministic function of the state inside
+/// the horizon; with a learned leaf it is a max over noisy estimates and
+/// plan 031 D1 measured it adding **+0.09 to +0.10** of a drive outcome of
+/// optimism at the root on every generation, with the bare net at +0.03.
+/// `Mean` is the AlphaZero remedy: a child's Q is the visit-weighted mean
+/// of everything backed up through it, so one lucky leaf cannot carry a
+/// whole subtree. The mean also changes what FPU (= parent Q) and
+/// `PUCT_C` see — the parent is no longer its best child — so a `c`
+/// re-tune belongs with any switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackupMode {
+    /// Home max / Away min over child Q; visits sum.
+    #[default]
+    Minimax,
+    /// `Σ visits·Q / Σ visits` over child Q; visits sum. Integer
+    /// arithmetic throughout so the result is independent of the order
+    /// `recon_mcts` hands children back in (the chance branch needs a
+    /// covariant sort for the same reason; here the sum is exact).
+    Mean,
+}
+
+impl BackupMode {
+    /// `BLOOD_MCTS_BACKUP={minimax|mean}`; unset or unrecognised ⇒ `Minimax`.
+    pub fn from_env() -> Self {
+        match std::env::var("BLOOD_MCTS_BACKUP").ok().as_deref().map(str::trim) {
+            Some("mean") | Some("avg") | Some("average") => BackupMode::Mean,
+            _ => BackupMode::Minimax,
+        }
+    }
+
+    /// Parse the CLI spelling; `None` on an unknown word so callers can
+    /// refuse to start a multi-hour match with a misspelt arm.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "minimax" | "max" => Some(BackupMode::Minimax),
+            "mean" | "avg" | "average" => Some(BackupMode::Mean),
+            _ => None,
+        }
+    }
+
+    /// Provenance tag for corpora and reports (same role as `PuctMode::label`).
+    pub fn label(&self) -> &'static str {
+        match self {
+            BackupMode::Minimax => "backup=minimax",
+            BackupMode::Mean => "backup=mean",
+        }
+    }
+}
+
 /// MCTS workers spawned by `MctsBot::get_action` get an explicit
 /// 16 MB stack instead of the OS-default ~2 MB. Sized for headroom
 /// against the recursive `Node::get_state` and `Arc<Node>` drop
@@ -488,6 +542,9 @@ pub struct BloodBowlDynamics {
     /// Plan 023 instrument: how exact ties are broken in `select_node`
     /// and at the root. `Hash` (default) is the shipped behaviour.
     pub tie_break: TieBreak,
+    /// Plan 032 #2: player-node aggregation rule. `Minimax` (default) is
+    /// the shipped behaviour.
+    pub backup: BackupMode,
 }
 
 impl Default for BloodBowlDynamics {
@@ -498,6 +555,7 @@ impl Default for BloodBowlDynamics {
             evaluator: Evaluator::default(),
             puct: PuctMode::default(),
             tie_break: TieBreak::default(),
+            backup: BackupMode::default(),
         }
     }
 }
@@ -1196,19 +1254,41 @@ impl GameDynamics for BloodBowlDynamics {
         // Away minimises (plan 006 — adversarial backprop). Visits
         // sum across children so PUCT's √N(parent) reflects total
         // descents (plan 007 — matches the Chance branch above).
+        //
+        // Plan 032 #2: under `BackupMode::Mean` the node's Q is instead the
+        // visit-weighted mean of its children — exact integer arithmetic,
+        // one truncating division at the end (symmetric under negation, so
+        // the Home/Away mirror tests keep holding). A child with zero
+        // recorded visits (fresh placeholder scored but not yet descended)
+        // contributes nothing to the mean; if *every* child is at zero the
+        // plain mean of their scores is used so the node is never left
+        // unscored while it has scored children.
         let want_max = *player == BbPlayer::Home;
         let mut best_score: Option<i64> = None;
         let mut total_visits: u32 = 0;
+        let mut weighted_sum: i128 = 0;
+        let mut plain_sum: i128 = 0;
+        let mut n_children: i128 = 0;
         for (q, _) in child_scores_and_actions.into_iter() {
-            total_visits += q.visits.load(Ordering::Relaxed);
+            let v = q.visits.load(Ordering::Relaxed);
+            total_visits += v;
             let s = q.score;
+            weighted_sum += i128::from(v) * i128::from(s);
+            plain_sum += i128::from(s);
+            n_children += 1;
             best_score = match best_score {
                 None => Some(s),
                 Some(b) if (want_max && s > b) || (!want_max && s < b) => Some(s),
                 Some(b) => Some(b),
             };
         }
-        best_score.map(|score| BbScore {
+        let score = match (self.backup, best_score) {
+            (_, None) => return None,
+            (BackupMode::Minimax, Some(b)) => b,
+            (BackupMode::Mean, Some(_)) if total_visits > 0 => (weighted_sum / i128::from(total_visits)) as i64,
+            (BackupMode::Mean, Some(_)) => (plain_sum / n_children) as i64,
+        };
+        Some(BbScore {
             visits: AtomicU32::new(total_visits),
             score,
             node_kind: *player,
@@ -1557,6 +1637,9 @@ pub struct MctsBot {
     /// Plan 023 ordering instrument. Resolved from `BLOOD_MCTS_TIE_BREAK`
     /// at `::new`; see [`TieBreak`]. Production leaves this at `Hash`.
     tie_break: TieBreak,
+    /// Plan 032 #2 player-node aggregation rule. Resolved from
+    /// `BLOOD_MCTS_BACKUP` at `::new`; see [`BackupMode`].
+    backup: BackupMode,
     /// How many of our own turns the search may look ahead before a
     /// state counts as terminal — see [`HorizonAnchor::turn_depth`].
     /// Default 1 (the historical single turn-pair). Resolved from
@@ -1604,6 +1687,7 @@ impl MctsBot {
             evaluator: Evaluator::default(),
             puct,
             tie_break: TieBreak::from_env(),
+            backup: BackupMode::from_env(),
             horizon_turns: std::env::var("BLOOD_MCTS_HORIZON_TURNS")
                 .ok()
                 .and_then(|v| v.trim().parse::<u8>().ok())
@@ -1675,6 +1759,17 @@ impl MctsBot {
         self
     }
 
+    /// Override the env-var default for the player-node backup rule
+    /// (plan 032 #2). Same A/B caveat as `with_puct`.
+    pub fn with_backup(mut self, backup: BackupMode) -> Self {
+        self.backup = backup;
+        self
+    }
+
+    pub fn backup(&self) -> BackupMode {
+        self.backup
+    }
+
     /// How many own-turns the search may look ahead (see
     /// [`HorizonAnchor::turn_depth`]). `1` is the default and is
     /// bit-identical to the historical horizon.
@@ -1743,12 +1838,17 @@ impl MctsBot {
             horizon: if horizon_disabled {
                 None
             } else {
-                Some(HorizonAnchor::capture_with_depth(&root_state, agent_team, self.horizon_turns))
+                Some(HorizonAnchor::capture_with_depth(
+                    &root_state,
+                    agent_team,
+                    self.horizon_turns,
+                ))
             },
             virtual_loss: self.virtual_loss,
             evaluator: self.evaluator.clone(),
             puct: self.puct,
             tie_break: self.tie_break,
+            backup: self.backup,
         };
         // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
         // workers (e.g. `expand_bench_main`) force single-thread for
@@ -1769,8 +1869,7 @@ impl MctsBot {
         // that one also walks the whole DAG for its depth histogram, which
         // costs more than the search on a 1000-iteration tree — far too much
         // to pay per search across a 20-game run.
-        let dump_leaf_stats =
-            dump_stats || std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
+        let dump_leaf_stats = dump_stats || std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
         let memory_mode = MemoryMode::resolve(self.memory_mode);
 
         // `new_anchor` mirrors `gd.horizon` when horizon is enabled. We
@@ -1781,7 +1880,11 @@ impl MctsBot {
         let new_anchor = if horizon_disabled {
             None
         } else {
-            Some(HorizonAnchor::capture_with_depth(&root_state, agent_team, self.horizon_turns))
+            Some(HorizonAnchor::capture_with_depth(
+                &root_state,
+                agent_team,
+                self.horizon_turns,
+            ))
         };
         let anchor_matches = self.reuse_enabled && self.cached_tree.is_some() && new_anchor == self.last_anchor;
         // If anchor changed (or reuse disabled), discard the cache up
@@ -2204,6 +2307,63 @@ mod tests {
             BbPlayer::Away,
             "node_kind should mirror the player owning the node"
         );
+    }
+
+    /// Plan 032 #2 — `BackupMode::Mean` is the visit-weighted mean for
+    /// *both* sides (the mean has no side), independent of child order,
+    /// and symmetric under negation (so the D9 mirror property survives).
+    #[test]
+    fn backprop_mean_is_visit_weighted_and_order_independent() {
+        let dynamics = BloodBowlDynamics {
+            backup: BackupMode::Mean,
+            ..BloodBowlDynamics::default()
+        };
+        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
+        let children = [child(-5, 2), child(10, 5), child(3, 1)];
+        // (-10 + 50 + 3) / 8 = 43 / 8 = 5 (truncated)
+        for player in [BbPlayer::Home, BbPlayer::Away] {
+            let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+            let result = dynamics.backprop_scores(&player, None, pairs).expect("score");
+            assert_eq!(result.score, 5, "{player:?}: visit-weighted mean");
+            assert_eq!(result.visits.load(Ordering::Relaxed), 8, "visits still sum");
+            assert_eq!(result.node_kind, player);
+        }
+        // Reversed child order: identical result (integer accumulation).
+        let rev: Vec<(&BbScore, &BbAction)> = children.iter().rev().zip(actions.iter()).collect();
+        assert_eq!(dynamics.backprop_scores(&BbPlayer::Home, None, rev).unwrap().score, 5);
+        // Negated scores: negated mean (truncation toward zero is symmetric).
+        let neg = [child(5, 2), child(-10, 5), child(-3, 1)];
+        let pairs: Vec<(&BbScore, &BbAction)> = neg.iter().zip(actions.iter()).collect();
+        assert_eq!(
+            dynamics.backprop_scores(&BbPlayer::Away, None, pairs).unwrap().score,
+            -5
+        );
+    }
+
+    /// A player node whose children have all been scored but never
+    /// descended (visits 0) must still get a score under `Mean`, or the
+    /// node becomes a backprop dead end.
+    #[test]
+    fn backprop_mean_falls_back_to_plain_mean_at_zero_visits() {
+        let dynamics = BloodBowlDynamics {
+            backup: BackupMode::Mean,
+            ..BloodBowlDynamics::default()
+        };
+        let actions = [placeholder_action(), placeholder_action()];
+        let children = [child(4, 0), child(-10, 0)];
+        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+        let result = dynamics.backprop_scores(&BbPlayer::Home, None, pairs).expect("score");
+        assert_eq!(result.score, -3);
+        assert_eq!(result.visits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn backup_mode_defaults_to_minimax_and_parses() {
+        assert_eq!(BloodBowlDynamics::default().backup, BackupMode::Minimax);
+        assert_eq!(BackupMode::parse("mean"), Some(BackupMode::Mean));
+        assert_eq!(BackupMode::parse("minimax"), Some(BackupMode::Minimax));
+        assert_eq!(BackupMode::parse("median"), None);
+        assert_eq!(BackupMode::Mean.label(), "backup=mean");
     }
 
     /// `apply_action` must collapse scripted player decisions

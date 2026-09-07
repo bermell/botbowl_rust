@@ -103,8 +103,15 @@ fn memo_does_not_resurrect_a_displaced_state() {
     let va2 = nn.value_home_i64(&a);
     let (after, _) = profile_counters();
 
-    assert_eq!(after - before, 1, "displaced state must be recomputed, not served stale");
-    assert_eq!(va1, va2, "the network is deterministic; the memo must not change its answers");
+    assert_eq!(
+        after - before,
+        1,
+        "displaced state must be recomputed, not served stale"
+    );
+    assert_eq!(
+        va1, va2,
+        "the network is deterministic; the memo must not change its answers"
+    );
 }
 
 /// The bug this guards against. The search scores a node before enumerating
@@ -148,5 +155,9 @@ fn prefetch_saves_the_second_forward_in_search_order() {
     let _ = nn.value_home_i64_prefetch_policy(&state);
     let _ = nn.priors(&state, &actions);
     let (a2, _) = profile_counters();
-    assert_eq!(a2 - b2, 1, "prefetching value call must serve the following priors call");
+    assert_eq!(
+        a2 - b2,
+        1,
+        "prefetching value call must serve the following priors call"
+    );
 }

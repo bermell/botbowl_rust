@@ -339,6 +339,14 @@ pub struct EvalArgs {
     /// run a horizon head-to-head in one process.
     #[arg(long)]
     pub vs_horizon_turns: Option<u8>,
+    /// Candidate player-node backup rule: `minimax` (default) or `mean`
+    /// (plan 032 #2).
+    #[arg(long, default_value = "minimax")]
+    pub backup: String,
+    /// Opponent backup rule; defaults to the candidate's. Set this to run
+    /// a backup-rule head-to-head in one process.
+    #[arg(long)]
+    pub vs_backup: Option<String>,
     /// Skip the fixed rungs (random/scripted/mcts-heuristic), keeping only
     /// the --vs-evaluator rung. E.g. mirror matches and promotion gates.
     #[arg(long, default_value_t = false)]
