@@ -89,6 +89,15 @@ EVALUATOR="${EVALUATOR:-nn}"
 # restore is correct exactly while nothing consumes the policy head. See
 # --select-on in bbnn/train.py.
 SELECT_ON="${SELECT_ON:-combined}"
+# Validate every N optimizer steps instead of once per epoch (plan 031 D4/D5,
+# adopted 2026-09-07). The warm-started fine-tunes gen04-07 all restored at
+# epoch 0-2 of 10 because val_value bottoms out inside the first epoch or two
+# and then climbs while val_policy is still falling; a per-epoch grid can only
+# hand back the epoch-0 or epoch-1 weights, which is most of why those nets
+# looked identical to their gen03 warm start. A finer grid lets best-val land
+# on the real optimum. ~1 epoch of the 3-generation window is ~15-20k steps at
+# batch 32, so 2500 is 6-8 checkpoints per epoch.
+EVAL_EVERY="${EVAL_EVERY:-2500}"
 # How the loop compounds (added 2026-09-03, after gen02 scored 0.450 against
 # gen01 on the full 100-game rung despite a *better* val_value, 0.4026 vs
 # 0.4126). Until now every generation trained a fresh net from random init on
@@ -549,7 +558,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # shellcheck disable=SC2086
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
                 --epochs "$EPOCHS" --device "$TRAIN_DEVICE" $INIT_ARGS \
-                --select-on "$SELECT_ON" \
+                --select-on "$SELECT_ON" --eval-every "$EVAL_EVERY" \
                 --out "$MODEL.pt" --onnx "$MODEL.onnx" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "$GG training failed — see train.log"
