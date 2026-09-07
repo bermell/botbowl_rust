@@ -5,11 +5,29 @@ open programme lives; completed plans point here. Ranking is by expected strengt
 of machine time, not novelty. Re-rank after plan 031's diagnostics land — the "gate" column says
 which diagnostic can demote an item before it costs any games.
 
-Ground rules carried over from plans 027/029: paired Home/Away on a shared seed base, points
-(W + D/2)/N, **120 games minimum** (SE ≈ 0.041 at a 20% draw rate; ~0.045 after pair correlation),
-score with `scripts/paired_summary.py` as well as `eval_summary.py`, one variable per arm, commit
-before launching, results decided by games not by `val_*`. Pre-commit the extension rule: a match
-in [0.53, 0.58] gets 120 more games on the same pair, not a claim.
+Ground rules carried over from plans 027/029, **as corrected by plan 031 D10 (2026-09-07)**:
+
+- Paired Home/Away on a shared seed base, points (W + D/2)/N, one variable per arm, commit before
+  launching, results decided by games not by `val_*`.
+- **SE ≈ 0.041 at 120 games, paired or unpaired.** The measured pair correlation is **zero**
+  (`r = 1.003`, 95% CI [0.962, 1.060] over 813 games in seven per-game logs), so the old
+  "~0.045 after pair correlation" inflation is dropped and every SE and z quoted in plans 027/029
+  stands as written. Score with `scripts/paired_summary.py` anyway — pairing is free and removes
+  the side-bias term from the point estimate; it just buys no variance.
+- **Use one shared seed base across arms that will be differenced against each other.** Plan 029's
+  four `exp-data` arms used disjoint bases (96/97/98/99 M), so no cross-arm contrast could be
+  differenced per seed. That is where the remaining variance reduction actually lives: the
+  *situation* term is shared across arms even though it is not shared within a Home/Away pair.
+- **Always pass `--per-game-out`.** Nine of the twelve `runs/exp-search/` arms, all of
+  `runs/exp-priors/` and `runs/exp-conv/`, and every `runs/loop14x7/gen*/report.json` rung could
+  not be re-analysed at all for lack of one.
+- **Size against real power, not against the 120-game floor.** At `V_pair = 0.1000` (5%
+  two-sided, 80% power): detecting 0.55 needs **628 games**; 0.56, 436; 0.58, 245; 0.60, 157. At
+  120 games a match has 80% power only against ~0.60 or larger. The pre-committed extension rule
+  still holds — a match in [0.53, 0.58] gets 120 more games on the same pair, not a claim — but
+  note that 240 games reaches only SE ≈ 0.029, so **a true 0.55 effect stays undecided even after
+  the extension**. Any item whose expected effect is ±0.03 must be resized to ~600 games or
+  dropped rather than run at 120 and called ambiguous.
 
 ## The queue
 
