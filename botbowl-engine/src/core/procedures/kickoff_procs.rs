@@ -243,13 +243,27 @@ impl Setup {
         let mut blitzer_pos = vec![(0, -2), (0, 2)];
         let mut catcher_pos = vec![(2, 2), (2, -2)];
         let mut thrower_pos = vec![(6, 3), (6, -3)];
-        #[allow(clippy::needless_collect)]
-        let players: Vec<PlayerID> = game_state
+        // Field in a fixed role order (the roster's), not dugout-slot order:
+        // `unfield_player` refills the *shared* dugout array first-free-slot,
+        // so after a drive in which the other team set up first our players
+        // sit behind theirs and our bench order is scrambled. On boards where
+        // `team_size` is below the formation's role slots that used to swap
+        // which role sits out — Home played a Thrower for its Catcher from the
+        // second drive on whenever Away received (plan 032 #11).
+        let role_rank = |role: PlayerRole| match role {
+            PlayerRole::Lineman => 0,
+            PlayerRole::Blitzer => 1,
+            PlayerRole::Catcher => 2,
+            PlayerRole::Thrower => 3,
+        };
+        let mut players: Vec<(u8, PlayerID)> = game_state
             .get_dugout()
             .filter(|dplayer| dplayer.stats.team == self.team)
             .filter(|dplayer| dplayer.place == DugoutPlace::Reserves)
-            .map(|p| p.id)
+            .map(|p| (role_rank(p.stats.role), p.id))
             .collect();
+        players.sort_unstable();
+        let players = players.into_iter().map(|(_, id)| id);
         let dims = game_state.board_dims;
         let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
         let middle_x = game_state.get_line_of_scrimage_x(self.team);

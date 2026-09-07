@@ -52,6 +52,31 @@ def main():
                         r["_file"] = path
                         rows.append(r)
 
+    # A paired match replays each seed with the seats swapped. When both seats
+    # hold the *same deterministic* bot (scripted mirror, random mirror, a
+    # single-worker NN mirror with no knob difference) the two games are the
+    # same game and count once; otherwise the pair are distinct games.
+    # Decided per log, not per pair: two distinct games can coincide (a 0-0
+    # draw both ways is common), so only a log where *every* pair coincides
+    # is a deterministic mirror.
+    by_seed = defaultdict(list)
+    for r in rows:
+        by_seed[(r["_file"], r["seed"])].append(r)
+    same = defaultdict(lambda: [0, 0])
+    for (f, _), pair in by_seed.items():
+        same[f][1] += 1
+        if len(pair) == 2 and all(
+            pair[0][k] == pair[1][k] for k in ("home_score", "away_score", "kicking_first_half")
+        ) and pair[0]["candidate_team"] != pair[1]["candidate_team"]:
+            same[f][0] += 1
+    mirror_logs = {f for f, (n_same, n) in same.items() if n >= 20 and n_same == n}
+    if mirror_logs:
+        deduped = []
+        for (f, _), pair in by_seed.items():
+            deduped.extend(pair[:1] if f in mirror_logs else pair)
+        for f in sorted(mirror_logs):
+            print(f"{f.split('/')[-1]}: every seed pair is the same game (deterministic bot in both seats) — counted once")
+        rows = deduped
     print(f"{len(rows)} finished games from {len(a.logs)} logs\n")
     print("pooled, by seat:")
     summarise("all", rows)

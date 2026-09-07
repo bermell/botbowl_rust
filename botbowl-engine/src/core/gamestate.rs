@@ -2271,6 +2271,70 @@ mod runtime_board_dims_tests {
         }
     }
 
+    /// Regression (plan 032 #11): the roles a team fields must not depend on
+    /// which team set up first in the previous drive.
+    ///
+    /// `SetupLine` fields players in dugout-slot order and stops at `team_size`,
+    /// and `unfield_player` used to drop players into the first free slot of
+    /// the *shared* dugout array. When Away set up first its players came off
+    /// the pitch into Home's low slots, pushing Home's benched Thrower ahead of
+    /// Home's Catcher in fielding order — so from the second drive on Home
+    /// played T instead of C, permanently, while Away's line-up never changed.
+    /// Only visible on boards where `team_size` < the formation's role slots
+    /// (the full pitch fields the same eleven roles either way). Measured as
+    /// Home 0.490 ± 0.001 in 20k random-vs-random games when Home kicked first.
+    #[test]
+    fn lineups_do_not_drift_with_setup_order() {
+        use crate::core::dices::Coin;
+        use crate::core::gamestate::DiceMode;
+        use crate::core::model::Action;
+        use crate::core::table::SimpleAT;
+        const PLAYERS_4: usize = 4;
+        if !fits_capacity() || TEAM_SIZE < PLAYERS_4 {
+            return;
+        }
+        fn roles(state: &super::GameState, team: TeamType) -> Vec<String> {
+            let mut v: Vec<String> = state
+                .get_players_on_pitch_in_team(team)
+                .map(|p| format!("{:?}", p.stats.role))
+                .collect();
+            v.sort();
+            v
+        }
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(BoardDims::new(W, H, PLAYERS_4))
+            .set_state(BuilderState::CoinToss)
+            .build();
+        // Away calls Heads and wins, then receives: Home kicks, Away sets up first.
+        state.fix_coin(Coin::Heads);
+        state.step_simple(SimpleAT::Heads);
+        state.step_simple(SimpleAT::Receive);
+        assert_eq!(state.info.kicking_first_half, TeamType::Home);
+        state.set_seed(7);
+        state.set_dice_mode(DiceMode::RollDice);
+
+        // Walk the game with "end turn when you can, else the first legal
+        // action" and snapshot both line-ups at each kickoff.
+        let mut lineups: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+        let mut steps = 0;
+        while lineups.len() < 2 && !state.info.game_over && steps < 10_000 {
+            steps += 1;
+            if state.is_legal_action(&Action::Simple(SimpleAT::KickoffAimMiddle)) {
+                lineups.push((roles(&state, TeamType::Home), roles(&state, TeamType::Away)));
+            }
+            let action = if state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)) {
+                Action::Simple(SimpleAT::EndTurn)
+            } else {
+                state.get_all_actions()[0]
+            };
+            state.step(action).unwrap();
+        }
+        assert_eq!(lineups.len(), 2, "expected the first- and second-half kickoffs");
+        assert_eq!(lineups[0].0, lineups[0].1, "both teams field the same roles in drive 1");
+        assert_eq!(lineups[1].0, lineups[0].0, "Home's line-up must not drift between drives");
+        assert_eq!(lineups[1].1, lineups[0].1, "Away's line-up must not drift between drives");
+    }
+
     #[test]
     #[should_panic(expected = "exceeds compiled capacity")]
     fn board_dims_over_capacity_panics() {
