@@ -24,9 +24,13 @@
 
 mod common;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use botbowl_data::ChildStat;
 use botbowl_engine::bots::Bot;
 use botbowl_mcts::{MctsBot, SearchBudget, TieBreak};
+use botbowl_nn::eval::NnEvaluator;
 
 use common::{mirror_action, mirror_playable, states, tier};
 
@@ -105,19 +109,58 @@ fn assert_exact_mirror(
     }
 }
 
+/// Which leaf/prior source the arm runs. The heuristic arms are the
+/// original plan-023 tests; the `Nn` arms are plan 031 D9.
+#[derive(Clone)]
+enum Arm {
+    Heuristic,
+    Nn(Arc<NnEvaluator>),
+}
+
+/// `BLOOD_NN_MIRROR_MODEL` points the NN arms at a real champion instead of
+/// the committed fixture — `models/` is gitignored so the default must stay
+/// on `tiny.onnx`. Same knob `mirror_nn_evaluator.rs` uses. The invariant is
+/// structural (the canonical frame in `botbowl-nn/src/perspective.rs` maps a
+/// state and its mirror onto the identical tensor), so it must hold for an
+/// arbitrary net; an untrained fixture localises a failure to the plumbing.
+fn nn_arm() -> Arm {
+    let onnx = match std::env::var("BLOOD_NN_MIRROR_MODEL") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../botbowl-nn/tests/fixtures/tiny.onnx"),
+    };
+    assert!(
+        onnx.exists(),
+        "missing model {} — run `uv run python -m bbnn.fixture` for the fixture",
+        onnx.display()
+    );
+    Arm::Nn(Arc::new(
+        NnEvaluator::from_path(&onnx).unwrap_or_else(|e| panic!("load {}: {e}", onnx.display())),
+    ))
+}
+
+fn bot(arm: &Arm, iters: usize) -> MctsBot {
+    let b = MctsBot::new(SearchBudget::Iterations(iters))
+        .with_workers(1)
+        .with_tie_break(TieBreak::Mover);
+    match arm {
+        Arm::Heuristic => b,
+        Arm::Nn(nn) => b.with_evaluator(Arc::clone(nn)),
+    }
+}
+
 fn run_at_budget(iters: usize, n: u32, seed: u64) {
+    run_arm_at_budget(&Arm::Heuristic, iters, n, seed);
+}
+
+fn run_arm_at_budget(arm: &Arm, iters: usize, n: u32, seed: u64) {
     let dims = tier();
     for (i, mut s) in states(n, seed).into_iter().enumerate() {
         let mut m = mirror_playable(&s, dims);
         s.set_seed(1000 + i as u64);
         m.set_seed(1000 + i as u64);
 
-        let mut bot_s = MctsBot::new(SearchBudget::Iterations(iters))
-            .with_workers(1)
-            .with_tie_break(TieBreak::Mover);
-        let mut bot_m = MctsBot::new(SearchBudget::Iterations(iters))
-            .with_workers(1)
-            .with_tie_break(TieBreak::Mover);
+        let mut bot_s = bot(arm, iters);
+        let mut bot_m = bot(arm, iters);
         let (action_s, sample_s) = bot_s.get_action_with_record(&s);
         let (action_m, sample_m) = bot_m.get_action_with_record(&m);
 
@@ -172,6 +215,56 @@ fn search_mirrors_exactly_at_budget_20() {
 #[ignore]
 fn search_mirrors_exactly_at_budget_200() {
     run_at_budget(200, 20, 24_100);
+}
+
+// ---------------------------------------------------------------------
+// Plan 031 D9: the same assertions under `Evaluator::Nn`.
+//
+// The arms above prove equivariance for the *heuristic* evaluator only,
+// and plan 027 left an unlocalised 56% Away share (z ≈ 3.4 pair-corrected)
+// in NN full games. `mirror_nn_evaluator.rs` already pins the two pieces
+// the search is built from — `value_home(mirrored(s)) == -value_home(s)`
+// and mover-relative priors — so if those hold and the search is
+// covariant, the composition must be exactly mirror-equivariant too.
+// Green here means the residual side bias is tie-break variance or
+// turn-order, and plan 032 #11's mirror games decide it. Red means a real
+// bug in the NN search path, which outranks everything else in the queue.
+//
+// These are `#[ignore]`d for cost (a tract forward per expanded node), not
+// for flakiness: run with
+//   cargo test -p botbowl-mcts --test mirror_search_exact -- --ignored nn_
+// ---------------------------------------------------------------------
+
+/// Root expansion only — isolates NN scoring/prior plumbing from selection.
+#[test]
+#[ignore]
+fn nn_search_mirrors_exactly_at_budget_5() {
+    run_arm_at_budget(&nn_arm(), 5, 40, 24_100);
+}
+
+/// Deep enough for PUCT descent to matter: this is where a non-covariant
+/// prior or a sign slip in backprop first shows up.
+#[test]
+#[ignore]
+fn nn_search_mirrors_exactly_at_budget_20() {
+    run_arm_at_budget(&nn_arm(), 20, 40, 24_100);
+}
+
+#[test]
+#[ignore]
+fn nn_search_mirrors_exactly_at_budget_200() {
+    run_arm_at_budget(&nn_arm(), 200, 20, 24_100);
+}
+
+/// The budget production actually plays at. The lower arms could in
+/// principle stay green while a bias only expressed itself deep in the tree
+/// (more recombination, more solved subtrees, more chance branching), and
+/// 1000 is the budget every side-bias measurement in plan 027 was taken at,
+/// so this is the arm that speaks directly to that result.
+#[test]
+#[ignore]
+fn nn_search_mirrors_exactly_at_production_budget() {
+    run_arm_at_budget(&nn_arm(), 1000, 20, 24_100);
 }
 
 /// Confirms the root-pick-only agreement rate the plan quotes (78% at 200

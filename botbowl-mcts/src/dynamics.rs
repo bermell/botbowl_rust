@@ -14,7 +14,7 @@
 //!   actions, feeding the stored `RollResult` straight in.
 
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -523,6 +523,134 @@ fn sole_legal_action(state: &GameState) -> Option<EngineAction> {
     }
     Some(first)
 }
+
+/// Which of `score_leaf`'s four documented leaf cases a state falls into.
+/// Recorded so [`LeafStats`] can answer plan 031 D8 — "how often is a
+/// mid-procedure state (case 4) handed to the NN, which never saw one in
+/// training?" — without a bespoke instrumented build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeafCase {
+    /// 1. Pending roll, in horizon, game live: a chance node. Expanded,
+    ///    *not* scored (`score_leaf` returns `None`).
+    ChanceUnscored,
+    /// 1b. Pending roll but past the horizon or game over: unexpandable,
+    ///     so it must carry a score. Every in-search touchdown lands here.
+    ChancePastHorizon,
+    /// 2. `game_over` — the true drive outcome.
+    Terminal,
+    /// 3. A player decision — the value function's home ground, and the
+    ///    only case the net is trained on.
+    PlayerDecision,
+    /// 4. Mid-procedure: no pending roll, not over, no team to act.
+    ///    `available_actions` returns `None`, so recon_mcts marks it
+    ///    terminal and it must be scored — out of distribution for the NN.
+    MidProcedure,
+}
+
+/// Classify a state exactly the way `score_leaf`'s body branches, so the
+/// counters cannot drift from the code they describe.
+fn leaf_case(state: &GameState, past_horizon: bool) -> LeafCase {
+    if state.pending_roll.is_some() {
+        if !state.info.game_over && !past_horizon {
+            return LeafCase::ChanceUnscored;
+        }
+        if state.info.game_over {
+            return LeafCase::Terminal;
+        }
+        return LeafCase::ChancePastHorizon;
+    }
+    if state.info.game_over {
+        return LeafCase::Terminal;
+    }
+    match state.available_actions.team {
+        Some(_) => LeafCase::PlayerDecision,
+        None => LeafCase::MidProcedure,
+    }
+}
+
+/// Process-global tally of `score_leaf` calls by [`LeafCase`], plus how many
+/// of them reached an actual network forward. Plain relaxed counters —
+/// negligible next to a tract forward, and always on so any run can be
+/// re-read after the fact with `BLOOD_MCTS_STATS=1`.
+#[derive(Default)]
+pub struct LeafStats {
+    pub chance_unscored: AtomicU64,
+    pub chance_past_horizon: AtomicU64,
+    pub terminal: AtomicU64,
+    pub player_decision: AtomicU64,
+    pub mid_procedure: AtomicU64,
+    /// Calls that actually queried the net (i.e. were not answered by the
+    /// exact-outcome carve-out). The denominator D8's threshold is against.
+    pub nn_forwards: AtomicU64,
+    /// …of which were case 4. The numerator.
+    pub nn_forwards_mid_procedure: AtomicU64,
+    /// Scored leaves answered by the exact-outcome carve-out instead of the
+    /// net: the game ended, or someone scored since the horizon anchor.
+    /// Counted directly rather than inferred as `scored − nn_forwards`,
+    /// because "how many in-search touchdowns does a search actually reach?"
+    /// is a question in its own right — it bounds what any leaf-value or
+    /// backup change can possibly learn from terminal reward.
+    pub exact_outcome: AtomicU64,
+}
+
+impl LeafStats {
+    fn record(&self, case: LeafCase) {
+        let slot = match case {
+            LeafCase::ChanceUnscored => &self.chance_unscored,
+            LeafCase::ChancePastHorizon => &self.chance_past_horizon,
+            LeafCase::Terminal => &self.terminal,
+            LeafCase::PlayerDecision => &self.player_decision,
+            LeafCase::MidProcedure => &self.mid_procedure,
+        };
+        slot.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_nn_forward(&self, case: LeafCase) {
+        self.nn_forwards.fetch_add(1, Ordering::Relaxed);
+        if case == LeafCase::MidProcedure {
+            self.nn_forwards_mid_procedure.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// One `MCTS_LEAF_STATS` line, cumulative over the process.
+    pub fn summary(&self) -> String {
+        let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        let (chance, past, term, dec, mid) = (
+            load(&self.chance_unscored),
+            load(&self.chance_past_horizon),
+            load(&self.terminal),
+            load(&self.player_decision),
+            load(&self.mid_procedure),
+        );
+        let total = chance + past + term + dec + mid;
+        let fwd = load(&self.nn_forwards);
+        let mid_fwd = load(&self.nn_forwards_mid_procedure);
+        let exact = load(&self.exact_outcome);
+        let scored = (total - chance).max(1);
+        format!(
+            "MCTS_LEAF_STATS total={total} chance_unscored={chance} chance_past_horizon={past} \
+             terminal={term} player_decision={dec} mid_procedure={mid} \
+             mid_share_of_scored={:.6} nn_forwards={fwd} nn_forwards_mid_procedure={mid_fwd} \
+             mid_share_of_forwards={:.6} exact_outcome={exact} exact_share_of_scored={:.6}",
+            mid as f64 / scored as f64,
+            mid_fwd as f64 / fwd.max(1) as f64,
+            exact as f64 / scored as f64,
+        )
+    }
+}
+
+/// The single process-wide instance. Cumulative across every search in the
+/// process, so the last dumped line of a multi-game run is the run total.
+pub static LEAF_STATS: LeafStats = LeafStats {
+    chance_unscored: AtomicU64::new(0),
+    chance_past_horizon: AtomicU64::new(0),
+    terminal: AtomicU64::new(0),
+    player_decision: AtomicU64::new(0),
+    mid_procedure: AtomicU64::new(0),
+    nn_forwards: AtomicU64::new(0),
+    nn_forwards_mid_procedure: AtomicU64::new(0),
+    exact_outcome: AtomicU64::new(0),
+};
 
 /// Inspect a state and decide which "player" owns it from MCTS's
 /// perspective. Chance nodes are detected by a pending roll; otherwise
@@ -1130,6 +1258,8 @@ impl GameDynamics for BloodBowlDynamics {
         // is constant per search, so this stays a pure function of
         // (state, anchor).
         let past_horizon = self.horizon.is_some_and(|anchor| anchor.diverged(state));
+        let case = leaf_case(state, past_horizon);
+        LEAF_STATS.record(case);
         if state.pending_roll.is_some() && !state.info.game_over && !past_horizon {
             return None; // chance node — expanded, not scored
         }
@@ -1166,15 +1296,23 @@ impl GameDynamics for BloodBowlDynamics {
             // pay for a policy tensor it will never read.
             Evaluator::Nn(nn) => match &self.horizon {
                 Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                    LEAF_STATS.exact_outcome.fetch_add(1, Ordering::Relaxed);
                     anchor.score_delta(state).clamp(-1, 1) * 1000
                 }
-                _ => nn.value_home_i64_prefetch_policy(state),
+                _ => {
+                    LEAF_STATS.record_nn_forward(case);
+                    nn.value_home_i64_prefetch_policy(state)
+                }
             },
             Evaluator::NnValue(nn) => match &self.horizon {
                 Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                    LEAF_STATS.exact_outcome.fetch_add(1, Ordering::Relaxed);
                     anchor.score_delta(state).clamp(-1, 1) * 1000
                 }
-                _ => nn.value_home_i64(state),
+                _ => {
+                    LEAF_STATS.record_nn_forward(case);
+                    nn.value_home_i64(state)
+                }
             },
         };
         Some(BbScore {
@@ -1626,6 +1764,13 @@ impl MctsBot {
         // tree drops. Used to validate recombination + depth claims
         // (plan 013) without modifying the benchmark tests.
         let dump_stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
+        // `BLOOD_MCTS_LEAF_STATS=1` dumps only the cumulative `score_leaf`
+        // case tally (plan 031 D8). Separate from `BLOOD_MCTS_STATS` because
+        // that one also walks the whole DAG for its depth histogram, which
+        // costs more than the search on a 1000-iteration tree — far too much
+        // to pay per search across a 20-game run.
+        let dump_leaf_stats =
+            dump_stats || std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
         let memory_mode = MemoryMode::resolve(self.memory_mode);
 
         // `new_anchor` mirrors `gd.horizon` when horizon is enabled. We
@@ -1759,6 +1904,11 @@ impl MctsBot {
                             }
                         });
                     }
+                }
+                if dump_leaf_stats {
+                    // Cumulative over the process, not per search — plan 031
+                    // D8 wants a rate over a whole run, so the last line wins.
+                    eprintln!("{}", LEAF_STATS.summary());
                 }
                 if dump_stats {
                     let info = tree.get_registry_info();
@@ -2215,6 +2365,78 @@ mod tests {
             "the touchdown must dominate the leaf score, got {}",
             score.score
         );
+    }
+
+    /// `leaf_case` exists only to describe what `score_leaf` did, so the one
+    /// thing it must never get wrong is which states `score_leaf` declines to
+    /// score. Pin the equivalence rather than the classification: if someone
+    /// changes the early return, this fails instead of silently reporting a
+    /// D8 rate computed against the wrong denominator.
+    #[test]
+    fn leaf_case_agrees_with_score_leaf_on_what_is_scored() {
+        use botbowl_engine::core::dices::RequestedRoll;
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::{Position, TeamType};
+
+        let base = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        let anchor = HorizonAnchor::capture(&base, TeamType::Home);
+        let dynamics = BloodBowlDynamics {
+            horizon: Some(anchor),
+            virtual_loss: 0,
+            ..Default::default()
+        };
+
+        // (label, state) pairs covering each documented case.
+        let mut cases: Vec<(&str, GameState)> = Vec::new();
+
+        // 3. player decision: the builder leaves Home to act.
+        cases.push(("player_decision", base.clone()));
+
+        // 1. pending roll, in horizon, live game.
+        let mut chance = base.clone();
+        chance.pending_roll = Some(RequestedRoll::D8);
+        cases.push(("chance_unscored", chance.clone()));
+
+        // 1b. same, but a touchdown has tripped the horizon.
+        let mut past = chance.clone();
+        past.home.score += 1;
+        cases.push(("chance_past_horizon", past));
+
+        // 2. game over.
+        let mut over = base.clone();
+        over.info.game_over = true;
+        cases.push(("terminal", over));
+
+        // 4. mid-procedure: no roll, not over, nobody to act.
+        let mut mid = base.clone();
+        mid.available_actions.team = None;
+        cases.push(("mid_procedure", mid));
+
+        for (label, state) in &cases {
+            let past_horizon = dynamics.horizon.is_some_and(|a| a.diverged(state));
+            let case = leaf_case(state, past_horizon);
+            let scored = dynamics.score_leaf(None, &BbPlayer::Chance, state).is_some();
+            assert_eq!(
+                scored,
+                case != LeafCase::ChanceUnscored,
+                "{label}: score_leaf scored={scored} but leaf_case said {case:?}"
+            );
+        }
+
+        // And the classification itself, so the counter labels mean what the
+        // summary line claims they mean.
+        let expected = [
+            ("player_decision", LeafCase::PlayerDecision),
+            ("chance_unscored", LeafCase::ChanceUnscored),
+            ("chance_past_horizon", LeafCase::ChancePastHorizon),
+            ("terminal", LeafCase::Terminal),
+            ("mid_procedure", LeafCase::MidProcedure),
+        ];
+        for (label, want) in expected {
+            let state = &cases.iter().find(|(l, _)| *l == label).expect("case present").1;
+            let past_horizon = dynamics.horizon.is_some_and(|a| a.diverged(state));
+            assert_eq!(leaf_case(state, past_horizon), want, "{label}");
+        }
     }
 
     #[test]
