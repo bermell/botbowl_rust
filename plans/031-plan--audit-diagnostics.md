@@ -10,16 +10,18 @@ item here was under ~1 h of machine time, most ran offline on the shards already
 Three of the four hypotheses these diagnostics were written to confirm turned out to be **wrong**,
 and the two largest findings were not on the list at all.
 
-| item | expectation going in | what was measured |
-|---|---|---|
-| D1 root-Q calibration | minimax-over-noise optimism | see D1 |
-| D2 tie rate | ~85% tied roots (from 8x3 pure-td) | see D2 |
-| D3 encoding ambiguity | missing action-type plane | 12.78% ambiguous, but **zero** of them are action-type; it is the procedure stack, and the measured cost is 0 |
-| D4 prior domination | search follows the NN prior | real but partial: prior lift 1.98 → 3.11, not the collapse the Read described |
-| D5 weight movement | 2e-4 barely moves the net | it moves it **1.4-1.7× further** than the last fine-tune that *did* win a rung |
-| D8 mid-procedure scoring | "below 0.1% is close" | exactly **0** — and the counter surfaced that `exact_outcome` is **0 too** |
-| D9 NN mirror equivariance | plan 027's 56% Away share might be a bug | **green** at every budget including production 1000 |
-| D10 pair correlation | ~1.10× SE inflation | **1.003**, CI [0.962, 1.060] — there is none |
+| item | expectation going in | what was measured | verdict |
+|---|---|---|---|
+| D1 root-Q calibration | minimax-over-noise optimism, flattening with fan width | optimism **+0.133-0.140**, but the fan-width signature is absent. A follow-up settles it: the bare leaf is at **+0.031** and **the search adds +0.101** (z=52) | **confirmed by other means** |
+| D2 tie rate | ~85% tied roots (from 8x3 pure-td) | **13.5%** in the nn half; the cross-generation test is **vacuous** (one frozen generator net). Real defect found elsewhere: top-1 label agreement **0.588** | **wrong** |
+| D3 encoding ambiguity | missing action-type plane | 12.78% ambiguous, but **zero** of them are action-type; it is the procedure stack, and the measured cost is 0 | **wrong remedy** |
+| D4 prior domination | search follows the NN prior | real but partial: prior lift **1.98 → 3.11** in production, **1.08 → 5.54** on matched states; not the collapse the Read described | **partly** |
+| D5 weight movement | 2e-4 barely moves the net | it moves it **1.4-1.7× further** than the last fine-tune that *did* win a rung | **wrong, and backwards** |
+| D6 corpus composition | ~33% hedge by samples | 33% confirmed — but **29.1% of train vs 47.5% of val**; and the generator net has been **frozen at gen03 since gen04** | **confirmed + two surprises** |
+| D7 y-flip augmentation cost | "expected small" — maybe drop it from the policy loss | **`--no-augment` is worse** (+0.0092 best `val_policy`, +0.0995 by step 110k). It is regularising, not correcting | **wrong** |
+| D8 mid-procedure scoring | "below 0.1% is close" | exactly **0** of 188,110 scored leaves | **confirmed** |
+| D9 NN mirror equivariance | plan 027's 56% Away share might be a bug | **green** at every budget including production 1000, fixture and champion | **not a bug** |
+| D10 pair correlation | ~1.10× SE inflation | **1.003**, CI [0.962, 1.060] — there is none | **wrong** |
 
 The two unplanned findings, both from D8's counters:
 
@@ -557,6 +559,53 @@ the comparison to samples with `ball_on_ground` set.
 
 **Read.** If `--no-augment` is not worse on `val_policy`, drop augmentation from the policy loss
 (keep it for the value head) or make the chance collapse y-covariant. Expected small.
+
+### Result (2026-09-07) — **`--no-augment` is worse; keep the augmentation**
+
+Only one train was needed, not two: `runs/exp-data/d1.pt` **is** the augmented arm (`train_arm`
+never passes `--no-augment`, and `train.py`'s default is `augment=True`). So the control already
+existed and this cost ~36 min of GPU, not the ~75 min budgeted. The `--no-augment` arm is
+`runs/audit031/d7-noaug.*`, identical in every other respect — same `arm_init.pt`, same
+`--seed 20260906`, same 110,000 steps, same `--eval-every 2500`, same `prep_d1` pool, same gen07
+holdout. Init assertion passes: both log `epoch -1 (warm-start baseline) | val_value 0.6410`.
+
+| metric (44 checkpoints each) | augment (`d1`) | `--no-augment` | Δ |
+|---|---|---|---|
+| best `val_policy` | **1.4740** @ 42,500 | 1.4832 @ 25,000 | **+0.0092 worse** |
+| best `val_value` | **0.4074** @ 5,000 | 0.4101 @ 5,000 | +0.0027 worse |
+| best `val_top1` | 0.5260 @ 20,000 | **0.5280** @ 10,000 | −0.0020 *better* |
+| best combined (what the loop selects on) | **1.8979** @ 17,500 | 1.9128 @ **7,500** | **+0.0149 worse** |
+| …its `val_policy` | **1.4781** | 1.4971 | +0.0190 worse |
+
+**Read: `--no-augment` is worse on `val_policy`, so the plan's condition is not met — do not drop
+the augmentation, and do not spend effort making the chance collapse y-covariant on this evidence.**
+
+**What the augmentation is actually doing is regularising, not correcting.** The gap is negligible
+early and grows without bound late:
+
+| step | 2,500 | 7,500 | 17,500 | 50,000 | 110,000 |
+|---|---|---|---|---|---|
+| Δ `val_policy` (no-aug − aug) | +0.0023 | −0.0084 | +0.0079 | **+0.0334** | **+0.0995** |
+
+Without augmentation the net reaches its best `val_policy` at 25,000 steps and its selected
+checkpoint at **7,500**; with it, 42,500 and 17,500. So the y-flip is buying delayed overfitting on
+a fixed corpus, which is the ordinary reason to augment — not repairing a y-asymmetry.
+
+**The one result that leans the plan's way, reported because it is the interesting half.** Best
+`val_top1` is marginally *better* without augmentation (0.5280 vs 0.5260). Cross-entropy and
+top-1 disagree in sign, which is what you would expect if the hypothesised y-asymmetry is real but
+small: flipping genuinely y-asymmetric policy targets blurs the argmax slightly, while the
+regularisation more than pays for it in likelihood. So the plan's mechanism may well exist — it is
+just an order of magnitude smaller than the benefit it would have to beat.
+
+**Caveat on power.** One seed pair. The `val_policy` differences (0.009-0.019 nats) sit in a range
+where D10's lesson applies and there is no across-seed noise floor for `val_*` — plan 032 #8 (seed
+variance) would supply one. The *overfitting* difference (+0.0995 by 110k) is far too large to be
+seed noise and is the part to rely on.
+
+**Decides.** Closes the question — no plan 032 item is created. If the y-covariance of the chance
+collapse is ever revisited, it should be motivated by a search-side measurement, not by this
+training comparison.
 
 ## D8 — How often is a mid-procedure state scored out of distribution?
 
