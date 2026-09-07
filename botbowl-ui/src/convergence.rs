@@ -163,6 +163,34 @@ pub fn run(args: ConvergenceArgs) -> io::Result<()> {
             continue;
         };
 
+        // Plan 032 #7: step into the turn with a production-budget bot so
+        // the probed root is a mid-turn (wide-fan) decision. Each decision
+        // gets a fresh bot: no tree reuse leaks into the probe.
+        let mut advanced_ok = true;
+        for _ in 0..args.advance {
+            if state.info.game_over || state.available_actions.team.is_none() {
+                advanced_ok = false;
+                break;
+            }
+            let mut bot = make_bot(&args, nn.as_ref(), 1000);
+            let action = bot.get_action(&state);
+            state.step(action).expect("engine step failed while advancing a probe state");
+        }
+        if !advanced_ok || state.info.game_over || state.available_actions.team.is_none() {
+            eprintln!("[{state_idx}] seed={state_seed} left the decision loop while advancing — skipped");
+            continue;
+        }
+        if args.min_legal > 0 {
+            // The fan the search sees is the *pruned* one, so measure it the
+            // way the search does: a root-expansion-only search.
+            let mut probe = make_bot(&args, nn.as_ref(), 2);
+            let n = probe.get_action_with_record(&state).1.children.len();
+            if n < args.min_legal {
+                eprintln!("[{state_idx}] seed={state_seed} fan {n} < --min-legal {} — skipped", args.min_legal);
+                continue;
+            }
+        }
+
         for repeat in 0..args.repeats {
             for &budget in &budgets {
                 let mut bot = make_bot(&args, nn.as_ref(), budget);

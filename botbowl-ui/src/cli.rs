@@ -72,6 +72,18 @@ pub struct ConvergenceArgs {
     /// Range floor for `--puct-mode normalised`.
     #[arg(long)]
     pub puct_range_floor: Option<f32>,
+    /// Play this many decisions with a production bot (1000 iterations,
+    /// same evaluator) from the random start before probing, so the probed
+    /// root is a mid-turn state — e.g. 1 turns an activation root (fan
+    /// ≈ 4 × players + 1) into a move fan of 30-100 squares (plan 032 #7).
+    /// 0 (default) probes the random start itself.
+    #[arg(long, default_value_t = 0)]
+    pub advance: u32,
+    /// Skip probed roots with fewer legal actions than this, so a run can
+    /// target the wide-fan regime specifically. Skipped states still consume
+    /// their seed slot; raise --states to compensate.
+    #[arg(long, default_value_t = 0)]
+    pub min_legal: usize,
     /// Random-start placement biases (defaults match generation).
     #[command(flatten)]
     pub bias: BiasArgs,
