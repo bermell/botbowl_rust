@@ -315,7 +315,53 @@ section carries the evidence.
   seed base 91000000. Incidental finding from the smoke run: after one activation the pruned
   fan is **bimodal** — of 40 seeds, 16 had fan 1 (pruning collapses the move fan to a single
   square), 14 had 2-22, and 10 (25%) had ≥30. So "wide fan" is a quarter of second decisions,
-  not the norm, and the first decision after activation is often forced. Result: pending.
+  not the norm, and the first decision after activation is often forced.
+
+  **Result (2026-09-08, 93 min, `runs/exp032/s7-widefan-c10.jsonl`, `audit_s7-widefan-c10.txt`).**
+  Two bookkeeping corrections first: the effective seed base was 32000000, not 91000000 (the
+  lib exports `SEED` after the script sets it — harmless, the seeds are still disjoint from
+  every match); and of 200 seeds **163 were skipped** for fan <30, leaving **37 states** (fans
+  31-95, 24 pairs in the 31-60 bucket and 198 in >60). The bimodality from the smoke run held
+  at scale: ≈18% of second decisions have a wide fan. Reference (16k) self-agreement across
+  its own repeats is 0.79 on argmax visits and 1.00 on `chosen_action`, so the ceiling for any
+  1000-budget target is ~0.8 on the visits column and 1.0 on the played column.
+
+  | target | top-1 vs ref visits | top-1 vs ref played | >60 bucket, vs ref played (198 pairs) |
+  |---|---|---|---|
+  | visits (shipped) | 0.216 | 0.212 | 0.177 |
+  | argmaxq | 0.270 | 0.347 | 0.308 |
+  | **cq(25)** | **0.311** | **0.401** | **0.389** |
+  | cq(50) | 0.311 | 0.365 | 0.348 |
+  | cq(100) | 0.284 | 0.284 | 0.258 |
+  | cq(200) | 0.239 | 0.239 | 0.207 |
+  | cqv(25) | 0.288 | 0.288 | 0.263 |
+
+  Reading. (a) **The shipped target is near-useless at wide fans**: 0.21 top-1 against either
+  reference, versus 0.69 on the narrow dump — D2's 0.22/0.25 numbers were not an artefact of
+  comparing against the played move, the 1000-visit distribution simply has not converged
+  there. (b) **Completed-Q beats it in every cell of both probes.** τ=100 (the pre-registered
+  value, best on the narrow dump) wins by +0.07 here; the sharper τ=25-50 wins by +0.10/+0.19
+  at wide fans but was slightly *worse* than visits on the narrow dump (cq(50) 0.647 vs 0.687
+  on ref visits). The trade-off is the expected one: at τ→0 the target collapses onto
+  `argmaxq`, which is exactly what `pick_best_action` plays and so scores well on "ref played"
+  while throwing away the distributional information a prior needs at narrow fans. (c) The
+  `cqv` variants (ln visits instead of ln prior) track `visits` and lose — the prior, not the
+  visit count, carries the useful ranking at wide fans, which is consistent with D2's finding
+  that visits there are mostly the FPU sweep.
+
+  **Gate passes.** Decision: train **Q7 at τ=100** as pre-registered (the only value that beats
+  the shipped target on *all four* cells of the two probes: narrow/wide × ref visits/ref
+  played); if Q7 beats D7, the follow-up is τ=50 as a second one-variable arm, and if that also
+  wins, a fan-dependent τ. Both probe files stay under `runs/exp032/` for re-scoring new target
+  ideas offline (`scripts/audit_q_target.py <jsonl>`) — no search needed.
+- **Run (launched 2026-09-08 00:06, `scripts/exp032_s7_cq_target.sh`, commit 030745b).** D7 is
+  the control (plan 029: from scratch on gen01-07, `arm_init.pt`, lr 1e-3, 110k steps, visit
+  target). Q7 = the identical recipe with the pool *and* the held-out set re-prepared under
+  `prepare --policy-target cq --tau 100` (so `--select-on combined` selects against the label
+  the net is trained on; val_value stays comparable to D7, val_policy does not). Prepare +
+  train overlap stage 1/2 of the eval chain (niced, GPU has headroom); the match `s7-q7-vs-d7`
+  (120 games, seed base 32000000) waits for the stage-2 runner and precedes stage 3.
+  Result: pending.
 
 ### 8. Encoder additions
 
