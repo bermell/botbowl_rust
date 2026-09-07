@@ -139,10 +139,18 @@ fn nn_arm() -> Arm {
 }
 
 fn bot(arm: &Arm, iters: usize, backup: BackupMode) -> MctsBot {
+    // `BLOOD_NN_MIRROR_FPU_K` lets the plan-032 #3 FPU-reduction arm run
+    // through the same exact-mirror assertions (its visited-prior share is
+    // accumulated in f64 so it should not depend on child order).
+    let k = std::env::var("BLOOD_NN_MIRROR_FPU_K")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.0);
     let b = MctsBot::new(SearchBudget::Iterations(iters))
         .with_workers(1)
         .with_tie_break(TieBreak::Mover)
-        .with_backup(backup);
+        .with_backup(backup)
+        .with_fpu_reduction(k);
     match arm {
         Arm::Heuristic => b,
         Arm::Nn(nn) => b.with_evaluator(Arc::clone(nn)),

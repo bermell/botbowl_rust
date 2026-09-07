@@ -347,6 +347,14 @@ pub struct EvalArgs {
     /// a backup-rule head-to-head in one process.
     #[arg(long)]
     pub vs_backup: Option<String>,
+    /// Candidate FPU reduction `k` in Q points (plan 032 #3): unexplored
+    /// children are estimated at `parent_Q − k·√(visited prior share)`.
+    /// 0 (default) is the shipped plain-FPU behaviour.
+    #[arg(long, default_value_t = 0.0)]
+    pub fpu_reduction: f32,
+    /// Opponent FPU reduction; defaults to the candidate's.
+    #[arg(long)]
+    pub vs_fpu_reduction: Option<f32>,
     /// Skip the fixed rungs (random/scripted/mcts-heuristic), keeping only
     /// the --vs-evaluator rung. E.g. mirror matches and promotion gates.
     #[arg(long, default_value_t = false)]

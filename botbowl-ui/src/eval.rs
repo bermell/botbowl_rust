@@ -119,12 +119,14 @@ fn make_bot(
     puct: PuctMode,
     horizon_turns: u8,
     backup: BackupMode,
+    fpu_reduction: f32,
 ) -> MctsBot {
     let bot = MctsBot::new(SearchBudget::Iterations(iters))
         .with_workers(workers)
         .with_puct(puct)
         .with_horizon_turns(horizon_turns)
-        .with_backup(backup);
+        .with_backup(backup)
+        .with_fpu_reduction(fpu_reduction);
     match evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
@@ -142,6 +144,7 @@ fn make_candidate(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
         puct_of(&args.puct_mode, args.puct_c),
         args.horizon_turns,
         backup_of(&args.backup),
+        args.fpu_reduction,
     )
 }
 
@@ -170,9 +173,17 @@ fn candidate_label(args: &EvalArgs) -> String {
             let base = evaluator_label(args.evaluator, args.model.as_deref());
             // Non-default search knobs go into the label so a report is
             // self-describing (plan 032 arms differ only in these).
-            match backup_of(&args.backup) {
-                BackupMode::Minimax => base,
-                b => format!("{base} [{}]", b.label()),
+            let mut knobs: Vec<String> = Vec::new();
+            if let b @ BackupMode::Mean = backup_of(&args.backup) {
+                knobs.push(b.label().to_string());
+            }
+            if args.fpu_reduction > 0.0 {
+                knobs.push(format!("fpu_k={}", args.fpu_reduction));
+            }
+            if knobs.is_empty() {
+                base
+            } else {
+                format!("{base} [{}]", knobs.join(" "))
             }
         }
         CliCandidateBot::Scripted => "scripted".to_string(),
@@ -492,6 +503,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         let opp_horizon = args.vs_horizon_turns.unwrap_or(args.horizon_turns);
         let cand_backup = backup_of(&args.backup);
         let opp_backup = backup_of(args.vs_backup.as_deref().unwrap_or(&args.backup));
+        let opp_fpu = args.vs_fpu_reduction.unwrap_or(args.fpu_reduction);
         if !args.skip_fixed_rungs {
             let wanted: Vec<&str> = args.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
             for name in &wanted {
@@ -521,7 +533,8 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                                 .with_workers(args.mcts_workers)
                                 .with_puct(opp_puct)
                                 .with_horizon_turns(opp_horizon)
-                                .with_backup(opp_backup),
+                                .with_backup(opp_backup)
+                                .with_fpu_reduction(opp_fpu),
                         )
                     },
                 ));
@@ -529,7 +542,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         }
         if let Some(vs) = args.vs_evaluator {
             let label = format!(
-                "vs:{} [{}{}{}]",
+                "vs:{} [{}{}{}{}]",
                 evaluator_label(vs, args.vs_model.as_deref()),
                 opp_puct.label(),
                 if opp_horizon != args.horizon_turns {
@@ -539,6 +552,11 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                 },
                 if opp_backup != cand_backup {
                     format!(" {}v{}", opp_backup.label(), cand_backup.label())
+                } else {
+                    String::new()
+                },
+                if opp_fpu != args.fpu_reduction {
+                    format!(" fpu_k={opp_fpu}v{}", args.fpu_reduction)
                 } else {
                     String::new()
                 }
@@ -554,6 +572,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     opp_puct,
                     opp_horizon,
                     opp_backup,
+                    opp_fpu,
                 ))
             }));
         }

@@ -545,6 +545,17 @@ pub struct BloodBowlDynamics {
     /// Plan 032 #2: player-node aggregation rule. `Minimax` (default) is
     /// the shipped behaviour.
     pub backup: BackupMode,
+    /// Plan 032 #3: first-play-urgency reduction `k`, in Q points (the
+    /// ±1000 = TD scale). `0.0` (default) is the shipped behaviour — an
+    /// unexplored child is estimated at exactly the parent's Q. With
+    /// `k > 0` the estimate is
+    /// `parent_Q − k · √(Σ prior(visited children) / Σ prior(all children))`
+    /// (Leela/KataGo form, with the prior mass normalised because this
+    /// crate's priors are unnormalised, mean ≈ 1). The more of the prior
+    /// mass has already been tried, the less urgent the untried rest is;
+    /// the first visit at a node is unaffected. Raw PUCT only — the
+    /// normalised frame has its own FPU handling.
+    pub fpu_reduction: f32,
 }
 
 impl Default for BloodBowlDynamics {
@@ -556,6 +567,7 @@ impl Default for BloodBowlDynamics {
             puct: PuctMode::default(),
             tie_break: TieBreak::default(),
             backup: BackupMode::default(),
+            fpu_reduction: 0.0,
         }
     }
 }
@@ -1078,21 +1090,41 @@ impl GameDynamics for BloodBowlDynamics {
             // Raw: the historical expression, with `c` substituted for the
             // module constant. Same ops in the same order, so at c == PUCT_C
             // this is bit-identical f32 output.
-            PuctMode::Raw { c } => scores_and_actions
-                .clone()
-                .into_iter()
-                .map(|(q, a)| {
-                    let action = a.deref().clone();
-                    let p = action.prior_f32().unwrap_or(1.0);
-                    let v = puct_value(q.as_ref(), parent_visits, p, home_perspective, fpu, c);
-                    (v, action)
-                })
-                .max_by(|(va, aa), (vb, ab)| {
-                    va.partial_cmp(vb)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
-                })
-                .expect("player node must have at least one action"),
+            PuctMode::Raw { c } => {
+                // Plan 032 #3 — FPU reduction. One extra pass, same shape as
+                // the normalised frame's PASS 1 (one `Ref` alive at a time).
+                // f64 accumulation so the visited/total ratio does not
+                // depend on the order `recon_mcts` hands children back.
+                let fpu = if self.fpu_reduction > 0.0 {
+                    let mut visited = 0.0f64;
+                    let mut total = 0.0f64;
+                    for (q, a) in scores_and_actions.clone().into_iter() {
+                        let p = f64::from(a.deref().prior_f32().unwrap_or(1.0));
+                        total += p;
+                        if q.is_some() {
+                            visited += p;
+                        }
+                    }
+                    fpu - self.fpu_reduction * ((visited / total.max(f64::MIN_POSITIVE)).sqrt() as f32)
+                } else {
+                    fpu
+                };
+                scores_and_actions
+                    .clone()
+                    .into_iter()
+                    .map(|(q, a)| {
+                        let action = a.deref().clone();
+                        let p = action.prior_f32().unwrap_or(1.0);
+                        let v = puct_value(q.as_ref(), parent_visits, p, home_perspective, fpu, c);
+                        (v, action)
+                    })
+                    .max_by(|(va, aa), (vb, ab)| {
+                        va.partial_cmp(vb)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
+                    })
+                    .expect("player node must have at least one action")
+            }
 
             PuctMode::NormalisedQ { c, range_floor } => {
                 // PASS 1 — build the frame. Structurally identical to
@@ -1640,6 +1672,9 @@ pub struct MctsBot {
     /// Plan 032 #2 player-node aggregation rule. Resolved from
     /// `BLOOD_MCTS_BACKUP` at `::new`; see [`BackupMode`].
     backup: BackupMode,
+    /// Plan 032 #3 FPU reduction `k` (Q points); `BLOOD_MCTS_FPU_REDUCTION`.
+    /// See `BloodBowlDynamics::fpu_reduction`.
+    fpu_reduction: f32,
     /// How many of our own turns the search may look ahead before a
     /// state counts as terminal — see [`HorizonAnchor::turn_depth`].
     /// Default 1 (the historical single turn-pair). Resolved from
@@ -1688,6 +1723,7 @@ impl MctsBot {
             puct,
             tie_break: TieBreak::from_env(),
             backup: BackupMode::from_env(),
+            fpu_reduction: env_f32("BLOOD_MCTS_FPU_REDUCTION").unwrap_or(0.0).max(0.0),
             horizon_turns: std::env::var("BLOOD_MCTS_HORIZON_TURNS")
                 .ok()
                 .and_then(|v| v.trim().parse::<u8>().ok())
@@ -1770,6 +1806,13 @@ impl MctsBot {
         self.backup
     }
 
+    /// Override the env-var default for the FPU reduction (plan 032 #3),
+    /// in Q points; `0.0` disables it.
+    pub fn with_fpu_reduction(mut self, k: f32) -> Self {
+        self.fpu_reduction = k.max(0.0);
+        self
+    }
+
     /// How many own-turns the search may look ahead (see
     /// [`HorizonAnchor::turn_depth`]). `1` is the default and is
     /// bit-identical to the historical horizon.
@@ -1849,6 +1892,7 @@ impl MctsBot {
             puct: self.puct,
             tie_break: self.tie_break,
             backup: self.backup,
+            fpu_reduction: self.fpu_reduction,
         };
         // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
         // workers (e.g. `expand_bench_main`) force single-thread for
@@ -2355,6 +2399,64 @@ mod tests {
         let result = dynamics.backprop_scores(&BbPlayer::Home, None, pairs).expect("score");
         assert_eq!(result.score, -3);
         assert_eq!(result.visits.load(Ordering::Relaxed), 0);
+    }
+
+    /// Plan 032 #3 — FPU reduction. Parent Q 500 (Home), one explored
+    /// child (prior 5, Q 400, 5 visits) and two unexplored (prior 1). With
+    /// no reduction the unexplored child wins on FPU = parent Q
+    /// (500 + 10·1·√6 ≈ 524 vs 400 + 10·5·√6/6 ≈ 420). With k = 1000 and
+    /// 5/7 of the prior mass already visited the FPU drops to
+    /// 500 − 1000·√(5/7) ≈ −345, and the explored child wins.
+    #[test]
+    fn fpu_reduction_buries_unexplored_children_once_prior_mass_is_visited() {
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::Position;
+        let state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        let explored = BbAction::player(EngineAction::Simple(SimpleAT::EndTurn), 5.0);
+        let fresh_a = BbAction::player(EngineAction::Simple(SimpleAT::EndSetup), 1.0);
+        let fresh_b = BbAction::player(EngineAction::Simple(SimpleAT::Heads), 1.0);
+        let q_explored = Some(child(400, 5));
+        let none: Option<BbScore> = None;
+        let parent = child(500, 6);
+        let children = || -> Vec<(&Option<BbScore>, &BbAction)> {
+            vec![(&q_explored, &explored), (&none, &fresh_a), (&none, &fresh_b)]
+        };
+
+        let plain = BloodBowlDynamics {
+            virtual_loss: 0,
+            ..Default::default()
+        };
+        let picked = plain.select_node(
+            Some(&parent),
+            &BbPlayer::Home,
+            &state,
+            SelectNodeState::Explore,
+            children(),
+        );
+        assert_ne!(picked, explored, "without reduction an unexplored child wins on FPU");
+
+        let reduced = BloodBowlDynamics {
+            virtual_loss: 0,
+            fpu_reduction: 1000.0,
+            ..Default::default()
+        };
+        let picked = reduced.select_node(
+            Some(&parent),
+            &BbPlayer::Home,
+            &state,
+            SelectNodeState::Explore,
+            children(),
+        );
+        assert_eq!(
+            picked, explored,
+            "with k=1000 the visited prior mass buries the untried rest"
+        );
+
+        // Nothing visited yet → no reduction at all: the first pick is the
+        // same as without the knob (max prior).
+        let all_fresh: Vec<(&Option<BbScore>, &BbAction)> = vec![(&none, &explored), (&none, &fresh_a)];
+        let picked = reduced.select_node(None, &BbPlayer::Home, &state, SelectNodeState::Explore, all_fresh);
+        assert_eq!(picked, explored);
     }
 
     #[test]
