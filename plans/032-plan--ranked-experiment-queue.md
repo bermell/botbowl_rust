@@ -379,6 +379,31 @@ section carries the evidence.
   0.327-0.365) while the heuristic hedge is near even. Same direction as the 56%. Since the search
   is now proven mirror-exact, that points at the *game*, not the search — turn order, kickoff, or
   the random-start generator — which narrows where to look.
+- **Measured for free from the existing per-game logs (2026-09-07, `scripts/side_bias_pooled.py`).**
+  No mirror match is needed for the seat term: every paired match plays each seed from both
+  seats, so grouping the pooled games by *seat* instead of by candidate cancels the candidate
+  effect and leaves the side bias. Pooling the five NN full-game logs that exist (`exp-data`
+  s1-s4 + `exp-conv` b1, 600 games, five different nets, three seed bases):
+
+  | games | Home points | z | TD Home:Away |
+  |---|---|---|---|
+  | all 600 NN | **0.438 ± 0.018** | **−3.46** | 1979:2156 |
+  | Home kicked first | 0.418 ± 0.026 | −3.20 | 899:1028 |
+  | Away kicked first | 0.456 ± 0.026 | −1.72 | 1080:1128 |
+  | *receiving team, seat-agnostic* | 0.517 ± 0.018 | +0.96 | |
+  | 340 heuristic/nn-value mirror games (`exp-search`) | 0.479 ± 0.025 | −0.83 | 757:819 |
+
+  Every one of the five NN logs is below 0.50 (0.400-0.487). So: (1) the Away edge is real and
+  the same size plan 027 saw (≈0.06); (2) it is **not** a kickoff/receive effect — receiving is
+  worth +0.017 ± 0.018 and Away leads in both kick splits; (3) it is specific to a net being in
+  the game (heuristic mirrors are within noise of 0.50, and plan 027's no-search games were 0.505).
+  Since D9 proves the NN *search* is mirror-exact on decision states, the remaining suspects are
+  the game phases the mirror tests never touch — coin toss / kick-receive choice
+  (`scripted::coin_toss_pick` collapses it to a fixed pick), setup, kickoff placement — plus the
+  chance model's fixed `Direction::up()` collapse, which is y-only and so seat-symmetric only if
+  the pitch is. Stage 2/3 add 600 gen03-vs-gen03 games on one seed base; re-run the script on
+  them before spending a dedicated mirror. Either way the paired design already removes this term
+  from every point estimate in this plan; it costs only variance (≈+0.003 on SE at 120 games).
 
 ### Deprioritised, with the reason
 
