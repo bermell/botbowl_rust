@@ -1,6 +1,6 @@
 # Drive-bounded corpus, the eval report card, and the gen-1 self-play loop
 
-**Status:** In progress (started 2026-07-19). Continues `plans/020-plan--first-nets-and-14x7-bootstrap.md` — read that first for the value-head diagnosis (overfitting + teacher-conditional labels) this plan acts on.
+**Status:** COMPLETED / SUPERSEDED. The 93%-vs-teacher headline below was measured under the pre-`e107f06` mover-tagging bug and the nets/corpus were retired (plan 023 postscript). What survives: drive-bounded random starts, the `eval` report card, and the gen-1 loop design automated in plan 022. Originally: Continues `plans/completed/020-plan--first-nets-and-14x7-bootstrap--completed.md` — read that first for the value-head diagnosis (overfitting + teacher-conditional labels) this plan acts on.
 
 ## Headline result
 
@@ -41,7 +41,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 2. **The value head alone carries the win**: the 93% is `nn-value` — scripted priors, NN values. Consistent with plan 020's hybrid diagnosis (priors were never the problem).
 3. **The eval harness pays for itself immediately** — the same net that looked mediocre under 12-game TDs/game noise is unambiguously strong under 30 paired ladder games; and the reference card exposed real anomalies (below) that free-play stats hid.
 4. **ScriptedBot is the strongest fixed opponent** (beats heuristic-MCTS 18–11; the new net only reaches 0.50 vs it). It should be treated as the real ladder bar, and it's a candidate data source if we ever want a stronger teacher.
-5. **Heuristic mirror match came out 0.40, not ~0.50** — ✅ **SETTLED: it is a genuine Home/Away asymmetry, not noise.** The plan-022 pre-flight ran the 100-game mirror (2026-08-28): the physical Home team took **0.645 of points (W57 D15 L28)**, p ≈ 0.003 clustered on the 50 seed-pairs. Two engine bugs verified by code reading — a kickoff-aim off-by-one (the only x-asymmetric expression in the engine) and an inverted post-touchdown kickoff that makes the *scorer* receive again. In-drive play is exonerated at n=4800. Full record, including what was ruled out and the deferred experiments: **`plans/023-idea--home-away-side-bias.md`**.
+5. **Heuristic mirror match came out 0.40, not ~0.50** — ✅ **SETTLED: it is a genuine Home/Away asymmetry, not noise.** The plan-022 pre-flight ran the 100-game mirror (2026-08-28): the physical Home team took **0.645 of points (W57 D15 L28)**, p ≈ 0.003 clustered on the 50 seed-pairs. Two engine bugs verified by code reading — a kickoff-aim off-by-one (the only x-asymmetric expression in the engine) and an inverted post-touchdown kickoff that makes the *scorer* receive again. In-drive play is exonerated at n=4800. Full record, including what was ruled out and the deferred experiments: **`plans/completed/023-idea--home-away-side-bias--completed.md`**.
 
 ## Open issues
 
@@ -53,7 +53,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 
 1. **Fix the y=9 OOB panic** (backtrace → guard → regression test), then re-run the full-`nn` report card — completes the nn vs nn-value comparison on the new net.
 2. **Mirror-match sanity run** (heuristic vs heuristic, 100 games) to settle the 0.40 anomaly before trusting fine-grained ladder deltas.
-3. **Start the gen-1 loop on 14x7** with `nn-value` as the generator: → **automated as `plans/022-plan--weekend-training-loop.md`** (`scripts/train_loop.sh`, net-vs-net eval rung, promotion gate, mirror-match pre-flight).
+3. **Start the gen-1 loop on 14x7** with `nn-value` as the generator: → **automated as `plans/completed/022-plan--weekend-training-loop--completed.md`** (`scripts/train_loop.sh`, net-vs-net eval rung, promotion gate, mirror-match pre-flight).
    - Generate a drive-bounded corpus with `--evaluator nn-value --model bbnet_14x7_db.onnx` (mixed with ~30–40% heuristic games as hedge, per plan 020's mixed-transition design).
    - Train gen-1 net (best-val restore, val = fresh held-out shard from the *new* corpus).
    - Report card vs: heuristic reference, gen-0 net (`bbnet_14x7_db`), ScriptedBot. **Promotion gate: ≥55% vs gen-0 net.**
@@ -65,7 +65,7 @@ Attribution (all stacked in one generation, same architecture and search): drive
 - **Board-relative lecture setups** — makes the battery live on small tiers; also unlocks lecture-based *capability* tracking per generation.
 - **Solved-root exact value targets** (still pending from plan 020; may matter less now that labels are drive-pure, but cheap to test).
 - **Scripted-bot rung analysis**: why does it beat heuristic-MCTS? Its TD-attempt thresholding may encode play patterns worth stealing for priors.
-- **Home/Away asymmetry audit** — mirror run confirmed the bias; audit done, fixes and follow-up experiments tracked in `plans/023-idea--home-away-side-bias.md`.
+- **Home/Away asymmetry audit** — mirror run confirmed the bias; audit done, fixes and follow-up experiments tracked in `plans/completed/023-idea--home-away-side-bias--completed.md`.
 - **8x3 loop closure**: the small board never got its gen-1 (pure-td data → net → self-play); cheap to run end-to-end as a full-loop rehearsal.
 - **Next tier (20x11, 7 players)** once the 14x7 loop shows compounding gains; expect a new bug harvest (every new board size is a fuzzing campaign).
 - **MA as curriculum knob**; **weight decay** to push the early-stop point later; **NN generation cost** (~2–4× heuristic) if gen-2 wants 10k+ games.

@@ -1,6 +1,6 @@
 # What actually makes the search strong? Priors, budget, horizon
 
-**Status:** Complete. **One conclusion needs qualifying (2026-09-06):** "`MCTS_ITERS=1000` sits at the knee" was inferred from two adjacent spans, 1000->2000 = 0.508 and 250->1000 = 0.700. Plan 028's convergence curve shows 1000-2000 is a **local flat region, not a ceiling** — top-1 agreement with a deep reference goes 0.69 (1000) -> 0.67 (2000) -> 0.73 (4000) -> 0.91 (16000). The two measurements agree precisely where they overlap; the error was extrapolating a plateau from the one span that happens to be dead. Keep 1000 as the *cheap* setting, but 2000 is the worst of both worlds and budgets >=8000 are untested and predicted to win. Everything else here stands. **The promotion gate this plan's arms were scored against is being removed from the loop (plan 030)** — the scoring *rule*, points (W+D/2)/N on paired Home/Away games, remains the right instrument for deliberate A/B arms like these; it is only the per-generation pass/fail use that is going.
+**Status:** Complete. **One conclusion needs qualifying (2026-09-06):** "`MCTS_ITERS=1000` sits at the knee" was inferred from two adjacent spans, 1000->2000 = 0.508 and 250->1000 = 0.700. Plan 028's convergence curve shows 1000-2000 is a **local flat region, not a ceiling** — top-1 agreement with a deep reference goes 0.69 (1000) -> 0.67 (2000) -> 0.73 (4000) -> 0.91 (16000). The two measurements agree precisely where they overlap; the error was extrapolating a plateau from the one span that happens to be dead. Keep 1000 as the *cheap* setting, but 2000 is the worst of both worlds and budgets >=8000 are untested and predicted to win. Everything else here stands, with one caveat added by the 2026-09-07 audit: **every E2 arm ran `nn-value` on both sides** (`scripts/exp_overnight.sh`, `exp_overnight2.sh`), the production configuration at the time; production switched to `--evaluator nn` on 2026-09-04 (`865880e`) while E2f was still running, and the budget curve has not been re-measured under learned priors (plan 032). **The promotion gate this plan's arms were scored against is being removed from the loop (plan 030)** — the scoring *rule*, points (W+D/2)/N on paired Home/Away games, remains the right instrument for deliberate A/B arms like these; it is only the per-generation pass/fail use that is going.
 
 Three search parameters have never been justified by a *strength* measurement:
 which prior source the bot plays with, how many iterations it searches, and how
@@ -261,7 +261,10 @@ The budget answer, stated plainly:
 
 **Keep 1000. Do not raise it — 2000 buys nothing for double the generate cost.
 Do not lower it — 250 is decisively worse.** The setting was chosen without
-measurement in plan 020 and turns out to sit right at the knee of the curve.
+measurement in plan 020 and turns out to sit right at the knee of the curve —
+*under `nn-value`*. Under `nn` priors the fan's tail has prior ≈ 0 and is never
+revisited after the FPU sweep, so the tree spends its budget differently; the
+knee must be re-measured under production settings before it is relied on.
 
 A caveat worth keeping: this is measured at one board size (14x7), with one net
 (gen03), against itself. The knee could move with board size or net strength —
@@ -338,6 +341,9 @@ have been sharing one name.
 
 ### NOT RESOLVED — and the "it's the net" reading was wrong
 
+> Still open as of 2026-09-07; the NN-evaluator `mirror_search_exact` arm and a
+> 300-game NN mirror are queued in plan 031 / plan 032.
+
 **Retraction first.** On the partial nn mirror (54 decided games, 61.1%) I wrote
 that the mirrors had isolated the bias to the network. They had not. Completed:
 
@@ -403,70 +409,6 @@ sit at opposite x; that is why plan 023's kickoff-aim bug was `w/4` vs `3w/4`).
 So the fixed direction is sideways to the scoring axis and cannot push the ball
 toward either endzone. It breaks y-symmetry, which both sides share equally.
 `mirror_chance_model.rs` already property-tests this layer.
-
-### Superseded reading (kept for the record)
-
-The true mirrors settle the mechanism question, and they overturn two things I
-had written above.
-
-| mirror (identical bots both sides) | decided | Away share | receiver wins |
-|---|---|---|---|
-| **heuristic** — no NN anywhere | 107 | **50.5%** [41.0, 59.9] | 54.2% |
-| **nn-value** — same net both sides *(partial, 70/100)* | 54 | **61.1%** [47.8, 74.4] | 38.9% |
-
-**The engine is fair.** With the scripted heuristic on both sides the Home/Away
-split is 50.5%, z=+0.10 — as clean as it gets. That rules out the board, the
-setup, and the turn structure as sources of the bias.
-
-**The asymmetry arrives with the net.** The nn mirror sits at 61.1%, and the
-receiving-team advantage *inverts*: receivers win 54.2% under the heuristic (as
-Blood Bowl intuition says they should — they have the ball) and only 38.9% under
-the net. A net that systematically misjudges the receiving position is exactly
-what plan 023's postscript means by retiring `gen01` for "learned
-side-miscalibration". This is the same failure, still present in gen03.
-
-Provisional because the nn mirror is 54 decided games with CI [47.8, 74.4],
-which includes 50%. It needs its full 100 and ideally a repeat.
-
-**Two corrections to my own earlier reasoning in this document:**
-
-1. **The "last turn" mechanism is refuted.** I hypothesised that the kicking
-   team's last turn of each half was the advantage. Measured directly, the
-   *kicking* team wins 45.8% under the heuristic — receiving is the advantage,
-   which is the obvious answer in hindsight. The hypothesis was backwards.
-2. **The coin test was computed wrong.** Games come in seed pairs that share one
-   coin, so 120 games are only 60 independent draws. Per game the skew read
-   z=+2.19; per draw it is 36/60 = 60%, **z=+1.55, not significant**. Even if
-   real, a 60/40 toss with a 54% receiver edge yields only ~50.8% Away — nowhere
-   near enough to explain the pooled figure.
-
-Pair correlation also inflates the pooled side estimate, though less than I
-feared: measured on the mirror, the pair-aware SE is **1.10x** the naive one, so
-the pooled z=+3.36 is really ~3.05. The effect survives the correction.
-
-The tension left on the table: pooled across everything, Away is 55.4%
-(n=977); the heuristic mirror alone says 50.5%. Both are consistent if the bias
-is net-borne, since every arm except the heuristic mirror has a net in it.
-
-### Mechanism candidates (superseded by the mirrors above — kept for the record)
-
-- **Last turn.** `game_procs.rs:90`: the *receiving* team takes the first turn
-  of each round, so the *kicking* team takes the **last turn of each half**.
-  In Blood Bowl the last word is worth a lot. This is symmetric across
-  Home/Away only if the coin is fair.
-- **The toss.** `scripted.rs:40` pins the call to Heads and `:52` always
-  Receives, so the toss *loser* kicks. In eval the coin is genuinely rolled
-  (`play_game` sets `DiceMode::RollDice`), so this should be 50/50 — but it has
-  never been checked. Note `GameStateBuilder` *fixes* the coin to Heads for
-  non-CoinToss states (`gamestate.rs:238`, comment `//Away`), which is the
-  random-start path **the training corpus is generated from**.
-- **A genuine board/setup asymmetry** on 14x7 that survives conditioning on the
-  toss.
-
-A discriminating detail is already visible: **Away scores only ~53% of TDs but
-wins ~57-62% of games.** The edge is not in scoring more, it is in converting
-scores into wins — which points at *when* scores land, i.e. turn order, rather
-than at raw play strength.
 
 ### How it gets resolved
 

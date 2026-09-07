@@ -5,6 +5,8 @@ Results. The search converges; plan 025's non-convergence was the pre-`e107f06`
 bug. Normalised Q is clearly *worse*. The live finding is different and better:
 the budget curve has a **flat spot at 1000-2000, not a ceiling**.
 
+Remaining arms (C1/C2 high-budget strength, the data-bottleneck test) are ranked in plan 032; the tie-rate premise is checked in plan 031 D2.
+
 ## The hygiene test, and why it matters
 
 One tree with `k·N` iterations has strictly more information available than
@@ -32,7 +34,8 @@ p~0.002).
 
 Two things make it more urgent than when plan 025 was written:
 
-1. **The policy label is finally consumed.** Until gen06 the loop played
+1. **The policy label is finally consumed.** Until gen05 (per plan 029's
+   on-disk shard inventory; `865880e`, 2026-09-04) the loop played
    `--evaluator nn-value` with scripted priors, so a 16%-better policy target
    trained a head nothing used. It now plays `--evaluator nn`.
 2. **Strength saturates at 500-1000** (plan 027: 250->1000 = 0.700, 1000->2000
@@ -47,8 +50,9 @@ PUCT is self-reinforcing among near-tied children: whichever takes an early
 lead attracts more visits and widens it. Plan 025 frames it as a Polya urn —
 running one urn longer converges to a *random* limit, not to the mean — so
 tie-break noise is amplified by depth rather than averaged away. Plan 020
-measured **84.8% of decisions with all-tied children Q**, which is the
-population this applies to.
+measured **84.8% of decisions with all-tied children Q** — on the **8x3
+pure-td** arm (plan 020 §8x3); the 14x7 tie rate has never been measured
+(plan 031 D2).
 
 Why the exploration term does not correct it: `puct_value` is textbook
 AlphaZero PUCT, but `Q` is in raw `leaf_score` units (`score_delta*1000 +

@@ -138,129 +138,13 @@ Output one JSONL row per (state, repeat, checkpoint) carrying the full `ChildSta
 
 **Cost.** ~1.95 ms/iteration under `nn-value` at this tier (2.6 ms/forward × ~0.75 forwards/iteration, both measured — see plan 024). 32k iterations ≈ 62 s per run; 50 states × 3 repeats ≈ 2.6 h single-threaded, **≈ 40 min at 4-way parallelism**. Add the heuristic control at roughly a tenth of that.
 
-## Results (2026-08-30, 52 states x 3 repeats, 14x7, gen01 champion)
+## Results
 
-Ran both arms: `nn-value` with `bbnet_14x7_gen01.onnx` (48 min) and a `heuristic`
-control (7 min). Raw data in `runs/convergence/`, analysis in
-`scripts/convergence_summary.py`. **Raw data deleted 2026-09-01** along
-with the rest of the plan-023 investigation's runs — this measurement
-used the `gen01` champion under the pre-`e107f06` buggy search, and
-`gen01` itself has since been retired for learned side-miscalibration
-(see plan 023's postscript), so the non-convergence finding below should
-be treated as provisional until re-checked post-fix.
-
-**The search does not converge. Run-to-run disagreement *increases* with budget.**
-
-| budget | TV between runs | top-1 agree | peak share | | TV (heur) | top-1 (heur) |
-|---|---|---|---|---|---|---|
-| 100 | 0.193 | 0.59 | 0.449 | | 0.126 | 0.60 |
-| 200 | 0.218 | 0.64 | 0.544 | | 0.179 | 0.56 |
-| **500** | 0.257 | **0.67** | 0.629 | | 0.220 | **0.64** |
-| **1000** *(current)* | 0.287 | 0.65 | 0.667 | | 0.239 | 0.60 |
-| 2000 | 0.339 | 0.56 | 0.664 | | 0.258 | 0.53 |
-| 4000 | 0.308 | 0.57 | 0.686 | | 0.295 | 0.53 |
-| 8000 | 0.329 | 0.54 | 0.716 | | 0.325 | 0.56 |
-| 16000 | 0.383 | 0.55 | 0.742 | | 0.377 | 0.54 |
-
-Read the columns together — that is where the finding is:
-
-- **Peak share rises monotonically** (0.45 -> 0.74): more search concentrates the
-  visit distribution onto a single action. The search gets *more confident*.
-- **Top-1 agreement peaks at ~500 and then falls** (0.67 -> 0.55): it does not
-  get more *right*, it gets more confidently *different*.
-- **TV between independent runs therefore grows** (0.19 -> 0.38).
-
-At 16k, only **21 of 52 states** have all three repeats picking the same top
-action, while the mean peak share is 0.742. Sharper labels, less reproducible.
-
-**It is the search, not the net.** The heuristic control shows the same shape,
-so this is not the gen-0/gen-1 value head being miscalibrated. The mechanism is
-near-tied alternatives plus PUCT's winner-take-all dynamic: with genuinely equal
-values, whichever child takes an early lead accumulates the rest, and the lead is
-decided by `recon_mcts`'s per-process `HashMap` tie-break order (plan 020's
-non-reproducibility gotcha). More iterations *amplify* an arbitrary early lead
-rather than resolving it. This is the mechanism behind plan 020's observation
-that "84.8% of decisions have all-tied children Q".
-
-**The value estimate is stable.** `|dv|` between runs sits at 0.03-0.05 across
-every budget, flat. So the *value* signal is reproducible; only the *policy*
-label is not. Given plan 020 already found the value head to be the bottleneck,
-and the value target is the drive outcome rather than `root_value`, the noisy
-quantity is the one we were least relying on — but it is also the one the policy
-head is trained on directly.
-
-**Zero roots solved** in 52 states at any budget, so the `SolvedRootPolicy` path
-is irrelevant for random-start states at this tier.
-
-### What this means for `MCTS_ITERS`
-
-The original hypothesis — "the distribution converges early, so we are wasting
-compute" — is **refuted, but the conclusion survives in a stronger form**: the
-distribution never converges, and past ~500 iterations extra compute makes the
-policy target *worse* as a training label (equally accurate top-1, more
-confidently wrong, higher variance).
-
-**Recommendation: `MCTS_ITERS` 1000 -> 500.** Top-1 reproducibility is
-equal-or-better (0.67 vs 0.65 nn-value; 0.64 vs 0.60 heuristic), TV noise is
-lower, and generation cost halves. That is a ~2x speedup for a constant change,
-available before any of plan 024's engineering.
-
-**Caveat that this experiment cannot settle:** a lower budget also means weaker
-*play*, so the trajectory distribution changes. Label reproducibility is not the
-only axis. The equal-total-compute ablation below is what decides it; this
-experiment says where to aim it (500 vs 1000, not 4000).
-
-### Follow-up questions this raises
-
-1. **Average k independent short searches instead of one long one — measured,
-   not speculative (2026-08-30).** At identical compute, averaging the visit
-   distributions of 2x500 beats a single 1x1000, against a held-out third run:
-
-   | label recipe | cost | TV vs held-out | top-1 vs held-out |
-   |---|---|---|---|
-   | 1 x 500 (single) | 500 | 0.2701 | 0.65 |
-   | **avg of 2 x 500** | **1000** | **0.2374** | **0.68** |
-   | 1 x 1000 (single) | 1000 | 0.2818 | 0.67 |
-
-   ~16% less label noise for the same compute. **Why more iterations cannot do
-   this:** PUCT is self-reinforcing — among tied children, whichever takes an
-   early lead attracts more visits, widening the lead. Tie-break noise is
-   *amplified* by depth, not averaged away. It is a Polya urn: running one urn
-   longer converges to a *random* limit, not the mean. Within a tree, iterations
-   are positively correlated (same early lead); across trees they are
-   independent, so averaging cuts variance as 1/k.
-
-   The independence assumption is confirmed by the numbers: if noise were fully
-   independent, avg-of-2 vs a held-out single should sit at sqrt(0.75) = 0.866 of
-   the single-run distance, predicting 0.2339 against 0.2374 measured — within
-   1.5%. Note the gain is in distribution *shape* (TV 0.282 -> 0.237), not argmax
-   (0.67 -> 0.68), which is what the cross-entropy policy loss actually consumes.
-
-   Untested: play strength (two 500-searches may pick worse moves than one
-   1000-search), the interaction with anchor-gated tree reuse
-   (`dynamics.rs:1051`), and the optimal k. Implementation is contained — call
-   `get_action_with_record` k times in the dataset generator and merge child
-   visits by action; `botbowl-mcts` is untouched.
-
-   A deterministic tie-break would attack the same root cause differently and is
-   worth comparing.
-2. **Should the policy target be softened?** A sharp label that is 45% likely to
-   name a different action on a re-run may be worse than an explicitly softened
-   one. Temperature on the visit distribution is a one-line change with a
-   measurable effect on `val_top1`.
-3. **What is the label-noise ceiling on `val_top1`?** Two independent labels
-   agree ~0.65 of the time at 1000 iters. If the label distribution has modal
-   probability `p`, pairwise agreement is `sum p_i^2` and the best achievable
-   predictor accuracy is `max p_i` — so ~0.65 pairwise implies a ceiling
-   somewhere around 0.75-0.80. Training currently reaches `val_top1` ~0.50, so
-   there is real headroom; the net is **not** yet at the ceiling. Worth
-   measuring properly with more repeats before investing in policy-head capacity.
-
-## Follow-ons this sets up
-
-**Adaptive budgets — potentially the bigger win.** If X\* is broadly distributed (a large median-to-p90 gap), then *no* fixed budget is efficient: it over-searches the easy majority to serve the hard tail. The natural answer is a dynamic stopping rule — stop when the policy target has been stable for K checkpoints — which spends the budget where it changes the label. Prior art: KataGo's playout-cap randomisation, which additionally exploits the fact that only a fraction of positions need a full-strength target at all. This experiment produces exactly the data needed to design that rule, and its own noise floor supplies the stability threshold.
-
-**The confirming ablation.** Convergence is a *screen*, not the final answer. The real question is compute allocation: at fixed total compute, a lower budget buys more games. Plan 020 found data *shape* beat data *scale*, and plan 021 found label *purity* beat label *volume*, so this trade has repeatedly not gone the intuitive way. Settle it with two corpora at **equal total compute** (e.g. 4800 games @ 1000 iters vs 9600 @ 500), each trained with best-val restore and compared on the standard rungs. That is one extra generation of wall time, and it is worth spending only once the convergence screen says where to aim.
+Removed 2026-09-07: the 2026-08-30 results (non-convergence, "cut to 500", the 2x500 ensemble
+table) were measured on the retired gen01 net under the pre-`e107f06` search and refuted by plan 028
+Stage 0 (which now holds the current convergence curve). The ideas they raised — averaging k short
+searches, softening the policy target, adaptive budgets, a `val_top1` label-noise ceiling — are
+ranked in plan 032 rather than kept here.
 
 ## Caveats
 

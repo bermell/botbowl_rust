@@ -1,6 +1,6 @@
 # Automated weekend training loop (gen-1+) on 14x7
 
-**Status:** Ready to launch (built 2026-08-12). Automates plan 021 §Next steps 3 — the gen-1 self-play loop — as an unattended multi-generation run with ssh-monitorable progress. The regime itself (drive-bounded corpus, nn-value generator, mixed heuristic hedge, best-val training, report-card eval, promotion gate) is exactly plan 021's; this plan only adds the orchestration and the missing eval instrument.
+**Status:** COMPLETED. The loop (`scripts/train_loop.sh`) is the production driver; Run 1 below predates `e107f06` and its nets were retired. Current regime: `EVALUATOR=nn`, `SELECT_ON=combined`, `WINDOW_GENS=3`, `WARM_FROM=champion`, sidecar on — read the script header, not this plan, for what runs today. Gate removal: plan 030. Originally: Automates plan 021 §Next steps 3 — the gen-1 self-play loop — as an unattended multi-generation run with ssh-monitorable progress. The regime itself (drive-bounded corpus, nn-value generator, mixed heuristic hedge, best-val training, report-card eval, promotion gate) is exactly plan 021's; this plan only adds the orchestration and the missing eval instrument.
 
 ## What was built
 
@@ -82,13 +82,13 @@ gain on the scripted rung and level on the teacher, with zero losses to it — s
 the from-scratch bootstrap reached the reference net's class in two generations.
 
 **Why it was paused rather than left running.** The pre-flight mirror match found
-a real side bias, and the investigation (`plans/023-idea--home-away-side-bias.md`)
+a real side bias, and the investigation (`plans/completed/023-idea--home-away-side-bias--completed.md`)
 verified two engine bugs in the kickoff path. They do **not** touch the
 drive-bounded training corpus, but they *do* affect every full game — which is
 every ladder rung and every promotion gate. Continuing would have produced more
 generations whose promote/reject decisions were measured under rules about to
 change, at ~26 h per datapoint. Two cheaper things wanted the idle machine first:
-`plans/025-plan--search-budget-convergence.md` (~40 min, and may cut `MCTS_ITERS`
+`plans/completed/025-plan--search-budget-convergence--completed.md` (~40 min, and may cut `MCTS_ITERS`
 2-3x for the price of changing a constant) and plan 023's deferred mirror re-runs.
 
 **State at the pause.** Champion is `bbnet_14x7_gen01.onnx` (gen02 was trained but
@@ -108,7 +108,7 @@ should start from a fresh `RUN_DIR` instead.
 - The `status.md` PROMOTED/REJECTED trail + per-gen `report.json` (fixed seed 0, fixed rungs) is the strength ladder — plot win rates by generation.
 - If gens promote: revisit NN priors (`--evaluator nn` vs `nn-value` card on the newest champion, plan 021 §Next steps 4).
 - If gens repeatedly reject: suspects are (a) 30-game gate noise (17/30 needed), (b) self-play data collapsing in variety (check TDs/drive and scoreless % in shard logs vs the 0.79/21% gen-0 baselines), (c) champion-relative labels drifting — consider merging corpora across generations before retraining.
-- Mirror-match verdict (runs/loop14x7/mirror.json, Home/Away split): **a real side bias showed** — Home took 0.645 of points over 100 games (p ≈ 0.003). Every ladder number inherits it, so audit before fine-grained cross-gen comparisons. Aggregate `win_rate` still cancels it (rungs are paired Home/Away), so the promotion gate stays valid. Investigation, verified bugs and deferred tests: `plans/023-idea--home-away-side-bias.md`.
+- Mirror-match verdict (runs/loop14x7/mirror.json, Home/Away split): **a real side bias showed** — Home took 0.645 of points over 100 games (p ≈ 0.003). Every ladder number inherits it, so audit before fine-grained cross-gen comparisons. Aggregate `win_rate` still cancels it (rungs are paired Home/Away), so the promotion gate stays valid. Investigation, verified bugs and deferred tests: `plans/completed/023-idea--home-away-side-bias--completed.md`.
 - Note when reading any report card: the aggregate `win_rate` and the `TD x:y` column are **candidate-relative and pooled across sides**, so neither can reveal a side bias — only the Home/Away split can, and the side-relative TD split is not currently recorded at all.
 
 ## Linux training host (added 2026-08-28)

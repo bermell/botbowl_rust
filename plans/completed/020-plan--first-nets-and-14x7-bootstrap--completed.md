@@ -1,6 +1,6 @@
 # First trained nets, the 14x7 bootstrap problem, and the road to gen-1
 
-**Status:** In progress (started 2026-07-17). Learnings recorded through the first 14x7-native net; next steps at the bottom are being executed in order.
+**Status:** COMPLETED / SUPERSEDED. Historical record of the first nets (2026-07). Every net and corpus here was produced by the pre-`e107f06` search and retired (plan 023 postscript); the drive-bounded regime moved to plan 021, the loop to plan 022. Originally: Learnings recorded through the first 14x7-native net; next steps at the bottom are being executed in order.
 
 This plan captures everything learned from the first real data-generation + training session (2026-07-17/18): the pure-TD experiment on 8x3, the small-board bug harvest, the search-budget sweep on 14x7, and the failure of both nets (8x3-transfer and 14x7-native gen-0) as search evaluators on 14x7.
 

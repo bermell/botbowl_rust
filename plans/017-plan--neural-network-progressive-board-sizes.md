@@ -1,6 +1,6 @@
 # Training neural network on progressively bigger boards
 
-> **Status (2026-07-14): implementation started** — the pipeline in `plans/017.b detailed-plan.md` is built:
+> **Status: IMPLEMENTED (2026-07); kept as the architecture / tier reference.** The pipeline in `plans/completed/017b-plan--nn-pipeline-detailed--completed.md` is built:
 > new `botbowl-nn` crate (shared encoder, `prepare` bin, tract-onnx `NnEvaluator`), the `train/` PyTorch project
 > (trainer + ONNX export + committed parity fixture), and NN wiring into `botbowl-mcts` (`Evaluator::Nn`,
 > `MctsBot::with_evaluator`). Encoder/target/npy/parity/prepare/NN-evaluator tests are green; an end-to-end smoke

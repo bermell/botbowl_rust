@@ -166,10 +166,11 @@ pub fn run(args: ConvergenceArgs) -> io::Result<()> {
         for repeat in 0..args.repeats {
             for &budget in &budgets {
                 let mut bot = make_bot(&args, nn.as_ref(), budget);
-                // Distinct per (state, repeat) so repeats are independent
-                // draws. Note the dominant nondeterminism is HashMap tie-break
-                // order, which no seed controls (plan 020) — this only keeps
-                // the bot's own RNG from being identical.
+                // `MctsBot` has no RNG of its own (`Bot::set_seed` is the trait's
+                // no-op default for it), so this seed does nothing today. Repeats
+                // are independent because each cell builds a fresh bot (no tree
+                // reuse) and `recon_mcts`'s HashMap tie-break order is randomised
+                // per process (plan 020). Kept so a future seeded bot is covered.
                 bot.set_seed(ChaCha8Rng::seed_from_u64(
                     state_seed ^ ((repeat as u64) << 32) ^ (budget as u64),
                 ));

@@ -5,9 +5,8 @@ worth **+0.05 to +0.06 points per doubling** — the largest effect this project
 has measured. Warm-started from the champion, the *same* 3x corpus difference is
 worth **nothing** (0.487, z=-0.30). **Do not widen `WINDOW_GENS` on the strength
 of stages 1-2.** Full results at the bottom; stage 3 is the one that decides
-production.
-
-**Status:** Not started. Design only — no arm has been run.
+production. Follow-ups (D7 vs gen03, M1, periodic from-scratch retrain,
+`--eval-every` in the loop) are ranked in plan 032.
 
 The loop has stopped compounding. The question this plan answers is whether the
 corpus is the reason. Everything needed to answer it is already on disk: eight
@@ -79,6 +78,11 @@ Eight generations, 8 shards x 600 games each, verified on disk 2026-09-06:
 | gen01-gen04 | `--evaluator nn-value` (NN leaf values, **scripted** priors) | 8 each | 811-820 MB each | yes |
 | gen05-gen07 | `--evaluator nn` (learned priors) | 8 each | 805-812 MB each | yes |
 
+**Correction (audit 2026-09-07):** the "generator" column describes shards 0-4 only. Shards 5-7 of *every*
+generation are the heuristic hedge (`train_loop.sh:163-164`), and the train pools below use shards
+`0 1 2 3 5 6` (`exp_data_scaling.sh:97`), so one third of every arm's games are heuristic-MCTS play with
+scripted-prior policy targets — the same labelling function gen00 is excluded for. No arm is a pure regime.
+
 It is not a homogeneous corpus, and a wide window necessarily mixes regimes.
 Two decisions:
 
@@ -98,9 +102,9 @@ pure-regime and one crosses the boundary:
 
 | arm | generations | regime | samples² | prepared size² |
 |---|---|---|---|---|
-| **D1** | gen07 | pure `nn` | 116,865 | 2.4 GiB |
-| **D3** | gen05-gen07 | pure `nn` | **350,595** (measured) | **7.2 GiB** (on disk) |
-| **D7** | gen01-gen07 | 4 `nn-value` + 3 `nn` | 818,055 | 16.8 GiB |
+| **D1** | gen07 | `nn` + hedge | 116,865 | 2.4 GiB |
+| **D3** | gen05-gen07 | `nn` + hedge | **350,595** (measured) | **7.2 GiB** (on disk) |
+| **D7** | gen01-gen07 | 4 (`nn-value` + hedge) + 3 (`nn` + hedge) | 818,055 | 16.8 GiB |
 | **M1** *(control, conditional)* | first 86 games of each train shard of gen01-gen07 | same mix as D7 | ~117,255 | 2.4 GiB |
 
 ² D3's figures are read from `runs/loop14x7/gen07/prepared_train/dims_16x9/manifest.json`
@@ -525,7 +529,9 @@ champion. **The production-relevant follow-up is one warm-started pair**
 trains and one match, ~5h.
 
 **2. D7 mixes generating regimes.** It is the only arm spanning both, 4
-generations of `nn-value` (scripted priors) plus 3 of `nn`. So part of its edge
+generations of `nn-value` (scripted priors) plus 3 of `nn` — and every arm
+already carries a one-third heuristic hedge (see the correction above), so the
+"pure" contrast D1->D3 is not pure either. So part of its edge
 may be *diversity* rather than volume, and part may be *diluted* by four
 generations of off-policy data. The M1 control in stage 3 — gen01-07
 subsampled to D1's size — separates these and is now worth running, since the

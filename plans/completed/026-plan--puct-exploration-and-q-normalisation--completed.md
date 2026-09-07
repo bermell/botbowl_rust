@@ -1,6 +1,6 @@
 # Is the exploration constant why more search makes labels worse?
 
-**Status:** Investigated and answered (2026-08-30). Verdict: **exploration at the shipped `c=10` is too low, but Q-normalisation is not the fix.** Raising `c` to 30 is the only change with any strength signal, and even that is marginal. A separate, larger finding fell out: the plan-023 kickoff fixes did **not** reduce the Home/Away bias.
+**Status:** Investigated and answered (2026-08-30); measured pre-`e107f06` with the heuristic evaluator, so treat as provisional. The two live leads — `c=30` and FPU reduction, both never tested under `--evaluator nn` — are ranked in plan 032. Verdict: **exploration at the shipped `c=10` is too low, but Q-normalisation is not the fix.** Raising `c` to 30 is the only change with any strength signal, and even that is marginal. A separate, larger finding fell out: the plan-023 kickoff fixes did **not** reduce the Home/Away bias.
 
 ## Question
 
