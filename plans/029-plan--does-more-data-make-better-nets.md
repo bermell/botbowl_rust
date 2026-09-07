@@ -1,9 +1,11 @@
 # Does more data make better nets?
 
-**Status: ANSWERED — yes (2026-09-07).** Stages 1 and 2 ran overnight. Corpus
-size is worth roughly **+0.05 to +0.06 points per doubling**, mildly
-diminishing, and it is the largest effect this project has measured. Full
-results at the bottom.
+**Status: ANSWERED, with a sting (2026-09-07).** From scratch, corpus size is
+worth **+0.05 to +0.06 points per doubling** — the largest effect this project
+has measured. Warm-started from the champion, the *same* 3x corpus difference is
+worth **nothing** (0.487, z=-0.30). **Do not widen `WINDOW_GENS` on the strength
+of stages 1-2.** Full results at the bottom; stage 3 is the one that decides
+production.
 
 **Status:** Not started. Design only — no arm has been run.
 
@@ -552,3 +554,67 @@ pinned at 3 since gen03, so every generation since has trained on the same
 amount of data. Combined with plan 030's gateless loop (1.7x more generations
 per day), the two levers compound: more generations produce more data, and more
 data is now known to produce better nets.
+
+
+## Stage 3 (2026-09-07) — the from-scratch curve does NOT transfer
+
+W1 (gen07) and W3 (gen05-07), both `--init models/bbnet_14x7_gen03.pt --lr 2e-4`
+— exactly what the loop does. Shared-init assertion passed: both started at
+`val_value 0.4011`.
+
+| regime | arms | points | z | p | 95% CI |
+|---|---|---|---|---|---|
+| from scratch | D3 vs D1 | **0.600** | +2.51 | 0.012 | [0.522, 0.678] |
+| **warm-started** | **W3 vs W1** | **0.487** | **−0.30** | **0.765** | **[0.405, 0.570]** |
+
+The regime difference is +0.112, SE 0.058, z=+1.95 (p=0.051) — borderline on its
+own, but the two arms individually are not ambiguous: one clearly positive, one
+dead flat.
+
+**Stated precisely, because the CI is wide:** there is *no evidence* that a
+wider window helps a warm-started champion, and the point estimate is slightly
+negative. A modest true benefit up to ~0.57 cannot be excluded at 120 games.
+What *is* excluded is anything like the +0.100 the from-scratch arms showed.
+
+Why this was predictable, and predicted: gen03 was trained on gen01-03, so a
+champion has already extracted much of what older generations contain. But note
+W3's extra data (gen05, gen06) is *novel* to gen03 — so "the champion has seen
+it" is not the whole explanation.
+
+### The learning, and it is not about data
+
+Look at how little warm-started training moves at all. W1 turned over at step
+**2,500** and W3 at **20,000**, against 17,500-92,500 for the from-scratch arms.
+A warm start at lr 2e-4 extracts a small, quickly-exhausted amount from *any*
+pool, so corpus size never becomes the binding constraint — the binding
+constraint is how far the net can move before it overfits.
+
+That reframes the plateau. Four generations at parity is not obviously "not
+enough data"; it is at least as consistent with **the incremental warm-start
+regime itself being unable to move the net much**, whatever it is fed.
+
+**Which suggests the experiment that follows: `D7` vs `gen03`.** D7 is a net
+trained from scratch on all seven generations, and it is 0.662 against D1.
+gen03 is the champion produced by eight generations of incremental
+warm-starting. If D7 beats gen03, the loop should periodically **retrain from
+scratch on the whole accumulated corpus** rather than only fine-tuning forward —
+and that is a bigger change than any window setting. Both `.onnx` files already
+exist; it is one 120-game match.
+
+### A fifth val/strength disagreement, and the sharpest yet
+
+W3 beat W1 on **both** validation heads — `val_value` 0.3884 vs 0.3947,
+combined 1.8510 vs 1.8667 — and then did not win a single point more in 120
+games. Every previous disagreement had val moving opposite to strength across
+*different* nets; this one is a controlled pair differing in one variable, with
+validation confidently pointing the wrong way. Validation loss should not be
+used to choose between training regimes, only to choose a checkpoint within one.
+
+### A production bug this exposed
+
+W1's best checkpoint was step 2,500 — *the first one taken*. Under production's
+per-epoch validation, gen05, gen06 and gen07 all restored at epoch 0 or 1 of 10,
+i.e. their first or second checkpoint. The loop has very likely been shipping
+past-peak weights for lack of resolution, and nobody could have seen it. The new
+`--eval-every` fixes this and should be adopted in `train_loop.sh` — validate
+every few hundred steps, not once per epoch — as part of the plan-030 rebuild.
