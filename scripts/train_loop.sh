@@ -4,7 +4,8 @@
 # Regime per generation (plan 021 §Next steps 3):
 #   generate (5 $EVALUATOR shards from the champion + 3 heuristic hedge shards)
 #   -> prepare (train = shards 0-3,5,6; val = shards 4,7 — one of each kind,
-#      pooled across the last WINDOW_GENS generations)
+#      pooled across the last WINDOW_GENS generations; policy label
+#      $POLICY_TARGET, completed-Q by default since plan 032 #7)
 #   -> train (warm-started from the previous net's .pt, best-val restore on
 #      $SELECT_ON, ONNX export)
 #   -> eval report card (fixed rungs + vs current champion)
@@ -89,6 +90,22 @@ EVALUATOR="${EVALUATOR:-nn}"
 # restore is correct exactly while nothing consumes the policy head. See
 # --select-on in bbnn/train.py.
 SELECT_ON="${SELECT_ON:-combined}"
+# Policy label (plan 032 #7, adopted 2026-09-08). `visits` is the AlphaZero
+# target, the root's visit distribution. At 1000 iterations over a wide fan
+# it has not converged: on roots with >30 children it agrees with the 16k
+# reference only 0.21 of the time and points away from the move the bot
+# actually played three times in four (plan 031 D2). `cq` is completed-Q,
+# softmax(ln prior + q_mover/tau) with unvisited children filled by the
+# visit-weighted mean Q — the search's *value* information folded into the
+# label. Same data, init, seed and steps: Q7 (cq, tau 100) beat D7 (visits)
+# 0.613 +/- 0.040, the largest single-variable gain in plan 032. Applied to
+# the val set too, so best-val selection scores against the trained label;
+# val_policy/val_top1 step-change at the switch and are not comparable
+# across it, val_value is. Set POLICY_TARGET=visits to revert.
+POLICY_TARGET="${POLICY_TARGET:-cq}"        # visits|cq
+CQ_TAU="${CQ_TAU:-100}"                     # in Q points (1000 = one TD); only for cq
+PREPARE_TARGET_ARGS="--policy-target $POLICY_TARGET"
+[ "$POLICY_TARGET" = cq ] && PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --tau $CQ_TAU"
 # Validate every N optimizer steps instead of once per epoch (plan 031 D4/D5,
 # adopted 2026-09-07). The warm-started fine-tunes gen04-07 all restored at
 # epoch 0-2 of 10 because val_value bottoms out inside the first epoch or two
@@ -395,12 +412,12 @@ if [ ! -f "$(champion)" ]; then
         for K in $TRAIN_SHARDS; do TRAIN_IN="$TRAIN_IN $GEN_DIR/shard$K.jsonl"; done
         for K in $VAL_SHARDS; do VAL_IN="$VAL_IN $GEN_DIR/shard$K.jsonl"; done
         # shellcheck disable=SC2086
-        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" >> "$LOG" 2>&1 \
+        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
             || die "gen00 prepare (train) failed"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" >> "$LOG" 2>&1 \
+        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
             || die "gen00 prepare (val) failed"
-        status "gen00 prepare done ($((SECONDS / 60)) min)"
+        status "gen00 prepare done ($((SECONDS / 60)) min), target $PREPARE_TARGET_ARGS"
         touch "$GEN_DIR/.prepared"
     fi
     DIMS_TRAIN=$(ls -d "$GEN_DIR"/prepared_train/dims_* 2>/dev/null | head -1)
@@ -509,12 +526,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
         VAL_IN=$(window_shards "$G" val)
         [ -n "$TRAIN_IN" ] && [ -n "$VAL_IN" ] || die "$GG window is empty (WINDOW_GENS=$WINDOW_GENS)"
         WIN_GENS=$(echo "$TRAIN_IN" | tr ' ' '\n' | grep -c . )
-        status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards"
+        status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards, target $PREPARE_TARGET_ARGS"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" >> "$LOG" 2>&1 \
+        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (train) failed"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" >> "$LOG" 2>&1 \
+        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (val) failed"
         status "$GG prepare done ($((SECONDS / 60)) min), disk free $(free_gb)"
         touch "$GEN_DIR/.prepared"
