@@ -274,7 +274,7 @@ section carries the evidence.
   |---|---|---|---|---|
   | `c=3` vs `c=10` | **0.421 ± 0.039** | 36-29-55 | 450:500 | −2.0 |
   | `c=30` vs `c=10` | 0.521 ± 0.037 | 47-31-42 | 467:452 | +0.5 |
-  | `k=100` vs `k=0` | pending | | | |
+  | `k=100` vs `k=0` | 0.446 ± 0.043 | 38-31-51 | 412:427 | −1.3 |
   | `k=300` vs `k=0` | pending | | | |
 
   `c=3` (15:40, 174 min): less exploration **loses** clearly, and it loses from both seats (Home
@@ -289,6 +289,13 @@ section carries the evidence.
   original +0.03-0.06 expectation for this item does not hold under the NN. Per the abandon
   rule `c` gets no sized match: strength is flat from c=10 to c=30 and only falls when
   exploration is cut. The FPU screens are the remaining hope for #3.
+  `k=100` (21:29, 171 min): **0.446 — a mild loss** (z = −1.3), symmetric across seats (Home 19-26,
+  Away 19-25). A 0.1-TD first-play penalty on unvisited children does not help; the plain FPU
+  (`parent_Q`, which under minimax is the most optimistic sibling) is at worst no worse. This is
+  the opposite of the Leela/KataGo experience and consistent with the direction the `c` screens
+  gave: at 1000 iterations on this tier the search benefits from *breadth* at the root, and
+  anything that narrows the first sweep (c=3, FPU reduction) costs points. `k=300` is running
+  only because it is already queued; the expectation is now that it loses harder.
 
 ### 4. Exploration in self-play: root Dirichlet noise + visit-temperature sampling for the first k decisions of a drive
 
