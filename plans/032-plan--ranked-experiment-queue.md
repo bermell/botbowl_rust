@@ -310,7 +310,14 @@ section carries the evidence.
   from-scratch arm now shares, and one of the two nets is D7 itself (no new control to train).
   `d7s2` = D7's recipe from a second materialised init (`arm_init_s2.pt`, `--seed 20260907` for
   init, shuffle and augmentation), same steps, same held-out. Match `d7s2 vs d7`, **300 games**
-  (SE ≈ 0.026), seed base 32000000, queued behind stage 3 and #9's match. Result: pending.
+  (SE ≈ 0.026), seed base 32000000, queued behind stage 3 and #9's match.
+- **Training (done 07:11, 77 min on the GPU next to the eval chain).** The seeds are
+  indistinguishable on the held-out set: `d7s2` best combined **1.8313** (step 90k: val_policy
+  1.4461, val_value 0.3852, top-1 0.535) vs D7 **1.8352** (step 92.5k: 1.4477 / 0.3876 / 0.535);
+  the same 0.004 as the run-to-run wobble of a single curve. Both peak at step 90-92.5k of 110k
+  and drift up after. So whatever strength gap the 300 games find is *not* visible in `val_*` —
+  which is the point: it bounds how much strength variance hides behind identical losses.
+  Match result: pending.
 
 ### 6. Heuristic hedge ablation
 
@@ -498,7 +505,15 @@ section carries the evidence.
   `audit_value_head_bias.py`) now rebuilds `BBNet` from the state dict's shape
   (`BBNet.from_state_dict`), bit-identical for the 64x6 default. `d7w96` = width 96 / blocks 8
   (**1.39 M params, 2.9×**), `--seed 20260906` (D7's), same 110k steps and held-out; tract runs
-  the wider ONNX fine. Match `d7w96 vs d7`, 120 games, seed base 32000000. Result: pending.
+  the wider ONNX fine. Match `d7w96 vs d7`, 120 games, seed base 32000000.
+- **Training (done 08:51, 99 min vs D7's ~75 — the GPU is not the bottleneck, the Python batcher
+  is).** `d7w96` best combined **1.8270** at step 95k (val_policy 1.4390, val_value 0.3880, top-1
+  0.538) vs D7 1.8352 and d7s2 1.8313. The 2.9× net buys **−0.008 combined, all of it policy**
+  (1.439 vs 1.446-1.448; value 0.388 is inside the seed spread 0.385-0.388). That is twice the
+  seed gap on val but still tiny: at 2.2 M training samples the 64x6 net is not badly
+  capacity-limited on this pool. Training loss at the end is 1.43/0.36 vs D7's 1.43/0.37 —
+  barely lower, so the wide net is not memorising either; it is data-limited like the small one.
+  Prediction for the match: within ±0.05 of 0.50 (val says 0.50-0.53). Result: pending.
 
 ### 10. High-budget strength (plan 028 C1/C2)
 
