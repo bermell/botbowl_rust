@@ -162,7 +162,37 @@ section carries the evidence.
   random-start corpora on seed 32100000, `BLOOD_MCTS_BACKUP=minimax|mean`, each through
   `audit_value_head_bias.py` — the pre-committed check that mean backup pulls the search-added
   optimism from +0.10 toward the bare leaf's +0.03. Part B: `gen03 --backup mean` vs `gen03`
-  minimax, 120 games, seed base 32000000. Result: pending.
+  minimax, 120 games, seed base 32000000.
+- **Part A result (2026-09-08 03:25, fixed engine, commit 76bda95; `runs/exp032/audit_s2-corpus-*.txt`).**
+  150 random-start self-play games per rule on the same seeds, gen03 both sides, 1000 iterations.
+
+  | | minimax (5,436 rows) | mean (6,269 rows) |
+  |---|---|---|
+  | bare NN leaf gap vs drive outcome | +0.045 (SE 0.009) | **+0.120** (SE 0.009) |
+  | 1000-iter search-root gap | +0.135 | +0.042 |
+  | **added by the search** (paired) | **+0.090** (z = 24.8) | **−0.078** (z = −25.8) |
+  | leaf calibration slope `b` | 0.95 | **0.59** |
+  | leaf RMSE | 0.638 | 0.701 |
+  | TDs / game, samples / game | 2.65, 36.2 | 2.47, 41.8 |
+
+  Three readings. (a) **The mechanism is confirmed**: swapping the backup rule moves the
+  search-added term by 0.17 of a drive outcome, from +0.09 optimistic to −0.08 pessimistic — the
+  backup manufactures the bias, replicating D1 on the fixed engine and a fresh seed. (b) **Mean
+  overshoots into pessimism by the same magnitude**, so the root is no better calibrated in
+  absolute terms; it is calibrated at +0.04 only because the leaf on these rows is *worse*. The
+  bias sign flips by fan width too: −0.16 at fans ≥31 (the visits there are mostly the FPU
+  sweep, D2, so the visit-weighted mean averages in a crowd of never-refuted bad moves), ≈0 at
+  11-30, −0.075 at ≤10. (c) The strongest signal is the leaf column: **on positions the
+  mean-backup bot reaches, gen03's own value head decalibrates from slope 0.95 to 0.59** — in
+  the top bin (pred +0.92) the drive is converted +0.50 under mean play vs +0.84 under minimax,
+  and symmetrically lost positions (pred −0.89) end −0.54 vs −0.86. Same net, same seeds; only
+  the play differs. Compression of outcomes toward zero from both ends, with 15% more decisions
+  per drive and 7% fewer TDs, is the signature of a bot that fails to convert what it has —
+  i.e. the mean-backup bot is the weaker player in its own self-play. Pre-committed prediction
+  for Part B, made before the match: **mean loses**, and the follow-up is not "mean vs minimax"
+  but a backup that keeps max-ness where the search has concentrated and averages only where it
+  has not (visit-weighted mean over the top-k by visits, or a max/mean blend `λ·max + (1−λ)·mean`
+  with λ rising in the child's visit share). Part B result: pending.
 
 ### 3. Re-tune `PUCT_C` under learned priors; add FPU reduction
 
