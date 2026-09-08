@@ -267,7 +267,22 @@ section carries the evidence.
 - **Run (queued behind stage 2, `scripts/exp032_s3_puct_fpu.sh`).** Four 120-game screens, gen03
   both sides, seed base 32000000, backup rule for all arms chosen from stage 2 (mean if ≥ 0.55,
   else minimax): `c=3 vs c=10`, `c=30 vs c=10`, `k=100 vs k=0`, `k=300 vs k=0`. Screens only —
-  a winner gets a sized match. Result: pending.
+  a winner gets a sized match. Stage 2 gave mean 0.454, so all arms run **minimax**.
+- **Results (2026-09-08, 120 games each, gen03 both sides, minimax).**
+
+  | arm | points | W-D-L | TD | z |
+  |---|---|---|---|---|
+  | `c=3` vs `c=10` | **0.421 ± 0.039** | 36-29-55 | 450:500 | −2.0 |
+  | `c=30` vs `c=10` | pending | | | |
+  | `k=100` vs `k=0` | pending | | | |
+  | `k=300` vs `k=0` | pending | | | |
+
+  `c=3` (15:40, 174 min): less exploration **loses** clearly, and it loses from both seats (Home
+  20-25, Away 16-30). So under learned priors the search is not over-exploring at `c=10` — the
+  gain, if any, is on the *more*-exploration side (`c=30`), consistent with plan 026's heuristic
+  result and with D4's finding that the learned prior's top lift (5.5×) already concentrates the
+  sweep. Note the paired SE is no tighter than unpaired again (1.04×): with a 1000-iteration
+  search the two seats' games diverge early enough that pairing buys almost nothing on this tier.
 
 ### 4. Exploration in self-play: root Dirichlet noise + visit-temperature sampling for the first k decisions of a drive
 
