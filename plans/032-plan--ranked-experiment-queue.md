@@ -317,6 +317,7 @@ section carries the evidence.
   the same 0.004 as the run-to-run wobble of a single curve. Both peak at step 90-92.5k of 110k
   and drift up after. So whatever strength gap the 300 games find is *not* visible in `val_*` —
   which is the point: it bounds how much strength variance hides behind identical losses.
+  The match moved to `scripts/exp032_s7b_tau50.sh` (order after stage 3: #9, #7b, then this).
   Match result: pending.
 
 ### 6. Heuristic hedge ablation
@@ -457,7 +458,32 @@ section carries the evidence.
   Prepare + train overlapped stage 1 (prepare 1 min, train 51 min on the shared GPU; restored
   at step 75,000 of 110,000, val_value 0.377, val_top1 0.572 against its own label). The match
   `s7-q7-vs-d7` (120 games, seed base 32000000) waits for the stage-2 runner and precedes
-  stage 3. Result: pending.
+  stage 3.
+- **Result (2026-09-08 09:36, 227 min — slowed by two GPU trains sharing the cores).**
+  **Q7 beats D7 0.613 ± 0.040 (z = +2.8)**: W62 D23 L35, TD 470:406; as Home W34 L17, as
+  Away W28 L18 (it wins from both seats); the paired SE is no tighter than unpaired (0.99×) and 35% of pairs split 1-1, so
+  the seeds carry little shared luck here. This is the **largest single-variable gain in the
+  programme so far**, and it comes from the label alone: same data, same init, same seed, same
+  steps, same search — only the policy target changed. It is also the first time an offline
+  proxy (the two top-1 probes) has predicted a match result in the right direction *and* at
+  roughly the right size (+0.06 on the played-move statistic → +0.11 in points, plausible
+  since the policy improvement compounds through the search).
+  Consequences:
+  1. **Ship it.** The loop's `prepare` call should use `--policy-target cq --tau 100` from the
+     next generation (`train_loop.sh` — not yet changed; deploy after the τ follow-up below so
+     the shipped value is the tested one). Since the held-out set is re-prepared under the same
+     target, `val_policy`/`val_top1` numbers from the loop will step-change and are not
+     comparable across the switch; `val_value` is.
+  2. **It re-ranks the queue.** D2's diagnosis (visit target ≈ FPU sweep at wide fans) is now a
+     confirmed strength lever, which raises the value of the fan-dependent τ idea and of #4's
+     class-balancing (which acts on the same label) and lowers the priority of the search-side
+     items (#3, #2b) that were trying to fix the same symptom from the other end.
+  3. **Follow-up launched (pre-registered): `q50` at τ=50**, `scripts/exp032_s7b_tau50.sh`,
+     identical recipe, head-to-head **vs Q7** 120 games (the question is which target to ship,
+     so the direct match is the cheapest discriminator; both arms' val sets are prepared under
+     their own τ so again only the match counts). Queued after stage 3 and #9's match, ahead
+     of #5's 300 games. If q50 wins, a fan-dependent τ (sharper where the fan is wide) is next;
+     if Q7 holds, τ=100 ships.
 
 ### 8. Encoder additions
 
