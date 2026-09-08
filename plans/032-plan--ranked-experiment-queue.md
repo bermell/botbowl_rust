@@ -109,10 +109,21 @@ section carries the evidence.
   same steps). Match `d8h vs gen03` on seed base 32000000. If d8h ≥ 0.50 where D7 was 0.40, the
   heuristic data is worth ≥ +0.10 and the loop's window must always include it; if d8h ≈ D7,
   the gap is the recipe/distillation and the from-scratch route is closed. Queue position: after
-  #7's match, before #3's screens (`scripts/exp032_s1b_d8h.sh`, launched 2026-09-08 02:50; it
+  #7's match, before #3's screens (`scripts/exp032_s1b_d8h.sh`, launched 2026-09-08 02:38; it
   holds `runs/exp032/s1b.pending`, which stage 3 blocks on). d8h validates on the loop's
   `gen07/prepared_val` like D7, so this is the one arm pair whose `val_*` are comparable.
-  Result: pending.
+- **Result (2026-09-08 12:45, 188 min): d8h = 0.425 ± 0.041 vs gen03** (W36 D30 L54, TD
+  404:468; as Home W16 L29, as Away W20 L25; 28% of pairs split 1-1). On val the two are
+  indistinguishable (d8h 1.829 vs D7 1.835 combined). **d8h ≈ D7** (0.425 vs 0.396, Δ = +0.03,
+  inside one SE of the difference 0.057): the gen00 heuristic corpus is worth at most a few
+  points, not the 0.10 that would have made it the missing ingredient. **The from-scratch route
+  is closed**: the recipe/distillation gap is what separates D7-class nets from gen03, and #7's
+  result (Q7 +0.11 over D7 from the label alone) says the label is the largest known piece of it.
+  The loop keeps its heuristic hedge for the reasons in #6 (label balance, ties), not because it
+  carries strength. Consequence for the queue: the natural next from-scratch test is **Q7 vs
+  gen03** — if the cq label closes the 0.10 gap to the champion, a full retrain becomes viable
+  again as the plan-030 rebuild's periodic step; it costs one 120-game match and no training,
+  so it slots in after the τ decision (#7b).
 
 ### 2. Mean backup instead of minimax with an NN leaf
 
