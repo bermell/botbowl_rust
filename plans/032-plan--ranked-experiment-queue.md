@@ -273,7 +273,7 @@ section carries the evidence.
   | arm | points | W-D-L | TD | z |
   |---|---|---|---|---|
   | `c=3` vs `c=10` | **0.421 ± 0.039** | 36-29-55 | 450:500 | −2.0 |
-  | `c=30` vs `c=10` | pending | | | |
+  | `c=30` vs `c=10` | 0.521 ± 0.037 | 47-31-42 | 467:452 | +0.5 |
   | `k=100` vs `k=0` | pending | | | |
   | `k=300` vs `k=0` | pending | | | |
 
@@ -283,6 +283,12 @@ section carries the evidence.
   result and with D4's finding that the learned prior's top lift (5.5×) already concentrates the
   sweep. Note the paired SE is no tighter than unpaired again (1.04×): with a 1000-iteration
   search the two seats' games diverge early enough that pairing buys almost nothing on this tier.
+  `c=30` (18:38, 177 min): **0.521, inside one SE of 0.50** — no measurable gain from tripling
+  exploration either. Together the two `c` screens bracket `c=10`: the curve is flat-to-falling
+  in both directions (0.421 / 0.50 / 0.521), so `c=10` is within ~0.02 of the optimum and the
+  original +0.03-0.06 expectation for this item does not hold under the NN. Per the abandon
+  rule `c` gets no sized match: strength is flat from c=10 to c=30 and only falls when
+  exploration is cut. The FPU screens are the remaining hope for #3.
 
 ### 4. Exploration in self-play: root Dirichlet noise + visit-temperature sampling for the first k decisions of a drive
 
