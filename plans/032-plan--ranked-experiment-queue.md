@@ -275,7 +275,7 @@ section carries the evidence.
   | `c=3` vs `c=10` | **0.421 ± 0.039** | 36-29-55 | 450:500 | −2.0 |
   | `c=30` vs `c=10` | 0.521 ± 0.037 | 47-31-42 | 467:452 | +0.5 |
   | `k=100` vs `k=0` | 0.446 ± 0.043 | 38-31-51 | 412:427 | −1.3 |
-  | `k=300` vs `k=0` | pending | | | |
+  | `k=300` vs `k=0` | 0.500 ± 0.044 | 50-20-50 | 416:404 | 0.0 |
 
   `c=3` (15:40, 174 min): less exploration **loses** clearly, and it loses from both seats (Home
   20-25, Away 16-30). So under learned priors the search is not over-exploring at `c=10` — the
@@ -296,6 +296,19 @@ section carries the evidence.
   gave: at 1000 iterations on this tier the search benefits from *breadth* at the root, and
   anything that narrows the first sweep (c=3, FPU reduction) costs points. `k=300` is running
   only because it is already queued; the expectation is now that it loses harder.
+  `k=300` (2026-09-09 00:19, 169 min): **0.500 exactly** (W50 D20 L50, TD 416:404) — the
+  prediction that it would lose harder was wrong; a 0.3-TD penalty is a wash, with fewer draws
+  than k=100 (20 vs 31) but the wins and losses it converts are balanced. So FPU reduction is
+  0.446 / 0.500 at k = 100 / 300: nowhere positive, and not monotone, which is what a
+  null effect measured twice at SE 0.04 looks like.
+- **Decision — #3 closed, nothing ships.** Four screens, no arm above one SE of 0.50 on the
+  high side (0.421, 0.521, 0.446, 0.500); the abandon rule fires. `c=10`, plain FPU stay. The
+  search-side knobs plan 026 identified are not where the strength is under the learned prior;
+  the cheapest reading of the whole stage is that the 1000-iteration search on this tier is
+  *breadth-limited at the root* (cutting exploration costs 0.08, adding it or narrowing the first
+  sweep does nothing), which is an argument for #10 (budget) as a diagnostic and for the label
+  work (#7) that changes what the prior points the breadth at. #2b (blended backup) drops below
+  #10 — the one search-side lever that showed a real signal (#2) did so on bias, not on strength.
 
 ### 4. Exploration in self-play: root Dirichlet noise + visit-temperature sampling for the first k decisions of a drive
 
