@@ -192,7 +192,26 @@ section carries the evidence.
   for Part B, made before the match: **mean loses**, and the follow-up is not "mean vs minimax"
   but a backup that keeps max-ness where the search has concentrated and averages only where it
   has not (visit-weighted mean over the top-k by visits, or a max/mean blend `λ·max + (1−λ)·mean`
-  with λ rising in the child's visit share). Part B result: pending.
+  with λ rising in the child's visit share).
+- **Part B result (2026-09-08 05:48, 143 min): mean = 0.454 ± 0.039 vs minimax (W38 D33 L49,
+  TD 244:263, z = −1.2; paired 0.454 ± 0.041, 16/60 pairs split by side).** The pre-committed
+  prediction held in direction; the abandon rule ("mean ≤ 0.50 at 120 games") is met.
+  **Decision: pure mean backup is abandoned; minimax stays production, and stage 3's `c`/FPU
+  sweep runs under minimax** (`pick_backup` chose it automatically). What the item taught:
+  the backup rule is the *lever* on the search's value bias (0.17 of a drive outcome between
+  the two rules, z ≈ 25 each way), but the bias itself is not the strength problem — the
+  optimistic rule wins. The likely reason is Blood Bowl's turnover structure: most of a
+  player-node's children are moves that hand over the turn cheaply, the search never refutes
+  them at 1000 iterations (D2's FPU-sweep visits), and averaging them in makes every position
+  look mediocre, so the bot stops distinguishing good plans from bad ones (the leaf-slope 0.59
+  in Part A). Max is the right operator for "there exists a plan"; it is only the *noise* under
+  max that hurts, and that is a leaf-quality problem more than a backup problem.
+- **#2b — blended backup (new, deprioritised until #3 lands).** `λ·max + (1−λ)·mean` per player
+  node with λ = visit share of the best child (→ max where the search has concentrated, → mean
+  where it is a flat sweep), or mean over the top-k by visits. Interacts with `PUCT_C`/FPU
+  (both change how concentrated visits are), so it is sized *after* stage 3 picks c and k:
+  ~2 h code + one 120-game match. Skip if stage 3's FPU reduction alone removes the wide-fan
+  sweep.
 
 ### 3. Re-tune `PUCT_C` under learned priors; add FPU reduction
 
