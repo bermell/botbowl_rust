@@ -484,6 +484,12 @@ section carries the evidence.
      their own τ so again only the match counts). Queued after stage 3 and #9's match, ahead
      of #5's 300 games. If q50 wins, a fan-dependent τ (sharper where the fan is wide) is next;
      if Q7 holds, τ=100 ships.
+     *Training (done 10:38, 58 min):* q50 restored at step 102.5k (val_policy 1.302, val_value
+     **0.380**, val_top1 0.581 against its own sharper label) vs Q7 at 75k (1.362 / **0.377** /
+     0.565). The held-out set is the same 36k rows for both and the value label does not depend
+     on τ, so **val_value is comparable here**: 0.380 vs 0.377 — the sharper policy target costs
+     the value head nothing measurable. Policy numbers are not comparable (different labels).
+     Match result: pending.
 
 ### 8. Encoder additions
 
