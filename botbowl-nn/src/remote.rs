@@ -372,9 +372,14 @@ fn exchange(
     // syscall per piece on the hot path.
     conn.stream.write_all(&frame).map_err(io_err)?;
 
-    let mut len_buf = [0u8; 4];
-    conn.stream.read_exact(&mut len_buf).map_err(io_err)?;
-    let len = u32::from_le_bytes(len_buf) as usize;
+    // The length prefix and the value arrive in one 8-byte piece, so read
+    // them together: for the value-only response (the generator's whole
+    // traffic) that is the entire frame in one syscall and no allocation.
+    // A length mismatch is a protocol error that drops the connection, so
+    // having read 4 bytes past a bad prefix costs nothing.
+    let mut head = [0u8; 8];
+    conn.stream.read_exact(&mut head).map_err(io_err)?;
+    let len = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
     let expect = if want_policy {
         4 + 4 * POLICY_CHANNELS * h * w
     } else {
@@ -385,11 +390,11 @@ fn exchange(
             "response is {len} B, expected {expect} B"
         )));
     }
-    let mut payload = vec![0u8; len];
-    conn.stream.read_exact(&mut payload).map_err(io_err)?;
-    let value = f32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+    let value = f32::from_le_bytes([head[4], head[5], head[6], head[7]]);
     let policy = if want_policy {
-        decode_f32(&payload[4..])
+        let mut payload = vec![0u8; len - 4];
+        conn.stream.read_exact(&mut payload).map_err(io_err)?;
+        decode_f32(&payload)
     } else {
         Vec::new()
     };
@@ -406,8 +411,12 @@ fn io_err(e: io::Error) -> RemoteError {
 }
 
 fn encode_f32(out: &mut Vec<u8>, xs: &[f32]) {
-    for x in xs {
-        out.extend_from_slice(&x.to_le_bytes());
+    // Size once and fill, rather than `extend_from_slice` per element: the
+    // per-call capacity check kept the 21 KB encode from vectorising.
+    let start = out.len();
+    out.resize(start + 4 * xs.len(), 0);
+    for (dst, x) in out[start..].chunks_exact_mut(4).zip(xs) {
+        dst.copy_from_slice(&x.to_le_bytes());
     }
 }
 

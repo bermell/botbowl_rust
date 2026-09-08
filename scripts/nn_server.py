@@ -18,12 +18,27 @@ which also documents the wire protocol.
 
 Design notes worth keeping in mind before editing:
 
+* **One thread, one event loop, a two-deep GPU pipeline.** The first
+  version ran a Python thread per connection feeding a `queue.Queue`, and a
+  batcher thread that did stage → replay → `.cpu()` → send strictly in
+  series. Measured on the 14x7 tier (6 parallel games, 64x6 net): the GPU
+  needs ~300 us per batch whatever its size up to 4, but the batch cost
+  777 us wall and each request queued another 840 us behind the previous
+  batch — the GPU idled while Python worked and Python spun (`.cpu()` is a
+  busy-wait) while the GPU worked, and the batcher lost the GIL to a dozen
+  connection threads every time it woke. This version reads every socket
+  from one `selectors` loop (no threads, no queue, no GIL handoffs), and
+  keeps one batch *in flight* on the GPU while it stages the next one and
+  answers the previous one. Completion is a `blocking=True` CUDA event, so
+  the process sleeps instead of spinning: a whole core comes back to the
+  games. See `Server.run` for the loop and `GraphRunner` for the
+  double-buffered pinned I/O that makes the overlap safe.
 * **No max-wait timer.** The obvious "wait 1 ms to collect a batch" makes
   the server *slower than tract* whenever few shards are active, which is
-  exactly the end of a generation and the whole eval phase. Greedy
-  draining self-regulates instead: batch size grows precisely as fast as
-  offered load, because requests accumulate during the previous forward.
-  `--max-wait-us` exists as a knob and defaults to 0.
+  exactly the end of a generation and the whole eval phase. The pipeline
+  batches naturally instead: the next batch is whatever arrived while the
+  current one was on the GPU, so batch size grows precisely as fast as
+  offered load. `--max-wait-us` exists as a knob and defaults to 0.
 * **The canary is a safety interlock, not a smoke test.** Each model's
   handshake returns its result on the committed parity fixture; the
   client compares against its own tract result and refuses to run on a
@@ -36,20 +51,21 @@ Design notes worth keeping in mind before editing:
 * **CUDA graphs are the point, not an optimisation (Stage 3).** This
   model is tiny (0.48 M params, 0.13 GFLOP) and the GPU is never the
   constraint: at batch 1 a traced module costs ~870 us end to end, of
-  which ~70 us is arithmetic. The rest is ATen dispatch and ~40 kernel
-  launches — the `F` term the plan's throughput model turns on. A
-  captured graph replays the whole tower as one launch, which is why
-  `F` falls from ~560 us to ~210 us and batch-1 latency roughly halves.
-  Graphs need static shapes, so batches are padded up to a bucket.
+  which ~300 us is the kernels themselves (24 cuDNN winograd launches at
+  hopeless occupancy — the fixed cost of a 3x3 conv on a 16x9 board) and
+  the rest is ATen dispatch. A captured graph replays the whole tower as
+  one launch. Graphs need static shapes, so batches are padded up to a
+  bucket. fp16 and channels_last were measured and are *slower* on Pascal.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import gc
 import itertools
 import os
-import queue
+import selectors
 import signal
 import socket
 import struct
@@ -75,10 +91,26 @@ CANARY_H, CANARY_W = 9, 16
 # Batch buckets for CUDA graph capture. A graph is a fixed shape, so a
 # batch of 9 runs as a padded 12 and the padding rows are discarded.
 # Fine-grained at the bottom because that is where the offered batch
-# actually lands (measured mean_batch 3.4 at 8 shards) *and* where a
-# graph saves the most; coarse at the top, where the GPU is doing real
-# work and one more launch is noise.
+# actually lands (measured mean_batch 1.6–3.4) *and* where a graph saves
+# the most; coarse at the top, where the GPU is doing real work and one
+# more launch is noise.
 BUCKETS = (1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64)
+# How many batches may be on the device at once. Each GraphRunner holds
+# this many pinned host slots; see `GraphRunner` for why the two must agree.
+DEPTH = 2
+# `Server.serve` timing. SPIN_S: how long before a batch's expected
+# completion to stop sleeping and start polling the event (CPU against
+# latency). JIT_S: how long before the device goes idle the next batch must
+# launch (batch size against latency; must cover the ~60 us host cost of a
+# launch plus the ~65 us a sleep wakes late). OVERDUE_S: how far past the
+# estimate to give up polling and block on the event.
+SPIN_S = 120e-6
+JIT_S = 250e-6
+OVERDUE_S = 2e-3
+# Per-connection receive buffer. A request is 8 + 4·(C·h·w + F) bytes —
+# 21 KB on the 14x7 tier — and a client has at most one in flight, so one
+# `recv_into` normally lands the whole frame.
+RECV_BUF = 1 << 17
 
 HANDSHAKES = itertools.count()
 
@@ -122,19 +154,13 @@ class Registry:
 
     Capacity is `--max-models` (default 4), which covers generation (one
     champion) and the eval phase's candidate-vs-champion pair with room
-    for a small strength ladder. Two clients naming the same weights share
-    one entry, one `model_id` and one batch queue; samples cannot be
-    batched across different weights, so a second model means a second
-    batch key, not a bigger batch.
+    for a small strength ladder. Samples cannot be batched across
+    different weights, so a second model means a second batch key, not a
+    bigger batch.
 
-    **Nothing is evicted.** LRU was the plan's suggestion, and it is the
-    wrong trade here: a `model_id` is also the key of that model's
-    captured CUDA graphs, which are owned by the batcher thread, so
-    evicting from a connection thread would either leak ~400 MB of VRAM
-    per evicted model or need cross-thread graph teardown — real
-    complexity on a path that cannot fire when the cap is 4 and the eval
-    phase holds 2. Exceeding the cap is a loud refusal instead, and the
-    fix is to raise the flag.
+    **Nothing is evicted.** A `model_id` is also the key of that model's
+    captured CUDA graphs; exceeding the cap is a loud refusal instead, and
+    the fix is to raise the flag.
     """
 
     def __init__(self, device: str, capacity: int, jit: str):
@@ -142,24 +168,20 @@ class Registry:
         self.capacity = capacity
         self.jit = jit
         self.by_weights: dict[str, Model] = {}
-        self.lock = threading.Lock()
 
     def get(self, path: str) -> Model:
-        # Resolve outside the lock: it touches the filesystem, and a bad
-        # path should raise without blocking other handshakes.
         pt = resolve_weights(path)
         key = str(pt)
-        with self.lock:
-            if key in self.by_weights:
-                return self.by_weights[key]
-            if len(self.by_weights) >= self.capacity:
-                raise RuntimeError(
-                    f"registry full ({self.capacity}): already serving "
-                    f"{[m.path for m in self.by_weights.values()]} — raise --max-models"
-                )
-            model = self._load(pt, path, model_id=len(self.by_weights))
-            self.by_weights[key] = model
-            return model
+        if key in self.by_weights:
+            return self.by_weights[key]
+        if len(self.by_weights) >= self.capacity:
+            raise RuntimeError(
+                f"registry full ({self.capacity}): already serving "
+                f"{[m.path for m in self.by_weights.values()]} — raise --max-models"
+            )
+        model = self._load(pt, path, model_id=len(self.by_weights))
+        self.by_weights[key] = model
+        return model
 
     def _load(self, pt: Path, path: str, model_id: int) -> Model:
         t0 = time.perf_counter()
@@ -209,6 +231,10 @@ def maybe_trace(module: torch.nn.Module, device: str, jit: str) -> torch.nn.Modu
     failure this server must not have. So: trace, then check the traced
     module against eager at a *different* batch and a *different* board
     size, and fall back to eager if they disagree.
+
+    Worth it even under CUDA graphs: freezing folds each BatchNorm into its
+    conv, and the captured graph of the frozen module replays in ~295 us
+    against ~380 us for the eager module's graph (batch 1, GTX 1060).
     """
     if jit == "off":
         return module
@@ -270,7 +296,7 @@ def compute_canary(module: torch.nn.Module, device: str) -> bytes:
 
 @dataclass
 class Request:
-    conn: "Connection"
+    conn: "Connection | None"
     model: Model
     h: int
     w: int
@@ -284,6 +310,25 @@ class Request:
         return (self.model.model_id, self.h, self.w)
 
 
+@dataclass
+class Launched:
+    """A batch that has been handed to the device and not yet answered."""
+
+    batch: list[Request]
+    runner: "EagerRunner | GraphRunner"
+    slot: "Slot | None"
+    want_policy: bool
+    t_launch: float
+    stage_ns: int
+    queue_ns: int
+    # Eager results are already on the host when `launch` returns.
+    values: np.ndarray | None = None
+    policies: np.ndarray | None = None
+    # perf_counter at which the server expects the device to be done; set
+    # by `Server.launch` from the runner's running estimate.
+    eta: float = 0.0
+
+
 def bucket_list(max_batch: int) -> list[int]:
     """The buckets a server with this `--max-batch` can ever be asked for."""
     bs = [b for b in BUCKETS if b < max_batch]
@@ -295,19 +340,25 @@ class EagerRunner:
     """Stage-2 behaviour: stack, H2D, call the module, D2H. No padding.
 
     Still the path for `--device cpu` and for `--graphs off`, and the
-    fallback whenever a graph cannot be captured.
+    fallback whenever a graph cannot be captured. Synchronous: `launch`
+    has the answer in hand when it returns and `wait` is a no-op, so the
+    pipeline degrades to the old serial loop rather than to a special case.
     """
 
     def __init__(self, module, device: str):
         self.module = module
         self.device = device
         self.bucket = 0  # "no padding" — reported in the stats histogram
+        self.eta_s = 0.0  # results are in hand when `launch` returns
 
-    def run(self, batch: list["Request"], want_policy: bool):
+    def ready(self, launched: Launched) -> bool:
+        return True
+
+    def launch(self, batch: list[Request], want_policy: bool, queue_ns: int) -> Launched:
         t0 = time.perf_counter()
         spatial = np.stack([r.spatial for r in batch])
         global_ = np.stack([r.global_ for r in batch])
-        with torch.no_grad():
+        with torch.inference_mode():
             s = torch.from_numpy(spatial).to(self.device, non_blocking=True)
             g = torch.from_numpy(global_).to(self.device, non_blocking=True)
             t1 = time.perf_counter()
@@ -318,7 +369,39 @@ class EagerRunner:
             # generator) never does.
             values = value.reshape(-1).cpu().numpy().astype(np.float32)
             policies = policy.reshape(len(batch), -1).cpu().numpy().astype(np.float32) if want_policy else None
-        return values, policies, int((t1 - t0) * 1e9), int((time.perf_counter() - t1) * 1e9)
+        return Launched(batch, self, None, want_policy, t1, int((t1 - t0) * 1e9), queue_ns, values, policies)
+
+    def wait(self, launched: Launched) -> tuple[np.ndarray, np.ndarray | None, int]:
+        return launched.values, launched.policies, int((time.perf_counter() - launched.t_launch) * 1e9)
+
+    def run(self, batch: list[Request], want_policy: bool):
+        """Synchronous convenience for `bench`."""
+        launched = self.launch(batch, want_policy, 0)
+        values, policies, fwd = self.wait(launched)
+        return values, policies, launched.stage_ns, fwd
+
+
+@dataclass
+class Slot:
+    """One set of pinned host buffers for a graph bucket — the in-flight
+    batch's staging and results. `GraphRunner` keeps two and alternates.
+
+    Inputs live in *one* pinned buffer (`host`), of which `np_s`/`np_g` are
+    views: the batch goes up in a single H2D copy. Every separate copy is
+    its own ~25 us device-side launch plus ~15 us of ATen dispatch, and at
+    batch 1 the whole tower is 300 us, so two input copies plus a sliced
+    output copy were a fifth of the device time and half the host time.
+    """
+
+    host: torch.Tensor
+    host_v: torch.Tensor
+    host_p: torch.Tensor
+    np_s: np.ndarray
+    np_g: np.ndarray
+    np_v: np.ndarray
+    np_p: np.ndarray
+    start: torch.cuda.Event
+    done: torch.cuda.Event
 
 
 class GraphRunner:
@@ -331,59 +414,117 @@ class GraphRunner:
     what `live_server_is_batch_invariant` pins. If BatchNorm were ever left
     in train mode, padding rows would leak into real ones and that test is
     what would catch it.
+
+    **Pipelining.** `launch` enqueues H2D → replay → D2H on the current
+    stream and records an event; nothing here blocks. `wait` sleeps on that
+    event (`blocking=True`: a real futex wait, not the CUDA default spin —
+    the old `.cpu()` sync burned ~40% of a core doing nothing). The device
+    buffers are shared between consecutive launches, which is sound because
+    a single stream executes in order: launch k+1's H2D cannot overwrite
+    `dev_s` before replay k has read it, and replay k+1 cannot overwrite
+    `value` before D2H k has copied it out. The *host* side is not ordered
+    by the stream, so each runner owns `DEPTH` `Slot`s of pinned buffers and
+    rotates: a slot is reused only `DEPTH` launches later, and `Server.serve`
+    never launches with `DEPTH` batches already in flight, so by then the
+    server has waited on the slot's previous batch and copied its results
+    out. Deepen the pipeline and the slots come with it.
     """
 
     def __init__(self, module, bucket: int, h: int, w: int, device: str):
         self.bucket, self.h, self.w = bucket, h, w
-        self.dev_s = torch.zeros(bucket, SPATIAL_CHANNELS, h, w, device=device)
-        self.dev_g = torch.zeros(bucket, GLOBAL_FEATURES, device=device)
-        # Persistent pinned staging. Under Stage 2 the H2D term was 294 us
-        # of a 1676 us batch and pinning was correctly judged not worth it;
-        # once graphs take the batch down to ~400 us it is a third of the
-        # cost, so it is worth it now. `.numpy()` aliases the pinned
-        # storage, so filling a row is a plain memcpy with no allocation.
-        self.host_s = torch.zeros(bucket, SPATIAL_CHANNELS, h, w).pin_memory()
-        self.host_g = torch.zeros(bucket, GLOBAL_FEATURES).pin_memory()
-        self.np_s = self.host_s.numpy()
-        self.np_g = self.host_g.numpy()
+        self.n_s = bucket * SPATIAL_CHANNELS * h * w
+        self.n_g = bucket * GLOBAL_FEATURES
+        # One device buffer, two views — so the batch is one H2D copy.
+        self.dev = torch.zeros(self.n_s + self.n_g, device=device)
+        dev_s = self.dev[: self.n_s].view(bucket, SPATIAL_CHANNELS, h, w)
+        dev_g = self.dev[self.n_s :].view(bucket, GLOBAL_FEATURES)
+        self.slots = [self._slot() for _ in range(DEPTH)]
+        self.next_slot = 0
+        # Running estimate of device time per batch (H2D → D2H), which the
+        # server uses to sleep until just before the result is due. Seeded
+        # high; the first batches correct it.
+        self.eta_s = 600e-6
         # Capture must not record cuDNN autotune or lazy allocator work, so
         # warm on a side stream first — this is required, not defensive.
+        # (`cudnn.benchmark` must be on before this runs: the heuristic
+        # picks a 4 ms algorithm for batch 1 of this net on Pascal, and the
+        # graph would bake it in. `main` sets it; `bench` inherits it.)
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream), torch.no_grad():
             for _ in range(3):
-                module(self.dev_s, self.dev_g)
+                module(dev_s, dev_g)
         torch.cuda.current_stream().wait_stream(stream)
         self.graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self.graph), torch.no_grad():
-            self.policy, self.value = module(self.dev_s, self.dev_g)
+            self.policy, self.value = module(dev_s, dev_g)
+        self.value_flat = self.value.reshape(-1)
+        self.policy_flat = self.policy.reshape(bucket, -1)
 
-    def run(self, batch: list["Request"], want_policy: bool):
+    def _slot(self) -> Slot:
+        b, h, w = self.bucket, self.h, self.w
+        host = torch.zeros(self.n_s + self.n_g).pin_memory()
+        host_v = torch.zeros(b).pin_memory()
+        host_p = torch.zeros(b, POLICY_CHANNELS * h * w).pin_memory()
+        return Slot(
+            host, host_v, host_p,
+            host[: self.n_s].view(b, SPATIAL_CHANNELS, h, w).numpy(),
+            host[self.n_s :].view(b, GLOBAL_FEATURES).numpy(),
+            host_v.numpy(), host_p.numpy(),
+            torch.cuda.Event(enable_timing=True),
+            # `blocking=True`: if the server does have to sleep on this event
+            # it sleeps in the kernel instead of spinning on the driver.
+            torch.cuda.Event(enable_timing=True, blocking=True),
+        )
+
+    def launch(self, batch: list[Request], want_policy: bool, queue_ns: int) -> Launched:
         t0 = time.perf_counter()
+        slot = self.slots[self.next_slot]
+        self.next_slot = (self.next_slot + 1) % DEPTH
         n = len(batch)
         for i, r in enumerate(batch):
-            self.np_s[i] = r.spatial
-            self.np_g[i] = r.global_
-        self.dev_s.copy_(self.host_s, non_blocking=True)
-        self.dev_g.copy_(self.host_g, non_blocking=True)
+            slot.np_s[i] = r.spatial
+            slot.np_g[i] = r.global_
+        slot.start.record()
+        self.dev.copy_(slot.host, non_blocking=True)
         t1 = time.perf_counter()
         self.graph.replay()
-        # Slice before `.cpu()`: the padding rows are computed (they are in
-        # the graph) but never copied back and never sent.
-        values = self.value.reshape(-1)[:n].cpu().numpy().astype(np.float32)
-        policies = self.policy.reshape(self.bucket, -1)[:n].cpu().numpy().astype(np.float32) if want_policy else None
-        return values, policies, int((t1 - t0) * 1e9), int((time.perf_counter() - t1) * 1e9)
+        # The padding rows are computed (they are in the graph) but never
+        # sent. The value vector is `bucket` floats, so copying all of it
+        # is cheaper than slicing it; the policy is 17 KB a row, so slice.
+        slot.host_v.copy_(self.value_flat, non_blocking=True)
+        if want_policy:
+            slot.host_p[:n].copy_(self.policy_flat[:n], non_blocking=True)
+        slot.done.record()
+        return Launched(batch, self, slot, want_policy, t1, int((t1 - t0) * 1e9), queue_ns)
+
+    def ready(self, launched: Launched) -> bool:
+        return launched.slot.done.query()
+
+    def wait(self, launched: Launched) -> tuple[np.ndarray, np.ndarray | None, int]:
+        slot = launched.slot
+        slot.done.synchronize()
+        n = len(launched.batch)
+        fwd_ns = int(slot.start.elapsed_time(slot.done) * 1e6)  # device-side ms → ns
+        self.eta_s += 0.1 * (fwd_ns / 1e9 - self.eta_s)
+        return slot.np_v[:n], (slot.np_p[:n] if launched.want_policy else None), fwd_ns
+
+    def run(self, batch: list[Request], want_policy: bool):
+        """Synchronous convenience for `bench`."""
+        launched = self.launch(batch, want_policy, 0)
+        values, policies, fwd = self.wait(launched)
+        return values, policies, launched.stage_ns, fwd
 
 
 class RunnerPool:
     """Chooses how to run a batch: a captured graph if one fits, else eager.
 
     Keyed `(model_id, h, w, bucket)`. Capture is lazy and happens on the
-    batcher thread, so a graph is always replayed by the thread that
-    recorded it; the first batch of an unseen bucket pays ~50 ms once. A
-    bucket whose capture fails is remembered as failed and falls through to
-    eager forever, so a torch/driver that cannot capture degrades to
-    Stage-2 speed rather than to a dead server.
+    serving thread (there is only one), so a graph is always replayed by
+    the thread that recorded it; the first batch of an unseen bucket pays
+    ~50 ms once. A bucket whose capture fails is remembered as failed and
+    falls through to eager forever, so a torch/driver that cannot capture
+    degrades to Stage-2 speed rather than to a dead server.
     """
 
     def __init__(self, device: str, max_batch: int, enabled: bool):
@@ -438,14 +579,16 @@ class RunnerPool:
 
 @dataclass
 class Stats:
-    """Where a batch's wall time actually goes.
+    """Where a batch's time actually goes.
 
-    The split matters more than the total: `F`, the fixed per-batch cost,
-    is what the plan's throughput model turns on, and it is the sum of
-    `stage` (H2D + numpy stack), the launch/dispatch part of `fwd`, and
-    `post` (D2H + the socket writes). Knowing which of those dominates is
-    what decides whether the next move is CUDA graphs or a shared-memory
-    ring.
+    `stage` is host work per batch (row copies into pinned memory + the H2D
+    enqueue), `fwd` is **device** time from the H2D to the end of the D2H
+    (CUDA events, so it is not inflated by a busy host), `wait` is how long
+    the loop slept for a result it needed, and `post` is the response
+    writes. With the pipeline, wall time per batch is *not* their sum: the
+    GPU runs `fwd` of batch k while the host does `stage`/`post` of k±1.
+    `queue` is the per-sample time between a frame arriving and its batch
+    launching — the number a client actually feels on top of `fwd`.
     """
 
     batches: int = 0
@@ -453,16 +596,19 @@ class Stats:
     padded: int = 0
     forward_ns: int = 0
     stage_ns: int = 0
+    wait_ns: int = 0
     post_ns: int = 0
     queue_ns: int = 0
     hist: dict = field(default_factory=dict)
+    t_start: float = field(default_factory=time.perf_counter)
 
-    def record(self, n: int, bucket: int, forward_ns: int, stage_ns: int, post_ns: int, queue_ns: int) -> None:
+    def record(self, n: int, bucket: int, forward_ns: int, stage_ns: int, wait_ns: int, post_ns: int, queue_ns: int) -> None:
         self.batches += 1
         self.samples += n
         self.padded += max(bucket, n) - n
         self.forward_ns += forward_ns
         self.stage_ns += stage_ns
+        self.wait_ns += wait_ns
         self.post_ns += post_ns
         self.queue_ns += queue_ns
         self.hist[n] = self.hist.get(n, 0) + 1
@@ -471,117 +617,20 @@ class Stats:
         if not self.batches:
             return "no batches yet"
         mean_batch = self.samples / self.batches
-        total_ns = self.forward_ns + self.stage_ns + self.post_ns
         us = lambda x: x / self.batches / 1e3  # noqa: E731
-        per_sample = total_ns / max(self.samples, 1) / 1e3
+        per_sample = self.forward_ns / max(self.samples, 1) / 1e3
         q_us = self.queue_ns / max(self.samples, 1) / 1e3
         top = sorted(self.hist.items())[:8]
         # `pad` is the share of rows the GPU computed and threw away — the
         # price of a fixed-shape graph. It should stay well under 1, or the
         # bucket ladder is too coarse for the offered batch distribution.
         pad = self.padded / max(self.samples, 1)
+        elapsed = max(time.perf_counter() - self.t_start, 1e-9)
         return (
             f"batches={self.batches} samples={self.samples} mean_batch={mean_batch:.2f} pad={pad:.2f} "
-            f"batch={us(total_ns):.0f}us (stage {us(self.stage_ns):.0f} + fwd {us(self.forward_ns):.0f} "
-            f"+ post {us(self.post_ns):.0f}) {per_sample:.0f}us/sample queue={q_us:.0f}us/sample "
-            f"hist={top}"
-        )
-
-
-class Batcher(threading.Thread):
-    """Greedy drain: block for one request, sweep up everything that has
-    piled up during the previous forward, run it, write the responses.
-    """
-
-    def __init__(
-        self,
-        q: queue.Queue,
-        device: str,
-        max_batch: int,
-        max_wait_us: int,
-        stats: Stats,
-        pool: RunnerPool,
-        prewarm: tuple[Model, list[tuple[int, int]]] | None = None,
-    ):
-        super().__init__(daemon=True, name="batcher")
-        self.q = q
-        self.device = device
-        self.max_batch = max_batch
-        self.max_wait_us = max_wait_us
-        self.stats = stats
-        self.pool = pool
-        self.prewarm = prewarm
-        self.stop = threading.Event()
-        # Main thread waits on this before it starts accepting, so no
-        # client ever races a graph capture.
-        self.ready = threading.Event()
-
-    def run(self) -> None:
-        # Capture on *this* thread: a graph is then always replayed by the
-        # thread that recorded it, which sidesteps every cross-thread
-        # stream question.
-        if self.prewarm is not None:
-            model, sizes = self.prewarm
-            t0 = time.perf_counter()
-            self.pool.prewarm(model, sizes)
-            log(f"prewarmed {len(self.pool.graphs)} graphs in {time.perf_counter() - t0:.1f}s")
-        self.ready.set()
-        leftover: list[Request] = []
-        while not self.stop.is_set():
-            if leftover:
-                batch, leftover = self._take(leftover)
-            else:
-                try:
-                    first = self.q.get(timeout=0.25)
-                except queue.Empty:
-                    continue
-                batch, leftover = self._take([first])
-            if batch:
-                try:
-                    self._run_batch(batch)
-                except Exception as e:  # pragma: no cover
-                    log(f"batch failed: {e!r}")
-                    for r in batch:
-                        r.conn.close()
-
-    def _take(self, seed: list[Request]) -> tuple[list[Request], list[Request]]:
-        """Pull the seed's key out of the queue, deferring other keys."""
-        key = seed[0].key
-        batch = [r for r in seed if r.key == key]
-        deferred = [r for r in seed if r.key != key]
-        if self.max_wait_us:
-            deadline = time.perf_counter() + self.max_wait_us / 1e6
-        while len(batch) < self.max_batch:
-            try:
-                r = self.q.get_nowait()
-            except queue.Empty:
-                if self.max_wait_us and time.perf_counter() < deadline:
-                    time.sleep(0)
-                    continue
-                break
-            (batch if r.key == key else deferred).append(r)
-        return batch, deferred
-
-    def _run_batch(self, batch: list[Request]) -> None:
-        t0 = time.perf_counter()
-        queue_ns = sum(int((t0 - r.t_enqueued) * 1e9) for r in batch)
-        first = batch[0]
-        want_policy = any(r.want_policy for r in batch)
-        runner = self.pool.get(first.model, first.h, first.w, len(batch))
-        values, policies, stage_ns, forward_ns = runner.run(batch, want_policy)
-        t2 = time.perf_counter()
-        for i, r in enumerate(batch):
-            body = values[i].tobytes()
-            if r.want_policy:
-                body += policies[i].tobytes()
-            r.conn.send(struct.pack("<I", len(body)) + body)
-        self.stats.record(
-            len(batch),
-            bucket=runner.bucket,
-            forward_ns=forward_ns,
-            stage_ns=stage_ns,
-            post_ns=int((time.perf_counter() - t2) * 1e9),
-            queue_ns=queue_ns,
+            f"stage {us(self.stage_ns):.0f}us fwd {us(self.forward_ns):.0f}us wait {us(self.wait_ns):.0f}us "
+            f"post {us(self.post_ns):.0f}us per batch; {per_sample:.0f}us GPU/sample queue={q_us:.0f}us/sample "
+            f"{self.samples / elapsed:.0f} samples/s hist={top}"
         )
 
 
@@ -591,65 +640,158 @@ class Batcher(threading.Thread):
 
 
 class Connection:
-    def __init__(self, sock: socket.socket, registry: Registry, q: queue.Queue):
+    """One client socket, parsed incrementally by the event loop.
+
+    Non-blocking. `on_readable` pulls whatever the kernel has into a
+    per-connection buffer and peels off complete frames: first the
+    handshake, then requests, each of which becomes a `Request` on the
+    server's pending list. A client has at most one request outstanding,
+    so in practice one `recv_into` delivers one whole frame and the buffer
+    is empty again afterwards; the partial-frame path exists for
+    correctness, not speed.
+    """
+
+    def __init__(self, sock: socket.socket, server: "Server"):
         self.sock = sock
-        self.registry = registry
-        self.q = q
+        self.server = server
         self.model: Model | None = None
         self.alive = True
+        self.buf = bytearray(RECV_BUF)
+        self.view = memoryview(self.buf)
+        self.have = 0
 
     # -- io ---------------------------------------------------------------
-    def recv_exact(self, n: int) -> bytes | None:
-        buf = bytearray(n)
-        view = memoryview(buf)
-        got = 0
-        while got < n:
-            k = self.sock.recv_into(view[got:], n - got)
-            if k == 0:
-                return None
-            got += k
-        return bytes(buf)
+    def on_readable(self) -> None:
+        try:
+            k = self.sock.recv_into(self.view[self.have:], RECV_BUF - self.have)
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError as e:
+            log(f"connection error: {e}")
+            self.close()
+            return
+        if k == 0:
+            self.close()
+            return
+        self.have += k
+        consumed = 0
+        while self.alive:
+            used = self._parse(self.view[consumed:self.have])
+            if used == 0:
+                break
+            consumed += used
+        if consumed:
+            rest = self.have - consumed
+            if rest:
+                self.buf[:rest] = self.buf[consumed:self.have]
+            self.have = rest
+        elif self.have == RECV_BUF:
+            log("frame larger than the receive buffer — dropping connection")
+            self.close()
 
     def send(self, data: bytes) -> None:
+        """Write a whole response. The client is always blocked reading, and
+        the socket buffer is empty (it holds one response at a time), so
+        this almost never has to wait; if it does, wait briefly rather than
+        drop the frame."""
+        if not self.alive:
+            return
+        mv = memoryview(data)
         try:
-            self.sock.sendall(data)
-        except OSError:
+            while mv:
+                try:
+                    n = self.sock.send(mv)
+                except BlockingIOError:
+                    if not self.server.wait_writable(self.sock):
+                        raise OSError(errno.ETIMEDOUT, "send would block")
+                    continue
+                mv = mv[n:]
+        except OSError as e:
+            log(f"send failed: {e}")
             self.close()
 
     def close(self) -> None:
         if self.alive:
             self.alive = False
+            self.server.forget(self)
             try:
                 self.sock.close()
             except OSError:
                 pass
 
     # -- protocol ---------------------------------------------------------
-    def handshake(self) -> bool:
-        head = self.recv_exact(12)
-        if head is None:
-            return False
-        magic, version, c, f, path_len = struct.unpack("<4sHHHH", head)
+    def _parse(self, mv: memoryview) -> int:
+        """Consume one complete frame from `mv` and return its length, or 0
+        if the frame is not all here yet."""
+        if self.model is None:
+            return self._parse_handshake(mv)
+        if len(mv) < 4:
+            return 0
+        (length,) = struct.unpack_from("<I", mv, 0)
+        if len(mv) < 4 + length:
+            return 0
+        body = mv[4:4 + length]
+        if length < 8:
+            log(f"request body is {length} B — dropping connection")
+            self.close()
+            return 0
+        model_id, flags, h, w = struct.unpack_from("<HHHH", body, 0)
+        if model_id != self.model.model_id:
+            # Guards against a server-side routing bug once the registry
+            # grows: a request must name the model its connection was
+            # bound to, or the connection dies.
+            log(f"model_id {model_id} != handshake {self.model.model_id} — dropping connection")
+            self.close()
+            return 0
+        n_spatial = SPATIAL_CHANNELS * h * w
+        want = 8 + 4 * n_spatial + 4 * GLOBAL_FEATURES
+        if length != want:
+            log(f"request is {length} B, expected {want} B for {h}x{w} — dropping connection")
+            self.close()
+            return 0
+        # One copy out of the receive buffer (the buffer is reused for the
+        # next frame); the runner copies once more into pinned memory.
+        flat = np.frombuffer(bytes(body[8:]), dtype="<f4", count=n_spatial + GLOBAL_FEATURES)
+        self.server.enqueue(
+            Request(
+                conn=self,
+                model=self.model,
+                h=h,
+                w=w,
+                want_policy=bool(flags & FLAG_WANT_POLICY),
+                spatial=flat[:n_spatial].reshape(SPATIAL_CHANNELS, h, w),
+                global_=flat[n_spatial:],
+            )
+        )
+        return 4 + length
+
+    def _parse_handshake(self, mv: memoryview) -> int:
+        if len(mv) < 12:
+            return 0
+        magic, version, c, f, path_len = struct.unpack_from("<4sHHHH", mv, 0)
         if magic != MAGIC:
-            return self._reject(STATUS_BAD_MAGIC, f"bad magic {magic!r}")
+            self._reject(STATUS_BAD_MAGIC, f"bad magic {bytes(magic)!r}")
+            return 0
         if version != PROTOCOL_VERSION:
-            return self._reject(STATUS_BAD_VERSION, f"version {version} != {PROTOCOL_VERSION}")
+            self._reject(STATUS_BAD_VERSION, f"version {version} != {PROTOCOL_VERSION}")
+            return 0
         if (c, f) != (SPATIAL_CHANNELS, GLOBAL_FEATURES):
-            return self._reject(
+            self._reject(
                 STATUS_BAD_SHAPES, f"client encodes C={c} F={f}, server model wants {SPATIAL_CHANNELS}/{GLOBAL_FEATURES}"
             )
-        raw = self.recv_exact(path_len)
-        if raw is None:
-            return False
-        path = raw.decode("utf-8", "replace")
+            return 0
+        if len(mv) < 12 + path_len:
+            return 0
+        path = bytes(mv[12:12 + path_len]).decode("utf-8", "replace")
         try:
-            self.model = self.registry.get(path)
+            model = self.server.registry.get(path)
         except Exception as e:
             status = STATUS_NO_CAPACITY if "registry full" in str(e) else STATUS_LOAD_FAILED
-            return self._reject(status, str(e))
+            self._reject(status, str(e))
+            return 0
+        self.model = model
         self.send(
-            struct.pack("<HHHHI", STATUS_OK, self.model.model_id, CANARY_H, CANARY_W, len(self.model.canary))
-            + self.model.canary
+            struct.pack("<HHHHI", STATUS_OK, model.model_id, CANARY_H, CANARY_W, len(model.canary)) + model.canary
         )
         # `MctsBot` spawns its worker threads per decision (`thread::scope`
         # in `dynamics.rs`), and connections are thread-local, so a shard
@@ -658,63 +800,222 @@ class Connection:
         # the log is nothing but handshakes.
         n = next(HANDSHAKES)
         if n < 4 or n % 1000 == 0:
-            log(f"connection #{n} bound to model_id={self.model.model_id} ({path})")
-        return True
+            log(f"connection #{n} bound to model_id={model.model_id} ({path})")
+        return 12 + path_len
 
-    def _reject(self, status: int, msg: str) -> bool:
+    def _reject(self, status: int, msg: str) -> None:
         log(f"rejecting connection: {msg}")
         payload = msg.encode()
         self.send(struct.pack("<HHHHI", status, 0, 0, 0, len(payload)) + payload)
         self.close()
-        return False
-
-    def serve(self) -> None:
-        try:
-            if not self.handshake():
-                return
-            while self.alive:
-                head = self.recv_exact(4)
-                if head is None:
-                    break
-                (length,) = struct.unpack("<I", head)
-                body = self.recv_exact(length)
-                if body is None:
-                    break
-                model_id, flags, h, w = struct.unpack_from("<HHHH", body, 0)
-                if model_id != self.model.model_id:
-                    # Guards against a server-side routing bug once the
-                    # registry grows: a request must name the model its
-                    # connection was bound to, or the connection dies.
-                    log(f"model_id {model_id} != handshake {self.model.model_id} — dropping connection")
-                    break
-                n_spatial = SPATIAL_CHANNELS * h * w
-                want = 8 + 4 * n_spatial + 4 * GLOBAL_FEATURES
-                if length != want:
-                    log(f"request is {length} B, expected {want} B for {h}x{w} — dropping connection")
-                    break
-                # Zero-copy view straight onto the frame we just read; the
-                # only copy is the `np.stack` the batcher does.
-                flat = np.frombuffer(body, dtype="<f4", count=n_spatial + GLOBAL_FEATURES, offset=8)
-                self.q.put(
-                    Request(
-                        conn=self,
-                        model=self.model,
-                        h=h,
-                        w=w,
-                        want_policy=bool(flags & FLAG_WANT_POLICY),
-                        spatial=flat[:n_spatial].reshape(SPATIAL_CHANNELS, h, w),
-                        global_=flat[n_spatial:],
-                    )
-                )
-        except OSError as e:
-            log(f"connection error: {e}")
-        finally:
-            self.close()
 
 
 # --------------------------------------------------------------------------
 # server
 # --------------------------------------------------------------------------
+
+
+class Server:
+    """The event loop: sockets, batching and the two-deep GPU pipeline, all
+    on one thread.
+
+    Per iteration: poll every socket (without blocking if there is work in
+    hand), launch the pending requests as one batch if the device is idle
+    or about to be, else answer the oldest in-flight batch if its result
+    has landed, else sleep until one of those becomes true. The GPU
+    therefore has the next batch queued just before the current one ends,
+    and the host's parsing/staging/responding runs while the device
+    computes. A request arriving at a random moment waits for at most one
+    batch to clear the device instead of a whole serial
+    stage→forward→respond cycle, and requests that arrive while a batch is
+    running leave together as the next one.
+    """
+
+    def __init__(self, registry: Registry, pool: RunnerPool, stats: Stats, max_batch: int, max_wait_us: int):
+        self.registry = registry
+        self.pool = pool
+        self.stats = stats
+        self.max_batch = max_batch
+        self.max_wait_us = max_wait_us
+        # `select`, not the default `epoll`: `epoll_wait` takes its timeout
+        # in whole milliseconds, so the sub-millisecond sleeps in `serve`
+        # (sleep until ~120 us before the batch is due) would all round up
+        # to 1 ms — measured as a flat 1.36 ms round trip for a lone client.
+        # `select` honours microseconds and wakes ~65 us late on this box.
+        # A shard holds one connection per search thread, so the fd count
+        # stays far below select's 1024.
+        self.sel = selectors.SelectSelector()
+        self.listener: socket.socket | None = None
+        self.conns: set[Connection] = set()
+        # FIFO of pending requests; batches are formed per key from it.
+        self.pending: list[Request] = []
+        self.gpu_free_at = 0.0
+        self.stopping = threading.Event()
+
+    # -- connection bookkeeping -------------------------------------------
+    def enqueue(self, r: Request) -> None:
+        self.pending.append(r)
+
+    def forget(self, conn: Connection) -> None:
+        self.conns.discard(conn)
+        try:
+            self.sel.unregister(conn.sock)
+        except (KeyError, ValueError, OSError):
+            pass
+
+    def wait_writable(self, sock: socket.socket, timeout: float = 1.0) -> bool:
+        with selectors.SelectSelector() as s:
+            s.register(sock, selectors.EVENT_WRITE)
+            return bool(s.select(timeout))
+
+    def _accept(self) -> None:
+        try:
+            sock, _ = self.listener.accept()
+        except OSError:
+            return
+        sock.setblocking(False)
+        conn = Connection(sock, self)
+        self.conns.add(conn)
+        self.sel.register(sock, selectors.EVENT_READ, conn)
+
+    def poll(self, timeout: float | None) -> None:
+        """Service every readable socket once. `timeout=0` never blocks."""
+        try:
+            events = self.sel.select(timeout)
+        except OSError:
+            return
+        for key, _mask in events:
+            if key.data is None:
+                self._accept()
+            else:
+                key.data.on_readable()
+
+    # -- batching ----------------------------------------------------------
+    def take(self) -> list[Request]:
+        """Pull the oldest pending request's key out of `pending`, up to
+        `max_batch`, leaving other keys in place for the next iteration."""
+        if not self.pending:
+            return []
+        key = self.pending[0].key
+        batch: list[Request] = []
+        rest: list[Request] = []
+        for r in self.pending:
+            if r.key == key and len(batch) < self.max_batch:
+                batch.append(r)
+            else:
+                rest.append(r)
+        self.pending = rest
+        return batch
+
+    def launch(self, batch: list[Request]) -> Launched:
+        t0 = time.perf_counter()
+        queue_ns = sum(int((t0 - r.t_enqueued) * 1e9) for r in batch)
+        first = batch[0]
+        want_policy = any(r.want_policy for r in batch)
+        runner = self.pool.get(first.model, first.h, first.w, len(batch))
+        launched = runner.launch(batch, want_policy, queue_ns)
+        # The device runs batches in order, so this one starts when the
+        # previous one is expected to finish, or now if the GPU is idle.
+        launched.eta = max(launched.t_launch, self.gpu_free_at) + runner.eta_s
+        self.gpu_free_at = launched.eta
+        return launched
+
+    def finish(self, launched: Launched) -> None:
+        t0 = time.perf_counter()
+        values, policies, forward_ns = launched.runner.wait(launched)
+        t1 = time.perf_counter()
+        for i, r in enumerate(launched.batch):
+            body = values[i:i + 1].tobytes()
+            if r.want_policy:
+                body += policies[i].tobytes()
+            r.conn.send(struct.pack("<I", len(body)) + body)
+        self.stats.record(
+            len(launched.batch),
+            bucket=launched.runner.bucket,
+            forward_ns=forward_ns,
+            stage_ns=launched.stage_ns,
+            wait_ns=int((t1 - t0) * 1e9),
+            post_ns=int((time.perf_counter() - t1) * 1e9),
+            queue_ns=launched.queue_ns,
+        )
+
+    # -- main loop ---------------------------------------------------------
+    def serve(self, path: str) -> None:
+        if os.path.exists(path):
+            os.unlink(path)
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(path)
+        self.listener.listen(128)
+        self.listener.setblocking(False)
+        self.sel.register(self.listener, selectors.EVENT_READ, None)
+
+        # Batches on the device, oldest first. At most DEPTH: a GraphRunner
+        # has that many pinned slots, and a request only ever waits behind
+        # that many batches.
+        inflight: list[Launched] = []
+        while not self.stopping.is_set():
+            # Block only when there is nothing to do at all; otherwise just
+            # sweep up what has arrived.
+            self.poll(0.0 if (inflight or self.pending) else 0.25)
+            if self.pending and self.max_wait_us and len(self.pending) < self.max_batch:
+                deadline = time.perf_counter() + self.max_wait_us / 1e6
+                while len(self.pending) < self.max_batch and time.perf_counter() < deadline:
+                    self.poll(0.0)
+            now = time.perf_counter()
+            # Launch when the device is idle, or just in time to keep it
+            # busy: with a batch in flight, hold the pending requests until
+            # it is within JIT_S of finishing, so they leave as one batch
+            # rather than a trickle of singles queued behind it. A batch
+            # costs the device about the same at 1 as at 4, so that is
+            # throughput for free when the GPU is the bottleneck, and at
+            # most JIT_S of latency for a lone request when it is not.
+            can_launch = len(inflight) < DEPTH and (
+                not inflight or len(self.pending) >= self.max_batch or inflight[-1].eta - now < JIT_S
+            )
+            if self.pending and can_launch:
+                batch = self.take()
+                try:
+                    inflight.append(self.launch(batch))
+                except Exception as e:  # pragma: no cover
+                    log(f"batch failed: {e!r}")
+                    for r in batch:
+                        r.conn.close()
+                continue
+            if not inflight:
+                continue
+            head = inflight[0]
+            if head.runner.ready(head):
+                inflight.pop(0)
+                self.finish(head)
+                continue
+            # Nothing to do until either the pending batch may launch or the
+            # oldest batch is due. Sleep in `select` until then — a request
+            # arriving meanwhile wakes us — and spin on `query()` for the
+            # last SPIN_S before a result: the spin buys back the ~65 us it
+            # takes to be woken from a real sleep, and bounds what waiting
+            # costs in CPU per batch.
+            if self.pending and len(inflight) < DEPTH:
+                wake_at = inflight[-1].eta - JIT_S
+            else:
+                wake_at = head.eta - SPIN_S
+            if wake_at > now:
+                self.poll(wake_at - now)
+            elif head.eta - now < -OVERDUE_S:
+                # The estimate was badly wrong (or the device stalled): stop
+                # spinning and block on the event properly.
+                inflight.pop(0)
+                self.finish(head)
+
+        for head in inflight:
+            self.finish(head)
+        try:
+            self.listener.close()
+        except OSError:
+            pass
+        for c in list(self.conns):
+            c.close()
+        if os.path.exists(path):
+            os.unlink(path)
 
 
 def warm(registry: Registry, model: Model, sizes: list[tuple[int, int]], max_batch: int) -> None:
@@ -886,8 +1187,8 @@ def main() -> int:
         "--max-wait-us",
         type=int,
         default=0,
-        help="spin this long for more requests before running a batch. DEFAULT 0 — a timer makes the "
-        "server slower than tract whenever few shards are active; greedy draining self-regulates.",
+        help="poll this long for more requests before launching a batch. DEFAULT 0 — a timer makes the "
+        "server slower than tract whenever few shards are active; the pipeline batches naturally.",
     )
     ap.add_argument(
         "--max-models",
@@ -909,9 +1210,8 @@ def main() -> int:
     ap.add_argument(
         "--switch-interval",
         type=float,
-        default=0.0005,
-        help="sys.setswitchinterval. DEFAULT 0.5ms, well below Python's 5ms default: a connection "
-        "thread must not sit on the GIL ten times longer than the batch it is feeding.",
+        default=None,
+        help="accepted for compatibility; the server is single-threaded and ignores it",
     )
     ap.add_argument("--stats-every", type=float, default=60.0, help="seconds between stats lines (0 = off)")
     ap.add_argument(
@@ -941,12 +1241,6 @@ def main() -> int:
     if args.torch_threads:
         torch.set_num_threads(args.torch_threads)
     torch.backends.cudnn.benchmark = True
-    # One connection thread per client thread, all of them doing a 21 KB
-    # `recv_into` and a `queue.put` under the GIL, plus the batcher. At the
-    # 5 ms default a thread that wants the GIL can wait 5 ms for it, which
-    # is an order of magnitude longer than the ~500 us batch it is waiting
-    # behind.
-    sys.setswitchinterval(args.switch_interval)
 
     registry = Registry(args.device, args.max_models, args.jit)
     if args.bench:
@@ -960,45 +1254,31 @@ def main() -> int:
 
     sizes = parse_sizes(args.warm_sizes)
     pool = RunnerPool(args.device, args.max_batch, enabled=args.graphs == "auto")
-    prewarm = None
     if args.model:
         model = registry.get(args.model)
         warm(registry, model, sizes, args.max_batch)
-        prewarm = (model, sizes)
-
-    q: queue.Queue = queue.Queue()
-    stats = Stats()
-    batcher = Batcher(q, args.device, args.max_batch, args.max_wait_us, stats, pool, prewarm)
-    batcher.start()
-    # Capture happens on the batcher thread; don't take a connection until
-    # it is done, or the first client eats a multi-second capture storm.
-    batcher.ready.wait()
+        # Capture before the socket exists, so the first client never eats a
+        # capture storm — and the socket appearing is the readiness signal
+        # `train_loop.sh` waits for.
+        t0 = time.perf_counter()
+        pool.prewarm(model, sizes)
+        log(f"prewarmed {len(pool.graphs)} graphs in {time.perf_counter() - t0:.1f}s")
     gc.collect()
     gc.freeze()
 
-    path = args.socket
-    if os.path.exists(path):
-        os.unlink(path)
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(path)
-    listener.listen(128)
-
-    stopping = threading.Event()
+    stats = Stats()
+    server = Server(registry, pool, stats, args.max_batch, args.max_wait_us)
 
     def shutdown(signum, _frame):
         log(f"signal {signum} — shutting down. {stats.line()}")
-        stopping.set()
-        try:
-            listener.close()
-        except OSError:
-            pass
+        server.stopping.set()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
     if args.stats_every:
         def ticker():
-            while not stopping.wait(args.stats_every):
+            while not server.stopping.wait(args.stats_every):
                 log(stats.line())
 
         threading.Thread(target=ticker, daemon=True, name="stats").start()
@@ -1007,24 +1287,11 @@ def main() -> int:
     if dev == "cuda":
         log(f"cuda device: {torch.cuda.get_device_name(0)} (torch {torch.__version__})")
     log(
-        f"listening on {path} device={dev} max_batch={args.max_batch} "
+        f"listening on {args.socket} device={dev} max_batch={args.max_batch} "
         f"max_wait_us={args.max_wait_us} graphs={len(pool.graphs)}"
     )
-
-    conns = 0
-    while not stopping.is_set():
-        try:
-            sock, _ = listener.accept()
-        except OSError:
-            break
-        conns += 1
-        c = Connection(sock, registry, q)
-        threading.Thread(target=c.serve, daemon=True, name=f"conn{conns}").start()
-
-    batcher.stop.set()
+    server.serve(args.socket)
     log(f"stopped. {stats.line()}")
-    if os.path.exists(path):
-        os.unlink(path)
     return 0
 
 
