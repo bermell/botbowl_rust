@@ -31,6 +31,12 @@ EOF
 
 BK="$(pick_backup)"
 log "=== stage 3: PUCT_C sweep + FPU reduction, backup=$BK for all arms ==="
+# #1b (exp032_s1b_d8h.sh) outranks these screens: it holds this marker from
+# launch until its match is done, so the two evals never share the cores.
+if [ -e "$OUT/s1b.pending" ]; then
+    log "stage 3: waiting for #1b (s1b.pending) before the screens"
+    while [ -e "$OUT/s1b.pending" ]; do stopped && exit 0; sleep 60; done
+fi
 start_sidecar "$CHAMP"
 
 # Every arm: candidate = the variant, opponent = production c=10, k=0.
