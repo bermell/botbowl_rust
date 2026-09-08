@@ -54,7 +54,10 @@ start_sidecar() {
     log "sidecar up (pid $NN_PID)"
 }
 stop_sidecar() { [ -n "$NN_PID" ] && kill "$NN_PID" 2>/dev/null; NN_PID=""; NN_ARGS=""; rm -f "$SOCK"; }
-trap stop_sidecar EXIT INT TERM
+# INT/TERM must exit after the cleanup — a bare `trap f TERM` resumes the
+# script after f returns, so `kill <pid>` was being swallowed.
+trap stop_sidecar EXIT
+trap 'stop_sidecar; trap - EXIT; exit 143' INT TERM
 
 # play TAG CAND_ONNX OPP_ONNX [extra eval args...]
 # Candidate vs opponent, both `--evaluator nn` at 1000 iterations unless the
