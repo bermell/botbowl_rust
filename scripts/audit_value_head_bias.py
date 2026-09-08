@@ -56,8 +56,7 @@ def predict(dims_dir, ckpt):
     # Defaults come from the same compile-time constants `encode.rs` writes, so a
     # shape mismatch means the checkpoint predates a schema bump — let strict=True
     # say so rather than silently scoring the wrong net.
-    net = BBNet(spatial_ch=spatial.shape[1], global_f=glob.shape[1])
-    net.load_state_dict(sd)
+    net = BBNet.from_state_dict(sd, spatial_ch=spatial.shape[1], global_f=glob.shape[1])
     net.eval()
 
     # CPU on purpose: 19k samples through a 0.48M-param net is seconds, and the

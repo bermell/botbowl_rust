@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from bbnn.model import (
@@ -99,3 +100,15 @@ def test_resolve_device_explicit_cuda_is_never_a_silent_cpu_fallback():
         assert "unusable" in str(e)
     else:
         assert dev.type == "cuda"
+
+
+def test_from_state_dict_recovers_width_and_blocks():
+    # A loader must rebuild a non-default net from its weights alone (plan 032 #9).
+    for width, blocks in [(64, 6), (96, 8)]:
+        sd = BBNet(width=width, blocks=blocks).state_dict()
+        assert BBNet.shape_of(sd) == {"width": width, "blocks": blocks}
+        model = BBNet.from_state_dict(sd)
+        assert model.stem.weight.shape[0] == width and len(model.blocks) == blocks
+    # Loading a 96x8 dict into the default shape is what every loader used to do.
+    with pytest.raises(RuntimeError):
+        BBNet().load_state_dict(BBNet(width=96, blocks=8).state_dict())

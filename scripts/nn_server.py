@@ -163,9 +163,8 @@ class Registry:
 
     def _load(self, pt: Path, path: str, model_id: int) -> Model:
         t0 = time.perf_counter()
-        module = BBNet()
         state = torch.load(pt, map_location="cpu", weights_only=True)
-        module.load_state_dict(state)
+        module = BBNet.from_state_dict(state)  # width/blocks come from the weights
         # `.eval()` is load-bearing, not hygiene: it is what freezes
         # BatchNorm onto its running statistics, and therefore what makes a
         # sample's result independent of the rest of its batch. Batching

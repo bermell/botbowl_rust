@@ -129,6 +129,8 @@ def train(
     seed=None,
     max_steps=None,
     eval_every=None,
+    width=64,
+    blocks=6,
 ):
     # Before anything that draws: the shuffle order, the augmentation flips,
     # and the weight init all come off global generators.
@@ -159,7 +161,19 @@ def train(
         )
 
     device = resolve_device(device) if isinstance(device, str) else device
-    model = BBNet().to(device)
+    # --init decides the architecture when given (a shape mismatch against
+    # --width/--blocks would otherwise fail strict loading below); a fresh
+    # net takes the requested size. 64x6 is the production default.
+    if init is not None:
+        state = torch.load(init, map_location=device)
+        shape = BBNet.shape_of(state)
+        if (shape["width"], shape["blocks"]) != (width, blocks):
+            print(f"note: --init is {shape['width']}x{shape['blocks']}; building that, not {width}x{blocks}")
+        model = BBNet(**shape).to(device)
+    else:
+        model = BBNet(width=width, blocks=blocks).to(device)
+    print(f"model: width {model.stem.weight.shape[0]}, blocks {len(model.blocks)}, "
+          f"params {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M")
 
     # Warm start (AlphaGo Zero keeps one continuously-trained net; generations
     # are checkpoints of a single SGD run, not independent retrainings). We
@@ -172,7 +186,7 @@ def train(
     # first steps and undo the warm start, so callers should pass a lower
     # --lr when using --init (train_loop.sh does).
     if init is not None:
-        model.load_state_dict(torch.load(init, map_location=device))
+        model.load_state_dict(state)
         print(f"warm start: loaded weights ← {init}")
 
     opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -345,6 +359,8 @@ def main():
              "different every run, so two arms that should differ only in their data also differ "
              "by the seed, and a small measured gap cannot be attributed to either",
     )
+    ap.add_argument("--width", type=int, default=64, help="conv tower width (ignored with --init, which fixes the shape)")
+    ap.add_argument("--blocks", type=int, default=6, help="residual blocks (ignored with --init)")
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
     ap.add_argument(
@@ -369,6 +385,8 @@ def main():
         max_steps=args.max_steps,
         eval_every=args.eval_every,
         seed=args.seed,
+        width=args.width,
+        blocks=args.blocks,
     )
 
 

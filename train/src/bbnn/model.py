@@ -62,6 +62,23 @@ class BBNet(nn.Module):
         self.value_fc1 = nn.Linear(32, value_hidden)
         self.value_fc2 = nn.Linear(value_hidden, 1)
 
+    @staticmethod
+    def shape_of(state_dict) -> dict:
+        """``{"width", "blocks"}`` implied by a saved state_dict, so a loader
+        can build a matching net without being told the architecture (plan
+        032 #9 trains wider/deeper nets next to the 64x6 default). Every
+        other constructor argument is pinned by the encoder/action schema."""
+        width = int(state_dict["stem.weight"].shape[0])
+        blocks = len({k.split(".")[1] for k in state_dict if k.startswith("blocks.")})
+        return {"width": width, "blocks": blocks}
+
+    @classmethod
+    def from_state_dict(cls, state_dict, **kwargs) -> "BBNet":
+        """Build the net a state_dict was saved from and load it (strict)."""
+        model = cls(**cls.shape_of(state_dict), **kwargs)
+        model.load_state_dict(state_dict)
+        return model
+
     def forward(self, spatial, global_feat):
         n = spatial.shape[0]
         h = spatial.shape[2]
