@@ -305,6 +305,12 @@ section carries the evidence.
   two independent from-scratch fits sit at rel-L2 **1.26-1.94** while every warm-start fine-tune
   sits at 0.19-0.41. That does not give strength variance, but it does say the two seeds will be
   genuinely different nets, not near-copies.
+- **Run (launched 2026-09-08 05:54, `scripts/exp032_s59_seed_capacity.sh`).** Moved from the D1
+  pool to the **D7 pool** (gen01-07, visit target) so the floor is measured on the recipe every
+  from-scratch arm now shares, and one of the two nets is D7 itself (no new control to train).
+  `d7s2` = D7's recipe from a second materialised init (`arm_init_s2.pt`, `--seed 20260907` for
+  init, shuffle and augmentation), same steps, same held-out. Match `d7s2 vs d7`, **300 games**
+  (SE ≈ 0.026), seed base 32000000, queued behind stage 3 and #9's match. Result: pending.
 
 ### 6. Heuristic hedge ablation
 
@@ -486,6 +492,13 @@ section carries the evidence.
   sidecar. Never tried. Run after #1-#4 so the search, not the net, is not the ceiling.
 - **Arms.** width 96 / blocks 8 on the D3 pool from a fresh init; 120 games vs the width-64 D3.
 - **Cost.** ~1.5 h GPU + 5 h games. **Abandon.** No gain on D3 data.
+- **Run (launched 2026-09-08 05:54, same script as #5).** On the D7 pool against D7 rather than
+  D3/D3 — same reasoning as #5, and D7 is the from-scratch net the loop would actually ship.
+  `bbnn.train` gained `--width/--blocks`; every loader (`--init`, `nn_server.py`,
+  `audit_value_head_bias.py`) now rebuilds `BBNet` from the state dict's shape
+  (`BBNet.from_state_dict`), bit-identical for the 64x6 default. `d7w96` = width 96 / blocks 8
+  (**1.39 M params, 2.9×**), `--seed 20260906` (D7's), same 110k steps and held-out; tract runs
+  the wider ONNX fine. Match `d7w96 vs d7`, 120 games, seed base 32000000. Result: pending.
 
 ### 10. High-budget strength (plan 028 C1/C2)
 
