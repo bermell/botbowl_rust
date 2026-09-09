@@ -124,6 +124,26 @@ section carries the evidence.
   gen03** — if the cq label closes the 0.10 gap to the champion, a full retrain becomes viable
   again as the plan-030 rebuild's periodic step; it costs one 120-game match and no training,
   so it slots in after the τ decision (#7b).
+- **#7c result (2026-09-09 16:31, 186 min, `scripts/exp032_s7c_q7_vs_champ.sh`): Q7 = 0.625 ±
+  0.041 vs champion gen03** (W63 D24 L33, TD 503:425; Home 33-15, Away 30-18; z = +3.0). The
+  same recipe that lost to gen03 at 0.396 with the visit label (D7) **beats it by the same margin
+  with the completed-Q label** — a 0.23-point swing from the label alone, on the same 120 seeds.
+  Three consequences:
+  1. **The from-scratch route is reopened**, and it is now the strongest route we have: Q7 is
+     the first net in the programme to beat gen03, after four incremental generations (gen04-07)
+     failed to. It clears the loop's promotion gate (0.55) by 1.8 SE.
+  2. **Q7 should be the loop's champion when it relaunches.** Otherwise gen08 generates from a
+     net that Q7 beats 0.625, and fine-tunes gen03 onto data gen03 produced — the distillation
+     ceiling #1 identified. The loop has no "install an external champion" step; the manual
+     version is: copy `runs/exp032/q7.{onnx,pt}` to `models/bbnet_14x7_q7.{onnx,pt}`, write its
+     path to `runs/loop14x7/champion.txt`, and let gen08 warm-start from it (`WARM_FROM=champion`)
+     with the cq label already the default. Pending the user's go-ahead — it changes what the
+     loop generates from.
+  3. **The gen03 → gen07 plateau is explained**, not by data volume, backup, `c`, FPU, capacity
+     or seed (all tested in this plan and flat), but by the policy label. The value head was
+     never the problem (#2's calibration audit: slope 0.95 under minimax); the policy head was
+     being taught an unconverged visit distribution, and under `EVALUATOR=nn` that head steers
+     the search.
 
 ### 2. Mean backup instead of minimax with an NN leaf
 
