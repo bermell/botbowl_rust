@@ -633,6 +633,14 @@ while [ "$G" -le "$MAX_GENS" ]; do
         SECONDS=0
     fi
 
+    # A persisted verdict is final. Re-deriving it on resume would replay
+    # the whole promotion history over champion.txt — and clobber a champion
+    # set by hand (plan 032 #7c installed Q7 that way; the first relaunch
+    # silently reverted it to gen03 and generated gen08 from the wrong net).
+    if [ -f "$GEN_DIR/verdict" ]; then
+        G=$((G + 1))
+        continue
+    fi
     SUMMARY_LINE=$("$PY" "$SUMMARY" "$GEN_DIR/report.json" --gate "$GATE")
     GATE_RC=$?
     if [ "$GATE_RC" -eq 0 ]; then
