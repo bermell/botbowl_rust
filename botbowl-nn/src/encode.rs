@@ -310,9 +310,12 @@ mod tests {
         // Whoever moves, the us-present plane must have a hit at the
         // canonical square of every fielded player on the mover's team —
         // the mirror is applied consistently (plan 017 mirror invariant).
+        // Squares chosen relative to the compiled board so the test also
+        // holds on the small tiers (a literal (10, 8) is off a 14x7 pitch).
+        let d = BoardDims::default();
         let mut b = GameStateBuilder::new();
-        b.add_home_player(Position::new((6, 4)));
-        b.add_away_player(Position::new((10, 8)));
+        b.add_home_player(Position::new((d.width / 2 - 2, d.height / 2)));
+        b.add_away_player(Position::new((d.width / 2 + 2, d.height - 2)));
         let state = b.build();
         let enc = encode(&state);
         let dims = state.board_dims;

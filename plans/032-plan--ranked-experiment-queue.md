@@ -646,7 +646,7 @@ section carries the evidence.
   The 0.008 val edge did not turn into strength (or did, at a size 120 games cannot see — the
   bound is < +0.09). **Abandon** per the pre-registered rule. Capacity is not the ceiling; data
   volume and label quality are (#7). The 96x8 net also costs ~2.5× the GPU time per forward, which
-  on the sidecar's already-serial critical path (plan 032 sidecar note) would slow generation.
+  on the sidecar's critical path (plan 033: the GPU kernels are the floor) would slow generation.
   Revisit only when the corpus is ≥ 5× larger or after the label change has been in the loop for
   a few generations and val stops improving on 64x6.
 
