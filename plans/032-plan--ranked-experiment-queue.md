@@ -370,7 +370,22 @@ section carries the evidence.
   and drift up after. So whatever strength gap the 300 games find is *not* visible in `val_*` —
   which is the point: it bounds how much strength variance hides behind identical losses.
   The match moved to `scripts/exp032_s7b_tau50.sh` (order after stage 3: #9, #7b, then this).
-  Match result: pending.
+- **Result (2026-09-09 13:23, 412 min, 300 games): d7s2 = 0.530 ± 0.028 vs D7** (W130 D58 L112,
+  TD 1072:1019; Home 70-57, Away 60-55; paired SE 0.028 over 150 pairs, 25% split 1-1). So two
+  nets that are **identical on val to 0.004** differ in strength by **+0.03 ± 0.03** — the seed
+  floor is bounded at about ±0.03-0.06 (one-sided 95% bound on |Δ| ≈ 0.08). Readings:
+  1. **Every 120-game verdict of ±0.04 in plans 029/032 sits on top of a ±0.03 seed term.** A
+     single-arm result of |Δ| < 0.06 (c=30 0.521, k=300 0.500, d7w96 0.508, q50 0.471) is not
+     distinguishable from a seed re-roll. The results that survive this floor are the ones with
+     |Δ| ≥ 0.10: Q7 vs D7 (+0.11), c=3 (−0.08, borderline), mean backup (−0.05, not), D7/d8h vs
+     gen03 (−0.10/−0.08), plan 029's D7 vs D1 (+0.16).
+  2. Plan 029's +0.06 per data doubling is **about one seed floor per doubling** — real in
+     aggregate across three doublings, but no single step of it was.
+  3. **Practical rule going forward:** treat 120 games as a screen for |Δ| ≥ 0.10 only; anything
+     that screens at 0.05-0.10 needs either a replicate from a second seed (the cleaner answer —
+     it also averages the floor) or 300+ games *and* the awareness that 300 games still cannot
+     separate a +0.03 effect from a lucky seed. The cheap version of a replicate is to train the
+     candidate from `arm_init_s2.pt` as well and pool the two matches.
 
 ### 6. Heuristic hedge ablation
 
