@@ -541,7 +541,15 @@ section carries the evidence.
      0.565). The held-out set is the same 36k rows for both and the value label does not depend
      on τ, so **val_value is comparable here**: 0.380 vs 0.377 — the sharper policy target costs
      the value head nothing measurable. Policy numbers are not comparable (different labels).
-     Match result: pending.
+     *Result (2026-09-09 06:31, 190 min):* **q50 = 0.471 ± 0.042 vs Q7** (W47 D19 L54, TD
+     461:470; Home 20-32, Away 27-22). The sharper target does **not** beat τ=100 — a mild,
+     non-significant loss (z = −0.7), so the best reading is "τ=50 ≈ τ=100, if anything worse".
+     That matches the offline probes' trade-off: τ=50 won at wide fans but lost at narrow ones,
+     and narrow roots are ~85% of samples. **τ=100 ships** (already the loop default, ef3cf8e).
+     Fan-dependent τ (sharper only where the fan is wide) remains the one untested variant with
+     an offline case for it; it is a `prepare` change, and can be scored offline first against
+     both probe files before any training. Not queued for now — the from-scratch-vs-champion
+     question (Q7 vs gen03, #7c) comes first.
 
 ### 8. Encoder additions
 
