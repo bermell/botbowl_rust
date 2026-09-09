@@ -597,7 +597,15 @@ section carries the evidence.
   seed gap on val but still tiny: at 2.2 M training samples the 64x6 net is not badly
   capacity-limited on this pool. Training loss at the end is 1.43/0.36 vs D7's 1.43/0.37 —
   barely lower, so the wide net is not memorising either; it is data-limited like the small one.
-  Prediction for the match: within ±0.05 of 0.50 (val says 0.50-0.53). Result: pending.
+  Prediction for the match: within ±0.05 of 0.50 (val says 0.50-0.53).
+- **Result (2026-09-09 03:21, 179 min): d7w96 = 0.508 ± 0.043 vs D7** (W49 D24 L47, TD 406:390;
+  Home 23-26, Away 26-21). As predicted: **no gain from 2.9× the parameters at this data size.**
+  The 0.008 val edge did not turn into strength (or did, at a size 120 games cannot see — the
+  bound is < +0.09). **Abandon** per the pre-registered rule. Capacity is not the ceiling; data
+  volume and label quality are (#7). The 96x8 net also costs ~2.5× the GPU time per forward, which
+  on the sidecar's already-serial critical path (plan 032 sidecar note) would slow generation.
+  Revisit only when the corpus is ≥ 5× larger or after the label change has been in the loop for
+  a few generations and val stops improving on 64x6.
 
 ### 10. High-budget strength (plan 028 C1/C2)
 
