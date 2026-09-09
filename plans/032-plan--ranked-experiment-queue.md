@@ -48,6 +48,54 @@ section carries the evidence.
 | 10 | 10 | High-budget strength | unchanged; still best run after #2 changes the backup. |
 | 8 | **11** | Encoder additions | **demoted and rewritten.** D3: the trigger fires numerically (12.78% ambiguous) but **zero** of 22,343 ambiguous groups are distinguished by action type, and the measured cost is 0 for both heads. |
 
+## Key results so far (2026-09-07 → 09-09, ~60 h of machine time)
+
+Written for someone who reads nothing else in this file. Numbers are points (W + D/2)/N over
+120 paired games unless stated, SE ≈ 0.041; the detail and the per-game logs are in each item.
+
+1. **The policy label is the dominant lever, and everything else we tried is flat.** The same
+   corpus and recipe, trained on the completed-Q label instead of the visit label, gave **Q7 0.613
+   over D7** (#7), and Q7 is the first net to beat the frozen champion: **0.625 ± 0.041 vs gen03,
+   z = +3.0** (#7c), where the visit-label twin D7 lost 0.425 (#1b). A +0.23 swing from the label
+   alone dwarfs every search knob (#3), the capacity arm (#9), and the seed floor (#5). Mechanism
+   (plan 031 D2): the visit label agrees with the move actually played only 0.59 of the time and
+   0.22-0.25 at roots with > 30 children — `recon_mcts` freezes solved children's visits, so the
+   best move is often the least-visited. The cq label (`softmax(ln prior + q/τ)`, τ = 100) is now
+   `train_loop.sh`'s default and Q7 is the installed champion.
+2. **The loop's plateau was the label, not the data or the loop mechanics.** Eight incremental
+   generations (gen04-07) all failed the 0.55 gate against gen03; a from-scratch retrain on the
+   same seven generations with the visit label *also* lost (#1b, 0.425). So the corpus was fine
+   and the "retrain from scratch" hypothesis (plan 030) was not the fix on its own — only the label
+   change turned the same data into a stronger net.
+3. **No search knob at production budget helps, and the shape says breadth-limited.** `PUCT_C`
+   3/10/30 → 0.421 / — / 0.521 and FPU k = 100/300 → 0.446 / 0.500 against the c = 10 baseline,
+   all within or below the floor except c = 30's marginal +0.02 (#3). Nothing at 1000 iterations
+   re-allocates visits usefully; the root fan is bimodal (median 6, p90 73 children) and the
+   search rarely sees a TD at all (plan 031 D8). Promotes #10 (budget) over any further tuning.
+4. **Mean backup is not the answer even though the mechanism is real.** Plan 031 D1 measured the
+   minimax backup contributing +0.10 of the +0.13 optimism at 1000 iterations (z = 52), and
+   switching to mean backup did remove it (search-added gap −0.078, #2 Part A) — but gen03 under
+   mean backup **lost 0.454 ± 0.039** to itself under minimax (#2 Part B). Most children of a
+   player node are cheap turnovers the search never refutes at 1000 iterations; averaging them in
+   makes every position look mediocre (leaf slope 0.59). Max is the right operator for "there
+   exists a plan"; the optimism is a calibration fact about the value label, not a search defect.
+5. **Capacity is not the ceiling.** 96×8 (2.5× the FLOPs, 99 min vs 75 to train) scored 0.508 vs
+   the 64×6 twin (#9). With the GPU floor scaling with the net (plan 033) this closes #9.
+6. **The floor every result stands on: ±0.03.** Two identically trained nets differing only in
+   seed scored +0.03 ± 0.03 against each other over 300 games (#5); the pair correlation is zero
+   (plan 031 D10), so 120-game screens resolve only |Δ| ≥ 0.10 and a ±0.03 question needs ~600
+   games. The old seat-bias worry is gone: 1500 Home games score 0.498 ± 0.011 (#11).
+7. **Inference is no longer where time goes.** The sidecar rewrite (plan 033) gives 1.36× the
+   forwards/s at the production shape; the remaining ~300 µs per batch is cuDNN on a 16×9 board.
+   Generation is bounded by the nn shards' engine work and RAM (2 parallel games per shard), not
+   by the GPU or the Python.
+
+Open, in the order I'd run them: does the loop compound again from Q7 with the cq label (relaunch
+`train_loop.sh` — gen08 warm-starts from `bbnet_14x7_q7.pt` at 2e-4 on gen06-08); #10 budget
+diagnostic; fan-dependent τ, scored offline first with `scripts/audit_q_target.py`; a value-target
+variant (outcome blended with root Q) as the next label experiment, since the label is where the
+gain has been; #6 hedge ablation only at ~600 games.
+
 ## The queue
 
 ### 1. D7 vs champion gen03 — does a from-scratch retrain on the whole corpus beat eight incremental generations?
@@ -137,8 +185,9 @@ section carries the evidence.
      ceiling #1 identified. The loop has no "install an external champion" step; the manual
      version is: copy `runs/exp032/q7.{onnx,pt}` to `models/bbnet_14x7_q7.{onnx,pt}`, write its
      path to `runs/loop14x7/champion.txt`, and let gen08 warm-start from it (`WARM_FROM=champion`)
-     with the cq label already the default. Pending the user's go-ahead — it changes what the
-     loop generates from.
+     with the cq label already the default. **Done 2026-09-09 18:31 on the user's go-ahead:**
+     `models/bbnet_14x7_q7.{onnx,pt,train.log}` installed, `runs/loop14x7/champion.txt` points at
+     it, noted in `status.md`; the loop is still stopped (STOP file) and picks it up on relaunch.
   3. **The gen03 → gen07 plateau is explained**, not by data volume, backup, `c`, FPU, capacity
      or seed (all tested in this plan and flat), but by the policy label. The value head was
      never the problem (#2's calibration audit: slope 0.95 under minimax); the policy head was
