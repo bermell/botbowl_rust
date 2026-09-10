@@ -1,6 +1,8 @@
 # Drop the promotion gate; benchmark on a frozen anchor instead
 
-**Status:** Agreed 2026-09-06, not yet implemented.
+**Status:** Agreed 2026-09-06; **design revised and settled 2026-09-10** (see "Decisions
+2026-09-10" at the end — that section supersedes the benchmark sizing below where they
+differ). Implementation in `train_loop.sh` is next; the loop relaunches gateless from gen10.
 
 ## Decision
 
@@ -13,7 +15,8 @@ several generations, not adjudicating single ones.
 ## Why
 
 **The gate has never changed a decision.** Seven generations gated, five
-rejected. The best rejected score is gen07's 0.490 — *below parity, not merely
+rejected (nine and six by 2026-09-10 — gen08 was promoted at *exactly* 0.550 on 100
+games, a coin flip dressed as a verdict when the seed floor alone is ±0.03, plan 032 #5). The best rejected score is gen07's 0.490 — *below parity, not merely
 below threshold*. A gate set at even money would have rejected all five too
 (plan 028's operating-characteristic check). It is not holding back
 improvements; there have been none to hold back.
@@ -119,3 +122,98 @@ open experimental programme stands and is now cheaper to run:
   the horizon, or the evaluator changes.
 
 The throughput gained here is what pays for that programme.
+
+## Decisions 2026-09-10
+
+Made after plan 032's programme (~60 h) settled what the plateau was: the visit policy
+label, not the loop mechanics. The three open loop-design questions are closed here so
+they are not re-litigated per generation. Where this section differs from the benchmark
+sizing above, this section wins.
+
+### 1. Gateless, benchmarked every generation on a frozen anchor — smaller and denser than proposed above
+
+- **Anchor: `bbnet_14x7_gen03.onnx`, frozen, as pre-committed.** It already scales Q7
+  (0.625), D7 (0.396) and d8h (0.425) from plan 032. Backfill gen08 and gen09 against it
+  so the curve starts at gen07 (gen07 vs gen03 = 0.490 is the gated number, same seeds).
+- **40 paired games vs the anchor every generation**, same seed base every time (`--seed 0`,
+  as today), rather than 100 games every third generation. Per generation SE ≈ 0.08 — not
+  a verdict, and not read as one. The **3-generation rolling mean** is 120 games at SE 0.04,
+  the same resolution as the old vs-champion rung, and there is a point every generation so a
+  regression can be *located* rather than bracketed to a 3-generation span. The shared seed
+  base means generation-to-generation differences share the situation term (plan 032 ground
+  rules), which is where the remaining variance reduction is.
+- **Fixed ladder: keep `mcts-heuristic` at 30 games, drop `random` and `scripted`.** Random
+  has read 1.000 nine times. Scripted still moves (0.867-0.950) but at 30 games it is noise
+  and it never changes a decision.
+- **Triggers are advisory, not automated rollback.** Look hard if the rolling mean drops
+  ≥ 0.10 below its best so far (a difference of two 120-game means has SE 0.058, so this is
+  a "come and look", not a proof), or fails to beat its best by 0.05 across six generations
+  (plateau). The operator decides; every `.pt`/`.onnx` stays on disk and rollback is by hand.
+  `champion.txt` becomes "the latest trained net", written unconditionally after train.
+- **Re-anchor when the rolling mean passes ~0.75.** A saturated anchor stops discriminating.
+  Add the latest net as a second anchor, run both for three generations of overlap, then drop
+  gen03 from the eval (keep the file). Record the overlap so the two curves can be spliced.
+- **Cost**, scaled from gen08's measured eval (287 min for 190 games, x4, sidecar):
+
+  | eval design | games | est. min |
+  |---|---|---|
+  | today (3 rungs + 100 vs champion) | 190 | 287 |
+  | plan 030 as written (every 3rd gen, amortised) | ~53 | ~80 |
+  | **this** (40 vs anchor + 30 mcts-heuristic) | 70 | ~110 |
+
+  Cycle drops from ~9.6 h (256 generate + 35 train + 287 eval) to ~6.7 h with the current
+  train step, or ~7.6 h with the from-scratch step below. With 8 cores the eval cannot run
+  beside generation without slowing both, so it stays sequential — but nothing downstream
+  waits on its *result* any more, so it could move to a side process later if cores allow.
+
+### 2. Train step: from scratch on the whole window each generation, pending plan 032 #12
+
+- **Why not the warm start.** At `WARM_LR` 2e-4 the fine-tune does not convert data into
+  strength: plan 029 stage 3 measured W3 vs W1 = 0.487 while the from-scratch pair D3 vs D1
+  gave 0.600; every fine-tune since gen04 restored at epoch 0-1 and gen08 (warm from Q7)
+  repeated it — best val at step 10k of ~50k, then val drifting up while train loss fell.
+  gen08 scored 0.550 against its own warm-start parent, inside the seed floor. Raising the
+  LR is not the fix either (plan 031 D5: 2e-4 already moves the weights further than the one
+  fine-tune that won a rung), and at 1e-3 the fresh Adam moments undo the warm start anyway.
+- **Why from scratch.** It is the only recipe that has beaten a champion by a clear margin:
+  Q7 (arm_init.pt, 1e-3, 110k steps, cq τ=100, gen01-07) 0.625 vs gen03 (z = +3.0). It costs
+  ~1 GPU-hour per generation (Q7 51 min, D7 ~75) instead of 35 min, well under what the
+  gate saves, and it dissolves the `WARM_FROM=champion|latest` question — which is what made
+  the gate load-bearing (a bad warm-start parent poisoning the lineage, gen04→gen05).
+- **Decided by plan 032 #12**, already scripted (`scripts/exp032_s12_scratch_vs_loop.sh`):
+  q9 = Q7's recipe on gen01-09 vs the loop's warm-started gen09, 120 games. Pre-registered:
+  q9 ≥ 0.60 → from-scratch becomes the train step. **Amendment:** a result in [0.50, 0.60)
+  also switches, on the grounds above (removing the warm-from question is worth a wash);
+  only q9 < 0.50 keeps the fine-tune, and then the loop uses `WARM_FROM=latest` since there
+  is no gate to define a champion.
+- **Bookkeeping when it switches.** `WARM_START=off` for the steady state; the gen-0
+  bootstrap path is unchanged. Steps must scale with the window so every row is seen at
+  least ~2×: at 9 generations (~1.05 M rows, ~117 k rows/gen) 110 k steps × batch 32 is
+  ~3.3 epochs. `--eval-every 2500` and `--select-on combined` stay.
+
+### 3. Window: all generations, capped at ten, and only meaningful under from-scratch
+
+- Under the fine-tune the window barely matters (W3 vs W1 above). Under from-scratch plan
+  029 measured ~+0.06 per doubling of data (about one seed floor per doubling, plan 032 #5 —
+  real in aggregate, not per step), and Q7 on seven generations of mostly weak-net data
+  still beat gen03, so stale early generations have not hurt yet. Value labels are drive
+  outcomes *under the play of the time*, so they will go stale eventually; the policy labels
+  are search-improved and age better.
+- **`WINDOW_GENS=10`** (effectively "all" until gen10). AlphaZero's 500 k-game window was its
+  last ~20 generations; ten is the same spirit at this scale, and keeps the prepare/train
+  cost bounded (~1.2 M rows, ~1 GPU-hour at 110-130 k steps).
+- **Before trusting the cap, measure it once:** when the corpus passes ten generations, run
+  one #12-style arm — from scratch on *all* vs on the *last ten* — 120 games on one seed base.
+  Only |Δ| ≥ 0.10 is resolvable at that size (plan 032 #5), so anything smaller means "cap is
+  fine, keep it". Queue it in plan 032 when gen11's corpus exists.
+
+### Order of operations
+
+1. **Unblock #12** (2026-09-10): the loop STOPped before gen09 prepare, and the #12 script
+   waits for "gen09 train done" — a deadlock. Remove STOP, relaunch the loop as-is so gen09
+   trains warm (the #12 control net), and re-place STOP once gen09's eval starts so the loop
+   exits after the verdict and #12 plays its match (~9 h total).
+2. Meanwhile implement §1-3 in `train_loop.sh` under a scratch `RUN_DIR`/`MODEL_DIR` dry run
+   (the gate machinery — `eval_summary.py --gate`, verdict files — stays in the tree, unused).
+3. Relaunch gateless from gen10 with the train step #12 picks. gen10 is the first gateless
+   generation; its anchor score plus the backfilled gen08/gen09 numbers start the curve.
