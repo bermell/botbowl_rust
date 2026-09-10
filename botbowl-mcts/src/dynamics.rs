@@ -30,6 +30,7 @@ use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, 
 use crate::action::{BbAction, BbPlayer};
 use crate::priors::prior_for_engine_action;
 use crate::pruning::should_prune;
+use crate::report::{self, Edge, NodeStats, NodeView, SearchSummary};
 use crate::roll_outcomes;
 use crate::score::leaf_score;
 use crate::scripted;
@@ -1624,85 +1625,102 @@ pub enum SearchBudget {
     Time(Duration),
 }
 
-pub struct MctsBot {
-    pub budget: SearchBudget,
-    /// Number of worker threads driving `tree.step()`. For
-    /// `SearchBudget::Iterations` the total step count is split across
-    /// them; for `SearchBudget::Time` every worker runs until the
-    /// time limit fires. Tests that need deterministic results should
-    /// pin this to 1 via [`with_workers`].
-    pub n_workers: usize,
-    /// Which `recon_mcts` state-memory strategy to use. See
-    /// [`MemoryMode`]. Always `StoreState` in production (plan 014 + 013);
-    /// `HashOnly` was removed entirely because it corrupts the DAG for
-    /// Blood Bowl (see the GOTCHA on [`MemoryMode`]). `BLOOD_MCTS_MEMORY`
-    /// can switch to the safe `get` diagnostic at runtime.
+/// Every knob that shapes a search, in one place.
+///
+/// Before this struct existed these were individual `MctsBot` fields, half
+/// resolved from `BLOOD_MCTS_*` at `::new` and the other half **re-read from
+/// the environment on every `get_action`** — so an explicit builder call could
+/// be silently overridden by a stray env var, and a process running several
+/// differently-configured bots (the web server of plan 034) could not
+/// configure `workers` / `horizon` / `memory_mode` independently at all.
+///
+/// [`MctsConfig::from_env`] is the default, so every existing CLI path behaves
+/// exactly as before; `run_search` now reads only `self.config`. Env vars are
+/// therefore resolved **once, at construction** — setting one between building
+/// a bot and calling it no longer has any effect.
+#[derive(Debug, Clone)]
+pub struct MctsConfig {
+    /// Worker threads driving `tree.step()`. `Iterations` budgets split the
+    /// total across them; `Time` budgets run every worker to the deadline.
+    /// Pin to 1 for deterministic tests.
+    pub workers: usize,
+    /// `recon_mcts` state-memory strategy. Always `StoreState` in production
+    /// (plan 013/014); `GetState` is the safe replay-based diagnostic.
     pub memory_mode: MemoryMode,
-    /// Carry the search tree across `get_action` calls within a single
-    /// trial. Within a bot turn the horizon anchor is stable, so the
-    /// surviving subtree's Q values stay valid; we just walk the
-    /// registry to the new root and resume search there.
-    ///
-    /// Default on; `BLOOD_MCTS_TREE_REUSE=off` disables and falls back
-    /// to today's fresh-tree-per-decision behaviour.
-    reuse_enabled: bool,
-    /// The tree from the previous `get_action`, or `None` for the
-    /// first call / after an anchor change / after a cache miss.
-    cached_tree: Option<CachedTree>,
-    /// The horizon captured on the previous `get_action`. Used to gate
-    /// reuse — when it changes (turn boundary or score), the cached
-    /// tree's Q values reflect the old horizon and must be discarded.
-    last_anchor: Option<HorizonAnchor>,
-    /// Plan 015 Step 5 — magnitude of the transient virtual-loss
-    /// penalty applied on descent. Resolved from `BLOOD_MCTS_VIRTUAL_LOSS`
-    /// at `::new` (default 30, `0` disables). Threaded into
-    /// `BloodBowlDynamics.virtual_loss` per `get_action`.
-    virtual_loss: i32,
-    /// Value/prior source threaded into `BloodBowlDynamics` each
-    /// `get_action`. Default `Heuristic` → byte-identical to the scripted
-    /// baseline; `with_evaluator` swaps in a frozen NN (plan 017).
-    evaluator: Evaluator,
-    /// Selection rule + exploration constant, threaded into
-    /// `BloodBowlDynamics.puct` per `get_action`. Resolved from
-    /// `BLOOD_MCTS_PUCT_MODE` / `_C` / `_RANGE_FLOOR` at `::new`.
-    puct: PuctMode,
-    /// Plan 023 ordering instrument. Resolved from `BLOOD_MCTS_TIE_BREAK`
-    /// at `::new`; see [`TieBreak`]. Production leaves this at `Hash`.
-    tie_break: TieBreak,
-    /// Plan 032 #2 player-node aggregation rule. Resolved from
-    /// `BLOOD_MCTS_BACKUP` at `::new`; see [`BackupMode`].
-    backup: BackupMode,
-    /// Plan 032 #3 FPU reduction `k` (Q points); `BLOOD_MCTS_FPU_REDUCTION`.
-    /// See `BloodBowlDynamics::fpu_reduction`.
-    fpu_reduction: f32,
-    /// How many of our own turns the search may look ahead before a
-    /// state counts as terminal — see [`HorizonAnchor::turn_depth`].
-    /// Default 1 (the historical single turn-pair). Resolved from
-    /// `BLOOD_MCTS_HORIZON_TURNS` at `::new`.
-    ///
-    /// Deeper is not free: max DAG depth is roughly linear in it, and
-    /// the per-decision tree footprint with it, so raising this raises
-    /// the ~400-500 MB per-tree high-water that already sets
-    /// `--parallel-games` on this host.
-    horizon_turns: u8,
+    /// Carry the search tree across `get_action` calls while the horizon
+    /// anchor is stable (plan 015 Step 1).
+    pub tree_reuse: bool,
+    /// Transient virtual-loss penalty applied on descent (plan 015 Step 5).
+    /// `0` disables.
+    pub virtual_loss: i32,
+    /// Selection rule + exploration constant. **Coupled to `leaf_score`'s
+    /// magnitudes** — changing one without the other degrades search.
+    pub puct: PuctMode,
+    /// Plan 023 ordering instrument. Production leaves this at `Hash`.
+    pub tie_break: TieBreak,
+    /// Plan 032 #2 player-node aggregation rule.
+    pub backup: BackupMode,
+    /// Plan 032 #3 FPU reduction `k`, in Q points. `0.0` is plain FPU.
+    pub fpu_reduction: f32,
+    /// How many own-turns the search may look ahead before a state counts as
+    /// terminal (see [`HorizonAnchor::turn_depth`]). Deeper is not free: max
+    /// DAG depth and per-tree footprint are roughly linear in it.
+    pub horizon_turns: u8,
+    /// `false` removes the horizon entirely — search runs to game over. The
+    /// historical unbounded baseline, for A/B only.
+    pub horizon: bool,
+    /// Dump registry hit/miss + DAG depth histogram after each search. Walks
+    /// the whole DAG, so it costs more than the search on small trees.
+    pub stats: bool,
+    /// Dump only the cumulative `score_leaf` case tally (plan 031 D8).
+    pub leaf_stats: bool,
+    /// Dump the top-10 root children by visits/Q after each search — the
+    /// first thing to reach for when the bot plays nonsense.
+    pub debug_root: bool,
 }
 
-impl MctsBot {
-    pub fn new(budget: SearchBudget) -> Self {
-        let n_workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        let reuse_enabled = !matches!(
+impl MctsConfig {
+    /// The shipped configuration, ignoring the environment entirely.
+    pub fn new() -> Self {
+        MctsConfig {
+            workers: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+            memory_mode: MemoryMode::StoreState,
+            tree_reuse: true,
+            virtual_loss: DEFAULT_VIRTUAL_LOSS,
+            puct: PuctMode::Raw { c: PUCT_C },
+            tie_break: TieBreak::Hash,
+            backup: BackupMode::Minimax,
+            fpu_reduction: 0.0,
+            horizon_turns: 1,
+            horizon: true,
+            stats: false,
+            leaf_stats: false,
+            debug_root: false,
+        }
+    }
+
+    /// [`MctsConfig::new`] with every `BLOOD_MCTS_*` override applied. This is
+    /// what `MctsBot::new` uses, which is what keeps the CLI's A/B knobs
+    /// working.
+    pub fn from_env() -> Self {
+        let mut cfg = MctsConfig::new();
+        let env_f32 = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<f32>().ok());
+
+        if let Some(s) = std::env::var("BLOOD_MCTS_WORKERS").ok() {
+            cfg.workers = s.trim().parse::<usize>().unwrap_or(cfg.workers).max(1);
+        }
+        cfg.memory_mode = MemoryMode::resolve(cfg.memory_mode);
+        cfg.tree_reuse = !matches!(
             std::env::var("BLOOD_MCTS_TREE_REUSE").ok().as_deref(),
             Some("off") | Some("0") | Some("false")
         );
-        let virtual_loss = match std::env::var("BLOOD_MCTS_VIRTUAL_LOSS").ok() {
-            Some(s) => s.parse::<i32>().unwrap_or(DEFAULT_VIRTUAL_LOSS),
-            None => DEFAULT_VIRTUAL_LOSS,
-        };
+        if let Some(s) = std::env::var("BLOOD_MCTS_VIRTUAL_LOSS").ok() {
+            cfg.virtual_loss = s.parse::<i32>().unwrap_or(DEFAULT_VIRTUAL_LOSS);
+        }
         // Resolve the mode *before* `c`, so `BLOOD_MCTS_PUCT_MODE=normalised`
         // alone can never leave the Raw constant (10) sitting in the
         // normalised frame — where it would be ~10x too explorative.
-        let env_f32 = |k: &str| std::env::var(k).ok().and_then(|v| v.trim().parse::<f32>().ok());
-        let puct = match std::env::var("BLOOD_MCTS_PUCT_MODE").ok().as_deref() {
+        cfg.puct = match std::env::var("BLOOD_MCTS_PUCT_MODE").ok().as_deref() {
             Some("normalised") | Some("normalized") | Some("norm") => PuctMode::NormalisedQ {
                 c: env_f32("BLOOD_MCTS_PUCT_C").unwrap_or(DEFAULT_PUCT_C_NORMALISED),
                 range_floor: env_f32("BLOOD_MCTS_PUCT_RANGE_FLOOR").unwrap_or(DEFAULT_Q_RANGE_FLOOR),
@@ -1711,25 +1729,77 @@ impl MctsBot {
                 c: env_f32("BLOOD_MCTS_PUCT_C").unwrap_or(PUCT_C),
             },
         };
+        cfg.tie_break = TieBreak::from_env();
+        cfg.backup = BackupMode::from_env();
+        cfg.fpu_reduction = env_f32("BLOOD_MCTS_FPU_REDUCTION").unwrap_or(0.0).max(0.0);
+        cfg.horizon_turns = std::env::var("BLOOD_MCTS_HORIZON_TURNS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u8>().ok())
+            .unwrap_or(1)
+            .max(1);
+        cfg.horizon = std::env::var("BLOOD_MCTS_HORIZON").ok().as_deref() != Some("off");
+        cfg.stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
+        cfg.leaf_stats = std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
+        cfg.debug_root = std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1");
+        cfg
+    }
+}
+
+impl Default for MctsConfig {
+    fn default() -> Self {
+        MctsConfig::from_env()
+    }
+}
+
+pub struct MctsBot {
+    pub budget: SearchBudget,
+    /// Everything that shapes the search. Defaults to
+    /// [`MctsConfig::from_env`]; override wholesale with
+    /// [`MctsBot::with_config`] or piecemeal with the `with_*` builders.
+    pub config: MctsConfig,
+    /// Value/prior source threaded into `BloodBowlDynamics` each
+    /// `get_action`. Default `Heuristic` → byte-identical to the scripted
+    /// baseline; `with_evaluator` swaps in a frozen NN (plan 017).
+    evaluator: Evaluator,
+    /// The tree from the previous `get_action`, or `None` for the
+    /// first call / after an anchor change / after a cache miss. Kept alive
+    /// so [`MctsBot::explore`] can walk it without re-searching.
+    cached_tree: Option<CachedTree>,
+    /// The horizon captured on the previous `get_action`. Used to gate
+    /// reuse — when it changes (turn boundary or score), the cached
+    /// tree's Q values reflect the old horizon and must be discarded.
+    last_anchor: Option<HorizonAnchor>,
+    /// Summary of the most recent search, for [`MctsBot::last_search`].
+    last_search: Option<report::SearchSummary>,
+}
+
+impl MctsBot {
+    pub fn new(budget: SearchBudget) -> Self {
+        MctsBot::with_budget_and_config(budget, MctsConfig::from_env())
+    }
+
+    /// Build a bot with an explicit configuration, bypassing the environment
+    /// entirely. This is what lets one process run several differently-tuned
+    /// bots (plan 034 decision: `BotSpec -> MctsBot` with no env vars).
+    pub fn with_budget_and_config(budget: SearchBudget, config: MctsConfig) -> Self {
         Self {
             budget,
-            n_workers,
-            memory_mode: MemoryMode::StoreState,
-            reuse_enabled,
+            config,
+            evaluator: Evaluator::default(),
             cached_tree: None,
             last_anchor: None,
-            virtual_loss,
-            evaluator: Evaluator::default(),
-            puct,
-            tie_break: TieBreak::from_env(),
-            backup: BackupMode::from_env(),
-            fpu_reduction: env_f32("BLOOD_MCTS_FPU_REDUCTION").unwrap_or(0.0).max(0.0),
-            horizon_turns: std::env::var("BLOOD_MCTS_HORIZON_TURNS")
-                .ok()
-                .and_then(|v| v.trim().parse::<u8>().ok())
-                .unwrap_or(1)
-                .max(1),
+            last_search: None,
         }
+    }
+
+    /// Replace the whole configuration.
+    pub fn with_config(mut self, config: MctsConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn config(&self) -> &MctsConfig {
+        &self.config
     }
 
     /// Swap the scripted heuristic for a frozen NN evaluator (plan 017).
@@ -1756,12 +1826,12 @@ impl MctsBot {
     }
 
     pub fn with_workers(mut self, n_workers: usize) -> Self {
-        self.n_workers = n_workers.max(1);
+        self.config.workers = n_workers.max(1);
         self
     }
 
     pub fn with_memory_mode(mut self, memory_mode: MemoryMode) -> Self {
-        self.memory_mode = memory_mode;
+        self.config.memory_mode = memory_mode;
         self
     }
 
@@ -1769,7 +1839,7 @@ impl MctsBot {
     /// that A/B against the fresh-tree baseline; production callers
     /// should leave it on (the default).
     pub fn with_tree_reuse(mut self, reuse_enabled: bool) -> Self {
-        self.reuse_enabled = reuse_enabled;
+        self.config.tree_reuse = reuse_enabled;
         self
     }
 
@@ -1777,7 +1847,7 @@ impl MctsBot {
     /// (plan 015 Step 5). Primarily for tests that A/B against
     /// disabled (`0`) or aggressive (`100`) settings.
     pub fn with_virtual_loss(mut self, virtual_loss: i32) -> Self {
-        self.virtual_loss = virtual_loss;
+        self.config.virtual_loss = virtual_loss;
         self
     }
 
@@ -1785,31 +1855,31 @@ impl MctsBot {
     /// the env vars when A/B-ing: `MctsBot::new` reads the environment, so
     /// a stray `BLOOD_MCTS_PUCT_*` would silently move every arm at once.
     pub fn with_puct(mut self, puct: PuctMode) -> Self {
-        self.puct = puct;
+        self.config.puct = puct;
         self
     }
 
     /// Override the env-var default for the plan-023 tie-break instrument.
     pub fn with_tie_break(mut self, tie_break: TieBreak) -> Self {
-        self.tie_break = tie_break;
+        self.config.tie_break = tie_break;
         self
     }
 
     /// Override the env-var default for the player-node backup rule
     /// (plan 032 #2). Same A/B caveat as `with_puct`.
     pub fn with_backup(mut self, backup: BackupMode) -> Self {
-        self.backup = backup;
+        self.config.backup = backup;
         self
     }
 
     pub fn backup(&self) -> BackupMode {
-        self.backup
+        self.config.backup
     }
 
     /// Override the env-var default for the FPU reduction (plan 032 #3),
     /// in Q points; `0.0` disables it.
     pub fn with_fpu_reduction(mut self, k: f32) -> Self {
-        self.fpu_reduction = k.max(0.0);
+        self.config.fpu_reduction = k.max(0.0);
         self
     }
 
@@ -1817,7 +1887,15 @@ impl MctsBot {
     /// [`HorizonAnchor::turn_depth`]). `1` is the default and is
     /// bit-identical to the historical horizon.
     pub fn with_horizon_turns(mut self, turns: u8) -> Self {
-        self.horizon_turns = turns.max(1);
+        self.config.horizon_turns = turns.max(1);
+        self
+    }
+
+    /// `false` searches to game over instead of stopping at the horizon —
+    /// the historical unbounded baseline. Previously only reachable through
+    /// `BLOOD_MCTS_HORIZON=off`, which had no builder at all.
+    pub fn with_horizon(mut self, horizon: bool) -> Self {
+        self.config.horizon = horizon;
         self
     }
 }
@@ -1831,6 +1909,7 @@ struct SearchResult {
     move_info: Vec<(BbAction, BbNodeInfo)>,
     root_info: BbNodeInfo,
     agent_team: TeamType,
+    elapsed: Duration,
 }
 
 impl MctsBot {
@@ -1839,6 +1918,7 @@ impl MctsBot {
     /// callers turn the result into an action ([`MctsBot::get_action`]) or
     /// a training sample ([`MctsBot::get_action_with_record`]).
     fn run_search(&mut self, state: &GameState) -> SearchResult {
+        let search_started = std::time::Instant::now();
         // Clone the state and turn on roll-by-roll stepping for the
         // search. `DiceMode::RegisterRolls` keeps `pending_roll` visible
         // on post-action states, so pickup / dodge / GFI rolls become
@@ -1874,9 +1954,9 @@ impl MctsBot {
             Some(t) => t,
             None => root_state.info.team_turn,
         };
-        // `BLOOD_MCTS_HORIZON=off` disables the horizon for A/B
-        // comparison (e.g. against the historical unbounded baseline).
-        let horizon_disabled = std::env::var("BLOOD_MCTS_HORIZON").ok().as_deref() == Some("off");
+        // `config.horizon == false` disables the horizon for A/B comparison
+        // (e.g. against the historical unbounded baseline).
+        let horizon_disabled = !self.config.horizon;
         let gd = BloodBowlDynamics {
             horizon: if horizon_disabled {
                 None
@@ -1884,37 +1964,30 @@ impl MctsBot {
                 Some(HorizonAnchor::capture_with_depth(
                     &root_state,
                     agent_team,
-                    self.horizon_turns,
+                    self.config.horizon_turns,
                 ))
             },
-            virtual_loss: self.virtual_loss,
+            virtual_loss: self.config.virtual_loss,
             evaluator: self.evaluator.clone(),
-            puct: self.puct,
-            tie_break: self.tie_break,
-            backup: self.backup,
-            fpu_reduction: self.fpu_reduction,
+            puct: self.config.puct,
+            tie_break: self.config.tie_break,
+            backup: self.config.backup,
+            fpu_reduction: self.config.fpu_reduction,
         };
-        // `BLOOD_MCTS_WORKERS` lets benches that wouldn't otherwise pin
-        // workers (e.g. `expand_bench_main`) force single-thread for
-        // marker-comparison sweeps, without modifying the test.
-        let n_workers = match std::env::var("BLOOD_MCTS_WORKERS").ok().as_deref() {
-            Some(s) => s.parse::<usize>().unwrap_or(self.n_workers).max(1),
-            None => self.n_workers.max(1),
-        };
+        let n_workers = self.config.workers.max(1);
         let budget = self.budget;
 
-        // `BLOOD_MCTS_STATS=1` dumps registry hit/miss/len and DAG
-        // depth distribution after the search finishes but before the
-        // tree drops. Used to validate recombination + depth claims
-        // (plan 013) without modifying the benchmark tests.
-        let dump_stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
-        // `BLOOD_MCTS_LEAF_STATS=1` dumps only the cumulative `score_leaf`
-        // case tally (plan 031 D8). Separate from `BLOOD_MCTS_STATS` because
-        // that one also walks the whole DAG for its depth histogram, which
-        // costs more than the search on a 1000-iteration tree — far too much
-        // to pay per search across a 20-game run.
-        let dump_leaf_stats = dump_stats || std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
-        let memory_mode = MemoryMode::resolve(self.memory_mode);
+        // `config.stats` dumps registry hit/miss/len and DAG depth
+        // distribution after the search finishes but before the tree drops.
+        // Used to validate recombination + depth claims (plan 013).
+        let dump_stats = self.config.stats;
+        // `config.leaf_stats` dumps only the cumulative `score_leaf` case
+        // tally (plan 031 D8). Separate from `stats` because that one also
+        // walks the whole DAG for its depth histogram, which costs more than
+        // the search on a 1000-iteration tree — far too much to pay per
+        // search across a 20-game run.
+        let dump_leaf_stats = dump_stats || self.config.leaf_stats;
+        let memory_mode = self.config.memory_mode;
 
         // `new_anchor` mirrors `gd.horizon` when horizon is enabled. We
         // gate tree reuse on it: if the previous call had the same
@@ -1927,10 +2000,10 @@ impl MctsBot {
             Some(HorizonAnchor::capture_with_depth(
                 &root_state,
                 agent_team,
-                self.horizon_turns,
+                self.config.horizon_turns,
             ))
         };
-        let anchor_matches = self.reuse_enabled && self.cached_tree.is_some() && new_anchor == self.last_anchor;
+        let anchor_matches = self.config.tree_reuse && self.cached_tree.is_some() && new_anchor == self.last_anchor;
         // If anchor changed (or reuse disabled), discard the cache up
         // front so we don't hold the prior tree alive past the search.
         if !anchor_matches {
@@ -2138,7 +2211,7 @@ impl MctsBot {
         // the cache field stays populated. That's fine — the alternative
         // (clear cache when reuse_enabled is false) buys nothing and
         // adds branches.
-        if self.reuse_enabled {
+        if self.config.tree_reuse {
             self.cached_tree = Some(cache_after);
             self.last_anchor = new_anchor;
         } else {
@@ -2150,6 +2223,166 @@ impl MctsBot {
             move_info,
             root_info,
             agent_team,
+            elapsed: search_started.elapsed(),
+        }
+    }
+
+    /// Summary of the most recent `get_action`, or `None` before the first
+    /// one. Cheap: built during `get_action` from the same `move_info` that
+    /// picks the move, so asking for it costs nothing extra.
+    pub fn last_search(&self) -> Option<&SearchSummary> {
+        self.last_search.as_ref()
+    }
+
+    /// Walk into the tree that produced the last decision.
+    ///
+    /// `path` is the edge sequence from that search's root. Returns `None`
+    /// when there is no cached tree (the first call, or `tree_reuse` off) or
+    /// when the path leaves the materialised part of the DAG. Purely
+    /// read-only — no descent, no visit bump (pinned by
+    /// `recon_mcts/tests/navigate.rs`).
+    ///
+    /// Deliberately one level at a time: the DAG is far too large to
+    /// serialise, so a caller expands on demand.
+    pub fn explore(&self, path: &[BbAction], with_state: bool) -> Option<NodeView> {
+        macro_rules! walk {
+            ($tree:expr) => {{
+                let mut node = $tree.get_root_node();
+                for action in path {
+                    node = node.get_child(action)?;
+                }
+                let info = node.get_node_info();
+                let mut children: Vec<Edge> = node
+                    .get_children_info()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(action, child)| Edge {
+                        action,
+                        stats: Self::node_stats(&child),
+                    })
+                    .collect();
+                children.sort_by_key(|e| std::cmp::Reverse(e.stats.visits));
+                Some(NodeView {
+                    stats: Self::node_stats(&info),
+                    children,
+                    state: if with_state { info.state } else { None },
+                })
+            }};
+        }
+        match self.cached_tree.as_ref()? {
+            CachedTree::StoreState(t) => walk!(t),
+            CachedTree::GetState(t) => walk!(t),
+        }
+    }
+
+    /// Greedy principal variation from the last search's root: at a player
+    /// node take the best child by that player's own Q (visits as tie-break),
+    /// at a chance node take the most likely outcome.
+    ///
+    /// This is *not* the same rule as `pick_best_action` beyond the first
+    /// step — deeper nodes are ranked from their own mover's perspective,
+    /// which is what makes the line readable as a sequence of sensible play.
+    pub fn principal_variation(&self, max_depth: usize) -> Vec<Edge> {
+        let mut pv: Vec<Edge> = Vec::new();
+        let mut path: Vec<BbAction> = Vec::new();
+        for _ in 0..max_depth {
+            let Some(node) = self.explore(&path, false) else {
+                break;
+            };
+            let best = node.children.into_iter().max_by(|a, b| {
+                let key = |e: &Edge| {
+                    (
+                        // Chance edges rank by probability; player edges by the
+                        // child's Q in the *parent's* frame.
+                        e.prob().unwrap_or(0.0),
+                        report::mover_sign(node.stats.player) * e.stats.q_home.unwrap_or(i64::MIN) as f32,
+                        e.stats.visits as f32,
+                    )
+                };
+                let (ap, aq, av) = key(a);
+                let (bp, bq, bv) = key(b);
+                ap.total_cmp(&bp).then(aq.total_cmp(&bq)).then(av.total_cmp(&bv))
+            });
+            match best {
+                Some(edge) => {
+                    path.push(edge.action.clone());
+                    pv.push(edge);
+                }
+                None => break,
+            }
+        }
+        pv
+    }
+
+    fn node_stats(info: &BbNodeInfo) -> NodeStats {
+        let (visits, q_home) = info
+            .score
+            .as_ref()
+            .map(|s| (s.visits.load(Ordering::Relaxed), Some(s.score)))
+            .unwrap_or((0, None));
+        NodeStats {
+            visits,
+            q_home,
+            q_mover: report::q_mover(q_home, info.player),
+            solved: info.solved,
+            terminal: matches!(info.n_children, Status::Terminal),
+            player: info.player,
+            depth: info.depth,
+            n_parents: info.n_parents,
+            n_children: match info.n_children {
+                Status::Action(n) | Status::ActionWip(n) => Some(n),
+                Status::Pending | Status::Terminal => None,
+            },
+            proc: info
+                .state
+                .as_ref()
+                .and_then(|s| s.proc_stack_top())
+                .map(|p| p.to_string()),
+        }
+    }
+
+    fn summarise(&self, state: &GameState, result: &SearchResult, chosen: EngineAction) -> SearchSummary {
+        let mut children: Vec<Edge> = result
+            .move_info
+            .iter()
+            .map(|(action, info)| Edge {
+                action: action.clone(),
+                stats: Self::node_stats(info),
+            })
+            .collect();
+        children.sort_by_key(|e| std::cmp::Reverse(e.stats.visits));
+
+        // One extra forward per decision, only for the NN evaluators. The
+        // heuristic leaf has no separate "value" to show that `leaf_score` on
+        // the root wouldn't already imply.
+        let evaluator_value = match &self.evaluator {
+            Evaluator::Nn(nn) | Evaluator::NnValue(nn) => {
+                let home = nn.value_home_i64(state) as f32 / report::Q_SCALE;
+                Some(match result.agent_team {
+                    TeamType::Home => home,
+                    TeamType::Away => -home,
+                })
+            }
+            Evaluator::Heuristic | Evaluator::PureTd => None,
+        };
+
+        SearchSummary {
+            agent: result.agent_team,
+            chosen,
+            root: Self::node_stats(&result.root_info),
+            children,
+            elapsed: result.elapsed,
+            budget: match self.budget {
+                SearchBudget::Iterations(n) => format!("{n} iterations"),
+                SearchBudget::Time(d) => format!("{} ms", d.as_millis()),
+            },
+            evaluator: match &self.evaluator {
+                Evaluator::Heuristic => "heuristic".to_string(),
+                Evaluator::PureTd => "pure-td".to_string(),
+                Evaluator::Nn(_) => "nn".to_string(),
+                Evaluator::NnValue(_) => "nn-value".to_string(),
+            },
+            evaluator_value,
         }
     }
 
@@ -2160,8 +2393,9 @@ impl MctsBot {
         agent_team: TeamType,
         tie_break: TieBreak,
         root_frame: MoverFrame,
+        debug_root: bool,
     ) -> EngineAction {
-        if std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1") {
+        if debug_root {
             let mut infos: Vec<_> = move_info
                 .iter()
                 .map(|(a, info)| {
@@ -2229,9 +2463,11 @@ impl MctsBot {
         let action = Self::pick_best_action(
             &result.move_info,
             result.agent_team,
-            self.tie_break,
+            self.config.tie_break,
             MoverFrame::for_team(state, result.agent_team),
+            self.config.debug_root,
         );
+        self.last_search = Some(self.summarise(state, &result, action));
 
         let children = result
             .move_info
@@ -2283,12 +2519,15 @@ impl MctsBot {
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
         let result = self.run_search(state);
-        Self::pick_best_action(
+        let action = Self::pick_best_action(
             &result.move_info,
             result.agent_team,
-            self.tie_break,
+            self.config.tie_break,
             MoverFrame::for_team(state, result.agent_team),
-        )
+            self.config.debug_root,
+        );
+        self.last_search = Some(self.summarise(state, &result, action));
+        action
     }
 }
 

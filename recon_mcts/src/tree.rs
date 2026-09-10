@@ -1257,6 +1257,44 @@ where
             solved: self.solved.load(Ordering::Relaxed),
         }
     }
+
+    /// One level of read-only navigation: the `(action, [`NodeInfo`])` pairs
+    /// for this node's materialised children, or `None` when the node has not
+    /// been expanded.
+    ///
+    /// The node-level counterpart of [`SearchTree::get_next_move_info`], which
+    /// only ever reaches the root's children. Added for callers that want to
+    /// *inspect* a finished tree rather than search it — a UI walking into the
+    /// DAG, a diagnostic dumping a principal variation. Nothing here mutates:
+    /// no descent, no visit bump, no virtual loss.
+    ///
+    /// Children that are still placeholders are included, and read as
+    /// `visits = 0` / `score = None` — a placeholder has been enumerated but
+    /// never descended.
+    pub fn get_children_info(&self) -> Option<Vec<(A, NodeInfo<S, P, Q>)>>
+    where
+        A: Clone,
+        Q: Clone,
+        P: Clone,
+    {
+        let info = self
+            .children
+            .read()
+            .unwrap()
+            .as_map()?
+            .iter()
+            .map(|(a, c)| (a.clone(), c.get_node_info()))
+            .collect();
+        Some(info)
+    }
+
+    /// Follow one action edge down, if that child has been materialised.
+    /// Together with [`Node::get_children_info`] and
+    /// [`Tree::get_root_node`] this is enough to walk a finished DAG
+    /// read-only.
+    pub fn get_child(&self, action: &A) -> Option<ArcNode<GD, S, P, A, Q, I, M>> {
+        self.children.read().unwrap().as_map()?.get(action).map(ArcNode::clone)
+    }
 }
 
 /// A trait used to remove nodes from the transposition table that are no longer reachable from the
@@ -2401,6 +2439,13 @@ where
     /// budgets) should poll this and stop early.
     pub fn is_solved(&self) -> bool {
         self.root.read().unwrap().solved.load(Ordering::Acquire)
+    }
+
+    /// The current root node, for read-only inspection of a finished tree
+    /// (see [`Node::get_children_info`]). Holding the returned `ArcNode`
+    /// keeps that node alive, so drop it before continuing to search.
+    pub fn get_root_node(&self) -> ArcNode<GD, S, P, A, Q, I, M> {
+        ArcNode::clone(&*self.root.read().unwrap())
     }
 
     /// Look up a node in the transposition table by `(player, state)`.

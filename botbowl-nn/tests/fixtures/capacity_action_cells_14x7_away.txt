@@ -1,0 +1,24 @@
+mover=Away dims=BoardDims { width: 16, height: 9, team_size: 4 }
+EndTurn -> c=22 y=0 x=0 simple=true
+StartBlitz (5,2) -> c=1 y=2 x=10 simple=false
+StartBlitz (6,5) -> c=1 y=5 x=9 simple=false
+StartBlitz (7,3) -> c=1 y=3 x=8 simple=false
+StartBlitz (7,4) -> c=1 y=4 x=8 simple=false
+StartBlock (7,3) -> c=12 y=3 x=8 simple=false
+StartBlock (7,4) -> c=12 y=4 x=8 simple=false
+StartFoul (5,2) -> c=3 y=2 x=10 simple=false
+StartFoul (6,5) -> c=3 y=5 x=9 simple=false
+StartFoul (7,3) -> c=3 y=3 x=8 simple=false
+StartFoul (7,4) -> c=3 y=4 x=8 simple=false
+StartHandoff (5,2) -> c=7 y=2 x=10 simple=false
+StartHandoff (6,5) -> c=7 y=5 x=9 simple=false
+StartHandoff (7,3) -> c=7 y=3 x=8 simple=false
+StartHandoff (7,4) -> c=7 y=4 x=8 simple=false
+StartMove (5,2) -> c=0 y=2 x=10 simple=false
+StartMove (6,5) -> c=0 y=5 x=9 simple=false
+StartMove (7,3) -> c=0 y=3 x=8 simple=false
+StartMove (7,4) -> c=0 y=4 x=8 simple=false
+StartPass (5,2) -> c=2 y=2 x=10 simple=false
+StartPass (6,5) -> c=2 y=5 x=9 simple=false
+StartPass (7,3) -> c=2 y=3 x=8 simple=false
+StartPass (7,4) -> c=2 y=4 x=8 simple=false

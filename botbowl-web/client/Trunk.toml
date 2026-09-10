@@ -1,0 +1,9 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+# `trunk serve` is only for iterating on the client alone; the real entry point
+# is `botbowl-web-server --dist-dir botbowl-web/client/dist`, which also owns
+# the websocket and the sprite mount.
+port = 8081
