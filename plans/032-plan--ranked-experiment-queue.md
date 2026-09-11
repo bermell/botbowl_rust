@@ -48,6 +48,56 @@ section carries the evidence.
 | 10 | 10 | High-budget strength | unchanged; still best run after #2 changes the backup. |
 | 8 | **11** | Encoder additions | **demoted and rewritten.** D3: the trigger fires numerically (12.78% ambiguous) but **zero** of 22,343 ambiguous groups are distinguished by action type, and the measured cost is 0 for both heads. |
 
+## Key results so far (2026-09-07 → 09-09, ~60 h of machine time)
+
+Written for someone who reads nothing else in this file. Numbers are points (W + D/2)/N over
+120 paired games unless stated, SE ≈ 0.041; the detail and the per-game logs are in each item.
+
+1. **The policy label is the dominant lever, and everything else we tried is flat.** The same
+   corpus and recipe, trained on the completed-Q label instead of the visit label, gave **Q7 0.613
+   over D7** (#7), and Q7 is the first net to beat the frozen champion: **0.625 ± 0.041 vs gen03,
+   z = +3.0** (#7c), where the visit-label twin D7 lost 0.425 (#1b). A +0.23 swing from the label
+   alone dwarfs every search knob (#3), the capacity arm (#9), and the seed floor (#5). Mechanism
+   (plan 031 D2): the visit label agrees with the move actually played only 0.59 of the time and
+   0.22-0.25 at roots with > 30 children — `recon_mcts` freezes solved children's visits, so the
+   best move is often the least-visited. The cq label (`softmax(ln prior + q/τ)`, τ = 100) is now
+   `train_loop.sh`'s default and Q7 is the installed champion.
+2. **The loop's plateau was the label, not the data or the loop mechanics.** Eight incremental
+   generations (gen04-07) all failed the 0.55 gate against gen03; a from-scratch retrain on the
+   same seven generations with the visit label *also* lost (#1b, 0.425). So the corpus was fine
+   and the "retrain from scratch" hypothesis (plan 030) was not the fix on its own — only the label
+   change turned the same data into a stronger net.
+3. **No search knob at production budget helps, and the shape says breadth-limited.** `PUCT_C`
+   3/10/30 → 0.421 / — / 0.521 and FPU k = 100/300 → 0.446 / 0.500 against the c = 10 baseline,
+   all within or below the floor except c = 30's marginal +0.02 (#3). Nothing at 1000 iterations
+   re-allocates visits usefully; the root fan is bimodal (median 6, p90 73 children) and the
+   search rarely sees a TD at all (plan 031 D8). Promotes #10 (budget) over any further tuning.
+4. **Mean backup is not the answer even though the mechanism is real.** Plan 031 D1 measured the
+   minimax backup contributing +0.10 of the +0.13 optimism at 1000 iterations (z = 52), and
+   switching to mean backup did remove it (search-added gap −0.078, #2 Part A) — but gen03 under
+   mean backup **lost 0.454 ± 0.039** to itself under minimax (#2 Part B). Most children of a
+   player node are cheap turnovers the search never refutes at 1000 iterations; averaging them in
+   makes every position look mediocre (leaf slope 0.59). Max is the right operator for "there
+   exists a plan"; the optimism is a calibration fact about the value label, not a search defect.
+5. **Capacity is not the ceiling.** 96×8 (2.5× the FLOPs, 99 min vs 75 to train) scored 0.508 vs
+   the 64×6 twin (#9). With the GPU floor scaling with the net (plan 033) this closes #9.
+6. **The floor every result stands on: ±0.03.** Two identically trained nets differing only in
+   seed scored +0.03 ± 0.03 against each other over 300 games (#5); the pair correlation is zero
+   (plan 031 D10), so 120-game screens resolve only |Δ| ≥ 0.10 and a ±0.03 question needs ~600
+   games. The old seat-bias worry is gone: 1500 Home games score 0.498 ± 0.011 (#11).
+7. **Inference is no longer where time goes.** The sidecar rewrite (plan 033) gives 1.36× the
+   forwards/s at the production shape; the remaining ~300 µs per batch is cuDNN on a 16×9 board.
+   Generation is bounded by the nn shards' engine work and RAM (2 parallel games per shard), not
+   by the GPU or the Python.
+
+**#12 closed 2026-09-10: q9 (from scratch, gen01-09) 0.471 vs the loop's gen09 — the
+fine-tune stays**, `WARM_FROM=latest`, gateless from gen10 (plan 030). The lineage since Q7:
+gen08 0.550 vs Q7, gen09 0.560 vs gen08, both promoted. Open, in the order I'd run them:
+the gateless relaunch itself (gen10+, anchor curve vs gen03); #10 budget
+diagnostic; fan-dependent τ, scored offline first with `scripts/audit_q_target.py`; a value-target
+variant (outcome blended with root Q) as the next label experiment, since the label is where the
+gain has been; #6 hedge ablation only at ~600 games.
+
 ## The queue
 
 ### 1. D7 vs champion gen03 — does a from-scratch retrain on the whole corpus beat eight incremental generations?
@@ -109,10 +159,42 @@ section carries the evidence.
   same steps). Match `d8h vs gen03` on seed base 32000000. If d8h ≥ 0.50 where D7 was 0.40, the
   heuristic data is worth ≥ +0.10 and the loop's window must always include it; if d8h ≈ D7,
   the gap is the recipe/distillation and the from-scratch route is closed. Queue position: after
-  #7's match, before #3's screens (`scripts/exp032_s1b_d8h.sh`, launched 2026-09-08 02:50; it
+  #7's match, before #3's screens (`scripts/exp032_s1b_d8h.sh`, launched 2026-09-08 02:38; it
   holds `runs/exp032/s1b.pending`, which stage 3 blocks on). d8h validates on the loop's
   `gen07/prepared_val` like D7, so this is the one arm pair whose `val_*` are comparable.
-  Result: pending.
+- **Result (2026-09-08 12:45, 188 min): d8h = 0.425 ± 0.041 vs gen03** (W36 D30 L54, TD
+  404:468; as Home W16 L29, as Away W20 L25; 28% of pairs split 1-1). On val the two are
+  indistinguishable (d8h 1.829 vs D7 1.835 combined). **d8h ≈ D7** (0.425 vs 0.396, Δ = +0.03,
+  inside one SE of the difference 0.057): the gen00 heuristic corpus is worth at most a few
+  points, not the 0.10 that would have made it the missing ingredient. **The from-scratch route
+  is closed**: the recipe/distillation gap is what separates D7-class nets from gen03, and #7's
+  result (Q7 +0.11 over D7 from the label alone) says the label is the largest known piece of it.
+  The loop keeps its heuristic hedge for the reasons in #6 (label balance, ties), not because it
+  carries strength. Consequence for the queue: the natural next from-scratch test is **Q7 vs
+  gen03** — if the cq label closes the 0.10 gap to the champion, a full retrain becomes viable
+  again as the plan-030 rebuild's periodic step; it costs one 120-game match and no training,
+  so it slots in after the τ decision (#7b).
+- **#7c result (2026-09-09 16:31, 186 min, `scripts/exp032_s7c_q7_vs_champ.sh`): Q7 = 0.625 ±
+  0.041 vs champion gen03** (W63 D24 L33, TD 503:425; Home 33-15, Away 30-18; z = +3.0). The
+  same recipe that lost to gen03 at 0.396 with the visit label (D7) **beats it by the same margin
+  with the completed-Q label** — a 0.23-point swing from the label alone, on the same 120 seeds.
+  Three consequences:
+  1. **The from-scratch route is reopened**, and it is now the strongest route we have: Q7 is
+     the first net in the programme to beat gen03, after four incremental generations (gen04-07)
+     failed to. It clears the loop's promotion gate (0.55) by 1.8 SE.
+  2. **Q7 should be the loop's champion when it relaunches.** Otherwise gen08 generates from a
+     net that Q7 beats 0.625, and fine-tunes gen03 onto data gen03 produced — the distillation
+     ceiling #1 identified. The loop has no "install an external champion" step; the manual
+     version is: copy `runs/exp032/q7.{onnx,pt}` to `models/bbnet_14x7_q7.{onnx,pt}`, write its
+     path to `runs/loop14x7/champion.txt`, and let gen08 warm-start from it (`WARM_FROM=champion`)
+     with the cq label already the default. **Done 2026-09-09 18:31 on the user's go-ahead:**
+     `models/bbnet_14x7_q7.{onnx,pt,train.log}` installed, `runs/loop14x7/champion.txt` points at
+     it, noted in `status.md`; the loop is still stopped (STOP file) and picks it up on relaunch.
+  3. **The gen03 → gen07 plateau is explained**, not by data volume, backup, `c`, FPU, capacity
+     or seed (all tested in this plan and flat), but by the policy label. The value head was
+     never the problem (#2's calibration audit: slope 0.95 under minimax); the policy head was
+     being taught an unconverged visit distribution, and under `EVALUATOR=nn` that head steers
+     the search.
 
 ### 2. Mean backup instead of minimax with an NN leaf
 
@@ -256,7 +338,48 @@ section carries the evidence.
 - **Run (queued behind stage 2, `scripts/exp032_s3_puct_fpu.sh`).** Four 120-game screens, gen03
   both sides, seed base 32000000, backup rule for all arms chosen from stage 2 (mean if ≥ 0.55,
   else minimax): `c=3 vs c=10`, `c=30 vs c=10`, `k=100 vs k=0`, `k=300 vs k=0`. Screens only —
-  a winner gets a sized match. Result: pending.
+  a winner gets a sized match. Stage 2 gave mean 0.454, so all arms run **minimax**.
+- **Results (2026-09-08, 120 games each, gen03 both sides, minimax).**
+
+  | arm | points | W-D-L | TD | z |
+  |---|---|---|---|---|
+  | `c=3` vs `c=10` | **0.421 ± 0.039** | 36-29-55 | 450:500 | −2.0 |
+  | `c=30` vs `c=10` | 0.521 ± 0.037 | 47-31-42 | 467:452 | +0.5 |
+  | `k=100` vs `k=0` | 0.446 ± 0.043 | 38-31-51 | 412:427 | −1.3 |
+  | `k=300` vs `k=0` | 0.500 ± 0.044 | 50-20-50 | 416:404 | 0.0 |
+
+  `c=3` (15:40, 174 min): less exploration **loses** clearly, and it loses from both seats (Home
+  20-25, Away 16-30). So under learned priors the search is not over-exploring at `c=10` — the
+  gain, if any, is on the *more*-exploration side (`c=30`), consistent with plan 026's heuristic
+  result and with D4's finding that the learned prior's top lift (5.5×) already concentrates the
+  sweep. Note the paired SE is no tighter than unpaired again (1.04×): with a 1000-iteration
+  search the two seats' games diverge early enough that pairing buys almost nothing on this tier.
+  `c=30` (18:38, 177 min): **0.521, inside one SE of 0.50** — no measurable gain from tripling
+  exploration either. Together the two `c` screens bracket `c=10`: the curve is flat-to-falling
+  in both directions (0.421 / 0.50 / 0.521), so `c=10` is within ~0.02 of the optimum and the
+  original +0.03-0.06 expectation for this item does not hold under the NN. Per the abandon
+  rule `c` gets no sized match: strength is flat from c=10 to c=30 and only falls when
+  exploration is cut. The FPU screens are the remaining hope for #3.
+  `k=100` (21:29, 171 min): **0.446 — a mild loss** (z = −1.3), symmetric across seats (Home 19-26,
+  Away 19-25). A 0.1-TD first-play penalty on unvisited children does not help; the plain FPU
+  (`parent_Q`, which under minimax is the most optimistic sibling) is at worst no worse. This is
+  the opposite of the Leela/KataGo experience and consistent with the direction the `c` screens
+  gave: at 1000 iterations on this tier the search benefits from *breadth* at the root, and
+  anything that narrows the first sweep (c=3, FPU reduction) costs points. `k=300` is running
+  only because it is already queued; the expectation is now that it loses harder.
+  `k=300` (2026-09-09 00:19, 169 min): **0.500 exactly** (W50 D20 L50, TD 416:404) — the
+  prediction that it would lose harder was wrong; a 0.3-TD penalty is a wash, with fewer draws
+  than k=100 (20 vs 31) but the wins and losses it converts are balanced. So FPU reduction is
+  0.446 / 0.500 at k = 100 / 300: nowhere positive, and not monotone, which is what a
+  null effect measured twice at SE 0.04 looks like.
+- **Decision — #3 closed, nothing ships.** Four screens, no arm above one SE of 0.50 on the
+  high side (0.421, 0.521, 0.446, 0.500); the abandon rule fires. `c=10`, plain FPU stay. The
+  search-side knobs plan 026 identified are not where the strength is under the learned prior;
+  the cheapest reading of the whole stage is that the 1000-iteration search on this tier is
+  *breadth-limited at the root* (cutting exploration costs 0.08, adding it or narrowing the first
+  sweep does nothing), which is an argument for #10 (budget) as a diagnostic and for the label
+  work (#7) that changes what the prior points the breadth at. #2b (blended backup) drops below
+  #10 — the one search-side lever that showed a real signal (#2) did so on bias, not on strength.
 
 ### 4. Exploration in self-play: root Dirichlet noise + visit-temperature sampling for the first k decisions of a drive
 
@@ -310,7 +433,30 @@ section carries the evidence.
   from-scratch arm now shares, and one of the two nets is D7 itself (no new control to train).
   `d7s2` = D7's recipe from a second materialised init (`arm_init_s2.pt`, `--seed 20260907` for
   init, shuffle and augmentation), same steps, same held-out. Match `d7s2 vs d7`, **300 games**
-  (SE ≈ 0.026), seed base 32000000, queued behind stage 3 and #9's match. Result: pending.
+  (SE ≈ 0.026), seed base 32000000, queued behind stage 3 and #9's match.
+- **Training (done 07:11, 77 min on the GPU next to the eval chain).** The seeds are
+  indistinguishable on the held-out set: `d7s2` best combined **1.8313** (step 90k: val_policy
+  1.4461, val_value 0.3852, top-1 0.535) vs D7 **1.8352** (step 92.5k: 1.4477 / 0.3876 / 0.535);
+  the same 0.004 as the run-to-run wobble of a single curve. Both peak at step 90-92.5k of 110k
+  and drift up after. So whatever strength gap the 300 games find is *not* visible in `val_*` —
+  which is the point: it bounds how much strength variance hides behind identical losses.
+  The match moved to `scripts/exp032_s7b_tau50.sh` (order after stage 3: #9, #7b, then this).
+- **Result (2026-09-09 13:23, 412 min, 300 games): d7s2 = 0.530 ± 0.028 vs D7** (W130 D58 L112,
+  TD 1072:1019; Home 70-57, Away 60-55; paired SE 0.028 over 150 pairs, 25% split 1-1). So two
+  nets that are **identical on val to 0.004** differ in strength by **+0.03 ± 0.03** — the seed
+  floor is bounded at about ±0.03-0.06 (one-sided 95% bound on |Δ| ≈ 0.08). Readings:
+  1. **Every 120-game verdict of ±0.04 in plans 029/032 sits on top of a ±0.03 seed term.** A
+     single-arm result of |Δ| < 0.06 (c=30 0.521, k=300 0.500, d7w96 0.508, q50 0.471) is not
+     distinguishable from a seed re-roll. The results that survive this floor are the ones with
+     |Δ| ≥ 0.10: Q7 vs D7 (+0.11), c=3 (−0.08, borderline), mean backup (−0.05, not), D7/d8h vs
+     gen03 (−0.10/−0.08), plan 029's D7 vs D1 (+0.16).
+  2. Plan 029's +0.06 per data doubling is **about one seed floor per doubling** — real in
+     aggregate across three doublings, but no single step of it was.
+  3. **Practical rule going forward:** treat 120 games as a screen for |Δ| ≥ 0.10 only; anything
+     that screens at 0.05-0.10 needs either a replicate from a second seed (the cleaner answer —
+     it also averages the floor) or 300+ games *and* the awareness that 300 games still cannot
+     separate a +0.03 effect from a lucky seed. The cheap version of a replicate is to train the
+     candidate from `arm_init_s2.pt` as well and pool the two matches.
 
 ### 6. Heuristic hedge ablation
 
@@ -450,7 +596,46 @@ section carries the evidence.
   Prepare + train overlapped stage 1 (prepare 1 min, train 51 min on the shared GPU; restored
   at step 75,000 of 110,000, val_value 0.377, val_top1 0.572 against its own label). The match
   `s7-q7-vs-d7` (120 games, seed base 32000000) waits for the stage-2 runner and precedes
-  stage 3. Result: pending.
+  stage 3.
+- **Result (2026-09-08 09:36, 227 min — slowed by two GPU trains sharing the cores).**
+  **Q7 beats D7 0.613 ± 0.040 (z = +2.8)**: W62 D23 L35, TD 470:406; as Home W34 L17, as
+  Away W28 L18 (it wins from both seats); the paired SE is no tighter than unpaired (0.99×) and 35% of pairs split 1-1, so
+  the seeds carry little shared luck here. This is the **largest single-variable gain in the
+  programme so far**, and it comes from the label alone: same data, same init, same seed, same
+  steps, same search — only the policy target changed. It is also the first time an offline
+  proxy (the two top-1 probes) has predicted a match result in the right direction *and* at
+  roughly the right size (+0.06 on the played-move statistic → +0.11 in points, plausible
+  since the policy improvement compounds through the search).
+  Consequences:
+  1. **Ship it.** The loop's `prepare` call should use `--policy-target cq --tau 100` from the
+     next generation (`train_loop.sh` — not yet changed; deploy after the τ follow-up below so
+     the shipped value is the tested one). Since the held-out set is re-prepared under the same
+     target, `val_policy`/`val_top1` numbers from the loop will step-change and are not
+     comparable across the switch; `val_value` is.
+  2. **It re-ranks the queue.** D2's diagnosis (visit target ≈ FPU sweep at wide fans) is now a
+     confirmed strength lever, which raises the value of the fan-dependent τ idea and of #4's
+     class-balancing (which acts on the same label) and lowers the priority of the search-side
+     items (#3, #2b) that were trying to fix the same symptom from the other end.
+  3. **Follow-up launched (pre-registered): `q50` at τ=50**, `scripts/exp032_s7b_tau50.sh`,
+     identical recipe, head-to-head **vs Q7** 120 games (the question is which target to ship,
+     so the direct match is the cheapest discriminator; both arms' val sets are prepared under
+     their own τ so again only the match counts). Queued after stage 3 and #9's match, ahead
+     of #5's 300 games. If q50 wins, a fan-dependent τ (sharper where the fan is wide) is next;
+     if Q7 holds, τ=100 ships.
+     *Training (done 10:38, 58 min):* q50 restored at step 102.5k (val_policy 1.302, val_value
+     **0.380**, val_top1 0.581 against its own sharper label) vs Q7 at 75k (1.362 / **0.377** /
+     0.565). The held-out set is the same 36k rows for both and the value label does not depend
+     on τ, so **val_value is comparable here**: 0.380 vs 0.377 — the sharper policy target costs
+     the value head nothing measurable. Policy numbers are not comparable (different labels).
+     *Result (2026-09-09 06:31, 190 min):* **q50 = 0.471 ± 0.042 vs Q7** (W47 D19 L54, TD
+     461:470; Home 20-32, Away 27-22). The sharper target does **not** beat τ=100 — a mild,
+     non-significant loss (z = −0.7), so the best reading is "τ=50 ≈ τ=100, if anything worse".
+     That matches the offline probes' trade-off: τ=50 won at wide fans but lost at narrow ones,
+     and narrow roots are ~85% of samples. **τ=100 ships** (already the loop default, ef3cf8e).
+     Fan-dependent τ (sharper only where the fan is wide) remains the one untested variant with
+     an offline case for it; it is a `prepare` change, and can be scored offline first against
+     both probe files before any training. Not queued for now — the from-scratch-vs-champion
+     question (Q7 vs gen03, #7c) comes first.
 
 ### 8. Encoder additions
 
@@ -498,7 +683,23 @@ section carries the evidence.
   `audit_value_head_bias.py`) now rebuilds `BBNet` from the state dict's shape
   (`BBNet.from_state_dict`), bit-identical for the 64x6 default. `d7w96` = width 96 / blocks 8
   (**1.39 M params, 2.9×**), `--seed 20260906` (D7's), same 110k steps and held-out; tract runs
-  the wider ONNX fine. Match `d7w96 vs d7`, 120 games, seed base 32000000. Result: pending.
+  the wider ONNX fine. Match `d7w96 vs d7`, 120 games, seed base 32000000.
+- **Training (done 08:51, 99 min vs D7's ~75 — the GPU is not the bottleneck, the Python batcher
+  is).** `d7w96` best combined **1.8270** at step 95k (val_policy 1.4390, val_value 0.3880, top-1
+  0.538) vs D7 1.8352 and d7s2 1.8313. The 2.9× net buys **−0.008 combined, all of it policy**
+  (1.439 vs 1.446-1.448; value 0.388 is inside the seed spread 0.385-0.388). That is twice the
+  seed gap on val but still tiny: at 2.2 M training samples the 64x6 net is not badly
+  capacity-limited on this pool. Training loss at the end is 1.43/0.36 vs D7's 1.43/0.37 —
+  barely lower, so the wide net is not memorising either; it is data-limited like the small one.
+  Prediction for the match: within ±0.05 of 0.50 (val says 0.50-0.53).
+- **Result (2026-09-09 03:21, 179 min): d7w96 = 0.508 ± 0.043 vs D7** (W49 D24 L47, TD 406:390;
+  Home 23-26, Away 26-21). As predicted: **no gain from 2.9× the parameters at this data size.**
+  The 0.008 val edge did not turn into strength (or did, at a size 120 games cannot see — the
+  bound is < +0.09). **Abandon** per the pre-registered rule. Capacity is not the ceiling; data
+  volume and label quality are (#7). The 96x8 net also costs ~2.5× the GPU time per forward, which
+  on the sidecar's critical path (plan 033: the GPU kernels are the floor) would slow generation.
+  Revisit only when the corpus is ≥ 5× larger or after the label change has been in the loop for
+  a few generations and val stops improving on 64x6.
 
 ### 10. High-budget strength (plan 028 C1/C2)
 
@@ -609,6 +810,69 @@ section carries the evidence.
   receive-and-pick-up phase is under-represented in the corpus. Scaling the deviate to the board
   (or aiming deeper) is a rules-design choice for the tier, not a bug — logged in the open
   questions.
+
+- **Confirmed on NN full games (2026-09-09): the NN seat term is gone.** `side_bias_pooled.py`
+  over the eleven post-fix NN matches in `runs/exp032/` (stage 2/3, #1b, #5, #7/7b/7c, #9 —
+  1,500 games, nine different nets, one seed base):
+
+  | | games | Home points | z | TD Home:Away |
+  |---|---|---|---|---|
+  | all NN, fixed engine | **1500** | **0.498 ± 0.011** | **−0.17** | 5249:5280 |
+  | Home kicked first | 770 | 0.475 ± 0.016 | −1.59 | 2652:2764 |
+  | Away kicked first | 730 | 0.523 ± 0.016 | +1.37 | 2597:2516 |
+  | receiving team, seat-agnostic | 1500 | 0.524 ± 0.011 | +2.10 | |
+
+  Against the pre-fix pool (600 games, 0.438, z −3.46) the seat term has moved from −0.06 to
+  0.00 ± 0.01. **The line-up ratchet was the whole NN Away edge**, and the hypothesis is
+  closed. Two residuals, both small: (1) receiving first is now worth +0.024 ± 0.011 — expected
+  in Blood Bowl, was masked before by the Away edge, and cancels in the paired design; (2) the
+  two kick splits sit ±0.024 either side of 0.50 in opposite directions, which is what the
+  receive advantage looks like when split by who kicked (Home kicks → Away receives → Away
+  edge, and vice versa) — not a second seat effect. #11 is **closed**; the corpus from gen08 on
+  is generated by a seat-symmetric game, and plan 031 D6's Away-skewed value labels in gen05-07
+  are the ratchet's fingerprint in the data.
+
+### 12. Loop train step: from scratch on the whole corpus vs the warm-started fine-tune
+
+- **Mechanism.** gen08's fine-tune (warm from Q7 at 2e-4, 3-gen window) restored at step 10k
+  of ~50k, epoch 0, val then drifting up — the same shape as gen05-07 — and scored 0.550 vs
+  its own parent. Plan 029 stage 3 already showed the warm regime does not turn more data
+  into strength (W3 vs W1 0.487 against D3 vs D1 0.600), and Q7 (from scratch, cq) is the
+  only net to beat a champion clearly. Same data as the loop's gen09 net, one arm.
+- **Arm.** `q9` = Q7's exact recipe (`arm_init.pt`, lr 1e-3, 110k steps, cq τ=100) on
+  gen01-09, shards 0-3,5,6; held-out gen09 shards 4,7. Match `q9 vs bbnet_14x7_gen09`,
+  120 games, seed base 32000000, production settings. `scripts/exp032_s12_scratch_vs_loop.sh`
+  (launched 2026-09-10 05:16; it waits for "gen09 train done", trains during gen09's eval,
+  plays after the loop exits).
+- **Decide (pre-registered; amended in plan 030 §Decisions 2026-09-10).** q9 ≥ 0.60 → the
+  loop's train step becomes the from-scratch recipe (`WARM_START=off`, `WINDOW_GENS=10`).
+  q9 in [0.50, 0.60) → also switch (removing the warm-from question is worth a wash).
+  q9 < 0.50 → fine-tune stays, with `WARM_FROM=latest` under the gateless loop.
+- **Note (2026-09-10 10:45).** The loop's STOP file (placed 05:16) fired *before gen09
+  prepare*, one boundary earlier than the script assumes, so #12 sat waiting on an idle
+  machine for ~5 h. Fix: relaunch the loop for gen09, re-place STOP once gen09's eval starts
+  (`scripts/stop_after.sh`), so it exits after the verdict.
+
+- **Result (2026-09-10 19:01, 167 min): q9 = 0.471 ± 0.040 vs gen09** (W43 D27 L50, TD
+  445:473; Home 25-23, Away 18-27; paired 0.471 ± 0.039 over 60 pairs, 33% split 1-1,
+  z = −0.7). **Pre-registered branch q9 < 0.50: the fine-tune stays.** The from-scratch
+  retrain on the whole corpus does not beat the two-step warm lineage Q7 → gen08 → gen09 on
+  the same data; |Δ| = 0.03 is inside the seed floor (#5), so the honest reading is "tie to
+  slight loss", not a clear loss. Same-day context: the loop's own gen09 (warm from gen08 at
+  2e-4, restored at **step 2500, epoch 0**) scored **0.560 vs gen08** and was promoted; gen08
+  had scored 0.550 vs Q7. Two fine-tunes since Q7, both a hair above even against their
+  parent — the lineage is at least holding, and a from-scratch reset buys nothing over it.
+  Caveat, recorded not argued: q9 restored at its **final** step (110k of 110k, epoch 3,
+  val 1.6461 still falling — 0.3662 value at 110k vs 0.3711 at 105k), so the Q7 recipe is
+  under-budgeted at 1.05 M rows where it had converged at 75k on 820k. A 200k-step q9 might
+  reach parity; at ~2 GPU-h + 3 h of games it is not worth chasing while the lineage holds.
+  **Queue it only if the anchor curve plateaus** (plan 030 trigger) — as the first thing to try
+  then, since a converged from-scratch net is the natural "reset" for a drifted lineage.
+  Val numbers are not comparable across the arms (q9 validates on gen09 4+7 alone, the loop
+  on the 3-gen window's 4+7).
+- **Decision for plan 030.** Train step stays the warm fine-tune at 2e-4 on `WINDOW_GENS=3`,
+  `WARM_FROM=latest` (no gate, so "champion" and "latest" coincide). Window 10 is moot under
+  the fine-tune (W3 vs W1, plan 029) and is dropped from the gateless design.
 
 ### Deprioritised, with the reason
 

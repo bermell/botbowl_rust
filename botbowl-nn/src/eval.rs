@@ -243,6 +243,12 @@ impl NnEvaluator {
         self.forward_counted(spatial, global, h, w, true)
     }
 
+    /// Value-only forward on raw tensors — what `value_home_i64` issues,
+    /// i.e. the generator's whole traffic. Exposed for `examples/nn_bench`.
+    pub fn value_only_raw(&self, spatial: &[f32], global: &[f32], h: usize, w: usize) -> f32 {
+        self.forward_counted(spatial, global, h, w, false).1
+    }
+
     /// The counted dispatch point. `want_policy = false` lets the remote
     /// backend send back 4 bytes instead of 17 KB — which is the whole
     /// response under `nn-value`, the generator's evaluator.
