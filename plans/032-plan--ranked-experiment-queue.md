@@ -90,9 +90,10 @@ Written for someone who reads nothing else in this file. Numbers are points (W +
    Generation is bounded by the nn shards' engine work and RAM (2 parallel games per shard), not
    by the GPU or the Python.
 
-Open, in the order I'd run them: **#12** (from-scratch vs the loop's fine-tune, decides the
-gateless loop's train step — plan 030 §Decisions 2026-09-10); the loop's own gen08 landed at
-0.550 vs Q7 (promoted, on the nose); #10 budget
+**#12 closed 2026-09-10: q9 (from scratch, gen01-09) 0.471 vs the loop's gen09 — the
+fine-tune stays**, `WARM_FROM=latest`, gateless from gen10 (plan 030). The lineage since Q7:
+gen08 0.550 vs Q7, gen09 0.560 vs gen08, both promoted. Open, in the order I'd run them:
+the gateless relaunch itself (gen10+, anchor curve vs gen03); #10 budget
 diagnostic; fan-dependent τ, scored offline first with `scripts/audit_q_target.py`; a value-target
 variant (outcome blended with root Q) as the next label experiment, since the label is where the
 gain has been; #6 hedge ablation only at ~600 games.
@@ -851,6 +852,27 @@ gain has been; #6 hedge ablation only at ~600 games.
   prepare*, one boundary earlier than the script assumes, so #12 sat waiting on an idle
   machine for ~5 h. Fix: relaunch the loop for gen09, re-place STOP once gen09's eval starts
   (`scripts/stop_after.sh`), so it exits after the verdict.
+
+- **Result (2026-09-10 19:01, 167 min): q9 = 0.471 ± 0.040 vs gen09** (W43 D27 L50, TD
+  445:473; Home 25-23, Away 18-27; paired 0.471 ± 0.039 over 60 pairs, 33% split 1-1,
+  z = −0.7). **Pre-registered branch q9 < 0.50: the fine-tune stays.** The from-scratch
+  retrain on the whole corpus does not beat the two-step warm lineage Q7 → gen08 → gen09 on
+  the same data; |Δ| = 0.03 is inside the seed floor (#5), so the honest reading is "tie to
+  slight loss", not a clear loss. Same-day context: the loop's own gen09 (warm from gen08 at
+  2e-4, restored at **step 2500, epoch 0**) scored **0.560 vs gen08** and was promoted; gen08
+  had scored 0.550 vs Q7. Two fine-tunes since Q7, both a hair above even against their
+  parent — the lineage is at least holding, and a from-scratch reset buys nothing over it.
+  Caveat, recorded not argued: q9 restored at its **final** step (110k of 110k, epoch 3,
+  val 1.6461 still falling — 0.3662 value at 110k vs 0.3711 at 105k), so the Q7 recipe is
+  under-budgeted at 1.05 M rows where it had converged at 75k on 820k. A 200k-step q9 might
+  reach parity; at ~2 GPU-h + 3 h of games it is not worth chasing while the lineage holds.
+  **Queue it only if the anchor curve plateaus** (plan 030 trigger) — as the first thing to try
+  then, since a converged from-scratch net is the natural "reset" for a drifted lineage.
+  Val numbers are not comparable across the arms (q9 validates on gen09 4+7 alone, the loop
+  on the 3-gen window's 4+7).
+- **Decision for plan 030.** Train step stays the warm fine-tune at 2e-4 on `WINDOW_GENS=3`,
+  `WARM_FROM=latest` (no gate, so "champion" and "latest" coincide). Window 10 is moot under
+  the fine-tune (W3 vs W1, plan 029) and is dropped from the gateless design.
 
 ### Deprioritised, with the reason
 

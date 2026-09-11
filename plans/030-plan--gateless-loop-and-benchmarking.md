@@ -168,6 +168,15 @@ sizing above, this section wins.
 
 ### 2. Train step: from scratch on the whole window each generation, pending plan 032 #12
 
+> **Settled 2026-09-10 19:01 — the fine-tune stays.** Plan 032 #12: q9 (Q7's recipe on
+> gen01-09) scored **0.471 ± 0.040 vs the loop's warm gen09**, the pre-registered "< 0.50"
+> branch. Meanwhile the lineage held on its own: gen08 0.550 vs Q7, gen09 0.560 vs gen08.
+> So the gateless loop keeps `WARM_START=on`, `WARM_LR=2e-4`, **`WARM_FROM=latest`** (with
+> no gate the two coincide), and **§3's window-10 is dropped — `WINDOW_GENS` stays 3**, since
+> the window barely matters under the fine-tune. A converged from-scratch retrain (q9 was
+> still improving at its last step) is kept in reserve as the *reset* to try first if the
+> anchor curve trips the plateau trigger. The argument below is left as written for the record.
+
 - **Why not the warm start.** At `WARM_LR` 2e-4 the fine-tune does not convert data into
   strength: plan 029 stage 3 measured W3 vs W1 = 0.487 while the from-scratch pair D3 vs D1
   gave 0.600; every fine-tune since gen04 restored at epoch 0-1 and gen08 (warm from Q7)
@@ -193,6 +202,9 @@ sizing above, this section wins.
 
 ### 3. Window: all generations, capped at ten, and only meaningful under from-scratch
 
+> **Moot after #12 (2026-09-10): the fine-tune stays, so `WINDOW_GENS=3` stays.** Revisit
+> only together with a from-scratch reset.
+
 - Under the fine-tune the window barely matters (W3 vs W1 above). Under from-scratch plan
   029 measured ~+0.06 per doubling of data (about one seed floor per doubling, plan 032 #5 —
   real in aggregate, not per step), and Q7 on seven generations of mostly weak-net data
@@ -215,5 +227,12 @@ sizing above, this section wins.
    exits after the verdict and #12 plays its match (~9 h total).
 2. Meanwhile implement §1-3 in `train_loop.sh` under a scratch `RUN_DIR`/`MODEL_DIR` dry run
    (the gate machinery — `eval_summary.py --gate`, verdict files — stays in the tree, unused).
-3. Relaunch gateless from gen10 with the train step #12 picks. gen10 is the first gateless
-   generation; its anchor score plus the backfilled gen08/gen09 numbers start the curve.
+3. Relaunch gateless from gen10 with the train step #12 picks (**decided: fine-tune,
+   `WARM_FROM=latest`**). gen10 is the first gateless generation; its anchor score plus the
+   backfilled gen08/gen09 numbers start the curve. Also raise `EVAL_PARALLEL_GAMES` 4 → 6:
+   measured 2026-09-10 during gen09's eval, 4 streams left ~58% of 8 cores idle and the
+   sidecar at mean batch 1.09 (latency-bound, ~380 µs/forward); the plan-032 matches already
+   run x6.
+
+Timeline: #12 unblocked 10:51, gen09 promoted 16:12 (0.560 vs gen08), #12 match done 19:01.
+The machine has been idle since; the gateless implementation is the next item.
