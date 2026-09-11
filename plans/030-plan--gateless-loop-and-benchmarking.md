@@ -2,7 +2,10 @@
 
 **Status:** Agreed 2026-09-06; **design revised and settled 2026-09-10** (see "Decisions
 2026-09-10" at the end — that section supersedes the benchmark sizing below where they
-differ). Implementation in `train_loop.sh` is next; the loop relaunches gateless from gen10.
+differ). **Implemented 2026-09-11 (`628e003`)**: `train_loop.sh` is gateless, `scripts/anchor_curve.py`
+draws the curve, `scripts/anchor_backfill.sh` scored gen08/gen09 vs the anchor; the loop relaunches
+gateless from gen10 as soon as the backfill finishes. Read the curve with
+`python3 scripts/anchor_curve.py`.
 
 ## Decision
 
