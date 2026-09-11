@@ -6,11 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/` library (folded in via history-preserving subtree merge).
 
-- Botbowl workspace (`Cargo.toml` at repo root) — Blood Bowl 2020 engine + tooling. Four member crates sharing one `Cargo.lock` and one `target/`:
+- Botbowl workspace (`Cargo.toml` at repo root) — Blood Bowl 2020 engine + tooling. Member crates sharing one `Cargo.lock` and one `target/` (`botbowl-data` and `botbowl-nn` are members too; both carry their own `CLAUDE.md`):
   - `botbowl-engine/` — pure rules library, procedure-stack state machine. No dependency on the other crates. Board/team size is build-time configurable via env vars (see its CLAUDE.md).
   - `botbowl-curriculum/` — training scenarios (`Lecture` trait, `run_trials`). Depends on `botbowl-engine`.
   - `botbowl-mcts/` — `BloodBowlDynamics` + `MctsBot`, the adapter onto `recon_mcts`. Depends on `botbowl-engine` + `recon_mcts`.
   - `botbowl-ui/` — `ratatui` terminal frontend with `live` / `replay` / `snapshot` / `curriculum` subcommands. Depends on the other three.
+  - `botbowl-web/{proto,server,client}/` — human-vs-bot play in a browser, with the bot's search shown next to the board (plan 034). `proto` is engine-free and compiles to wasm32; `server` owns the `GameState` and the bots; `client` is a Leptos CSR app built with `trunk`. Has its own `CLAUDE.md`.
 - `recon_mcts/` — generic **re**combining, **con**current MCTS library (safe std-only Rust). A **nested, separate Cargo workspace**, deliberately in the botbowl workspace's `exclude` list — don't merge it in (its `tests/nim/` member compiles with `--features test_internals` by default). Has its own `CLAUDE.md`. No dependency on the botbowl crates.
 
 ## Plans
@@ -29,6 +30,15 @@ cargo test --workspace                # all tests, fast (bot trial benchmarks ar
 cargo test --workspace -- --ignored   # bot benchmark suite only (slow, ~2 min)
 cargo test -p botbowl-engine <name>   # one crate / single test by substring
 cargo run -p botbowl-ui -- live      # also: snapshot --seed 0 --step 0 | curriculum "Score TD" --difficulty easy --bot mcts | replay <file>
+```
+
+Web play (one binary plays any board up to the compiled capacity — build `--release`, a debug MCTS
+search reads as a hung UI):
+
+```sh
+cd botbowl-web/client && trunk build --release      # needs: cargo install trunk; rustup target add wasm32-unknown-unknown
+cargo run --release -p botbowl-web-server -- \
+    --assets-dir /Users/mattias/repos/blood/botbowl/botbowl/web/static/img   # → http://127.0.0.1:8080
 ```
 
 recon_mcts (cd into `recon_mcts/` first): `cargo test`, and `cargo fmt` is **required** after edits (enforced by `.cursor/rules`). Demo bins live in `tests/nim/` (see its CLAUDE.md).

@@ -1,8 +1,18 @@
 # Web play UI: human vs bot in the browser, with search-tree overlays
 
-**Status:** Agreed 2026-09-10 (decisions below settled in discussion), not yet implemented. No code written. POC scope only: local machine,
-one player, never exposed to the internet. Supersedes the "easy for a human to play against an
-agent" line of `001-grand-plan.md` §1 (the terminal UI never grew an input path and won't).
+**Status:** **Phases 0-3 shipped 2026-09-11.** Playable end to end: a full game against any bot
+this workspace can build, on any board the binary's capacity allows, with dice, undo, and an
+inspector over the MCTS bot's search. Phase 4 (engine and search on wasm32) is untouched and stays
+a future idea — the design below is the record; the implementation log at the bottom is what
+actually happened, including three divergences from it. POC scope only: local machine, one player,
+never exposed to the internet. Supersedes the "easy for a human to play against an agent" line of
+`001-grand-plan.md` §1 (the terminal UI never grew an input path and won't).
+
+```sh
+cd botbowl-web/client && trunk build --release
+cargo run --release -p botbowl-web-server -- \
+    --assets-dir /Users/mattias/repos/blood/botbowl/botbowl/web/static/img
+```
 
 ## Goal
 
@@ -223,3 +233,96 @@ mostly in `recon_mcts`. Worth it only once the server-side loop is boring.
   removing the per-`get_action` env reads. Decide when phase 2 starts.
 - Whether `SearchReport` should also carry per-child NN value estimates (needs a forward per
   child; cheap on 14x7, maybe not on 26x15). Defer until the overlay exists.
+
+---
+
+## Implementation log (2026-09-11)
+
+### What shipped, against the phases as written
+
+**Phase 0.** `trunk 0.21` + `wasm32-unknown-unknown` + Leptos 0.8.20 CSR; the client compiles on
+*both* targets, so it stays a workspace member and `cargo test --workspace` is unaffected beyond
+compile time. Decision 9 verified by `botbowl-engine/tests/register_rolls_full_game.rs` — 40 whole
+games on 14x7 and 15 at the compiled capacity, every die supplied by the caller: **no engine
+assert fired**, so nothing had to be fixed. Decision 8 verified by
+`botbowl-nn/tests/capacity_parity.rs`: golden encoder bytes and action↔cell maps captured under a
+`BOARD_SIZE_W=14 BOARD_SIZE_H=7 BOARD_PLAYERS=4` build are byte-identical under the default
+26x15 build, and the `#[ignore]`d end-to-end check against `bbnet_14x7_gen0c` gives an identical
+value and all 47 identical priors under both capacities.
+
+**Phase 1.** `botbowl-web/{proto,server}` as designed. Exit criterion met and pinned:
+`tests/play_over_websocket.rs` plays whole games over the real socket on 14x7 *and* 26x15 from one
+binary, choosing only from what the `ViewState` describes, asserting every human prompt offered at
+least one action.
+
+**Phase 2.** `MctsConfig` landed in the fuller of the two forms left open (see below), plus
+`MctsBot::{last_search, explore, principal_variation}` and three read-only navigation methods added
+to `recon_mcts`. Exit criterion met: candidates on the pitch as a heatmap, a ranked list, and a
+clickable PV.
+
+**Phase 3.** `FixNextRoll` (pin ahead of the roll — the session never pauses on one), recording
+save, resume-from-recording in the lobby, NN value on the inspector's summary line, and
+"step into the PV" rendering a node's stored `GameState` on the pitch.
+
+**Phase 4.** Not started, as planned.
+
+### Divergences from the design
+
+1. **Manual setup is not possible, so the client does not offer it.** §client says "per-square
+   `SelectPosition` for manual placement". The engine's `Setup` procedure
+   (`kickoff_procs.rs`) offers **only** `SimpleAT::SetupLine` and then `EndSetup` — there is no
+   per-square placement action to expose. "Human controls every decision the engine surfaces"
+   still holds; manual setup is simply not one of them. Adding it is an engine feature, not a UI
+   one.
+2. **`MctsConfig` took the larger of the two options in "Still open".** Minimal (struct +
+   `from_env` default, builders untouched) would not have been enough: `BLOOD_MCTS_HORIZON`,
+   `_WORKERS` and `_MEMORY` were re-read from the environment inside *every* `get_action`, so they
+   **overrode** an explicit builder call. A lobby that says "4 workers" has to mean it. So
+   `run_search` now reads only `self.config`; `MctsConfig::from_env()` is still the default, so
+   every CLI path behaves exactly as before, and env vars are resolved once at construction
+   instead of per call.
+3. **`SearchReport` gained `search_id`, and Q is reported in one frame.** Neither was in the
+   design. The bot keeps exactly one tree, so an inspector opened on an earlier move cannot be
+   walked — without an id the server would happily answer about the wrong position. And signing
+   each node's Q by its *own* player (the obvious reading of "mover-centric") makes the inspector
+   flip sign at every ply: a root at `+0.27` whose best child reads `-0.27` looks like the bot
+   picked the worst move. Everything is in the searching agent's frame now.
+
+The "Still open" question about per-child NN value estimates is still open and still deferred: the
+overlay exists, nobody has wanted the number yet.
+
+### Bugs found and fixed on the way
+
+- **`view::derive` panicked mid-kickoff.** `Kickoff` sets
+  `BallState::InAir(aim + direction * len)` with `len` capped only at `max_scatter()`, which on a
+  narrow board puts the ball at a *negative* coordinate for a step or two. `Position` is `i8`, so
+  the view's unchecked `pos.y as usize` wrapped to ~2^64 and the multiply overflowed. The
+  websocket test never saw it (it only observes states where the *human* is asked to move), so the
+  guard is now `tests/derive_every_state.rs`, which derives a view at **every** engine pause of
+  whole random games and asserts a kick actually leaves the grid in the process.
+- **A panicking session was invisible.** The blocking thread died, the socket stayed open, and the
+  browser clicked into nothing. `ws.rs` now selects on the session handle and reports the crash.
+- **The principal variation opened on unvisited children.** Folding "never scored" in as
+  `q_home.unwrap_or(i64::MIN)` and then multiplying by the mover sign turned it into `+9.2e18` for
+  an `Away` node, so the PV walked straight into a `0v` child and stopped. Unscored children now
+  rank last explicitly.
+- **Stale wasm after a rebuild.** The dev server now sends `cache-control: no-cache`; without it
+  the browser kept serving the previous `index.html` and the page ran old code that looked exactly
+  like a logic bug.
+
+### A finding for the experiment queue, deliberately not fixed here
+
+On **every** board below the compiled default, the engine's own `SetupLine` formation fails the
+engine's own `is_setup_legal`: the clamped offsets reach the line-of-scrimmage *column* but at `y`
+values outside `los_y_range`, so the scrimmage count is **0** against a required 3. Measured at
+16x9/4, 18x11/6 and 22x11/8; legal at 28x17/11. Nothing in the engine enforces
+`is_setup_legal`, so it has never affected play — but it means a 14x7 drive opens with nobody on
+the line, and it is the formation every 14x7 model was trained against. Changing it invalidates
+the trained nets and every measured result in plan 032, so it belongs there (added to "Still
+open"), not in a UI commit. Pinned as a test:
+`botbowl-web/server/src/view.rs::the_auto_setup_formation_is_illegal_on_clamped_boards`.
+
+### Where the code lives
+
+`botbowl-web/CLAUDE.md` carries the architecture and the gotchas; it loads automatically when
+working in that tree.

@@ -30,9 +30,29 @@ Clones the root state, sets `DiceMode::RegisterRolls`, force-disables logging an
 
 `MctsBot.memory_mode` is always `MemoryMode::StoreState` in production. **GOTCHA:** `recon_mcts`'s `HashOnly` marker is *broken* for Blood Bowl — a `GameState` is large enough that hash collisions are inevitable, and `HashOnly` merges any two colliding states into one DAG node, producing illegal actions mid-search, corrupted backprop, and drop-time panics. The variant has been removed from `MemoryMode`; only `StoreState` (default, structural O(1) equality) and `GetState` (safe replay-based diagnostic) remain. Never reach for `recon_mcts::HashOnly` when wiring a Blood Bowl tree (plan 013).
 
-## Env knobs for A/B and debugging
+## MctsConfig — one struct, resolved once at construction
 
-Read once per `get_action`: `BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_BACKUP=mean`, `BLOOD_MCTS_STATS=1`, `BLOOD_MCTS_DEBUG_ROOT=1` (dump top-10 root children by visits/Q after each search — first thing to reach for when the bot plays nonsense; all-zero Q means backprop is broken).
+Every knob that shapes a search lives in `MctsConfig` (`dynamics.rs`): `workers`, `memory_mode`, `tree_reuse`, `virtual_loss`, `puct`, `tie_break`, `backup`, `fpu_reduction`, `horizon_turns`, `horizon`, `stats`, `leaf_stats`, `debug_root`. `MctsBot::new` uses `MctsConfig::from_env()`, so every CLI path keeps its `BLOOD_MCTS_*` A/B knobs; `MctsBot::with_budget_and_config(budget, MctsConfig::new())` builds a bot that ignores the environment entirely, which is what lets one process (the web server, plan 034) run several differently-tuned bots.
+
+**Env vars are read once, at `::new`** — setting one between building a bot and calling it no longer does anything. Before plan 034, `BLOOD_MCTS_HORIZON`, `_WORKERS` and `_MEMORY` were re-read inside *every* `get_action` and therefore **overrode** an explicit `with_workers(...)`; the builders now actually win.
+
+`BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_HORIZON_TURNS=N`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_PUCT_MODE`/`_C`/`_RANGE_FLOOR`, `BLOOD_MCTS_TIE_BREAK`, `BLOOD_MCTS_BACKUP=mean`, `BLOOD_MCTS_FPU_REDUCTION=k`, `BLOOD_MCTS_STATS=1`, `BLOOD_MCTS_LEAF_STATS=1`, `BLOOD_MCTS_DEBUG_ROOT=1` (dump top-10 root children by visits/Q after each search — first thing to reach for when the bot plays nonsense; all-zero Q means backprop is broken).
+
+## Reading a finished search (`report.rs`)
+
+`MctsBot` keeps the tree it just searched (it already did, for reuse) and exposes it read-only:
+`last_search() -> Option<&SearchSummary>` (root + children + timing + evaluator value),
+`principal_variation(depth)`, and `explore(&[BbAction], with_state)` which walks **one level at a
+time** into the cached DAG via `recon_mcts`'s `Node::get_children_info` / `Node::get_child` /
+`Tree::get_root_node`. Inspection is inert — no descent, no visit bump.
+
+- **Q is Home-centric on the wire and agent-centric in `q_agent`.** One frame for a whole
+  read-out: signing each node by its *own* player makes a PV flip sign at every ply, so a root at
+  `+0.27` whose best child reads `-0.27` looks like the bot picked the worst move.
+- **There is exactly one tree — the most recent search's.** Every `get_action` re-roots or rebuilds
+  it, so anything holding a path from an earlier search must notice (plan 034's `search_id`).
+- Visits are "descents through this node", cumulative across a reused tree and frozen once a
+  subtree is solved: a search-effort measure, not a move-quality one.
 
 ## Invariant (also stated at repo root)
 

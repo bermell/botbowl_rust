@@ -131,7 +131,8 @@ fn tackle_zones(state: &GameState, squares: &mut [pv::SquareView]) {
             if dims.is_out(adj) {
                 continue;
             }
-            let sq = &mut squares[index_of(dims, adj)];
+            let Some(index) = index_of(dims, adj) else { continue };
+            let sq = &mut squares[index];
             match p.stats.team {
                 em::TeamType::Home => sq.tz_home += 1,
                 em::TeamType::Away => sq.tz_away += 1,
@@ -140,8 +141,21 @@ fn tackle_zones(state: &GameState, squares: &mut [pv::SquareView]) {
     }
 }
 
-fn index_of(dims: em::BoardDims, pos: Position) -> usize {
-    pos.y as usize * dims.width as usize + pos.x as usize
+/// Row-major index of a position in the square grid, or `None` when the
+/// position is not on the grid at all.
+///
+/// This has to be fallible: the engine legitimately puts the ball *outside*
+/// the array while it is in flight — `Kickoff` sets
+/// `BallState::InAir(aim + direction * len)` with `len` capped only at
+/// `max_scatter()`, which on a narrow board reaches well past the border ring
+/// into negative coordinates. `Position` is `i8`, so an unchecked
+/// `pos.y as usize` wrapped to ~2^64 and the multiply overflowed, panicking
+/// the session thread mid-kickoff.
+fn index_of(dims: em::BoardDims, pos: Position) -> Option<usize> {
+    if pos.x < 0 || pos.y < 0 || pos.x >= dims.width || pos.y >= dims.height {
+        return None;
+    }
+    Some(pos.y as usize * dims.width as usize + pos.x as usize)
 }
 
 /// Annotate every square offered by the path buffer with its success
@@ -158,7 +172,10 @@ fn annotate_paths(state: &GameState, squares: &mut [pv::SquareView]) {
             let Some(node) = paths.get_pos(pos) else {
                 continue;
             };
-            let sq = &mut squares[index_of(dims, pos)];
+            // `paths` is capacity-sized, so this index is in range by
+            // construction — but go through the same checked path anyway.
+            let Some(index) = index_of(dims, pos) else { continue };
+            let sq = &mut squares[index];
             sq.move_prob = Some(node.prob);
             sq.block_dice = node.get_block_dice().map(mirror::num_block_dices_to_proto);
 
@@ -251,12 +268,14 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
     };
 
     for p in state.get_players_on_pitch() {
-        let idx = index_of(dims, p.position);
-        squares[idx].player = Some(player_view(state, p, carrier == Some(p.id)));
+        if let Some(idx) = index_of(dims, p.position) {
+            squares[idx].player = Some(player_view(state, p, carrier == Some(p.id)));
+        }
     }
 
-    if let Some(pos) = ball_pos {
-        let idx = index_of(dims, pos);
+    // A ball off the grid is one still in flight past the touchline; it is
+    // simply not drawn until the throw-in brings it back.
+    if let Some(idx) = ball_pos.and_then(|pos| index_of(dims, pos)) {
         squares[idx].ball = Some(match state.ball {
             BallState::Carried(_) => pv::BallView::Carried,
             BallState::InAir(_) => pv::BallView::InAir,
@@ -279,8 +298,11 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         for action in state.get_all_actions() {
             match action {
                 em::Action::Positional(at, pos) => {
-                    let sq = &mut squares[index_of(dims, pos)];
-                    sq.actions.push(mirror::pos_at_to_proto(at));
+                    // An action outside the runtime board would be an engine
+                    // bug, but a view must not panic on one.
+                    if let Some(index) = index_of(dims, pos) {
+                        squares[index].actions.push(mirror::pos_at_to_proto(at));
+                    }
                 }
                 em::Action::Simple(at) => {
                     let at = mirror::simple_at_to_proto(at);

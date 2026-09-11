@@ -42,7 +42,7 @@ pub fn stats_to_proto(stats: &NodeStats) -> ps::NodeStats {
     ps::NodeStats {
         visits: stats.visits,
         q_home: stats.q_home,
-        q_display: stats.q_mover,
+        q_display: stats.q_agent,
         solved: stats.solved,
         terminal: stats.terminal,
         player: player_to_proto(stats.player),
@@ -97,7 +97,7 @@ pub fn summary_to_proto(search_id: u64, summary: &SearchSummary, pv: &[Edge], so
         chosen: mirror::action_to_proto(summary.chosen),
         root_visits: summary.root.visits,
         root_q_home: summary.root.q_home,
-        root_q_display: summary.root.q_mover,
+        root_q_display: summary.root.q_agent,
         children: summary.children.iter().map(|c| child_to_proto(c, denom)).collect(),
         pv: pv_steps,
         elapsed_ms: summary.elapsed.as_millis() as u64,

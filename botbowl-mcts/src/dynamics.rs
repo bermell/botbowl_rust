@@ -2245,6 +2245,9 @@ impl MctsBot {
     /// Deliberately one level at a time: the DAG is far too large to
     /// serialise, so a caller expands on demand.
     pub fn explore(&self, path: &[BbAction], with_state: bool) -> Option<NodeView> {
+        // Every Q in the read-out is in the last search's agent frame; there
+        // is no cached tree without a last search, so this is always known.
+        let agent = self.last_search.as_ref()?.agent;
         macro_rules! walk {
             ($tree:expr) => {{
                 let mut node = $tree.get_root_node();
@@ -2258,12 +2261,12 @@ impl MctsBot {
                     .into_iter()
                     .map(|(action, child)| Edge {
                         action,
-                        stats: Self::node_stats(&child),
+                        stats: Self::node_stats(&child, agent),
                     })
                     .collect();
                 children.sort_by_key(|e| std::cmp::Reverse(e.stats.visits));
                 Some(NodeView {
-                    stats: Self::node_stats(&info),
+                    stats: Self::node_stats(&info, agent),
                     children,
                     state: if with_state { info.state } else { None },
                 })
@@ -2289,20 +2292,8 @@ impl MctsBot {
             let Some(node) = self.explore(&path, false) else {
                 break;
             };
-            let best = node.children.into_iter().max_by(|a, b| {
-                let key = |e: &Edge| {
-                    (
-                        // Chance edges rank by probability; player edges by the
-                        // child's Q in the *parent's* frame.
-                        e.prob().unwrap_or(0.0),
-                        report::mover_sign(node.stats.player) * e.stats.q_home.unwrap_or(i64::MIN) as f32,
-                        e.stats.visits as f32,
-                    )
-                };
-                let (ap, aq, av) = key(a);
-                let (bp, bq, bv) = key(b);
-                ap.total_cmp(&bp).then(aq.total_cmp(&bq)).then(av.total_cmp(&bv))
-            });
+            let player = node.stats.player;
+            let best = node.children.into_iter().max_by(|a, b| Self::pv_better(a, b, player));
             match best {
                 Some(edge) => {
                     path.push(edge.action.clone());
@@ -2314,7 +2305,31 @@ impl MctsBot {
         pv
     }
 
-    fn node_stats(info: &BbNodeInfo) -> NodeStats {
+    /// Which of two sibling edges the principal variation should follow, from
+    /// the perspective of `player` — the node they hang off.
+    ///
+    /// **Unscored children rank last.** An earlier version folded them in as
+    /// `q_home.unwrap_or(i64::MIN)` and then multiplied by the mover sign,
+    /// which turned "never scored" into `+9.2e18` for an `Away` node — so the
+    /// PV walked straight into whichever child had never been visited and
+    /// stopped there, reporting a two-ply line of `0v` nodes.
+    fn pv_better(a: &Edge, b: &Edge, player: BbPlayer) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        // A chance node's "best" line is its most likely outcome, not its most
+        // valuable one — the dice do not choose.
+        if let (Some(pa), Some(pb)) = (a.prob(), b.prob()) {
+            return pa.total_cmp(&pb).then(a.stats.visits.cmp(&b.stats.visits));
+        }
+        let key = |e: &Edge| e.stats.q_home.map(|q| report::mover_sign(player) * q as f32);
+        match (key(a), key(b)) {
+            (None, None) => a.stats.visits.cmp(&b.stats.visits),
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (Some(x), Some(y)) => x.total_cmp(&y).then(a.stats.visits.cmp(&b.stats.visits)),
+        }
+    }
+
+    fn node_stats(info: &BbNodeInfo, agent: TeamType) -> NodeStats {
         let (visits, q_home) = info
             .score
             .as_ref()
@@ -2323,7 +2338,7 @@ impl MctsBot {
         NodeStats {
             visits,
             q_home,
-            q_mover: report::q_mover(q_home, info.player),
+            q_agent: report::q_agent(q_home, agent),
             solved: info.solved,
             terminal: matches!(info.n_children, Status::Terminal),
             player: info.player,
@@ -2347,7 +2362,7 @@ impl MctsBot {
             .iter()
             .map(|(action, info)| Edge {
                 action: action.clone(),
-                stats: Self::node_stats(info),
+                stats: Self::node_stats(info, result.agent_team),
             })
             .collect();
         children.sort_by_key(|e| std::cmp::Reverse(e.stats.visits));
@@ -2369,7 +2384,7 @@ impl MctsBot {
         SearchSummary {
             agent: result.agent_team,
             chosen,
-            root: Self::node_stats(&result.root_info),
+            root: Self::node_stats(&result.root_info, result.agent_team),
             children,
             elapsed: result.elapsed,
             budget: match self.budget {

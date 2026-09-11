@@ -22,11 +22,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::http::{header, HeaderValue};
 use axum::routing::get;
 use axum::Router;
 use botbowl_engine::core::model::{HEIGHT, TEAM_SIZE, WIDTH};
 use botbowl_web_proto::msg::BoardSpec;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 pub mod bots;
 pub mod dice;
@@ -95,7 +97,16 @@ pub fn router(app: Arc<AppState>, assets_dir: Option<&Path>, dist_dir: Option<&P
         let index = dist.join("index.html");
         router = router.fallback_service(ServeDir::new(dist).fallback(ServeFile::new(index)));
     }
-    router.with_state(app)
+    // `no-cache` (revalidate, don't blindly reuse) on everything. Without it
+    // a browser keeps serving the previous `index.html` after a
+    // `trunk build`, so the page silently runs stale wasm — which costs an
+    // hour the first time it happens and looks exactly like a code bug.
+    router
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
+        .with_state(app)
 }
 
 #[cfg(test)]

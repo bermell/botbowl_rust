@@ -31,7 +31,7 @@ async fn serve(socket: WebSocket, app: Arc<AppState>) {
     let (to_ws, mut from_session) = mpsc::channel::<ServerMsg>(OUT_BUFFER);
     let errors = to_ws.clone();
 
-    let session = tokio::task::spawn_blocking(move || session::run(app, from_ws, to_ws));
+    let mut session = tokio::task::spawn_blocking(move || session::run(app, from_ws, to_ws));
 
     let pump = tokio::spawn(async move {
         while let Some(msg) = from_session.recv().await {
@@ -50,25 +50,47 @@ async fn serve(socket: WebSocket, app: Arc<AppState>) {
         }
     });
 
-    while let Some(frame) = stream.next().await {
-        let Ok(frame) = frame else { break };
-        match frame {
-            Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
-                Ok(msg) => {
-                    if to_session.send(msg).await.is_err() {
-                        break;
-                    }
+    loop {
+        tokio::select! {
+            frame = stream.next() => {
+                let Some(Ok(frame)) = frame else { break };
+                match frame {
+                    Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
+                        Ok(msg) => {
+                            if to_session.send(msg).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = errors
+                                .send(ServerMsg::Error(format!("could not parse client message: {e}")))
+                                .await;
+                        }
+                    },
+                    Message::Close(_) => break,
+                    // Ping/Pong are handled by axum; binary frames are not
+                    // part of the protocol.
+                    _ => {}
                 }
-                Err(e) => {
+            }
+            // The session ending on its own means it panicked — the engine
+            // and the bots are full of `assert!`s and `unwrap`s, and without
+            // this arm the socket would simply go quiet forever while the
+            // browser kept sending clicks into the void. Say so instead.
+            outcome = &mut session => {
+                if outcome.is_err() {
                     let _ = errors
-                        .send(ServerMsg::Error(format!("could not parse client message: {e}")))
+                        .send(ServerMsg::Error(
+                            "the game session crashed — see the server's stderr for the panic. \
+                             Start a new game to continue."
+                                .into(),
+                        ))
                         .await;
+                    // Give the pump a moment to deliver that before we cut it.
+                    tokio::task::yield_now().await;
                 }
-            },
-            Message::Close(_) => break,
-            // Ping/Pong are handled by axum; binary frames are not part of
-            // the protocol.
-            _ => {}
+                break;
+            }
         }
     }
 
@@ -76,6 +98,5 @@ async fn serve(socket: WebSocket, app: Arc<AppState>) {
     // if a search is in flight (a documented POC limitation — there is no
     // cancel).
     drop(to_session);
-    let _ = session.await;
     pump.abort();
 }

@@ -7,9 +7,14 @@
 //!
 //! **Q is Home-centric** on the wire, exactly as `recon_mcts` stores it
 //! (plan 006), on `leaf_score`'s scale where a touchdown is ±1000. Each
-//! struct also carries `q_mover`, the same number from the perspective of the
-//! node's own player and rescaled to `[-1, 1]`, because that is the only form
-//! that reads correctly next to a board.
+//! struct also carries `q_agent`: the same number in **the searching agent's**
+//! frame, rescaled to `[-1, 1]`.
+//!
+//! One frame for the whole read-out, deliberately. Signing each node by its
+//! *own* player instead reads as a sign flip at every ply — a root at `+0.27`
+//! whose best child says `-0.27` looks like the bot picked the worst move,
+//! when both numbers say the same thing about the same position. The node's
+//! own player is still reported, in [`NodeStats::player`].
 //!
 //! Visit counts are "descents through this node", cumulative across reused
 //! trees within a turn, and `recon_mcts` freezes them once a subtree is
@@ -34,9 +39,9 @@ pub struct NodeStats {
     /// Home-centric aggregated score. `None` when the node was never scored —
     /// an expanded chance node is deliberately unscored (plan 018).
     pub q_home: Option<i64>,
-    /// `q_home` from this node's own player's perspective, rescaled so a
-    /// touchdown is ±1. `Chance` nodes keep the Home frame.
-    pub q_mover: Option<f32>,
+    /// `q_home` in the searching agent's frame, rescaled so a touchdown is
+    /// ±1. The same frame for every node of one search.
+    pub q_agent: Option<f32>,
     /// `recon_mcts` has proven this subtree out.
     pub solved: bool,
     /// No children: terminal, or past the search horizon.
@@ -108,7 +113,8 @@ pub struct NodeView {
     pub state: Option<GameState>,
 }
 
-/// Sign of the mover's perspective relative to Home's.
+/// Sign of a player's perspective relative to Home's. `Chance` nodes have no
+/// perspective of their own and keep the Home frame.
 pub(crate) fn mover_sign(player: BbPlayer) -> f32 {
     match player {
         BbPlayer::Away => -1.0,
@@ -116,7 +122,11 @@ pub(crate) fn mover_sign(player: BbPlayer) -> f32 {
     }
 }
 
-/// `q_home` → the node player's frame, rescaled to `[-1, 1]`.
-pub(crate) fn q_mover(q_home: Option<i64>, player: BbPlayer) -> Option<f32> {
-    q_home.map(|q| mover_sign(player) * (q as f32) / Q_SCALE)
+/// `q_home` → the searching agent's frame, rescaled to `[-1, 1]`.
+pub(crate) fn q_agent(q_home: Option<i64>, agent: TeamType) -> Option<f32> {
+    let sign = match agent {
+        TeamType::Home => 1.0,
+        TeamType::Away => -1.0,
+    };
+    q_home.map(|q| sign * (q as f32) / Q_SCALE)
 }

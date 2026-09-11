@@ -159,6 +159,30 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                         assert!(child.prior.is_some(), "a player edge carries its PUCT prior");
                     }
                 }
+
+                // Every Q in one report must be in **one** frame — the
+                // searching agent's — or the inspector reads as a sign flip
+                // at every ply and the bot looks like it picked the worst
+                // move. Away searched here, so `q_display` is `-q_home/1000`
+                // at the root, at every child, and at every PV step alike.
+                let expected = |q_home: Option<i64>| q_home.map(|q| -(q as f32) / 1000.0);
+                assert_eq!(report.root_q_display, expected(report.root_q_home));
+                for child in &report.children {
+                    assert_eq!(
+                        child.stats.q_display,
+                        expected(child.stats.q_home),
+                        "child {:?} is in a different frame from the root",
+                        child.edge
+                    );
+                }
+                for step in &report.pv {
+                    assert_eq!(
+                        step.stats.q_display,
+                        expected(step.stats.q_home),
+                        "PV step {:?} is in a different frame from the root",
+                        step.edge
+                    );
+                }
                 reports.push(report);
             }
             ServerMsg::View(view) => {
@@ -184,6 +208,21 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
     let last = reports.last().unwrap();
     assert!(!last.pv.is_empty(), "a searched tree has a principal variation");
     assert_eq!(last.pv[0].path.len(), 1, "the first PV step is one edge from the root");
+    // The PV must follow the search, not wander into a child that was never
+    // visited. (It used to: unscored children sorted *first* for an Away
+    // agent, so the line was two plies of `0 visits`.)
+    if last.children.iter().any(|c| c.stats.visits > 0) {
+        assert!(
+            last.pv[0].stats.visits > 0,
+            "the PV opened on an unvisited child: {:?}",
+            last.pv[0]
+        );
+        assert!(
+            last.pv[0].stats.q_home.is_some(),
+            "the PV opened on an unscored child: {:?}",
+            last.pv[0]
+        );
+    }
 
     for step in &last.pv {
         send(

@@ -2,8 +2,10 @@
 //!
 //! Q values are the engine's raw `leaf_score` scale (a touchdown is ±1000) and
 //! **Home-centric end-to-end**, exactly as `recon_mcts` stores them. The
-//! server also ships a mover-centric `q_display` in `[-1, 1]` so the client
-//! never has to know that convention.
+//! server also ships `q_display`: the same number in the **searching agent's**
+//! frame and rescaled to `[-1, 1]`, so the client never has to know that
+//! convention, and so the whole read-out reads in one frame instead of
+//! flipping sign at every ply.
 
 use serde::{Deserialize, Serialize};
 
@@ -50,8 +52,8 @@ pub struct NodeStats {
     /// Home-centric aggregated score, `None` when the node was never scored
     /// (an expanded chance node is deliberately unscored).
     pub q_home: Option<i64>,
-    /// `q_home` from the searching agent's perspective, rescaled to `[-1, 1]`
-    /// (a touchdown is ±1).
+    /// `q_home` in the searching agent's frame, rescaled to `[-1, 1]` (a
+    /// touchdown is ±1). Positive is good for the bot, at every depth.
     pub q_display: Option<f32>,
     /// `recon_mcts` has proven this subtree out.
     pub solved: bool,

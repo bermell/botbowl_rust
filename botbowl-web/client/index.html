@@ -4,6 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Blood Bowl — web play</title>
+    <!-- `data-wasm-opt="0"`: this is a localhost-only POC, so the ~1.5 MB
+         unoptimised release wasm is fine, and skipping wasm-opt keeps
+         `trunk build` from having to fetch another binary. -->
     <link data-trunk rel="rust" data-wasm-opt="0" />
     <link data-trunk rel="css" href="style.css" />
   </head>
