@@ -19,6 +19,13 @@ cargo run --release -p botbowl-web-server -- \
 **Build the server `--release` for real play.** A debug MCTS search is one to two orders of
 magnitude slower, which reads as a hung UI rather than a slow one.
 
+`--dist-dir`, `--models-dir` and `--recordings-dir` default to paths resolved from the server
+crate's own `CARGO_MANIFEST_DIR`, **not** the working directory, so the two commands above work
+from anywhere — including from inside `botbowl-web/client`, which is where you just ran `trunk`.
+They used to be cwd-relative, and starting the server from the client directory then served a bare
+404 with `0 model(s)` and no hint why. A missing client build is now a hard error naming the path
+and the command to fix it, not a warning.
+
 ## The one rule: the client is a renderer
 
 `proto` has **no engine dependency** and the client has no game logic — no rules, no geometry, no

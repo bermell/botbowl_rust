@@ -41,6 +41,9 @@ cargo run --release -p botbowl-web-server -- \
     --assets-dir /Users/mattias/repos/blood/botbowl/botbowl/web/static/img   # → http://127.0.0.1:8080
 ```
 
+Both commands work from any directory — the server's `--dist-dir`/`--models-dir` defaults are
+resolved from its own crate path, not the cwd.
+
 recon_mcts (cd into `recon_mcts/` first): `cargo test`, and `cargo fmt` is **required** after edits (enforced by `.cursor/rules`). Demo bins live in `tests/nim/` (see its CLAUDE.md).
 
 ## Git workflow
