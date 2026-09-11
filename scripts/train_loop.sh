@@ -191,9 +191,13 @@ PARALLEL_GAMES="${PARALLEL_GAMES:-2}"
 # same tree count the generate phase carries across all its shards.
 # Was 4; measured during gen09's eval (2026-09-10) at 4 streams: ~58% of the
 # 8 cores idle, the sidecar at mean batch 1.09 (latency-bound, ~380 us per
-# single-sample forward). 6 is what the plan-032 matches ran at; the 6 extra
-# trees fit (eval held 2.8 GB at 4 streams against 11 GB available).
-EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-6}"
+# single-sample forward). Re-measured 2026-09-11 at 6 streams (anchor
+# backfill): still 37% idle, each search thread ~70% busy (the rest is the
+# sidecar round trip), server 0.7 core, GPU ~70% at mean batch 1.16 and
+# 2773 samples/s — 1.46x the x4 rate for 1.5x the streams, i.e. not yet
+# GPU-bound. 8 streams is 16 trees at ~250 MB each; eval held 3.0 GB at 6
+# against 10.7 GB available, so 8 fits with room.
+EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-8}"
 NN_SERVER_RESTARTS="${NN_SERVER_RESTARTS:-3}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
                                             # (old corpora used 8e5.. and 2e6..)
