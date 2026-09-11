@@ -8,10 +8,14 @@
 #      $POLICY_TARGET, completed-Q by default since plan 032 #7)
 #   -> train (warm-started from the previous net's .pt, best-val restore on
 #      $SELECT_ON, ONNX export)
-#   -> eval report card (fixed rungs + vs current champion)
-#   -> promotion gate: points (W + D/2)/N >= 0.55 vs champion => new champion
-#   On a failed gate the champion stays the generator and the loop continues
-#   with fresh seeds; the rejected net + report stay on disk.
+#   -> the new net becomes the generator unconditionally (gateless since
+#      plan 030, 2026-09-11 — AlphaZero's arrangement; the gate never changed
+#      a decision in nine generations and cost ~30% of the cycle)
+#   -> benchmark: $ANCHOR_GAMES paired games vs a *frozen* anchor net plus the
+#      $EVAL_RUNGS fixed rung(s). A single score is a point on a curve
+#      (SE ~0.07 at 40 games), the 3-gen rolling mean is the number to read
+#      (scripts/anchor_curve.py); REGRESSION/PLATEAU flags are advisory and
+#      the operator rolls back by hand — every net stays on disk.
 #
 # On a host with no champion yet (models/ is gitignored, so a fresh clone has
 # none), a one-off gen-0 bootstrap runs first: a heuristic-only corpus, prepared
@@ -59,20 +63,22 @@ cd "$REPO"
 export BOARD_SIZE_W=14 BOARD_SIZE_H=7 BOARD_PLAYERS=4
 
 # ---- knobs (env-overridable) ------------------------------------------------
-MAX_GENS="${MAX_GENS:-10}"
+MAX_GENS="${MAX_GENS:-30}"
 GAMES_PER_SHARD="${GAMES_PER_SHARD:-600}"   # 8 shards -> 4800 games/generation
 MCTS_ITERS="${MCTS_ITERS:-1000}"
 EVAL_GAMES="${EVAL_GAMES:-30}"              # per fixed ladder rung, paired Home/Away
+# Fixed rungs kept in the report card. `random` read 1.000 in every one of
+# nine generations and `scripted` sits at 0.87-0.95 where 30 games is noise;
+# only mcts-heuristic still moves (0.85 -> 1.00 over gen01-09).
+EVAL_RUNGS="${EVAL_RUNGS:-mcts-heuristic}"
 # The vs-champion rung separately, because it is the only rung the gate
 # reads and the only one that is underpowered. At 30 games the points score
 # has SE ~0.077, so the 0.55 gate sits 0.65 SE above 0.50 and passes an
 # *equal* net about a quarter of the time. At 100 it is SE ~0.042 and 1.2 SE,
 # roughly halving that false-promotion rate. The fixed rungs stay at 30:
 # they are already decisive (p < 0.01) and are the cheap information here.
-VS_EVAL_GAMES="${VS_EVAL_GAMES:-100}"
 MIRROR_GAMES="${MIRROR_GAMES:-100}"         # pre-flight heuristic mirror match
 EPOCHS="${EPOCHS:-10}"
-GATE="${GATE:-0.55}"                        # promotion: points (W+D/2)/N vs champion
                                             # (was wins/N until 2026-09-02 — see eval_summary.py)
 TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
 # Which leaf/prior source the bot plays with. `nn-value` = NN leaf values but
@@ -147,7 +153,12 @@ WARM_START="${WARM_START:-on}"              # seed each generation from a previo
 # games/gen and a 3-gen window the head just wanders. Switched to `champion`
 # on 2026-09-05 after the second rejection. Revisit if the gate starts
 # passing consistently again — `latest` is the better idea when it works.
-WARM_FROM="${WARM_FROM:-champion}"
+# Gateless since 2026-09-11 (plan 030): the trained net *is* the next
+# generator, so champion and latest coincide and `latest` is the natural
+# spelling. Plan 032 #12 settled the alternative — a from-scratch retrain on
+# the whole corpus scored 0.471 against this fine-tune's gen09 — so the
+# 2e-4 warm start stays.
+WARM_FROM="${WARM_FROM:-latest}"
 # Warm start restores weights but not Adam's moment estimates (the .pt has to
 # stay a bare state_dict — nn_server.py loads it directly), so the first steps
 # of a warm-started run are taken with fresh moments. At the from-scratch
@@ -178,12 +189,23 @@ PARALLEL_GAMES="${PARALLEL_GAMES:-2}"
 # MCTS trees — candidate and opponent — against a dataset worker's one, so
 # the per-unit memory is roughly double. 4 workers ~ 8 trees, which is the
 # same tree count the generate phase carries across all its shards.
-EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-4}"
+# Was 4; measured during gen09's eval (2026-09-10) at 4 streams: ~58% of the
+# 8 cores idle, the sidecar at mean batch 1.09 (latency-bound, ~380 us per
+# single-sample forward). 6 is what the plan-032 matches ran at; the 6 extra
+# trees fit (eval held 2.8 GB at 4 streams against 11 GB available).
+EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-6}"
 NN_SERVER_RESTARTS="${NN_SERVER_RESTARTS:-3}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
                                             # (old corpora used 8e5.. and 2e6..)
 RUN_DIR="${RUN_DIR:-$REPO/runs/loop14x7}"   # override both for dry runs so a
 MODEL_DIR="${MODEL_DIR:-$REPO/models}"      # test never touches real models/
+# Plan 030: the frozen benchmark opponent. gen03 was the last net promoted on
+# merit under the gate and every plan-032 match is already on its scale (Q7
+# 0.625, D7 0.396). Never retrain or overwrite it. Re-anchor (add a second,
+# overlap three generations, then drop this one) once the rolling mean passes
+# ~0.75 — a saturated anchor stops discriminating.
+ANCHOR="${ANCHOR:-$MODEL_DIR/bbnet_14x7_gen03.onnx}"
+ANCHOR_GAMES="${ANCHOR_GAMES:-40}"          # paired Home/Away on --seed 0, every generation
 # -----------------------------------------------------------------------------
 
 NN_SHARDS="0 1 2 3 4"       # generated by the champion (nn-value)
@@ -323,7 +345,8 @@ if [ -f "$(champion)" ]; then
 else
     CHAMP_DESC="no champion yet — will bootstrap gen-0 from a heuristic corpus"
 fi
-status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gate $GATE, max $MAX_GENS gens"
+status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gateless, anchor $(basename "$ANCHOR") x$ANCHOR_GAMES, max $MAX_GENS gens"
+[ -f "$ANCHOR" ] || die "anchor model not found: $ANCHOR"
 
 # ---- build ------------------------------------------------------------------
 # The documented launch is `nohup scripts/train_loop.sh &`, which gets a
@@ -583,13 +606,19 @@ while [ "$G" -le "$MAX_GENS" ]; do
         BEST=$(grep 'restored best-val weights' "$GEN_DIR/train.log" | tail -1)
         BASE=$(grep 'warm-start baseline' "$GEN_DIR/train.log" | tail -1)
         status "$GG train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}${BASE:+ (warm-start baseline was${BASE##*val_value})}"
-        touch "$GEN_DIR/.trained"
         echo "$MODEL.pt" > "$LATEST_FILE"
+        # Gateless: the net just trained generates the next generation,
+        # unconditionally. The benchmark below measures it; it does not
+        # decide anything. Written before the marker so a resume can never
+        # see a trained generation whose net is not the generator.
+        echo "$MODEL.onnx" > "$CHAMPION_FILE"
+        touch "$GEN_DIR/.trained"
+        status "$GG is the generator now (no gate — plan 030); benchmark follows"
         prune_prepared "$((G - 1))"
     fi
     [ -f "$MODEL.onnx" ] || die "$GG onnx export missing: $MODEL.onnx"
 
-    # -- 4. eval report card + promotion gate ----------------------------------
+    # -- 4. benchmark: fixed rung(s) + vs the frozen anchor ----------------------
     check_stop "before $GG eval"
     if [ ! -e "$GEN_DIR/.evaluated" ]; then
         SECONDS=0
@@ -613,14 +642,16 @@ while [ "$G" -le "$MAX_GENS" ]; do
         else
             EVAL_EXTRA="--parallel-games $EVAL_PARALLEL_GAMES"
         fi
-        status "$GG eval: $EVAL_GAMES games/rung + $VS_EVAL_GAMES vs-champion, x$EVAL_PARALLEL_GAMES (random, scripted, mcts-heuristic, vs $(basename "$CHAMP"))"
+        status "$GG eval: $EVAL_GAMES games/rung ($EVAL_RUNGS) + $ANCHOR_GAMES vs anchor $(basename "$ANCHOR"), x$EVAL_PARALLEL_GAMES"
         # shellcheck disable=SC2086
         if ! "$UI" eval --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
                 --mcts-iters "$MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
-                --vs-games "$VS_EVAL_GAMES" \
+                --rungs "$EVAL_RUNGS" \
+                --vs-games "$ANCHOR_GAMES" \
                 --skip-lectures \
-                --vs-evaluator "$EVALUATOR" --vs-model "$CHAMP" \
+                --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
                 $EVAL_EXTRA \
+                --per-game-out "$GEN_DIR/eval.games.jsonl" \
                 --out "$GEN_DIR/report.json" > "$GEN_DIR/eval.log" 2>&1; then
             nn_server_stop
             die "$GG eval failed — see eval.log"
@@ -633,28 +664,29 @@ while [ "$G" -le "$MAX_GENS" ]; do
         SECONDS=0
     fi
 
-    # A persisted verdict is final. Re-deriving it on resume would replay
-    # the whole promotion history over champion.txt — and clobber a champion
-    # set by hand (plan 032 #7c installed Q7 that way; the first relaunch
-    # silently reverted it to gen03 and generated gen08 from the wrong net).
+    # A persisted verdict is final (gated era: PROMOTED/REJECTED; gateless:
+    # BENCHMARKED). Re-deriving it on resume would replay the whole promotion
+    # history over champion.txt — and clobber a champion set by hand (plan
+    # 032 #7c installed Q7 that way; the first relaunch silently reverted it
+    # to gen03 and generated gen08 from the wrong net).
     if [ -f "$GEN_DIR/verdict" ]; then
         G=$((G + 1))
         continue
     fi
-    SUMMARY_LINE=$("$PY" "$SUMMARY" "$GEN_DIR/report.json" --gate "$GATE")
-    GATE_RC=$?
-    if [ "$GATE_RC" -eq 0 ]; then
-        echo "$MODEL.onnx" > "$CHAMPION_FILE"
-        echo "PROMOTED" > "$GEN_DIR/verdict"
-        status "$GG eval done ($((SECONDS / 60)) min): $SUMMARY_LINE => PROMOTED, champion is now $(basename "$MODEL.onnx")"
-    elif [ "$GATE_RC" -eq 2 ]; then
-        echo "REJECTED" > "$GEN_DIR/verdict"
-        status "$GG eval done ($((SECONDS / 60)) min): $SUMMARY_LINE => REJECTED (gate $GATE), champion stays $(basename "$(champion)")"
-    else
-        die "$GG gate check failed (eval_summary rc=$GATE_RC)"
-    fi
+    SUMMARY_LINE=$("$PY" "$SUMMARY" "$GEN_DIR/report.json")
+    echo "BENCHMARKED" > "$GEN_DIR/verdict"
+    status "$GG eval done ($((SECONDS / 60)) min): $SUMMARY_LINE"
+    # The curve is what the benchmark is for: this generation's point, the
+    # 3-gen rolling mean, and the advisory flags — all against the same
+    # frozen opponent, so successive lines are directly comparable.
+    CURVE=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" 2>&1) \
+        || CURVE="anchor_curve.py failed: $CURVE"
+    status "$GG curve: $CURVE"
+    case "$CURVE" in
+        *REGRESSION*|*PLATEAU*) status "ALERT $GG: $(echo "$CURVE" | grep -o '\(REGRESSION\|PLATEAU\)[^|]*' | tr '\n' ' ')— advisory (plan 030): inspect, and roll back champion.txt by hand if warranted" ;;
+    esac
 
     G=$((G + 1))
 done
 
-status "loop finished: $MAX_GENS generations done, champion $(basename "$(champion)")"
+status "loop finished: $MAX_GENS generations done, generator $(basename "$(champion)")"
