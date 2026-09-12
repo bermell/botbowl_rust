@@ -72,9 +72,13 @@ GAMES_PER_SHARD="${GAMES_PER_SHARD:-600}"   # 8 shards -> 4800 games/generation
 MCTS_ITERS="${MCTS_ITERS:-1000}"
 EVAL_GAMES="${EVAL_GAMES:-30}"              # per fixed ladder rung, paired Home/Away
 # Fixed rungs kept in the report card. `random` read 1.000 in every one of
-# nine generations and `scripted` sits at 0.87-0.95 where 30 games is noise;
-# only mcts-heuristic still moves (0.85 -> 1.00 over gen01-09).
-EVAL_RUNGS="${EVAL_RUNGS:-mcts-heuristic}"
+# nine generations and `scripted` sits at 0.87-0.95 where 30 games is noise.
+# mcts-heuristic saturated too and was dropped 2026-09-12: gen08-12 scored
+# 0.900 1.000 0.950 0.950 0.983 (gen12 W29 D1 L0), so it no longer separates
+# generations and its 30 games only cost eval time. Empty = no fixed rungs,
+# leaving the anchor as the sole measurement. Set it again (or pass a new
+# rung name) once there is a stronger scripted bot worth benchmarking against.
+EVAL_RUNGS="${EVAL_RUNGS:-}"
 # The vs-champion rung separately, because it is the only rung the gate
 # reads and the only one that is underpowered. At 30 games the points score
 # has SE ~0.077, so the 0.55 gate sits 0.65 SE above 0.50 and passes an
@@ -652,11 +656,21 @@ while [ "$G" -le "$MAX_GENS" ]; do
         else
             EVAL_EXTRA="--parallel-games $EVAL_PARALLEL_GAMES"
         fi
-        status "$GG eval: $EVAL_GAMES games/rung ($EVAL_RUNGS) + $ANCHOR_GAMES vs anchor $(basename "$ANCHOR"), x$EVAL_PARALLEL_GAMES"
+        # No fixed rungs -> --skip-fixed-rungs, which keeps only the --vs rung
+        # (the anchor). Passing `--rungs ""` would also work, but the dedicated
+        # flag says the intent out loud.
+        if [ -n "$EVAL_RUNGS" ]; then
+            RUNG_ARGS="--rungs $EVAL_RUNGS"
+            RUNG_DESC="$EVAL_GAMES games/rung ($EVAL_RUNGS) + "
+        else
+            RUNG_ARGS="--skip-fixed-rungs"
+            RUNG_DESC="no fixed rungs, "
+        fi
+        status "$GG eval: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR"), x$EVAL_PARALLEL_GAMES"
         # shellcheck disable=SC2086
         if ! "$UI" eval --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
                 --mcts-iters "$MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
-                --rungs "$EVAL_RUNGS" \
+                $RUNG_ARGS \
                 --vs-games "$ANCHOR_GAMES" \
                 --skip-lectures \
                 --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
