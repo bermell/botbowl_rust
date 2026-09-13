@@ -133,7 +133,7 @@ Three facts, in order of how much they constrain the explanation:
    0.559 (n=160) — about 2.3 SE. The decline arrested at ~0.58 rather than running away; gen15-17
    are tightly clustered (0.600 / 0.562 / 0.588).
 
-### What changed at gen10, and why #4 is now the prime suspect
+### Hypothesis (2026-09-13): exploration collapse - TESTED AND FALSIFIED 2026-09-14
 
 Two things were removed at gen10, together: the **promotion gate** (gateless, plan 030) and the
 **heuristic hedge shards** (`HEUR_SHARDS=""`, commit 363e900). The first fully-hedge-free training
@@ -157,17 +157,68 @@ the same frozen `bbnet_14x7_gen03.onnx`*, so it was vacuous by construction. gen
 data where the generator changes every generation, i.e. the first regime in which a π-entropy
 collapse is even expressible. The gate should be re-evaluated, not inherited.
 
-### Next diagnostic (cheap, offline, run before any code change)
+### The diagnostic result (2026-09-14): the corpus is not degrading, on any axis
 
-```sh
-train/.venv/bin/python scripts/audit_corpus_stats.py     --runs runs/loop14x7 --gens 12 13 14 15 16 17 --workers 4 --json /tmp/health.json
-```
+`train/.venv/bin/python scripts/audit_corpus_stats.py --runs runs/loop14x7 --gens 12 13 14 15 16 17 --workers 4` - 83 s, 6 generations, ~940k roots. **Every metric is flat across the entire decline.**
+`nn` shards, ALL fan:
 
-The question it answers: **does π entropy fall across gen12→17, and does the label/value mix shift
-toward draws?** If entropy falls, #4 is the cause and moves to the top of the queue. If entropy is
-flat, the cause is elsewhere — look at the value target (outcome blended with root Q) instead,
-since a value head that cannot distinguish a draw from a missed win produces exactly this
-signature. Not run yet: it streams ~4 GB and the box was generating.
+| metric | gen12 | gen13 | gen14 | gen15 | gen16 | gen17 |
+|---|---:|---:|---:|---:|---:|---:|
+| mean H(pi) nats | 1.172 | 1.184 | 1.164 | 1.165 | 1.139 | 1.153 |
+| H/ln(n) | 0.498 | 0.503 | 0.498 | 0.496 | 0.483 | 0.492 |
+| tie rate | 0.183 | 0.192 | 0.189 | 0.192 | 0.193 | 0.193 |
+| mean rho(prior, visits) | 0.410 | 0.400 | 0.406 | 0.398 | 0.395 | 0.396 |
+| top1 agree | 0.638 | 0.633 | 0.637 | 0.641 | 0.656 | 0.648 |
+| calibration b | 0.950 | 0.946 | 0.958 | 0.933 | 0.943 | 0.926 |
+| calibration a | -0.088 | -0.087 | -0.088 | -0.082 | -0.087 | -0.083 |
+| mean gap E[v - outcome] | +0.106 | +0.107 | +0.104 | +0.106 | +0.108 | +0.111 |
+| value saturation | 0.1076 | 0.1039 | 0.1075 | 0.1076 | 0.1076 | 0.1078 |
+| drives ending in a score | 0.828 | 0.822 | 0.844 | 0.830 | 0.822 | 0.835 |
+| value class 0 (mover) | 0.247 | 0.265 | 0.234 | 0.267 | 0.274 | 0.258 |
+| samples/drive | 32.7 | 34.2 | 32.9 | 32.3 | 32.0 | 32.7 |
+
+**Both data-side hypotheses are dead.** pi entropy did not fall (3% wobble, no trend), so the
+exploration-collapse story is wrong - and #4's original gate is *re-confirmed*, this time on data
+that could actually have refuted it. Value calibration did not drift either, so the value-target
+story is wrong too. Most decisive: **the generator still scores on 83% of drives in gen17, exactly
+as in gen12**, and the draw-class mass in the value target is flat at ~0.25. The corpus produced by
+the gen16 net is statistically indistinguishable from the one produced by the gen11 net.
+
+**So the defect is not in the data. It is in the net lineage.** That is a strong constraint, and it
+inverts the intervention: there is nothing to fix about generation, and the accumulated corpus
+gen10-17 is healthy training material.
+
+One contrast remains to be explained: corpus scoring rate is flat at 83%, yet the *eval* draw rate
+against the anchor doubled (14% -> 28%). Self-play drives are random-start and search-dominated at
+1000 iterations, which smooths over net quality; full games against a fixed opponent do not. That
+fits a net whose prior/value has degraded *as a search guide* while its behaviour under its own
+search looks unchanged.
+
+### Remaining candidates, all training-side
+
+1. **Iterated warm-start on an overlapping window.** Every generation fine-tunes the previous
+   champion (`WARM_FROM=latest`, lr 2e-4) on a 3-generation window sharing two thirds of its data
+   with the previous window. val improves monotonically for seven generations (1.7164 -> 1.1892)
+   while strength falls - the net fits its own corpus ever better and plays worse. That is
+   progressive overfitting along a self-referential chain, and it needs no corpus degradation,
+   which is exactly what the audit found.
+2. **The cq target is self-referential.** `softmax(ln prior + q/tau)` contains the net's *own*
+   prior, so each generation partly distills the previous net's prior into the next. One-shot this
+   was the largest win in the queue (#7, +0.23); iterated with a warm start it becomes a feedback
+   term. Weak supporting drift: rho(prior, visits) 0.410 -> 0.396 while top1 agreement rises
+   0.638 -> 0.656. Not conclusive alone.
+
+### The discriminating test (run this next)
+
+**Retrain from scratch on the accumulated gen10-17 corpus and play it against gen13.** The audit
+says the data is good, so if a from-scratch net trained on it is strong, the warm-start chain is
+the defect; if it is equally weak, the data is subtly bad in a way this audit does not measure.
+Cost: one training run + 120 games, no new generation needed - every corpus is on disk. This is
+#1/#12 methodology.
+
+#12 already ran a version of this (q9 from scratch scored 0.471 vs the loop's gen09) and chose the
+fine-tune. That verdict was measured **before** the lineage had visibly decayed, at gen09, when the
+warm-start chain was still healthy. Re-run it against gen13 rather than inheriting it.
 
 ### Secondary, independent of the above
 
@@ -489,12 +540,11 @@ signature. Not run yet: it streams ~4 GB and the box was generating.
 - **Where the ties actually are.** The heuristic hedge, not the nn half: 58% overall and **89% at
   >60 children**, across a third of every corpus. If ties are the motivation, #7 (hedge ablation)
   addresses them more directly than root noise does.
-- **Re-opened 2026-09-13 (see the gen10-17 section above).** The entropy limb of the gate was
-  measured on gen05-07, all three generated by the *same* frozen net, so it could not have
-  detected a within-lineage entropy collapse. The gateless run gen10-17 is the first data where
-  the generator changes every generation, and it shows a 0.675 → 0.58 decline with the draw rate
-  doubling to 28% while val loss improves monotonically — the signature this item predicts.
-  Re-run the gate on gen12-17 (`audit_corpus_stats.py`) before inheriting the old verdict.
+- **Re-opened and re-closed 2026-09-14.** The old entropy gate was vacuous (gen05-07 shared one
+  frozen generator), so it was re-run on gen12-17, where the generator changes every generation and
+  the loop lost 0.675 -> 0.58. **pi entropy is flat: 1.172 / 1.184 / 1.164 / 1.165 / 1.139 /
+  1.153**, tie rate flat at 0.183-0.193. The gate fails again, now on data that could have refuted
+  it. Stays unpromoted; the gen10-17 regression is not an exploration problem.
 - **Cost.** One generation A/B: two corpora from the same champion and seeds (noisy vs greedy),
   train both from the same init, play 120 games. ~14 h.
 - **Expected.** Standard ingredient; modest on its own, larger once #2 removes the ties that
