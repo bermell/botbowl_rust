@@ -399,3 +399,46 @@ Kept as specified: `search_output_unchanged_heuristic_200` (default-on, ~17s in 
   `NodeStats.player` is now `Option<BbPlayer>` and the inspector already renders it via `{:?}`, so a
   placeholder reads as `None` there and as `NodePlayer::Pending` on the wire. Not lifted onto
   `ChildStat`; still deferred.
+
+### Correction: "no behaviour change" is scoped to *iteration* budgets
+
+The plan's "Why this is a refactor, not a behaviour change" and its T7 expectation ("if T2 held these
+should be unchanged") both silently assume `SearchBudget::Iterations`. That assumption does not hold
+for the paths T7 actually exercises:
+
+    botbowl-mcts/tests/{get_the_ball,score_td}_{easy,medium}.rs  -> SearchBudget::Time
+    botbowl-ui/src/dataset.rs  --mcts-ms                         -> SearchBudget::Time
+    botbowl-web/server/src/bots.rs  Budget::Millis               -> SearchBudget::Time
+
+Under a **time** budget this change is not output-preserving at all: the same wall-clock now buys
+substantially more iterations (up to ~4x on a wide mid-turn fan), so the bot searches deeper and
+genuinely plays *better*. That is the win, not a regression — but it means the golden's byte-equality
+statement covers `SearchBudget::Iterations` only, and T7 passing on both sides says "no regression",
+not "identical".
+
+So the plan's justification section resolves as follows. It asked whether the wall-clock saving has
+a consumer; it has both of the ones it named, and they are automatic:
+
+- **(b) the saved time is spent on a higher iteration budget** — already true, for free, everywhere a
+  `Time` budget is used: the four curriculum lectures, `dataset --mcts-ms`, and every web game
+  (plan 034 paces the bot in milliseconds). No tuning needed.
+- **(a) self-play generation throughput** — true whenever the generator runs on
+  `SearchBudget::Iterations` (the `dataset.rs` default): same search, less wall-clock.
+
+Iteration-budgeted paths (`eval`, `convergence`, `bot_factory`, the goldens) are byte-identical, as
+T2 proves.
+
+### What T6/T7 does and does not say
+
+Both sides green, identical test set, 0 failures, no `Node::player()` panics and no `on_drop`
+assertions — that is the soak result and it is clean.
+
+Two limits worth knowing before anyone cites this run:
+
+- The per-test wall-clock in a `cargo test --workspace -- --ignored` run is **not** a measurement.
+  Cargo runs test binaries concurrently and these are multi-worker MCTS tests contending for the
+  same cores, so individual timings move in both directions between the two runs. The single-worker
+  tests in that run *are* clean, and they agree with the isolated T5 numbers
+  (`mirror_search_exact`'s 9 arms 27.2s -> 17.3s; the T2 full matrix 52.8s -> 32.0s).
+- The numeric pass rates the curriculum lectures print were not captured — the comparison made here
+  is pass/fail against each test's own built-in threshold, on both sides.
