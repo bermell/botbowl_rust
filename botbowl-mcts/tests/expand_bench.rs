@@ -360,6 +360,12 @@ fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_
     state.clear_log();
 
     let counters = Arc::new(Counters::default());
+    // `CountingDynamics` only sees the `apply_action`s recon_mcts makes.
+    // `BloodBowlDynamics` also calls itself (plan 023's `peek_mover` did it
+    // once per candidate action, at every expansion), and those never reach
+    // the wrapper. `ENGINE_APPLY_ACTIONS` counts inside the impl, so the
+    // delta below is the true engine-advance count (plan 035 T5).
+    let engine_aa_before = botbowl_mcts::dynamics::ENGINE_APPLY_ACTIONS.load(Ordering::Relaxed);
     // Mirror MctsBot::get_action's horizon capture (plan 014). Anchor
     // is held constant for the whole search so recombination stays a
     // pure function of (state, anchor).
@@ -409,20 +415,22 @@ fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_
     let sn = counters.select_node.load(Ordering::Relaxed);
     let sl = counters.score_leaf.load(Ordering::Relaxed);
     let bp = counters.backprop_scores.load(Ordering::Relaxed);
+    let eaa = botbowl_mcts::dynamics::ENGINE_APPLY_ACTIONS.load(Ordering::Relaxed) - engine_aa_before;
     let per_step_us = elapsed.as_nanos() as f64 / iters as f64 / 1e3;
     let f = |n: u64| n as f64 / iters as f64;
     eprintln!(
         "EXPAND_COUNTS {label}/iters={iters} per_step_us={per_step_us:.2} \
-         apply_action/step={:.2} avail_actions/step={:.2} \
+         apply_action/step={:.2} engine_apply_action/step={:.2} avail_actions/step={:.2} \
          select_node/step={:.2} score_leaf/step={:.2} backprop/step={:.2}",
         f(aa),
+        f(eaa),
         f(av),
         f(sn),
         f(sl),
         f(bp),
     );
     eprintln!(
-        "EXPAND_COUNTS {label}/totals apply_action={aa} avail_actions={av} \
+        "EXPAND_COUNTS {label}/totals apply_action={aa} engine_apply_action={eaa} avail_actions={av} \
          select_node={sn} score_leaf={sl} backprop_scores={bp}"
     );
 }

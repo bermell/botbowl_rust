@@ -171,3 +171,65 @@ fn search_transitions_are_mirror_invariant() {
         failures.iter().take(2).cloned().collect::<Vec<_>>().join("\n\n"),
     );
 }
+
+/// Plan 035 T3: `apply_action` is a pure, deterministic function of
+/// `(state, action)`.
+///
+/// This is the one assumption behind plan 035's equivalence argument. The old
+/// mover tag was `player_for_state(apply_action(parent_state, a))` computed
+/// eagerly at enumeration time (`peek_mover`); the new one is
+/// `player_for_state(child_state)` where `child_state` is what descent
+/// computed via the *same* `apply_action`. Those are the same value iff
+/// `apply_action` returns the same state every time it is called on equal
+/// inputs. Recombination already requires this (two paths reaching the same
+/// logical state must produce equal `GameState`s or the DAG silently splits),
+/// so a red here is a pre-existing bug of that class, not a plan-035
+/// regression.
+///
+/// Applies each legal action twice from independent clones and compares with
+/// `GameState`'s own `PartialEq` — the same equality the transposition table
+/// uses under `MemoryMode::StoreState` — plus the derived mover tag.
+#[test]
+fn apply_action_is_pure_and_deterministic() {
+    let mut checked = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for (i, s0) in states(200, 35_030).into_iter().enumerate() {
+        let mut s = s0.clone();
+        s.set_dice_mode(DiceMode::RegisterRolls);
+        s.set_logging_state(false);
+        s.clear_log();
+        let gd = dynamics(&s);
+        let Some(acts) = gd.available_actions(&player_of(&s), &s) else {
+            continue;
+        };
+        for (_, a) in acts.iter() {
+            let first = gd.apply_action(s.clone(), a);
+            let second = gd.apply_action(s.clone(), a);
+            checked += 1;
+            match (first, second) {
+                (None, None) => {}
+                (Some(x), Some(y)) => {
+                    if x != y {
+                        failures.push(format!("state {i} action {a:?}: two applies gave different states"));
+                    } else if player_of(&x) != player_of(&y) {
+                        failures.push(format!("state {i} action {a:?}: mover tag is not a function of the state"));
+                    }
+                }
+                (f, sec) => failures.push(format!(
+                    "state {i} action {a:?}: legality is not deterministic ({} vs {})",
+                    f.is_some(),
+                    sec.is_some()
+                )),
+            }
+        }
+    }
+
+    assert!(checked > 500, "expected a broad sweep, checked only {checked} applies");
+    assert!(
+        failures.is_empty(),
+        "{} impure applies over {checked} checked. First 3:\n{}",
+        failures.len(),
+        failures.iter().take(3).cloned().collect::<Vec<_>>().join("\n"),
+    );
+}

@@ -723,6 +723,19 @@ pub static LEAF_STATS: LeafStats = LeafStats {
     exact_outcome: AtomicU64::new(0),
 };
 
+/// Total `apply_action` calls this impl has executed, gated behind the
+/// `expand_bench` feature (zero cost otherwise).
+///
+/// `tests/expand_bench.rs`'s `CountingDynamics` wrapper only counts the
+/// calls **recon_mcts** makes; it is blind to the ones this impl makes to
+/// itself. Plan 023's `peek_mover` made one per candidate action at every
+/// expansion — invisible to the wrapper, which is why the wrapper's
+/// `apply_action/step` read as ~1 per descent hop while the engine was
+/// doing an order of magnitude more work. Counting inside the impl is the
+/// only honest reading of total engine advances (plan 035 T5).
+#[cfg(feature = "expand_bench")]
+pub static ENGINE_APPLY_ACTIONS: AtomicU64 = AtomicU64::new(0);
+
 /// Inspect a state and decide which "player" owns it from MCTS's
 /// perspective. Chance nodes are detected by a pending roll; otherwise
 /// the engine's `available_actions.team` tells us whose move it is.
@@ -893,6 +906,8 @@ impl GameDynamics for BloodBowlDynamics {
     }
 
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
+        #[cfg(feature = "expand_bench")]
+        ENGINE_APPLY_ACTIONS.fetch_add(1, Ordering::Relaxed);
         let mut new_state = state;
         let proc_input: SomeProcInput = match action {
             BbAction::Player {
