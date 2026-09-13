@@ -15,13 +15,14 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use botbowl_engine::core::dices as ed;
 use botbowl_engine::core::game_runner::Recording;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model as em;
 use botbowl_engine::core::model::{Action as EngineAction, BoardDims, SomeProcInput};
-use botbowl_web_proto::msg::{ClientMsg, GameSpec, LobbyInfo, ServerMsg, StartFrom};
+use botbowl_web_proto::msg::{ClientMsg, GameSpec, LobbyInfo, ServerMsg, StartFrom, StepMode};
 use botbowl_web_proto::search as ps;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -37,6 +38,10 @@ use crate::{dice, AppState};
 const PV_DEPTH: usize = 8;
 /// How many session log lines to keep and ship.
 const LOG_TAIL: usize = 60;
+/// How long the run loop sleeps between polls while it is waiting out an
+/// `Auto` step delay. Short enough that a mode change or an undo does not feel
+/// stuck behind the delay, long enough not to spin.
+const POLL: Duration = Duration::from_millis(5);
 
 /// One undo point: the board, the dice stream, and where the recording was.
 /// The bot is deliberately *not* snapshotted — `MctsBot`'s cached tree keys on
@@ -69,10 +74,29 @@ pub struct GameSession {
     /// because each one re-roots (or rebuilds) the single cached tree —
     /// an inspector opened on an earlier move cannot be walked any more.
     search_id: u64,
+    /// How fast the session may run through steps the human does not answer.
+    step_mode: StepMode,
+    /// True while `advance` has stopped *before* a step it could take. The
+    /// board the client last saw is the result of the previous step, and the
+    /// session is back in the run loop, so undo, mode changes and tree
+    /// inspection all still work while it holds.
+    paused: bool,
+    /// When an `Auto` hold expires. `None` under `Manual`, which waits for
+    /// [`ClientMsg::StepOnce`] instead of a clock.
+    resume_at: Option<Instant>,
+}
+
+/// Whether the session may take the step it is standing in front of.
+enum Hold {
+    /// Take it now.
+    Go,
+    /// Stop and hand control back to the run loop; resume at this instant, or
+    /// on an explicit `StepOnce` when there is none.
+    Wait(Option<Instant>),
 }
 
 impl GameSession {
-    fn new(spec: GameSpec, bot: SessionBot) -> Result<Self, String> {
+    fn new(spec: GameSpec, bot: SessionBot, step_mode: StepMode) -> Result<Self, String> {
         let (w, h, team_size) = spec.board.engine_dims();
         let dims = BoardDims::new(w, h, team_size);
         let mut state = match &spec.start {
@@ -107,6 +131,9 @@ impl GameSession {
             steps,
             log: vec![format!("new game, seed {seed}")],
             search_id: 0,
+            step_mode,
+            paused: false,
+            resume_at: None,
         })
     }
 
@@ -137,6 +164,8 @@ impl GameSession {
             can_undo: !self.history.is_empty(),
             bot_thinking,
             log_tail: self.log_tail(),
+            step_mode: self.step_mode,
+            paused: self.paused,
         };
         out.send(ServerMsg::View(Box::new(view::derive(&self.state, &ctx))));
     }
@@ -163,12 +192,29 @@ impl GameSession {
         self.steps.push(self.state.clone());
     }
 
-    /// Drive the engine until the human has something to decide, or the game
-    /// is over: rolling every die, and letting the bot answer its own prompts.
+    /// Whether the step the session is standing in front of may be taken now.
+    ///
+    /// Asked *before* the step rather than after it, so that the board the
+    /// client sees while the session holds is the finished result of the
+    /// previous step — never a half-applied one — and so the hold never
+    /// stands between the human and their own next decision.
+    fn hold(&self) -> Hold {
+        match self.step_mode {
+            StepMode::Run => Hold::Go,
+            StepMode::Manual => Hold::Wait(None),
+            StepMode::Auto { ms } => Hold::Wait(Some(Instant::now() + Duration::from_millis(ms))),
+        }
+    }
+
+    /// Drive the engine until the human has something to decide, the game is
+    /// over, or the step mode says to hold: rolling every die, and letting the
+    /// bot answer its own prompts.
     fn advance(&mut self, out: &Out) {
         let mut before = (self.state.home.score, self.state.away.score);
         loop {
             if self.state.info.game_over {
+                self.paused = false;
+                self.resume_at = None;
                 self.note(format!(
                     "game over: {} - {}",
                     self.state.home.score, self.state.away.score
@@ -182,65 +228,126 @@ impl GameSession {
                 return;
             }
 
-            if let Some(requested) = self.state.pending_roll {
-                let (result, fixed) = self.resolve(requested, out);
-                let event = dice::event(requested, result, fixed);
-                self.note(event.text.clone());
-                out.send(ServerMsg::Dice(event));
-                self.step(SomeProcInput::Roll(result));
-                let after = (self.state.home.score, self.state.away.score);
-                if after != before {
-                    self.note(format!("TOUCHDOWN — {} - {}", after.0, after.1));
-                    before = after;
-                }
-                continue;
-            }
-
-            if self.actor() == self.human {
+            if self.state.pending_roll.is_none() && self.actor() == self.human {
+                self.paused = false;
+                self.resume_at = None;
                 self.view(out, false);
                 return;
             }
 
-            // The bot's turn. Show the board with the spinner *before* the
-            // search starts, or the human stares at a stale position for the
-            // whole think time.
-            self.view(out, true);
-            let budget = self.spec.bot.label();
-            out.send(ServerMsg::BotThinking {
-                team: mirror::team_to_proto(self.actor()),
-                budget,
-            });
-
-            let action = self.bot.get_action(&self.state);
-            self.search_id += 1;
-            let search_id = self.search_id;
-            let report = self.bot.last_search().map(|summary| {
-                let pv = self.bot.principal_variation(PV_DEPTH);
-                Box::new(report::summary_to_proto(search_id, summary, &pv, summary.root.solved))
-            });
-            self.note(format!("bot: {:?}", action));
-            out.send(ServerMsg::BotMoved {
-                action: mirror::action_to_proto(action),
-                report,
-            });
-
-            if !self.state.is_legal_action(&action) {
-                // A bot returning an illegal action is a bug in the bot, but
-                // stepping it would panic the session thread and take the
-                // socket with it. Surface it instead.
-                out.send(ServerMsg::Error(format!(
-                    "bot proposed an illegal action {action:?} at {:?}",
-                    self.state.proc_stack_top()
-                )));
+            // From here there is a step to take that the human does not
+            // answer — a die or a bot move — so this is where a hold belongs.
+            if let Hold::Wait(resume_at) = self.hold() {
+                self.paused = true;
+                self.resume_at = resume_at;
                 self.view(out, false);
                 return;
             }
-            self.step(SomeProcInput::Action(action));
-            let after = (self.state.home.score, self.state.away.score);
-            if after != before {
-                self.note(format!("TOUCHDOWN — {} - {}", after.0, after.1));
-                before = after;
+
+            if !self.take_one(out, &mut before) {
+                return;
             }
+        }
+    }
+
+    /// One engine step: resolve the pending roll, or let the bot move.
+    /// Returns `false` when the session must stop rather than loop on (a bot
+    /// that proposed an illegal action).
+    fn take_one(&mut self, out: &Out, before: &mut (u8, u8)) -> bool {
+        if let Some(requested) = self.state.pending_roll {
+            let (result, fixed) = self.resolve(requested, out);
+            let event = dice::event(requested, result, fixed);
+            self.note(event.text.clone());
+            out.send(ServerMsg::Dice(event));
+            self.step(SomeProcInput::Roll(result));
+            self.note_score(before);
+            return true;
+        }
+
+        // The bot's turn. Show the board with the spinner *before* the
+        // search starts, or the human stares at a stale position for the
+        // whole think time.
+        self.view(out, true);
+        let budget = self.spec.bot.label();
+        out.send(ServerMsg::BotThinking {
+            team: mirror::team_to_proto(self.actor()),
+            budget,
+        });
+
+        let action = self.bot.get_action(&self.state);
+        self.search_id += 1;
+        let search_id = self.search_id;
+        let report = self.bot.last_search().map(|summary| {
+            let pv = self.bot.principal_variation(PV_DEPTH);
+            Box::new(report::summary_to_proto(search_id, summary, &pv, summary.root.solved))
+        });
+        self.note(format!("bot: {:?}", action));
+        out.send(ServerMsg::BotMoved {
+            action: mirror::action_to_proto(action),
+            report,
+        });
+
+        if !self.state.is_legal_action(&action) {
+            // A bot returning an illegal action is a bug in the bot, but
+            // stepping it would panic the session thread and take the
+            // socket with it. Surface it instead.
+            out.send(ServerMsg::Error(format!(
+                "bot proposed an illegal action {action:?} at {:?}",
+                self.state.proc_stack_top()
+            )));
+            self.paused = false;
+            self.resume_at = None;
+            self.view(out, false);
+            return false;
+        }
+        self.step(SomeProcInput::Action(action));
+        self.note_score(before);
+        true
+    }
+
+    fn note_score(&mut self, before: &mut (u8, u8)) {
+        let after = (self.state.home.score, self.state.away.score);
+        if after != *before {
+            self.note(format!("TOUCHDOWN — {} - {}", after.0, after.1));
+            *before = after;
+        }
+    }
+
+    /// When the run loop should come back and step the session on its own.
+    /// `None` means it may block on the socket: either nothing is held, or
+    /// the hold is waiting for an explicit `StepOnce`.
+    fn wake_at(&self) -> Option<Instant> {
+        self.paused.then_some(self.resume_at).flatten()
+    }
+
+    /// Take the held step, then carry on under the current mode.
+    fn step_once(&mut self, out: &Out) {
+        if !self.paused {
+            // Not an error: the human can hit Step on a board that is already
+            // waiting for *them*, and a queued Step can arrive after a mode
+            // change released the hold.
+            return;
+        }
+        self.paused = false;
+        self.resume_at = None;
+        let mut before = (self.state.home.score, self.state.away.score);
+        if self.take_one(out, &mut before) {
+            self.advance(out);
+        }
+    }
+
+    /// Re-pace the session. Switching to `Run` while it holds releases it;
+    /// switching between the holding modes just re-arms the hold, without
+    /// taking a step, so changing the speed never skips anything.
+    fn set_step_mode(&mut self, mode: StepMode, out: &Out) {
+        self.step_mode = mode;
+        self.note(format!("step mode: {}", mode.label()));
+        if self.paused {
+            self.paused = false;
+            self.resume_at = None;
+            self.advance(out);
+        } else {
+            self.view(out, false);
         }
     }
 
@@ -313,12 +420,11 @@ impl GameSession {
             )),
             Some(node) => {
                 let view = node.state.as_ref().filter(|_| with_view).map(|state| {
+                    // A node's board is hypothetical: it belongs to no
+                    // session moment, so none of the session flags apply.
                     let ctx = DeriveCtx {
                         human: self.human,
-                        seq: 0,
-                        can_undo: false,
-                        bot_thinking: false,
-                        log_tail: Vec::new(),
+                        ..DeriveCtx::default()
                     };
                     Box::new(view::derive(state, &ctx))
                 });
@@ -408,9 +514,36 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
     })));
 
     let mut session: Option<GameSession> = None;
+    // The pacing outlives any one game: the client sets it on the game screen
+    // and expects "New game" to keep it, and a `SetStepMode` that arrives
+    // before the first `NewGame` must not be dropped on the floor.
+    let mut step_mode = StepMode::default();
 
-    while let Some(msg) = input.blocking_recv() {
+    loop {
+        let msg = match session.as_ref().and_then(GameSession::wake_at) {
+            // An `Auto` hold is running: come back when it expires, but stay
+            // responsive to anything the client sends in the meantime.
+            Some(deadline) => match wait_until(&mut input, deadline) {
+                Wait::Msg(msg) => msg,
+                Wait::Closed => break,
+                Wait::Elapsed => {
+                    session.as_mut().expect("a session, to have a deadline").step_once(&out);
+                    continue;
+                }
+            },
+            None => match input.blocking_recv() {
+                Some(msg) => msg,
+                None => break,
+            },
+        };
+
         match msg {
+            ClientMsg::SetStepMode(mode) => {
+                step_mode = mode;
+                if let Some(s) = session.as_mut() {
+                    s.set_step_mode(mode, &out);
+                }
+            }
             ClientMsg::NewGame(spec) => {
                 if let Err(e) = spec.board.validate(app.capacity) {
                     out.send(ServerMsg::Error(e));
@@ -422,7 +555,7 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
                 }
                 match bots::build(&spec.bot, &app.model_cache, &models) {
                     Err(e) => out.send(ServerMsg::Error(e)),
-                    Ok(bot) => match GameSession::new(spec, bot) {
+                    Ok(bot) => match GameSession::new(spec, bot, step_mode) {
                         Err(e) => out.send(ServerMsg::Error(e)),
                         Ok(mut new_session) => {
                             new_session.advance(&out);
@@ -434,9 +567,10 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
             other => match session.as_mut() {
                 None => out.send(ServerMsg::Error("no game yet — send NewGame first".into())),
                 Some(s) => match other {
-                    ClientMsg::NewGame(_) => unreachable!("handled above"),
+                    ClientMsg::NewGame(_) | ClientMsg::SetStepMode(_) => unreachable!("handled above"),
                     ClientMsg::Act(action) => s.act(mirror::action_from_proto(action), &out),
                     ClientMsg::Undo => s.undo(&out),
+                    ClientMsg::StepOnce => s.step_once(&out),
                     ClientMsg::ExpandNode {
                         search_id,
                         path,
@@ -446,6 +580,35 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
                     ClientMsg::SaveRecording { path } => s.save(&path, &app.recordings_dir, &out),
                 },
             },
+        }
+    }
+}
+
+enum Wait {
+    Msg(ClientMsg),
+    /// The deadline passed with nothing to read.
+    Elapsed,
+    /// The socket went away.
+    Closed,
+}
+
+/// Block for a client message, but no later than `deadline`.
+///
+/// Polling rather than `tokio::time::timeout`: this runs on a `spawn_blocking`
+/// thread that must not touch the async runtime, and a 5 ms poll is far below
+/// the shortest step delay the UI offers.
+fn wait_until(input: &mut mpsc::Receiver<ClientMsg>, deadline: Instant) -> Wait {
+    loop {
+        match input.try_recv() {
+            Ok(msg) => return Wait::Msg(msg),
+            Err(mpsc::error::TryRecvError::Disconnected) => return Wait::Closed,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Wait::Elapsed;
+                }
+                std::thread::sleep(POLL.min(deadline - now));
+            }
         }
     }
 }

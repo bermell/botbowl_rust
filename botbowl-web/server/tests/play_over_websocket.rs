@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use botbowl_web_proto::action::{Action, TeamType};
-use botbowl_web_proto::msg::{BoardSpec, BotSpec, ClientMsg, GameSpec, ServerMsg, StartFrom};
+use botbowl_web_proto::msg::{BoardSpec, BotSpec, ClientMsg, GameSpec, ServerMsg, StartFrom, StepMode};
 use botbowl_web_proto::view::ViewState;
 use botbowl_web_server::{compiled_capacity, router, AppState};
 use futures_util::{SinkExt, StreamExt};
@@ -347,4 +347,176 @@ async fn bad_input_is_reported_not_fatal() {
         }
     }
     assert!(saw_view, "the session recovered and started a game");
+}
+
+/// The board the tests play on: the plan's first target, or the whole pitch
+/// when this binary was built too small for it.
+fn test_board() -> BoardSpec {
+    let capacity = compiled_capacity();
+    if BoardSpec::new(14, 7, 4).validate(capacity).is_ok() {
+        BoardSpec::new(14, 7, 4)
+    } else {
+        capacity
+    }
+}
+
+fn new_game(board: BoardSpec, seed: u64) -> ClientMsg {
+    ClientMsg::NewGame(GameSpec {
+        board,
+        human: TeamType::Home,
+        bot: BotSpec::Scripted,
+        seed: Some(seed),
+        start: StartFrom::CoinToss,
+    })
+}
+
+/// `Manual` pacing: the session holds *before* each step it could take, so the
+/// board on screen is always the finished result of the previous one, and
+/// nothing moves until the client asks. This is what makes the search report
+/// next to the board readable — it belongs to the move about to be played.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manual_pacing_holds_before_every_step() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    let _lobby = recv(&mut socket).await;
+
+    // Sent before there is a game: the pacing lives on the connection, so
+    // this must be remembered rather than answered with "no game yet".
+    send(&mut socket, ClientMsg::SetStepMode(StepMode::Manual)).await;
+    send(&mut socket, new_game(test_board(), 7)).await;
+
+    let mut rng = StdRng::seed_from_u64(7);
+    let mut steps = 0usize;
+    let mut holds = 0usize;
+    // Units of engine work seen since the last hold was released. A hold
+    // reached by `StepOnce` must have exactly one behind it; the hold that
+    // opens a sequence (right after our own move) has none, because the hold
+    // sits in front of the step rather than behind it.
+    let mut work_since_step = 0usize;
+    let mut expect_work = false;
+    let mut checked_quiet = false;
+
+    while steps < 40 {
+        match recv(&mut socket).await {
+            ServerMsg::View(view) => {
+                assert_eq!(view.step_mode, StepMode::Manual, "the view reports the pacing");
+                if view.scoreboard.game_over {
+                    break;
+                }
+                if view.paused {
+                    holds += 1;
+                    let expected = usize::from(expect_work);
+                    assert_eq!(
+                        work_since_step, expected,
+                        "a stepped hold must have exactly one unit of work behind it"
+                    );
+                    // The first hold: prove nothing moves on its own.
+                    if !checked_quiet {
+                        checked_quiet = true;
+                        let quiet = tokio::time::timeout(Duration::from_millis(300), socket.next()).await;
+                        assert!(quiet.is_err(), "a held session must not step itself: {quiet:?}");
+                    }
+                    work_since_step = 0;
+                    expect_work = true;
+                    steps += 1;
+                    send(&mut socket, ClientMsg::StepOnce).await;
+                    continue;
+                }
+                if view.bot_thinking || view.to_act != Some(TeamType::Home) {
+                    continue;
+                }
+                // Our own decision points are never held: a hold sits in front
+                // of the steps we do *not* answer.
+                let actions = legal_actions(&view);
+                assert!(!actions.is_empty(), "asked to act at {:?} with nothing on offer", view.proc);
+                work_since_step = 0;
+                expect_work = false;
+                send(&mut socket, ClientMsg::Act(actions[rng.gen_range(0..actions.len())])).await;
+            }
+            ServerMsg::Dice(_) | ServerMsg::BotMoved { .. } => work_since_step += 1,
+            ServerMsg::BotThinking { .. } => {}
+            ServerMsg::GameOver { .. } => break,
+            ServerMsg::Error(e) => panic!("server error while stepping: {e}"),
+            other => panic!("unexpected message {other:?}"),
+        }
+    }
+
+    assert!(holds >= 20, "only {holds} holds — the session was not stepping");
+}
+
+/// Switching back to `Run` while the session is holding releases it, and the
+/// game finishes on its own from there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn run_releases_a_held_session() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    let _lobby = recv(&mut socket).await;
+    send(&mut socket, ClientMsg::SetStepMode(StepMode::Manual)).await;
+    send(&mut socket, new_game(test_board(), 5)).await;
+
+    // Wait for the first hold.
+    loop {
+        if let ServerMsg::View(view) = recv(&mut socket).await {
+            if view.paused {
+                break;
+            }
+        }
+    }
+
+    send(&mut socket, ClientMsg::SetStepMode(StepMode::Run)).await;
+
+    // The session must now reach a human decision (or the end) unprodded.
+    let mut released = false;
+    for _ in 0..400 {
+        if let ServerMsg::View(view) = recv(&mut socket).await {
+            assert_eq!(view.step_mode, StepMode::Run);
+            if view.scoreboard.game_over {
+                released = true;
+                break;
+            }
+            if !view.paused && !view.bot_thinking && view.to_act == Some(TeamType::Home) {
+                released = true;
+                break;
+            }
+        }
+    }
+    assert!(released, "Run did not release the hold");
+}
+
+/// `Auto` paces itself: no `StepOnce` is ever sent here, and the game still
+/// makes progress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_pacing_steps_itself() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    let _lobby = recv(&mut socket).await;
+    send(&mut socket, ClientMsg::SetStepMode(StepMode::Auto { ms: 20 })).await;
+    send(&mut socket, new_game(test_board(), 9)).await;
+
+    let mut rng = StdRng::seed_from_u64(9);
+    let mut work = 0usize;
+    let mut human_decisions = 0usize;
+
+    while work < 30 {
+        match recv(&mut socket).await {
+            ServerMsg::View(view) => {
+                assert_eq!(view.step_mode, StepMode::Auto { ms: 20 });
+                if view.scoreboard.game_over {
+                    break;
+                }
+                if view.paused || view.bot_thinking || view.to_act != Some(TeamType::Home) {
+                    continue;
+                }
+                let actions = legal_actions(&view);
+                human_decisions += 1;
+                send(&mut socket, ClientMsg::Act(actions[rng.gen_range(0..actions.len())])).await;
+            }
+            ServerMsg::Dice(_) | ServerMsg::BotMoved { .. } => work += 1,
+            ServerMsg::Error(e) => panic!("server error under auto pacing: {e}"),
+            _ => {}
+        }
+    }
+
+    assert!(work >= 30, "auto pacing stalled after {work} steps");
+    assert!(human_decisions > 0, "auto pacing never handed control back");
 }

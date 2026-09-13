@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use botbowl_web_proto::dice::{BlockDice, RollResult};
-use botbowl_web_proto::msg::ClientMsg;
+use botbowl_web_proto::msg::{ClientMsg, StepMode};
 use botbowl_web_proto::search::SearchEdge;
 use botbowl_web_proto::view::{BallView, SquareKind, SquareView, ViewState};
 use botbowl_web_proto::{Action, Position, TeamType};
@@ -30,6 +30,7 @@ pub fn Game() -> impl IntoView {
                 <Dugout side=0 />
                 <div class="pitch-column">
                     <Board />
+                    <StepControls />
                     <OverlayPicker />
                 </div>
                 <Dugout side=1 />
@@ -149,6 +150,12 @@ fn Board() -> impl IntoView {
                 let heat = heat.get();
                 let overlay = app.overlay.get();
                 let my_turn = app.my_turn();
+                // Whose tackle zones to paint, resolved once for the whole
+                // board: `threat_team` scans every square, so asking it per
+                // square would make drawing quadratic.
+                let threat = view
+                    .threat_team()
+                    .or_else(|| (overlay == Overlay::TackleZones).then(|| view.mover().other()));
                 Some(
                     view! {
                         <div class="pitch" style=format!("--cols: {cols}; --sq: {sq}px")>
@@ -156,7 +163,7 @@ fn Board() -> impl IntoView {
                                 .squares
                                 .iter()
                                 .map(|square_view| {
-                                    square(&view, square_view, &route, &heat, overlay, my_turn)
+                                    square(&view, square_view, &route, &heat, overlay, my_turn, threat)
                                 })
                                 .collect_view()}
                         </div>
@@ -176,12 +183,16 @@ fn square(
     heat: &HashMap<Position, f32>,
     overlay: Overlay,
     my_turn: bool,
+    threat: Option<TeamType>,
 ) -> AnyView {
     let app = expect_context::<App>();
     let pos = sq.pos;
     let actionable = my_turn && !sq.actions.is_empty();
     let on_route = route.contains(&pos);
-    let opponent = view.human.other();
+    // Tackle zones of whoever is *not* moving, banded 1/2/3+ rather than
+    // shaded continuously: the number changes the dodge target, so reading it
+    // off at a glance matters more than a smooth gradient.
+    let threat_tz = threat.map(|t| sq.tz(t)).filter(|&n| n > 0);
 
     let kind_class = match sq.kind {
         SquareKind::OutOfBounds => "oob",
@@ -200,12 +211,13 @@ fn square(
             "risk",
             sq.move_prob.map(|p| 1.0 - p).filter(|_| actionable).unwrap_or(0.0),
         ),
-        Overlay::TackleZones => ("tz", (sq.tz(opponent) as f32 / 3.0).min(1.0)),
+        // Not a tint: it only forces the banded tackle-zone layer on.
+        Overlay::TackleZones => ("none", 0.0),
         Overlay::BotVisits | Overlay::BotPriors => ("bot", heat.get(&pos).copied().unwrap_or(0.0)),
         Overlay::None => ("none", 0.0),
     };
 
-    let title = tooltip(sq, opponent);
+    let title = tooltip(sq, threat.unwrap_or_else(|| view.human.other()));
 
     view! {
         <div
@@ -228,6 +240,8 @@ fn square(
             on:mouseenter=move |_| app.hover.set(Some(pos))
             on:mouseleave=move |_| app.hover.update(|h| { if *h == Some(pos) { *h = None } })
         >
+            {threat_tz
+                .map(|n| view! { <span class=format!("tz tz-{}", n.min(3))></span> })}
             {sq
                 .player
                 .as_ref()
@@ -273,8 +287,9 @@ fn square(
 }
 
 /// Everything the square knows, as a hover tooltip — the overlays can only
-/// show one dimension at a time.
-fn tooltip(sq: &SquareView, opponent: TeamType) -> String {
+/// show one dimension at a time. `threat` is the team whose tackle zones the
+/// board is painting, which is the mover's opponent, not always the human's.
+fn tooltip(sq: &SquareView, threat: TeamType) -> String {
     let mut parts = vec![format!("({}, {})", sq.pos.x, sq.pos.y)];
     if let Some(p) = &sq.player {
         parts.push(format!(
@@ -296,9 +311,9 @@ fn tooltip(sq: &SquareView, opponent: TeamType) -> String {
             parts.push(format!("{:?}", p.status));
         }
     }
-    let tz = sq.tz(opponent);
+    let tz = sq.tz(threat);
     if tz > 0 {
-        parts.push(format!("{tz} opposing tackle zone(s)"));
+        parts.push(format!("{tz} {threat:?} tackle zone(s)"));
     }
     if let Some(p) = sq.move_prob {
         parts.push(format!("route succeeds {:.0}%", p * 100.0));
@@ -355,6 +370,75 @@ fn Thinking() -> impl IntoView {
         app.thinking
             .get()
             .map(|label| view! { <div class="thinking"><span class="spinner"></span>{label}</div> })
+    }
+}
+
+/// How fast the bot is allowed to play. The point of holding is not the
+/// animation — it is that a held board is a board you can still inspect: the
+/// search report next to it is the one that produced the move about to be
+/// taken, and undo, the tree explorer and roll pinning all keep working while
+/// the session holds.
+#[component]
+fn StepControls() -> impl IntoView {
+    let app = expect_context::<App>();
+    let set = move |mode: StepMode| {
+        app.step_mode.set(mode);
+        ws::send(&ClientMsg::SetStepMode(mode));
+    };
+    let is = move |mode: StepMode| app.step_mode.get() == mode;
+
+    view! {
+        <div class="steps">
+            <span class="label">"Bot pace"</span>
+            <button class="pace" class:on=move || is(StepMode::Run) on:click=move |_| set(StepMode::Run)>
+                "Run"
+            </button>
+            <button
+                class="pace"
+                class:on=move || is(StepMode::Manual)
+                on:click=move |_| set(StepMode::Manual)
+            >
+                "Step"
+            </button>
+            <button
+                class="pace"
+                class:on=move || app.step_mode.get().millis().is_some()
+                on:click=move |_| set(StepMode::Auto { ms: app.step_ms.get() })
+            >
+                "Auto"
+            </button>
+            // `on:input` only moves the label; the mode change goes out on
+            // `on:change`, so dragging the slider does not spray the socket.
+            <input
+                type="range"
+                min="50"
+                max="3000"
+                step="50"
+                prop:value=move || app.step_ms.get().to_string()
+                on:input=move |ev| {
+                    if let Ok(ms) = event_target_value(&ev).parse::<u64>() {
+                        app.step_ms.set(ms);
+                    }
+                }
+                on:change=move |_| {
+                    if app.step_mode.get().millis().is_some() {
+                        set(StepMode::Auto { ms: app.step_ms.get() });
+                    }
+                }
+            />
+            <span class="ms">{move || format!("{} ms", app.step_ms.get())}</span>
+            <button
+                class="stepone"
+                disabled=move || !app.paused()
+                on:click=move |_| ws::send(&ClientMsg::StepOnce)
+            >
+                "Step ▶"
+                <span class="key">"→"</span>
+            </button>
+            {move || {
+                app.paused().then(|| view! { <span class="held">"held"</span> })
+            }}
+        </div>
     }
 }
 
@@ -583,13 +667,27 @@ fn GameOver() -> impl IntoView {
 }
 
 /// `1`-`6` pick an overlay, `Z` undoes, `E`/`Enter` ends the turn, `Esc`
-/// closes a menu.
+/// closes a menu, `→` steps the bot.
 fn keyboard_shortcuts(app: App) {
     let handle = window_event_listener(leptos::ev::keydown, move |ev| {
         // Never steal a key from a text field in the lobby.
         let key = ev.key();
         match key.as_str() {
             "Escape" => app.menu.set(None),
+            // One key for both halves of the gesture: it takes the held step,
+            // and on a session that is running free it puts the brakes on
+            // first — otherwise "press → to watch the bot" needs you to have
+            // reached for the mode buttons beforehand, which is exactly the
+            // moment you have already missed.
+            "ArrowRight" => {
+                ev.prevent_default();
+                if app.paused() {
+                    ws::send(&ClientMsg::StepOnce);
+                } else {
+                    app.step_mode.set(StepMode::Manual);
+                    ws::send(&ClientMsg::SetStepMode(StepMode::Manual));
+                }
+            }
             "z" | "Z" => {
                 if app.view.get().is_some_and(|v| v.can_undo) {
                     ws::send(&ClientMsg::Undo);

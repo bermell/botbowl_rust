@@ -28,6 +28,8 @@ pub struct DeriveCtx {
     pub can_undo: bool,
     pub bot_thinking: bool,
     pub log_tail: Vec<String>,
+    pub step_mode: botbowl_web_proto::msg::StepMode,
+    pub paused: bool,
 }
 
 impl Default for DeriveCtx {
@@ -38,6 +40,8 @@ impl Default for DeriveCtx {
             can_undo: false,
             bot_thinking: false,
             log_tail: Vec::new(),
+            step_mode: botbowl_web_proto::msg::StepMode::default(),
+            paused: false,
         }
     }
 }
@@ -361,6 +365,8 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         can_undo: ctx.can_undo,
         setup_legal,
         bot_thinking: ctx.bot_thinking,
+        step_mode: ctx.step_mode,
+        paused: ctx.paused,
     }
 }
 
@@ -706,6 +712,59 @@ mod tests {
             big.step(em::Action::Simple(SimpleAT::SetupLine)).unwrap();
             assert_eq!(view_of(&big).setup_legal, Some(true));
         }
+    }
+
+    /// The board paints the tackle zones of whoever is *not* moving, so the
+    /// same overlay reads correctly whether it is your turn or the bot's.
+    #[test]
+    fn the_threatened_team_is_the_movers_opponent() {
+        let state = a_position();
+        let v = view_of(&state);
+        assert_eq!(v.mover(), PTeam::Home, "Home's turn, Home is being asked");
+        assert!(v.moves_offered(), "turn start offers StartMove");
+        assert_eq!(
+            v.threat_team(),
+            Some(PTeam::Away),
+            "while Home moves, Away's zones are the ones that matter"
+        );
+        // Which is exactly the count the squares already carry.
+        assert_eq!(at(&v, 8, 3).tz(v.threat_team().unwrap()), 2);
+
+        // Away to move — the bot's turn, from the same board: the overlay
+        // flips sides rather than staying pinned to whichever team the
+        // browser plays.
+        let mut bot_turn = v.clone();
+        bot_turn.to_act = Some(PTeam::Away);
+        assert_eq!(bot_turn.threat_team(), Some(PTeam::Home));
+
+        // `to_act` wins over `team_turn`, because it does not always agree
+        // with it — an uphill block's dice are picked by the defender.
+        let mut mid_procedure = v.clone();
+        mid_procedure.to_act = None;
+        mid_procedure.scoreboard.team_turn = PTeam::Away;
+        assert_eq!(mid_procedure.threat_team(), Some(PTeam::Home));
+    }
+
+    /// Nothing to paint when nobody is choosing where to put a player: a
+    /// kickoff, a dice prompt, or after the whistle.
+    #[test]
+    fn no_tackle_zones_when_no_move_is_on_offer() {
+        let mut over = a_position();
+        over.info.game_over = true;
+        assert_eq!(view_of(&over).threat_team(), None);
+
+        let mut state = a_position();
+        state.info.game_over = false;
+        let v = view_of(&state);
+        assert!(v.moves_offered());
+        // Strip the offers the way a mid-procedure state does, and the layer
+        // goes away with them.
+        let mut bare = v.clone();
+        for sq in bare.squares.iter_mut() {
+            sq.actions.clear();
+        }
+        assert!(!bare.moves_offered());
+        assert_eq!(bare.threat_team(), None);
     }
 
     #[test]

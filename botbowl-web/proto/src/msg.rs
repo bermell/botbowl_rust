@@ -257,11 +257,52 @@ pub struct LobbyInfo {
     pub server: String,
 }
 
+/// How fast the session is allowed to run through the steps the human does
+/// not answer — the bot's moves and the engine's own dice.
+///
+/// `Run` is the original behaviour: one click plays the bot's whole reply.
+/// The other two exist because that is unwatchable — the board jumps from
+/// your move to the bot's finished turn with no way to see the order things
+/// happened in, or to open the inspector on the search that produced them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StepMode {
+    /// Play on until the human has something to decide.
+    #[default]
+    Run,
+    /// Hold before every step and wait for [`ClientMsg::StepOnce`].
+    Manual,
+    /// Hold `ms` before every step, then take it.
+    Auto { ms: u64 },
+}
+
+impl StepMode {
+    pub fn label(self) -> String {
+        match self {
+            StepMode::Run => "run".into(),
+            StepMode::Manual => "step".into(),
+            StepMode::Auto { ms } => format!("auto {ms} ms"),
+        }
+    }
+
+    /// The delay an `Auto` mode waits, for a speed control to read back.
+    pub fn millis(self) -> Option<u64> {
+        match self {
+            StepMode::Auto { ms } => Some(ms),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMsg {
     NewGame(GameSpec),
     Act(Action),
     Undo,
+    /// Change how the session paces itself. Takes effect immediately, even
+    /// while it is already holding.
+    SetStepMode(StepMode),
+    /// Take one held step. Ignored when the session is not holding.
+    StepOnce,
     /// Walk into the cached search DAG. The path is the edge sequence from
     /// the root of the search identified by `search_id` — which must be the
     /// *most recent* one, because that is the only tree the bot keeps.

@@ -6,7 +6,7 @@
 //! view preferences (which overlay is on, which square's menu is open).
 
 use botbowl_web_proto::dice::{DiceEvent, RollResult};
-use botbowl_web_proto::msg::{GameSpec, LobbyInfo};
+use botbowl_web_proto::msg::{GameSpec, LobbyInfo, StepMode};
 use botbowl_web_proto::search::{NodeExpansion, SearchReport};
 use botbowl_web_proto::view::ViewState;
 use botbowl_web_proto::{Action, Position, TeamType};
@@ -28,7 +28,10 @@ pub enum Overlay {
     Moves,
     /// Path success probability, green → red.
     Risk,
-    /// Opposing tackle zones.
+    /// Force the tackle-zone layer on. The layer paints itself whenever
+    /// somebody is choosing a move (see `ViewState::threat_team`); this shows
+    /// it the rest of the time too — during a kickoff, a dice prompt, or the
+    /// bot's think — when you want to read the board rather than play it.
     TackleZones,
     /// Where the bot's search spent its visits.
     BotVisits,
@@ -52,7 +55,7 @@ impl Overlay {
         match self {
             Overlay::Moves => "Moves",
             Overlay::Risk => "Risk",
-            Overlay::TackleZones => "Tackle zones",
+            Overlay::TackleZones => "Tackle zones (always)",
             Overlay::BotVisits => "Bot visits",
             Overlay::BotPriors => "Bot priors",
             Overlay::None => "Plain",
@@ -99,6 +102,13 @@ pub struct App {
     pub game_over: RwSignal<Option<(Option<TeamType>, u8, u8)>>,
     pub pinned: RwSignal<Option<RollResult>>,
     pub saved: RwSignal<Option<String>>,
+    /// How the server is pacing the bot. Set from the step control and then
+    /// echoed back on every view, which is the authority; kept here because
+    /// it outlives one game — "New game" keeps the pacing you chose.
+    pub step_mode: RwSignal<StepMode>,
+    /// The `Auto` delay the speed slider last showed, remembered while
+    /// another mode is selected so switching back does not reset it.
+    pub step_ms: RwSignal<u64>,
 
     // ---- local view state, never sent anywhere
     pub overlay: RwSignal<Overlay>,
@@ -135,6 +145,8 @@ impl App {
             game_over: RwSignal::new(None),
             pinned: RwSignal::new(None),
             saved: RwSignal::new(None),
+            step_mode: RwSignal::new(StepMode::default()),
+            step_ms: RwSignal::new(600),
             overlay: RwSignal::new(Overlay::default()),
             menu: RwSignal::new(None),
             hover: RwSignal::new(None),
@@ -144,10 +156,24 @@ impl App {
     }
 
     /// True while the human is the one being asked something.
+    ///
+    /// A held step is not one of those moments even when `to_act` still names
+    /// the human: the engine is standing on a roll it has not made, and the
+    /// server would reject an action. Stepping made those boards visible for
+    /// the first time, so the check has to be here.
     pub fn my_turn(&self) -> bool {
-        self.view
-            .get()
-            .is_some_and(|v| v.to_act == Some(v.human) && !v.scoreboard.game_over && !v.bot_thinking)
+        self.view.get().is_some_and(|v| {
+            v.to_act == Some(v.human)
+                && !v.scoreboard.game_over
+                && !v.bot_thinking
+                && !v.paused
+                && v.pending_roll.is_none()
+        })
+    }
+
+    /// True while the server is holding before a step it could take.
+    pub fn paused(&self) -> bool {
+        self.view.get().is_some_and(|v| v.paused)
     }
 
     pub fn error(&self, message: String) {

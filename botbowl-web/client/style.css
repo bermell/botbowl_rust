@@ -172,8 +172,20 @@ button:disabled { opacity: .4; cursor: default; }
 }
 .sq.tint-move::before { background: #d9ff7a; }
 .sq.tint-risk::before { background: #ff6a5a; }
-.sq.tint-tz::before { background: #ff3b6b; }
 .sq.tint-bot::before { background: #ffd166; }
+
+/* Tackle zones on the mover's opponent's side, banded green/yellow/red by
+   how many. Its own layer rather than one of the tints above: it is on
+   whenever somebody is choosing a move, so it has to coexist with whichever
+   overlay is selected. Kept translucent, and under the sprites. */
+/* No z-index: it is the square's first child, so the sprites that follow it
+   in the DOM paint on top and the players stay readable. */
+.sq .tz { position: absolute; inset: 0; pointer-events: none; }
+/* Each band gets a ring as well as a wash: a green wash on a green pitch is
+   nearly invisible on its own, and the count is the part worth reading. */
+.sq .tz-1 { background: rgba(80, 240, 140, .26); box-shadow: inset 0 0 0 2px rgba(80, 240, 140, .55); }
+.sq .tz-2 { background: rgba(250, 205, 60, .30); box-shadow: inset 0 0 0 2px rgba(250, 205, 60, .65); }
+.sq .tz-3 { background: rgba(255, 70, 70, .34); box-shadow: inset 0 0 0 2px rgba(255, 70, 70, .75); }
 
 .sq.actionable { cursor: pointer; }
 .sq.actionable::after {
@@ -219,6 +231,20 @@ button:disabled { opacity: .4; cursor: default; }
   animation: spin .7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.steps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.steps .label { color: var(--ink-dim); }
+.steps .pace { padding: 4px 10px; font-size: 12px; }
+.steps .pace.on { border-color: var(--accent); color: var(--accent); }
+.steps input[type="range"] { width: 120px; accent-color: var(--accent); }
+.steps .ms { color: var(--ink-dim); font-variant-numeric: tabular-nums; min-width: 52px; }
+.steps .stepone { display: flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; }
+.steps .stepone:disabled { opacity: .45; }
+.steps .key {
+  display: inline-block; min-width: 14px; text-align: center;
+  background: var(--line); border-radius: 3px; font-size: 10px; padding: 0 3px;
+}
+.steps .held { color: var(--accent); }
 
 .overlays { display: flex; gap: 6px; flex-wrap: wrap; }
 .overlay { display: flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; }

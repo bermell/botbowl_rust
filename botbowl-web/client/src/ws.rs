@@ -99,6 +99,12 @@ fn handle(app: App, msg: ServerMsg) {
             if fresh {
                 app.thinking.set(None);
                 app.menu.set(None);
+                // The server is the authority on pacing — it may have clamped
+                // or carried a mode across a new game.
+                app.step_mode.set(view.step_mode);
+                if let Some(ms) = view.step_mode.millis() {
+                    app.step_ms.set(ms);
+                }
                 app.view.set(Some(*view));
             }
         }

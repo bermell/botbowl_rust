@@ -39,6 +39,14 @@ and the client draws it. Two things fall out of that:
   unit-tested against `GameStateBuilder` positions and fuzzed over whole random games
   (`tests/derive_every_state.rs`).
 
+Anything the client draws from the view but does not *fetch* is a method on `ViewState`, not a
+helper in the client — `mover()`, `moves_offered()`, `threat_team()` decide the tackle-zone layer
+and are unit-tested in `server/src/view.rs` against real positions. The layer paints the zones of
+the mover's **opponent**, so it flips sides on its own when the bot is the one choosing; `mover()`
+reads `to_act` before `team_turn` because the two disagree (an uphill block's dice are picked by
+the defender). `threat_team` is `None` outside a move phase, so a kickoff or a dice prompt is not
+covered in colour. Resolve it **once per board**, not once per square: it scans every square.
+
 The price is that `proto` hand-mirrors the engine's action and dice enums. `server/src/mirror.rs`
 pays it: every conversion is an **exhaustive match with no wildcard arm**, so adding an engine
 variant is a compile error there, and every variant round-trips in its tests.
@@ -59,6 +67,20 @@ inside the call, so it must not run on the async runtime. Channels in, channels 
   point, so one undo rewinds across the bot's whole reply. No engine involvement. `MctsBot`'s
   cached tree stops matching its anchor after an undo and discards itself, which costs a wasted
   reuse and nothing else.
+- **The hold sits in front of a step, never behind it** (`StepMode`). `advance` used to loop until
+  the human had something to decide, which made the bot's whole reply arrive as one jump. It now
+  asks `hold()` before each step it takes on the human's behalf — a die or a bot move — and under
+  `Manual`/`Auto` returns to the run loop instead. In front, because that way the board on screen
+  is always the *finished* result of the previous step, the search report beside it belongs to the
+  move about to be played, and a hold never stands between the human and their own next decision.
+  Releasing is `StepOnce`, or the `Auto` deadline, or switching to `Run`; changing speed re-arms
+  the hold without taking a step. Because the hold returns to the run loop rather than sleeping
+  inside `advance`, undo, roll pinning and `ExpandNode` all keep working while it holds — which is
+  the whole point, since inspecting the tree mid-turn is why the pacing exists.
+  - The pacing lives on the **connection**, not the session: it is set from the game screen, must
+    survive "New game", and a `SetStepMode` can arrive before the first `NewGame`.
+  - `Auto` polls with `try_recv` on a 5 ms tick rather than `tokio::time::timeout`, because this
+    thread is a `spawn_blocking` worker that must not touch the async runtime.
 - **A panicking session is reported, not silent.** The engine and the bots are full of `assert!`s;
   before `ws.rs` learned to select on the session handle, a panic left the socket open and the
   browser clicking into a dead thread.

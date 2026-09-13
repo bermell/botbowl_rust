@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::{PosAT, Position, SimpleAT, TeamType};
 use crate::dice::{NumBlockDices, RequestedRoll};
+use crate::msg::StepMode;
 
 /// The runtime board. `width`/`height` are the **engine** dims, i.e. playable
 /// plus the 2-cell out-of-bounds border, so a `Position` indexes the grid
@@ -329,6 +330,12 @@ pub struct ViewState {
     pub setup_legal: Option<bool>,
     /// True while a bot search is running.
     pub bot_thinking: bool,
+    /// How the session is pacing the steps the human does not answer.
+    pub step_mode: StepMode,
+    /// True while the session is holding *before* a step it could take —
+    /// so this board is the result of the previous one, and the step control
+    /// is live.
+    pub paused: bool,
 }
 
 impl ViewState {
@@ -339,5 +346,32 @@ impl ViewState {
     /// Every square that offers at least one positional action.
     pub fn actionable(&self) -> impl Iterator<Item = &SquareView> {
         self.squares.iter().filter(|s| !s.actions.is_empty())
+    }
+
+    /// Whoever is choosing right now — the human, or the bot mid-turn.
+    /// `to_act` is the authority (an uphill block's dice are picked by the
+    /// *defender*, not by whoever's turn it is), with `team_turn` as the
+    /// fallback for mid-procedure states where nobody is being asked yet.
+    pub fn mover(&self) -> TeamType {
+        self.to_act.unwrap_or(self.scoreboard.team_turn)
+    }
+
+    /// True while somebody is being offered somewhere to move a player to.
+    /// Push and follow-up placements do not count: the mover has no choice
+    /// left to make about tackle zones by then.
+    pub fn moves_offered(&self) -> bool {
+        self.squares.iter().any(|s| {
+            s.actions
+                .iter()
+                .any(|at| at.is_start() || matches!(at, PosAT::Move | PosAT::Block | PosAT::Handoff))
+        })
+    }
+
+    /// Whose tackle zones the board should paint: the *opponent* of whoever
+    /// is currently picking a move, because those are the zones that make the
+    /// move harder. `None` when nobody is picking one, so the overlay does not
+    /// clutter a kickoff or a dice prompt.
+    pub fn threat_team(&self) -> Option<TeamType> {
+        (!self.scoreboard.game_over && self.moves_offered()).then(|| self.mover().other())
     }
 }
