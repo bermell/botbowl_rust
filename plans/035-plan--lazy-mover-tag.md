@@ -1,7 +1,9 @@
 # Plan 035 — Lazy mover tag: delete `peek_mover`
 
-**Status:** Not started. Reviewed 2026-09-13 against `tree.rs` / `dynamics.rs`; corrections folded in
-(see "Review notes" at the end for what changed and why).
+**Status:** **Done, 2026-09-13.** Implemented as specified; every work item landed and every test
+gate is green. Results and the two corrections the measurement forced are in "Outcome" at the end —
+read that first, the body below is the design as written beforehand. Reviewed 2026-09-13 against
+`tree.rs` / `dynamics.rs`; corrections folded in (see "Review notes").
 
 **One line.** The child's `BbPlayer` tag is never read while the child is still a placeholder, so it
 does not need to be known at enumeration time. Move its computation to `materialize_placeholder`,
@@ -305,3 +307,95 @@ does remove the placeholder without touching its tag. The equivalence argument s
   committed or stashed before the before-reading.
 - **Justification section added** — the change cannot improve strength at a fixed budget by
   construction, so the plan has to name the wall-clock consumer it serves.
+
+---
+
+## Outcome (2026-09-13)
+
+Implemented as designed. `peek_mover` is gone; `GameDynamics::player_for_child` has the signature
+proposed above (no `parent_state`); `Node.player` is a `OnceLock<P>`; `NodeInfo.player` is
+`Option<P>`; `botbowl-web/proto`'s `NodePlayer` gained a `Pending` variant. All ten `GameDynamics`
+impls updated, including `expand_bench.rs`'s `CountingDynamics`, which **forwards**
+`player_for_child` to its inner dynamics.
+
+### The instrument was broken, and fixing it was the first real work
+
+The plan assumed `expand_bench.rs`'s `apply_action/step` was the before-reading. It was not.
+`CountingDynamics` wraps the dynamics recon_mcts calls, so it counts only the `apply_action`s
+**recon_mcts** makes — and `peek_mover` called `BloodBowlDynamics::apply_action` *directly*, through
+the inner value. The wrapper never saw a single one of them. Its `apply_action/step` read 5.00 and
+3.25 before the refactor and 5.00 and 3.25 after it: a number that could not have moved, measuring
+a cost that was entirely invisible to it.
+
+Fix: an `expand_bench`-gated `ENGINE_APPLY_ACTIONS` counter **inside** `BloodBowlDynamics::apply_action`,
+reported as `engine_apply_action/step`. Two caveats worth knowing, both learned the hard way:
+
+- It is process-wide, so two bench tests running concurrently contaminate each other's delta. The
+  first "before" reading was wrong for this reason (it read 11.54 / 22.57). Take the reading with
+  one scenario per cargo invocation, or `--test-threads=1`. Documented at the call site.
+- Because the wrapper forwards, `engine_apply_action >= apply_action` always; equality is the
+  post-refactor ideal, and it is what we now get exactly.
+
+### T5 — measured, release, horizon-bounded, 1 worker, `--test-threads=1`
+
+Before from a worktree at the baseline commit `7a09b19`, after from the refactor, same machine,
+same session:
+
+| scenario | engine `apply_action`/step | | descent applies/step | µs/step | |
+|---|---|---|---|---|---|
+| | before | after | (both) | before | after |
+| `score_td_easy@1k` | 6.70 | **5.00** (−25%) | 5.00 | 157.5 | **127.6** (−19%) |
+| `full_teams@1k` | 15.87 | **3.25** (−80%) | 3.25 | 1057.3 | **251.6** (−76%, 4.2x) |
+
+Engine advances now equal the descent's own, exactly — zero wasted work, which is the strongest
+form the claim could take. The win is concentrated where the plan predicted: `full_teams` is the
+30+-action mid-turn fan, `score_td_easy` is a sparse scenario whose expansions are mostly narrow
+chance nodes, and the split between them (12.62 vs 1.70 wasted advances per step) is just the mean
+post-pruning branching factor of each.
+
+The premise was therefore *stronger* than the plan's hedge allowed for, and the "park the plan if
+`apply_action/step` is low" branch never triggered.
+
+### T1/T4 — `recon_mcts/tests/player_tag.rs` (new)
+
+`navigate.rs`'s `Chain` is a **single-player** game, so the assertion the plan wanted to put there
+("every materialised node's player equals what `player_for_child` would give") would have been
+vacuously true. Put it in a new file on a two-player `Countdown` game whose mover alternates
+independently of its state — the same property that makes nim the generality check — with a
+minimax `backprop_scores` so a wrong tag is an actual min/max flip:
+
+- `an_unmaterialised_placeholder_reports_no_player` — after one `step()`, every root child reports
+  `player: None`, `score: None`, `n_children: Pending`.
+- `every_materialised_node_carries_the_tag_player_for_child_would_give` — walks the solved DAG and
+  checks each edge.
+
+### T2 — byte-exact, full matrix
+
+`botbowl-mcts/tests/lazy_mover_identity.rs`, goldens blessed on master in `7a09b19` *before* any
+code changed, then required to pass unchanged. **Green byte-for-byte** across the whole matrix:
+40 states x {200, 1000} x {`Heuristic`, `Nn(tiny.onnx)`}. No diff at all — not even the benign
+`Q = None` ordering difference the plan budgeted for.
+
+Incidentally the gate's own wall-clock went 52.8s → 32.0s on the same machine in the same session,
+which is the refactor measured end-to-end through a real bot.
+
+Kept as specified: `search_output_unchanged_heuristic_200` (default-on, ~17s in debug) and the
+`#[ignore]`d `search_output_unchanged_full_matrix`.
+
+### T3, T4 (nim), T6, T7
+
+- **T3** `apply_action_is_pure_and_deterministic` added to `mirror_apply_action.rs`, green on
+  master before the refactor and after it.
+- **T4** `cd recon_mcts && cargo test` green, nim included.
+- **T6/T7** `cargo test --workspace` — 54 test binaries, 0 failures. The multi-worker `--ignored`
+  bot benchmark suite run before and after; no panics from `Node::player()`'s `expect` and no
+  `on_drop` assertions.
+
+### Answers to the open questions
+
+- `hash_for` keeps hashing the player. Confirmed by T2: the hash inputs are unchanged, which is
+  *why* node identity and `deterministic_hash` iteration order came out bit-identical.
+- Exposing the tag on `ChildStat` / the web inspector: work item 7 made it nearly free after all —
+  `NodeStats.player` is now `Option<BbPlayer>` and the inspector already renders it via `{:?}`, so a
+  placeholder reads as `None` there and as `NodePlayer::Pending` on the wire. Not lifted onto
+  `ChildStat`; still deferred.

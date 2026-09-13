@@ -22,7 +22,9 @@ Note: `tests/nim/` is a **separate workspace member** so it can be compiled with
 
 ## Architecture — DAG-shaped concurrent MCTS
 
-The core abstraction is the `GameDynamics` trait (see crate-level doc-comment in `src/lib.rs`). Implementors define `Player`, `State`, `Action`, `Score`, plus `available_actions`, `apply_action`, `select_node`, `score_leaf`, `backprop_scores`. The library handles the tree.
+The core abstraction is the `GameDynamics` trait (see crate-level doc-comment in `src/lib.rs`). Implementors define `Player`, `State`, `Action`, `Score`, plus `available_actions`, `player_for_child`, `apply_action`, `select_node`, `score_leaf`, `backprop_scores`. The library handles the tree.
+
+**`available_actions` returns bare actions; the mover comes from `player_for_child` (plan 035).** A node's tag names the mover of that node itself, and it is derived once, at materialisation, from `(parent_player, action, child_state)` — not at enumeration time. The old contract had `ActionIter::Item = (Player, Action)`, which forced an implementation to pre-compute each candidate's resulting state just to name its mover: in botbowl that was one full engine advance per candidate at every expansion, discarded immediately, exactly undoing lazy expansion. `Node.player` is therefore a `OnceLock<P>` — `Node::player()` panics (in release too) if anything reads it before materialisation, and `NodeInfo.player` is `Option<P>` because the inspection API can legitimately see an un-descended placeholder. `player_for_child` must be **pure**, like `apply_action`: node identity hashes `(player, state)`, so an impure tag splits the DAG. `tests/player_tag.rs` pins both halves.
 
 Distinctive design points to keep in mind when touching this crate:
 

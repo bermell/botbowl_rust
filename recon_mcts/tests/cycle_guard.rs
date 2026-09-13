@@ -24,14 +24,24 @@ impl GameDynamics for CycleGame {
     type State = u8;
     type Action = u8;
     type Score = f64;
-    type ActionIter = Vec<(Self::Player, Self::Action)>;
+    type ActionIter = Vec<Self::Action>;
 
     fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
-        Some(vec![(P, (state + 1) % 2)])
+        Some(vec![(state + 1) % 2])
     }
 
     fn apply_action(&self, _state: Self::State, action: &Self::Action) -> Option<Self::State> {
         Some(*action)
+    }
+
+    /// One player, so the tag never changes.
+    fn player_for_child(
+        &self,
+        _parent_player: &Self::Player,
+        _action: &Self::Action,
+        _child_state: &Self::State,
+    ) -> Self::Player {
+        P
     }
 
     fn select_node<II, Q, A>(

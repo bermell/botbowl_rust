@@ -110,9 +110,9 @@ fn search_transitions_are_mirror_invariant() {
             // The enumerated sets themselves must mirror.
             let mut want: Vec<String> = acts
                 .iter()
-                .filter_map(|(_, a)| mirror_bb_action(dims, a).map(|b| format!("{b:?}")))
+                .filter_map(|a| mirror_bb_action(dims, a).map(|b| format!("{b:?}")))
                 .collect();
-            let mut got: Vec<String> = acts_m.iter().map(|(_, a)| format!("{a:?}")).collect();
+            let mut got: Vec<String> = acts_m.iter().map(|a| format!("{a:?}")).collect();
             if want.len() == got.len() {
                 want.sort();
                 got.sort();
@@ -124,7 +124,7 @@ fn search_transitions_are_mirror_invariant() {
                 }
             }
 
-            let (_, a) = acts.choose(&mut rng).expect("non-empty");
+            let a = acts.choose(&mut rng).expect("non-empty");
             let Some(am) = mirror_bb_action(dims, a) else { break };
             let Some(next_s) = gd_s.apply_action(s.clone(), a) else {
                 break;
@@ -203,7 +203,7 @@ fn apply_action_is_pure_and_deterministic() {
         let Some(acts) = gd.available_actions(&player_of(&s), &s) else {
             continue;
         };
-        for (_, a) in acts.iter() {
+        for a in acts.iter() {
             let first = gd.apply_action(s.clone(), a);
             let second = gd.apply_action(s.clone(), a);
             checked += 1;
@@ -213,7 +213,9 @@ fn apply_action_is_pure_and_deterministic() {
                     if x != y {
                         failures.push(format!("state {i} action {a:?}: two applies gave different states"));
                     } else if player_of(&x) != player_of(&y) {
-                        failures.push(format!("state {i} action {a:?}: mover tag is not a function of the state"));
+                        failures.push(format!(
+                            "state {i} action {a:?}: mover tag is not a function of the state"
+                        ));
                     }
                 }
                 (f, sec) => failures.push(format!(

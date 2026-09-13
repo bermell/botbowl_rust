@@ -76,7 +76,7 @@ impl GameDynamics for Game2048Dynamics {
     type Action = ActionChance;
 
     type Score = ScoreItem;
-    type ActionIter = Vec<(Self::Player, Self::Action)>;
+    type ActionIter = Vec<Self::Action>;
 
     fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         match state.state {
@@ -85,17 +85,26 @@ impl GameDynamics for Game2048Dynamics {
                 state
                     .available_action()
                     .iter()
-                    .map(|x| ((), ActionChance::Action(*x)))
+                    .map(|x| ActionChance::Action(*x))
                     .collect(),
             ),
             GameState::WaitingForRandom => Some(
                 state
                     .available_chance()
                     .iter()
-                    .map(|x| ((), ActionChance::Chance(x.0, x.1, x.2)))
+                    .map(|x| ActionChance::Chance(x.0, x.1, x.2))
                     .collect(),
             ),
         }
+    }
+
+    /// Single-player: `Player = ()`, so there is nothing to derive.
+    fn player_for_child(
+        &self,
+        _parent_player: &Self::Player,
+        _action: &Self::Action,
+        _child_state: &Self::State,
+    ) -> Self::Player {
     }
 
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {

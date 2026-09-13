@@ -14,7 +14,9 @@
 //! *own* player instead reads as a sign flip at every ply — a root at `+0.27`
 //! whose best child says `-0.27` looks like the bot picked the worst move,
 //! when both numbers say the same thing about the same position. The node's
-//! own player is still reported, in [`NodeStats::player`].
+//! own player is still reported, in [`NodeStats::player`] — as an `Option`,
+//! since a node the search enumerated but never descended into has no mover
+//! yet (plan 035).
 //!
 //! Visit counts are "descents through this node", cumulative across reused
 //! trees within a turn, and `recon_mcts` freezes them once a subtree is
@@ -46,7 +48,13 @@ pub struct NodeStats {
     pub solved: bool,
     /// No children: terminal, or past the search horizon.
     pub terminal: bool,
-    pub player: BbPlayer,
+    /// Whose move it is at this node — `None` while the node is an
+    /// unmaterialised placeholder (enumerated, never descended into). Plan
+    /// 035: the mover is derived from the child *state*, which does not
+    /// exist until the first descent computes it. Such a node also reads
+    /// 0 visits and no Q, so "pending" is the honest rendering, not a
+    /// regression.
+    pub player: Option<BbPlayer>,
     pub depth: usize,
     pub n_parents: usize,
     /// `None` when the node has not been expanded.

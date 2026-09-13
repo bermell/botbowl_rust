@@ -752,40 +752,12 @@ fn player_for_state(state: &GameState) -> BbPlayer {
     }
 }
 
-/// The tag `available_actions` attaches to each returned action must name
-/// the player who owns the *resulting* node (recon_mcts's contract — see
-/// `tests/nim/lib.rs::available_actions`, which tags every action with the
-/// *other* player, never the current one). Plan 023: this was tagging every
-/// action with the current node's own mover (chance outcomes always
-/// `BbPlayer::Chance`, player actions always the acting team), which is
-/// only an accident of "the same team usually keeps moving" — it is wrong
-/// the instant an action resolves into a pending roll, a turnover, or (for
-/// a chance outcome) a genuine follow-up decision like a push square. That
-/// wrong tag then feeds `select_node`'s `home_perspective` and
-/// `backprop_scores`'s `want_max` *directly*, silently mis-evaluating
-/// exactly whichever physical side is `TeamType::Home` in that instance —
-/// the search would sometimes minimise a Home decision or maximise an Away
-/// one. Determining the true tag costs one extra `apply_action` per
-/// candidate (state is cheap to clone relative to correctness here, and
-/// `make_branch` was going to apply it again anyway) — accepted per this
-/// repo's "bot capability over performance" priority.
-fn peek_mover(dynamics: &BloodBowlDynamics, state: &GameState, action: &BbAction) -> BbPlayer {
-    match dynamics.apply_action(state.clone(), action) {
-        Some(next) => player_for_state(&next),
-        // `apply_action` only returns `None` for a move that turns out to
-        // be illegal once actually resolved (pathfinding etc.) — recon_mcts
-        // treats that as "not really an action" and never scores this
-        // node, so the tag is moot; `Chance` is the conservative default.
-        None => BbPlayer::Chance,
-    }
-}
-
 impl GameDynamics for BloodBowlDynamics {
     type Player = BbPlayer;
     type State = GameState;
     type Action = BbAction;
     type Score = BbScore;
-    type ActionIter = Vec<(Self::Player, Self::Action)>;
+    type ActionIter = Vec<Self::Action>;
 
     // TODO: there are currently a few things left to do here.
     //  - Action filtering: with domain knowledge we can prune some action that we know to be bad
@@ -810,19 +782,18 @@ impl GameDynamics for BloodBowlDynamics {
             }
         }
 
-        // Chance node: enumerate roll outcomes. Each outcome is tagged
-        // with *its own resulting node's* mover, not `Chance` — see
-        // `peek_mover`. Most rolls (scripted/collapsed) resolve into the
-        // same team's next decision or a pending follow-up roll; only the
-        // true pass/fail branches and turnover-causing failures actually
-        // change it, and only `peek_mover` knows which.
+        // Chance node: enumerate roll outcomes. Each outcome's own
+        // resulting mover is derived later, in `player_for_child`, once the
+        // child state exists — most rolls (scripted/collapsed) resolve into
+        // the same team's next decision or a pending follow-up roll, but the
+        // true pass/fail branches and turnover-causing failures change it.
         if state.pending_roll.is_some() {
             let outcomes = roll_outcomes::enumerate(state, state.pending_roll.as_ref().unwrap());
-            return Some(outcomes.into_iter().map(|a| (peek_mover(self, state, &a), a)).collect());
+            return Some(outcomes);
         }
 
         // Player node: copy engine's available actions. `team` only gates
-        // presence here — each action's own tag comes from `peek_mover`.
+        // presence here — each child's own tag comes from `player_for_child`.
         state.available_actions.team?;
         // Block-die picks and other scripted player decisions are
         // resolved inside `apply_action`'s quiescent-advance loop
@@ -864,24 +835,48 @@ impl GameDynamics for BloodBowlDynamics {
             }
             Evaluator::Nn(nn) => nn.priors(state, &filtered),
         };
-        // Tagged with the *resulting* node's mover (see `peek_mover`), not
-        // `mcts_player` (this node's own mover) — most actions keep the
-        // same team moving, but an action that resolves straight into a
-        // pending roll, a turnover, or `EndTurn` hands the tag to `Chance`
-        // or the other team instead.
-        let actions: Vec<(BbPlayer, BbAction)> = filtered
+        let actions: Vec<BbAction> = filtered
             .into_iter()
             .zip(priors)
-            .map(|(a, prior)| {
-                let bb_action = BbAction::player(a, prior);
-                (peek_mover(self, state, &bb_action), bb_action)
-            })
+            .map(|(a, prior)| BbAction::player(a, prior))
             .collect();
         if actions.is_empty() {
             None
         } else {
             Some(actions)
         }
+    }
+
+    /// The mover at the child reached by `action`.
+    ///
+    /// recon_mcts's contract is that a node's tag names the mover of the
+    /// *resulting* node, not the node the action was enumerated at (see
+    /// `recon_mcts::GameDynamics::player_for_child`). It feeds
+    /// `select_node`'s `home_perspective` and `backprop_scores`'s `want_max`
+    /// directly, so getting it wrong silently minimises a Home decision or
+    /// maximises an Away one — plan 023 found exactly that bug, on the
+    /// transitions that matter (turnovers, rolls, follow-up decisions like a
+    /// push square after a `Pow`).
+    ///
+    /// For Blood Bowl the resulting state names its own mover, so neither
+    /// `parent_player` nor `action` is needed: a pending roll means `Chance`,
+    /// otherwise the engine's `available_actions.team` says whose move it is.
+    /// Plan 035: `child_state` is handed to us by `recon_mcts` at
+    /// materialisation, so this is now free. Plan 023's `peek_mover` had to
+    /// run a full `apply_action` **per candidate action at every expansion**
+    /// to reach the same state — 6.9x the descent's own engine work on a
+    /// wide mid-turn fan, all of it thrown away.
+    ///
+    /// Pure by construction (`player_for_state` reads two fields), which the
+    /// recombination invariant requires — an impure tag splits the DAG,
+    /// since node identity hashes `(player, state)`.
+    fn player_for_child(
+        &self,
+        _parent_player: &Self::Player,
+        _action: &Self::Action,
+        child_state: &Self::State,
+    ) -> Self::Player {
+        player_for_state(child_state)
     }
 
     /// Diagnostics only (recon_mcts cycle dump). A compact situation
@@ -2307,7 +2302,11 @@ impl MctsBot {
             let Some(node) = self.explore(&path, false) else {
                 break;
             };
-            let player = node.stats.player;
+            // A node with no mover yet is an unmaterialised placeholder, and a
+            // placeholder has no children — so `max_by` below sees an empty
+            // iterator and the line ends here regardless of what we pass.
+            // `Chance` is the inert choice (`mover_sign` → 0).
+            let player = node.stats.player.unwrap_or(BbPlayer::Chance);
             let best = node.children.into_iter().max_by(|a, b| Self::pv_better(a, b, player));
             match best {
                 Some(edge) => {

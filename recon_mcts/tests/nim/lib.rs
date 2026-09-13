@@ -75,21 +75,19 @@ impl Clone for Score {
 
 #[doc(hidden)]
 pub struct ActionIter {
-    player: Player,
     nums: std::ops::RangeInclusive<usize>,
 }
 
 impl ActionIter {
-    fn new(player: Player, max: usize) -> Self {
-        Self { player, nums: 1..=max }
+    fn new(max: usize) -> Self {
+        Self { nums: 1..=max }
     }
 }
 
 impl Iterator for ActionIter {
-    type Item = (Player, usize);
+    type Item = usize;
     fn next(&mut self) -> Option<Self::Item> {
-        let a = self.nums.next()?;
-        Some((self.player.clone(), a))
+        self.nums.next()
     }
 }
 
@@ -114,10 +112,23 @@ impl GameDynamics for Nim {
     // https://github.com/rust-lang/rust/issues/63063
     type ActionIter = ActionIter;
 
-    fn available_actions(&self, player: &Self::Player, _state: &Self::State) -> Option<Self::ActionIter> {
-        match player {
-            Player::P1 => Some(ActionIter::new(Player::P2, self.max_move)),
-            Player::P2 => Some(ActionIter::new(Player::P1, self.max_move)),
+    fn available_actions(&self, _player: &Self::Player, _state: &Self::State) -> Option<Self::ActionIter> {
+        Some(ActionIter::new(self.max_move))
+    }
+
+    /// Nim is the reason `player_for_child` takes the parent's player rather
+    /// than being a function of the child state: `State` is the pile count,
+    /// and the mover alternates independently of it. A `player_for_state`
+    /// signature would be unimplementable here.
+    fn player_for_child(
+        &self,
+        parent_player: &Self::Player,
+        _action: &Self::Action,
+        _child_state: &Self::State,
+    ) -> Self::Player {
+        match parent_player {
+            Player::P1 => Player::P2,
+            Player::P2 => Player::P1,
         }
     }
 
@@ -560,8 +571,8 @@ mod test {
 
             // `node_info` is called after `apply_best_action` so `node_info.player` is the next
             // player after action `a` is applied
-            if node_info.player == Player::P2 && node_info.score.as_ref().unwrap().player1 > 0.8
-                || node_info.player == Player::P1 && node_info.score.as_ref().unwrap().player2 > 0.8
+            if node_info.player == Some(Player::P2) && node_info.score.as_ref().unwrap().player1 > 0.8
+                || node_info.player == Some(Player::P1) && node_info.score.as_ref().unwrap().player2 > 0.8
             {
                 assert_eq!(0, node_info.state.unwrap() % (MAX_MOVE + 1));
             }

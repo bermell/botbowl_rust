@@ -269,11 +269,23 @@ impl GameDynamics for CountingDynamics {
     type State = GameState;
     type Action = BbAction;
     type Score = BbScore;
-    type ActionIter = Vec<(BbPlayer, BbAction)>;
+    type ActionIter = Vec<BbAction>;
 
     fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         self.counters.available_actions.fetch_add(1, Ordering::Relaxed);
         self.inner.available_actions(player, state)
+    }
+
+    /// Must **forward** to the inner dynamics: the whole point of plan 035 is
+    /// that this replaces `peek_mover`'s per-candidate `apply_action`, and a
+    /// wrapper that answered for itself would measure a different search.
+    fn player_for_child(
+        &self,
+        parent_player: &Self::Player,
+        action: &Self::Action,
+        child_state: &Self::State,
+    ) -> Self::Player {
+        self.inner.player_for_child(parent_player, action, child_state)
     }
 
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State> {
@@ -365,6 +377,11 @@ fn run_call_counts_inner(label: &str, state: &mut GameState, iters: usize, with_
     // once per candidate action, at every expansion), and those never reach
     // the wrapper. `ENGINE_APPLY_ACTIONS` counts inside the impl, so the
     // delta below is the true engine-advance count (plan 035 T5).
+    //
+    // **The counter is process-wide**, so two of these tests running
+    // concurrently contaminate each other's delta. Take the reading with one
+    // scenario per cargo invocation (pass a single test-name filter), or with
+    // `--test-threads=1`.
     let engine_aa_before = botbowl_mcts::dynamics::ENGINE_APPLY_ACTIONS.load(Ordering::Relaxed);
     // Mirror MctsBot::get_action's horizon capture (plan 014). Anchor
     // is held constant for the whole search so recombination stays a

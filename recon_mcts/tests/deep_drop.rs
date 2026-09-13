@@ -28,13 +28,13 @@ impl GameDynamics for LineGame {
     type State = u32;
     type Action = u32;
     type Score = f64;
-    type ActionIter = Vec<(Self::Player, Self::Action)>;
+    type ActionIter = Vec<Self::Action>;
 
     fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         if *state < self.len {
             // Actions `k * (len + 1) + (s + 1)` for k in 0..width —
             // distinct actions, identical successor state (recombination).
-            Some((0..self.width).map(|k| (P, k * (self.len + 1) + state + 1)).collect())
+            Some((0..self.width).map(|k| k * (self.len + 1) + state + 1).collect())
         } else {
             None // terminal
         }
@@ -42,6 +42,16 @@ impl GameDynamics for LineGame {
 
     fn apply_action(&self, _state: Self::State, action: &Self::Action) -> Option<Self::State> {
         Some(action % (self.len + 1))
+    }
+
+    /// One player, so the tag never changes.
+    fn player_for_child(
+        &self,
+        _parent_player: &Self::Player,
+        _action: &Self::Action,
+        _child_state: &Self::State,
+    ) -> Self::Player {
+        P
     }
 
     fn select_node<II, Q, A>(

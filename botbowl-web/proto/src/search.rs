@@ -13,12 +13,17 @@ use crate::action::{Action, TeamType};
 use crate::dice::RollResult;
 
 /// Which kind of node an edge leads to. The Blood Bowl search has three
-/// "players": the two teams plus `Chance` for pending-roll nodes.
+/// "players": the two teams plus `Chance` for pending-roll nodes — and
+/// `Pending` for a node the search has enumerated but never descended into,
+/// whose mover is therefore not yet known (it is derived from the child
+/// state, which the search computes lazily). Such a node also reports 0
+/// visits and no Q.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodePlayer {
     Home,
     Away,
     Chance,
+    Pending,
 }
 
 /// One edge out of a search node: either a team's action or a die outcome.

@@ -50,19 +50,54 @@ pub trait GameDynamics {
     /// A type that represents an evaluation of `Self::State`.  This would commonly be a float, but
     /// more elaborate types may be useful for some games, e.g. those with more than two players.
     type Score;
-    /// An iterator used to establish the available actions and next player (note that the player
-    /// can be different for different actions).
+    /// An iterator over the available actions.
+    ///
+    /// The child node's own player is **not** part of this item: the tree derives it via
+    /// [`GameDynamics::player_for_child`] once the child is materialised and its state is known.
+    /// See that method for why.
     ///
     /// If the returned iterator contains a closure, it will need to be boxed on stable Rust until
     /// `#![feature(type_alias_impl_trait)]` is stabilized (see
     /// [#63063](https://github.com/rust-lang/rust/issues/63063) and
     /// [#63066](https://github.com/rust-lang/rust/issues/63066)).
-    type ActionIter: IntoIterator<Item = (Self::Player, Self::Action)>;
+    type ActionIter: IntoIterator<Item = Self::Action>;
 
     /// Convert an input state into the available actions / moves. Return `None` if the game is
     /// over.  If the game is over, the [`GameDynamics::score_leaf`] method
     /// will be called to evaluate the state
+    ///
+    /// Only the actions are returned — the tree tags each resulting node with
+    /// [`GameDynamics::player_for_child`] when it materialises the child, so an implementation
+    /// never has to pre-compute a child state just to name its mover.
     fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter>;
+
+    /// The mover at the child node reached by taking `action` from a node owned by
+    /// `parent_player`. Called once, when the child is materialised.
+    ///
+    /// **Must be a pure function of its arguments** — the tree's recombination invariant depends
+    /// on it, exactly as it does for [`GameDynamics::apply_action`]. An impure tag splits the DAG:
+    /// the mover is hashed together with the state to establish node identity.
+    ///
+    /// The mover is deliberately *not* derived from `child_state` alone. In nim (this crate's own
+    /// test game) `State` is the pile count and the mover alternates independently of it, which is
+    /// also why node identity hashes `(player, state)` rather than the state on its own. Games
+    /// differ in which argument they need:
+    ///
+    /// - nim: `match parent_player { P1 => P2, P2 => P1 }` — ignores action and state.
+    /// - a game whose state names its own mover (e.g. a board with a side-to-move field): read
+    ///   `child_state`.
+    /// - a "pass the turn" action: read `action`.
+    ///
+    /// `parent_state` is not supplied. Nothing has needed it, and it is the one thing the tree
+    /// does not have to hand at materialisation time — recovering it under
+    /// [`state_memory::GetState`](crate::state_memory::GetState) would mean replaying from the
+    /// root.
+    fn player_for_child(
+        &self,
+        parent_player: &Self::Player,
+        action: &Self::Action,
+        child_state: &Self::State,
+    ) -> Self::Player;
 
     /// Modify the state input (i.e. game board) with an action.
     ///
@@ -207,10 +242,18 @@ pub trait BaseGD {
     /// See [`GameDynamics::Score`] for a description of this associated type.
     type Score;
     /// See [`GameDynamics::ActionIter`] for a description of this associated type.
-    type ActionIter: IntoIterator<Item = (Self::Player, Self::Action)>;
+    type ActionIter: IntoIterator<Item = Self::Action>;
 
     /// See [`GameDynamics::available_actions`] for a description of this associated function.
     fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter>;
+
+    /// See [`GameDynamics::player_for_child`] for a description of this associated function.
+    fn player_for_child(
+        &self,
+        parent_player: &Self::Player,
+        action: &Self::Action,
+        child_state: &Self::State,
+    ) -> Self::Player;
 
     /// See [`GameDynamics::apply_action`] for a description of this associated function.
     fn apply_action(&self, state: Self::State, action: &Self::Action) -> Option<Self::State>;
@@ -237,6 +280,16 @@ where
     #[inline(always)]
     fn available_actions(&self, player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         <T as GameDynamics>::available_actions(self, player, state)
+    }
+
+    #[inline(always)]
+    fn player_for_child(
+        &self,
+        parent_player: &Self::Player,
+        action: &Self::Action,
+        child_state: &Self::State,
+    ) -> Self::Player {
+        <T as GameDynamics>::player_for_child(self, parent_player, action, child_state)
     }
 
     #[inline(always)]
@@ -317,6 +370,11 @@ where
     #[inline(always)]
     fn available_actions(&self, player: &T::Player, state: &T::State) -> Option<T::ActionIter> {
         <T as BaseGD>::available_actions(self, player, state)
+    }
+
+    #[inline(always)]
+    fn player_for_child(&self, parent_player: &T::Player, action: &T::Action, child_state: &T::State) -> T::Player {
+        <T as BaseGD>::player_for_child(self, parent_player, action, child_state)
     }
 
     #[inline(always)]

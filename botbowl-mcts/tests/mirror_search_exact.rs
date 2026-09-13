@@ -217,7 +217,10 @@ fn search_mirrors_exactly_at_budget_5() {
 /// next real decision (the push square) is Home's own choice, was tagged
 /// `Chance` and evaluated as if it were Away's, silently minimising instead
 /// of maximising. Fixed via `peek_mover` (one extra `apply_action` per
-/// candidate to read the true resulting mover). Green since.
+/// candidate to read the true resulting mover). Green since. Plan 035 kept
+/// the fix and deleted the mechanism: `recon_mcts` derives the tag itself via
+/// `GameDynamics::player_for_child` at materialisation, where the child state
+/// already exists.
 #[test]
 fn search_mirrors_exactly_at_budget_20() {
     run_at_budget(20, 40, 24_100);

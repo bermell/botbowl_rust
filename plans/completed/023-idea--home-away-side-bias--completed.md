@@ -836,6 +836,16 @@ extra `apply_action` per candidate during expansion (`make_branch` was
 going to call it again anyway to materialise the child) — accepted per
 this repo's bot-capability-over-performance priority; not benchmarked.
 
+> **Mechanism superseded by plan 035 (2026-09-13).** The diagnosis above — the
+> tag must name the *resulting* node's mover — stands unchanged and is still
+> the contract. Only the way it is computed has moved: `recon_mcts`'s
+> `available_actions` now returns bare actions and the tree derives the tag via
+> `GameDynamics::player_for_child` when it materialises the child, where the
+> resulting state is already in hand. `peek_mover` is deleted. The cost it left
+> unbenchmarked was measured on the way out: 15.87 → 3.25 engine advances per
+> step on a wide mid-turn fan, 4.2x throughput, with byte-identical search
+> output (`botbowl-mcts/tests/lazy_mover_identity.rs`).
+
 **Confirmation, in three independent instruments:**
 
 1. **Exact equality.** `search_mirrors_exactly_at_budget_20` — previously

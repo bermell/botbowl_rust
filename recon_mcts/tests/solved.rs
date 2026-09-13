@@ -32,12 +32,12 @@ impl GameDynamics for TwoLevelGame {
     type State = u32;
     type Action = u32;
     type Score = f64;
-    type ActionIter = Vec<(Self::Player, Self::Action)>;
+    type ActionIter = Vec<Self::Action>;
 
     fn available_actions(&self, _player: &Self::Player, state: &Self::State) -> Option<Self::ActionIter> {
         match state {
-            0 => Some(vec![(P, 1), (P, 2)]),
-            s if *s < 100 => Some(vec![(P, s + 100)]),
+            0 => Some(vec![1, 2]),
+            s if *s < 100 => Some(vec![s + 100]),
             _ => None, // terminal
         }
     }
@@ -47,6 +47,16 @@ impl GameDynamics for TwoLevelGame {
             0 => Some(action * 10),
             _ => Some(*action), // interior actions carry the target state
         }
+    }
+
+    /// One player, so the tag never changes.
+    fn player_for_child(
+        &self,
+        _parent_player: &Self::Player,
+        _action: &Self::Action,
+        _child_state: &Self::State,
+    ) -> Self::Player {
+        P
     }
 
     fn select_node<II, Q, A>(

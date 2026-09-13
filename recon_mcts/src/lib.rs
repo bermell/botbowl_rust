@@ -77,7 +77,7 @@ impl GameDynamics for MyGame {
     type State = usize;
     type Action = usize;
     type Score = f64;
-    type ActionIter = Vec<(Self::Player, Self::Action)>;
+    type ActionIter = Vec<Self::Action>;
 
     fn available_actions(
         &self,
@@ -85,6 +85,20 @@ impl GameDynamics for MyGame {
         state: &Self::State,
     ) -> Option<Self::ActionIter> {
         todo!()
+    }
+
+    // The tree derives each child's own mover here, once the child has been
+    // materialised and its state is known.
+    fn player_for_child(
+        &self,
+        parent_player: &Self::Player,
+        action: &Self::Action,
+        child_state: &Self::State,
+    ) -> Self::Player {
+        match parent_player {
+            Player::P1 => Player::P2,
+            Player::P2 => Player::P1,
+        }
     }
 
     fn apply_action(

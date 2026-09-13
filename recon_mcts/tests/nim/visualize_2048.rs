@@ -16,7 +16,7 @@ type Game2048MctsTree = Tree<
         (),
         crate::test_mcts_2048::ActionChance,
         crate::test_mcts_2048::ScoreItem,
-        std::vec::IntoIter<((), crate::test_mcts_2048::ActionChance)>,
+        std::vec::IntoIter<crate::test_mcts_2048::ActionChance>,
         GetState,
     >,
     Game2048Dynamics,

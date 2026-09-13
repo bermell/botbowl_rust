@@ -189,9 +189,5 @@ fn search_output_unchanged_heuristic_200() {
 #[test]
 #[ignore = "plan 035 one-shot gate — slow (NN forwards); run with --ignored"]
 fn search_output_unchanged_full_matrix() {
-    run_matrix(
-        &[Arm::Heuristic, nn_arm()],
-        &[200, 1000],
-        "lazy_mover_goldens_full.txt",
-    );
+    run_matrix(&[Arm::Heuristic, nn_arm()], &[200, 1000], "lazy_mover_goldens_full.txt");
 }

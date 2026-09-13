@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, OnceLock, RwLock, Weak};
 
 /// The `BuildHasher` used for a node's children map. Behind `deterministic_hash`
 /// this is a fixed-seed hasher (`DefaultHasher`'s seed is constant, unlike
@@ -181,8 +181,8 @@ impl<GD, S, P, A, Q, I, M, II> SearchTree for TreeAlias<GD, M>
 where
     Node<GD, S, P, A, Q, I, M>: StateMemory<State = S>,
     GD: GameDynamics<Player = P, State = S, Action = A, Score = Q, ActionIter = II>,
-    II: IntoIterator<IntoIter = I, Item = (P, A)>,
-    I: Iterator<Item = (P, A)>,
+    II: IntoIterator<IntoIter = I, Item = A>,
+    I: Iterator<Item = A>,
     A: Clone + Hash + Eq,
     S: Clone + Hash + PartialEq<S>,
     P: Hash + PartialEq<P>,
@@ -313,8 +313,16 @@ pub struct NodeInfo<S, P, Q> {
     /// The state of the `Node`, which is possibly `None` depending on the [`state_memory`]
     /// configuration.
     pub state: Option<S>,
-    /// The player taking an action at this `Node`.
-    pub player: P,
+    /// The player taking an action at this `Node`, or `None` while the `Node`
+    /// is an unmaterialised placeholder.
+    ///
+    /// [`Node::get_children_info`] reports placeholders — children that have
+    /// been enumerated but never descended into — and a placeholder has no
+    /// mover yet: the tag is derived from the child *state* via
+    /// [`GameDynamics::player_for_child`], and that state does not exist until
+    /// the first descent computes it. Such a node also reads `visits = 0` and
+    /// `score: None`, so "pending" is the honest rendering across the board.
+    pub player: Option<P>,
     /// The score of the `Node` as evaluated by the player.
     pub score: Option<Q>,
     /// The number of direct parent `Node`s this `Node has.
@@ -372,8 +380,8 @@ pub mod state_memory {
     //! # where
     //! #     // Node<GD, S, P, A, Q, I, M>: StateMemory<State = S>,
     //! #     GD: GameDynamics<Player = P, State = S, Action = A, Score = Q, ActionIter = II>,
-    //! #     II: IntoIterator<IntoIter = I, Item = (P, A)>,
-    //! #     I: Iterator<Item = (P, A)>,
+    //! #     II: IntoIterator<IntoIter = I, Item = A>,
+    //! #     I: Iterator<Item = A>,
     //! #     A: Hash + Eq + Clone,
     //! #     S: Hash + PartialEq<S> + Clone,
     //! #     P: Hash + PartialEq<P>,
@@ -421,7 +429,7 @@ pub mod state_memory {
         type State = S;
 
         fn eq(&self, rhs: &Self) -> bool {
-            self.player == rhs.player && self.get_state() == rhs.get_state()
+            self.player() == rhs.player() && self.get_state() == rhs.get_state()
         }
 
         fn modify_state(_: &RwLock<Option<Self::State>>) {}
@@ -440,7 +448,7 @@ pub mod state_memory {
         type State = S;
 
         fn eq(&self, rhs: &Self) -> bool {
-            self.player == rhs.player && self.get_state() == rhs.get_state()
+            self.player() == rhs.player() && self.get_state() == rhs.get_state()
         }
 
         fn modify_state(state: &RwLock<Option<Self::State>>) {
@@ -576,9 +584,9 @@ mod branch_wip {
             self.scored.as_mut().unwrap()
         }
 
-        pub fn next_unscored<P>(&mut self) -> Option<(P, A)>
+        pub fn next_unscored(&mut self) -> Option<A>
         where
-            I: Iterator<Item = (P, A)>,
+            I: Iterator<Item = A>,
         {
             let n = self.unscored.next();
             if n.is_some() {
@@ -603,7 +611,7 @@ mod branch_wip {
                 if !(_r.is_none() || SEEN.load(Ordering::Relaxed)) {
                     eprintln!(
                         "Warning: \
-                        GameDynamics::ActionIter returned the same player/action pair twice\
+                        GameDynamics::ActionIter returned the same action twice\
                         "
                     );
                     SEEN.store(true, Ordering::Relaxed);
@@ -638,7 +646,7 @@ mod branch_wip {
 // P  = GameDynamics::Player
 // A  = GameDynamics::Action
 // Q  = GameDynamics::Score
-// I  = Iterator<Item = (P, A)>,
+// I  = Iterator<Item = A>,
 // M  = StateMemory
 /// The fundamental type composing a `Tree`.
 pub struct Node<GD, S, P, A, Q, I, M>
@@ -653,7 +661,19 @@ where
     // `materialize_placeholder`. Placeholders are not in the registry
     // so their hash is never read until materialisation.
     hash: AtomicU64,
-    player: P,
+    // `OnceLock` rather than plain `P` because a placeholder child (created
+    // by `enumerate_placeholders` with no state yet) does not know its mover:
+    // `GD::player_for_child` needs the child state, which only exists once
+    // descent computes it. Set exactly once, in `materialize_placeholder`,
+    // *before* the hash is computed and the registry is probed — both of
+    // which read it. Every other constructor fills it eagerly.
+    //
+    // Plan 035: this replaces the `(player, action)` pairs `available_actions`
+    // used to return, which forced every implementation to pre-compute each
+    // candidate's resulting state just to name its mover (botbowl's
+    // `peek_mover`: one full engine advance per candidate, per expansion,
+    // thrown away).
+    player: OnceLock<P>,
     depth: AtomicUsize,
     state: RwLock<Option<S>>,
     score: RwLock<Option<Q>>,
@@ -703,7 +723,7 @@ where
     ) -> ArcWrap<Self> {
         let node = Self {
             hash: AtomicU64::new(Self::hash(&player, &state)),
-            player,
+            player: OnceLock::from(player),
             depth: AtomicUsize::new(0),
             state: RwLock::new(Some(state)),
             score: RwLock::new(None),
@@ -733,7 +753,7 @@ where
         ArcNode {
             inner: Arc::new(Node {
                 hash: AtomicU64::new(hash),
-                player,
+                player: OnceLock::from(player),
                 depth,
                 state: RwLock::new(Some(state)),
                 score: RwLock::new(None),
@@ -751,11 +771,13 @@ where
     }
 
     /// Construct a placeholder child for lazy expansion: no state, no
-    /// score, single parent edge wired up, not registered. The hash is
-    /// initialised to 0 (sentinel) and set on first descent via
-    /// `materialize_placeholder`. Cheap — no `apply_action`, no
-    /// `score_leaf`, no registry write.
-    fn new_placeholder(parent_node: &ArcNode<GD, S, P, A, Q, I, M>, player: P, action: A) -> ArcWrap<Self>
+    /// score, **no player**, single parent edge wired up, not registered.
+    /// The hash is initialised to 0 (sentinel) and the player left empty;
+    /// both are set on first descent via `materialize_placeholder`, which
+    /// is the first moment the child's state — and therefore
+    /// `GD::player_for_child` — is available. Cheap — no `apply_action`,
+    /// no `score_leaf`, no registry write.
+    fn new_placeholder(parent_node: &ArcNode<GD, S, P, A, Q, I, M>, action: A) -> ArcWrap<Self>
     where
         A: Clone,
     {
@@ -765,7 +787,7 @@ where
         let placeholder = ArcNode {
             inner: Arc::new(Node {
                 hash: AtomicU64::new(0),
-                player,
+                player: OnceLock::new(),
                 depth: AtomicUsize::new(parent_depth + 1),
                 state: RwLock::new(None),
                 score: RwLock::new(None),
@@ -833,12 +855,29 @@ where
             if !(_r || SEEN.load(Ordering::Relaxed)) {
                 eprintln!(
                     "Warning: \
-                    GameDynamics::ActionIter returned the same player/action pair twice\
+                    GameDynamics::ActionIter returned the same action twice\
                     "
                 );
                 SEEN.store(true, Ordering::Relaxed);
             }
         }
+    }
+
+    /// This node's mover.
+    ///
+    /// Panics if the node is still an unmaterialised placeholder. That is the
+    /// point: the tag is set in `materialize_placeholder` before anything can
+    /// legitimately read it (the hash, the registry probe, `score_leaf`,
+    /// `select_node`, `backprop_scores` — every one of those runs on a node
+    /// that has a state), so a panic here means a new read crept in *ahead*
+    /// of materialisation. The `expect` is kept in release builds: it costs a
+    /// null check on a pointer, and the alternative failure mode is a
+    /// silently wrong min/max in backprop.
+    ///
+    /// The inspection API deliberately does not go through this — see
+    /// [`Node::get_node_info`], which reports `Option<P>`.
+    pub(crate) fn player(&self) -> &P {
+        self.player.get().expect("player read before materialisation")
     }
 
     pub(crate) fn get_state(&self) -> S {
@@ -963,7 +1002,7 @@ where
                 let score_cur_rlk = self.score.read().expect("no score");
                 let score_new = GD::backprop_scores(
                     &*self.game_dynamics,
-                    &self.player,
+                    self.player(),
                     score_cur_rlk.as_ref(),
                     scores_and_actions,
                 );
@@ -1249,7 +1288,9 @@ where
     {
         NodeInfo {
             depth: self.depth.load(Ordering::Relaxed),
-            player: self.player.clone(),
+            // `None` for an unmaterialised placeholder — `get_children_info`
+            // reports those, and they have no mover yet by construction.
+            player: self.player.get().cloned(),
             score: self.score.read().unwrap().clone(),
             state: self.state.read().unwrap().clone(),
             n_parents: self.parents.read().unwrap().len(),
@@ -1712,8 +1753,8 @@ impl<GD, S, P, A, Q, II, I, M> Tree<Node<GD, S, P, A, Q, I, M>, GD>
 where
     Node<GD, S, P, A, Q, I, M>: StateMemory<State = S>,
     GD: GameDynamics<Player = P, State = S, Action = A, Score = Q, ActionIter = II>,
-    II: IntoIterator<IntoIter = I, Item = (P, A)>,
-    I: Iterator<Item = (P, A)>,
+    II: IntoIterator<IntoIter = I, Item = A>,
+    I: Iterator<Item = A>,
     A: Hash + Eq + Clone,
     S: Hash + PartialEq<S> + Clone,
     P: Hash + PartialEq<P>,
@@ -1843,7 +1884,22 @@ where
                     //      (cheap — no apply_action / score_leaf).
                     drop(children_rlk);
                     if !node.registered.load(Ordering::Acquire) {
-                        match self.materialize_placeholder(&node, &node_state) {
+                        // Plan 035: the placeholder's mover is derived here,
+                        // from the descent edge that reached it. An
+                        // unregistered node is always a placeholder pushed by
+                        // the `Branch` arm's `Some(new_state)` path, so
+                        // `path.last()` is `(node, Some(action))` and
+                        // `path[len-2].0` is its parent. (The root and any
+                        // twin are registered, and the `Twin` arm's
+                        // `(twin, None)` push therefore never lands here.)
+                        let n = path.len();
+                        assert!(n >= 2, "an unregistered node always has a parent on the descent path");
+                        let parent_node = ArcNode::clone(&path[n - 2].0);
+                        let edge = path[n - 1]
+                            .1
+                            .clone()
+                            .expect("a placeholder is only ever reached across an action edge");
+                        match self.materialize_placeholder(&node, &node_state, parent_node.player(), &edge) {
                             MaterializeOutcome::Twin(twin) => {
                                 // Twin already exists in the registry —
                                 // descent continues with it. `node_state`
@@ -2011,7 +2067,7 @@ where
         GD::select_node(
             &*self.game_dynamics,
             parent_node.score.read().unwrap().as_ref(),
-            &parent_node.player,
+            parent_node.player(),
             parent_node_state,
             purpose,
             scores_and_actions,
@@ -2066,7 +2122,7 @@ where
                 *score_wlk = GD::score_leaf(
                     &*self.game_dynamics,
                     parent_node.score.read().unwrap().as_ref(),
-                    &parent_node.player,
+                    parent_node.player(),
                     node.state.read().unwrap().as_ref().unwrap(),
                 );
                 drop(score_wlk);
@@ -2083,12 +2139,16 @@ where
             // To allow other threads to steal work, we drop `children_wlk` as soon as we no longer
             // need `branch_wip`
             while let Children::BranchWip(ref mut branch_wip) = *children_wlk {
-                if let Some((p, a)) = branch_wip.next_unscored() {
-                    // a new player / action pair; `GD::apply_action` and
+                if let Some(a) = branch_wip.next_unscored() {
+                    // a new action; `GD::apply_action` and
                     // `Self::create_scored_child` could both be slow (depending on user
                     // implementation of `GameDynamics` so we go ahead and drop the `children_wlk`
                     drop(children_wlk);
                     if let Some(state) = GD::apply_action(&*parent_node.game_dynamics, parent_state.clone(), &a) {
+                        // This path builds the child eagerly, so unlike a
+                        // placeholder it has the child state in hand right
+                        // here and can tag it immediately (plan 035).
+                        let p = GD::player_for_child(&*self.game_dynamics, parent_node.player(), &a, &state);
                         self.create_scored_child(parent_node, p, a, state);
                         children_wlk = parent_node.children.write().unwrap();
                     } else {
@@ -2148,12 +2208,14 @@ where
         if !matches!(*children_wlk, Children::NewLeaf) {
             return;
         }
-        let players_actions = self.game_dynamics.available_actions(&parent_node.player, parent_state);
+        // Bare actions — the child's own mover is derived later, in
+        // `materialize_placeholder`, once its state exists (plan 035).
+        let players_actions = self.game_dynamics.available_actions(parent_node.player(), parent_state);
         match players_actions {
             Some(player_acts) => {
                 let mut map: HashMap<A, ArcNode<GD, S, P, A, Q, I, M>, ChildHasher> = HashMap::default();
-                for (p, a) in player_acts {
-                    let placeholder = Node::new_placeholder(parent_node, p, a.clone());
+                for a in player_acts {
+                    let placeholder = Node::new_placeholder(parent_node, a.clone());
                     map.insert(a, placeholder);
                 }
                 if map.is_empty() {
@@ -2176,16 +2238,24 @@ where
     ///
     /// `node_state` is the placeholder's state (computed by the
     /// previous `apply_action` during descent). On entry, `node` has
-    /// `registered=false`, `state=None`, `score=None`, and exactly one
-    /// parent edge. On return (the `Done` arm), it has its hash set,
-    /// state stored, registered, and scored. The `Twin` arm splices
-    /// the existing twin into the parent's children map in place of
-    /// the placeholder, drops the placeholder, and asks the caller to
-    /// continue descent with the twin.
+    /// `registered=false`, `state=None`, `score=None`, **`player` unset**,
+    /// and exactly one parent edge. On return (the `Done` arm), it has
+    /// its player and hash set, state stored, registered, and scored. The
+    /// `Twin` arm splices the existing twin into the parent's children
+    /// map in place of the placeholder, drops the placeholder, and asks
+    /// the caller to continue descent with the twin.
+    ///
+    /// `parent_player` and `action` are the descent edge that reached this
+    /// placeholder; together with `node_state` they are exactly
+    /// `GD::player_for_child`'s arguments (plan 035). This is the earliest
+    /// point at which the child's mover can be known, and — per the table
+    /// in that plan — every read of it happens at or after this point.
     fn materialize_placeholder(
         &self,
         node: &ArcNode<GD, S, P, A, Q, I, M>,
         node_state: &S,
+        parent_player: &P,
+        action: &A,
     ) -> MaterializeOutcome<GD, S, P, A, Q, I, M>
     where
         A: Clone,
@@ -2200,10 +2270,23 @@ where
             return MaterializeOutcome::Done;
         }
 
+        // Derive the mover BEFORE the hash and the registry probe — both
+        // read it, in the Twin arm as much as the miss arm.
+        //
+        // `get_or_init`, not `set`: the miss arm is serialised by
+        // `score.write()` plus the `registered` re-check above, but the
+        // **Twin arm never registers the placeholder**, so a second worker
+        // queued on `score_wlk` re-runs this and must find the same value
+        // already there rather than assert. `player_for_child` is required
+        // to be pure, so the recomputed value is identical either way.
+        let player = node
+            .player
+            .get_or_init(|| GD::player_for_child(&*self.game_dynamics, parent_player, action, node_state));
+
         // Stash the state and compute the hash. Both must be set before
         // we put the node in the registry (the registry's hash-set
         // probe reads `self.hash` and StateMemory::eq may read state).
-        let h = Self::hash_for(&node.player, node_state);
+        let h = Self::hash_for(player, node_state);
         node.hash.store(h, Ordering::Relaxed);
         *node.state.write().unwrap() = Some(node_state.clone());
 
@@ -2314,7 +2397,7 @@ where
                     GD::score_leaf(
                         &*self.game_dynamics,
                         parent_score_ref,
-                        &node.player,
+                        node.player(),
                         node.state.read().unwrap().as_ref().unwrap(),
                     )
                 };
@@ -2458,7 +2541,10 @@ where
         let probe: ArcNode<GD, S, P, A, Q, I, M> = ArcWrap {
             inner: Arc::new(Node {
                 hash: AtomicU64::new(hash),
-                player,
+                // A registry probe is compared against real nodes via
+                // `StateMemory::eq`, which reads the player — so it must be
+                // filled, never left pending.
+                player: OnceLock::from(player),
                 depth: AtomicUsize::new(0),
                 state: RwLock::new(Some(state)),
                 score: RwLock::new(None),
@@ -2594,8 +2680,8 @@ pub(crate) mod test {
     where
         Node<GD, S, P, A, Q, I, M>: StateMemory<State = S>,
         GD: GameDynamics<Player = P, State = S, Action = A, Score = Q, ActionIter = II>,
-        II: IntoIterator<IntoIter = I, Item = (P, A)>,
-        I: Iterator<Item = (P, A)>,
+        II: IntoIterator<IntoIter = I, Item = A>,
+        I: Iterator<Item = A>,
         A: Clone + Hash + Eq,
         S: Clone + Hash + PartialEq<S>,
         P: Hash + PartialEq<P>,

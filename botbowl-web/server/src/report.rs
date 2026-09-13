@@ -6,11 +6,14 @@ use botbowl_web_proto::search as ps;
 
 use crate::mirror;
 
-pub fn player_to_proto(p: BbPlayer) -> ps::NodePlayer {
+/// `None` is an unmaterialised placeholder — enumerated, never descended
+/// into, so it has no mover yet (plan 035).
+pub fn player_to_proto(p: Option<BbPlayer>) -> ps::NodePlayer {
     match p {
-        BbPlayer::Home => ps::NodePlayer::Home,
-        BbPlayer::Away => ps::NodePlayer::Away,
-        BbPlayer::Chance => ps::NodePlayer::Chance,
+        Some(BbPlayer::Home) => ps::NodePlayer::Home,
+        Some(BbPlayer::Away) => ps::NodePlayer::Away,
+        Some(BbPlayer::Chance) => ps::NodePlayer::Chance,
+        None => ps::NodePlayer::Pending,
     }
 }
 
