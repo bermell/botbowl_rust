@@ -61,28 +61,38 @@ pub fn scripted_pick(state: &GameState) -> Option<EngineAction> {
 
 /// Attacker preference: Pow > PowPush (unless defender Dodge) > BothDown
 /// (only if attacker has Block and defender doesn't) > Push > BothDown
-/// (any) > PowPush (any) > Skull. Mirrors `scripted_bot::pick_block_die`.
+/// (any) > PowPush (any) > Skull. Mirrors `scripted_bot::pick_block_die`
+/// — with one deliberate hole: when the attacker has Block, the
+/// defender doesn't, and the roll offers *both* a knockdown-and-push die
+/// and `BothDown`, this returns `None`. Knocking the defender down in
+/// place versus down-and-pushed is a genuine positional choice, and
+/// `roll_outcomes::block_outcomes` emits exactly that roll as its
+/// `[Pow, BothDown, ..]` child so the search can decide (plan 036).
 fn pick_for_attacker(
     simple: &std::collections::HashSet<SimpleAT>,
     attacker: Option<&FieldedPlayer>,
     defender: Option<&FieldedPlayer>,
 ) -> Option<SimpleAT> {
-    if simple.contains(&SimpleAT::SelectPow) {
-        return Some(SimpleAT::SelectPow);
-    }
-    if simple.contains(&SimpleAT::SelectPowPush) {
-        let defender_dodges = defender.map(|d| d.has_skill(Skill::Dodge)).unwrap_or(false);
-        if !defender_dodges {
-            return Some(SimpleAT::SelectPowPush);
+    let defender_dodges = defender.map(|d| d.has_skill(Skill::Dodge)).unwrap_or(false);
+    let attacker_has_block = attacker.map(|a| a.has_skill(Skill::Block)).unwrap_or(false);
+    let defender_has_block = defender.map(|d| d.has_skill(Skill::Block)).unwrap_or(false);
+    let both_down_fells_defender_only = attacker_has_block && !defender_has_block;
+
+    let knockdown_and_push = if simple.contains(&SimpleAT::SelectPow) {
+        Some(SimpleAT::SelectPow)
+    } else if simple.contains(&SimpleAT::SelectPowPush) && !defender_dodges {
+        Some(SimpleAT::SelectPowPush)
+    } else {
+        None
+    };
+    if let Some(pick) = knockdown_and_push {
+        if both_down_fells_defender_only && simple.contains(&SimpleAT::SelectBothDown) {
+            return None; // down-in-place vs down-and-pushed: let the search choose
         }
-        // Defender has Dodge — fall through to a safer pick.
+        return Some(pick);
     }
-    if simple.contains(&SimpleAT::SelectBothDown) {
-        let attacker_has_block = attacker.map(|a| a.has_skill(Skill::Block)).unwrap_or(false);
-        let defender_has_block = defender.map(|d| d.has_skill(Skill::Block)).unwrap_or(false);
-        if attacker_has_block && !defender_has_block {
-            return Some(SimpleAT::SelectBothDown);
-        }
+    if simple.contains(&SimpleAT::SelectBothDown) && both_down_fells_defender_only {
+        return Some(SimpleAT::SelectBothDown);
     }
     if simple.contains(&SimpleAT::SelectPush) {
         return Some(SimpleAT::SelectPush);
@@ -222,6 +232,43 @@ mod tests {
         assert_eq!(
             scripted_pick(&state),
             Some(EngineAction::Simple(SimpleAT::SelectBothDown))
+        );
+    }
+
+    #[test]
+    fn attacker_with_block_gets_a_real_choice_between_pow_and_both_down() {
+        let mut state = block_state(
+            Position::new((5, 5)),
+            Position::new((6, 5)),
+            TeamType::Home,
+            Position::new((5, 5)),
+        );
+        let att_id = state.get_player_id_at(Position::new((5, 5))).unwrap();
+        state.get_mut_player(att_id).unwrap().stats.give_skill(Skill::Block);
+        offer(&mut state, &[SimpleAT::SelectBothDown, SimpleAT::SelectPow]);
+        assert_eq!(
+            scripted_pick(&state),
+            None,
+            "down-in-place vs down-and-pushed is the search's call"
+        );
+
+        // Same with PowPush standing in for Pow (no Dodge on the defender)...
+        let mut state = block_state(
+            Position::new((5, 5)),
+            Position::new((6, 5)),
+            TeamType::Home,
+            Position::new((5, 5)),
+        );
+        state.get_mut_player(att_id).unwrap().stats.give_skill(Skill::Block);
+        offer(&mut state, &[SimpleAT::SelectBothDown, SimpleAT::SelectPowPush]);
+        assert_eq!(scripted_pick(&state), None);
+
+        // ...but not when the defender has Block too: BothDown does nothing, Pow wins.
+        let def_id = state.get_player_id_at(Position::new((6, 5))).unwrap();
+        state.get_mut_player(def_id).unwrap().stats.give_skill(Skill::Block);
+        assert_eq!(
+            scripted_pick(&state),
+            Some(EngineAction::Simple(SimpleAT::SelectPowPush))
         );
     }
 

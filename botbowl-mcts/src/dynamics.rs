@@ -797,12 +797,13 @@ impl GameDynamics for BloodBowlDynamics {
         state.available_actions.team?;
         // Block-die picks and other scripted player decisions are
         // resolved inside `apply_action`'s quiescent-advance loop
-        // (see `scripted::scripted_player_pick`), so MCTS never sees
-        // those intermediate states. The only way one could surface
-        // here is if the *root* state passed to `MctsBot::get_action`
-        // is itself mid-block-die — uncommon in practice; the search
-        // would waste one expansion fanning out over die choices,
-        // then converge after a single `apply_action` step.
+        // (see `scripted::scripted_player_pick`), so MCTS rarely sees
+        // those intermediate states. Two ways one does surface here:
+        // the *root* state passed to `MctsBot::get_action` is itself
+        // mid-block-die, or the roll is the attacker-Block-only
+        // `[Pow, BothDown]` child of `roll_outcomes::block_outcomes`,
+        // which `scripted_pick` deliberately leaves to the search
+        // (down-in-place vs down-and-pushed is a positional choice).
 
         // Safety net: if the pruning rules narrow the list to *zero*
         // legal actions while the engine still offers something, fall

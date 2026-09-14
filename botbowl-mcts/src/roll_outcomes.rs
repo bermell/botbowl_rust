@@ -1,7 +1,9 @@
 use botbowl_engine::core::dices::{BlockDice, Coin, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8};
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Direction, Position};
+use botbowl_engine::core::procedures::block_procs::Push;
 use botbowl_engine::core::procedures::AnyProc;
+use botbowl_engine::core::table::{NumBlockDices, Skill};
 
 use crate::action::BbAction;
 
@@ -17,6 +19,12 @@ use crate::action::BbAction;
 ///   bounce enumeration in [`bounce_outcomes`] (settle squares + a
 ///   collapsed out-of-bounds child, or the surrounding player squares
 ///   minus already-visited ones).
+/// - `BlockDice` while a `Block` is on top of the proc stack → one child
+///   per resolved block outcome in [`block_outcomes`] (defender down and
+///   pushed / down in place / pushed / nothing / both down / attacker
+///   down, plus the attacker's down-vs-down-and-push choice), weighted by
+///   the exact probability the picker ends up with that outcome given
+///   both players' skills and the push geometry.
 /// - Every other roll type (including a `D8` that isn't a live ball
 ///   bounce) → a single child carrying the deterministic `RollResult`
 ///   from [`scripted_result`]. Single-child keeps the search tree
@@ -48,8 +56,192 @@ pub fn enumerate(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
         }
         RequestedRoll::D8 => enumerate_d8(state),
         RequestedRoll::ThrowIn => vec![throw_in_outcome(state)],
+        RequestedRoll::BlockDice(n) => block_outcomes(state, *n),
         _ => vec![BbAction::chance(scripted_result(req), 1.0)],
     }
+}
+
+/// What one block die *does* once skills and board position are applied,
+/// ordered from the attacker's best to the attacker's worst. The picker
+/// (attacker on a normal block, defender on an uphill one) chooses among
+/// the outcomes the rolled dice offer, so this order is the preference
+/// that resolves a multi-die roll — the defender's preference is the
+/// reverse.
+///
+/// `DefDownPush` and `DefDownNoPush` are deliberately *not* ranked
+/// against each other for the attacker: knocking the defender down in
+/// place (Block skill turning a `BothDown` into a one-sided knockdown)
+/// versus knocking them down *and* moving them is a genuine positional
+/// choice, so a roll offering both becomes [`Resolved::DefDownChoice`]
+/// and the search decides. The defender, picking uphill, takes the
+/// no-push variant (no displacement, no crowd risk).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum BlockOutcome {
+    /// Defender knocked down and pushed: `Pow`, `PowPush` against a
+    /// defender without Dodge — or *any* push die when the only push
+    /// square is the crowd (the defender leaves the pitch either way).
+    DefDownPush,
+    /// Defender knocked down where they stand: `BothDown` when only the
+    /// attacker has Block.
+    DefDownNoPush,
+    /// Defender pushed back, nobody down: `Push`, or `PowPush` against Dodge.
+    Push,
+    /// Nobody moves, nobody falls: `BothDown` when both have Block.
+    NothingHappens,
+    /// Both players down, turnover: `BothDown` when neither has Block.
+    AllDown,
+    /// Attacker down, turnover: `Skull`, or `BothDown` when only the
+    /// defender has Block.
+    AttDown,
+}
+
+/// The picker's resolution of one rolled combination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Resolved {
+    Single(BlockOutcome),
+    /// Attacker may take either `DefDownPush` or `DefDownNoPush`.
+    DefDownChoice,
+}
+
+/// The six faces of a block die.
+const BLOCK_FACES: [BlockDice; 6] = [
+    BlockDice::Skull,
+    BlockDice::BothDown,
+    BlockDice::Push,
+    BlockDice::Push,
+    BlockDice::PowPush,
+    BlockDice::Pow,
+];
+
+/// Skill / position context that decides what each die face does.
+#[derive(Debug, Clone, Copy)]
+struct BlockContext {
+    attacker_block: bool,
+    defender_block: bool,
+    defender_dodge: bool,
+    crowd_push: bool,
+}
+
+impl BlockContext {
+    fn outcome_of(&self, die: BlockDice) -> BlockOutcome {
+        use BlockOutcome::*;
+        let push_effect = if self.crowd_push { DefDownPush } else { Push };
+        match die {
+            BlockDice::Skull => AttDown,
+            BlockDice::BothDown => match (self.attacker_block, self.defender_block) {
+                (true, true) => NothingHappens,
+                (true, false) => DefDownNoPush,
+                (false, true) => AttDown,
+                (false, false) => AllDown,
+            },
+            BlockDice::Push => push_effect,
+            BlockDice::PowPush if self.defender_dodge => push_effect,
+            BlockDice::PowPush | BlockDice::Pow => DefDownPush,
+        }
+    }
+
+    /// The die face that, rolled on every die, forces the engine to
+    /// produce exactly `outcome` in this context (the engine then offers
+    /// a single `Select*`, so no pick heuristic can steer it elsewhere).
+    fn representative(&self, outcome: BlockOutcome) -> BlockDice {
+        use BlockOutcome::*;
+        match outcome {
+            DefDownPush => BlockDice::Pow,
+            DefDownNoPush | NothingHappens | AllDown => BlockDice::BothDown,
+            Push => BlockDice::Push,
+            AttDown => BlockDice::Skull,
+        }
+    }
+}
+
+/// Chance children for a block roll: one child per *resolved outcome*
+/// rather than per die combination, each carrying a representative dice
+/// array that makes the engine produce exactly that outcome once the
+/// scripted die pick (`block_dice::scripted_pick`) runs in
+/// `apply_action`'s quiescent loop.
+///
+/// All `6^n` face combinations (n ≤ 3) are enumerated and classified by
+/// [`BlockContext::outcome_of`], then resolved by whoever picks — the
+/// attacker on `One`/`Two`/`Three` (best outcome for them), the defender
+/// on `TwoUphill`/`ThreeUphill` (worst for the attacker). Probabilities
+/// are exact counts over `6^n`. The attacker-Block-only roll showing both
+/// a knockdown-and-push die and a `BothDown` is emitted as its own child
+/// carrying `[Pow, BothDown, ..]`, on which `scripted_pick` declines to
+/// choose so the search sees both `SelectPow` and `SelectBothDown`.
+///
+/// Reads only the `Block` proc on top of the stack, the two players'
+/// skills and the push geometry, so it is a pure function of `state`.
+/// Falls back to the all-`Pow` script when not actually mid-block
+/// (dummy states in tests).
+fn block_outcomes(state: &GameState, n: NumBlockDices) -> Vec<BbAction> {
+    let Some(AnyProc::Block(block)) = state.proc_stack_peek() else {
+        return vec![BbAction::chance(scripted_result(&RequestedRoll::BlockDice(n)), 1.0)];
+    };
+    let (Some(attacker), Ok(defender)) = (state.get_active_player(), state.get_player(block.defender())) else {
+        return vec![BbAction::chance(scripted_result(&RequestedRoll::BlockDice(n)), 1.0)];
+    };
+    let ctx = BlockContext {
+        attacker_block: attacker.has_skill(Skill::Block),
+        defender_block: defender.has_skill(Skill::Block),
+        defender_dodge: defender.has_skill(Skill::Dodge),
+        crowd_push: Push::is_crowd_push(attacker.position, defender.position, state),
+    };
+    let num_dice = u8::from(n) as usize;
+    let defender_picks = matches!(n, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill);
+
+    // Count combinations per resolved outcome. Fixed-order buckets keep
+    // the child order deterministic (Vec, not HashMap).
+    let mut counts: Vec<(Resolved, u32)> = Vec::new();
+    let total = 6u32.pow(num_dice as u32);
+    for combo in 0..total {
+        let mut rest = combo;
+        let mut best = None::<BlockOutcome>;
+        let mut worst = None::<BlockOutcome>;
+        for _ in 0..num_dice {
+            let o = ctx.outcome_of(BLOCK_FACES[(rest % 6) as usize]);
+            rest /= 6;
+            best = Some(best.map_or(o, |b| b.min(o)));
+            worst = Some(worst.map_or(o, |w| w.max(o)));
+        }
+        let (best, worst) = (best.unwrap(), worst.unwrap());
+        let resolved = if defender_picks {
+            Resolved::Single(worst)
+        } else if best == BlockOutcome::DefDownPush && has_face(&ctx, combo, num_dice, BlockOutcome::DefDownNoPush) {
+            Resolved::DefDownChoice
+        } else {
+            Resolved::Single(best)
+        };
+        match counts.iter_mut().find(|(r, _)| *r == resolved) {
+            Some((_, c)) => *c += 1,
+            None => counts.push((resolved, 1)),
+        }
+    }
+
+    counts
+        .into_iter()
+        .map(|(resolved, count)| {
+            let mut dices: [Option<BlockDice>; 3] = [None, None, None];
+            for (i, slot) in dices.iter_mut().take(num_dice).enumerate() {
+                *slot = Some(match resolved {
+                    Resolved::Single(o) => ctx.representative(o),
+                    Resolved::DefDownChoice if i == 0 => BlockDice::Pow,
+                    Resolved::DefDownChoice => BlockDice::BothDown,
+                });
+            }
+            BbAction::chance(RollResult::BlockDice(dices), count as f32 / total as f32)
+        })
+        .collect()
+}
+
+/// Does die combination `combo` (base-6 encoded) contain a die whose
+/// effect is `outcome`?
+fn has_face(ctx: &BlockContext, combo: u32, num_dice: usize, outcome: BlockOutcome) -> bool {
+    let mut rest = combo;
+    (0..num_dice).any(|_| {
+        let o = ctx.outcome_of(BLOCK_FACES[(rest % 6) as usize]);
+        rest /= 6;
+        o == outcome
+    })
 }
 
 /// The single scripted throw-in child, picked so the ball lands **in
@@ -270,12 +462,10 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
             outcome: botbowl_engine::core::model::InjuryOutcome::Stunned,
             ejected: false,
         },
-        // BlockDice: a deterministic Pow per die. Matches
-        // `BlockDicePolicy::KnockdownAtAdvantage` semantics; the
-        // player-side die selection that follows is collapsed by
-        // `block_dice::scripted_pick` in the dynamics. Plan 009:
-        // push exactly `num_dices` fixes (not a constant 3) to
-        // avoid stale fixes leaking into unrelated later block rolls.
+        // BlockDice: only reached by `block_outcomes`' fallback when the
+        // state is not actually mid-block (no `Block` proc on top). A
+        // deterministic Pow per die; exactly `num_dices` of them (plan
+        // 009) so no stale fixes leak into later block rolls.
         RequestedRoll::BlockDice(n) => {
             let mut dices: [Option<BlockDice>; 3] = [None, None, None];
             for slot in dices.iter_mut().take(u8::from(*n) as usize) {
@@ -302,7 +492,7 @@ mod tests {
     use super::*;
     use botbowl_engine::core::dices::{D6Target, Sum2D6Target};
     use botbowl_engine::core::gamestate::{DiceMode, GameStateBuilder};
-    use botbowl_engine::core::model::{Action, BallState, Coord, SomeProcInput};
+    use botbowl_engine::core::model::{Action, BallState, Coord, PlayerStatus, SomeProcInput, TeamType};
     use botbowl_engine::core::table::{NumBlockDices, PosAT, SimpleAT};
 
     /// A plain state that is *not* mid-bounce, so `enumerate` routes D8
@@ -573,8 +763,275 @@ mod tests {
         assert_eq!(sole_result(&RequestedRoll::Scatter), RollResult::Scatter(up, up, up));
     }
 
+    // ---- block outcomes -------------------------------------------------
+
+    /// Build a state paused on a block roll: home attacker at `att`
+    /// blocks the away defender at `def`. `setup` runs before the block
+    /// is declared (add assists, skills, sideline geometry). Asserts the
+    /// engine computed `expected_dice` so a test can't silently model a
+    /// different roll than it thinks.
+    fn state_paused_on_block(
+        att: Position,
+        def: Position,
+        extra: &[(Position, TeamType)],
+        expected_dice: NumBlockDices,
+        setup: impl FnOnce(&mut GameState),
+    ) -> GameState {
+        let mut builder = GameStateBuilder::new();
+        builder.add_home_player(att).add_away_player(def);
+        for (pos, team) in extra {
+            match team {
+                TeamType::Home => builder.add_home_player(*pos),
+                TeamType::Away => builder.add_away_player(*pos),
+            };
+        }
+        let mut state = builder.build();
+        setup(&mut state);
+        state.set_dice_mode(DiceMode::RegisterRolls);
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::StartBlock, att)));
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::Block, def)));
+        assert_eq!(state.proc_stack_top(), Some("Block"), "expected to be mid-block");
+        assert_eq!(state.pending_roll, Some(RequestedRoll::BlockDice(expected_dice)));
+        state
+    }
+
+    fn give_skill(state: &mut GameState, pos: Position, skill: Skill) {
+        let id = state.get_player_id_at(pos).unwrap();
+        state.get_mut_player(id).unwrap().stats.give_skill(skill);
+    }
+
+    /// The dice array a block chance child carries.
+    fn dice_of(a: &BbAction) -> [Option<BlockDice>; 3] {
+        match result_of(a) {
+            RollResult::BlockDice(d) => d,
+            other => panic!("expected a BlockDice result, got {:?}", other),
+        }
+    }
+
+    /// Probability of the child whose dice array is exactly `dice`
+    /// (`None` if no such child).
+    fn prob_of(outcomes: &[BbAction], dice: &[BlockDice]) -> Option<f32> {
+        let want: Vec<Option<BlockDice>> = (0..3).map(|i| dice.get(i).copied()).collect();
+        outcomes
+            .iter()
+            .find(|a| dice_of(a).to_vec() == want)
+            .map(|a| a.prob_f32().unwrap())
+    }
+
+    fn assert_prob(outcomes: &[BbAction], dice: &[BlockDice], numer: u32, denom: u32) {
+        let got = prob_of(outcomes, dice).unwrap_or_else(|| panic!("no child with dice {:?} in {:?}", dice, outcomes));
+        let want = numer as f32 / denom as f32;
+        assert!(
+            (got - want).abs() < 1e-5,
+            "child {:?}: expected {}/{} = {}, got {}",
+            dice,
+            numer,
+            denom,
+            want,
+            got
+        );
+    }
+
+    const ATT: Position = Position { x: 5, y: 5 };
+    const DEF: Position = Position { x: 6, y: 5 };
+    /// A home assist adjacent to the defender only → 2-dice block.
+    const HOME_ASSIST: &[(Position, TeamType)] = &[(Position { x: 7, y: 6 }, TeamType::Home)];
+    /// An away assist adjacent to the attacker only → 2-dice uphill.
+    const AWAY_ASSIST: &[(Position, TeamType)] = &[(Position { x: 4, y: 4 }, TeamType::Away)];
+
     #[test]
-    fn block_dice_has_exactly_num_dices_of_pow() {
+    fn block_one_die_no_skills_has_four_outcomes() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |_| {});
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert_eq!(outcomes.len(), 4, "{outcomes:?}");
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::Pow], 2, 6); // Pow + PowPush
+        assert_prob(&outcomes, &[BlockDice::Push], 2, 6);
+        assert_prob(&outcomes, &[BlockDice::BothDown], 1, 6);
+        assert_prob(&outcomes, &[BlockDice::Skull], 1, 6);
+    }
+
+    #[test]
+    fn block_two_dice_attacker_picks_best() {
+        let state = state_paused_on_block(ATT, DEF, HOME_ASSIST, NumBlockDices::Two, |_| {});
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::Two));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_eq!(outcomes.len(), 4, "{outcomes:?}");
+        // P(≥1 Pow-ish) = 1 − (4/6)²
+        assert_prob(&outcomes, &[BlockDice::Pow, BlockDice::Pow], 20, 36);
+        // P(≥1 Push, no Pow-ish) = (4/6)² − (2/6)²
+        assert_prob(&outcomes, &[BlockDice::Push, BlockDice::Push], 12, 36);
+        // P(≥1 BothDown, no Push/Pow-ish) = (2/6)² − (1/6)²
+        assert_prob(&outcomes, &[BlockDice::BothDown, BlockDice::BothDown], 3, 36);
+        assert_prob(&outcomes, &[BlockDice::Skull, BlockDice::Skull], 1, 36);
+    }
+
+    #[test]
+    fn block_attacker_block_only_splits_choice_from_forced_outcomes() {
+        let state = state_paused_on_block(ATT, DEF, HOME_ASSIST, NumBlockDices::Two, |s| {
+            give_skill(s, ATT, Skill::Block);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::Two));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_eq!(outcomes.len(), 5, "{outcomes:?}");
+        // P(≥1 Pow-ish, ≥1 BothDown) = 2·2·1/36
+        assert_prob(&outcomes, &[BlockDice::Pow, BlockDice::BothDown], 4, 36);
+        // P(≥1 Pow-ish) − choice = (1 − (4/6)²) − 4/36
+        assert_prob(&outcomes, &[BlockDice::Pow, BlockDice::Pow], 16, 36);
+        // P(≥1 BothDown, no Pow-ish) = (4/6)² − (3/6)²
+        assert_prob(&outcomes, &[BlockDice::BothDown, BlockDice::BothDown], 7, 36);
+        // P(≥1 Push, no BothDown/Pow-ish) = (3/6)² − (1/6)²
+        assert_prob(&outcomes, &[BlockDice::Push, BlockDice::Push], 8, 36);
+        assert_prob(&outcomes, &[BlockDice::Skull, BlockDice::Skull], 1, 36);
+    }
+
+    /// Both have Block: a `BothDown` leaves both standing *in place*, which
+    /// is not the same as a push — it gets its own child.
+    #[test]
+    fn block_both_have_block_keeps_nothing_happens_distinct_from_push() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |s| {
+            give_skill(s, ATT, Skill::Block);
+            give_skill(s, DEF, Skill::Block);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_eq!(outcomes.len(), 4, "{outcomes:?}");
+        assert_prob(&outcomes, &[BlockDice::Pow], 2, 6);
+        assert_prob(&outcomes, &[BlockDice::Push], 2, 6);
+        assert_prob(&outcomes, &[BlockDice::BothDown], 1, 6);
+        assert_prob(&outcomes, &[BlockDice::Skull], 1, 6);
+    }
+
+    /// Only the defender has Block: `BothDown` fells the attacker alone.
+    #[test]
+    fn block_defender_block_only_folds_both_down_into_attacker_down() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |s| give_skill(s, DEF, Skill::Block));
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+        assert_prob(&outcomes, &[BlockDice::Skull], 2, 6);
+        assert!(prob_of(&outcomes, &[BlockDice::BothDown]).is_none());
+    }
+
+    #[test]
+    fn block_defender_dodge_turns_pow_push_into_push() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |s| give_skill(s, DEF, Skill::Dodge));
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::Pow], 1, 6);
+        assert_prob(&outcomes, &[BlockDice::Push], 3, 6);
+    }
+
+    /// Defender on the sideline with the attacker pushing straight out:
+    /// every push die surfs them, so there is no "nobody down" child.
+    #[test]
+    fn block_crowd_push_folds_push_into_defender_down() {
+        let def = Position::new((6, 1));
+        let att = Position::new((6, 2));
+        let state = state_paused_on_block(att, def, &[], NumBlockDices::One, |_| {});
+        assert!(Push::is_crowd_push(att, def, &state));
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+        assert_prob(&outcomes, &[BlockDice::Pow], 4, 6);
+        assert!(prob_of(&outcomes, &[BlockDice::Push]).is_none());
+        assert_prob(&outcomes, &[BlockDice::BothDown], 1, 6);
+        assert_prob(&outcomes, &[BlockDice::Skull], 1, 6);
+    }
+
+    /// Uphill: the defender picks, so the resolution order flips.
+    #[test]
+    fn block_uphill_defender_picks_worst_for_attacker() {
+        let state = state_paused_on_block(ATT, DEF, AWAY_ASSIST, NumBlockDices::TwoUphill, |_| {});
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::TwoUphill));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_eq!(outcomes.len(), 4, "{outcomes:?}");
+        // P(≥1 Skull) = 1 − (5/6)²
+        assert_prob(&outcomes, &[BlockDice::Skull, BlockDice::Skull], 11, 36);
+        // P(≥1 BothDown, no Skull) = (5/6)² − (4/6)²
+        assert_prob(&outcomes, &[BlockDice::BothDown, BlockDice::BothDown], 9, 36);
+        // P(≥1 Push, no Skull/BothDown) = (4/6)² − (2/6)²
+        assert_prob(&outcomes, &[BlockDice::Push, BlockDice::Push], 12, 36);
+        assert_prob(&outcomes, &[BlockDice::Pow, BlockDice::Pow], 4, 36);
+    }
+
+    /// Uphill with attacker-Block-only: no choice child — the defender
+    /// takes the knockdown without the push.
+    #[test]
+    fn block_uphill_attacker_block_only_has_no_choice_child() {
+        let state = state_paused_on_block(ATT, DEF, AWAY_ASSIST, NumBlockDices::TwoUphill, |s| {
+            give_skill(s, ATT, Skill::Block);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::TwoUphill));
+        assert!(probs_sum_to_one(&outcomes));
+        assert!(prob_of(&outcomes, &[BlockDice::Pow, BlockDice::BothDown]).is_none());
+        // BothDown (def down, no push) beats Pow-ish for the defender:
+        // P(≥1 BothDown, no Skull/Push) = (3/6)² − (2/6)²
+        assert_prob(&outcomes, &[BlockDice::BothDown, BlockDice::BothDown], 5, 36);
+        assert_prob(&outcomes, &[BlockDice::Pow, BlockDice::Pow], 4, 36);
+    }
+
+    /// Every block child carries exactly `n` dice, for every dice count.
+    #[test]
+    fn block_children_carry_exactly_num_dice() {
+        for (n, extra) in [
+            (NumBlockDices::One, &[][..]),
+            (NumBlockDices::Two, HOME_ASSIST),
+            (NumBlockDices::TwoUphill, AWAY_ASSIST),
+        ] {
+            let state = state_paused_on_block(ATT, DEF, extra, n, |_| {});
+            let outcomes = enumerate(&state, &RequestedRoll::BlockDice(n));
+            assert!(probs_sum_to_one(&outcomes));
+            for a in &outcomes {
+                let count = dice_of(a).iter().filter(|d| d.is_some()).count();
+                assert_eq!(count, u8::from(n) as usize, "wrong dice count for {:?}: {:?}", n, a);
+            }
+        }
+    }
+
+    /// End-to-end through the engine: the choice child really leaves the
+    /// attacker a two-way decision, the forced children really produce
+    /// the modelled outcome.
+    #[test]
+    fn block_children_drive_the_engine_to_the_modelled_outcome() {
+        let build = || {
+            state_paused_on_block(ATT, DEF, HOME_ASSIST, NumBlockDices::Two, |s| {
+                give_skill(s, ATT, Skill::Block);
+            })
+        };
+        let def_id = build().get_player_id_at(DEF).unwrap();
+
+        // Choice child: engine offers both picks, the script declines.
+        let mut state = build();
+        state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::BlockDice([
+            Some(BlockDice::Pow),
+            Some(BlockDice::BothDown),
+            None,
+        ])));
+        let simple = state.available_actions.get_simple();
+        assert!(simple.contains(&SimpleAT::SelectPow) && simple.contains(&SimpleAT::SelectBothDown));
+        assert_eq!(crate::block_dice::scripted_pick(&state), None);
+
+        // Forced DefDownNoPush child: defender down where they stand.
+        let mut state = build();
+        state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::BlockDice([
+            Some(BlockDice::BothDown),
+            Some(BlockDice::BothDown),
+            None,
+        ])));
+        let pick = crate::block_dice::scripted_pick(&state).expect("single die → scripted");
+        assert_eq!(pick, Action::Simple(SimpleAT::SelectBothDown));
+        state.step_with_roll_or_action(SomeProcInput::Action(pick));
+        let defender = state.get_player_unsafe(def_id);
+        assert_eq!(defender.position, DEF);
+        assert_eq!(defender.status, PlayerStatus::Down);
+        assert_eq!(state.get_player_at(ATT).unwrap().status, PlayerStatus::Up);
+    }
+
+    #[test]
+    fn block_dice_fallback_has_exactly_num_dices_of_pow() {
+        // `dummy_state` is not mid-block, so `block_outcomes` falls back
+        // to the all-Pow script.
         for n in [
             NumBlockDices::One,
             NumBlockDices::Two,

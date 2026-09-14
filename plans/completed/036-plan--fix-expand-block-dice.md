@@ -1,5 +1,28 @@
 # Fix enumerate dice roll outcomes
 
+**Status:** **Shipped 2026-09-14.** `roll_outcomes::block_outcomes` replaces the all-`Pow` script.
+Implementation diverges from the Python sketch below in two deliberate ways:
+
+- **Outcomes are classified by *effect*, not by die face**, and there are six of them (attacker-best
+  first): defender down *and pushed* (`Pow`, `PowPush` without Dodge, any push die into the crowd);
+  defender down *in place* (`BothDown`, attacker Block only); push, nobody down; nothing happens
+  (`BothDown`, both Block — *not* folded into push, the Python did); both down; attacker down. The
+  attacker-Block-only roll that offers both a knockdown-and-push die and `BothDown` is emitted as a
+  seventh **choice** child carrying `[Pow, BothDown, ..]`; `block_dice::scripted_pick` declines to
+  pick on exactly that roll, so the search decides between down-in-place and down-and-pushed.
+  Uphill, the defender resolves with the reversed order and takes down-in-place over down-and-pushed
+  (no choice child).
+- **Probabilities are exact counts over the `6^n` face combinations** (n ≤ 3) rather than the
+  sequential `probability_left` formula — same numbers, and the choice class falls out for free.
+
+Each child's dice array is a representative that forces the modelled outcome through the engine
+(all slots the same face, so only one `Select*` is offered). The engine grew `Block::defender()`,
+`Block::num_dices()` and `Push::is_crowd_push()` to keep it a pure function of `state`. The plan 035
+default golden (`tests/data/lazy_mover_goldens.txt`) was re-blessed; the `#[ignore]`d full-matrix
+golden was not and is stale.
+
+---
+
 the function `enumrate` in mcts `roll_outcomes.rs` currently on returns pows. However it's a delicate functionality that
 should be fixed. The overall purpose is this:
 

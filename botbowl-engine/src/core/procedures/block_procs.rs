@@ -47,6 +47,16 @@ impl Push {
         }
     }
 
+    /// Would pushing the player standing `on` away from `from` send them
+    /// into the crowd? True exactly when no push square is free and at
+    /// least one is out of bounds — the case `calculate_next_state`
+    /// resolves without asking for a square. Read-only; used by the
+    /// MCTS block-outcome model to fold "push into the crowd" into the
+    /// defender-removed outcome.
+    pub fn is_crowd_push(from: Position, on: Position, game_state: &GameState) -> bool {
+        matches!(Push::get_push_squares(on, from, game_state), PushSquares::Crowd(_))
+    }
+
     fn get_push_squares(on: Position, from: Position, game_state: &GameState) -> PushSquares {
         let direction = on - from;
         let opposite_pos = on + direction;
@@ -306,6 +316,16 @@ impl Block {
             roll: Default::default(),
             is_uphill: matches!(dices, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill),
         })
+    }
+
+    /// The player being blocked.
+    pub fn defender(&self) -> PlayerID {
+        self.defender
+    }
+
+    /// The dice count (and uphill-ness) this block was set up with.
+    pub fn num_dices(&self) -> NumBlockDices {
+        self.dices
     }
 
     fn add_aa(&self, aa: &mut AvailableActions) {
