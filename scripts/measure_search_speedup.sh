@@ -6,10 +6,14 @@
 # GAMES games per shard instead of 600, and runs it once per binary arm.
 # Seeds are gen20's own (30000000 + K*1e5), so every arm faces identical start states.
 #
-#   throughput.sh <arm-name> <binary> [nn|heuristic]
+#   measure_search_speedup.sh <arm-name> <binary> [nn|heuristic]
+#
+# Build each arm from a worktree at its commit with its own CARGO_TARGET_DIR, and keep
+# one scenario per invocation: two of these running at once contend for the 8 cores and
+# neither number means anything.
 set -u
-REPO=/home/mattias/repos/botbowl_rust
-SP=/tmp/claude-1000/-home-mattias-repos-botbowl-rust/2872361b-1b8d-4585-9cd4-fb5327cec840/scratchpad
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SP="${SP:-$REPO/runs/exp-speedup}"   # holds bin/<arm> binaries and the per-arm output
 cd "$REPO"
 export BOARD_SIZE_W=14 BOARD_SIZE_H=7 BOARD_PLAYERS=4
 export PATH="$HOME/.cargo/bin:$PATH"
