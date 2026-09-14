@@ -115,40 +115,46 @@ different net**, which matters for #4 below.
 | 16 | 0.562 | 16-13-11 | 0.550 | 33% | 1.2172 |
 | 17 | 0.588 | 18-11-11 | 0.583 | 28% | 1.1892 |
 | 18 | 0.625 | 21-8-11 | 0.592 | 20% | 1.1765 |
+| 19 | 0.613 | 21-7-12 | 0.608 | 18% | 1.1570 |
 
 **REGRESSION fired at gen16** (rolling 0.550, 0.108 below the best 0.658) and cleared at gen17
 (0.583). **PLATEAU fired at gen18**: best rolling over the last 6 gens 0.658 vs 0.654 before them,
 i.e. six generations and ~40 h of machine time with no net progress. Peak rolling is still gen13.
 
-**The drop is milder than it first looked, and is reverting.** gen18's 0.625 is the best single
-point since gen13 and rolling has risen three generations running (0.550 -> 0.583 -> 0.592). On the
-fair pre/post split - not the peak-vs-trough one - the effect is **1.9 SE, p ~ 0.06**:
+**gen10-19 is statistically a flat line. There was no regression.** With gen19 in hand the whole
+curve fits a constant true strength of 0.611, and every excursion in it - gen12-13's 0.713/0.675
+peak and gen14's 0.487 trough alike - is accounted for by the +/-0.07 sampling noise of a 40-game
+match:
 
-| window | gens | n | mean pts |
-|---|---|---:|---:|
-| before the break | 10-13 | 160 | 0.660 |
-| after the break | 14-18 | 200 | 0.572 |
+| quantity | value |
+|---|---:|
+| gen10-19 mean | 0.6113 |
+| observed SD across generations | 0.0635 |
+| SD expected from 40-game noise alone | 0.0676 |
+| excess variance | -0.00054 |
+| chi2 (flat-line fit) | 8.39 on 9 df |
 
-(An earlier note in this file quoted 2.3 SE by comparing gen12-13, the two best generations, against
-gen14-17. Using the peak as the baseline overstates it; 1.9 SE is the honest number.) So the
-defensible reading is **flat at ~0.59 with gen14 a low outlier**, not a collapse - which lowers the
-value of a gen13 rollback, since gen13's 0.675 may itself be a high outlier. What survives
-unchanged is PLATEAU: six generations bought nothing.
+Zero excess variance, and a chi2 almost exactly equal to its df. The pre/post split that once read
+2.3 SE is now **1.83 SE** (gen10-13 0.659 vs gen14-19 0.579) and shrinking as data accumulates.
+The rise-collapse-recovery narrative built over 2026-09-11..14 was noise read as signal.
 
-Three facts, in order of how much they constrain the explanation:
+**PLATEAU fired at gen18 and again at gen19, and that is the real finding**: ten generations,
+~70 h of machine time, no measurable strength change at all.
 
-1. **Strength fell while val loss improved monotonically, for seven straight generations.**
-   1.7164 → 1.1892 across gen08-17 with no reversal, spanning a 0.675 → 0.58 strength decline.
-   The net fits its own corpus ever better while playing no better. Any theory has to explain
-   both halves; "undertrained" and "capacity" explain neither.
-2. **The draw rate roughly doubled and stayed there.** 14% over gen12-13 (11/80) → **28% over
-   gen14-17** (50/180), with TDs near level in the drawish generations (130:135, 176:162,
-   175:162). Wins collapsed 25 → 13-18 while losses barely moved: the loop stopped *winning*
-   games rather than starting to lose them. That is a policy going passive, not one getting
-   tactically worse.
-3. **The level shift is real but modest.** gen12-13 pooled 0.694 (n=80) vs gen14-17 pooled
-   0.559 (n=160) — about 2.3 SE. The decline arrested at ~0.58 rather than running away; gen15-17
-   are tightly clustered (0.600 / 0.562 / 0.588).
+Two consequences:
+
+* **Do not roll back to gen13.** Its 0.675 is a high draw from the same distribution as everything
+  else; the rollback buys nothing.
+* **`ANCHOR_GAMES=40` cannot resolve this loop.** At n=40 the curve resolves only |delta| >~ 0.14,
+  which is why ten generations supported a story that was not there. Detecting the ~0.05 gains this
+  loop might plausibly produce needs ~400 games per point. Fix the measurement before trusting the
+  next ten generations. This is the same lesson as #5/D10 (120 games resolve only |delta| >= 0.10),
+  now paid for a second time.
+
+What survives unexplained: **nine generations of monotonic val improvement (1.7164 -> 1.1570)
+against exactly zero strength gain.** The net learns something every generation and none of it
+reaches the board. Note this also undercuts candidate 1 below - progressive overfitting predicts
+monotonic decay, and the data show a flat line, not a decline.
 
 ### Hypothesis (2026-09-13): exploration collapse - TESTED AND FALSIFIED 2026-09-14
 
