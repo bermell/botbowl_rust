@@ -156,6 +156,39 @@ against exactly zero strength gain.** The net learns something every generation 
 reaches the board. Note this also undercuts candidate 1 below - progressive overfitting predicts
 monotonic decay, and the data show a flat line, not a decline.
 
+**Chart:** https://claude.ai/code/artifact/3c5adf9d-1ea4-4c0a-90ca-b1907554d007 - the full
+gen05-19 curve with +/-1 SE bars, the fitted level and its band, and the per-generation table.
+
+### Run closed 2026-09-14 at gen20
+
+STOP placed 10:20; the loop finished gen20's generate (4800 games) and exited before prepare, so
+**gen20 has a corpus but no net and no curve point** - its `.generated` marker is intact and a
+relaunch resumes it at prepare. Champion on disk is `bbnet_14x7_gen19.onnx`; gen10-20 corpora and
+gen10-19 nets are all kept.
+
+Where this leaves the queue, in the order worth doing:
+
+1. **Size the measurement before trusting anything else.** `ANCHOR_GAMES=40` resolves only
+   |delta| >~ 0.14. Ten generations of data supported a rise-collapse-recovery story that was not
+   there, and three separate advisory alerts fired on noise. ~400 games/point is what the ~0.05
+   gains this loop might produce actually need. Until this is fixed the curve cannot answer the
+   question it exists to answer.
+2. **The from-scratch test, reframed.** Not "does it beat the decayed lineage" - there is no decay -
+   but "can anything trained on this corpus exceed 0.61?" The audit says the data is healthy, so a
+   from-scratch net landing at ~0.61 too would point at the corpus or the architecture as the
+   ceiling rather than the training procedure. One training run + games, no new generation needed.
+3. **Pin the engine commit first.** Plans 035 and 036 changed `botbowl-mcts` / `recon_mcts` search
+   behaviour after this run's binaries were built at 5c7a651. The next relaunch rebuilds and picks
+   them up, so gen20+ data would not be comparable with gen10-19 and the anchor curve could move for
+   reasons unrelated to training. Pin, or re-baseline the anchor.
+4. **`EPOCHS=10` is ~30 min/generation of waste** - best-val lands at step 2500-15000 of ~110k in
+   every generation. Independent of everything above.
+
+The open question that outlived every hypothesis: **nine generations of monotonic val improvement
+(1.7164 -> 1.1570) against zero strength gain.** The net learns something each generation and none
+of it reaches the board. That, not the phantom regression, is what the next experiment should be
+aimed at.
+
 ### Hypothesis (2026-09-13): exploration collapse - TESTED AND FALSIFIED 2026-09-14
 
 Two things were removed at gen10, together: the **promotion gate** (gateless, plan 030) and the
