@@ -114,9 +114,26 @@ different net**, which matters for #4 below.
 | 15 | 0.600 | 20-8-12 | 0.588 | 20% | 1.2318 |
 | 16 | 0.562 | 16-13-11 | 0.550 | 33% | 1.2172 |
 | 17 | 0.588 | 18-11-11 | 0.583 | 28% | 1.1892 |
+| 18 | 0.625 | 21-8-11 | 0.592 | 20% | 1.1765 |
 
 **REGRESSION fired at gen16** (rolling 0.550, 0.108 below the best 0.658) and cleared at gen17
-(0.583, inside the 0.10 threshold). PLATEAU never fired. Peak is gen13.
+(0.583). **PLATEAU fired at gen18**: best rolling over the last 6 gens 0.658 vs 0.654 before them,
+i.e. six generations and ~40 h of machine time with no net progress. Peak rolling is still gen13.
+
+**The drop is milder than it first looked, and is reverting.** gen18's 0.625 is the best single
+point since gen13 and rolling has risen three generations running (0.550 -> 0.583 -> 0.592). On the
+fair pre/post split - not the peak-vs-trough one - the effect is **1.9 SE, p ~ 0.06**:
+
+| window | gens | n | mean pts |
+|---|---|---:|---:|
+| before the break | 10-13 | 160 | 0.660 |
+| after the break | 14-18 | 200 | 0.572 |
+
+(An earlier note in this file quoted 2.3 SE by comparing gen12-13, the two best generations, against
+gen14-17. Using the peak as the baseline overstates it; 1.9 SE is the honest number.) So the
+defensible reading is **flat at ~0.59 with gen14 a low outlier**, not a collapse - which lowers the
+value of a gen13 rollback, since gen13's 0.675 may itself be a high outlier. What survives
+unchanged is PLATEAU: six generations bought nothing.
 
 Three facts, in order of how much they constrain the explanation:
 
