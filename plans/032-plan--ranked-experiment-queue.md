@@ -189,6 +189,117 @@ The open question that outlived every hypothesis: **nine generations of monotoni
 of it reaches the board. That, not the phantom regression, is what the next experiment should be
 aimed at.
 
+### What the 035/036 binaries actually changed, measured (2026-09-14)
+
+Item 3 above asked whether to pin the engine commit. Answer: **do not pin — re-baseline**, because
+036 changed how the bot plays by a large margin, and because the search got ~1.6x cheaper, which is
+what pays for the bigger measurement item 1 demands.
+
+Three binaries, same machine, same session, one scenario per arm so nothing contends:
+`5c7a651` (the exact binary that generated gen13-20, mtime matches the 2026-09-12 15:49 loop start),
+`3ca3705` (035 in, 036 out) and `9153250`/HEAD (both). Each arm replicates the loop's **generate
+phase exactly** — 8 shards x `--parallel-games 2`, `--mode random-start --truncate`, 1000 iters,
+`--evaluator nn` on `bbnet_14x7_gen19.onnx` through the CUDA sidecar — on gen20's own seeds
+(`30000000 + K*1e5`), 40 games/shard = 320 games/arm. A second pass runs the same shape on
+`--evaluator heuristic`, which takes the NN out of the picture entirely.
+
+| arm | contains | s/game | decisions/game | **ms/decision** |
+|---|---|---:|---:|---:|
+| `5c7a651` | — | 4.371 | 33.99 ± 1.84 | **128.6** |
+| `3ca3705` | 035 | 2.678 | 32.44 ± 1.74 | **82.5** |
+| HEAD | 035 + 036 | 2.281 | 28.24 ± 1.71 | **80.8** |
+| `5c7a651` heuristic | — | 2.931 | 30.63 ± 1.75 | **95.7** |
+| `3ca3705` heuristic | 035 | 1.353 | 29.99 ± 1.61 | **45.1** |
+| HEAD heuristic | 035 + 036 | 1.159 | 23.63 ± 1.29 | **49.1** |
+
+**The speedup with the NN in the loop is 1.59x per decision (1.92x per game); without it, 1.95x.**
+ms/decision is the number to quote — s/game also moves because 036 shortens games (below). The NN
+forward is a fixed cost 035 cannot touch, so it dilutes the engine-side win; that the dilution is
+only 1.95x -> 1.59x is itself the measurement that inference is no longer dominant (plan 032 key
+result 7, re-confirmed). Plan 035's microbench bracketed this correctly: it read 4.2x on the
+30+-action `full_teams` fan and 1.19x on the narrow `score_td_easy`, and real self-play games, which
+mix the two, land at 2.1x with a heuristic leaf.
+
+**Against the historical numbers.** The loop's own generate phase ran 4800 games in 305-312 min in
+each of gen17-20 = **3.81-3.90 s/game** at 5c7a651. (The controlled arm above reads 4.37 s/game for
+the same binary; it plays only the first 40 seeds of each shard, so the loop's figure is the better
+fleet average.) Scaling the loop's own number by the measured per-decision ratio puts a HEAD
+generation at **~2.4 s/game, i.e. ~3.2 h instead of ~5.1 h — about 2 h/generation saved.** The chain
+since the sidecar: 86.3 s/game (plan 024 "before") -> 5.88 (plan 024, 5 nn shards x2) -> 3.81
+(8 shards x2, the gen13-20 loop) -> ~2.4 projected.
+
+#### 036 changed how the bot plays; 035 did not
+
+Same 320 games/arm, counting the agent's own chosen actions:
+
+| evaluator | action | pre-035 | +035 | +036 | 035 effect | 036 effect |
+|---|---|---:|---:|---:|---:|---:|
+| heuristic | `Block`/game | 2.32 | 2.33 | 1.34 | −0.01 ± 0.20 (0.0σ) | **−0.99 ± 0.17 (−5.9σ)** |
+| heuristic | `StartBlitz`/game | 1.89 | 1.87 | 0.67 | +0.03 ± 0.16 (+0.2σ) | **−1.20 ± 0.13 (−9.5σ)** |
+| nn | `Block`/game | 3.48 | 3.35 | 2.34 | +0.12 ± 0.26 (+0.5σ) | **−1.01 ± 0.23 (−4.3σ)** |
+| nn | `StartBlitz`/game | 2.20 | 2.10 | 1.37 | +0.11 ± 0.17 (+0.6σ) | **−0.73 ± 0.15 (−4.8σ)** |
+
+**The bot throws 30-42% fewer blocks and 36-64% fewer blitzes under 036**, and the `Push` /
+`FollowUp` decisions that follow a block fall with them — which is the whole of the decisions/game
+drop. Scoring is unchanged (score sum/game 2.73 ± 0.10 vs 2.75 ± 0.10 with the NN; 2.65 vs 2.68 with
+the heuristic), so this is a change in *how* the same amount of football gets played.
+
+That is the expected sign. Before 036 `roll_outcomes::enumerate` modelled every block as a single
+`Pow` child, so the search believed a block always knocks the defender down: free, riskless, always
+available. With the six real outcome classes and their exact probabilities in the tree, blocks have
+a downside and the search stops taking them. **Every corpus and every net on disk was produced by a
+bot playing under the old, false premise.** 035 by contrast moves nothing, at 0.0-0.6σ on four
+independent counts — which is the plan-035 no-op claim re-confirmed on full games rather than on
+40 fixed root states.
+
+#### Production self-play is not reproducible run-to-run
+
+Found while trying to attribute the above, and it invalidates a premise stated elsewhere in this
+file. **The same binary, same net, same `--seed`, same flags, replayed twice, plays different
+games** — verified on `5c7a651` with `--evaluator heuristic` (no GPU, no NN), tree reuse off, and
+under both `BLOOD_MCTS_TIE_BREAK=hash` and `=asc`. The *start states* are identical (the seeded
+random-start is innocent); the divergence appears in the first search, in the root children's visit
+distribution and their enumeration order, and the chosen action differs from there on.
+
+Mechanism, partly localised: `recon_mcts`'s `deterministic_hash` feature — the fixed-seed
+`ChildHasher` that makes children-map iteration order stable — is enabled **only in
+`botbowl-mcts`'s `[dev-dependencies]`** (`botbowl-mcts/Cargo.toml:29`), so test targets get it and
+the shipped `botbowl-ui` does not. Rebuilding `botbowl-ui` with it in `[dependencies]` did *not*
+restore reproducibility on its own, so at least one more per-process-random source remains; the
+registry is a `HashSet<WeakWrap<..>>` on the default `RandomState` (`tree.rs:683`) and pointer-keyed
+maps are the other candidate. Not chased further.
+
+Consequences:
+
+- **"Given a state, the generator plays the same move every time. All corpus diversity comes from
+  random starts and dice — none from the policy" (the exploration-collapse section below) is
+  false.** There is an uncontrolled diversity source in the policy. That section's conclusion is
+  unaffected — it was falsified on corpus statistics anyway — but the mechanism it argues from is
+  not real, and #4's premise needs restating before anyone builds on it.
+- Plan 035's byte-exact T2 golden is intact and was never in tension with this: it pins
+  `deterministic_hash`, `TieBreak::Mover` and `.with_workers(1)` precisely because production does
+  not have them.
+- Any A/B run through full games carries this as extra variance. It is already inside every
+  measured SE in this file, so no published number changes.
+
+#### exp037: the re-baseline, launched 2026-09-14 21:14 on 9153250
+
+`scripts/exp037_rebaseline.sh`. Two 400-game matches on one shared seed base (`--seed 0`, so the
+first 20 pairs are the same situations the 40-game curve points used), both against the frozen
+anchor `bbnet_14x7_gen03.onnx`, at HEAD:
+
+- **m1 `gen19` vs anchor** — the re-baselined curve point. 400 games is SE ≈ 0.025 against the
+  ANCHOR_GAMES=40 point's ≈ 0.07, which is item 1 of this section's queue.
+- **m2 `scratch1020` vs anchor** — the reframed from-scratch test (item 2): the Q7 recipe
+  (`arm_init.pt`, lr 1e-3, 110k steps, cq τ=100) on the **whole accumulated gen10-20 corpus**
+  (66 train shards, 1,304,195 samples; val held out on gen20 shards 4/7), asking whether anything
+  trained on this corpus can exceed the lineage's flat 0.611.
+
+Differencing m2 − m1 per seed answers "from scratch vs the warm-started lineage" on the anchor scale
+with the situation term shared. Both matches read against the gen10-19 pooled 0.611 — but on the
+pre-036 binaries, so a shift in m1 is a binary effect, not a training effect, and cannot be
+attributed to either half alone.
+
 ### Hypothesis (2026-09-13): exploration collapse - TESTED AND FALSIFIED 2026-09-14
 
 Two things were removed at gen10, together: the **promotion gate** (gateless, plan 030) and the
@@ -201,6 +312,13 @@ aggregated Q with a deterministic tie-break (`TieBreak::Hash`). Verified 2026-09
 Dirichlet noise and no temperature sampling anywhere in `botbowl-mcts` or `recon_mcts`. Given a
 state, the generator plays the same move every time. **All corpus diversity comes from random
 starts and dice — none from the policy.** The hedge was the last off-policy source, and it is gone.
+
+> **Correction, 2026-09-14** (see "Production self-play is not reproducible run-to-run" above): the
+> two sentences in bold are false. Replaying the same binary on the same net, state and seed gives a
+> *different* game — the search itself is nondeterministic per process, so the policy does inject
+> diversity, just uncontrolled and unmeasured diversity. The absence of Dirichlet noise and
+> temperature sampling stands. The section's verdict is unaffected: it was falsified on corpus
+> statistics, not on this mechanism.
 
 That closes a feedback loop: a passive policy draws more → the corpus fills with draws → the
 value head learns draws are what happens → the search finds less reason to prefer scoring lines →
