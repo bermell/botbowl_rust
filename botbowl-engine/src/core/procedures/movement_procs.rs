@@ -6,7 +6,7 @@ use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
 };
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
-use crate::core::procedures::{ball_procs, block_procs};
+use crate::core::procedures::{ball_procs, block_procs, game_procs};
 use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
@@ -87,17 +87,20 @@ impl SimpleProc for DodgeProc {
         self.id
     }
 }
-fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> AnyProc {
+fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
     match roll {
-        PathingEvent::Dodge(target) => DodgeProc::new(active_player, target),
-        PathingEvent::GFI(target) => GfiProc::new(active_player, target),
-        PathingEvent::Pickup(target) => ball_procs::PickupProc::new(active_player, target),
-        PathingEvent::Block(id, dices) => block_procs::Block::new(dices, id),
-        PathingEvent::Handoff(id, target) => ball_procs::Catch::new(id, target),
-        PathingEvent::Touchdown(id) => ball_procs::Touchdown::new(id),
-        PathingEvent::Foul(victim, target) => casualty_procs::Armor::new_foul(victim, target, active_player),
-        PathingEvent::StandUp => StandUp::new(active_player),
-        PathingEvent::Pass { to, pass, modifer } => ball_procs::Pass::new(to, pass, modifer),
+        PathingEvent::Dodge(target) => vec![DodgeProc::new(active_player, target)],
+        PathingEvent::GFI(target) => vec![GfiProc::new(active_player, target)],
+        PathingEvent::Pickup(target) => vec![ball_procs::PickupProc::new(active_player, target)],
+        PathingEvent::Block(id, dices) => vec![block_procs::Block::new(dices, id)],
+        PathingEvent::Handoff(id, target) => vec![
+            game_procs::TurnoverIfPossessionLost::new(),
+            ball_procs::Catch::new(id, target),
+        ],
+        PathingEvent::Touchdown(id) => vec![ball_procs::Touchdown::new(id)],
+        PathingEvent::Foul(victim, target) => vec![casualty_procs::Armor::new_foul(victim, target, active_player)],
+        PathingEvent::StandUp => vec![StandUp::new(active_player)],
+        PathingEvent::Pass { to, pass, modifer } => vec![ball_procs::Pass::new(to, pass, modifer)],
     }
 }
 
@@ -133,7 +136,7 @@ impl MoveAction {
                     if event_ends_player_action(&roll) {
                         game_state.get_mut_player_unsafe(player_id).used = true;
                     }
-                    return ProcState::NotDoneNew(proc_from_roll(roll, player_id));
+                    return ProcState::NotDoneNewProcs(proc_from_roll(roll, player_id));
                 }
             }
         }
@@ -591,6 +594,7 @@ mod tests {
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
             .add_home_player(target_pos)
+            .add_away_player(Position { x: 10, y: 10 })
             .add_ball_pos(start_pos)
             .build();
 
@@ -606,6 +610,7 @@ mod tests {
             BallState::OnGround(target_pos + bounce_dir),
             "failed handoff catch must bounce from the receiver's square"
         );
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
 
     /// Same invariant for a pass whose deflect attempt failed: the ball
