@@ -78,6 +78,11 @@ pub fn simple_at_index(at: SimpleAT) -> usize {
         SimpleAT::SetupLine => 13,
         SimpleAT::EndSetup => 14,
         SimpleAT::KickoffAimMiddle => 15,
+        // The extra setup formations share the `SetupLine` channel: the
+        // policy head predates them and widening it would invalidate every
+        // trained net for a choice the search can make on its own. A net that
+        // should *prefer* a formation needs a wider head and a retrain.
+        SimpleAT::SetupSpread | SimpleAT::SetupWedge | SimpleAT::SetupZone => 13,
     }
 }
 
@@ -224,6 +229,17 @@ mod tests {
             assert_eq!(simple_at_index(at), i);
             assert_eq!(simple_at_from_index(i), at);
         }
+    }
+
+    /// The setup formations added after the policy head was fixed share
+    /// `SetupLine`'s channel, so a net trained before them still evaluates
+    /// every setup action (identically — the search picks between them).
+    #[test]
+    fn extra_setup_formations_share_the_setup_line_channel() {
+        for at in [SimpleAT::SetupSpread, SimpleAT::SetupWedge, SimpleAT::SetupZone] {
+            assert_eq!(simple_at_index(at), simple_at_index(SimpleAT::SetupLine));
+        }
+        assert_eq!(simple_at_from_index(13), SimpleAT::SetupLine);
     }
 
     #[test]

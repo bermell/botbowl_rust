@@ -37,6 +37,12 @@ pub enum SimpleAT {
     SetupLine,
     EndSetup,
     KickoffAimMiddle,
+    // Setup formations beyond the default line — see `Formation` in
+    // `procedures/kickoff_procs.rs`. Appended at the end so the existing
+    // action indices (and any model trained against them) keep their meaning.
+    SetupSpread,
+    SetupWedge,
+    SetupZone,
 }
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]

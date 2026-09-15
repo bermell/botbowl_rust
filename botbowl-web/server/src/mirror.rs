@@ -95,6 +95,9 @@ pub fn simple_at_to_proto(at: et::SimpleAT) -> pa::SimpleAT {
         et::SimpleAT::SetupLine => pa::SimpleAT::SetupLine,
         et::SimpleAT::EndSetup => pa::SimpleAT::EndSetup,
         et::SimpleAT::KickoffAimMiddle => pa::SimpleAT::KickoffAimMiddle,
+        et::SimpleAT::SetupSpread => pa::SimpleAT::SetupSpread,
+        et::SimpleAT::SetupWedge => pa::SimpleAT::SetupWedge,
+        et::SimpleAT::SetupZone => pa::SimpleAT::SetupZone,
     }
 }
 
@@ -116,6 +119,9 @@ pub fn simple_at_from_proto(at: pa::SimpleAT) -> et::SimpleAT {
         pa::SimpleAT::SetupLine => et::SimpleAT::SetupLine,
         pa::SimpleAT::EndSetup => et::SimpleAT::EndSetup,
         pa::SimpleAT::KickoffAimMiddle => et::SimpleAT::KickoffAimMiddle,
+        pa::SimpleAT::SetupSpread => et::SimpleAT::SetupSpread,
+        pa::SimpleAT::SetupWedge => et::SimpleAT::SetupWedge,
+        pa::SimpleAT::SetupZone => et::SimpleAT::SetupZone,
     }
 }
 
@@ -417,9 +423,9 @@ mod tests {
             assert_eq!(simple_at_to_proto(simple_at_from_proto(at)), at);
         }
         // ...and the engine side is covered by the same identity, because the
-        // maps are bijections between two 14- and 16-variant enums.
+        // maps are bijections between two 14- and 19-variant enums.
         assert_eq!(pa::PosAT::ALL.len(), 14);
-        assert_eq!(pa::SimpleAT::ALL.len(), 16);
+        assert_eq!(pa::SimpleAT::ALL.len(), 19);
     }
 
     #[test]

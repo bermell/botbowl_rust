@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, Sum2D6};
 use crate::core::model::{
-    other_team, Action, AvailableActions, BallState, Coord, Direction, DugoutPlace, PlayerID, Position, ProcState,
-    Procedure, Result, TeamType, Weather,
+    other_team, Action, AvailableActions, BallState, BoardDims, Coord, Direction, DugoutPlace, PlayerID, Position,
+    ProcState, Procedure, Result, TeamType, Weather,
 };
 use crate::core::procedures::ball_procs;
 use crate::core::table::*;
@@ -181,6 +181,195 @@ impl Procedure for LandKickoff {
         }
     }
 }
+/// Where a formation slot sits along the y axis. Resolved against the *active*
+/// board, never against hard-coded offsets, so a formation means the same thing
+/// on every board size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Row {
+    /// `i`-th row of the line-of-scrimmage band, counted outwards from the
+    /// centre (0 = centre, 1 = one south, 2 = one north, …). Yields nothing
+    /// when the band is narrower than `i` — that slot is simply skipped, which
+    /// is what keeps the front rank inside `los_y_range` on every board (and
+    /// therefore `is_setup_legal`).
+    Los(usize),
+    /// `k` rows from the centre, clamped onto the pitch.
+    Off(Coord),
+    /// Outermost row of the north (-1) / south (+1) wing.
+    Wing(Coord),
+}
+
+/// One fielding slot: the role we'd like there, how many squares back from our
+/// own line of scrimmage, and which row.
+type Slot = (PlayerRole, Coord, Row);
+
+/// Pre-configured setups. Each is a pure function of `(BoardDims, TeamType)`;
+/// slots are listed in fielding priority order, so a team smaller than the
+/// formation fields the front of the list and the rest sit out. Every
+/// formation opens with three line-of-scrimmage slots, so any of them is legal
+/// (`GameState::is_setup_legal`) on any board whose LOS band is three rows
+/// wide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Formation {
+    /// The historical auto-setup: everything on the line, catchers just behind
+    /// it, throwers deep. Reproduces the pre-`Formation` layout exactly on the
+    /// full pitch.
+    Line,
+    /// Wide defence: sentries on both wings, a thin line, deep safeties.
+    Spread,
+    /// Receiving wedge: a cage around a deep receiver, wide outlets.
+    Wedge,
+    /// Deep defensive screen: a second rank behind the line and a lone safety.
+    Zone,
+}
+
+impl Formation {
+    pub const ALL: [Formation; 4] = [Formation::Line, Formation::Spread, Formation::Wedge, Formation::Zone];
+
+    pub fn action(self) -> SimpleAT {
+        match self {
+            Formation::Line => SimpleAT::SetupLine,
+            Formation::Spread => SimpleAT::SetupSpread,
+            Formation::Wedge => SimpleAT::SetupWedge,
+            Formation::Zone => SimpleAT::SetupZone,
+        }
+    }
+
+    pub fn from_action(at: SimpleAT) -> Option<Formation> {
+        match at {
+            SimpleAT::SetupLine => Some(Formation::Line),
+            SimpleAT::SetupSpread => Some(Formation::Spread),
+            SimpleAT::SetupWedge => Some(Formation::Wedge),
+            SimpleAT::SetupZone => Some(Formation::Zone),
+            _ => None,
+        }
+    }
+
+    /// Board requirements. The clamping below would keep an oversized formation
+    /// on-pitch, but it would collapse it onto its neighbours and stop being
+    /// the formation it claims to be — so the tighter shapes are simply not
+    /// offered on boards that can't hold them. `Line` is always available.
+    pub fn fits(self, dims: &BoardDims) -> bool {
+        let depth = Self::max_back(dims);
+        match self {
+            Formation::Line => true,
+            Formation::Spread => dims.team_size >= 4 && depth >= 3,
+            Formation::Wedge => dims.team_size >= 4 && depth >= 5,
+            Formation::Zone => dims.team_size >= 4 && depth >= 4,
+        }
+    }
+
+    /// Formations legal on this board, in menu order.
+    pub fn available(dims: &BoardDims) -> impl Iterator<Item = Formation> + '_ {
+        Self::ALL.into_iter().filter(|f| f.fits(dims))
+    }
+
+    /// Deepest offset from our own line of scrimmage that still lands on the
+    /// pitch and on our own half.
+    fn max_back(dims: &BoardDims) -> Coord {
+        dims.width / 2 - 2
+    }
+
+    fn slots(self) -> Vec<Slot> {
+        use PlayerRole::*;
+        match self {
+            // Front rank centre-out (blitzers on the shoulders at Los(3)/Los(4)),
+            // catchers a step behind it, throwers deep. On the full pitch this is
+            // square-for-square the old hard-coded formation.
+            Formation::Line => vec![
+                (Lineman, 0, Row::Los(0)),
+                (Lineman, 0, Row::Los(1)),
+                (Lineman, 0, Row::Los(2)),
+                (Blitzer, 0, Row::Los(3)),
+                (Blitzer, 0, Row::Los(4)),
+                (Lineman, 0, Row::Los(5)),
+                (Lineman, 0, Row::Los(6)),
+                (Catcher, 2, Row::Off(-2)),
+                (Catcher, 2, Row::Off(2)),
+                (Thrower, 6, Row::Off(-3)),
+                (Thrower, 6, Row::Off(3)),
+            ],
+            // Two per wing is the cap in `is_setup_legal`, so the wing pairs sit
+            // at different depths on the same outer row.
+            Formation::Spread => vec![
+                (Lineman, 0, Row::Los(0)),
+                (Lineman, 0, Row::Los(1)),
+                (Lineman, 0, Row::Los(2)),
+                (Blitzer, 1, Row::Wing(-1)),
+                (Blitzer, 1, Row::Wing(1)),
+                (Catcher, 3, Row::Wing(-1)),
+                (Catcher, 3, Row::Wing(1)),
+                (Lineman, 0, Row::Los(3)),
+                (Lineman, 0, Row::Los(4)),
+                (Thrower, 5, Row::Off(0)),
+                (Thrower, 5, Row::Off(1)),
+            ],
+            // A cage around a deep receiver: corners at back 3 and 5, wide
+            // outlets for the hand-off.
+            Formation::Wedge => vec![
+                (Lineman, 0, Row::Los(0)),
+                (Lineman, 0, Row::Los(1)),
+                (Lineman, 0, Row::Los(2)),
+                (Thrower, 4, Row::Off(0)),
+                (Blitzer, 3, Row::Off(1)),
+                (Blitzer, 3, Row::Off(-1)),
+                (Lineman, 5, Row::Off(1)),
+                (Lineman, 5, Row::Off(-1)),
+                (Catcher, 2, Row::Off(3)),
+                (Catcher, 2, Row::Off(-3)),
+                (Lineman, 0, Row::Los(3)),
+            ],
+            // Nothing committed to the wings: a second rank two back, wide cover
+            // further out, one safety on the deep centre.
+            Formation::Zone => vec![
+                (Lineman, 0, Row::Los(0)),
+                (Lineman, 0, Row::Los(1)),
+                (Lineman, 0, Row::Los(2)),
+                (Blitzer, 2, Row::Off(2)),
+                (Blitzer, 2, Row::Off(-2)),
+                (Lineman, 2, Row::Off(0)),
+                (Catcher, 4, Row::Off(3)),
+                (Catcher, 4, Row::Off(-3)),
+                (Thrower, 6, Row::Off(0)),
+                (Lineman, 0, Row::Los(3)),
+                (Lineman, 0, Row::Los(4)),
+            ],
+        }
+    }
+
+    /// The board's LOS rows ordered centre-out; `Row::Los(i)` indexes this.
+    fn los_rows_center_out(dims: &BoardDims) -> Vec<Coord> {
+        let band = dims.los_y_range();
+        let center = dims.height / 2;
+        let mut rows = vec![center];
+        let mut step = 1;
+        while rows.len() < band.clone().count() {
+            for y in [center + step, center - step] {
+                if band.contains(&y) {
+                    rows.push(y);
+                }
+            }
+            step += 1;
+        }
+        rows
+    }
+
+    /// Resolve a slot to a square on `team`'s own half, or `None` when the
+    /// board has no row for it.
+    fn square(dims: &BoardDims, team: TeamType, slot: Slot) -> Option<Position> {
+        let (_, back, row) = slot;
+        let center = dims.height / 2;
+        let y = match row {
+            Row::Los(i) => *Self::los_rows_center_out(dims).get(i)?,
+            Row::Off(k) => (center + k).clamp(1, dims.height - 2),
+            Row::Wing(-1) => *dims.north_wing_y_range().start(),
+            Row::Wing(_) => *dims.south_wing_y_range().end(),
+        };
+        let back = back.min(Self::max_back(dims));
+        let x_delta_sign = if team == TeamType::Home { 1 } else { -1 };
+        Some(Position::new((dims.los_x(team) + back * x_delta_sign, y)))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Setup {
     team: TeamType,
@@ -230,7 +419,7 @@ impl Setup {
             game_state.field_dugout_player(id, p);
         }
     }
-    fn setup_line(&self, game_state: &mut GameState) -> Result<()> {
+    fn setup_formation(&self, game_state: &mut GameState, formation: Formation) -> Result<()> {
         //unfield all players
         let player_ids = game_state
             .get_players_on_pitch_in_team(self.team)
@@ -239,10 +428,6 @@ impl Setup {
         for id in player_ids {
             game_state.unfield_player(id, DugoutPlace::Reserves)?;
         }
-        let mut linemen_pos = vec![(0, -3), (0, 3), (0, -1), (0, 1), (0, 0)];
-        let mut blitzer_pos = vec![(0, -2), (0, 2)];
-        let mut catcher_pos = vec![(2, 2), (2, -2)];
-        let mut thrower_pos = vec![(6, 3), (6, -3)];
         // Field in a fixed role order (the roster's), not dugout-slot order:
         // `unfield_player` refills the *shared* dugout array first-free-slot,
         // so after a drive in which the other team set up first our players
@@ -256,71 +441,73 @@ impl Setup {
             PlayerRole::Catcher => 2,
             PlayerRole::Thrower => 3,
         };
-        let mut players: Vec<(u8, PlayerID)> = game_state
+        let mut bench: Vec<(u8, PlayerID, PlayerRole)> = game_state
             .get_dugout()
             .filter(|dplayer| dplayer.stats.team == self.team)
             .filter(|dplayer| dplayer.place == DugoutPlace::Reserves)
-            .map(|p| (role_rank(p.stats.role), p.id))
+            .map(|p| (role_rank(p.stats.role), p.id, p.stats.role))
             .collect();
-        players.sort_unstable();
-        let players = players.into_iter().map(|(_, id)| id);
+        bench.sort_unstable_by_key(|(rank, id, _)| (*rank, *id));
         let dims = game_state.board_dims;
-        let x_delta_sign = if self.team == TeamType::Home { 1 } else { -1 };
-        let middle_x = game_state.get_line_of_scrimage_x(self.team);
-        let middle_y = dims.height / 2;
-        // Clamp formation offsets so they stay on-pitch and on our own half on
-        // small boards. On the full pitch these bounds are wider than any offset,
-        // so the historical formation is reproduced exactly.
-        let max_dx = dims.width / 2 - 2;
-        let max_dy = (middle_y - 1).min(dims.height - 2 - middle_y);
         let mut fielded = 0usize;
-        for id in players {
-            if fielded >= dims.team_size {
+        // Slots first, then whoever is left over: a formation can have fewer
+        // usable slots than the board has players (LOS slots are skipped when
+        // the band is narrow), and the team must still field `team_size`.
+        let slots = formation.slots().into_iter().map(Some).chain(std::iter::repeat(None));
+        for slot in slots {
+            if fielded >= dims.team_size || bench.is_empty() {
                 break;
             }
-            let player = game_state.get_dugout_player(id).unwrap();
-            let (dx, dy) = {
-                match player.stats.role {
-                    PlayerRole::Blitzer if !blitzer_pos.is_empty() => blitzer_pos.pop().unwrap(),
-                    PlayerRole::Thrower if !thrower_pos.is_empty() => thrower_pos.pop().unwrap(),
-                    PlayerRole::Catcher if !catcher_pos.is_empty() => catcher_pos.pop().unwrap(),
-                    PlayerRole::Lineman if !linemen_pos.is_empty() => linemen_pos.pop().unwrap(),
-                    _ => continue,
-                }
+            let position = match slot {
+                // A slot the board has no row for is dropped, not relocated —
+                // the leftover players are placed by the `None` arm below,
+                // after every real slot has had its turn.
+                Some(s) => match Formation::square(&dims, self.team, s) {
+                    None => continue,
+                    // Clamping `back` on a shallow board can still land two
+                    // slots on the same square; that one falls back.
+                    Some(pos) if game_state.is_out(pos) || game_state.get_player_id_at(pos).is_some() => {
+                        Self::reserve_square(game_state, self.team)
+                    }
+                    Some(pos) => pos,
+                },
+                None => Self::reserve_square(game_state, self.team),
             };
-            let (dx, dy) = (dx.min(max_dx), dy.clamp(-max_dy, max_dy));
-            let mut position = Position::new((middle_x + dx * x_delta_sign, middle_y + dy));
-            // Clamping can collide players onto the same square on tiny boards;
-            // fall back to the nearest free square on our own half.
-            if game_state.is_out(position) || game_state.get_player_id_at(position).is_some() {
-                position = Self::first_free_own_half(game_state, middle_x, x_delta_sign);
-            }
+            // Take the wanted role if it's still on the bench, else the
+            // lowest-ranked player left (linemen before positionals).
+            let wanted = slot.map(|s| s.0);
+            let idx = wanted
+                .and_then(|want| bench.iter().position(|(_, _, role)| *role == want))
+                .unwrap_or(0);
+            let (_, id, role) = bench.remove(idx);
             fielded += 1;
-            let player = game_state.get_dugout_player(id).unwrap();
-            crate::game_log!(
-                game_state,
-                "fielding {:?} {:?} at {:?}",
-                player.stats.role,
-                player.stats.team,
-                position
-            );
+            crate::game_log!(game_state, "fielding {:?} {:?} at {:?}", role, self.team, position);
             game_state.field_dugout_player(id, position)
         }
         Ok(())
     }
-    /// First empty square on `team`'s own half, scanning from the line of
-    /// scrimmage backwards toward the end zone. Used as a collision fallback
-    /// when clamped formation offsets overlap on small boards.
-    fn first_free_own_half(game_state: &GameState, los_x: Coord, x_delta_sign: Coord) -> Position {
-        let xs: Vec<Coord> = if x_delta_sign > 0 {
-            (los_x..=game_state.board_dims.width - 2).collect()
-        } else {
-            (1..=los_x).rev().collect()
-        };
-        for x in xs {
-            for y in 1..=game_state.board_dims.height - 2 {
-                if game_state.get_player_id_at_coord(x, y).is_none() {
-                    return Position { x, y };
+    /// Fallback square for a player the formation has no room for: the first
+    /// free square behind our own line of scrimmage, shallow ranks first and
+    /// centre rows before wings (the wings are capped at two players by
+    /// `is_setup_legal`, so they are filled only as a last resort).
+    fn reserve_square(game_state: &GameState, team: TeamType) -> Position {
+        let dims = game_state.board_dims;
+        let center = dims.height / 2;
+        let x_delta_sign = if team == TeamType::Home { 1 } else { -1 };
+        let los_x = dims.los_x(team);
+        let (north, south) = (dims.north_wing_y_range(), dims.south_wing_y_range());
+        let mut rows: Vec<Coord> = (1..=dims.height - 2).collect();
+        rows.sort_by_key(|y| (y - center).abs());
+        for wings_allowed in [false, true] {
+            for back in 0..=(dims.width / 2 - 2) {
+                for &y in &rows {
+                    if !wings_allowed && (north.contains(&y) || south.contains(&y)) {
+                        continue;
+                    }
+                    let x = los_x + back * x_delta_sign;
+                    if game_state.get_player_id_at_coord(x, y).is_none() {
+                        return Position { x, y };
+                    }
                 }
             }
         }
@@ -331,13 +518,16 @@ impl Procedure for Setup {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let mut aa = AvailableActions::new(self.team);
         if input == ProcInput::Nothing {
-            aa.insert_simple(SimpleAT::SetupLine);
+            for formation in Formation::available(&game_state.board_dims) {
+                aa.insert_simple(formation.action());
+            }
             return ProcState::NeedAction(aa);
         }
 
         match input {
-            ProcInput::Action(Action::Simple(SimpleAT::SetupLine)) => {
-                self.setup_line(game_state).unwrap();
+            ProcInput::Action(Action::Simple(at)) if Formation::from_action(at).is_some() => {
+                self.setup_formation(game_state, Formation::from_action(at).unwrap())
+                    .unwrap();
                 aa.insert_simple(SimpleAT::EndSetup);
                 ProcState::NeedAction(aa)
             }
@@ -350,6 +540,7 @@ impl Procedure for Setup {
 
 #[cfg(test)]
 mod tests {
+    use super::Formation;
     use crate::core::gamestate::{BuilderState, GameState, GameStateBuilder};
     use crate::core::model::*;
     use crate::core::table::*;
@@ -410,6 +601,117 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Board sizes to exercise the formations on: the compiled capacity plus a
+    /// couple of smaller tiers (skipped when the build is too small for them).
+    fn test_boards() -> Vec<BoardDims> {
+        let capacity = BoardDims::default();
+        let mut boards = vec![capacity];
+        for (w, h, players) in [(28, 17, 11), (22, 11, 8), (18, 11, 6), (16, 9, 4)] {
+            if (w, h, players) != (capacity.width, capacity.height, capacity.team_size)
+                && w <= capacity.width
+                && h <= capacity.height
+                && players <= capacity.team_size
+            {
+                boards.push(BoardDims::new(w, h, players));
+            }
+        }
+        boards
+    }
+
+    /// Away wins the toss and kicks, so Home (the receiver) is asked to set up.
+    fn at_setup(dims: BoardDims) -> GameState {
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(dims)
+            .set_state(BuilderState::CoinToss)
+            .build();
+        state.fix_coin(crate::core::dices::Coin::Heads);
+        state.step_simple(SimpleAT::Heads);
+        state.step_simple(SimpleAT::Kick);
+        state
+    }
+
+    fn squares(state: &GameState, team: TeamType) -> Vec<Position> {
+        let mut v: Vec<Position> = state.get_players_on_pitch_in_team(team).map(|p| p.position).collect();
+        v.sort_by_key(|p| (p.x, p.y));
+        v
+    }
+
+    #[test]
+    fn every_offered_formation_is_legal_on_every_board() {
+        for dims in test_boards() {
+            for formation in Formation::available(&dims) {
+                let mut state = at_setup(dims);
+                let team = state.get_active_teamtype().unwrap();
+                state.step_simple(formation.action());
+                assert_eq!(
+                    state.get_players_on_pitch_in_team(team).count(),
+                    dims.team_size,
+                    "{formation:?} on {}x{}/{} should field the whole team",
+                    dims.width,
+                    dims.height,
+                    dims.team_size
+                );
+                assert!(
+                    state.is_setup_legal(team),
+                    "{formation:?} is an illegal setup on {}x{}/{}: {:?}",
+                    dims.width,
+                    dims.height,
+                    dims.team_size,
+                    squares(&state, team)
+                );
+                state.step_simple(SimpleAT::EndSetup);
+            }
+        }
+    }
+
+    #[test]
+    fn offered_formations_are_distinct() {
+        for dims in test_boards() {
+            let mut seen: Vec<(Formation, Vec<Position>)> = Vec::new();
+            for formation in Formation::available(&dims) {
+                let mut state = at_setup(dims);
+                let team = state.get_active_teamtype().unwrap();
+                state.step_simple(formation.action());
+                let occupied = squares(&state, team);
+                if let Some((other, _)) = seen.iter().find(|(_, other)| *other == occupied) {
+                    panic!(
+                        "{formation:?} and {other:?} field identical squares on {}x{}/{} — \
+                         one of them should not be offered there",
+                        dims.width, dims.height, dims.team_size
+                    );
+                }
+                seen.push((formation, occupied));
+            }
+            assert!(
+                seen.len() >= 2 || dims.team_size < 4,
+                "{}x{}/{} offers only one formation",
+                dims.width,
+                dims.height,
+                dims.team_size
+            );
+        }
+    }
+
+    /// Both teams get the same shape, mirrored across the halfway line.
+    #[test]
+    fn formations_are_mirrored_between_teams() {
+        let dims = BoardDims::default();
+        for formation in Formation::available(&dims) {
+            let mut state = at_setup(dims);
+            state.step_simple(formation.action()); // Home (receiving)
+            state.step_simple(SimpleAT::EndSetup);
+            state.step_simple(formation.action()); // Away (kicking)
+            state.step_simple(SimpleAT::EndSetup);
+            let home = squares(&state, TeamType::Home);
+            let mut away: Vec<Position> = squares(&state, TeamType::Away)
+                .iter()
+                .map(|p| Position::new((dims.width - 1 - p.x, p.y)))
+                .collect();
+            away.sort_by_key(|p| (p.x, p.y));
+            assert_eq!(home, away, "{formation:?} is not mirror-symmetric");
         }
     }
 

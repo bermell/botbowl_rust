@@ -9,6 +9,7 @@ use botbowl_data::{ChildStat, DatasetWriter, Outcome, Sample, Team, Trajectory, 
 use botbowl_engine::core::gamestate::GameStateBuilder;
 use botbowl_engine::core::model::{Action, Position};
 use botbowl_engine::core::table::{PosAT, SimpleAT};
+use botbowl_nn::actions::POLICY_CHANNELS;
 use botbowl_nn::encode::{GLOBAL_FEATURES, SPATIAL_CHANNELS};
 use botbowl_nn::npy;
 
@@ -134,7 +135,7 @@ fn prepare_round_trips_shapes_offsets_and_policy_sums() {
 
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(subdir.join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["policy_channels"], 30);
+    assert_eq!(manifest["policy_channels"], POLICY_CHANNELS);
     assert_eq!(manifest["spatial_channels"], SPATIAL_CHANNELS);
     assert_eq!(manifest["num_samples"], 2);
     assert_eq!(manifest["num_actions"], 5);

@@ -148,10 +148,13 @@ pub enum SimpleAT {
     SetupLine,
     EndSetup,
     KickoffAimMiddle,
+    SetupSpread,
+    SetupWedge,
+    SetupZone,
 }
 
 impl SimpleAT {
-    pub const ALL: [SimpleAT; 16] = [
+    pub const ALL: [SimpleAT; 19] = [
         SimpleAT::SelectBothDown,
         SimpleAT::SelectPow,
         SimpleAT::SelectPush,
@@ -168,6 +171,9 @@ impl SimpleAT {
         SimpleAT::SetupLine,
         SimpleAT::EndSetup,
         SimpleAT::KickoffAimMiddle,
+        SimpleAT::SetupSpread,
+        SimpleAT::SetupWedge,
+        SimpleAT::SetupZone,
     ];
 
     pub fn label(self) -> &'static str {
@@ -185,7 +191,10 @@ impl SimpleAT {
             SimpleAT::Tails => "Tails",
             SimpleAT::Kick => "Kick",
             SimpleAT::Receive => "Receive",
-            SimpleAT::SetupLine => "Auto setup",
+            SimpleAT::SetupLine => "Line setup",
+            SimpleAT::SetupSpread => "Spread setup",
+            SimpleAT::SetupWedge => "Wedge setup",
+            SimpleAT::SetupZone => "Zone setup",
             SimpleAT::EndSetup => "End setup",
             SimpleAT::KickoffAimMiddle => "Aim at middle",
         }

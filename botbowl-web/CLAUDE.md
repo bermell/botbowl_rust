@@ -150,10 +150,12 @@ backgrounds — those exist for six fixed sizes, none of which are the tiers we 
   with `len` capped only at `max_scatter()`, which on a narrow board reaches past the border ring
   into negative coordinates. `Position` is `i8`, so an unchecked `pos.y as usize` wraps to ~2^64;
   `view::index_of` is fallible for this reason and off-grid balls are simply not drawn.
-- **Manual setup is not possible.** The engine's `Setup` procedure offers only `SetupLine` and then
-  `EndSetup` (`kickoff_procs.rs`) — there is no per-square placement action, so the UI cannot
-  expose one. `is_setup_legal` exists but nothing in the engine enforces it, and below the default
-  board the engine's own formation fails it (recorded in `plans/032`, "Still open").
+- **Manual setup is not possible.** The engine's `Setup` procedure offers one action per
+  pre-configured formation that fits the board — `SetupLine | SetupSpread | SetupWedge | SetupZone`
+  (`Formation` in `kickoff_procs.rs`) — and then `EndSetup`. There is no per-square placement
+  action, so the UI cannot expose one; it just renders whichever formation shortcuts the engine
+  offered. `is_setup_legal` still isn't enforced by the engine, but every offered formation now
+  satisfies it on every board (it used to fail below the default board; `plans/032`).
 - **A long search blocks its own session.** `spawn_blocking` keeps the socket alive, but there is
   no cancel, so the human cannot undo mid-think. Accepted for a POC.
 

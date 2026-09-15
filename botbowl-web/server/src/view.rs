@@ -644,17 +644,24 @@ mod tests {
     }
 
     #[test]
-    fn a_setup_offers_the_engines_two_setup_actions_and_nothing_else() {
+    fn a_setup_offers_the_engines_formation_actions_and_nothing_else() {
         let mut state = at_setup(dims());
         let v = view_of(&state);
-        // The engine's `Setup` procedure (`kickoff_procs.rs`) offers *only*
-        // `SetupLine`, then `EndSetup` — there is no per-square placement
-        // action, so manual setup is not something a UI can expose today.
-        // `is_setup_legal` exists but nothing in the engine enforces it.
-        assert_eq!(
-            v.simple_actions.iter().map(|a| a.at).collect::<Vec<_>>(),
-            vec![PSimpleAT::SetupLine],
-            "an empty setup should offer only the auto-setup shortcut"
+        // The engine's `Setup` procedure (`kickoff_procs.rs`) offers one action
+        // per pre-configured formation that fits the board, then `EndSetup` —
+        // there is no per-square placement action, so manual setup is not
+        // something a UI can expose today.
+        let offered = v.simple_actions.iter().map(|a| a.at).collect::<Vec<_>>();
+        assert!(
+            offered.contains(&PSimpleAT::SetupLine) && offered.len() > 1,
+            "an empty setup should offer the formation shortcuts, got {offered:?}"
+        );
+        assert!(
+            offered
+                .iter()
+                .all(|at| matches!(at, PSimpleAT::SetupLine | PSimpleAT::SetupSpread)
+                    || matches!(at, PSimpleAT::SetupWedge | PSimpleAT::SetupZone)),
+            "setup should offer nothing but formations, got {offered:?}"
         );
         assert!(
             v.squares.iter().all(|s| !s.actions.contains(&PosAT::SelectPosition)),
@@ -674,43 +681,38 @@ mod tests {
         );
     }
 
-    /// A finding, pinned here rather than fixed: on any board smaller than the
-    /// compiled default, the engine's own `SetupLine` formation fails the
-    /// engine's own `is_setup_legal`.
+    /// Was a pinned finding, now a regression guard: the auto-setups used to
+    /// clamp hard-coded offsets, which on any board smaller than the compiled
+    /// default put the front rank on the line-of-scrimmage *column* but at `y`
+    /// values outside `los_y_range` — `line_of_scrimage` counted 0 against a
+    /// required 3, so the engine's own formation failed the engine's own
+    /// `is_setup_legal` at 16x9/4, 18x11/6 and 22x11/8.
     ///
-    /// The clamped formation offsets put the front rank on the line-of-
-    /// scrimmage *column* but at `y` values outside `los_y_range`, so
-    /// `line_of_scrimage` counts 0 against a required 3. Measured at 16x9/4,
-    /// 18x11/6 and 22x11/8; legal at the default 28x17/11.
-    ///
-    /// Nothing in the engine enforces `is_setup_legal`, so this has never
-    /// affected play — but it *is* the formation every 14x7 model was trained
-    /// against, so changing `SetupLine` would invalidate the trained nets and
-    /// every measured result in `plans/032`. It belongs in the experiment
-    /// queue, not in a UI change.
+    /// The formations are now built from board-relative anchors (`Formation`
+    /// in `kickoff_procs.rs`) and open with three LOS slots, so every offered
+    /// formation is legal on every board.
     #[test]
-    fn the_auto_setup_formation_is_illegal_on_clamped_boards() {
-        let mut small = at_setup(dims());
-        small.step(em::Action::Simple(SimpleAT::SetupLine)).unwrap();
-        let team = small.get_active_teamtype().unwrap();
-        let los_x = small.get_line_of_scrimage_x(team);
-        let los_y = small.board_dims.los_y_range();
-        let on_scrimmage = small
-            .get_players_on_pitch_in_team(team)
-            .filter(|p| p.position.x == los_x && los_y.contains(&p.position.y))
-            .count();
-        assert_eq!(
-            on_scrimmage, 0,
-            "the clamped formation reaches the LOS column but not its rows"
-        );
-        assert_eq!(view_of(&small).setup_legal, Some(false));
-
-        // The default board is fine, which is why this went unnoticed.
-        let capacity = em::BoardDims::default();
-        if capacity.width >= 28 && capacity.height >= 17 && capacity.team_size >= 11 {
-            let mut big = at_setup(capacity);
-            big.step(em::Action::Simple(SimpleAT::SetupLine)).unwrap();
-            assert_eq!(view_of(&big).setup_legal, Some(true));
+    fn every_auto_setup_formation_is_legal_on_clamped_boards() {
+        for at in [
+            SimpleAT::SetupLine,
+            SimpleAT::SetupSpread,
+            SimpleAT::SetupWedge,
+            SimpleAT::SetupZone,
+        ] {
+            let mut small = at_setup(dims());
+            if !small.is_legal_action(&em::Action::Simple(at)) {
+                continue; // not offered on this board
+            }
+            let team = small.get_active_teamtype().unwrap();
+            small.step(em::Action::Simple(at)).unwrap();
+            let los_x = small.get_line_of_scrimage_x(team);
+            let los_y = small.board_dims.los_y_range();
+            let on_scrimmage = small
+                .get_players_on_pitch_in_team(team)
+                .filter(|p| p.position.x == los_x && los_y.contains(&p.position.y))
+                .count();
+            assert!(on_scrimmage >= 3, "{at:?} puts {on_scrimmage} players on the LOS rows");
+            assert_eq!(view_of(&small).setup_legal, Some(true), "{at:?} is an illegal setup");
         }
     }
 
