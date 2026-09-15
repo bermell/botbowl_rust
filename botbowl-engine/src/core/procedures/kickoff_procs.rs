@@ -239,7 +239,7 @@ impl Setup {
         for id in player_ids {
             game_state.unfield_player(id, DugoutPlace::Reserves)?;
         }
-        let mut linemen_pos = vec![(0, 0), (0, -1), (0, 1), (0, -3), (0, 3)];
+        let mut linemen_pos = vec![(0, -3), (0, 3), (0, -1), (0, 1), (0, 0)];
         let mut blitzer_pos = vec![(0, -2), (0, 2)];
         let mut catcher_pos = vec![(2, 2), (2, -2)];
         let mut thrower_pos = vec![(6, 3), (6, -3)];
