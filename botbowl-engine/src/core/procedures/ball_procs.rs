@@ -121,6 +121,8 @@ impl Procedure for Bounce {
             }
         } else {
             game_state.set_ball(BallState::OnGround(new_pos));
+            // debug assert there's no player on that square
+            debug_assert!(game_state.get_player_at(new_pos).is_none());
             ProcState::Done
         }
     }
@@ -594,11 +596,10 @@ mod tests {
         let border_pos = Position::new((5, dims.height - 1)); // bottom border ring
         state.set_ball(BallState::InAir(border_pos));
 
-        let AnyProc::Bounce(mut proc) = Bounce::new() else { unreachable!() };
-        let result = proc.step(
-            &mut state,
-            ProcInput::Roll(RollResult::D8(D8::from(Direction::down()))),
-        );
+        let AnyProc::Bounce(mut proc) = Bounce::new() else {
+            unreachable!()
+        };
+        let result = proc.step(&mut state, ProcInput::Roll(RollResult::D8(D8::from(Direction::down()))));
         let ProcState::DoneNew(AnyProc::ThrowIn(mut throw_in)) = result else {
             panic!("outward bounce from the border must resolve to a throw-in, got {result:?}");
         };
@@ -921,6 +922,45 @@ mod tests {
                 ..
             })
         ));
+    }
+    #[test]
+    fn knockdown_both_and_bounce_ball_around() {
+        let carrier_pos = Position::new((5, 1));
+        let blocker_pos = Position::new((5, 2));
+        let bonus_downed_player_pos = Position::new((5, 3));
+
+        let mut state = GameStateBuilder::new()
+            .add_home_player(blocker_pos)
+            .add_away_player(carrier_pos)
+            .add_away_player(bonus_downed_player_pos)
+            .add_ball_pos(carrier_pos)
+            .build();
+
+        state.get_mut_player_at_unsafe(bonus_downed_player_pos).status = PlayerStatus::Down;
+
+        state.step_positional(PosAT::StartBlock, blocker_pos);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, carrier_pos);
+
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+
+        // bouncing
+        state.fix_d8_direction(Direction::down()); // to home player
+        state.fix_d8_direction(Direction::up()); //back to away players
+        state.fix_d8_direction(Direction::up()); // out of bounds
+
+        // out of bounce throw-in
+        state.fix_d3(2); // throw-in direction down
+        state.fix_d6(1); // throw in length
+        state.fix_d6(1); // throw in length
+        state.fix_d8_direction(Direction::right()); // final bounce
+
+        state.step_simple(SimpleAT::SelectBothDown);
+        let expected_ball = BallState::OnGround(bonus_downed_player_pos + Direction::right());
+        assert_eq!(state.ball, expected_ball);
     }
 
     #[test]

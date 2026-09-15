@@ -196,34 +196,66 @@ impl Procedure for FollowUp {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KnockDown {
-    id: PlayerID,
+    id: Option<PlayerID>,
+    second_id: Option<PlayerID>,
 }
 impl KnockDown {
     pub fn new(id: PlayerID) -> AnyProc {
-        AnyProc::KnockDown(KnockDown { id })
+        AnyProc::KnockDown(KnockDown {
+            id: Some(id),
+            second_id: None,
+        })
     }
     pub fn new_pure(id: PlayerID) -> KnockDown {
-        KnockDown { id }
+        KnockDown {
+            id: Some(id),
+            second_id: None,
+        }
+    }
+    pub fn new_empty() -> AnyProc {
+        AnyProc::KnockDown(KnockDown {
+            id: None,
+            second_id: None,
+        })
+    }
+}
+fn knock_down_player(game_state: &mut GameState, id: PlayerID) -> (bool, bool) {
+    let player = match game_state.get_mut_player(id) {
+        Ok(player_) => player_,
+        Err(_) => return (false, false), //Means the player is already off the pitch, most likely crowd push
+    };
+    debug_assert!(matches!(player.status, PlayerStatus::Up));
+    player.status = PlayerStatus::Down;
+    player.used = true;
+    let player_position = player.position;
+    // let armor_proc = casualty_procs::Armor::new(id);
+
+    if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == id) {
+        game_state.set_ball(BallState::InAir(player_position));
+        (true, true)
+    } else {
+        (true, false)
     }
 }
 impl Procedure for KnockDown {
     fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
-        let player = match game_state.get_mut_player(self.id) {
-            Ok(player_) => player_,
-            Err(_) => return ProcState::Done, //Means the player is already off the pitch, most likely crowd push
-        };
-        debug_assert!(matches!(player.status, PlayerStatus::Up));
-        player.status = PlayerStatus::Down;
-        player.used = true;
-        let player_position = player.position;
-        let armor_proc = casualty_procs::Armor::new(self.id);
-
-        if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
-            game_state.set_ball(BallState::InAir(player_position));
-            ProcState::DoneNewProcs(vec![ball_procs::Bounce::new(), armor_proc])
-        } else {
-            ProcState::DoneNew(armor_proc)
+        let mut procs: Vec<AnyProc> = Vec::with_capacity(3);
+        let mut armor_procs: Vec<AnyProc> = Vec::with_capacity(2);
+        let mut ball_in_air = false;
+        for id in [self.id, self.second_id].iter().flatten() {
+            let (knocked_down, p_ball_in_air) = knock_down_player(game_state, *id);
+            ball_in_air |= p_ball_in_air;
+            if knocked_down {
+                armor_procs.push(casualty_procs::Armor::new(*id))
+            }
         }
+        if ball_in_air {
+            procs.push(ball_procs::Bounce::new());
+        }
+        for armor_proc in armor_procs {
+            procs.push(armor_proc);
+        }
+        ProcState::from(procs)
     }
 }
 
@@ -386,21 +418,23 @@ impl Procedure for Block {
             }
             ProcInput::Action(Action::Simple(dice_action_type)) => {
                 let attacker_id = game_state.info.active_player.unwrap();
-                let mut knockdown_attacker = false;
-                let mut knockdown_defender = false;
                 let mut push = false;
+                let mut knockdown_proc: KnockDown = KnockDown {
+                    id: None,
+                    second_id: None,
+                };
 
                 match dice_action_type {
                     SimpleAT::SelectBothDown => {
                         if !game_state.get_active_player().unwrap().has_skill(Skill::Block) {
-                            knockdown_attacker = true;
+                            knockdown_proc.second_id = Some(attacker_id);
                         }
                         if !game_state.get_player_unsafe(self.defender).has_skill(Skill::Block) {
-                            knockdown_defender = true;
+                            knockdown_proc.id = Some(self.defender);
                         }
                     }
                     SimpleAT::SelectPow => {
-                        knockdown_defender = true;
+                        knockdown_proc.id = Some(self.defender);
                         push = true;
                     }
                     SimpleAT::SelectPush => {
@@ -408,29 +442,28 @@ impl Procedure for Block {
                     }
                     SimpleAT::SelectPowPush => {
                         if !game_state.get_player_unsafe(self.defender).has_skill(Skill::Dodge) {
-                            knockdown_defender = true;
+                            knockdown_proc.id = Some(self.defender);
                         }
                         push = true;
                     }
 
-                    SimpleAT::SelectSkull => knockdown_attacker = true,
+                    SimpleAT::SelectSkull => knockdown_proc.second_id = Some(attacker_id),
                     _ => panic!("very wrong!"),
                 }
+
                 let mut procs: Vec<AnyProc> = Vec::with_capacity(3);
-                if knockdown_attacker {
-                    procs.push(KnockDown::new(attacker_id));
+
+                // if any player is knocked down we add the knockdown proc making it the last proc
+                // to be executed of the returned ones
+                if knockdown_proc.id.is_some() || knockdown_proc.second_id.is_some() {
+                    procs.push(AnyProc::KnockDown(knockdown_proc));
                 }
+
                 if push {
-                    let mut push_proc = Push::new_pure(
+                    procs.push(Push::new(
                         game_state.get_player_unsafe(attacker_id).position,
                         game_state.get_player_unsafe(self.defender).position,
-                    );
-                    if knockdown_defender {
-                        push_proc.knockdown_proc = Some(KnockDown::new_pure(self.defender));
-                    }
-                    procs.push(AnyProc::Push(push_proc));
-                } else if knockdown_defender {
-                    procs.push(KnockDown::new(self.defender));
+                    ));
                 }
                 ProcState::from(procs)
             }
@@ -556,12 +589,12 @@ mod tests {
         state.fix_blockdice(BlockDice::Pow);
         state.fix_blockdice(BlockDice::BothDown);
         state.step_positional(PosAT::Block, away_pos);
-        state.fix_d6(1); //away armor
-        state.fix_d6(1); //away armor
         state.fix_d6(5); //home armor
         state.fix_d6(6); //home armor
         state.fix_d6(6); //home injury
         state.fix_d6(6); //home injury
+        state.fix_d6(1); //away armor
+        state.fix_d6(1); //away armor
         state.step_simple(SimpleAT::SelectBothDown);
 
         assert!(state.get_player_at(home_pos).is_none());
