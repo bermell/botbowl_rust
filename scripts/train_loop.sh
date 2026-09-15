@@ -174,6 +174,15 @@ WARM_FROM="${WARM_FROM:-latest}"
 # fine-tuning default that keeps it.
 WARM_LR="${WARM_LR:-2e-4}"
 SCRATCH_LR="${SCRATCH_LR:-1e-3}"            # used when there is nothing to warm-start from
+# A .pt that must never be warm-started from, however the WARM_FROM rules
+# would otherwise reach it. Exists for the from-scratch AlphaZero run: its
+# gen-0 champion is a *randomly initialised* net (scripts/make_random_net.py),
+# there only so generation has something to play with. Warm-starting gen01
+# from random weights at WARM_LR would be the worst of both worlds — a
+# fine-tuning learning rate applied to a net that has learned nothing — so
+# name that .pt here and gen01 trains from random init at SCRATCH_LR instead.
+# Every later generation warm-starts from gen01 as usual.
+NO_WARM_FROM="${NO_WARM_FROM:-}"
 BOOTSTRAP_GAMES_PER_SHARD="${BOOTSTRAP_GAMES_PER_SHARD:-$GAMES_PER_SHARD}"
                                             # gen-0 corpus when no champion exists
 INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
@@ -542,6 +551,13 @@ while [ "$G" -le "$MAX_GENS" ]; do
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
         status "$GG generate done ($((SECONDS / 60)) min): $GAMES/$((GAMES_PER_SHARD * 8)) games"
+        # What the corpus actually contains, not just how much of it there is.
+        # A drive that ends without a touchdown ran out of half, so this is
+        # the share the bots converted — the generation-side twin of the TD/g
+        # the eval phase prints. A loop that is learning to stall rather than
+        # to score shows it here first, while the anchor score still looks fine.
+        TD=$("$PY" "$REPO/scripts/td_rate.py" "$GEN_DIR" 2>&1) || TD="td_rate.py failed: $TD"
+        status "$GG corpus: $TD"
         touch "$GEN_DIR/.generated"
     fi
 
@@ -599,6 +615,10 @@ while [ "$G" -le "$MAX_GENS" ]; do
                 INIT_PT="$CHAMP_PT"
             fi
         fi
+        if [ -n "$INIT_PT" ] && [ -n "$NO_WARM_FROM" ] && [ "$INIT_PT" = "$NO_WARM_FROM" ]; then
+            status "$GG train: not warm-starting from $(basename "$INIT_PT") (NO_WARM_FROM) — random init at lr $SCRATCH_LR"
+            INIT_PT=""
+        fi
         if [ -n "$INIT_PT" ]; then
             INIT_ARGS="--init $INIT_PT --lr $WARM_LR"
             WARM_NOTE="$(basename "$INIT_PT")"
@@ -606,7 +626,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
             status "$GG train: warm start from $WARM_NOTE at lr $WARM_LR"
         else
             INIT_ARGS="--lr $SCRATCH_LR"
-            [ "$WARM_START" = "on" ] \
+            [ "$WARM_START" = "on" ] && [ "$CHAMP_PT" != "$NO_WARM_FROM" ] \
                 && status "WARN: $GG warm start wanted but no usable .pt (champion $CHAMP_PT) — training from random init at lr $SCRATCH_LR"
         fi
         # shellcheck disable=SC2086

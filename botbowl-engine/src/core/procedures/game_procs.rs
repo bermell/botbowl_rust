@@ -617,11 +617,13 @@ mod tests {
         assert!(state.away_to_act());
         state.step_simple(SimpleAT::Kick);
 
-        assert!(state.home_to_act());
+        // The kicking team (Away here) sets up first — BB2020, fixed in
+        // 2ea14e7; this test still expected the receiver to go first.
+        assert!(state.away_to_act());
         state.step_simple(SimpleAT::SetupLine);
         state.step_simple(SimpleAT::EndSetup);
 
-        assert!(state.away_to_act());
+        assert!(state.home_to_act());
         state.step_simple(SimpleAT::SetupLine);
         state.step_simple(SimpleAT::EndSetup);
 

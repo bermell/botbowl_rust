@@ -40,6 +40,23 @@ def points(row: dict) -> float:
     return (row["wins"] + 0.5 * row["draws"]) / n
 
 
+def td_rate(row: dict) -> str:
+    """Touchdowns per game, for and against.
+
+    `pts` says who won; this says whether anyone is *playing football*. The
+    two come apart in the direction that matters for a from-scratch run: a
+    net that learns only to stall converges on 0-0 draws and scores 0.500
+    against anything that also stalls, with a TD rate near zero. Tracked in
+    the eval phase alongside scripts/td_rate.py on the generation corpus, so
+    the same quantity is visible on both sides of the loop.
+    """
+    n = row["games"]
+    if not n:
+        return "TD/g -"
+    f, a = row["tds_for"], row["tds_against"]
+    return f"TD/g {(f + a) / n:.2f} ({f / n:.2f}-{a / n:.2f})"
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("report")
@@ -64,6 +81,7 @@ def main() -> int:
         # verdict stays re-derivable and old status lines stay comparable.
         parts.append(
             f"{row['opponent']} pts {points(row):.3f} (w {row['win_rate']:.2f}) "
+            f"{td_rate(row)} "
             f"(W{row['wins']} D{row['draws']} L{row['losses']} "
             f"TD {row['tds_for']}:{row['tds_against']}, "
             f"home {row['wins_as_home']}-{row['losses_as_home']} "

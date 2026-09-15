@@ -408,6 +408,57 @@ warm-start chain was still healthy. Re-run it against gen13 rather than inheriti
   0.900-1.000 for five generations — it would not have caught this decline either. The anchor is
   now the only measurement. Eval fell 76 → ~51 min.
 
+## Reset: a from-scratch AlphaZero run (2026-09-15)
+
+Six engine bug fixes landed between `bdc1ba3` and `d39ef7b` — ball bounce resolved after
+knockdowns, turn ordering after a touchdown, turnover on knocking yourself down, failed catch on a
+hand-off, kickoff setup order (the *kicking* team sets up first), and board-relative setup
+formations. The last one alone changes the opening position of every 14x7 drive. **Every corpus
+above was generated under rules the engine no longer implements**, so gen00-gen20 and every number
+measured on them are not comparable to anything produced from here on.
+
+The response is a clean restart, not a rollback:
+
+| | old run | this run |
+|---|---|---|
+| run dir | `runs/loop14x7` | `runs/az14x7` |
+| models | `models/` | `models/az/` |
+| gen-0 champion | trained on a **heuristic** corpus (the scripted bot is the teacher) | **random weights**, `scripts/make_random_net.py --seed 0` |
+| gen01 training | warm start from gen00 at `WARM_LR` | random init at `SCRATCH_LR` (`NO_WARM_FROM`) |
+| anchor | `bbnet_14x7_gen03.onnx` | the random seed net — a true zero on the fixed engine |
+| fixed rungs | none (saturated) | `random,scripted` again |
+
+Nothing reads the old data: not as a corpus, not as a warm start, not as the anchor. It is all kept
+on disk — the reset is about contamination, not disk.
+
+Launch is `scripts/az_from_scratch.sh`, which is `train_loop.sh` with that environment pinned so
+the configuration is committed rather than living in a shell history.
+
+**Two deliberate deviations from a literal AlphaZero reading,** on the record so they are choices
+and not accidents: `POLICY_TARGET=cq` rather than `visits` (plan 031 D2's finding that `visits` has
+not converged at 1000 iterations over a wide fan is engine-independent and still holds), and
+`--mode random-start`, drive-bounded, rather than whole games from kickoff (the value backfill is
+drive-relative per plan 023, and it is what makes 4800 games/generation affordable).
+
+### Touchdown rate is now tracked on both sides of the loop
+
+`pts` says who won; it does not say whether anyone is playing football. The two come apart in the
+direction that matters for a cold start: a net that learns only to stall converges on 0-0 draws and
+scores 0.500 against anything that also stalls. So both phases now report the rate.
+
+- **Generation:** `scripts/td_rate.py` streams the generation's shards and the loop logs
+  `genNN corpus: TD/drive ...`. A random-start drive stops as soon as either score changes, so
+  TD/drive is the share of drives the bots converted; the drives that miss ran out of half. It is
+  computed from `outcome - meta.extra.start_score`, because the shard logs' `score=H-A` line does
+  not carry the starting score. ~1 s for a generation's 850 MB.
+- **Eval:** `eval_summary.py` prints `TD/g` (total, then for-against) on every rung, so it lands in
+  the `genNN eval done` status line next to `pts`.
+
+Calibration from the corpora that exist: the old gen20 (a net 20 generations deep, contaminated
+engine) converted **0.839** of its drives; the random seed net converts **0.167**. That is the span
+this run has to climb.
+
+
 ## The queue
 
 ### 1. D7 vs champion gen03 — does a from-scratch retrain on the whole corpus beat eight incremental generations?
