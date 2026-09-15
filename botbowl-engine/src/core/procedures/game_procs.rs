@@ -46,8 +46,8 @@ impl Half {
 
         let procs: Vec<AnyProc> = vec![
             kickoff_procs::Kickoff::new(),
-            kickoff_procs::Setup::new(kicking_team),
             kickoff_procs::Setup::new(other_team(kicking_team)),
+            kickoff_procs::Setup::new(kicking_team),
             KOWakeUp::new(),
         ];
 
@@ -676,6 +676,7 @@ mod tests {
         let td_pos = Position::new((1, 5));
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
+            .add_away_player(Position::new((5, 5)))
             .add_ball_pos(start_pos)
             .build();
 
@@ -688,7 +689,10 @@ mod tests {
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
         assert_eq!(state.get_players_on_pitch().count(), 0);
+
+        // check that the action belongs to the scoring team, not the opponent
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
+        assert_eq!(state.available_actions.team, Some(TeamType::Home));
     }
 
     /// Real Blood Bowl: the team that just scored kicks off to its opponent.
