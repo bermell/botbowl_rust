@@ -453,6 +453,11 @@ impl Procedure for Block {
 
                 let mut procs: Vec<AnyProc> = Vec::with_capacity(3);
 
+                //if attacker is knocked down it's a turnover
+                if knockdown_proc.second_id.is_some() {
+                    game_state.info.turnover = true;
+                }
+
                 // if any player is knocked down we add the knockdown proc making it the last proc
                 // to be executed of the returned ones
                 if knockdown_proc.id.is_some() || knockdown_proc.second_id.is_some() {
@@ -714,5 +719,29 @@ mod tests {
         state.step_positional(PosAT::StartBlitz, away_pos);
         state.fix_blockdice(BlockDice::Skull);
         state.step_positional(PosAT::Block, home_pos);
+    }
+    #[test]
+    fn attacker_knockdown_causes_turnover() {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_home_player(Position::new((3, 3)))
+            .add_away_player(away_pos)
+            .build();
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fix_blockdice(BlockDice::Skull);
+        state.step_positional(PosAT::Block, away_pos);
+
+        state.fix_d6(1); //home armor
+        state.fix_d6(1); //home armor
+        state.step_simple(SimpleAT::SelectSkull);
+
+        assert!(state.get_player_at(home_pos).unwrap().status == PlayerStatus::Down);
+        assert!(state.get_player_at(away_pos).unwrap().status == PlayerStatus::Up);
+
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
+        state.step_positional(PosAT::StartMove, away_pos);
     }
 }
