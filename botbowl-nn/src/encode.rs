@@ -1,6 +1,14 @@
 //! `GameState → tensor` encoder — the single source of feature layout,
 //! shared verbatim by the offline prepare step and the live evaluator.
 //!
+//! Two views of one encoding. [`encode_raw`] is the source of truth and
+//! yields the spatial planes as **raw `u8` counts** — every spatial channel
+//! is an integer quantity (a flag, a characteristic, a tackle-zone count), so
+//! `u8` is exact, not a quantisation. [`encode`] is that divided by
+//! [`spatial_channel_scales`], which is what the live evaluator feeds the
+//! network. The offline corpus stores the `u8` form (4× smaller on disk) and
+//! the trainer applies the same scales, read from the manifest.
+//!
 //! Output ([`Encoded`]):
 //! - `spatial`: `C × H × W` `f32`, flat in C-major/row-major order
 //!   (`idx = c*H*W + y*W + x`), i.e. PyTorch `NCHW` per-sample. `H`/`W`
@@ -59,6 +67,44 @@ const TURN_NORM: f32 = 8.0;
 const RR_NORM: f32 = 3.0;
 const HALF_NORM: f32 = 2.0;
 const SCORE_NORM: f32 = 3.0;
+
+/// Per-channel divisor taking [`EncodedRaw::spatial`] to [`Encoded::spatial`].
+///
+/// Written into the prepared corpus's manifest so the trainer normalises with
+/// exactly these numbers — the `u8` corpus is meaningless without them, and a
+/// second hand-maintained copy in Python is precisely the train/inference skew
+/// this crate exists to make impossible. Length `SPATIAL_CHANNELS`.
+pub fn spatial_channel_scales() -> Vec<f32> {
+    let mut scales = Vec::with_capacity(SPATIAL_CHANNELS);
+    for _ in 0..2 {
+        // present, standing, stunned, used are flags; then the four
+        // characteristics and movement_left carry their normalisers; then one
+        // flag per skill.
+        scales.extend([1.0, 1.0, 1.0, 1.0, MOVE_NORM, ST_NORM, MA_NORM, AG_NORM, AV_NORM]);
+        scales.extend(std::iter::repeat(1.0).take(Skill::COUNT));
+    }
+    // ball x3, active, us/them tackle zones, oob — all raw counts or flags.
+    scales.extend([1.0; 7]);
+    debug_assert_eq!(scales.len(), SPATIAL_CHANNELS);
+    scales
+}
+
+/// The raw, pre-normalisation encoding: identical layout to [`Encoded`], but
+/// the spatial planes are the underlying integers.
+#[derive(Debug, Clone)]
+pub struct EncodedRaw {
+    /// `C × H × W`, flat C-major/row-major (`idx = c*H*W + y*W + x`).
+    pub spatial: Vec<u8>,
+    /// `F` non-spatial features, mover-perspective. Not quantised: it is 15
+    /// values per sample, and `score_diff` is signed.
+    pub global: Vec<f32>,
+    /// Board height (rows, tensor H) incl. OOB border.
+    pub h: usize,
+    /// Board width (cols, tensor W) incl. OOB border.
+    pub w: usize,
+    /// The team to move (perspective anchor).
+    pub mover: TeamType,
+}
 
 /// A fully encoded decision node, ready to tensorise.
 #[derive(Debug, Clone)]
@@ -138,14 +184,37 @@ pub fn global_feature_names() -> Vec<String> {
     .collect()
 }
 
-/// Encode a decision (or scoreable) state into mover-centric tensors.
+/// Encode a decision (or scoreable) state into mover-centric tensors,
+/// normalised for the network. Exactly [`encode_raw`] divided by
+/// [`spatial_channel_scales`].
 pub fn encode(state: &GameState) -> Encoded {
+    let raw = encode_raw(state);
+    let scales = spatial_channel_scales();
+    let plane = raw.h * raw.w;
+    let spatial = raw
+        .spatial
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| v as f32 / scales[i / plane])
+        .collect();
+    Encoded {
+        spatial,
+        global: raw.global,
+        h: raw.h,
+        w: raw.w,
+        mover: raw.mover,
+    }
+}
+
+/// Encode a decision (or scoreable) state into mover-centric tensors, with
+/// the spatial planes left as raw integer counts. See the module docs.
+pub fn encode_raw(state: &GameState) -> EncodedRaw {
     let mover = mover_for(state);
     let dims = state.board_dims;
     let h = dims.height as usize;
     let w = dims.width as usize;
     let plane = h * w;
-    let mut spatial = vec![0.0f32; SPATIAL_CHANNELS * plane];
+    let mut spatial = vec![0u8; SPATIAL_CHANNELS * plane];
 
     // Flat index for (channel, canonical position).
     let idx = |c: usize, pos: Position| -> usize { c * plane + (pos.y as usize) * w + (pos.x as usize) };
@@ -155,21 +224,21 @@ pub fn encode(state: &GameState) -> Encoded {
     for p in state.get_players_on_pitch() {
         let pos = cpos(p.position);
         let side_base = if p.stats.team == mover { 0 } else { PER_SIDE };
-        let mut set = |off: usize, v: f32| {
+        let mut set = |off: usize, v: u8| {
             spatial[idx(side_base + off, pos)] = v;
         };
-        set(0, 1.0); // present
+        set(0, 1); // present
         use botbowl_engine::core::model::PlayerStatus;
-        set(1, matches!(p.status, PlayerStatus::Up) as u8 as f32); // standing
-        set(2, matches!(p.status, PlayerStatus::Stunned) as u8 as f32); // stunned
-        set(3, p.used as u8 as f32); // used
-        set(4, p.total_movement_left() as f32 / MOVE_NORM); // movement_left
-        set(5, p.stats.str_ as f32 / ST_NORM); // ST
-        set(6, p.stats.ma as f32 / MA_NORM); // MA
-        set(7, p.stats.ag as f32 / AG_NORM); // AG
-        set(8, p.stats.av as f32 / AV_NORM); // AV
+        set(1, matches!(p.status, PlayerStatus::Up) as u8); // standing
+        set(2, matches!(p.status, PlayerStatus::Stunned) as u8); // stunned
+        set(3, p.used as u8); // used
+        set(4, p.total_movement_left()); // movement_left
+        set(5, p.stats.str_); // ST
+        set(6, p.stats.ma); // MA
+        set(7, p.stats.ag); // AG
+        set(8, p.stats.av); // AV
         for sk in SKILL_PLANES {
-            set(PER_SIDE_BASE + sk.index(), p.has_skill(sk) as u8 as f32);
+            set(PER_SIDE_BASE + sk.index(), p.has_skill(sk) as u8);
         }
 
         // Tackle zones this player exerts onto its (canonical) neighbours.
@@ -180,7 +249,7 @@ pub fn encode(state: &GameState) -> Encoded {
                 let ny = pos.y + dy;
                 if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
                     let np = Position::new((nx, ny));
-                    spatial[idx(tz_c, np)] += 1.0;
+                    spatial[idx(tz_c, np)] += 1;
                 }
             }
         }
@@ -188,11 +257,11 @@ pub fn encode(state: &GameState) -> Encoded {
 
     // --- Ball planes ---
     match state.ball {
-        BallState::OnGround(pos) => spatial[idx(C_BALL_GROUND, cpos(pos))] = 1.0,
-        BallState::InAir(pos) => spatial[idx(C_BALL_AIR, cpos(pos))] = 1.0,
+        BallState::OnGround(pos) => spatial[idx(C_BALL_GROUND, cpos(pos))] = 1,
+        BallState::InAir(pos) => spatial[idx(C_BALL_AIR, cpos(pos))] = 1,
         BallState::Carried(id) => {
             if let Ok(carrier) = state.get_player(id) {
-                spatial[idx(C_BALL_CARRIER, cpos(carrier.position))] = 1.0;
+                spatial[idx(C_BALL_CARRIER, cpos(carrier.position))] = 1;
             }
         }
         BallState::OffPitch => {}
@@ -201,7 +270,7 @@ pub fn encode(state: &GameState) -> Encoded {
     // --- Active player ---
     if let Some(id) = state.info.active_player {
         if let Ok(p) = state.get_player(id) {
-            spatial[idx(C_ACTIVE, cpos(p.position))] = 1.0;
+            spatial[idx(C_ACTIVE, cpos(p.position))] = 1;
         }
     }
 
@@ -210,7 +279,7 @@ pub fn encode(state: &GameState) -> Encoded {
         for x in 0..w {
             let pos = Position::new((x as i8, y as i8));
             if dims.is_out(pos) {
-                spatial[idx(C_OOB, pos)] = 1.0;
+                spatial[idx(C_OOB, pos)] = 1;
             }
         }
     }
@@ -243,7 +312,7 @@ pub fn encode(state: &GameState) -> Encoded {
     ];
     debug_assert_eq!(global.len(), GLOBAL_FEATURES);
 
-    Encoded {
+    EncodedRaw {
         spatial,
         global,
         h,
@@ -268,6 +337,48 @@ mod tests {
         assert_eq!(SPATIAL_CHANNELS, 2 * (9 + Skill::COUNT) + 7);
         assert_eq!(SPATIAL_CHANNELS, 103);
         assert_eq!(GLOBAL_FEATURES, 15);
+    }
+
+    #[test]
+    fn raw_u8_planes_reproduce_the_normalised_ones_exactly() {
+        // The whole basis for storing the corpus as u8: every spatial channel
+        // is an integer over a fixed divisor, so the round-trip is exact and
+        // not a quantisation. Bit equality, not a tolerance.
+        let scales = spatial_channel_scales();
+        assert_eq!(scales.len(), SPATIAL_CHANNELS);
+        let state = GameStateBuilder::new_start_of_game();
+        let raw = encode_raw(&state);
+        let enc = encode(&state);
+        let plane = enc.h * enc.w;
+        assert_eq!(raw.spatial.len(), enc.spatial.len());
+        for (i, (&r, &f)) in raw.spatial.iter().zip(&enc.spatial).enumerate() {
+            assert_eq!(
+                r as f32 / scales[i / plane],
+                f,
+                "channel {} cell {}",
+                i / plane,
+                i % plane
+            );
+        }
+        assert_eq!(raw.global, enc.global);
+        assert_eq!((raw.h, raw.w, raw.mover), (enc.h, enc.w, enc.mover));
+    }
+
+    /// A u8 plane cannot hold a value that overflows it. ST/MA/AG/AV and
+    /// movement are small by construction; a tackle-zone cell tops out at the
+    /// 8 neighbours a square has.
+    #[test]
+    fn raw_planes_fit_in_u8_on_a_crowded_board() {
+        let state = GameStateBuilder::new_at_kickoff();
+        let raw = encode_raw(&state);
+        let plane = raw.h * raw.w;
+        let max_tz = raw.spatial[C_US_TZ * plane..(C_US_TZ + 1) * plane]
+            .iter()
+            .chain(&raw.spatial[C_THEM_TZ * plane..(C_THEM_TZ + 1) * plane])
+            .copied()
+            .max()
+            .unwrap_or(0);
+        assert!(max_tz <= 8, "a tackle-zone cell reached {max_tz}");
     }
 
     #[test]

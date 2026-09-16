@@ -8,7 +8,11 @@
 //! subdir has a single tensor shape (no ragged spatial padding needed).
 //!
 //! Per dims-subdir it writes:
-//! - `spatial.npy`  `(N, C, H, W)` f32
+//! - `spatial.npy`  `(N, C, H, W)` u8 — **raw integer counts**. Every spatial
+//!   channel is an integer quantity, so this is exact, not a quantisation;
+//!   divide by the manifest's `spatial_scales` to get what the network eats.
+//!   4x smaller than the f32 it replaced, which more than pays back the 37 ->
+//!   103 channel widening.
 //! - `global.npy`   `(N, F)` f32
 //! - `value.npy`    `(N,)` f32           — mover-signed outcome target
 //! - `chosen.npy`   `(N,)` i64           — local index of the played action
@@ -24,7 +28,7 @@
 //! **Everything sized by the corpus is streamed to disk as it is produced**
 //! ([`npy::StreamWriter`]), so peak RSS is O(1) in corpus size rather than
 //! O(corpus). It used to buffer the lot and write at the end: `spatial` is
-//! 21,312 bytes/sample, so a 3-generation window (353k samples) peaked at
+//! 14,832 bytes/sample, so a 3-generation window (353k samples) peaked at
 //! 7.6 GB on a 14.4 GB box and a 7-generation one would not have fit. Only
 //! the three N-sized `i64`/`f32` vectors (`value`, `chosen`, CSR `offsets`,
 //! ~20 bytes/sample together) stay in RAM; the N+1-long offsets array wants
@@ -37,7 +41,9 @@ use clap::{Parser, ValueEnum};
 
 use botbowl_data::DatasetReader;
 use botbowl_nn::actions::{action_cell, POLICY_CHANNELS};
-use botbowl_nn::encode::{encode, global_feature_names, spatial_channel_names, GLOBAL_FEATURES, SPATIAL_CHANNELS};
+use botbowl_nn::encode::{
+    encode_raw, global_feature_names, spatial_channel_names, spatial_channel_scales, GLOBAL_FEATURES, SPATIAL_CHANNELS,
+};
 use botbowl_nn::npy;
 use botbowl_nn::perspective::mover_for;
 use botbowl_nn::targets::{policy_target_of, value_target, PolicyTargetKind, SolvedRootPolicy};
@@ -49,7 +55,9 @@ use botbowl_nn::targets::{policy_target_of, value_target, PolicyTargetKind, Solv
 // final-scoreline z — batches prepared at v1 are not comparable.
 // v3: the per-player skill planes went from a hand-picked 6 to one plane per
 // `Skill` variant (C 37 → 103), so v2 tensors have the wrong channel count.
-const NN_SCHEMA_VERSION: u32 = 3;
+// v4: `spatial.npy` is u8 raw counts plus a `spatial_scales` vector, not
+// pre-normalised f32 — a v3 reader would read the dtype wrong.
+const NN_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {
@@ -107,8 +115,8 @@ struct Args {
 struct DimsGroup {
     subdir: PathBuf,
     n: usize,
-    spatial: npy::StreamWriter<f32>, // (N, C, H, W)
-    global: npy::StreamWriter<f32>,  // (N, F)
+    spatial: npy::StreamWriter<u8>, // (N, C, H, W), raw counts; see `spatial_scales`
+    global: npy::StreamWriter<f32>, // (N, F)
     // CSR ragged legal actions.
     action_rows: npy::StreamWriter<i64>, // (M, 4)
     policy: npy::StreamWriter<f32>,      // (M,)
@@ -200,7 +208,7 @@ fn main() {
                     }
                 };
 
-                let enc = encode(&sample.state);
+                let enc = encode_raw(&sample.state);
                 let mover = mover_for(&sample.state);
                 let dims = sample.state.board_dims;
                 // Lazy: creating the group creates its dims subdir and opens
@@ -261,6 +269,7 @@ fn main() {
     }
 
     let channel_names = spatial_channel_names();
+    let channel_scales = spatial_channel_scales();
     let feature_names = global_feature_names();
     let group_count = groups.len();
 
@@ -278,6 +287,11 @@ fn main() {
             "global_features": GLOBAL_FEATURES,
             "policy_channels": POLICY_CHANNELS,
             "spatial_channel_names": channel_names,
+            "spatial_dtype": "u8",
+            // The trainer must divide by exactly these — the u8 planes are
+            // meaningless without them, and a second hand-maintained copy in
+            // Python is the train/inference skew this crate exists to prevent.
+            "spatial_scales": channel_scales,
             "global_feature_names": feature_names,
             "value_target": "mover_signed_drive_outcome",
             "solved_root_policy": format!("{solved_root:?}"),

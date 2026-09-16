@@ -18,6 +18,8 @@ const PREFIX: usize = MAGIC.len() + 2 + 2;
 /// Little-endian dtype descriptor strings.
 pub const F4: &str = "<f4";
 pub const I8: &str = "<i8";
+/// `uint8`. Single-byte, so numpy spells the byte order "not applicable".
+pub const U1: &str = "|u1";
 
 fn header_bytes(descr: &str, shape: &[usize]) -> Vec<u8> {
     header_bytes_min(descr, shape, 0)
@@ -86,6 +88,16 @@ pub fn write_f32(path: impl AsRef<Path>, data: &[f32], shape: &[usize]) -> io::R
     w.flush()
 }
 
+/// Write a flat `u8` buffer with the given shape. No chunking needed — the
+/// payload is already the byte stream.
+pub fn write_u8(path: impl AsRef<Path>, data: &[u8], shape: &[usize]) -> io::Result<()> {
+    debug_assert_eq!(shape.iter().product::<usize>(), data.len(), "shape/len mismatch");
+    let mut w = BufWriter::new(File::create(path)?);
+    write_header(&mut w, U1, shape)?;
+    w.write_all(data)?;
+    w.flush()
+}
+
 /// Write a flat `i64` buffer with the given shape.
 /// Write a flat `i64` buffer. Chunked for the same reason as
 /// [`write_f32`] — `actions.npy` is `(M, 4)` with M ~5.6M rows.
@@ -119,6 +131,14 @@ impl NpyScalar for f32 {
     }
 }
 
+impl NpyScalar for u8 {
+    const DESCR: &'static str = U1;
+    const SIZE: usize = 1;
+    fn write_le(self, out: &mut [u8]) {
+        out[0] = self;
+    }
+}
+
 impl NpyScalar for i64 {
     const DESCR: &'static str = I8;
     const SIZE: usize = 8;
@@ -132,9 +152,10 @@ impl NpyScalar for i64 {
 /// The v1.0 header is padded to a multiple of 64 and its length depends only
 /// on dtype + shape — never on the data — so reserving a fixed region and
 /// back-patching it once `N` is known is exact, not a guess. 128 covers every
-/// shape `prepare` emits (the widest, `(N, 37, 9, 16)`, needs 74 bytes before
-/// padding), and [`StreamWriter::finish`] asserts rather than silently
-/// corrupting a file if that ever stops being true.
+/// shape `prepare` emits (the widest, `(N, 103, 9, 16)`, needs 75 bytes before
+/// padding — `(N, 103, 9, 16)` as `|u1` is 75), and [`StreamWriter::finish`]
+/// asserts rather than silently corrupting a file if that ever stops being
+/// true.
 pub const STREAM_HEADER_RESERVE: usize = 128;
 
 /// Append-only `.npy` writer whose **leading axis length is discovered as it
@@ -142,8 +163,8 @@ pub const STREAM_HEADER_RESERVE: usize = 128;
 /// the file, then seek back and write the real header.
 ///
 /// This exists so `prepare` does not have to hold the whole prepared corpus in
-/// RAM before it knows `N`. `spatial` alone is 21,312 bytes/sample, so a
-/// 7-generation window (~825k samples) would be ~17.6 GB of `Vec<f32>` on a
+/// RAM before it knows `N`. `spatial` alone is 14,832 bytes/sample, so a
+/// 7-generation window (~825k samples) would be ~12.2 GB of `Vec<u8>` on a
 /// 14.4 GB box; the kernel already OOM-killed `prepare` once at a 3-generation
 /// window. Streaming makes peak RSS O(1) in corpus size for a single parse
 /// (a two-pass "count then write" would double the ~27 s parse instead).
@@ -248,6 +269,12 @@ impl Npy {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
+    }
+
+    /// Borrow the payload as `u8` (panics if the descriptor isn't `|u1`).
+    pub fn as_u8(&self) -> &[u8] {
+        assert_eq!(self.descr, U1, "expected |u1, got {}", self.descr);
+        &self.data
     }
 
     /// Decode the payload as `i64` (panics if the descriptor isn't `<i8`).
@@ -385,6 +412,42 @@ mod tests {
     /// The whole point of the reservation: for the shapes `prepare` actually
     /// emits, the streamed file must be byte-for-byte what the buffered writer
     /// produced, so a regenerated corpus md5-matches an existing one.
+    #[test]
+    fn u8_round_trips_and_streams_identically() {
+        let dir = std::env::temp_dir().join(format!("npy_u8_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rows = 5;
+        let trailing = [103usize, 9, 16];
+        let row: usize = trailing.iter().product();
+        let data: Vec<u8> = (0..rows * row).map(|i| (i % 251) as u8).collect();
+
+        let buffered = dir.join("buffered.npy");
+        let mut shape = vec![rows];
+        shape.extend(trailing);
+        write_u8(&buffered, &data, &shape).unwrap();
+
+        let back = read(&buffered).unwrap();
+        assert_eq!(back.descr, U1);
+        assert_eq!(back.shape, shape);
+        assert_eq!(back.as_u8(), &data[..]);
+
+        // The streamed writer must produce the same bytes — this is the path
+        // `prepare` uses, and `(N, 103, 9, 16)` as |u1 is the widest header
+        // STREAM_HEADER_RESERVE has to cover.
+        let streamed = dir.join("streamed.npy");
+        let mut w = StreamWriter::<u8>::create(&streamed, &trailing).unwrap();
+        for chunk in data.chunks(row) {
+            w.push(chunk).unwrap();
+        }
+        assert_eq!(w.finish().unwrap(), rows);
+        assert_eq!(
+            std::fs::read(&buffered).unwrap(),
+            std::fs::read(&streamed).unwrap(),
+            "streamed u8 file differs from the buffered one"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn stream_writer_is_byte_identical_to_the_buffered_writer() {
         // (N, 37, 9, 16) is the real `spatial` shape; its header pads to 128.

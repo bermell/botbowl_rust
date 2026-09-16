@@ -39,10 +39,10 @@ class PreparedDataset(Dataset):
     def __init__(self, dims_dir, augment=False):
         self.augment = augment
         d = Path(dims_dir)
-        # Memory-mapped: at ~20 KB/sample the spatial planes outgrow RAM
-        # long before anything else (520k samples ≈ 10 GB); the OS pages
-        # slices in on demand. `__getitem__` copies its slice out.
-        self.spatial = np.load(d / "spatial.npy", mmap_mode="r")  # (N, C, H, W) f32
+        # Memory-mapped: the spatial planes outgrow RAM long before anything
+        # else; the OS pages slices in on demand. `__getitem__` copies its
+        # slice out.
+        self.spatial = np.load(d / "spatial.npy", mmap_mode="r")  # (N, C, H, W) u8
         self.global_ = np.load(d / "global.npy")             # (N, F) f32
         self.value = np.load(d / "value.npy")                # (N,) f32
         self.chosen = np.load(d / "chosen.npy")              # (N,) i64
@@ -54,6 +54,26 @@ class PreparedDataset(Dataset):
         assert self.spatial.shape[0] == len(self.value)
         assert len(self.offsets) == len(self.value) + 1
 
+        # Since schema v4 `spatial.npy` holds the encoder's *raw* integer
+        # counts as u8 (4x smaller on disk) and the manifest carries the
+        # per-channel divisors that turn them into what the network eats.
+        # Those divisors are emitted by `botbowl-nn/src/encode.rs`, which is
+        # the single source of feature layout — never hardcode them here, or
+        # training and inference normalise differently and nothing says so.
+        scales = self.manifest.get("spatial_scales")
+        if scales is None:
+            raise ValueError(
+                f"{d}/manifest.json has no 'spatial_scales' — it was prepared "
+                f"at nn_schema_version "
+                f"{self.manifest.get('nn_schema_version')}, before the u8 "
+                f"corpus (v4). Re-run `prepare`."
+            )
+        assert len(scales) == self.spatial.shape[1], (
+            f"{len(scales)} scales for {self.spatial.shape[1]} channels"
+        )
+        # (C, 1, 1) so it broadcasts over a single (C, H, W) sample.
+        self.spatial_scale = torch.tensor(scales, dtype=torch.float32).view(-1, 1, 1)
+
     def __len__(self):
         return self.spatial.shape[0]
 
@@ -61,7 +81,7 @@ class PreparedDataset(Dataset):
         lo, hi = int(self.offsets[i]), int(self.offsets[i + 1])
         # np.array copies the slice out of the read-only mmap (from_numpy
         # rejects non-writable arrays).
-        spatial = torch.from_numpy(np.array(self.spatial[i])).float()
+        spatial = torch.from_numpy(np.array(self.spatial[i])).float().div_(self.spatial_scale)
         actions = torch.from_numpy(self.actions[lo:hi]).long()         # (K_i, 4)
         if self.augment and torch.rand(()) < 0.5:
             spatial, actions = flip_y(spatial, actions)

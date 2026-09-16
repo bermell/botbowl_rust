@@ -10,7 +10,7 @@ use botbowl_engine::core::gamestate::GameStateBuilder;
 use botbowl_engine::core::model::{Action, Position};
 use botbowl_engine::core::table::{PosAT, SimpleAT};
 use botbowl_nn::actions::POLICY_CHANNELS;
-use botbowl_nn::encode::{GLOBAL_FEATURES, SPATIAL_CHANNELS};
+use botbowl_nn::encode::{encode, spatial_channel_scales, GLOBAL_FEATURES, SPATIAL_CHANNELS};
 use botbowl_nn::npy;
 
 fn child(action: Action, visits: u32, q: i64, solved: bool) -> ChildStat {
@@ -98,6 +98,26 @@ fn prepare_round_trips_shapes_offsets_and_policy_sums() {
         spatial.shape,
         vec![2, SPATIAL_CHANNELS, dims.height as usize, dims.width as usize]
     );
+    assert_eq!(spatial.descr, npy::U1, "spatial must be stored as raw u8 counts");
+
+    // The corpus is only correct if `u8 / manifest scale` is exactly the
+    // tensor the live evaluator builds. Both samples encode the same state.
+    let scales = spatial_channel_scales();
+    let want = encode(&GameStateBuilder::new_start_of_game()).spatial;
+    let plane = (dims.height as usize) * (dims.width as usize);
+    let raw = spatial.as_u8();
+    for sample in 0..2 {
+        let row = &raw[sample * want.len()..(sample + 1) * want.len()];
+        for (i, (&r, &f)) in row.iter().zip(&want).enumerate() {
+            assert_eq!(
+                r as f32 / scales[i / plane],
+                f,
+                "sample {sample} channel {} cell {}",
+                i / plane,
+                i % plane
+            );
+        }
+    }
 
     let global = npy::read(subdir.join("global.npy")).unwrap();
     assert_eq!(global.shape, vec![2, GLOBAL_FEATURES]);
@@ -137,6 +157,12 @@ fn prepare_round_trips_shapes_offsets_and_policy_sums() {
         serde_json::from_str(&std::fs::read_to_string(subdir.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["policy_channels"], POLICY_CHANNELS);
     assert_eq!(manifest["spatial_channels"], SPATIAL_CHANNELS);
+    assert_eq!(manifest["spatial_dtype"], "u8");
+    assert_eq!(
+        manifest["spatial_scales"].as_array().unwrap().len(),
+        SPATIAL_CHANNELS,
+        "the trainer needs one scale per channel"
+    );
     assert_eq!(manifest["num_samples"], 2);
     assert_eq!(manifest["num_actions"], 5);
 
