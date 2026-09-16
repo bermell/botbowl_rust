@@ -8,6 +8,7 @@ botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
 botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
 botbowl-nn = { version = "0.1.0", path = "../botbowl-nn/" }
 recon_mcts = { version = "0.1.0", path = "../recon_mcts/", features = ["lockref-guard"] }
+serde = { version = "1", features = ["derive"] }
 
 [features]
 # Opt-in gate for the heavy profiling benches in `tests/expand_bench.rs`.

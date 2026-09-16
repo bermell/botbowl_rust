@@ -1,0 +1,19 @@
+[package]
+name = "botbowl-worker"
+version = "0.1.0"
+edition = "2021"
+description = "Dials a botbowl-hub and plays the games it hands out (plan 040)"
+
+[dependencies]
+botbowl-hub-proto = { version = "0.1.0", path = "../botbowl-hub-proto/" }
+botbowl-play = { version = "0.1.0", path = "../botbowl-play/" }
+botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+botbowl-nn = { version = "0.1.0", path = "../botbowl-nn/" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+futures-util = "0.3"
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "botbowl-worker"
+path = "src/main.rs"

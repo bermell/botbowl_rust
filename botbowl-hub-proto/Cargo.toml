@@ -1,0 +1,13 @@
+[package]
+name = "botbowl-hub-proto"
+version = "0.1.0"
+edition = "2021"
+description = "Wire types between botbowl-hub and botbowl-worker (plan 040)"
+
+[dependencies]
+botbowl-play = { version = "0.1.0", path = "../botbowl-play/" }
+botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
+botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+blake3 = "1"

@@ -36,7 +36,7 @@ impl Evaluator {
 }
 
 /// Search knobs for one `MctsBot`. `None` keeps the bot's own default.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SearchConfig {
     pub budget: SearchBudget,
     pub workers: usize,

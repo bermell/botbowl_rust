@@ -86,7 +86,7 @@ const NORM_VL_REFERENCE: f32 = 300.0;
 ///
 /// `c` lives inside each variant so "normalised mode still carrying the
 /// Raw constant" is unrepresentable.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PuctMode {
     /// Historical behaviour: `Q_raw + c * P * sqrt(N) / (1 + n)`.
     Raw { c: f32 },
@@ -142,7 +142,7 @@ impl PuctMode {
 /// whole subtree. The mean also changes what FPU (= parent Q) and
 /// `PUCT_C` see — the parent is no longer its best child — so a `c`
 /// re-tune belongs with any switch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BackupMode {
     /// Home max / Away min over child Q; visits sum.
     #[default]
@@ -1628,7 +1628,7 @@ enum CachedTree {
 }
 
 /// How long each `MctsBot::get_action` call runs the tree search.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum SearchBudget {
     /// Run exactly this many `tree.step()` calls, split across workers.
     Iterations(usize),
