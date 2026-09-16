@@ -63,12 +63,63 @@ impl From<PosAT> for AnyAT {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Skill {
+    //Agility Skills
     Dodge,
+    // Strength Skills
     Throw,
     Block,
     Catch,
+    // Passing Skills
     SureHands,
     SureFeet,
+    JumpUp,
+    // General Skills
+    SideStep,
+    Sprint,
+    DirtyPlayer,
+    PileDriver,
+    QuickFoul,
+    // Mutation Skills
+    Shadowing,
+    SneakyGit,
+    // Traits
+    Dauntless,
+    Guard,
+    MightyBlow,
+    StandFirm,
+    Tackle,
+    Wrestle,
+    BreakTackle,
+    Fend,
+    Kick,
+    BoneHead,
+    WildAnimal,
+    KickOffReturn,
+    Stunty,
+    Frenzy,
+    Claws,
+    NervesOfSteel,
+    Pass,
+    OnTheBall,
+    Accurate,
+    ArmBar,
+    Brawler,
+    Grab,
+    Juggernaut,
+    Leap,
+    Loner,
+}
+impl Skill {
+    pub fn all_skills() -> Vec<Skill> {
+        vec![
+            Skill::Dodge,
+            Skill::Throw,
+            Skill::Block,
+            Skill::Catch,
+            Skill::SureHands,
+            Skill::SureFeet,
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
