@@ -215,12 +215,16 @@ the forward — search, engine, encode.
 is ~10% end-to-end throughput, against tract ~3%. Consistent with the arithmetic (two encodes and
 two tensor compares per node before, one encode plus a state clone and compare after).
 
-### D. `lazy_mover_goldens_full.txt` is stale — still open
+### D. `lazy_mover_goldens_full.txt` — re-blessed 2026-09-16 (`d286f22`)
 
-Its NN arms were blessed at C=103 and the encoder has moved three times since. The `#[ignore]`d full
-matrix will fail until re-blessed (~14 min); the default-on heuristic arm is unaffected and passes,
-since it never touches the encoder. Deferred deliberately while the schema is still moving — flagged
-in the test's own module docs.
+Its NN arms had been blessed at C=103 and the encoder moved three times after that, so the
+`#[ignore]`d full matrix was failing; the default-on heuristic arm was unaffected throughout, since
+it never touches the encoder. Re-blessed once the schema settled at v6, on the Linux box, before the
+from-scratch run launched.
+
+The diff is the expected shape: both `heuristic` arms byte-identical (the heuristic@200 block still
+matches the default-on golden byte for byte), both `nn-tiny` arms moved, line count unchanged. It
+replays deterministically — 32 s in `--release`, so the ~14 min estimated above was a debug figure.
 
 ## Consequences to remember
 
