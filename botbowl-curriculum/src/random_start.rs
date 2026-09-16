@@ -47,9 +47,14 @@ const ADD_SKILL_PROB: f32 = 0.5;
 
 /// Legal ranges for the nudged stats. `ag`/`pass` are D6 target numbers
 /// (lower is better), `str_`/`ma`/`av` are plain characteristics.
+///
+/// Every upper bound stays at or under the matching `PlayerStats::MAX_*` cap,
+/// which the NN encoder divides by — a generator that exceeded one would emit
+/// a feature plane above 1.0 and break the side-factored encoding. Pinned by
+/// `sampling_ranges_stay_under_the_engine_caps`.
 const STR_RANGE: (u8, u8) = (1, 6);
 const MA_RANGE: (u8, u8) = (1, 9);
-const AG_RANGE: (u8, u8) = (1, 6);
+const AG_RANGE: (u8, u8) = (1, PlayerStats::MAX_AG);
 const AV_RANGE: (u8, u8) = (3, 11);
 const PASS_RANGE: (u8, u8) = (2, 6);
 
@@ -537,6 +542,15 @@ mod tests {
             seen.insert(v);
         }
         assert_eq!(seen, HashSet::from([1, 2, 3]), "clamping at the floor lost values");
+    }
+
+    /// The generator must not outrun the encoder's normalisers.
+    #[test]
+    fn sampling_ranges_stay_under_the_engine_caps() {
+        assert!(STR_RANGE.1 <= PlayerStats::MAX_ST);
+        assert!(MA_RANGE.1 <= PlayerStats::MAX_MA);
+        assert!(AG_RANGE.1 <= PlayerStats::MAX_AG);
+        assert!(AV_RANGE.1 <= PlayerStats::MAX_AV);
     }
 
     /// A config with every mechanism switched off.

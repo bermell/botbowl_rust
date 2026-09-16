@@ -1,6 +1,8 @@
 //! End-to-end smoke check for the all-skills encoder: generate curriculum
 //! random starts, print the stat/skill variety they contain, and confirm the
-//! encoded tensor lights up the matching skill plane for every player.
+//! encoded tensor lights up the matching skill plane for every player —
+//! together with the `present` plane that says whose player it is, which is
+//! the only thing carrying ownership since the planes were unpaired.
 //!
 //! `cargo run -p botbowl-nn --example skill_planes_smoke`
 
@@ -9,7 +11,7 @@ use std::collections::BTreeMap;
 use botbowl_curriculum::random_start::{generate_random_start, RandomStartConfig};
 use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::core::table::Skill;
-use botbowl_nn::encode::{encode, spatial_channel_names, PER_SIDE, SPATIAL_CHANNELS};
+use botbowl_nn::encode::{encode, spatial_channel_names, SPATIAL_CHANNELS};
 use botbowl_nn::perspective::{canonical_pos, mover_for};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -20,7 +22,11 @@ fn main() {
         ..Default::default()
     };
     let names = spatial_channel_names();
-    println!("C = {SPATIAL_CHANNELS}, skill planes per side = {}", Skill::COUNT);
+    // The skill planes start right after the 2 present + 8 shared per-player
+    // planes; `SKILL_BASE` itself is private to the encoder.
+    const SKILL_BASE: usize = 10;
+    assert_eq!(names[SKILL_BASE], format!("skill_{:?}", Skill::ALL[0]).to_lowercase());
+    println!("C = {SPATIAL_CHANNELS}, skill planes = {} (unpaired)", Skill::COUNT);
 
     let mut skill_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut stat_lines = 0usize;
@@ -36,15 +42,19 @@ fn main() {
 
         for p in state.get_players_on_pitch() {
             let pos = canonical_pos(p.position, dims, mover);
-            let base = if p.stats.team == mover { 0 } else { PER_SIDE };
             let cell = |c: usize| enc.spatial[c * plane + (pos.y as usize) * enc.w + (pos.x as usize)];
             if p.stats != botbowl_engine::core::model::PlayerStats::new_lineman(p.stats.team) {
                 stat_lines += 1;
             }
+            // Ownership: exactly one of the two present planes, never both.
+            let (us, them) = (cell(0), cell(1));
+            let ours = (p.stats.team == mover) as u8 as f32;
+            assert_eq!((us, them), (ours, 1.0 - ours), "present planes disagree on the owner");
+
             for sk in Skill::ALL {
                 let want = p.has_skill(sk) as u8 as f32;
-                let got = cell(base + 9 + sk.index());
-                assert_eq!(got, want, "plane {} wrong for {sk:?}", names[base + 9 + sk.index()]);
+                let c = SKILL_BASE + sk.index();
+                assert_eq!(cell(c), want, "plane {} wrong for {sk:?}", names[c]);
                 if p.has_skill(sk) {
                     *skill_counts.entry(format!("{sk:?}")).or_default() += 1;
                 }

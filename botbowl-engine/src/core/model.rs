@@ -527,6 +527,20 @@ pub struct PlayerStats {
     //spp
 }
 impl PlayerStats {
+    /// Inclusive caps on the characteristics. They bound what any roster or
+    /// generator may produce, and the NN encoder divides by them so every
+    /// per-player feature plane lands in `[0, 1]` — which is what makes the
+    /// side-factored encoding exactly recoverable (`botbowl-nn/src/encode.rs`).
+    /// Raise one and the encoder's normalisers follow automatically.
+    pub const MAX_ST: u8 = 8;
+    pub const MAX_MA: u8 = 10;
+    /// AG is a D6 target number, so 6 is the worst possible and also the cap.
+    pub const MAX_AG: u8 = 6;
+    pub const MAX_AV: u8 = 12;
+    /// `FieldedPlayer::total_movement_left` is `ma + 2` before the player
+    /// moves — the two Go-For-It steps are movement the plane has to hold.
+    pub const MAX_MOVEMENT: u8 = Self::MAX_MA + 2;
+
     pub fn new_lineman(team: TeamType) -> PlayerStats {
         PlayerStats {
             str_: 3,
@@ -967,4 +981,30 @@ pub enum InjuryOutcome {
     Stunned,
     KO,
     Casualty,
+}
+
+#[cfg(test)]
+mod player_stats_tests {
+    use super::PlayerStats;
+    use crate::core::model::TeamType;
+
+    /// The stock roster must fit under the caps the NN encoder normalises by;
+    /// a roster over a cap would encode as a feature plane above 1.0 and
+    /// silently break the side-factored encoding's exact recovery.
+    #[test]
+    fn stock_rosters_respect_the_characteristic_caps() {
+        for team in [TeamType::Home, TeamType::Away] {
+            for stats in [
+                PlayerStats::new_lineman(team),
+                PlayerStats::new_blitzer(team),
+                PlayerStats::new_catcher(team),
+                PlayerStats::new_thrower(team),
+            ] {
+                assert!(stats.str_ <= PlayerStats::MAX_ST, "{:?} ST {}", stats.role, stats.str_);
+                assert!(stats.ma <= PlayerStats::MAX_MA, "{:?} MA {}", stats.role, stats.ma);
+                assert!(stats.ag <= PlayerStats::MAX_AG, "{:?} AG {}", stats.role, stats.ag);
+                assert!(stats.av <= PlayerStats::MAX_AV, "{:?} AV {}", stats.role, stats.av);
+            }
+        }
+    }
 }

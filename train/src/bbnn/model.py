@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Must match botbowl-nn/src/encode.rs and actions.rs.
-SPATIAL_CHANNELS = 103
+SPATIAL_CHANNELS = 58
 GLOBAL_FEATURES = 15
 POLICY_CHANNELS = 30
 

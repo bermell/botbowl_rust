@@ -16,7 +16,7 @@ import torch
 from bbnn.data import PreparedDataset
 
 
-def write_corpus(d, n=3, c=5, h=4, w=6, scales=None, schema=4):
+def write_corpus(d, n=3, c=5, h=4, w=6, scales=None, schema=5):
     rng = np.random.default_rng(0)
     spatial = rng.integers(0, 9, size=(n, c, h, w), dtype=np.uint8)
     np.save(d / "spatial.npy", spatial)
@@ -50,7 +50,7 @@ def test_spatial_is_divided_by_the_manifest_scales(tmp_path):
 def test_a_pre_v4_corpus_is_rejected_rather_than_silently_misread(tmp_path):
     # Without scales the planes are raw counts an order of magnitude off, and
     # training would happily converge on the wrong inputs.
-    write_corpus(tmp_path, scales=None, schema=3)
+    write_corpus(tmp_path, scales=None, schema=4)
     with pytest.raises(ValueError, match="spatial_scales"):
         PreparedDataset(tmp_path)
 
