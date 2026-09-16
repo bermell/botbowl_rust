@@ -34,6 +34,12 @@ pub const DECAY_MAX: f32 = 4.0;
 pub const TEMP_MIN: f32 = 0.2;
 pub const TEMP_MAX: f32 = 5.0;
 
+const MOD_STR_PROB: f32 = 0.1;
+const MOD_AGI_PROB: f32 = 0.1;
+const MOD_ARMOR_PROB: f32 = 0.1;
+const MOD_PASS_PROB: f32 = 0.1;
+const ADD_SKILL_PROB: f32 = 0.5;
+
 /// Bias weights for [`generate_random_start`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RandomStartConfig {
@@ -121,14 +127,15 @@ pub fn generate_random_start(cfg: &RandomStartConfig, rng: &mut ChaCha8Rng) -> G
 
     // The ball never starts in an endzone column: a pre-placed carrier there
     // would be a touchdown the engine never awarded.
-    let ball_pos = Position::new((
-        rng.gen_range(2..=dims.width - 3),
-        rng.gen_range(1..=dims.height - 2),
-    ));
+    let ball_pos = Position::new((rng.gen_range(2..=dims.width - 3), rng.gen_range(1..=dims.height - 2)));
     let carried = rng.gen::<f32>() < cfg.carried_prob.clamp(0.0, 1.0);
     // The attacker orients the front; with a carried ball it is the carrier's
     // team, with a loose ball a nominal choice.
-    let attacker = if rng.gen::<bool>() { TeamType::Home } else { TeamType::Away };
+    let attacker = if rng.gen::<bool>() {
+        TeamType::Home
+    } else {
+        TeamType::Away
+    };
 
     // The engagement line sits a few squares ahead of the ball toward the
     // attacker's target endzone; the defenders' column faces it one square
@@ -187,10 +194,8 @@ pub fn generate_random_start(cfg: &RandomStartConfig, rng: &mut ChaCha8Rng) -> G
         .set_state(BuilderState::Turn { turn: 1 })
         .add_ball_pos(ball_pos);
     for (pos, team) in &placed {
-        match team {
-            TeamType::Home => builder.add_home_player(*pos),
-            TeamType::Away => builder.add_away_player(*pos),
-        };
+        let player_stats = sample_player(rng, *team);
+        builder.add_player_details(*pos, *team, player_stats);
     }
     let mut state = builder.build();
     // Quiet the engine's stdout log before stepping the state below —
@@ -202,6 +207,42 @@ pub fn generate_random_start(cfg: &RandomStartConfig, rng: &mut ChaCha8Rng) -> G
     state.set_seed(rng.next_u64());
     state.set_dice_mode(DiceMode::RollDice);
     state
+}
+
+fn add_random(rng: &mut ChaCha8Rng, start: u8) -> u8 {
+    let delta = rng.gen_range(-2..=2);
+    (start as u16 + delta as u16).clamp(1, 5) as u8
+}
+// Generate a random player stat line
+fn sample_player(rng: &mut ChaCha8Rng, team: TeamType) -> botbowl_engine::core::model::PlayerStats {
+    let mut stats = botbowl_engine::core::model::PlayerStats::new_lineman(team);
+
+    // modify strength?
+    if rng.gen::<f32>() < MOD_STR_PROB {
+        stats.str_ = add_random(rng, stats.str_);
+    }
+    // modify agility?
+    if rng.gen::<f32>() < MOD_AGI_PROB {
+        stats.ag = add_random(rng, stats.ag);
+    }
+    // modify armor?
+    if rng.gen::<f32>() < MOD_ARMOR_PROB {
+        stats.av = add_random(rng, stats.av);
+    }
+    // modify passing?
+    if rng.gen::<f32>() < MOD_PASS_PROB {
+        stats.pass = add_random(rng, stats.pass);
+    }
+    // add some skills?
+    let mut skills = botbowl_engine::core::table::Skill::all_skills();
+    while skills.len() > 0 && rng.gen::<f32>() < ADD_SKILL_PROB {
+        let index = rng.gen_range(0..skills.len());
+        let skill = skills[rng.gen_range(0..skills.len())];
+        skills.remove(index);
+        stats.add_skill(skill);
+    }
+
+    stats
 }
 
 /// Per-team player count, skewed toward full strength: for team size 11 the
@@ -298,7 +339,9 @@ fn square_weight(
         // Pinned to the team's front column, pulled toward the ball's y so
         // the brawl forms near the ball laterally.
         Role::Line => {
-            placement.front_line.powi(-i32::from((s.x - placement.front_x[front_x_index(team)]).abs()))
+            placement
+                .front_line
+                .powi(-i32::from((s.x - placement.front_x[front_x_index(team)]).abs()))
                 * placement.ball_distance.powi(-i32::from((s.y - ball_pos.y).abs()))
         }
         Role::Pocket => placement.ball_distance.powi(-i32::from(s.distance_to(&ball_pos))),
@@ -351,7 +394,11 @@ fn own_side_feature(dims: BoardDims, team: TeamType, s: Position, placed: &[(Pos
 /// turn-1-Home-active state, using only the public engine API (see plan 019:
 /// the counter pattern mirrors exactly what `Half::step` produces).
 fn apply_game_context(state: &mut GameState, rng: &mut ChaCha8Rng) {
-    let active = if rng.gen::<bool>() { TeamType::Home } else { TeamType::Away };
+    let active = if rng.gen::<bool>() {
+        TeamType::Home
+    } else {
+        TeamType::Away
+    };
     if active == TeamType::Away {
         // Hand the turn to Away through the engine so available_actions,
         // team_turn and player flags are all regenerated consistently.
@@ -457,10 +504,17 @@ mod tests {
         };
         for seed in 0..30 {
             let state = generate(&carried_cfg, seed);
-            assert!(matches!(state.ball, BallState::Carried(_)), "seed {seed}: {:?}", state.ball);
+            assert!(
+                matches!(state.ball, BallState::Carried(_)),
+                "seed {seed}: {:?}",
+                state.ball
+            );
             let pos = ball_square(&state);
             let dims = state.board_dims;
-            assert!((2..=dims.width - 3).contains(&pos.x), "seed {seed}: carrier in endzone column");
+            assert!(
+                (2..=dims.width - 3).contains(&pos.x),
+                "seed {seed}: carrier in endzone column"
+            );
 
             let state = generate(&loose_cfg, seed);
             let BallState::OnGround(pos) = state.ball else {
@@ -684,7 +738,10 @@ mod tests {
                 state.step(action).expect("engine step failed");
                 steps += 1;
             }
-            assert!(state.info.game_over, "seed {seed}: game did not finish in {steps} steps");
+            assert!(
+                state.info.game_over,
+                "seed {seed}: game did not finish in {steps} steps"
+            );
         }
     }
 }

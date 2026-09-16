@@ -517,16 +517,19 @@ pub struct PlayerStats {
     pub str_: u8,
     pub ma: u8,
     pub ag: u8,
-    pass: D6Target,
+    pub pass: D6Target,
     pub av: u8,
     pub team: TeamType,
-    skills: HashSet<Skill>,
+    pub skills: HashSet<Skill>,
     pub role: PlayerRole,
     //skills: [Option<table::Skill>; 3],
     //injuries
     //spp
 }
 impl PlayerStats {
+    pub fn add_skill(&mut self, skill: Skill) {
+        self.skills.insert(skill);
+    }
     pub fn new_lineman(team: TeamType) -> PlayerStats {
         PlayerStats {
             str_: 3,

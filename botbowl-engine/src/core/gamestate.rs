@@ -159,6 +159,14 @@ impl GameStateBuilder {
         self.home_players.push(position);
         self
     }
+    pub fn add_player_details(
+        &mut self,
+        position: Position,
+        team: TeamType,
+        stats: PlayerStats,
+    ) -> &mut GameStateBuilder {
+        self
+    }
     pub fn set_state(&mut self, state: BuilderState) -> &mut GameStateBuilder {
         self.state = state;
         self
@@ -780,8 +788,7 @@ impl GameState {
         debug_assert!(half == 1 || half == 2);
         self.info.half = half;
         if half == 2 {
-            self.proc_stack
-                .retain(|p| !matches!(p, AnyProc::Half(h) if !h.started));
+            self.proc_stack.retain(|p| !matches!(p, AnyProc::Half(h) if !h.started));
         }
     }
 
@@ -1714,7 +1721,11 @@ mod gamestate_tests {
 
         state.set_half(2);
         assert_eq!(state.info.half, 2);
-        let half_procs = state.proc_stack.iter().filter(|p| matches!(p, AnyProc::Half(_))).count();
+        let half_procs = state
+            .proc_stack
+            .iter()
+            .filter(|p| matches!(p, AnyProc::Half(_)))
+            .count();
         assert_eq!(half_procs, 1, "the pending unstarted half should be dropped");
 
         // Ending every remaining turn must now end the game — no second-half
@@ -1881,7 +1892,10 @@ mod gamestate_tests {
             dims.is_on_team_side(away_kicks, TeamType::Home),
             "Away's kick must land in Home's half, got {away_kicks:?}"
         );
-        assert!(!dims.is_out(home_kicks) && !dims.is_out(away_kicks), "aims are in bounds");
+        assert!(
+            !dims.is_out(home_kicks) && !dims.is_out(away_kicks),
+            "aims are in bounds"
+        );
     }
 
     #[test]
@@ -2331,8 +2345,14 @@ mod runtime_board_dims_tests {
         }
         assert_eq!(lineups.len(), 2, "expected the first- and second-half kickoffs");
         assert_eq!(lineups[0].0, lineups[0].1, "both teams field the same roles in drive 1");
-        assert_eq!(lineups[1].0, lineups[0].0, "Home's line-up must not drift between drives");
-        assert_eq!(lineups[1].1, lineups[0].1, "Away's line-up must not drift between drives");
+        assert_eq!(
+            lineups[1].0, lineups[0].0,
+            "Home's line-up must not drift between drives"
+        );
+        assert_eq!(
+            lineups[1].1, lineups[0].1,
+            "Away's line-up must not drift between drives"
+        );
     }
 
     #[test]
