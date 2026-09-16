@@ -87,12 +87,17 @@ pub fn mirror_playable(s: &GameState, dims: BoardDims) -> GameState {
         .with_board_dims(dims)
         .set_state(BuilderState::Turn { turn: 1 })
         .add_ball_pos(flip(dims, ball_pos));
+    // Carry the whole stat line across, not just the square: since plan
+    // 038 `generate_random_start` gives players varied ST/MA/AG/AV and
+    // skills, and re-fielding them as plain linemen quietly rebuilds a
+    // *different* position — which shows up as a phantom mirror-invariance
+    // failure rather than as anything pointing here.
     for p in s.get_players_on_pitch() {
         let pos = flip(dims, p.position);
-        match p.stats.team {
-            TeamType::Home => builder.add_away_player(pos),
-            TeamType::Away => builder.add_home_player(pos),
-        };
+        let team = other_team(p.stats.team);
+        let mut stats = p.stats.clone();
+        stats.team = team;
+        builder.add_player_details(pos, team, stats);
     }
     let mut m = builder.build();
     m.set_logging_state(false);
@@ -146,12 +151,11 @@ pub fn mirror_y_playable(s: &GameState, dims: BoardDims) -> GameState {
         .with_board_dims(dims)
         .set_state(BuilderState::Turn { turn: 1 })
         .add_ball_pos(flip_y(dims, ball_pos));
+    // Stats travel with the player — see `mirror_playable`. The y mirror
+    // keeps both teams where they are, so the team label is unchanged.
     for p in s.get_players_on_pitch() {
         let pos = flip_y(dims, p.position);
-        match p.stats.team {
-            TeamType::Home => builder.add_home_player(pos),
-            TeamType::Away => builder.add_away_player(pos),
-        };
+        builder.add_player_details(pos, p.stats.team, p.stats.clone());
     }
     let mut m = builder.build();
     m.set_logging_state(false);

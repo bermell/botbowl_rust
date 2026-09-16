@@ -18,9 +18,10 @@
 //!   quadratic growth of far-away area. A global temperature sharpens or
 //!   flattens the final distribution.
 
+use botbowl_engine::core::dices::D6Target;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
-use botbowl_engine::core::model::{other_team, BoardDims, Coord, Direction, Position, TeamType};
-use botbowl_engine::core::table::SimpleAT;
+use botbowl_engine::core::model::{other_team, BoardDims, Coord, Direction, PlayerStats, Position, TeamType};
+use botbowl_engine::core::table::{SimpleAT, Skill};
 use rand::{Rng, RngCore};
 use rand_chacha::ChaCha8Rng;
 
@@ -34,11 +35,23 @@ pub const DECAY_MAX: f32 = 4.0;
 pub const TEMP_MIN: f32 = 0.2;
 pub const TEMP_MAX: f32 = 5.0;
 
+/// Per-stat probability that a generated player's stat line is nudged off the
+/// lineman baseline, and the geometric continuation probability for handing
+/// out skills (so a player gets `k` skills with probability ~`p^k (1-p)`).
 const MOD_STR_PROB: f32 = 0.1;
+const MOD_MA_PROB: f32 = 0.1;
 const MOD_AGI_PROB: f32 = 0.1;
 const MOD_ARMOR_PROB: f32 = 0.1;
 const MOD_PASS_PROB: f32 = 0.1;
 const ADD_SKILL_PROB: f32 = 0.5;
+
+/// Legal ranges for the nudged stats. `ag`/`pass` are D6 target numbers
+/// (lower is better), `str_`/`ma`/`av` are plain characteristics.
+const STR_RANGE: (u8, u8) = (1, 6);
+const MA_RANGE: (u8, u8) = (1, 9);
+const AG_RANGE: (u8, u8) = (1, 6);
+const AV_RANGE: (u8, u8) = (3, 11);
+const PASS_RANGE: (u8, u8) = (2, 6);
 
 /// Bias weights for [`generate_random_start`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -194,8 +207,7 @@ pub fn generate_random_start(cfg: &RandomStartConfig, rng: &mut ChaCha8Rng) -> G
         .set_state(BuilderState::Turn { turn: 1 })
         .add_ball_pos(ball_pos);
     for (pos, team) in &placed {
-        let player_stats = sample_player(rng, *team);
-        builder.add_player_details(*pos, *team, player_stats);
+        builder.add_player_details(*pos, *team, sample_player(rng, *team));
     }
     let mut state = builder.build();
     // Quiet the engine's stdout log before stepping the state below —
@@ -209,37 +221,45 @@ pub fn generate_random_start(cfg: &RandomStartConfig, rng: &mut ChaCha8Rng) -> G
     state
 }
 
-fn add_random(rng: &mut ChaCha8Rng, start: u8) -> u8 {
-    let delta = rng.gen_range(-2..=2);
-    (start as u16 + delta as u16).clamp(1, 5) as u8
+/// Nudge `start` by -2..=2, clamped into `[min, max]`. Signed arithmetic
+/// throughout: an unsigned intermediate wraps on a negative delta and the
+/// clamp then silently returns `max`.
+fn add_random(rng: &mut ChaCha8Rng, start: u8, (min, max): (u8, u8)) -> u8 {
+    let delta: i16 = rng.gen_range(-2..=2);
+    (start as i16 + delta).clamp(min as i16, max as i16) as u8
 }
-// Generate a random player stat line
-fn sample_player(rng: &mut ChaCha8Rng, team: TeamType) -> botbowl_engine::core::model::PlayerStats {
-    let mut stats = botbowl_engine::core::model::PlayerStats::new_lineman(team);
 
-    // modify strength?
+/// Generate a random player stat line: a lineman with each characteristic
+/// independently nudged with small probability, plus a geometric number of
+/// skills drawn **without replacement** from [`Skill::good_skills`].
+///
+/// Only `good_skills` is sampled — the engine implements a subset of
+/// `Skill::ALL`, and the network has a plane for every variant regardless, so
+/// widening the pool here is a one-line change once more skills have rules.
+fn sample_player(rng: &mut ChaCha8Rng, team: TeamType) -> PlayerStats {
+    let mut stats = PlayerStats::new_lineman(team);
+
     if rng.gen::<f32>() < MOD_STR_PROB {
-        stats.str_ = add_random(rng, stats.str_);
+        stats.str_ = add_random(rng, stats.str_, STR_RANGE);
     }
-    // modify agility?
+    if rng.gen::<f32>() < MOD_MA_PROB {
+        stats.ma = add_random(rng, stats.ma, MA_RANGE);
+    }
     if rng.gen::<f32>() < MOD_AGI_PROB {
-        stats.ag = add_random(rng, stats.ag);
+        stats.ag = add_random(rng, stats.ag, AG_RANGE);
     }
-    // modify armor?
     if rng.gen::<f32>() < MOD_ARMOR_PROB {
-        stats.av = add_random(rng, stats.av);
+        stats.av = add_random(rng, stats.av, AV_RANGE);
     }
-    // modify passing?
     if rng.gen::<f32>() < MOD_PASS_PROB {
-        stats.pass = add_random(rng, stats.pass);
+        let pass = add_random(rng, stats.pass as u8, PASS_RANGE);
+        stats.pass = D6Target::try_from(pass).expect("pass target kept inside PASS_RANGE");
     }
-    // add some skills?
-    let mut skills = botbowl_engine::core::table::Skill::all_skills();
-    while skills.len() > 0 && rng.gen::<f32>() < ADD_SKILL_PROB {
-        let index = rng.gen_range(0..skills.len());
-        let skill = skills[rng.gen_range(0..skills.len())];
-        skills.remove(index);
-        stats.add_skill(skill);
+
+    let mut pool = Skill::good_skills();
+    while !pool.is_empty() && rng.gen::<f32>() < ADD_SKILL_PROB {
+        let index = rng.gen_range(0..pool.len());
+        stats.give_skill(pool.swap_remove(index));
     }
 
     stats
@@ -432,6 +452,91 @@ mod tests {
     fn generate(cfg: &RandomStartConfig, seed: u64) -> GameState {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         generate_random_start(cfg, &mut rng)
+    }
+
+    /// The point of `sample_player`: a generated corpus must contain players
+    /// that are *not* the lineman baseline, in every varied dimension, and
+    /// must hand out skills. One state is far too few (each nudge fires at
+    /// 10%), so this samples across seeds.
+    #[test]
+    fn generated_players_vary_in_stats_and_skills() {
+        let cfg = RandomStartConfig::default();
+        let mut str_ = HashSet::new();
+        let mut ma = HashSet::new();
+        let mut ag = HashSet::new();
+        let mut av = HashSet::new();
+        let mut pass = HashSet::new();
+        let mut skilled = 0usize;
+        let mut total = 0usize;
+        for seed in 0..40 {
+            for p in generate(&cfg, seed).get_players_on_pitch() {
+                total += 1;
+                str_.insert(p.stats.str_);
+                ma.insert(p.stats.ma);
+                ag.insert(p.stats.ag);
+                av.insert(p.stats.av);
+                pass.insert(p.stats.pass as u8);
+                if !p.stats.skills.is_empty() {
+                    skilled += 1;
+                }
+            }
+        }
+        assert!(total > 100, "expected a decent sample, got {total} players");
+        assert!(str_.len() > 1, "strength never varied: {str_:?}");
+        assert!(ma.len() > 1, "movement never varied: {ma:?}");
+        assert!(ag.len() > 1, "agility never varied: {ag:?}");
+        assert!(av.len() > 1, "armour never varied: {av:?}");
+        assert!(pass.len() > 1, "passing never varied: {pass:?}");
+        // ADD_SKILL_PROB = 0.5 ⇒ ~half the players get at least one skill.
+        assert!(skilled * 4 > total, "only {skilled} of {total} players got a skill");
+    }
+
+    /// Skills come from `good_skills` only, and never twice on one player —
+    /// the pool is drawn without replacement.
+    #[test]
+    fn generated_skills_come_only_from_the_good_pool() {
+        let good: HashSet<Skill> = Skill::good_skills().into_iter().collect();
+        let cfg = RandomStartConfig::default();
+        for seed in 0..40 {
+            for p in generate(&cfg, seed).get_players_on_pitch() {
+                for skill in &p.stats.skills {
+                    assert!(good.contains(skill), "seed {seed}: {skill:?} is not a good skill");
+                }
+                assert!(p.stats.skills.len() <= good.len());
+            }
+        }
+    }
+
+    /// Stats stay inside their declared ranges — `add_random` used to do its
+    /// arithmetic in `u16`, where a negative delta wraps and the clamp then
+    /// silently returns the maximum.
+    #[test]
+    fn generated_stats_stay_in_range() {
+        let cfg = RandomStartConfig::default();
+        for seed in 0..40 {
+            for p in generate(&cfg, seed).get_players_on_pitch() {
+                let st = &p.stats;
+                assert!((STR_RANGE.0..=STR_RANGE.1).contains(&st.str_), "str {}", st.str_);
+                assert!((MA_RANGE.0..=MA_RANGE.1).contains(&st.ma), "ma {}", st.ma);
+                assert!((AG_RANGE.0..=AG_RANGE.1).contains(&st.ag), "ag {}", st.ag);
+                assert!((AV_RANGE.0..=AV_RANGE.1).contains(&st.av), "av {}", st.av);
+                let pass = st.pass as u8;
+                assert!((PASS_RANGE.0..=PASS_RANGE.1).contains(&pass), "pass {pass}");
+            }
+        }
+    }
+
+    /// `add_random` is symmetric around its input and respects the bounds.
+    #[test]
+    fn add_random_never_wraps() {
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        let mut seen = HashSet::new();
+        for _ in 0..500 {
+            let v = add_random(&mut rng, 1, (1, 9));
+            assert!((1..=3).contains(&v), "1 nudged out of range: {v}");
+            seen.insert(v);
+        }
+        assert_eq!(seen, HashSet::from([1, 2, 3]), "clamping at the floor lost values");
     }
 
     /// A config with every mechanism switched off.

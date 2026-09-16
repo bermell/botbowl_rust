@@ -47,7 +47,9 @@ use botbowl_nn::targets::{policy_target_of, value_target, PolicyTargetKind, Solv
 // v2: value target became the drive-relative outcome (per-sample backfill
 // in `Trajectory::backfill_outcome_value`) instead of the broadcast
 // final-scoreline z — batches prepared at v1 are not comparable.
-const NN_SCHEMA_VERSION: u32 = 2;
+// v3: the per-player skill planes went from a hand-picked 6 to one plane per
+// `Skill` variant (C 37 → 103), so v2 tensors have the wrong channel count.
+const NN_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {

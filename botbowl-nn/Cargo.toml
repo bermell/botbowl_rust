@@ -14,6 +14,8 @@ clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
+rand = "0.8"
+rand_chacha = "0.3"
 
 [[bin]]
 name = "prepare"

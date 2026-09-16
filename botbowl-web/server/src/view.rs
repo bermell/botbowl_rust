@@ -90,18 +90,14 @@ fn square_kind(state: &GameState, pos: Position) -> pv::SquareKind {
 fn player_view(state: &GameState, p: &em::FieldedPlayer, has_ball: bool) -> pv::PlayerView {
     let team = p.stats.team;
     let role = mirror::role_to_proto(p.stats.role);
-    let mut skills: Vec<String> = [
-        et::Skill::Block,
-        et::Skill::Dodge,
-        et::Skill::Catch,
-        et::Skill::Throw,
-        et::Skill::SureHands,
-        et::Skill::SureFeet,
-    ]
-    .into_iter()
-    .filter(|s| p.has_skill(*s))
-    .map(|s| mirror::skill_label(s).to_string())
-    .collect();
+    // Every skill the engine knows, not a hand-picked six: the curriculum can
+    // now field players with any of them (`Skill::good_skills`), and one the
+    // list forgot would be invisible in the browser.
+    let mut skills: Vec<String> = et::Skill::ALL
+        .into_iter()
+        .filter(|s| p.has_skill(*s))
+        .map(|s| mirror::skill_label(s).to_string())
+        .collect();
     skills.sort();
 
     pv::PlayerView {

@@ -34,6 +34,10 @@ pub enum BuilderState {
 pub struct GameStateBuilder {
     home_players: Vec<Position>,
     away_players: Vec<Position>,
+    /// Players whose stat line the caller pinned explicitly (see
+    /// [`GameStateBuilder::add_player_details`]); fielded after the plain
+    /// `home_players`/`away_players`, which default to linemen.
+    detailed_players: Vec<(Position, PlayerStats)>,
     ball_pos: Option<Position>,
     state: BuilderState,
     /// Runtime board override for `build()`. `None` → read `BoardDims::from_env()`.
@@ -114,6 +118,7 @@ impl GameStateBuilder {
         GameStateBuilder {
             home_players: Vec::new(),
             away_players: Vec::new(),
+            detailed_players: Vec::new(),
             ball_pos: None,
             state: BuilderState::Turn { turn: 1 },
             board_dims: None,
@@ -159,12 +164,18 @@ impl GameStateBuilder {
         self.home_players.push(position);
         self
     }
+    /// Field a player at `position` with an explicit stat line — the hook the
+    /// curriculum's random-start generator uses to put varied stats and skills
+    /// on the pitch. `stats.team` is authoritative and `team` must agree with
+    /// it; the argument is kept so call sites read unambiguously.
     pub fn add_player_details(
         &mut self,
         position: Position,
         team: TeamType,
         stats: PlayerStats,
     ) -> &mut GameStateBuilder {
+        assert_eq!(stats.team, team, "add_player_details: stats.team disagrees with team");
+        self.detailed_players.push((position, stats));
         self
     }
     pub fn set_state(&mut self, state: BuilderState) -> &mut GameStateBuilder {
@@ -299,6 +310,12 @@ impl GameStateBuilder {
         for position in self.away_players.iter() {
             let player_stats = PlayerStats::new_lineman(TeamType::Away);
             _ = state.add_new_player_to_field(player_stats, *position)
+        }
+
+        for (position, stats) in self.detailed_players.iter() {
+            state
+                .add_new_player_to_field(stats.clone(), *position)
+                .expect("add_player_details: could not field the player");
         }
 
         if let Some(pos) = self.ball_pos {

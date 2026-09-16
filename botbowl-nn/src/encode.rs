@@ -20,32 +20,32 @@ use botbowl_engine::core::table::Skill;
 
 use crate::perspective::{canonical_pos, mover_for};
 
-/// Per-side plane count: present, standing, stunned, used, movement_left,
-/// ST, MA, AG, AV, then the 6 skill planes.
-pub const PER_SIDE: usize = 15;
+/// Number of non-skill per-player planes: present, standing, stunned, used,
+/// movement_left, ST, MA, AG, AV.
+const PER_SIDE_BASE: usize = 9;
+
+/// Skill planes, in channel order — **every** [`Skill`] variant, ordered by
+/// [`Skill::index`]. Deriving this from the engine's enum instead of a
+/// hand-picked subset is what lets a net reason about any skill the engine
+/// can put on a player; the previous 6-skill list was a freeze to keep older
+/// checkpoints loadable and is gone.
+const SKILL_PLANES: [Skill; Skill::COUNT] = Skill::ALL;
+
+/// Per-side plane count: the base planes plus one plane per skill.
+pub const PER_SIDE: usize = PER_SIDE_BASE + Skill::COUNT;
 /// Spatial channel count `C`.
-pub const SPATIAL_CHANNELS: usize = 2 * PER_SIDE + 7; // = 37
+pub const SPATIAL_CHANNELS: usize = 2 * PER_SIDE + 7;
 /// Non-spatial feature count `F`.
 pub const GLOBAL_FEATURES: usize = 15;
 
-/// Skill planes, in channel order. Must match [`skill_plane_names`].
-const SKILL_PLANES: [Skill; 6] = [
-    Skill::Dodge,
-    Skill::Throw,
-    Skill::Block,
-    Skill::Catch,
-    Skill::SureHands,
-    Skill::SureFeet,
-];
-
 // Global-spatial plane offsets (after the two per-side blocks).
-const C_BALL_GROUND: usize = 2 * PER_SIDE; // 30
-const C_BALL_AIR: usize = 2 * PER_SIDE + 1; // 31
-const C_BALL_CARRIER: usize = 2 * PER_SIDE + 2; // 32
-const C_ACTIVE: usize = 2 * PER_SIDE + 3; // 33
-const C_US_TZ: usize = 2 * PER_SIDE + 4; // 34
-const C_THEM_TZ: usize = 2 * PER_SIDE + 5; // 35
-const C_OOB: usize = 2 * PER_SIDE + 6; // 36
+const C_BALL_GROUND: usize = 2 * PER_SIDE;
+const C_BALL_AIR: usize = 2 * PER_SIDE + 1;
+const C_BALL_CARRIER: usize = 2 * PER_SIDE + 2;
+const C_ACTIVE: usize = 2 * PER_SIDE + 3;
+const C_US_TZ: usize = 2 * PER_SIDE + 4;
+const C_THEM_TZ: usize = 2 * PER_SIDE + 5;
+const C_OOB: usize = 2 * PER_SIDE + 6;
 
 // Light normalisation divisors — arbitrary but fixed, so train and
 // inference agree (both go through this file). BN in the tower absorbs
@@ -168,8 +168,8 @@ pub fn encode(state: &GameState) -> Encoded {
         set(6, p.stats.ma as f32 / MA_NORM); // MA
         set(7, p.stats.ag as f32 / AG_NORM); // AG
         set(8, p.stats.av as f32 / AV_NORM); // AV
-        for (i, sk) in SKILL_PLANES.into_iter().enumerate() {
-            set(9 + i, p.has_skill(sk) as u8 as f32);
+        for sk in SKILL_PLANES {
+            set(PER_SIDE_BASE + sk.index(), p.has_skill(sk) as u8 as f32);
         }
 
         // Tackle zones this player exerts onto its (canonical) neighbours.
@@ -262,8 +262,46 @@ mod tests {
     fn name_lengths_match_channel_counts() {
         assert_eq!(spatial_channel_names().len(), SPATIAL_CHANNELS);
         assert_eq!(global_feature_names().len(), GLOBAL_FEATURES);
-        assert_eq!(SPATIAL_CHANNELS, 37);
+        // 2 * (9 base + 39 skill) + 7 global planes. Pinned so a change to
+        // the engine's `Skill` enum shows up here as a failing test, next to
+        // the `NN_SCHEMA_VERSION` bump it requires.
+        assert_eq!(SPATIAL_CHANNELS, 2 * (9 + Skill::COUNT) + 7);
+        assert_eq!(SPATIAL_CHANNELS, 103);
         assert_eq!(GLOBAL_FEATURES, 15);
+    }
+
+    #[test]
+    fn every_skill_has_its_own_plane_and_the_names_agree() {
+        let names = spatial_channel_names();
+        for sk in Skill::ALL {
+            let want = format!("us_skill_{sk:?}").to_lowercase();
+            assert_eq!(names[9 + sk.index()], want);
+            assert_eq!(
+                names[PER_SIDE + 9 + sk.index()],
+                format!("them_skill_{sk:?}").to_lowercase()
+            );
+        }
+    }
+
+    #[test]
+    fn a_skill_outside_the_old_six_reaches_its_plane() {
+        // The regression this whole change is about: `Guard` used to have no
+        // plane at all, so a guard and a plain lineman encoded identically.
+        use botbowl_engine::core::model::{PlayerStats, TeamType};
+        let mut stats = PlayerStats::new_lineman(TeamType::Home);
+        stats.give_skill(Skill::Guard);
+        let pos = Position::new((5, 5));
+        let mut builder = GameStateBuilder::new();
+        builder.add_player_details(pos, TeamType::Home, stats);
+        let state = builder.build();
+        assert_eq!(mover_for(&state), TeamType::Home, "test assumes no x-mirror");
+
+        let enc = encode(&state);
+        let plane = enc.h * enc.w;
+        let at = |c: usize| enc.spatial[c * plane + (pos.y as usize) * enc.w + (pos.x as usize)];
+        assert_eq!(at(0), 1.0, "player is present");
+        assert_eq!(at(9 + Skill::Guard.index()), 1.0, "guard plane is set");
+        assert_eq!(at(9 + Skill::Block.index()), 0.0, "an unheld skill stays 0");
     }
 
     #[test]
@@ -278,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn variable_dims_16x9_gives_37_9_16() {
+    fn variable_dims_16x9_matches_the_channel_count() {
         // 14x7 playable tier → engine 16x9. Requires a build whose capacity
         // is at least 16x9 (the default 28x17 is).
         botbowl_engine::skip_if_board_smaller_than!(16, 9);
@@ -287,7 +325,7 @@ mod tests {
         let enc = encode(&state);
         assert_eq!(enc.h, 9);
         assert_eq!(enc.w, 16);
-        assert_eq!(enc.spatial.len(), 37 * 9 * 16);
+        assert_eq!(enc.spatial.len(), SPATIAL_CHANNELS * 9 * 16);
     }
 
     #[test]

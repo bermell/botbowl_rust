@@ -527,9 +527,6 @@ pub struct PlayerStats {
     //spp
 }
 impl PlayerStats {
-    pub fn add_skill(&mut self, skill: Skill) {
-        self.skills.insert(skill);
-    }
     pub fn new_lineman(team: TeamType) -> PlayerStats {
         PlayerStats {
             str_: 3,
