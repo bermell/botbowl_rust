@@ -32,7 +32,8 @@
 //!
 //! **`lazy_mover_goldens_full.txt` is currently STALE.** Its NN arms were
 //! blessed against the C=103 encoder; the tensor layout has since changed
-//! twice (unpaired per-player planes, then the endzone planes — C=58), so the
+//! repeatedly (unpaired per-player planes, the endzone planes, the path-
+//! probability plane — C=59), so the
 //! `#[ignore]`d full matrix will fail until it is re-blessed. The default-on
 //! heuristic arm is unaffected and up to date: it never touches the encoder,
 //! and the random-start states it runs on have not moved. Re-bless the full

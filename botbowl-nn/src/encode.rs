@@ -39,6 +39,7 @@
 
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{other_team, BallState, PlayerStats, Position, TeamType};
+use botbowl_engine::core::pathing::PathFinder;
 use botbowl_engine::core::table::Skill;
 
 use crate::perspective::{canonical_pos, mover_for};
@@ -77,7 +78,7 @@ const SKILL_PLANES: [Skill; Skill::COUNT] = Skill::ALL;
 const SHARED_BASE: usize = SKILL_BASE + Skill::COUNT;
 
 /// Spatial channel count `C`.
-pub const SPATIAL_CHANNELS: usize = SHARED_BASE + 9;
+pub const SPATIAL_CHANNELS: usize = SHARED_BASE + 10;
 /// Non-spatial feature count `F`.
 pub const GLOBAL_FEATURES: usize = 15;
 
@@ -97,6 +98,16 @@ const C_OOB: usize = SHARED_BASE + 6;
 /// away from it.
 const C_US_TD_ZONE: usize = SHARED_BASE + 7;
 const C_THEM_TD_ZONE: usize = SHARED_BASE + 8;
+/// Probability that the **active player** reaches this square, as the
+/// pathfinder computes it — the move's cumulative success chance across every
+/// dodge, GFI and pickup on the way. `0` means "no path here"; a real path is
+/// floored at `1/255` so the two can never be confused.
+///
+/// This is the one lossy plane: the pathfinder's `f32` is quantised to 1/255.
+/// [`encode_raw`] stores the quantised value and [`encode`] divides by
+/// [`PATH_PROB_NORM`], so the raw/normalised identity still holds exactly —
+/// the loss is at the input, not between the two views.
+const C_PATH_PROB: usize = SHARED_BASE + 9;
 
 // Per-player normalisers. These are the engine's characteristic caps, not
 // arbitrary round numbers: every per-player plane must land in `[0, 1]` or the
@@ -107,6 +118,8 @@ const ST_NORM: f32 = PlayerStats::MAX_ST as f32;
 const MA_NORM: f32 = PlayerStats::MAX_MA as f32;
 const AG_NORM: f32 = PlayerStats::MAX_AG as f32;
 const AV_NORM: f32 = PlayerStats::MAX_AV as f32;
+/// Full `u8` range: path probabilities are a fraction, not a characteristic.
+const PATH_PROB_NORM: f32 = 255.0;
 
 // Global-feature divisors — arbitrary but fixed, so train and inference agree
 // (both go through this file). BN in the tower absorbs the rest. The `[0, 1]`
@@ -131,6 +144,7 @@ pub fn spatial_channel_scales() -> Vec<f32> {
     scales[PLAYER_BASE + P_MA] = MA_NORM;
     scales[PLAYER_BASE + P_AG] = AG_NORM;
     scales[PLAYER_BASE + P_AV] = AV_NORM;
+    scales[C_PATH_PROB] = PATH_PROB_NORM;
     scales
 }
 
@@ -191,6 +205,7 @@ pub fn spatial_channel_names() -> Vec<String> {
             "oob",
             "us_td_zone",
             "them_td_zone",
+            "path_prob",
         ]
         .into_iter()
         .map(String::from),
@@ -340,6 +355,36 @@ pub fn encode_raw(state: &GameState) -> EncodedRaw {
         }
     }
 
+    // --- Path probabilities for the active player ---
+    //
+    // **Recomputed, never read from `state.path_buffer`.** That field is
+    // `#[serde(skip)]` and `#[derivative(PartialEq = "ignore")]`, so a state
+    // that has been through the corpus (`prepare` deserialises JSONL) comes
+    // back with `has_paths == true` and an empty buffer — the plane would be
+    // all zeros in training and populated at inference, silent skew of exactly
+    // the kind this crate is built to prevent. Ignoring it in `PartialEq` is
+    // the second problem: two states that recombine to one DAG node may differ
+    // in the buffer, which would make the prior impure.
+    //
+    // `PathFinder::player_paths` is a pure function of `(state, id)` and
+    // reproduces the buffer's contents exactly
+    // (`recomputed_paths_match_the_engines_own_buffer`). The `has_paths` gate
+    // *is* serialised and *is* in `PartialEq`, so gating on it stays pure.
+    if state.available_actions.has_paths() {
+        if let Some(id) = state.info.active_player {
+            if let Ok(paths) = PathFinder::player_paths(state, id) {
+                for (pos, node) in paths.iter_position() {
+                    let Some(node) = node else { continue };
+                    // A reachable square always has p > 0, so floor the
+                    // quantisation at 1: a long, unlikely path must not read
+                    // as "unreachable".
+                    let q = (node.prob * PATH_PROB_NORM).round().clamp(1.0, PATH_PROB_NORM) as u8;
+                    spatial[idx(C_PATH_PROB, cpos(pos))] = q;
+                }
+            }
+        }
+    }
+
     // --- Global (non-spatial) features, mover-perspective ---
     let (us, them) = match mover {
         TeamType::Home => (&state.home, &state.away),
@@ -390,8 +435,8 @@ mod tests {
         // 2 present + 8 shared per-player + 39 skill + 7 shared. Pinned so a
         // change to the engine's `Skill` enum shows up here as a failing
         // test, next to the `NN_SCHEMA_VERSION` bump it requires.
-        assert_eq!(SPATIAL_CHANNELS, 2 + PLAYER_SCALARS + Skill::COUNT + 9);
-        assert_eq!(SPATIAL_CHANNELS, 58);
+        assert_eq!(SPATIAL_CHANNELS, 2 + PLAYER_SCALARS + Skill::COUNT + 10);
+        assert_eq!(SPATIAL_CHANNELS, 59);
         assert_eq!(spatial_channel_scales().len(), SPATIAL_CHANNELS);
         assert_eq!(GLOBAL_FEATURES, 15);
     }
@@ -474,6 +519,125 @@ mod tests {
         assert_eq!(at(C_THEM_PRESENT), 0.0);
         assert_eq!(at(SKILL_BASE + Skill::Guard.index()), 1.0, "guard plane is set");
         assert_eq!(at(SKILL_BASE + Skill::Block.index()), 0.0, "an unheld skill stays 0");
+    }
+
+    /// A state with the active player mid-move, where the engine has filled
+    /// its own `path_buffer` — the fixture the path-plane tests need.
+    fn state_with_paths() -> GameState {
+        use botbowl_engine::core::model::Action;
+        use botbowl_engine::core::table::PosAT;
+        let carrier = Position::new((5, 5));
+        let mut builder = GameStateBuilder::new();
+        builder
+            .add_home_player(carrier)
+            .add_away_player(Position::new((8, 5)))
+            .add_ball_pos(carrier);
+        let mut state = builder.build();
+        state.set_logging_state(false);
+        state
+            .step(Action::Positional(PosAT::StartMove, carrier))
+            .expect("activate the carrier");
+        assert!(state.available_actions.has_paths(), "fixture has no path offerings");
+        state
+    }
+
+    /// The encoder recomputes the paths instead of reading `path_buffer`.
+    /// That is only sound if the recomputation agrees with the engine's own
+    /// buffer, square for square — this is what pins it.
+    #[test]
+    fn recomputed_paths_match_the_engines_own_buffer() {
+        let state = state_with_paths();
+        let id = state.info.active_player.expect("an active player");
+        let cached = state.get_paths().expect("engine filled the buffer");
+        let recomputed = PathFinder::player_paths(&state, id).expect("recompute");
+
+        let mut compared = 0;
+        for (pos, node) in cached.iter_position() {
+            let mine = &recomputed[pos];
+            match (node, mine) {
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    assert_eq!(a.prob, b.prob, "probability differs at {pos:?}");
+                    compared += 1;
+                }
+                _ => panic!("reachability differs at {pos:?}"),
+            }
+        }
+        assert!(compared > 20, "fixture only compared {compared} squares");
+    }
+
+    /// The reason for recomputing, stated as a test: a state that has been
+    /// through the corpus keeps `has_paths == true` but loses the buffer
+    /// (`#[serde(skip)]`), so an encoder that read `path_buffer` would emit an
+    /// all-zero plane in training and a populated one at inference. Both
+    /// encodings must be identical.
+    #[test]
+    fn the_path_plane_survives_the_corpus_round_trip() {
+        let state = state_with_paths();
+        let json = serde_json::to_string(&state).expect("serialise");
+        let restored: GameState = serde_json::from_str(&json).expect("deserialise");
+
+        assert!(restored.available_actions.has_paths(), "the gate is serialised");
+        assert!(
+            restored.get_paths().is_none(),
+            "path_buffer is #[serde(skip)] — if this ever starts round-tripping, \
+             the comment in encode_raw needs revisiting, not this assert relaxing"
+        );
+
+        let live = encode(&state);
+        let back = encode(&restored);
+        let plane = live.h * live.w;
+        let range = C_PATH_PROB * plane..(C_PATH_PROB + 1) * plane;
+        assert_eq!(
+            live.spatial[range.clone()],
+            back.spatial[range],
+            "the path plane differs across the corpus round-trip"
+        );
+        assert_eq!(live.spatial, back.spatial, "some other plane differs too");
+    }
+
+    /// `0` must mean "unreachable" and nothing else: a reachable square always
+    /// carries `p > 0`, so its quantised value is floored at 1.
+    #[test]
+    fn zero_in_the_path_plane_means_unreachable() {
+        let state = state_with_paths();
+        let id = state.info.active_player.unwrap();
+        let paths = PathFinder::player_paths(&state, id).unwrap();
+        let raw = encode_raw(&state);
+        let dims = state.board_dims;
+        let mover = mover_for(&state);
+        let plane = raw.h * raw.w;
+
+        let mut reachable = 0;
+        for (pos, node) in paths.iter_position() {
+            let c = canonical_pos(pos, dims, mover);
+            let v = raw.spatial[C_PATH_PROB * plane + (c.y as usize) * raw.w + (c.x as usize)];
+            match node {
+                Some(n) => {
+                    assert!(n.prob > 0.0, "the pathfinder produced a zero-probability path");
+                    assert!(v >= 1, "reachable square {pos:?} (p={}) quantised to 0", n.prob);
+                    reachable += 1;
+                }
+                None => assert_eq!(v, 0, "unreachable square {pos:?} has a probability"),
+            }
+        }
+        assert!(reachable > 20, "fixture only had {reachable} reachable squares");
+    }
+
+    /// With no active player the plane is simply empty — and identically so in
+    /// training and inference, which is all that is required.
+    #[test]
+    fn the_path_plane_is_empty_when_no_paths_are_offered() {
+        let state = GameStateBuilder::new_start_of_game();
+        assert!(!state.available_actions.has_paths());
+        let raw = encode_raw(&state);
+        let plane = raw.h * raw.w;
+        assert!(
+            raw.spatial[C_PATH_PROB * plane..(C_PATH_PROB + 1) * plane]
+                .iter()
+                .all(|&v| v == 0),
+            "path plane is populated with no offerings"
+        );
     }
 
     /// The mover's endzone must always land on the canonical `x = 1` column

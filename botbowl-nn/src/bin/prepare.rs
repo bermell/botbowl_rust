@@ -28,7 +28,7 @@
 //! **Everything sized by the corpus is streamed to disk as it is produced**
 //! ([`npy::StreamWriter`]), so peak RSS is O(1) in corpus size rather than
 //! O(corpus). It used to buffer the lot and write at the end: `spatial` is
-//! 8,352 bytes/sample, so a 3-generation window (353k samples) peaked at
+//! 8,496 bytes/sample, so a 3-generation window (353k samples) peaked at
 //! 7.6 GB on a 14.4 GB box and a 7-generation one would not have fit. Only
 //! the three N-sized `i64`/`f32` vectors (`value`, `chosen`, CSR `offsets`,
 //! ~20 bytes/sample together) stay in RAM; the N+1-long offsets array wants
@@ -62,7 +62,9 @@ use botbowl_nn::targets::{policy_target_of, value_target, PolicyTargetKind, Solv
 // plus two endzone planes (→ 58) without which a translation-equivariant tower
 // cannot tell which end the mover attacks. `MOVE_NORM` also changed, 10 → 12,
 // so even the shared planes differ.
-const NN_SCHEMA_VERSION: u32 = 5;
+// v6: adds `path_prob`, the active player's per-square path probability —
+// recomputed by the encoder, never read from the (unserialised) path_buffer.
+const NN_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {

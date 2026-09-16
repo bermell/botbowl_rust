@@ -152,7 +152,7 @@ impl NpyScalar for i64 {
 /// The v1.0 header is padded to a multiple of 64 and its length depends only
 /// on dtype + shape — never on the data — so reserving a fixed region and
 /// back-patching it once `N` is known is exact, not a guess. 128 covers every
-/// shape `prepare` emits (the widest, `(N, 58, 9, 16)` as `|u1`, needs 74
+/// shape `prepare` emits (the widest, `(N, 59, 9, 16)` as `|u1`, needs 74
 /// bytes before padding), and [`StreamWriter::finish`] asserts rather than
 /// silently corrupting a file if that ever stops being true.
 pub const STREAM_HEADER_RESERVE: usize = 128;
@@ -162,7 +162,7 @@ pub const STREAM_HEADER_RESERVE: usize = 128;
 /// the file, then seek back and write the real header.
 ///
 /// This exists so `prepare` does not have to hold the whole prepared corpus in
-/// RAM before it knows `N`. `spatial` alone is 8,352 bytes/sample, so a
+/// RAM before it knows `N`. `spatial` alone is 8,496 bytes/sample, so a
 /// 7-generation window (~825k samples) would be ~6.7 GB of `Vec<u8>` on a
 /// 14.4 GB box; the kernel already OOM-killed `prepare` once at a 3-generation
 /// window. Streaming makes peak RSS O(1) in corpus size for a single parse
