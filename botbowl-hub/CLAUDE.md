@@ -1,0 +1,59 @@
+# botbowl-hub, botbowl-worker, botbowl-hub-proto
+
+Plan 040: distribute the loop's game-playing phases over machines that dial in. The **hub**
+(on the training box) owns a job queue and writes results in the exact layout `train_loop.sh`
+consumes; **workers** connect outbound over a websocket, receive small game batches, and stream
+one result per game. The **proto** crate is the wire vocabulary shared by both. The game code
+itself is `botbowl-play`; nothing here plays a game any other way.
+
+## Run it
+
+```sh
+# training box (train_loop.sh does this itself; by hand for remote workers to join early):
+botbowl-hub serve --bind 0.0.0.0:7777 --token-file runs/<run>/hub.token
+# any machine, same commit, same BOARD_SIZE_* build:
+botbowl-worker --hub ws://<office-ip>:7777/ws --token-file hub.token        # sizes itself from cores/RAM
+botbowl-worker ... --parallel-games 4 --nn-server /tmp/nn.sock              # the local worker, with the GPU sidecar
+# submit (flag-compatible with `botbowl-ui eval`'s ladder half):
+botbowl-hub job eval --evaluator nn --model X.onnx --vs-evaluator nn --vs-model anchor.onnx \
+    --vs-games 40 --skip-fixed-rungs --per-game-out eval.games.jsonl --out report.json --wait
+botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text page
+```
+
+## Invariants
+
+- **Compatibility is exact commit + clean tree + board capacity** (`Hello` → `Reject{reason}`).
+  `--allow-commit-mismatch` on the hub relaxes only the commit check. Dirty workers are refused
+  unless the hub is dirty too — commit, then rebuild. `PROTOCOL_VERSION` in proto is bumped on
+  any frame change; `postcard` encoding, so field order matters.
+- **Models are bytes, identified by BLAKE3.** `ModelId::of(onnx)`. The hub reads a path once at
+  submit and ships bytes only to workers whose `Hello.cached_models` lack the id. Worker cache:
+  `~/.cache/botbowl/models/<hex>.onnx`, verified by rehash on startup.
+- **A worker probes every net once before any game uses it** (`ModelStore::get`): a
+  schema-mismatched ONNX panics inside tract, and inside `MctsBot` that poisons tree locks and
+  aborts the process on unwind. The probe turns it into `TaskFailed`; three failures of one game
+  fail the job with the message. Keep the probe.
+- **Games never run on the tokio runtime.** Worker game threads are `std` threads with
+  `GAME_STACK_SIZE`; `MctsBot` spawns its own scoped threads inside them.
+- **Results are idempotent.** Hub dedupes on `(job, rung, game)`; a vanished worker's in-flight
+  games are requeued at the front; a slow worker that reappears cannot double count. The worker's
+  result channel outlives its socket, so nothing finished is lost on a reconnect.
+- **Output equals `botbowl-ui eval`'s.** `eval.games.jsonl` lines are `EvalGameLine`
+  (serde, field order is the format), `report.json` is `botbowl_play::eval::Report` with
+  `lectures: []` — the hub never runs the lecture battery. Rung labels are built by the same
+  code as the CLI's, so `eval_summary.py`/`paired_summary.py` keep matching.
+- **Control API and workers share one bearer token** (`hub.token`, random on first start).
+  No TLS yet (plan 040 phase 5); `http.rs` is a deliberately tiny client that will go with it.
+
+## Tests
+
+`cargo test -p botbowl-hub`: hub + two in-process workers reproduce a single-process eval
+exactly (search-free bots so it is exact on any tier); a worker that vanishes mid-task loses
+nothing; each incompatibility is rejected with its reason. For MCTS/NN paths, run real binaries
+at 14x7 against a current-schema net (`scripts/make_random_net.py` makes one) — search output is
+not reproducible across processes, so compare labels and counts, not lines.
+
+## Not yet (plan 040 phases 2-5)
+
+Generate jobs (trajectory shards), heartbeat-timeout requeue and hub restart recovery, serving
+the worker binary + self-update, TLS with a pinned cert.

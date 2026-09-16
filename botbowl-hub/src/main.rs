@@ -442,6 +442,7 @@ fn main() {
                 println!("{id}");
                 return;
             }
+            let mut idle_polls: u64 = 0;
             loop {
                 std::thread::sleep(Duration::from_secs(5));
                 let (code, body) = match request("GET", &format!("{}/api/jobs/{id}", a.client.hub), &token, None) {
@@ -457,7 +458,21 @@ fn main() {
                 }
                 let s: JobStatus = serde_json::from_str(&body).expect("job json");
                 match &s.state {
-                    JobState::Running => {}
+                    JobState::Running => {
+                        // A job with nobody to run it never fails on its
+                        // own; say so in the log rather than sit silent.
+                        if s.workers_connected == 0 {
+                            idle_polls += 1;
+                            if idle_polls % 12 == 1 {
+                                eprintln!(
+                                    "[hub job] WARN: job {id} is running but no workers are connected ({}s idle so far)",
+                                    idle_polls * 5
+                                );
+                            }
+                        } else {
+                            idle_polls = 0;
+                        }
+                    }
                     JobState::Done => {
                         print_report_lines(&s);
                         println!("wrote {}", req.report_out.display());

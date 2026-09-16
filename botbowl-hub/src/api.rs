@@ -68,6 +68,9 @@ pub struct JobStatus {
     pub state: JobState,
     pub rungs: Vec<RungProgress>,
     pub elapsed_secs: u64,
+    /// Workers connected to the hub right now; `job --wait` warns when a
+    /// running job has none.
+    pub workers_connected: usize,
     pub report: Option<Report>,
 }
 

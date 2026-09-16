@@ -154,6 +154,25 @@ impl ModelStore {
                 format!("failed to load {}: {e}", path.display()),
             )
         })?;
+        // Probe one forward on a fresh state *outside* any search. A net
+        // whose encoder schema does not match this binary makes tract panic
+        // on first use; inside `MctsBot` that poisons the tree's locks and
+        // the unwinding drop aborts the whole worker (seen 2026-09-16 with a
+        // 53-channel net on a 75-channel binary). Here it is a plain error
+        // the hub gets as `TaskFailed`.
+        let probe = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let state = botbowl_engine::core::gamestate::GameStateBuilder::new().build();
+            eval.value_home_i64(&state)
+        }));
+        if probe.is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "model {} is incompatible with this binary's encoder (probe forward panicked)",
+                    id.to_hex()
+                ),
+            ));
+        }
         let eval = Arc::new(eval);
         self.loaded.lock().unwrap().insert(*id, Arc::clone(&eval));
         Ok(eval)
@@ -283,7 +302,23 @@ fn spawn_game_threads(
                 .spawn(move || {
                     while let Some(task) = queue.pop() {
                         in_flight.fetch_add(1, Ordering::Relaxed);
-                        run_task(&task, &store, &out);
+                        // A panic inside a game (an engine bug, a net whose
+                        // schema does not match this binary) must reach the
+                        // hub as a failure, not leave the task in flight
+                        // forever on a worker that is still heartbeating.
+                        let r =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_task(&task, &store, &out)));
+                        if let Err(p) = r {
+                            let msg = p
+                                .downcast_ref::<String>()
+                                .cloned()
+                                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                                .unwrap_or_else(|| "panic".to_string());
+                            let _ = out.send(ToHub::TaskFailed {
+                                task: task.id(),
+                                error: format!("game panicked: {msg}"),
+                            });
+                        }
                         in_flight.fetch_sub(1, Ordering::Relaxed);
                     }
                 })

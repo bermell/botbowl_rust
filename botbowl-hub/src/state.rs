@@ -76,9 +76,10 @@ impl Job {
         self.rungs.iter().all(|r| r.done.len() as u32 >= r.total)
     }
 
-    fn status(&self) -> JobStatus {
+    fn status(&self, workers_connected: usize) -> JobStatus {
         JobStatus {
             id: self.id,
+            workers_connected,
             state: self.state.clone(),
             rungs: self
                 .rungs
@@ -197,7 +198,7 @@ impl Inner {
     }
 
     pub fn job_status(&self, id: JobId) -> Option<JobStatus> {
-        self.jobs.get(&id).map(Job::status)
+        self.jobs.get(&id).map(|j| j.status(self.workers.len()))
     }
 
     pub fn status(&self) -> HubStatus {
@@ -218,7 +219,7 @@ impl Inner {
                     last_seen_secs: w.last_seen.elapsed().as_secs(),
                 })
                 .collect(),
-            jobs: self.jobs.values().map(Job::status).collect(),
+            jobs: self.jobs.values().map(|j| j.status(self.workers.len())).collect(),
         }
     }
 

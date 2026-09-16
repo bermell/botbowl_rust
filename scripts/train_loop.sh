@@ -312,6 +312,17 @@ CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target/14x7}"
 export CARGO_TARGET_DIR
 UI="$CARGO_TARGET_DIR/release/botbowl-ui"
 PREPARE="$CARGO_TARGET_DIR/release/prepare"
+# Plan 040: the eval phase runs on the hub. The daemon lives for the whole
+# loop (remote workers stay connected across generations); the *local*
+# worker is started per phase, inside the sidecar's lifetime, because its
+# loaded nets hold the sidecar socket. Remote machines join with
+#   botbowl-worker --hub ws://<this box>:$HUB_PORT/ws --token-file <copy of $HUB_TOKEN_FILE>
+HUB="$CARGO_TARGET_DIR/release/botbowl-hub"
+WORKER="$CARGO_TARGET_DIR/release/botbowl-worker"
+HUB_PORT="${HUB_PORT:-7777}"
+HUB_URL="http://127.0.0.1:$HUB_PORT"
+HUB_TOKEN_FILE="${HUB_TOKEN_FILE:-$RUN_DIR/hub.token}"
+WORKER_CACHE="$RUN_DIR/worker-cache"
 PY="$REPO/train/.venv/bin/python"
 SUMMARY="$REPO/scripts/eval_summary.py"
 
@@ -423,8 +434,56 @@ nn_server_stop() {
     NN_SERVER_PID=""
     rm -f "$NN_SOCKET"
 }
+# ---- hub + local worker lifecycle (plan 040) --------------------------------
+# The hub is idempotent to start: if one already answers on $HUB_PORT (a
+# previous loop instance, or started by hand so remote workers could join
+# early) it is reused and left running on exit.
+HUB_PID=""
+WORKER_PID=""
+hub_start() {
+    if "$HUB" status --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" > /dev/null 2>&1; then
+        log "hub already running on $HUB_URL; reusing"
+        return 0
+    fi
+    "$HUB" serve --bind "0.0.0.0:$HUB_PORT" --token-file "$HUB_TOKEN_FILE" >> "$RUN_DIR/hub.log" 2>&1 &
+    HUB_PID=$!
+    local i=0
+    until "$HUB" status --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" > /dev/null 2>&1; do
+        i=$((i + 1))
+        if [ "$i" -gt 30 ] || ! kill -0 "$HUB_PID" 2>/dev/null; then
+            die "hub did not come up on $HUB_URL in ${i}s — see hub.log"
+        fi
+        sleep 1
+    done
+    status "hub up (pid $HUB_PID, port $HUB_PORT, token $HUB_TOKEN_FILE)"
+}
+hub_stop() {
+    [ -n "$HUB_PID" ] || return 0
+    kill "$HUB_PID" 2>/dev/null
+    wait "$HUB_PID" 2>/dev/null
+    HUB_PID=""
+}
+# $1 = parallel games, $2 = log file (per phase, so a fallback warning is
+# attributable); the sidecar socket is passed when the server is up.
+worker_start() {
+    local extra=""
+    [ -n "$NN_SERVER_PID" ] && extra="--nn-server $NN_SOCKET"
+    # shellcheck disable=SC2086
+    "$WORKER" --hub "ws://127.0.0.1:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
+        --name "local" --parallel-games "$1" --cache-dir "$WORKER_CACHE" $extra \
+        >> "$2" 2>&1 &
+    WORKER_PID=$!
+    log "local worker started (pid $WORKER_PID, x$1${extra:+ via sidecar})"
+}
+worker_stop() {
+    [ -n "$WORKER_PID" ] || return 0
+    kill "$WORKER_PID" 2>/dev/null
+    wait "$WORKER_PID" 2>/dev/null
+    WORKER_PID=""
+}
+cleanup() { worker_stop; nn_server_stop; hub_stop; }
 # Never leave a server (and its 400 MB of VRAM) behind on any exit path.
-trap nn_server_stop EXIT INT TERM
+trap cleanup EXIT INT TERM
 
 [ -f "$CHAMPION_FILE" ] || echo "$INIT_CHAMPION" > "$CHAMPION_FILE"
 [ -x "$PY" ] || die "trainer venv python not found: $PY"
@@ -452,11 +511,12 @@ esac
 command -v cargo >/dev/null 2>&1 || die "cargo not on PATH (looked in \$HOME/.cargo/bin) — cannot build"
 
 log "building release binaries (14x7) with $(cargo --version)"
-if ! cargo build --release -p botbowl-ui -p botbowl-nn >> "$LOG" 2>&1; then
+if ! cargo build --release -p botbowl-ui -p botbowl-nn -p botbowl-hub -p botbowl-worker >> "$LOG" 2>&1; then
     die "cargo build failed — see loop.log"
 fi
-[ -x "$UI" ] && [ -x "$PREPARE" ] || die "expected binaries missing after build"
+[ -x "$UI" ] && [ -x "$PREPARE" ] && [ -x "$HUB" ] && [ -x "$WORKER" ] || die "expected binaries missing after build"
 status "build ok"
+hub_start
 
 # ---- pre-flight: heuristic mirror match (plan 021 open issue 5) --------------
 check_stop "before mirror match"
@@ -742,11 +802,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # dataset's one, so this is deliberately below the generate phase's
         # concurrency even though eval has the box to itself.
         nn_server_start "$CHAMP"
-        if [ -n "$NN_SERVER_PID" ]; then
-            EVAL_EXTRA="--nn-server $NN_SOCKET --parallel-games $EVAL_PARALLEL_GAMES"
-        else
-            EVAL_EXTRA="--parallel-games $EVAL_PARALLEL_GAMES"
-        fi
+        # Plan 040: the games run on whatever workers are connected to the
+        # hub — this box's local worker (started here, inside the sidecar's
+        # lifetime, with the eval-phase parallelism) plus any remote ones.
+        # `job eval` takes the same flags `botbowl-ui eval` did and blocks
+        # until the hub has written report.json and eval.games.jsonl.
+        worker_start "$EVAL_PARALLEL_GAMES" "$GEN_DIR/eval.worker.log"
         # No fixed rungs -> --skip-fixed-rungs, which keeps only the --vs rung
         # (the anchor). Passing `--rungs ""` would also work, but the dedicated
         # flag says the intent out loud.
@@ -757,22 +818,23 @@ while [ "$G" -le "$MAX_GENS" ]; do
             RUNG_ARGS="--skip-fixed-rungs"
             RUNG_DESC="no fixed rungs, "
         fi
-        status "$GG eval: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR"), x$EVAL_PARALLEL_GAMES"
+        status "$GG eval: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR"), local x$EVAL_PARALLEL_GAMES + hub workers"
         # shellcheck disable=SC2086
-        if ! "$UI" eval --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
+        if ! "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+                --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
                 --mcts-iters "$MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
                 $RUNG_ARGS \
                 --vs-games "$ANCHOR_GAMES" \
-                --skip-lectures \
                 --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
-                $EVAL_EXTRA \
                 --per-game-out "$GEN_DIR/eval.games.jsonl" \
-                --out "$GEN_DIR/report.json" > "$GEN_DIR/eval.log" 2>&1; then
+                --out "$GEN_DIR/report.json" --wait > "$GEN_DIR/eval.log" 2>&1; then
+            worker_stop
             nn_server_stop
-            die "$GG eval failed — see eval.log"
+            die "$GG eval failed — see eval.log, hub.log and worker.log"
         fi
-        grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/eval.log" \
-            && status "WARN: $GG eval fell back to tract — see eval.log and nn_server.log"
+        grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/eval.worker.log" \
+            && status "WARN: $GG eval had the local worker fall back to tract — see eval.worker.log and nn_server.log"
+        worker_stop
         nn_server_stop
         touch "$GEN_DIR/.evaluated"
     else

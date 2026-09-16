@@ -2,7 +2,17 @@
 
 **Status:** Designed 2026-09-16. **Phase 0 done 2026-09-16** (`botbowl-play` extracted;
 verified behaviour-neutral against the pre-extraction binary at 14x7: identical corpus metadata,
-byte-identical search-free eval output, identical report labels/schema). Phases 1+ not started.
+byte-identical search-free eval output, identical report labels/schema). **Phase 1 done
+2026-09-16**: `botbowl-hub-proto`, `botbowl-hub` (serve / job eval / status), `botbowl-worker`;
+eval jobs end to end; `train_loop.sh`'s eval phase runs through the hub with the local worker
+started inside the sidecar's lifetime. Verified with real 14x7 binaries: search-free job equals
+`botbowl-ui eval` byte for byte; NN candidate vs NN anchor ships the net by hash and runs; a
+schema-incompatible net fails the job in 5 s with the reason and the worker survives (models are
+probe-forwarded before use — a panic inside `MctsBot` poisons the tree and aborts the process).
+Deviations from the design below: proto depends on `botbowl-play` (not engine-free — no wasm
+target exists to protect); `job.json` persistence and `Drain`-on-shutdown deferred to phase 3;
+the `mcts-heuristic` rung and `--vs` opponent both use the same `opponent_search` knobs as
+before. Phases 2+ not started.
 Decided: dirty-tree workers are refused (no exception); Windows deferred until a box exists;
 `job --wait` progress output still open. Independent of plan 039 (mixed board sizes);
 the two compose because board dims are a runtime `GameState` field within one compiled capacity.
