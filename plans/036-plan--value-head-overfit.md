@@ -1,7 +1,48 @@
 # Plan 036 — Stop the value head overfitting the window
 
-**Status:** Proposed (written 2026-09-16). Ranked into plan 032's queue as a training-side item;
+**Status:** W1-W5 implemented, default-off, 2026-09-16 (`7b4b428`, branch
+`plan-036-value-overfit`). W6 deferred on purpose. Experiments not yet run — waiting on a window
+from the from-scratch run `runs/az14x7v6`. Ranked into plan 032's queue as a training-side item;
 it costs no generation games until the last step.
+
+### What exists
+
+| Item | Flag | Default | Where |
+|---|---|---|---|
+| W1 value loss weight | `train.py --value-weight` | 1.0 | `train.py` backward pass only; `--select-on` stays unweighted |
+| W2 weight decay | `train.py --weight-decay` | 0.0 | AdamW, BN + bias exempt (18 decayed / 46 exempt on the 64x6 tower); stays on plain Adam at 0.0 |
+| W3 blended value target | `prepare --value-blend L` | 1.0 | `targets::value_target_blended`; manifest `value_target` records the blend |
+| W4 per-drive value weight | `train.py --per-drive-value-weight` | off | `prepare` always writes `weight.npy`; no re-prepare needed to try the arm |
+| W5 exact dedup | `prepare --dedup` | off | 128-bit digest of `(spatial, global)` |
+| Selection rule | — | always on | every training log now prints the val_policy-only optimum next to the restore step |
+
+Two properties make the A/B mean anything, and both are checked: `train.py` with no new flag
+reproduces master digit for digit on the same seed, and `prepare` with no new flag writes a
+`value.npy` bit-identical to `--value-blend 1.0`. `weight.npy` sums to exactly 1.0 per drive, before
+and after dedup drops rows.
+
+`nn_schema_version` deliberately does **not** move for W3/W4, against what the W3 section below
+says: that version gates the *tensor layout* a checkpoint is compatible with, and a v6 net loads a
+blended corpus perfectly well. Bumping it would have falsely invalidated the corpus being generated.
+The manifest's `value_target` / `value_blend` / `dedup` / `value_weight` fields are what identify
+which corpus a net was fitted to.
+
+### Runner
+
+`scripts/exp036_value_overfit.sh` (E1-E3) and `scripts/exp036_report.py` (the table). Every arm is
+resumable and niced, since it shares the box with a generation run. The report prints
+`(restore_step, val_policy@restore, val_value@restore, val_value@end)` plus `drift`
+(val_value@end - @restore, E2's signal) and `pgap` (policy optimum - restore, the selection-rule
+question).
+
+### Which window — the regime caveat
+
+The symptom this plan is about is a property of **warm-started fine-tunes**: "every warm-started
+fine-tune since gen04 restores at epoch 0-2 of 10". `gen01` of a from-scratch run trains from random
+init at 1e-3, where mechanism 1 (two thirds of the window already fitted) is absent by construction
+and only mechanism 2 (value-label multiplicity) is in play. So gen01 is a real but *partial* read —
+it measures W1-W5 against label noise alone. The full read needs gen02+ with `--init` at 2e-4.
+Run both; the runner stamps which regime it used into its log.
 
 ## Problem
 
