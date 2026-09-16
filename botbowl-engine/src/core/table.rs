@@ -63,51 +63,52 @@ impl From<PosAT> for AnyAT {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Skill {
-    //Agility Skills
-    Dodge,
-    // Strength Skills
-    Throw,
-    Block,
+    // Agility Skills
     Catch,
-    // Passing Skills
-    SureHands,
-    SureFeet,
+    Dodge,
     JumpUp,
-    // General Skills
+    Leap,
     SideStep,
     Sprint,
+    SureFeet,
+    // Devious Skills
     DirtyPlayer,
     PileDriver,
     QuickFoul,
-    // Mutation Skills
     Shadowing,
     SneakyGit,
-    // Traits
+    // General Skills
+    Block,
     Dauntless,
-    Guard,
-    MightyBlow,
-    StandFirm,
+    Fend,
+    Frenzy,
+    Kick,
+    SureHands,
     Tackle,
     Wrestle,
-    BreakTackle,
-    Fend,
-    Kick,
-    BoneHead,
-    WildAnimal,
-    KickOffReturn,
-    Stunty,
-    Frenzy,
+    // Mutation Skills
     Claws,
-    NervesOfSteel,
-    Pass,
-    OnTheBall,
+    // Passing Skills
     Accurate,
+    NervesOfSteel,
+    OnTheBall,
+    Pass,
+    // Strength Skills
     ArmBar,
     Brawler,
+    BreakTackle,
     Grab,
+    Guard,
     Juggernaut,
-    Leap,
+    MightyBlow,
+    StandFirm,
+    // Traits
+    BoneHead,
     Loner,
+    Stunty,
+    Throw,
+    WildAnimal,
+    KickOffReturn,
 }
 impl Skill {
     pub fn all_skills() -> Vec<Skill> {
@@ -118,6 +119,22 @@ impl Skill {
             Skill::Catch,
             Skill::SureHands,
             Skill::SureFeet,
+        ]
+    }
+    pub fn good_skills() -> Vec<Skill> {
+        vec![
+            Skill::Dodge,
+            Skill::Block,
+            Skill::Catch,
+            Skill::JumpUp,
+            Skill::SideStep,
+            Skill::Guard,
+            Skill::MightyBlow,
+            Skill::Frenzy,
+            Skill::Tackle,
+            Skill::Wrestle,
+            Skill::SureHands,
+            Skill::StandFirm,
         ]
     }
 }
