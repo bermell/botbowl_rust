@@ -84,7 +84,18 @@ def resolve_device(spec="auto"):
     return dev
 
 
-def compute_losses(model, batch, device):
+def compute_losses(model, batch, device, per_drive_value_weight=False):
+    """Policy CE + value MSE.
+
+    Plan 036 W4: with ``per_drive_value_weight`` the value MSE becomes
+    ``(w * se).sum() / w.sum()`` with ``w = 1/len(drive)``, so a 60-position
+    drive and a 10-position one contribute the same total value gradient — the
+    label is one scalar per drive either way, and weighting by multiplicity is
+    AlphaGo-2016's "one position per game" without discarding the other 29.
+    Normalising by ``w.sum()`` rather than ``N`` keeps the loss on the same
+    scale as the plain MSE, so ``--value-weight`` means the same thing with the
+    flag on or off and the two arms' val curves stay directly comparable.
+    """
     spatial = batch["spatial"].to(device)
     global_ = batch["global"].to(device)
     policy_out, value_out = model(spatial, global_)
@@ -92,20 +103,25 @@ def compute_losses(model, batch, device):
     logsm = F.log_softmax(logits, dim=1)
     target = batch["policy"].to(device)                       # (N, K), sums to 1 per row
     policy_loss = -(target * logsm).sum(dim=1).mean()
-    value_loss = F.mse_loss(value_out, batch["value"].to(device))
+    value_target = batch["value"].to(device)
+    if per_drive_value_weight:
+        w = batch["weight"].to(device)                        # (N, 1)
+        value_loss = (w * (value_out - value_target) ** 2).sum() / w.sum()
+    else:
+        value_loss = F.mse_loss(value_out, value_target)
     pred = logits.argmax(dim=1)
     acc = (pred == batch["chosen"].to(device)).float().mean()
     return policy_loss, value_loss, acc
 
 
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, per_drive_value_weight=False):
     """Mean policy loss / value MSE / top-1 over a held-out loader."""
     model.eval()
     tot_p = tot_v = tot_a = 0.0
     nb = 0
     with torch.no_grad():
         for batch in loader:
-            pl, vl, acc = compute_losses(model, batch, device)
+            pl, vl, acc = compute_losses(model, batch, device, per_drive_value_weight)
             tot_p += pl.item()
             tot_v += vl.item()
             tot_a += acc.item()
@@ -131,6 +147,9 @@ def train(
     eval_every=None,
     width=64,
     blocks=6,
+    value_weight=1.0,
+    weight_decay=0.0,
+    per_drive_value_weight=False,
 ):
     # Before anything that draws: the shuffle order, the augmentation flips,
     # and the weight init all come off global generators.
@@ -189,7 +208,38 @@ def train(
         model.load_state_dict(state)
         print(f"warm start: loaded weights ← {init}")
 
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    # Plan 036 W2. AdamW's decay is decoupled, so at weight_decay=0 it is Adam
+    # step for step — but stay on Adam anyway when the knob is off, so the
+    # baseline arm is literally the code that ran before.
+    #
+    # BatchNorm scales/shifts and biases are excluded. Decaying a BN gamma
+    # toward zero shrinks the activations it normalises and the tower just
+    # relearns it in the next conv; decaying biases costs capacity for no
+    # regularisation. This is the standard split and the model has BN
+    # everywhere (`model.py`).
+    if weight_decay:
+        decay, no_decay = [], []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            (no_decay if param.ndim <= 1 or name.endswith(".bias") else decay).append(param)
+        opt = torch.optim.AdamW(
+            [
+                {"params": decay, "weight_decay": weight_decay},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
+            lr=lr,
+        )
+        print(
+            f"optimiser: AdamW lr {lr} weight_decay {weight_decay} "
+            f"({len(decay)} decayed tensors, {len(no_decay)} exempt: BN + bias)"
+        )
+    else:
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+    if value_weight != 1.0:
+        print(f"value loss weight: {value_weight} (restore criterion stays unweighted)")
+    if per_drive_value_weight:
+        print("value loss weighted per drive: 1/len(drive)")
 
     # Early stopping via best-checkpoint restore: the value head starts
     # memorizing trajectories within a handful of epochs (plan 020 probe:
@@ -207,7 +257,7 @@ def train(
     # unchanged" is a no-op candidate that would burn a full eval phase to
     # score 0.5 against itself.
     if val_loader is not None and init is not None:
-        _, vv0, _ = evaluate(model, val_loader, device)
+        _, vv0, _ = evaluate(model, val_loader, device, per_drive_value_weight)
         print(f"epoch  -1  (warm-start baseline)  |  val_value {vv0:.4f}")
 
     # Step-driven when --max-steps is given, epoch-driven otherwise (production).
@@ -229,14 +279,23 @@ def train(
     # gives every arm the same number of checkpoints.
     interval = eval_every if eval_every else None
     best_step = None
+    # Plan 036's second, *reported* criterion: where val_policy alone bottoms
+    # out. Nothing restores from it — it exists so the gap between the two
+    # optima is a number on the training log rather than something to go
+    # digging for. The plan's rule of thumb: if after W1-W4 the two still
+    # differ by >5k steps, the heads want splitting at restore time.
+    best_vp = None
+    best_vp_step = None
 
     def validate(tag):
         """Val pass + best-checkpoint bookkeeping. Returns the printable suffix."""
-        nonlocal best_val, best_epoch, best_step, best_state
+        nonlocal best_val, best_epoch, best_step, best_state, best_vp, best_vp_step
         if val_loader is None:
             return ""
-        vp, vv, va = evaluate(model, val_loader, device)
+        vp, vv, va = evaluate(model, val_loader, device, per_drive_value_weight)
         model.train()
+        if best_vp is None or vp < best_vp:
+            best_vp, best_vp_step = vp, step
         suffix = f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
         # Which head decides the restore. `value` is the historical rule and was
         # correct while the bot played `--evaluator nn-value`: priors came from
@@ -263,8 +322,8 @@ def train(
         nb = 0
         for batch in loader:
             opt.zero_grad()
-            pl, vl, acc = compute_losses(model, batch, device)
-            (pl + vl).backward()
+            pl, vl, acc = compute_losses(model, batch, device, per_drive_value_weight)
+            (pl + value_weight * vl).backward()
             opt.step()
             step += 1
             tot_p += pl.item()
@@ -296,6 +355,13 @@ def train(
         # says whether a data-rich arm simply trained longer before overfitting,
         # which is a different claim from "more data taught it more" (plan 029).
         print(f"restored best-val weights: step {best_step} epoch {best_epoch} ({label} {best_val:.4f})")
+        # Reported, never restored from — see `best_vp` above.
+        if best_vp_step is not None:
+            gap = best_vp_step - best_step
+            print(
+                f"policy-only optimum: step {best_vp_step} (val_policy {best_vp:.4f}), "
+                f"{gap:+d} steps from the restore"
+            )
 
     # Export/serialize from CPU: `export_onnx` traces with CPU dummy inputs,
     # and a .pt of CUDA tensors would pin the checkpoint to a GPU host.
@@ -364,6 +430,31 @@ def main():
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
     ap.add_argument(
+        "--value-weight",
+        type=float,
+        default=1.0,
+        help="plan 036 W1: scale the value loss in the backward pass "
+             "(policy_ce + W * value_mse). 1.0 is the historical unweighted sum; "
+             "Leela Zero runs 0.25 after seeing exactly this value-head over-fit. "
+             "The --select-on restore criterion stays *unweighted*: the weight is "
+             "about gradient balance, the criterion measures the heads",
+    )
+    ap.add_argument(
+        "--weight-decay",
+        type=float,
+        default=0.0,
+        help="plan 036 W2: AdamW decoupled weight decay (0.0 = plain Adam, as before). "
+             "BatchNorm params and biases are exempt. AlphaZero's 1e-4 is an SGD L2 "
+             "coefficient at lr 0.2, so it is a starting point here, not a translation",
+    )
+    ap.add_argument(
+        "--per-drive-value-weight",
+        action="store_true",
+        help="plan 036 W4: weight each sample's value loss by 1/len(drive) from "
+             "weight.npy, so every drive contributes one unit of value gradient "
+             "per epoch instead of one per position. No effect on the policy loss",
+    )
+    ap.add_argument(
         "--device",
         default="auto",
         help="auto (default; cuda if it can actually run kernels, else cpu), cpu, cuda, cuda:N",
@@ -387,6 +478,9 @@ def main():
         seed=args.seed,
         width=args.width,
         blocks=args.blocks,
+        value_weight=args.value_weight,
+        weight_decay=args.weight_decay,
+        per_drive_value_weight=args.per_drive_value_weight,
     )
 
 

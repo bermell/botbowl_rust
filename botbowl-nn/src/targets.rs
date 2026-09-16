@@ -219,6 +219,49 @@ pub fn value_target(sample: &Sample) -> Option<f32> {
     })
 }
 
+/// Q points per touchdown — the scale `Sample::root_value` is expressed in
+/// (`botbowl-mcts/src/dynamics.rs`: a Home TD is +1000).
+const TD_POINTS: f32 = 1000.0;
+
+/// The search's root value re-signed into the mover's frame and mapped onto
+/// the outcome target's `[-1, 1]` scale. `None` when the root was never
+/// scored.
+pub fn root_value_target(sample: &Sample) -> Option<f32> {
+    sample.root_value.map(|q| {
+        let v = (q as f32 / TD_POINTS).clamp(-1.0, 1.0);
+        match sample.to_move {
+            Team::Home => v,
+            Team::Away => -v,
+        }
+    })
+}
+
+/// Value target `v2` (plan 036 W3): `lambda * outcome + (1 - lambda) * root_q`.
+///
+/// The outcome label is one high-variance scalar per *drive* — a dice-driven
+/// TD/no-TD — copied to all ~30 of its positions, which is what lets the value
+/// head learn drive identity instead of position value (plan 036 mechanism 2).
+/// The root search value is an average over ~1000 leaf scores, so blending it
+/// in cuts the per-label variance without discarding the only unbiased signal
+/// there is.
+///
+/// `lambda = 1.0` is exactly [`value_target`], bit for bit — the default, so
+/// this is a no-op until asked for. `lambda = 0.0` is pure bootstrap and is
+/// *not* recommended: the search value comes from the net being trained
+/// (self-confirmation) and at 1000 iterations the search is far from converged
+/// (plan 031 D2). Samples with no `root_value` fall back to the pure outcome
+/// rather than being dropped — the outcome is still a valid label.
+pub fn value_target_blended(sample: &Sample, lambda: f32) -> Option<f32> {
+    let outcome = value_target(sample)?;
+    if lambda >= 1.0 {
+        return Some(outcome);
+    }
+    match root_value_target(sample) {
+        Some(root) => Some(lambda * outcome + (1.0 - lambda) * root),
+        None => Some(outcome),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,5 +564,69 @@ mod tests {
         assert_eq!(value_target(&away), Some(-1.0));
         let none = sample(vec![child(1, Some(0), false)], false, Team::Home, None);
         assert_eq!(value_target(&none), None);
+    }
+
+    /// A sample with an explicit Home-centric root Q (the helper pins 0).
+    fn sample_rv(to_move: Team, outcome: Option<f32>, root_value: Option<i64>) -> Sample {
+        let mut s = sample(vec![child(1, Some(0), false)], false, to_move, outcome);
+        s.root_value = root_value;
+        s
+    }
+
+    #[test]
+    fn root_value_target_signs_by_mover_and_scales_to_one_td() {
+        let home = sample_rv(Team::Home, Some(1.0), Some(500));
+        let away = sample_rv(Team::Away, Some(1.0), Some(500));
+        assert_eq!(root_value_target(&home), Some(0.5));
+        assert_eq!(root_value_target(&away), Some(-0.5));
+        assert_eq!(root_value_target(&sample_rv(Team::Home, Some(1.0), None)), None);
+    }
+
+    #[test]
+    fn root_value_target_clamps_a_multi_td_root() {
+        // Two touchdowns of lead is still 1.0 — the outcome label it blends
+        // with is clamped the same way (botbowl-data: score delta in [-1,1]).
+        assert_eq!(root_value_target(&sample_rv(Team::Home, Some(1.0), Some(2500))), Some(1.0));
+        assert_eq!(root_value_target(&sample_rv(Team::Home, Some(1.0), Some(-2500))), Some(-1.0));
+    }
+
+    #[test]
+    fn blend_at_lambda_one_is_the_plain_outcome() {
+        // Bit-for-bit, for every sample, whatever the root says — this is the
+        // default, so the flag has to be a literal no-op until it is asked for.
+        for rv in [Some(1000), Some(-750), Some(0), None] {
+            for mover in [Team::Home, Team::Away] {
+                let s = sample_rv(mover, Some(1.0), rv);
+                assert_eq!(value_target_blended(&s, 1.0), value_target(&s));
+            }
+        }
+    }
+
+    #[test]
+    fn blend_mixes_outcome_and_root_in_the_movers_frame() {
+        // Home to move, drive ended in a Home TD (outcome +1), search thought
+        // the position was worth half a TD to Home (+0.5).
+        let s = sample_rv(Team::Home, Some(1.0), Some(500));
+        assert_eq!(value_target_blended(&s, 0.5), Some(0.75));
+        // Away to move at the same node: both halves flip together, so the
+        // blend is the exact negation — never a mix of two frames.
+        let a = sample_rv(Team::Away, Some(1.0), Some(500));
+        assert_eq!(value_target_blended(&a, 0.5), Some(-0.75));
+    }
+
+    #[test]
+    fn blend_falls_back_to_the_outcome_without_a_root_value() {
+        // An unscored root still has a perfectly good outcome label; dropping
+        // the sample would be throwing away data to avoid a missing average.
+        let s = sample_rv(Team::Home, Some(-1.0), None);
+        assert_eq!(value_target_blended(&s, 0.5), Some(-1.0));
+        // ... and no outcome is still no target, blend or not.
+        assert_eq!(value_target_blended(&sample_rv(Team::Home, None, Some(500)), 0.5), None);
+    }
+
+    #[test]
+    fn blend_at_lambda_zero_is_the_root_value() {
+        let s = sample_rv(Team::Home, Some(1.0), Some(-250));
+        assert_eq!(value_target_blended(&s, 0.0), Some(-0.25));
     }
 }

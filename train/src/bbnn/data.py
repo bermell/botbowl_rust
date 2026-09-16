@@ -45,6 +45,13 @@ class PreparedDataset(Dataset):
         self.spatial = np.load(d / "spatial.npy", mmap_mode="r")  # (N, C, H, W) u8
         self.global_ = np.load(d / "global.npy")             # (N, F) f32
         self.value = np.load(d / "value.npy")                # (N,) f32
+        # Plan 036 W4: per-sample weight for the value term, 1/len(drive).
+        # Optional — corpora prepared before it exists fall back to 1.0, which
+        # is what an unweighted MSE already does, so an old prepared dir still
+        # trains and `--per-drive-value-weight` on one is a no-op rather than a
+        # crash.
+        wpath = d / "weight.npy"
+        self.weight = np.load(wpath) if wpath.exists() else np.ones(len(self.value), dtype=np.float32)
         self.chosen = np.load(d / "chosen.npy")              # (N,) i64
         self.actions = np.load(d / "actions.npy")            # (M, 4) i64
         self.policy = np.load(d / "policy.npy")              # (M,) f32
@@ -52,6 +59,7 @@ class PreparedDataset(Dataset):
         with open(d / "manifest.json") as f:
             self.manifest = json.load(f)
         assert self.spatial.shape[0] == len(self.value)
+        assert len(self.weight) == len(self.value)
         assert len(self.offsets) == len(self.value) + 1
 
         # Since schema v4 `spatial.npy` holds the encoder's *raw* integer
@@ -89,6 +97,7 @@ class PreparedDataset(Dataset):
             "spatial": spatial,
             "global": torch.from_numpy(self.global_[i]).float(),
             "value": torch.tensor([self.value[i]], dtype=torch.float32),
+            "weight": torch.tensor([self.weight[i]], dtype=torch.float32),
             "chosen": int(self.chosen[i]),
             "actions": actions,
             "policy": torch.from_numpy(self.policy[lo:hi]).float(),    # (K_i,)
@@ -102,6 +111,7 @@ def collate(batch):
         spatial  (N, C, H, W)
         global   (N, F)
         value    (N, 1)
+        weight   (N, 1)         f32, per-sample value-loss weight
         actions  (N, K_max, 4)  long, padded with 0
         policy   (N, K_max)     f32, padded with 0
         pad_mask (N, K_max)     bool, True for real actions
@@ -113,6 +123,7 @@ def collate(batch):
     spatial = torch.stack([b["spatial"] for b in batch])
     global_ = torch.stack([b["global"] for b in batch])
     value = torch.stack([b["value"] for b in batch])
+    weight = torch.stack([b["weight"] for b in batch])
     chosen = torch.tensor([b["chosen"] for b in batch], dtype=torch.long)
 
     actions = torch.zeros(n, k_max, 4, dtype=torch.long)
@@ -128,6 +139,7 @@ def collate(batch):
         "spatial": spatial,
         "global": global_,
         "value": value,
+        "weight": weight,
         "actions": actions,
         "policy": policy,
         "pad_mask": pad_mask,

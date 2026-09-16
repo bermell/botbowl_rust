@@ -34,7 +34,9 @@
 //! ~20 bytes/sample together) stay in RAM; the N+1-long offsets array wants
 //! its leading zero anyway, and 825k samples is 17 MB of them.
 
-use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, ValueEnum};
@@ -42,11 +44,12 @@ use clap::{Parser, ValueEnum};
 use botbowl_data::DatasetReader;
 use botbowl_nn::actions::{action_cell, POLICY_CHANNELS};
 use botbowl_nn::encode::{
-    encode_raw, global_feature_names, spatial_channel_names, spatial_channel_scales, GLOBAL_FEATURES, SPATIAL_CHANNELS,
+    encode_raw, global_feature_names, spatial_channel_names, spatial_channel_scales, EncodedRaw, GLOBAL_FEATURES,
+    SPATIAL_CHANNELS,
 };
 use botbowl_nn::npy;
 use botbowl_nn::perspective::mover_for;
-use botbowl_nn::targets::{policy_target_of, value_target, PolicyTargetKind, SolvedRootPolicy};
+use botbowl_nn::targets::{policy_target_of, value_target_blended, PolicyTargetKind, SolvedRootPolicy};
 
 /// Layout schema version — bump when the tensor layout / channel meaning
 /// changes so a stale prepared dir can be rejected.
@@ -112,6 +115,17 @@ struct Args {
     /// Temperature for `--policy-target cq`, in Q points (1000 = one TD).
     #[arg(long, default_value_t = 100.0)]
     tau: f32,
+    /// Plan 036 W3. Value label = `L * drive_outcome + (1 - L) * root_search_value`,
+    /// both mover-signed. `1.0` (the default) is the pure outcome, bit for bit.
+    #[arg(long = "value-blend", default_value_t = 1.0)]
+    value_blend: f32,
+    /// Plan 036 W5. Drop rows whose `(spatial, global)` bytes have already been
+    /// written, keeping the first. Plan 031 D3 measured 12.8% of rows as exact
+    /// duplicates — intra-drive block/push/reroll chains with disjoint legal
+    /// sets and zero value variance inside a group, so the first row carries
+    /// everything the rest do.
+    #[arg(long)]
+    dedup: bool,
 }
 
 /// One board shape's open output files, plus the little that must stay in RAM.
@@ -130,6 +144,10 @@ struct DimsGroup {
     // Buffered: ~20 bytes/sample all told, and `offsets` is built by hand
     // anyway (it is N+1 long, with a leading 0).
     value: Vec<f32>,
+    /// Plan 036 W4: per-sample weight for the *value* term, `1 / (kept rows of
+    /// this drive)`. The policy term keeps weight 1 — only the value label is
+    /// duplicated across a drive.
+    weight: Vec<f32>,
     chosen: Vec<i64>,
     offsets: Vec<i64>, // (N+1,), starts with 0
 }
@@ -145,6 +163,7 @@ impl DimsGroup {
             action_rows: npy::StreamWriter::create(subdir.join("actions.npy"), &[4])?,
             policy: npy::StreamWriter::create(subdir.join("policy.npy"), &[])?,
             value: Vec::new(),
+            weight: Vec::new(),
             chosen: Vec::new(),
             offsets: vec![0],
             subdir,
@@ -165,10 +184,40 @@ impl DimsGroup {
         );
 
         npy::write_f32(self.subdir.join("value.npy"), &self.value, &[n])?;
+        assert_eq!(self.weight.len(), n, "one value weight per sample");
+        npy::write_f32(self.subdir.join("weight.npy"), &self.weight, &[n])?;
         npy::write_i64(self.subdir.join("chosen.npy"), &self.chosen, &[n])?;
         npy::write_i64(self.subdir.join("action_offsets.npy"), &self.offsets, &[n + 1])?;
         Ok((n, m))
     }
+}
+
+/// Plan 036 W5: a 128-bit digest of one encoded state, as two independently
+/// seeded 64-bit hashes of the same bytes. `DefaultHasher` gives 64 bits, and
+/// 64 bits over 350k rows is a ~1e-8 birthday probability — small, but this
+/// runs on every corpus forever, so pay one extra pass for a bound nobody has
+/// to think about again.
+///
+/// The board dims go in explicitly: two different shapes could otherwise
+/// digest identically only by accident of length, and they live in different
+/// output groups anyway.
+fn encoding_digest(enc: &EncodedRaw) -> u128 {
+    let mut lo = DefaultHasher::new();
+    let mut hi = DefaultHasher::new();
+    // Different seeds, same bytes.
+    0u64.hash(&mut lo);
+    0x9E37_79B9_7F4A_7C15u64.hash(&mut hi);
+    for h in [&mut lo, &mut hi] {
+        enc.w.hash(h);
+        enc.h.hash(h);
+        enc.spatial.hash(h);
+        // f32 has no Hash (NaN != NaN); the global features are finite by
+        // construction, so their bit patterns are a sound key.
+        for g in &enc.global {
+            g.to_bits().hash(h);
+        }
+    }
+    (u128::from(hi.finish()) << 64) | u128::from(lo.finish())
 }
 
 fn main() {
@@ -186,12 +235,27 @@ fn main() {
     let mut total_skipped_policy = 0usize;
     let mut total_skipped_value = 0usize;
     let mut total_below_min = 0usize;
+    let mut total_dupes = 0usize;
+    // Plan 036 W5. A 128-bit digest of the `(spatial, global)` bytes, not the
+    // bytes themselves: a 3-generation window is ~350k rows x ~6 KB, which is
+    // 2 GB of exact keys against 5 MB of digests. At 128 bits the birthday
+    // probability over 350k rows is ~1e-28 — unlike the MCTS memory modes this
+    // repo forbids, a collision here drops one duplicate-looking training row
+    // rather than merging two live search nodes.
+    let mut seen: HashSet<u128> = HashSet::new();
 
     for input in &args.inputs {
         let reader =
             DatasetReader::open(input).unwrap_or_else(|e| panic!("cannot open input {}: {e}", input.display()));
         for traj in reader {
             let traj = traj.unwrap_or_else(|e| panic!("bad trajectory in {}: {e}", input.display()));
+            // Plan 036 W4. One JSONL trajectory is one drive, which is exactly
+            // the unit the value label is constant over, so the weight is known
+            // once the drive has been written: `1 / kept rows`. Counting *kept*
+            // rows rather than `traj.samples.len()` is what makes the weights
+            // sum to 1 per drive after filtering and dedup — the whole point is
+            // that each drive contributes one unit of value gradient per epoch.
+            let before: BTreeMap<(usize, usize), usize> = groups.iter().map(|(k, g)| (*k, g.n)).collect();
             for sample in &traj.samples {
                 total_read += 1;
                 if sample.root_visits < args.min_root_visits {
@@ -205,7 +269,7 @@ fn main() {
                         continue;
                     }
                 };
-                let value = match value_target(sample) {
+                let value = match value_target_blended(sample, args.value_blend) {
                     Some(v) => v,
                     None => {
                         // Value target missing (outcome not backfilled) — the
@@ -216,6 +280,12 @@ fn main() {
                 };
 
                 let enc = encode_raw(&sample.state);
+                // Dedup on the encoded bytes, after the target filters: a row
+                // the net never sees cannot be the one we keep.
+                if args.dedup && !seen.insert(encoding_digest(&enc)) {
+                    total_dupes += 1;
+                    continue;
+                }
                 let mover = mover_for(&sample.state);
                 let dims = sample.state.board_dims;
                 // Lazy: creating the group creates its dims subdir and opens
@@ -267,6 +337,15 @@ fn main() {
                 group.offsets.push(last + m_local as i64);
                 total_kept += 1;
             }
+
+            // The drive is written; back-fill its rows' value weights. A drive
+            // whose rows were all filtered out contributes none.
+            for (key, group) in groups.iter_mut() {
+                let kept = group.n - before.get(key).copied().unwrap_or(0);
+                if kept > 0 {
+                    group.weight.extend(std::iter::repeat(1.0 / kept as f32).take(kept));
+                }
+            }
         }
     }
 
@@ -300,7 +379,26 @@ fn main() {
             // Python is the train/inference skew this crate exists to prevent.
             "spatial_scales": channel_scales,
             "global_feature_names": feature_names,
-            "value_target": "mover_signed_drive_outcome",
+            // Plan 036 W3: the label's *meaning*, which `nn_schema_version`
+            // deliberately does not cover — that version gates the tensor
+            // layout a checkpoint is compatible with, and a v6 net loads a
+            // blended corpus perfectly well. This string is what tells you
+            // which corpus a net was fitted to.
+            "value_target": if args.value_blend >= 1.0 {
+                "mover_signed_drive_outcome".to_string()
+            } else {
+                format!(
+                    "mover_signed_blend(outcome={:.3},root={:.3})",
+                    args.value_blend,
+                    1.0 - args.value_blend
+                )
+            },
+            "value_blend": args.value_blend,
+            // Plan 036 W4: `weight.npy` is always written (1/len(drive)); it is
+            // the *trainer* that decides whether to apply it, so a corpus never
+            // has to be re-prepared to try the arm.
+            "value_weight": "inverse_drive_length",
+            "dedup": args.dedup,
             "solved_root_policy": format!("{solved_root:?}"),
             "policy_target": format!("{kind:?}"),
             "min_root_visits": args.min_root_visits,
@@ -322,7 +420,7 @@ fn main() {
     println!(
         "prepare done: read {total_read} samples, kept {total_kept} \
          (dropped {total_below_min} below min-root-visits, {total_skipped_policy} without a policy target, \
-         {total_skipped_value} without a value target) \
+         {total_skipped_value} without a value target, {total_dupes} exact duplicates) \
          across {group_count} board-dims group(s)"
     );
 }

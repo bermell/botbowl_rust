@@ -59,3 +59,23 @@ def test_scale_length_must_match_the_channel_count(tmp_path):
     write_corpus(tmp_path, c=5, scales=[1.0, 1.0])
     with pytest.raises(AssertionError):
         PreparedDataset(tmp_path)
+
+
+def test_weight_npy_is_loaded_when_present(tmp_path):
+    # Plan 036 W4: prepare writes 1/len(drive) per row; the loader must hand it
+    # through untouched, because the trainer divides by its sum.
+    write_corpus(tmp_path, n=3, scales=[1.0] * 5)
+    np.save(tmp_path / "weight.npy", np.array([0.5, 0.25, 0.25], dtype=np.float32))
+    ds = PreparedDataset(tmp_path)
+    got = [float(ds[i]["weight"]) for i in range(len(ds))]
+    assert got == [0.5, 0.25, 0.25]
+
+
+def test_a_corpus_without_weights_falls_back_to_one(tmp_path):
+    # Corpora prepared before W4 have no weight.npy. Weight 1.0 everywhere is
+    # exactly the unweighted MSE, so an old prepared dir still trains and
+    # --per-drive-value-weight on one is a no-op rather than a crash.
+    write_corpus(tmp_path, n=3, scales=[1.0] * 5)
+    assert not (tmp_path / "weight.npy").exists()
+    ds = PreparedDataset(tmp_path)
+    assert [float(ds[i]["weight"]) for i in range(len(ds))] == [1.0, 1.0, 1.0]
