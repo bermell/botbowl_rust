@@ -5,6 +5,7 @@ members = [
     "botbowl-curriculum",
     "botbowl-mcts",
     "botbowl-ui",
+    "botbowl-play",
     "botbowl-data",
     "botbowl-nn",
     "botbowl-web/proto",

@@ -495,3 +495,70 @@ fn parse_size(s: &str) -> Result<(u16, u16), String> {
     let h: u16 = h.parse().map_err(|e| format!("bad height: {e}"))?;
     Ok((w, h))
 }
+
+// ---- CLI enum -> `botbowl-play` config mappings (plan 040 phase 0) ----
+//
+// The CLI keeps its own `ValueEnum` types so `botbowl-play` stays clap-free;
+// these are the only place the two vocabularies meet.
+
+impl From<CliEvaluator> for botbowl_play::bots::Evaluator {
+    fn from(e: CliEvaluator) -> Self {
+        use botbowl_play::bots::Evaluator as E;
+        match e {
+            CliEvaluator::Heuristic => E::Heuristic,
+            CliEvaluator::PureTd => E::PureTd,
+            CliEvaluator::Nn => E::Nn,
+            CliEvaluator::NnValue => E::NnValue,
+        }
+    }
+}
+
+impl From<CliCandidateBot> for botbowl_play::bots::CandidateBot {
+    fn from(c: CliCandidateBot) -> Self {
+        use botbowl_play::bots::CandidateBot as C;
+        match c {
+            CliCandidateBot::Mcts => C::Mcts,
+            CliCandidateBot::Scripted => C::Scripted,
+            CliCandidateBot::Random => C::Random,
+        }
+    }
+}
+
+impl From<DatasetMode> for botbowl_play::generate::GenMode {
+    fn from(m: DatasetMode) -> Self {
+        use botbowl_play::generate::GenMode as G;
+        match m {
+            DatasetMode::SelfPlay => G::SelfPlay,
+            DatasetMode::Curriculum => G::Curriculum,
+            DatasetMode::RandomStart => G::RandomStart,
+        }
+    }
+}
+
+impl From<CliDifficulty> for botbowl_curriculum::Difficulty {
+    fn from(d: CliDifficulty) -> Self {
+        use botbowl_curriculum::Difficulty as D;
+        match d {
+            CliDifficulty::Easy => D::Easy,
+            CliDifficulty::Medium => D::Medium,
+            CliDifficulty::Hard => D::Hard,
+        }
+    }
+}
+
+impl BiasArgs {
+    pub fn to_bias(&self) -> botbowl_play::generate::RandomStartBias {
+        botbowl_play::generate::RandomStartBias {
+            ball_distance: self.ball_distance,
+            front_line: self.front_line,
+            mark_teammate: self.mark_teammate,
+            mark_opponent: self.mark_opponent,
+            own_side: self.own_side,
+            temperature: self.temperature,
+            temperature2: self.temperature2,
+            carried_prob: self.carried_prob,
+            line_fraction: self.line_fraction,
+            pocket_fraction: self.pocket_fraction,
+        }
+    }
+}

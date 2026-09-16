@@ -1,6 +1,10 @@
 # Distributed generation and eval: one hub, many workers
 
-**Status:** Designed 2026-09-16, **not started**. Independent of plan 039 (mixed board sizes);
+**Status:** Designed 2026-09-16. **Phase 0 done 2026-09-16** (`botbowl-play` extracted;
+verified behaviour-neutral against the pre-extraction binary at 14x7: identical corpus metadata,
+byte-identical search-free eval output, identical report labels/schema). Phases 1+ not started.
+Decided: dirty-tree workers are refused (no exception); Windows deferred until a box exists;
+`job --wait` progress output still open. Independent of plan 039 (mixed board sizes);
 the two compose because board dims are a runtime `GameState` field within one compiled capacity.
 
 ## Problem
