@@ -136,25 +136,32 @@ pub struct NnEvaluator {
 }
 
 thread_local! {
-    /// Last forward on this thread, so the two heads of one state cost one
-    /// pass instead of two.
+    /// Last evaluation on this thread, so the two heads of one state cost one
+    /// encode and one forward instead of two of each.
     ///
     /// `BBNet` emits `(policy, value)` from a shared trunk, but the search
-    /// asks for them separately: `available_actions` calls [`NnEvaluator::priors`]
-    /// at expansion (`dynamics.rs:653`) and `score_leaf` calls
-    /// [`NnEvaluator::value_home_i64`] when scoring the same node
-    /// (`dynamics.rs:1165`). Each used to re-encode the state and run a full
-    /// forward, discarding exactly the head the other one needed — so
-    /// `--evaluator nn` paid two passes per expanded node where `nn-value`
+    /// asks for them separately: `score_leaf` calls
+    /// [`NnEvaluator::value_home_i64_prefetch_policy`] when scoring a node
+    /// and `available_actions` calls [`NnEvaluator::priors`] right after, on
+    /// the same state (`dynamics.rs`). Each used to re-encode the state and
+    /// run a full forward, discarding exactly the head the other one needed —
+    /// so `--evaluator nn` paid two passes per expanded node where `nn-value`
     /// pays one. Measured cost of that waste: gen05's generate phase ran 425
     /// min against gen04's 292 (+46%) and its eval 396 against 276 (+43%).
     ///
     /// The two calls land back to back on the same state, so a single slot
-    /// hits essentially always. The key is the **encoded input compared
-    /// exactly**, not a hash: a `GameState` hash collision is precisely the
-    /// bug that got `recon_mcts`'s `HashOnly` banned from this repo, and a
-    /// collision here would silently return another state's value. ~7 KB per
-    /// memcmp against a full network pass is not a close call.
+    /// hits essentially always. **The key is the `GameState` itself, compared
+    /// with its `PartialEq`** — the identity `StoreState` recombination uses
+    /// for the DAG, and the one every prior and leaf value is already required
+    /// to be a pure function of (root `CLAUDE.md`). Not a hash: a `GameState`
+    /// hash collision is precisely the bug that got `recon_mcts`'s `HashOnly`
+    /// banned from this repo, and a collision here would silently return
+    /// another state's value. Not the encoded tensor either, which is what the
+    /// slot compared before schema v6: building the key then meant running the
+    /// encoder — and with the path plane the encoder runs the pathfinder, so
+    /// the memo saved the forward but paid a 40–70 µs encode to find out
+    /// (plan 038 §encode cost). A state compare is ~1 µs; the clone that
+    /// fills the slot on a miss ~3–4 µs against a forward of 300 µs or more.
     ///
     /// Thread-local because MCTS workers run concurrently and each descends
     /// its own path; sharing one slot across threads would thrash it.
@@ -162,11 +169,13 @@ thread_local! {
 }
 
 struct CachedForward {
-    spatial: Vec<f32>,
-    global: Vec<f32>,
-    /// `None` when the cached pass was value-only (the remote backend can
-    /// skip returning the policy tensor). A later `priors` call on the same
-    /// state must then re-forward rather than invent one.
+    /// The memo key. Owned, so the slot can outlive the caller's borrow.
+    state: GameState,
+    /// Kept so a value-only hit that later needs the policy (the remote
+    /// backend can skip returning it) can re-forward without re-encoding.
+    enc: Encoded,
+    /// `None` when the cached pass was value-only. A later `priors` call on
+    /// the same state must then forward again rather than invent one.
     policy: Option<Vec<f32>>,
     value: f32,
 }
@@ -286,44 +295,60 @@ impl NnEvaluator {
         out
     }
 
-    /// One forward per state, shared by both heads. Returns
+    /// One encode and one forward per state, shared by both heads. Returns
     /// `(policy, value)`; `policy` is empty when the caller did not ask for
     /// it and none was cached.
     ///
     /// Behaviour-preserving by construction: a hit is returned only when the
-    /// encoded input matches the cached one *element for element*, and the
-    /// network is deterministic, so callers see exactly the values a fresh
-    /// forward would have produced. That also keeps the recombination purity
-    /// invariant intact — priors and leaf values stay pure functions of the
-    /// state.
-    fn forward_memo(&self, enc: &Encoded, want_policy: bool) -> (Vec<f32>, f32) {
-        let hit = LAST_FORWARD.with(|slot| {
+    /// state equals the cached one under `GameState::eq`, the encoder reads
+    /// nothing `PartialEq` ignores, and the network is deterministic, so
+    /// callers see exactly what a fresh encode + forward would have produced.
+    /// That also keeps the recombination purity invariant intact — priors and
+    /// leaf values stay pure functions of the state.
+    fn forward_memo(&self, state: &GameState, want_policy: bool) -> (Vec<f32>, f32) {
+        enum Probe {
+            Hit(Vec<f32>, f32),
+            /// Same state, but the cached pass had no policy and one is
+            /// wanted now: forward again from the cached encoding.
+            HitNeedsPolicy,
+            Miss,
+        }
+        let probe = LAST_FORWARD.with(|slot| {
             let slot = slot.borrow();
-            let c = slot.as_ref()?;
-            if c.spatial != enc.spatial || c.global != enc.global {
-                return None;
+            let Some(c) = slot.as_ref() else { return Probe::Miss };
+            if c.state != *state {
+                return Probe::Miss;
             }
             match (want_policy, &c.policy) {
-                // Asked for priors but the cached pass was value-only.
-                (true, None) => None,
-                (true, Some(p)) => Some((p.clone(), c.value)),
-                (false, _) => Some((Vec::new(), c.value)),
+                (true, None) => Probe::HitNeedsPolicy,
+                (true, Some(p)) => Probe::Hit(p.clone(), c.value),
+                (false, _) => Probe::Hit(Vec::new(), c.value),
             }
         });
-        if let Some(hit) = hit {
-            return hit;
+        match probe {
+            Probe::Hit(policy, value) => (policy, value),
+            Probe::HitNeedsPolicy => LAST_FORWARD.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let c = slot.as_mut().expect("probed as a hit");
+                let (policy, value) = self.forward_counted(&c.enc.spatial, &c.enc.global, c.enc.h, c.enc.w, true);
+                c.policy = Some(policy.clone());
+                c.value = value;
+                (policy, value)
+            }),
+            Probe::Miss => {
+                let enc = encode(state);
+                let (policy, value) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, want_policy);
+                LAST_FORWARD.with(|slot| {
+                    *slot.borrow_mut() = Some(CachedForward {
+                        state: state.clone(),
+                        enc,
+                        policy: if policy.is_empty() { None } else { Some(policy.clone()) },
+                        value,
+                    });
+                });
+                (policy, value)
+            }
         }
-
-        let (policy, value) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, want_policy);
-        LAST_FORWARD.with(|slot| {
-            *slot.borrow_mut() = Some(CachedForward {
-                spatial: enc.spatial.clone(),
-                global: enc.global.clone(),
-                policy: if policy.is_empty() { None } else { Some(policy.clone()) },
-                value,
-            });
-        });
-        (policy, value)
     }
 
     /// Priors for a node's already-filtered legal actions. One forward
@@ -333,11 +358,13 @@ impl NnEvaluator {
         if actions.is_empty() {
             return Vec::new();
         }
-        let enc = encode(state);
-        let (policy, _v) = self.forward_memo(&enc, true);
-        let plane = enc.h * enc.w;
-        let mover = enc.mover;
+        let (policy, _v) = self.forward_memo(state, true);
+        // The same `(h, w, mover)` the encoder derives; recomputed here so a
+        // memo hit does not need the `Encoded` at all.
         let dims = state.board_dims;
+        let (h, w) = (dims.height as usize, dims.width as usize);
+        let plane = h * w;
+        let mover = mover_for(state);
 
         let logits: Vec<f32> = actions
             .iter()
@@ -351,7 +378,7 @@ impl NnEvaluator {
                         .copied()
                         .fold(f32::NEG_INFINITY, f32::max)
                 } else {
-                    policy[cell.channel * plane + cell.y * enc.w + cell.x]
+                    policy[cell.channel * plane + cell.y * w + cell.x]
                 }
             })
             .collect();
@@ -383,14 +410,12 @@ impl NnEvaluator {
     /// priors from the scripted heuristic and never asks for the policy, so
     /// prefetching it there would add payload for nothing.
     pub fn value_home_i64_prefetch_policy(&self, state: &GameState) -> i64 {
-        let enc: Encoded = encode(state);
-        let (_policy, v) = self.forward_memo(&enc, true);
+        let (_policy, v) = self.forward_memo(state, true);
         self.to_home_i64(v, state)
     }
 
     pub fn value_home_i64(&self, state: &GameState) -> i64 {
-        let enc: Encoded = encode(state);
-        let (_policy, v) = self.forward_memo(&enc, false);
+        let (_policy, v) = self.forward_memo(state, false);
         self.to_home_i64(v, state)
     }
 

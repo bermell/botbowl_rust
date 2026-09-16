@@ -245,12 +245,14 @@ pub fn encode(state: &GameState) -> Encoded {
     let raw = encode_raw(state);
     let scales = spatial_channel_scales();
     let plane = raw.h * raw.w;
-    let spatial = raw
-        .spatial
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| v as f32 / scales[i / plane])
-        .collect();
+    // One divisor per plane, so the inner loop is a plain division and not an
+    // integer `i / plane` per element (that alone was most of `encode`'s
+    // no-path cost). Division, not a reciprocal multiply: the raw/normalised
+    // identity is pinned bit-for-bit and Python divides too.
+    let mut spatial = Vec::with_capacity(raw.spatial.len());
+    for (chunk, &scale) in raw.spatial.chunks_exact(plane).zip(scales.iter()) {
+        spatial.extend(chunk.iter().map(|&v| v as f32 / scale));
+    }
     Encoded {
         spatial,
         global: raw.global,
@@ -564,6 +566,54 @@ mod tests {
             }
         }
         assert!(compared > 20, "fixture only compared {compared} squares");
+    }
+
+    /// Plan 038 open item B, settled: the engine's buffer is **not** a
+    /// substitute for the recompute even when it is present. At a `BlockAction`
+    /// decision the buffer holds one direct-block offering per adjacent victim
+    /// (`new_direct_block_node`) while `has_paths` is just as true as it is
+    /// mid-move; the plane is defined as the mover's *movement* probabilities
+    /// and the recompute gives exactly that. An encoder that read the buffer
+    /// "when present" would encode the two differently, silently, at every
+    /// block decision. Keep this test if anyone revisits the fast path: it is
+    /// the counter-example.
+    #[test]
+    fn the_engines_buffer_is_not_the_path_plane_at_a_block_decision() {
+        use botbowl_engine::core::model::Action;
+        use botbowl_engine::core::table::PosAT;
+        let attacker = Position::new((5, 5));
+        let mut builder = GameStateBuilder::new();
+        builder
+            .add_home_player(attacker)
+            .add_away_player(Position::new((6, 5)))
+            .add_away_player(Position::new((6, 6)));
+        let mut state = builder.build();
+        state.set_logging_state(false);
+        state
+            .step(Action::Positional(PosAT::StartBlock, attacker))
+            .expect("start the block");
+        assert!(
+            state.available_actions.has_paths(),
+            "block offerings live in the path buffer"
+        );
+        let id = state.info.active_player.expect("the attacker is active");
+
+        let cached = state.get_paths().expect("engine filled the buffer");
+        let recomputed = PathFinder::player_paths(&state, id).expect("recompute");
+        let cached_n = cached.iter().filter(|n| n.is_some()).count();
+        let recomputed_n = recomputed.iter().filter(|n| n.is_some()).count();
+        assert_eq!(cached_n, 2, "one block offering per adjacent standing opponent");
+        assert!(
+            recomputed_n > cached_n,
+            "the buffer ({cached_n} squares) and the recompute ({recomputed_n}) must differ here, \
+             or item B's premise has changed and this test — not the encoder — needs revisiting"
+        );
+        assert!(
+            cached
+                .iter_position()
+                .all(|(_, n)| n.as_ref().is_none_or(|n| n.get_action_type() == PosAT::Block)),
+            "block offerings are Block actions, not moves"
+        );
     }
 
     /// The reason for recomputing, stated as a test: a state that has been

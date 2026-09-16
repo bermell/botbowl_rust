@@ -1,9 +1,9 @@
 # Encoder schema v6: every skill, factored sides, endzones, path probabilities
 
-**Status:** Landed (commits `b71a656`, `2dd29a7`, `4ba7141`, `92555aa`, 2026-09-16), with two
-follow-ups open — see *Open items*. Written after the fact so the reasoning behind a schema that
-invalidated every checkpoint is recoverable; the per-decision detail lives in
-`botbowl-nn/CLAUDE.md`, this is the narrative and the arithmetic.
+**Status:** Landed (commits `b71a656`, `2dd29a7`, `4ba7141`, `92555aa`, 2026-09-16); the encode-cost
+follow-ups closed 2026-09-16 — see *Open items* for what was done and why B was **rejected**. Written
+after the fact so the reasoning behind a schema that invalidated every checkpoint is recoverable; the
+per-decision detail lives in `botbowl-nn/CLAUDE.md`, this is the narrative and the arithmetic.
 
 The spatial tensor went **C = 37 → 59** and the corpus dtype `f32 → u8`. Net effect on size:
 **21,312 → 8,496 bytes/sample**, i.e. smaller than before while carrying 39 skills instead of 6,
@@ -157,36 +157,65 @@ Derived from the measured 77.1 µs — **arithmetic, not an end-to-end measureme
 Linear in budget. Against the remote sidecar's ~0.91 ms/forward × 482 ≈ 440 ms that is ~8% on the NN
 path; against tract it is a smaller share, since tract's forwards are slower.
 
-## Open items
+## Open items — resolved 2026-09-16
 
-### A. Cache the `Encoded`, not just the forward result — no correctness question
+The call: **do A, keyed on the `GameState` rather than the tensor; reject B outright; fix the
+one cheap thing the microbenchmark turned up in `encode` itself.** Nothing gated, nothing that
+needs to know which procedure is on top of the stack.
 
-`priors` re-encodes a state that `value_home_i64_prefetch_policy` encoded microseconds earlier, on
-the same thread. `LAST_FORWARD` is **already** a thread-local that assumes exactly that locality; it
-just caches the forward *result* instead of the encoding that keyed it. Caching the `Encoded`
-alongside it halves the new cost outright (~37 ms → ~18 ms per 300-iteration search) and, as a
-bonus, replaces the 8,496-element `Vec<f32>` comparison on every memo probe with a cheap identity
-check. No new assumption.
+### A. Memo keyed on the state — done
 
-### B. Reuse the cached `path_buffer` when present — needs a proof first
+`LAST_FORWARD` now stores `(GameState, Encoded, policy, value)` and probes with `GameState::eq`,
+the identity `StoreState` recombination already uses for the DAG. State-equal ⇒ encoding-equal by
+construction (the encoder reads nothing `PartialEq` ignores), so a hit is indistinguishable from
+a fresh evaluation — `tests/memo.rs` pins that, together with the forward count: one forward per
+node, a clone is a hit, a different state a miss. The old key was the encoded tensor, which meant
+running the encoder — pathfinder included — just to find out whether the forward could be skipped.
 
-The engine has already computed the paths at inference time; only the corpus path cannot see them.
-Using the cache when `get_paths()` returns `Some` and recomputing otherwise would remove the
-pathfinding bill entirely at inference.
+Measured in release on a 16x9 random start, 4 a side (`examples/encode_bench.rs`):
 
-**Do not add this casually.** `take_path` drains the buffer as a move is committed, so there may be
-decision points where the cached buffer is a strict subset of a fresh recompute. If there are, this
-reintroduces exactly the train/inference skew the recompute was adopted to avoid — and it would be
-silent. The prerequisite is a test over many real search states asserting cache ≡ recompute at every
-decision point with `has_paths`, not the single-fixture check that exists today. A `debug_assert`
-comparing the two on every encode would surface a divergence in the test suite cheaply.
+| | before | after |
+|---|---|---|
+| `encode`, no paths | 26.1 µs | 2.7 µs |
+| `encode`, paths offered (85 squares) | 67.0 µs | 48.6 µs |
+| memo key compare | 4.3–8.5 µs (8,496 `f32`) | 0.3–1.2 µs (`GameState ==`) |
+| memo fill on a miss | tensor clone | `GameState::clone` 2.7–4.7 µs |
 
-### C. End-to-end timing
+The no-path `encode` was not 1.8 µs as the earlier microbenchmark said — on a fuller board it was
+26 µs, and almost none of it was the encoder proper: the normalisation loop did an integer
+`i / plane` per element. It now divides one plane at a time (still a division, so the bit-for-bit
+raw/normalised identity and Python's `/ scales` are untouched). That is the 26 → 2.7.
 
-The 37 ms above is arithmetic from a microbenchmark. A fixed-budget `Evaluator::Nn` search timed
-before/after would confirm it. Worth doing before deciding whether B is needed at all.
+### B. Reuse the cached `path_buffer` — rejected, with the counter-example pinned
 
-### D. `lazy_mover_goldens_full.txt` is stale
+It is unsound as stated, not merely unproven. At a `BlockAction` decision `has_paths` is true and
+the buffer holds one `new_direct_block_node` per adjacent victim; the plane is the mover's
+*movement* probabilities and the recompute gives exactly that. So "use the cache when present"
+would encode block decisions differently at inference than in the corpus — the silent skew the
+recompute exists to prevent. `the_engines_buffer_is_not_the_path_plane_at_a_block_decision`
+constructs it. A variant gated on the top procedure being `MoveAction` would probably be sound, but
+it needs an engine API to see the stack, a proof per producer, and it buys ~45 µs on the *first*
+encode of a node only — the second is already free under A. Not worth the surface.
+
+### C. End-to-end — measured
+
+`dataset --mode random-start --mcts-iters 300 --evaluator nn --truncate`, 14x7 binary, one shard,
+schema-v6 net trained for the purpose (`runs/exp038/bbnet_14x7_v6.onnx`, 2 epochs on gen02's
+JSONL re-prepared at v6). Runs are **not** deterministic across invocations at a fixed seed (the
+base arm alone gave 9,660 and 13,238 forwards for the same two games), so the comparison is
+per forward: non-NN wall time = `(wall_ms − NN total_ms) / forwards`, i.e. everything that is not
+the forward — search, engine, encode.
+
+| backend | non-NN ms / forward, before | after | NN ms / forward |
+|---|---|---|---|
+| tract | 0.361, 0.369 | 0.294 | ~1.97 |
+| sidecar (GPU) | 0.457, 0.400 | 0.324, 0.326 | ~0.51 |
+
+≈ 70–100 µs saved per forward, a fifth to a quarter of the non-NN work; against the sidecar that
+is ~10% end-to-end throughput, against tract ~3%. Consistent with the arithmetic (two encodes and
+two tensor compares per node before, one encode plus a state clone and compare after).
+
+### D. `lazy_mover_goldens_full.txt` is stale — still open
 
 Its NN arms were blessed at C=103 and the encoder has moved three times since. The `#[ignore]`d full
 matrix will fail until re-blessed (~14 min); the default-on heuristic arm is unaffected and passes,
