@@ -970,975 +970,975 @@ arm=heuristic budget=1000 state=39 pick=StartBlitz (8,4) root_value=Some(2521) r
   StartBlock (6,5) visits=147 q=Some(2519) prior=Some(1.0) solved=false terminal=false
   StartBlock (8,4) visits=68 q=Some(2372) prior=Some(1.0) solved=false terminal=false
   EndTurn visits=15 q=Some(2519) prior=Some(0.2) solved=false terminal=false
-arm=nn-tiny budget=200 state=0 pick=StartMove (8,4) root_value=Some(-139) root_visits=168
-  StartMove (8,4) visits=96 q=Some(-139) prior=Some(1.0209237) solved=false terminal=false
-  StartMove (9,1) visits=23 q=Some(-139) prior=Some(1.024493) solved=false terminal=false
-  StartMove (11,6) visits=25 q=Some(-139) prior=Some(1.0072335) solved=false terminal=false
-  StartBlitz (8,4) visits=5 q=Some(-139) prior=Some(1.0075876) solved=false terminal=false
-  StartBlitz (9,1) visits=5 q=Some(-139) prior=Some(1.0224419) solved=false terminal=false
-  StartBlitz (11,6) visits=5 q=Some(-139) prior=Some(1.0173295) solved=false terminal=false
-  StartPass (9,1) visits=5 q=Some(-139) prior=Some(1.0374596) solved=false terminal=false
-  StartHandoff (9,1) visits=5 q=Some(-139) prior=Some(0.8395721) solved=false terminal=false
-  EndTurn visits=1 q=Some(138) prior=Some(1.0229594) solved=false terminal=false
-arm=nn-tiny budget=200 state=1 pick=StartPass (8,6) root_value=Some(-139) root_visits=135
-  StartMove (8,3) visits=1 q=Some(-139) prior=Some(0.9662763) solved=false terminal=false
-  StartMove (8,5) visits=1 q=Some(-139) prior=Some(0.998051) solved=false terminal=false
-  StartMove (8,6) visits=1 q=Some(-139) prior=Some(0.9981807) solved=false terminal=false
-  StartMove (8,7) visits=1 q=Some(-139) prior=Some(0.99756587) solved=false terminal=false
-  StartBlitz (8,3) visits=1 q=Some(-139) prior=Some(0.92690206) solved=false terminal=false
-  StartBlitz (8,5) visits=1 q=Some(-139) prior=Some(0.9660424) solved=false terminal=false
-  StartBlitz (8,6) visits=1 q=Some(-139) prior=Some(0.91843176) solved=false terminal=false
-  StartBlitz (8,7) visits=1 q=Some(-139) prior=Some(0.9715807) solved=false terminal=false
-  StartPass (8,3) visits=24 q=Some(-85) prior=Some(0.976078) solved=false terminal=false
-  StartPass (8,5) visits=28 q=Some(-90) prior=Some(0.968524) solved=false terminal=false
-  StartPass (8,6) visits=9 q=Some(-139) prior=Some(0.9952409) solved=false terminal=false
-  StartPass (8,7) visits=8 q=Some(-139) prior=Some(0.9890231) solved=false terminal=false
-  StartHandoff (8,3) visits=0 q=None prior=Some(0.8042012) solved=false terminal=false
-  StartHandoff (8,5) visits=28 q=Some(-90) prior=Some(0.81158966) solved=false terminal=false
-  StartHandoff (8,6) visits=9 q=Some(-139) prior=Some(0.8095724) solved=false terminal=false
-  StartHandoff (8,7) visits=0 q=None prior=Some(0.7966177) solved=false terminal=false
-  StartBlock (8,3) visits=6 q=Some(-92) prior=Some(1.2815101) solved=false terminal=false
-  StartBlock (8,5) visits=12 q=Some(-92) prior=Some(1.2825065) solved=false terminal=false
-  StartBlock (8,6) visits=1 q=Some(-139) prior=Some(1.2952272) solved=false terminal=false
-  StartBlock (8,7) visits=1 q=Some(-139) prior=Some(1.2778398) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.9690389) solved=false terminal=false
-arm=nn-tiny budget=200 state=2 pick=StartMove (10,6) root_value=Some(-138) root_visits=169
-  StartMove (6,4) visits=71 q=Some(-138) prior=Some(0.98745877) solved=false terminal=false
-  StartMove (9,6) visits=5 q=Some(-138) prior=Some(1.0204247) solved=false terminal=false
-  StartMove (10,6) visits=77 q=Some(-138) prior=Some(1.0122195) solved=false terminal=false
-  StartBlitz (6,4) visits=5 q=Some(-138) prior=Some(0.9937274) solved=false terminal=false
-  StartBlitz (9,6) visits=5 q=Some(-138) prior=Some(0.99123836) solved=false terminal=false
-  StartBlitz (10,6) visits=5 q=Some(-138) prior=Some(1.003768) solved=false terminal=false
-  EndTurn visits=1 q=Some(0) prior=Some(0.9911635) solved=true terminal=true
-arm=nn-tiny budget=200 state=3 pick=StartMove (3,6) root_value=Some(-139) root_visits=147
-  StartMove (3,2) visits=5 q=Some(-139) prior=Some(0.9236285) solved=false terminal=false
-  StartMove (3,3) visits=8 q=Some(-139) prior=Some(0.9231417) solved=false terminal=false
-  StartMove (3,6) visits=75 q=Some(-139) prior=Some(0.9655947) solved=false terminal=false
-  StartMove (4,5) visits=17 q=Some(-139) prior=Some(0.9284141) solved=false terminal=false
-  StartBlitz (3,2) visits=5 q=Some(-139) prior=Some(0.89240044) solved=false terminal=false
-  StartBlitz (3,3) visits=5 q=Some(-139) prior=Some(0.9340083) solved=false terminal=false
-  StartBlitz (3,6) visits=5 q=Some(-139) prior=Some(0.918105) solved=false terminal=false
-  StartBlitz (4,5) visits=5 q=Some(-139) prior=Some(0.942129) solved=false terminal=false
-  StartBlock (3,2) visits=5 q=Some(-139) prior=Some(1.2517824) solved=false terminal=false
-  StartBlock (3,3) visits=5 q=Some(-139) prior=Some(1.2044874) solved=false terminal=false
-  StartBlock (4,5) visits=11 q=Some(-46) prior=Some(1.2103455) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.90596205) solved=false terminal=false
-arm=nn-tiny budget=200 state=4 pick=StartBlitz (4,5) root_value=Some(-138) root_visits=155
-  StartMove (4,5) visits=134 q=Some(52) prior=Some(1.0123274) solved=false terminal=false
-  StartBlitz (4,5) visits=14 q=Some(-138) prior=Some(1.0075984) solved=false terminal=false
-  EndTurn visits=7 q=Some(138) prior=Some(0.98007417) solved=false terminal=false
-arm=nn-tiny budget=200 state=5 pick=StartPass (9,5) root_value=Some(140) root_visits=133
-  StartMove (9,5) visits=27 q=Some(139) prior=Some(0.9623446) solved=false terminal=false
-  StartMove (12,5) visits=5 q=Some(139) prior=Some(0.9666508) solved=false terminal=false
-  StartMove (13,4) visits=5 q=Some(139) prior=Some(0.98249394) solved=false terminal=false
-  StartBlitz (9,5) visits=5 q=Some(139) prior=Some(1.0098159) solved=false terminal=false
-  StartBlitz (12,5) visits=5 q=Some(139) prior=Some(0.9234301) solved=false terminal=false
-  StartBlitz (13,4) visits=5 q=Some(139) prior=Some(1.0073621) solved=false terminal=false
-  StartPass (9,5) visits=7 q=Some(140) prior=Some(1.0210491) solved=false terminal=false
-  StartPass (12,5) visits=7 q=Some(-45) prior=Some(0.97262484) solved=false terminal=false
-  StartPass (13,4) visits=7 q=Some(140) prior=Some(0.92320925) solved=false terminal=false
-  StartHandoff (9,5) visits=14 q=Some(139) prior=Some(0.8330873) solved=false terminal=false
-  StartHandoff (12,5) visits=10 q=Some(139) prior=Some(0.8022809) solved=false terminal=false
-  StartHandoff (13,4) visits=10 q=Some(139) prior=Some(0.7797007) solved=false terminal=false
-  StartBlock (9,5) visits=9 q=Some(46) prior=Some(1.2928193) solved=false terminal=false
-  StartBlock (12,5) visits=5 q=Some(139) prior=Some(1.2966801) solved=false terminal=false
-  StartBlock (13,4) visits=13 q=Some(46) prior=Some(1.2638401) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.9626111) solved=false terminal=false
-arm=nn-tiny budget=200 state=6 pick=StartMove (11,5) root_value=Some(138) root_visits=137
-  StartMove (11,5) visits=18 q=Some(138) prior=Some(0.93658555) solved=false terminal=false
-  StartMove (12,1) visits=16 q=Some(138) prior=Some(0.95080006) solved=false terminal=false
-  StartMove (12,3) visits=13 q=Some(138) prior=Some(0.9160867) solved=false terminal=false
-  StartMove (12,4) visits=13 q=Some(138) prior=Some(0.92808485) solved=false terminal=false
-  StartBlitz (11,5) visits=5 q=Some(138) prior=Some(0.9720116) solved=false terminal=false
-  StartBlitz (12,1) visits=5 q=Some(138) prior=Some(0.9405621) solved=false terminal=false
-  StartBlitz (12,3) visits=5 q=Some(138) prior=Some(0.88362193) solved=false terminal=false
-  StartBlitz (12,4) visits=5 q=Some(138) prior=Some(0.9149157) solved=false terminal=false
-  StartBlock (11,5) visits=24 q=Some(107) prior=Some(1.2022567) solved=false terminal=false
-  StartBlock (12,3) visits=15 q=Some(107) prior=Some(1.2195413) solved=false terminal=false
-  StartBlock (12,4) visits=17 q=Some(107) prior=Some(1.2101022) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.9254315) solved=false terminal=false
-arm=nn-tiny budget=200 state=7 pick=StartBlitz (2,5) root_value=Some(-139) root_visits=137
-  StartMove (2,5) visits=10 q=Some(-96) prior=Some(1.0197685) solved=false terminal=false
-  StartBlitz (2,5) visits=82 q=Some(-139) prior=Some(0.9775352) solved=false terminal=false
-  EndTurn visits=45 q=Some(139) prior=Some(1.0026964) solved=false terminal=false
-arm=nn-tiny budget=200 state=8 pick=StartHandoff (9,5) root_value=Some(140) root_visits=148
-  StartMove (7,6) visits=8 q=Some(140) prior=Some(0.9374205) solved=false terminal=false
-  StartMove (8,4) visits=5 q=Some(139) prior=Some(0.89824474) solved=false terminal=false
-  StartMove (8,5) visits=5 q=Some(139) prior=Some(0.9855688) solved=false terminal=false
-  StartMove (9,5) visits=5 q=Some(139) prior=Some(0.960096) solved=false terminal=false
-  StartBlitz (7,6) visits=5 q=Some(139) prior=Some(0.9946425) solved=false terminal=false
-  StartBlitz (8,4) visits=5 q=Some(139) prior=Some(0.98388964) solved=false terminal=false
-  StartBlitz (8,5) visits=5 q=Some(139) prior=Some(0.8912822) solved=false terminal=false
-  StartBlitz (9,5) visits=5 q=Some(139) prior=Some(0.9247836) solved=false terminal=false
-  StartPass (9,5) visits=5 q=Some(140) prior=Some(0.9708867) solved=false terminal=false
-  StartHandoff (9,5) visits=10 q=Some(140) prior=Some(0.76913655) solved=false terminal=false
-  StartBlock (7,6) visits=5 q=Some(139) prior=Some(1.2489902) solved=false terminal=false
-  StartBlock (8,4) visits=40 q=Some(108) prior=Some(1.253175) solved=false terminal=false
-  StartBlock (8,5) visits=44 q=Some(108) prior=Some(1.2537718) solved=false terminal=false
-  EndTurn visits=1 q=Some(-140) prior=Some(0.9281108) solved=false terminal=false
-arm=nn-tiny budget=200 state=9 pick=StartMove (6,3) root_value=Some(-138) root_visits=144
-  StartMove (2,4) visits=4 q=Some(-138) prior=Some(1.0168133) solved=false terminal=false
-  StartMove (2,7) visits=10 q=Some(-138) prior=Some(0.9883493) solved=false terminal=false
-  StartMove (4,4) visits=3 q=Some(-138) prior=Some(0.9972806) solved=false terminal=false
-  StartMove (6,3) visits=53 q=Some(-138) prior=Some(0.98916095) solved=false terminal=false
-  StartBlitz (2,4) visits=3 q=Some(-138) prior=Some(0.99031657) solved=false terminal=false
-  StartBlitz (2,7) visits=4 q=Some(-138) prior=Some(1.0322199) solved=false terminal=false
-  StartBlitz (4,4) visits=4 q=Some(-138) prior=Some(0.99748987) solved=false terminal=false
-  StartBlitz (6,3) visits=3 q=Some(-138) prior=Some(0.9924941) solved=false terminal=false
-  StartPass (2,4) visits=8 q=Some(-130) prior=Some(1.0044954) solved=false terminal=false
-  StartPass (2,7) visits=4 q=Some(-138) prior=Some(1.0365441) solved=false terminal=false
-  StartPass (4,4) visits=8 q=Some(-129) prior=Some(1.0241741) solved=false terminal=false
-  StartPass (6,3) visits=4 q=Some(-138) prior=Some(1.0127753) solved=false terminal=false
-  StartHandoff (2,4) visits=8 q=Some(-129) prior=Some(0.8157777) solved=false terminal=false
-  StartHandoff (2,7) visits=4 q=Some(-138) prior=Some(0.84593624) solved=false terminal=false
-  StartHandoff (4,4) visits=8 q=Some(-129) prior=Some(0.8334838) solved=false terminal=false
-  StartHandoff (6,3) visits=4 q=Some(-138) prior=Some(0.8330054) solved=false terminal=false
-  StartBlock (2,4) visits=8 q=Some(-135) prior=Some(1.2904267) solved=false terminal=false
-  StartBlock (4,4) visits=9 q=Some(-129) prior=Some(1.302065) solved=false terminal=false
-  EndTurn visits=1 q=Some(138) prior=Some(0.99719316) solved=false terminal=false
-arm=nn-tiny budget=200 state=10 pick=StartMove (7,3) root_value=Some(-139) root_visits=166
-  StartMove (4,2) visits=3 q=Some(-138) prior=Some(0.99368596) solved=false terminal=false
-  StartMove (6,2) visits=3 q=Some(-138) prior=Some(0.96900815) solved=false terminal=false
-  StartMove (6,6) visits=26 q=Some(-139) prior=Some(0.96137637) solved=false terminal=false
-  StartMove (7,3) visits=58 q=Some(-139) prior=Some(0.95803493) solved=false terminal=false
-  StartBlitz (4,2) visits=3 q=Some(-138) prior=Some(0.94862735) solved=false terminal=false
-  StartBlitz (6,2) visits=3 q=Some(-138) prior=Some(0.996882) solved=false terminal=false
-  StartBlitz (6,6) visits=3 q=Some(-138) prior=Some(0.9712763) solved=false terminal=false
-  StartBlitz (7,3) visits=3 q=Some(-138) prior=Some(0.9613663) solved=false terminal=false
-  StartPass (4,2) visits=3 q=Some(-139) prior=Some(0.998922) solved=false terminal=false
-  StartHandoff (4,2) visits=3 q=Some(-138) prior=Some(0.78552455) solved=false terminal=false
-  StartBlock (4,2) visits=48 q=Some(-113) prior=Some(1.2483912) solved=false terminal=false
-  StartBlock (6,2) visits=10 q=Some(-113) prior=Some(1.2572771) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.9496285) solved=false terminal=false
-arm=nn-tiny budget=200 state=11 pick=StartMove (4,3) root_value=Some(139) root_visits=156
-  StartMove (1,1) visits=5 q=Some(139) prior=Some(0.96007013) solved=false terminal=false
-  StartMove (1,4) visits=15 q=Some(139) prior=Some(0.9531404) solved=false terminal=false
-  StartMove (1,6) visits=41 q=Some(139) prior=Some(0.9338716) solved=false terminal=false
-  StartMove (4,3) visits=50 q=Some(139) prior=Some(0.96435076) solved=false terminal=false
-  StartBlitz (1,1) visits=5 q=Some(139) prior=Some(1.03445) solved=false terminal=false
-  StartBlitz (1,4) visits=5 q=Some(139) prior=Some(0.9932015) solved=false terminal=false
-  StartBlitz (1,6) visits=5 q=Some(139) prior=Some(0.96449417) solved=false terminal=false
-  StartBlitz (4,3) visits=5 q=Some(139) prior=Some(0.95276) solved=false terminal=false
-  StartPass (4,3) visits=5 q=Some(139) prior=Some(0.95320594) solved=false terminal=false
-  StartHandoff (4,3) visits=5 q=Some(139) prior=Some(0.79208827) solved=false terminal=false
-  StartBlock (1,1) visits=11 q=Some(139) prior=Some(1.2759355) solved=false terminal=false
-  StartBlock (1,4) visits=5 q=Some(139) prior=Some(1.2604171) solved=false terminal=false
-  EndTurn visits=1 q=Some(-140) prior=Some(0.96201485) solved=false terminal=false
-arm=nn-tiny budget=200 state=12 pick=StartMove (2,1) root_value=Some(-139) root_visits=151
-  StartMove (2,1) visits=21 q=Some(-139) prior=Some(0.9443489) solved=false terminal=false
-  StartMove (2,3) visits=20 q=Some(-139) prior=Some(0.9505395) solved=false terminal=false
-  StartMove (3,1) visits=14 q=Some(-139) prior=Some(0.97623307) solved=false terminal=false
-  StartMove (4,1) visits=5 q=Some(-138) prior=Some(0.94930667) solved=false terminal=false
-  StartBlitz (2,1) visits=5 q=Some(-138) prior=Some(0.9167497) solved=false terminal=false
-  StartBlitz (2,3) visits=5 q=Some(-138) prior=Some(0.9388898) solved=false terminal=false
-  StartBlitz (3,1) visits=5 q=Some(-138) prior=Some(0.9667239) solved=false terminal=false
-  StartBlitz (4,1) visits=5 q=Some(-138) prior=Some(0.952117) solved=false terminal=false
-  StartBlock (3,1) visits=35 q=Some(-114) prior=Some(1.24172) solved=false terminal=false
-  StartBlock (4,1) visits=35 q=Some(-114) prior=Some(1.2280217) solved=false terminal=false
-  EndTurn visits=1 q=Some(140) prior=Some(0.935349) solved=false terminal=false
-arm=nn-tiny budget=200 state=13 pick=StartMove (13,4) root_value=Some(138) root_visits=129
-  StartMove (11,3) visits=16 q=Some(138) prior=Some(1.0024266) solved=false terminal=false
-  StartMove (13,4) visits=27 q=Some(138) prior=Some(1.0023255) solved=false terminal=false
-  StartBlitz (11,3) visits=7 q=Some(138) prior=Some(1.0285175) solved=false terminal=false
-  StartBlitz (13,4) visits=7 q=Some(138) prior=Some(0.96461034) solved=false terminal=false
-  StartPass (11,3) visits=7 q=Some(0) prior=Some(0.93003213) solved=false terminal=false
-  StartPass (13,4) visits=13 q=Some(138) prior=Some(0.9962189) solved=false terminal=false
-  StartHandoff (11,3) visits=11 q=Some(138) prior=Some(0.7916559) solved=false terminal=false
-  StartHandoff (13,4) visits=13 q=Some(138) prior=Some(0.7943266) solved=false terminal=false
-  StartBlock (11,3) visits=7 q=Some(138) prior=Some(1.2505252) solved=false terminal=false
-  StartBlock (13,4) visits=23 q=Some(46) prior=Some(1.2702085) solved=false terminal=false
-  EndTurn visits=1 q=Some(-138) prior=Some(0.96915287) solved=false terminal=false
-arm=nn-tiny budget=200 state=14 pick=StartMove (4,1) root_value=Some(139) root_visits=210
-  StartMove (3,2) visits=11 q=Some(139) prior=Some(0.9818902) solved=false terminal=false
-  StartMove (3,3) visits=4 q=Some(139) prior=Some(0.9914484) solved=false terminal=false
-  StartMove (4,1) visits=13 q=Some(139) prior=Some(0.9901818) solved=false terminal=false
-  StartMove (6,4) visits=4 q=Some(139) prior=Some(0.9616613) solved=false terminal=false
-  StartBlitz (3,2) visits=4 q=Some(139) prior=Some(0.9503292) solved=false terminal=false
-  StartBlitz (3,3) visits=4 q=Some(139) prior=Some(0.8650619) solved=false terminal=false
-  StartBlitz (4,1) visits=4 q=Some(139) prior=Some(0.981751) solved=false terminal=false
-  StartBlitz (6,4) visits=4 q=Some(139) prior=Some(0.9667039) solved=false terminal=false
-  StartPass (6,4) visits=4 q=Some(139) prior=Some(0.98923683) solved=false terminal=false
-  StartHandoff (6,4) visits=9 q=Some(139) prior=Some(0.8025336) solved=false terminal=false
-  StartBlock (3,2) visits=137 q=Some(131) prior=Some(1.2593462) solved=false terminal=false
-  StartBlock (3,3) visits=11 q=Some(108) prior=Some(1.2867923) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.97306377) solved=false terminal=false
-arm=nn-tiny budget=200 state=15 pick=StartBlitz (2,6) root_value=Some(139) root_visits=158
-  StartMove (1,6) visits=20 q=Some(139) prior=Some(0.9278312) solved=false terminal=false
-  StartMove (2,6) visits=11 q=Some(139) prior=Some(0.96274316) solved=false terminal=false
-  StartMove (3,7) visits=11 q=Some(139) prior=Some(0.9645934) solved=false terminal=false
-  StartBlitz (1,6) visits=11 q=Some(139) prior=Some(0.98585105) solved=false terminal=false
-  StartBlitz (2,6) visits=24 q=Some(139) prior=Some(0.9622767) solved=false terminal=false
-  StartBlitz (3,7) visits=11 q=Some(139) prior=Some(0.94457763) solved=false terminal=false
-  StartPass (3,7) visits=11 q=Some(139) prior=Some(0.939476) solved=false terminal=false
-  StartHandoff (3,7) visits=5 q=Some(-92) prior=Some(0.7459545) solved=false terminal=false
-  StartBlock (1,6) visits=11 q=Some(139) prior=Some(1.255075) solved=false terminal=false
-  StartBlock (2,6) visits=32 q=Some(54) prior=Some(1.1853509) solved=false terminal=false
-  StartBlock (3,7) visits=11 q=Some(139) prior=Some(1.2186544) solved=false terminal=false
-  EndTurn visits=2 q=Some(-139) prior=Some(0.9076178) solved=false terminal=false
-arm=nn-tiny budget=200 state=16 pick=StartMove (9,2) root_value=Some(-139) root_visits=130
-  StartMove (4,2) visits=9 q=Some(-138) prior=Some(0.9282058) solved=false terminal=false
-  StartMove (4,3) visits=5 q=Some(-138) prior=Some(0.9070865) solved=false terminal=false
-  StartMove (9,2) visits=16 q=Some(-139) prior=Some(0.9214577) solved=false terminal=false
-  StartBlitz (4,2) visits=5 q=Some(-138) prior=Some(0.86647856) solved=false terminal=false
-  StartBlitz (4,3) visits=5 q=Some(-138) prior=Some(0.90449995) solved=false terminal=false
-  StartBlitz (9,2) visits=5 q=Some(-138) prior=Some(0.9053236) solved=false terminal=false
-  StartBlock (4,2) visits=28 q=Some(-108) prior=Some(1.2364147) solved=false terminal=false
-  StartBlock (4,3) visits=26 q=Some(-108) prior=Some(1.1901443) solved=false terminal=false
-  StartBlock (9,2) visits=30 q=Some(-131) prior=Some(1.2078722) solved=false terminal=false
-  EndTurn visits=1 q=Some(138) prior=Some(0.9325172) solved=false terminal=false
-arm=nn-tiny budget=200 state=17 pick=StartPass (2,2) root_value=Some(-139) root_visits=132
-  StartMove (1,2) visits=3 q=Some(-139) prior=Some(0.9785306) solved=false terminal=false
-  StartMove (2,2) visits=2 q=Some(-139) prior=Some(1.0160801) solved=false terminal=false
-  StartMove (3,2) visits=3 q=Some(-139) prior=Some(0.9340592) solved=false terminal=false
-  StartMove (6,2) visits=3 q=Some(-139) prior=Some(0.9481667) solved=false terminal=false
-  StartBlitz (1,2) visits=3 q=Some(-139) prior=Some(0.9700687) solved=false terminal=false
-  StartBlitz (2,2) visits=3 q=Some(-139) prior=Some(0.92943877) solved=false terminal=false
-  StartBlitz (3,2) visits=3 q=Some(-139) prior=Some(0.8718531) solved=false terminal=false
-  StartBlitz (6,2) visits=3 q=Some(-139) prior=Some(0.9924099) solved=false terminal=false
-  StartPass (1,2) visits=5 q=Some(-139) prior=Some(0.9804412) solved=false terminal=false
-  StartPass (2,2) visits=5 q=Some(-139) prior=Some(1.0176083) solved=false terminal=false
-  StartPass (3,2) visits=14 q=Some(-92) prior=Some(1.0708807) solved=false terminal=false
-  StartPass (6,2) visits=13 q=Some(-92) prior=Some(0.99761695) solved=false terminal=false
-  StartHandoff (1,2) visits=5 q=Some(-138) prior=Some(0.8008772) solved=false terminal=false
-  StartHandoff (2,2) visits=5 q=Some(-139) prior=Some(0.777536) solved=false terminal=false
-  StartHandoff (3,2) visits=14 q=Some(-92) prior=Some(0.8413175) solved=false terminal=false
-  StartHandoff (6,2) visits=13 q=Some(-92) prior=Some(0.8213214) solved=false terminal=false
-  StartBlock (1,2) visits=9 q=Some(-107) prior=Some(1.2488734) solved=false terminal=false
-  StartBlock (2,2) visits=8 q=Some(-108) prior=Some(1.2610358) solved=false terminal=false
-  StartBlock (3,2) visits=9 q=Some(-108) prior=Some(1.3110654) solved=false terminal=false
-  StartBlock (6,2) visits=8 q=Some(-46) prior=Some(1.2732874) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.9575308) solved=false terminal=false
-arm=nn-tiny budget=200 state=18 pick=StartMove (7,6) root_value=Some(139) root_visits=143
-  StartMove (6,1) visits=6 q=Some(139) prior=Some(0.9551492) solved=false terminal=false
-  StartMove (6,4) visits=10 q=Some(139) prior=Some(0.9551523) solved=false terminal=false
-  StartMove (7,6) visits=75 q=Some(139) prior=Some(0.95139956) solved=false terminal=false
-  StartMove (10,1) visits=6 q=Some(139) prior=Some(0.96038145) solved=false terminal=false
-  StartBlitz (6,1) visits=4 q=Some(138) prior=Some(0.98946553) solved=false terminal=false
-  StartBlitz (6,4) visits=4 q=Some(138) prior=Some(1.0111326) solved=false terminal=false
-  StartBlitz (7,6) visits=4 q=Some(138) prior=Some(0.9498471) solved=false terminal=false
-  StartBlitz (10,1) visits=4 q=Some(138) prior=Some(0.9727508) solved=false terminal=false
-  StartPass (10,1) visits=4 q=Some(139) prior=Some(0.9852966) solved=false terminal=false
-  StartHandoff (10,1) visits=7 q=Some(139) prior=Some(0.7881696) solved=false terminal=false
-  StartBlock (6,1) visits=8 q=Some(46) prior=Some(1.2787743) solved=false terminal=false
-  StartBlock (6,4) visits=11 q=Some(92) prior=Some(1.2347573) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.96772295) solved=false terminal=false
-arm=nn-tiny budget=200 state=19 pick=StartPass (6,6) root_value=Some(140) root_visits=150
-  StartMove (3,5) visits=8 q=Some(139) prior=Some(0.9165035) solved=false terminal=false
-  StartMove (3,6) visits=6 q=Some(139) prior=Some(0.914034) solved=false terminal=false
-  StartMove (4,7) visits=10 q=Some(139) prior=Some(0.9747149) solved=false terminal=false
-  StartMove (6,6) visits=15 q=Some(139) prior=Some(0.9343103) solved=false terminal=false
-  StartBlitz (3,5) visits=5 q=Some(139) prior=Some(0.90192544) solved=false terminal=false
-  StartBlitz (3,6) visits=7 q=Some(139) prior=Some(0.912234) solved=false terminal=false
-  StartBlitz (4,7) visits=6 q=Some(139) prior=Some(0.98813945) solved=false terminal=false
-  StartBlitz (6,6) visits=6 q=Some(139) prior=Some(0.93386346) solved=false terminal=false
-  StartPass (6,6) visits=6 q=Some(140) prior=Some(0.9247386) solved=false terminal=false
-  StartHandoff (6,6) visits=5 q=Some(139) prior=Some(0.7899335) solved=false terminal=false
-  StartBlock (3,5) visits=12 q=Some(54) prior=Some(1.254493) solved=false terminal=false
-  StartBlock (3,6) visits=11 q=Some(139) prior=Some(1.2232789) solved=false terminal=false
-  StartBlock (4,7) visits=6 q=Some(139) prior=Some(1.1977737) solved=false terminal=false
-  StartBlock (6,6) visits=46 q=Some(46) prior=Some(1.209658) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.92440087) solved=false terminal=false
-arm=nn-tiny budget=200 state=20 pick=StartMove (6,7) root_value=Some(139) root_visits=146
-  StartMove (6,5) visits=7 q=Some(139) prior=Some(0.96187925) solved=false terminal=false
-  StartMove (6,6) visits=7 q=Some(139) prior=Some(0.93478185) solved=false terminal=false
-  StartMove (6,7) visits=61 q=Some(139) prior=Some(0.9941436) solved=false terminal=false
-  StartMove (7,7) visits=11 q=Some(139) prior=Some(0.9868262) solved=false terminal=false
-  StartBlitz (6,5) visits=7 q=Some(139) prior=Some(0.89345294) solved=false terminal=false
-  StartBlitz (6,6) visits=10 q=Some(139) prior=Some(0.87982666) solved=false terminal=false
-  StartBlitz (6,7) visits=9 q=Some(139) prior=Some(0.936246) solved=false terminal=false
-  StartBlitz (7,7) visits=9 q=Some(139) prior=Some(0.97482556) solved=false terminal=false
-  StartBlock (6,5) visits=7 q=Some(139) prior=Some(1.2533475) solved=false terminal=false
-  StartBlock (6,6) visits=17 q=Some(46) prior=Some(1.2264134) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.9582571) solved=false terminal=false
-arm=nn-tiny budget=200 state=21 pick=StartBlitz (10,5) root_value=Some(138) root_visits=127
-  StartMove (10,5) visits=95 q=Some(11) prior=Some(0.9447511) solved=false terminal=false
-  StartBlitz (10,5) visits=12 q=Some(138) prior=Some(0.91644853) solved=false terminal=false
-  StartBlock (10,5) visits=18 q=Some(-46) prior=Some(1.2193277) solved=false terminal=false
-  EndTurn visits=3 q=Some(-138) prior=Some(0.9194728) solved=false terminal=false
-arm=nn-tiny budget=200 state=22 pick=StartMove (9,1) root_value=Some(139) root_visits=192
-  StartMove (2,6) visits=3 q=Some(139) prior=Some(0.99270874) solved=false terminal=false
-  StartMove (5,7) visits=3 q=Some(139) prior=Some(1.007009) solved=false terminal=false
-  StartMove (8,7) visits=3 q=Some(139) prior=Some(0.9700891) solved=false terminal=false
-  StartMove (9,1) visits=41 q=Some(139) prior=Some(1.0081962) solved=false terminal=false
-  StartBlitz (2,6) visits=3 q=Some(139) prior=Some(0.99813545) solved=false terminal=false
-  StartBlitz (5,7) visits=4 q=Some(139) prior=Some(1.041691) solved=false terminal=false
-  StartBlitz (8,7) visits=4 q=Some(139) prior=Some(1.0299842) solved=false terminal=false
-  StartBlitz (9,1) visits=4 q=Some(139) prior=Some(1.019765) solved=false terminal=false
-  StartPass (2,6) visits=11 q=Some(108) prior=Some(1.0314143) solved=false terminal=false
-  StartPass (5,7) visits=6 q=Some(139) prior=Some(1.0575346) solved=false terminal=false
-  StartPass (8,7) visits=40 q=Some(108) prior=Some(1.0313843) solved=false terminal=false
-  StartPass (9,1) visits=4 q=Some(139) prior=Some(1.032539) solved=false terminal=false
-  StartHandoff (2,6) visits=11 q=Some(108) prior=Some(0.8595343) solved=false terminal=false
-  StartHandoff (5,7) visits=6 q=Some(139) prior=Some(0.85578644) solved=false terminal=false
-  StartHandoff (8,7) visits=40 q=Some(108) prior=Some(0.87431824) solved=false terminal=false
-  StartHandoff (9,1) visits=4 q=Some(139) prior=Some(0.8369324) solved=false terminal=false
-  StartBlock (5,7) visits=4 q=Some(139) prior=Some(1.3461255) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(1.0068514) solved=false terminal=false
-arm=nn-tiny budget=200 state=23 pick=StartMove (4,3) root_value=Some(-139) root_visits=138
-  StartMove (3,4) visits=4 q=Some(-139) prior=Some(0.9931596) solved=false terminal=false
-  StartMove (4,3) visits=5 q=Some(-139) prior=Some(0.9467706) solved=false terminal=false
-  StartMove (4,5) visits=4 q=Some(-139) prior=Some(0.9435153) solved=false terminal=false
-  StartMove (6,3) visits=4 q=Some(-139) prior=Some(0.93278384) solved=false terminal=false
-  StartBlitz (3,4) visits=4 q=Some(-139) prior=Some(0.9209893) solved=false terminal=false
-  StartBlitz (4,3) visits=4 q=Some(-139) prior=Some(0.94590086) solved=false terminal=false
-  StartBlitz (4,5) visits=4 q=Some(-139) prior=Some(0.886179) solved=false terminal=false
-  StartBlitz (6,3) visits=4 q=Some(-138) prior=Some(0.91660964) solved=false terminal=false
-  StartBlock (4,3) visits=22 q=Some(-123) prior=Some(1.2049003) solved=false terminal=false
-  StartBlock (4,5) visits=72 q=Some(-123) prior=Some(1.2034088) solved=false terminal=false
-  StartBlock (6,3) visits=12 q=Some(-133) prior=Some(1.200236) solved=false terminal=false
-  EndTurn visits=1 q=Some(0) prior=Some(0.9055455) solved=true terminal=true
-arm=nn-tiny budget=200 state=24 pick=StartMove (7,4) root_value=Some(138) root_visits=167
-  StartMove (3,4) visits=5 q=Some(138) prior=Some(0.9635534) solved=false terminal=false
-  StartMove (7,4) visits=55 q=Some(138) prior=Some(0.9632152) solved=false terminal=false
-  StartMove (7,6) visits=28 q=Some(138) prior=Some(0.9885221) solved=false terminal=false
-  StartMove (8,6) visits=24 q=Some(138) prior=Some(0.99074036) solved=false terminal=false
-  StartBlitz (3,4) visits=5 q=Some(138) prior=Some(1.0340027) solved=false terminal=false
-  StartBlitz (7,4) visits=5 q=Some(138) prior=Some(0.9608435) solved=false terminal=false
-  StartBlitz (7,6) visits=5 q=Some(138) prior=Some(0.9210719) solved=false terminal=false
-  StartBlitz (8,6) visits=5 q=Some(138) prior=Some(0.9583953) solved=false terminal=false
-  StartBlock (3,4) visits=34 q=Some(45) prior=Some(1.2528632) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.96679276) solved=false terminal=false
-arm=nn-tiny budget=200 state=25 pick=StartBlitz (12,1) root_value=Some(139) root_visits=148
-  StartMove (12,1) visits=13 q=Some(-15) prior=Some(0.90729785) solved=false terminal=false
-  StartBlitz (12,1) visits=20 q=Some(139) prior=Some(0.9690674) solved=false terminal=false
-  StartBlock (12,1) visits=110 q=Some(-46) prior=Some(1.206828) solved=false terminal=false
-  EndTurn visits=8 q=Some(-139) prior=Some(0.91680694) solved=false terminal=false
-arm=nn-tiny budget=200 state=26 pick=StartPass (10,6) root_value=Some(-139) root_visits=133
-  StartMove (10,6) visits=6 q=Some(-138) prior=Some(0.9274691) solved=false terminal=false
-  StartMove (13,3) visits=6 q=Some(-138) prior=Some(0.908322) solved=false terminal=false
-  StartMove (13,6) visits=5 q=Some(-138) prior=Some(0.9474585) solved=false terminal=false
-  StartBlitz (10,6) visits=6 q=Some(-138) prior=Some(0.95468205) solved=false terminal=false
-  StartBlitz (13,3) visits=6 q=Some(-138) prior=Some(0.98618627) solved=false terminal=false
-  StartBlitz (13,6) visits=6 q=Some(-138) prior=Some(0.97169745) solved=false terminal=false
-  StartPass (10,6) visits=6 q=Some(-139) prior=Some(0.9317961) solved=false terminal=false
-  StartHandoff (10,6) visits=5 q=Some(-138) prior=Some(0.77753043) solved=false terminal=false
-  StartBlock (10,6) visits=59 q=Some(-92) prior=Some(1.224419) solved=false terminal=false
-  StartBlock (13,3) visits=18 q=Some(-92) prior=Some(1.2193695) solved=false terminal=false
-  StartBlock (13,6) visits=17 q=Some(-92) prior=Some(1.2131006) solved=false terminal=false
-  EndTurn visits=1 q=Some(0) prior=Some(0.9379687) solved=true terminal=true
-arm=nn-tiny budget=200 state=27 pick=StartBlitz (7,6) root_value=Some(138) root_visits=197
-  StartMove (7,6) visits=0 q=None prior=Some(0.95250946) solved=false terminal=false
-  StartMove (11,7) visits=0 q=None prior=Some(0.9448324) solved=false terminal=false
-  StartBlitz (7,6) visits=1 q=Some(138) prior=Some(0.9852125) solved=false terminal=false
-  StartBlitz (11,7) visits=0 q=None prior=Some(0.9439652) solved=false terminal=false
-  StartPass (11,7) visits=0 q=None prior=Some(0.98250985) solved=false terminal=false
-  StartHandoff (11,7) visits=0 q=None prior=Some(0.7870675) solved=false terminal=false
-  StartBlock (7,6) visits=4 q=Some(45) prior=Some(1.2305945) solved=false terminal=false
-  StartBlock (11,7) visits=192 q=Some(46) prior=Some(1.2410264) solved=false terminal=false
-  EndTurn visits=0 q=None prior=Some(0.932282) solved=false terminal=false
-arm=nn-tiny budget=200 state=28 pick=StartMove (4,4) root_value=Some(-139) root_visits=141
-  StartMove (2,4) visits=6 q=Some(-139) prior=Some(0.9571987) solved=false terminal=false
-  StartMove (3,3) visits=11 q=Some(-139) prior=Some(0.9010986) solved=false terminal=false
-  StartMove (4,4) visits=18 q=Some(-139) prior=Some(0.89853585) solved=false terminal=false
-  StartMove (4,5) visits=18 q=Some(-139) prior=Some(0.86019343) solved=false terminal=false
-  StartBlitz (2,4) visits=6 q=Some(-139) prior=Some(0.9515519) solved=false terminal=false
-  StartBlitz (3,3) visits=6 q=Some(-139) prior=Some(0.94426703) solved=false terminal=false
-  StartBlitz (4,4) visits=6 q=Some(-139) prior=Some(0.91396856) solved=false terminal=false
-  StartBlitz (4,5) visits=9 q=Some(-139) prior=Some(0.85338676) solved=false terminal=false
-  StartBlock (2,4) visits=9 q=Some(-139) prior=Some(1.2143927) solved=false terminal=false
-  StartBlock (3,3) visits=38 q=Some(-46) prior=Some(1.1785458) solved=false terminal=false
-  StartBlock (4,4) visits=6 q=Some(-139) prior=Some(1.2284065) solved=false terminal=false
-  StartBlock (4,5) visits=9 q=Some(-139) prior=Some(1.2029622) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.8954924) solved=false terminal=false
-arm=nn-tiny budget=200 state=29 pick=StartMove (13,1) root_value=Some(139) root_visits=152
-  StartMove (12,7) visits=6 q=Some(139) prior=Some(1.027975) solved=false terminal=false
-  StartMove (13,1) visits=92 q=Some(139) prior=Some(0.96138954) solved=false terminal=false
-  StartMove (13,2) visits=5 q=Some(139) prior=Some(0.95259094) solved=false terminal=false
-  StartMove (13,7) visits=19 q=Some(139) prior=Some(0.9819642) solved=false terminal=false
-  StartBlitz (12,7) visits=5 q=Some(139) prior=Some(0.96358204) solved=false terminal=false
-  StartBlitz (13,1) visits=5 q=Some(139) prior=Some(0.91972595) solved=false terminal=false
-  StartBlitz (13,2) visits=5 q=Some(139) prior=Some(0.9585974) solved=false terminal=false
-  StartBlitz (13,7) visits=5 q=Some(139) prior=Some(0.9720982) solved=false terminal=false
-  StartBlock (12,7) visits=11 q=Some(46) prior=Some(1.3013327) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.96074367) solved=false terminal=false
-arm=nn-tiny budget=200 state=30 pick=StartMove (4,1) root_value=Some(139) root_visits=134
-  StartMove (1,3) visits=7 q=Some(139) prior=Some(0.96288264) solved=false terminal=false
-  StartMove (4,1) visits=32 q=Some(139) prior=Some(0.98203295) solved=false terminal=false
-  StartBlitz (1,3) visits=8 q=Some(139) prior=Some(1.0072033) solved=false terminal=false
-  StartBlitz (4,1) visits=7 q=Some(139) prior=Some(0.9503947) solved=false terminal=false
-  StartPass (1,3) visits=10 q=Some(139) prior=Some(1.0026127) solved=false terminal=false
-  StartPass (4,1) visits=9 q=Some(139) prior=Some(1.0008693) solved=false terminal=false
-  StartHandoff (1,3) visits=10 q=Some(139) prior=Some(0.80359304) solved=false terminal=false
-  StartHandoff (4,1) visits=9 q=Some(139) prior=Some(0.7771908) solved=false terminal=false
-  StartBlock (1,3) visits=24 q=Some(46) prior=Some(1.2799296) solved=false terminal=false
-  StartBlock (4,1) visits=17 q=Some(46) prior=Some(1.279795) solved=false terminal=false
-  EndTurn visits=1 q=Some(-138) prior=Some(0.95349586) solved=false terminal=false
-arm=nn-tiny budget=200 state=31 pick=StartHandoff (5,5) root_value=Some(425) root_visits=141
-  StartMove (1,7) visits=13 q=Some(139) prior=Some(0.93144476) solved=false terminal=false
-  StartMove (2,3) visits=6 q=Some(139) prior=Some(0.95110124) solved=false terminal=false
-  StartMove (5,5) visits=12 q=Some(139) prior=Some(0.9485718) solved=false terminal=false
-  StartBlitz (1,7) visits=6 q=Some(139) prior=Some(0.9772729) solved=false terminal=false
-  StartBlitz (2,3) visits=15 q=Some(139) prior=Some(1.0056767) solved=false terminal=false
-  StartBlitz (5,5) visits=6 q=Some(139) prior=Some(0.9938845) solved=false terminal=false
-  StartPass (5,5) visits=6 q=Some(140) prior=Some(0.9589736) solved=false terminal=false
-  StartHandoff (5,5) visits=16 q=Some(425) prior=Some(0.79369515) solved=false terminal=false
-  StartBlock (2,3) visits=17 q=Some(139) prior=Some(1.2496649) solved=false terminal=false
-  StartBlock (5,5) visits=51 q=Some(46) prior=Some(1.2491179) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.9405966) solved=false terminal=false
-arm=nn-tiny budget=200 state=32 pick=StartBlitz (13,5) root_value=Some(-620) root_visits=139
-  StartMove (12,5) visits=7 q=Some(-139) prior=Some(0.9784539) solved=false terminal=false
-  StartMove (13,5) visits=7 q=Some(-139) prior=Some(0.97148633) solved=false terminal=false
-  StartBlitz (12,5) visits=6 q=Some(-139) prior=Some(0.9699702) solved=false terminal=false
-  StartBlitz (13,5) visits=67 q=Some(-620) prior=Some(0.9378092) solved=false terminal=false
-  StartPass (13,5) visits=8 q=Some(46) prior=Some(0.93821186) solved=false terminal=false
-  StartHandoff (13,5) visits=7 q=Some(-139) prior=Some(0.7682138) solved=false terminal=false
-  StartBlock (12,5) visits=17 q=Some(-46) prior=Some(1.2382429) solved=false terminal=false
-  StartBlock (13,5) visits=23 q=Some(-139) prior=Some(1.2619324) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.9356788) solved=false terminal=false
-arm=nn-tiny budget=200 state=33 pick=StartMove (2,3) root_value=Some(-140) root_visits=147
-  StartMove (2,3) visits=28 q=Some(-140) prior=Some(0.95476544) solved=false terminal=false
-  StartMove (6,2) visits=10 q=Some(-139) prior=Some(0.939772) solved=false terminal=false
-  StartMove (6,3) visits=24 q=Some(-139) prior=Some(0.9523481) solved=false terminal=false
-  StartMove (6,5) visits=12 q=Some(-139) prior=Some(0.9536204) solved=false terminal=false
-  StartBlitz (2,3) visits=7 q=Some(-139) prior=Some(0.9362012) solved=false terminal=false
-  StartBlitz (6,2) visits=7 q=Some(-139) prior=Some(0.9633646) solved=false terminal=false
-  StartBlitz (6,3) visits=7 q=Some(-139) prior=Some(0.9409661) solved=false terminal=false
-  StartBlitz (6,5) visits=7 q=Some(-139) prior=Some(0.90770155) solved=false terminal=false
-  StartPass (2,3) visits=7 q=Some(-140) prior=Some(0.96656895) solved=false terminal=false
-  StartHandoff (2,3) visits=11 q=Some(-140) prior=Some(0.7874294) solved=false terminal=false
-  StartBlock (6,2) visits=12 q=Some(-46) prior=Some(1.2518502) solved=false terminal=false
-  StartBlock (6,3) visits=7 q=Some(-139) prior=Some(1.263675) solved=false terminal=false
-  StartBlock (6,5) visits=7 q=Some(-139) prior=Some(1.2360442) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.94569296) solved=false terminal=false
-arm=nn-tiny budget=200 state=34 pick=StartMove (2,3) root_value=Some(-138) root_visits=152
-  StartMove (2,3) visits=107 q=Some(-138) prior=Some(1.0127071) solved=false terminal=false
-  StartBlitz (2,3) visits=17 q=Some(-138) prior=Some(1.0039182) solved=false terminal=false
-  EndTurn visits=31 q=Some(138) prior=Some(0.9833746) solved=false terminal=false
-arm=nn-tiny budget=200 state=35 pick=StartMove (3,6) root_value=Some(-139) root_visits=144
-  StartMove (3,6) visits=10 q=Some(-139) prior=Some(0.9623133) solved=false terminal=false
-  StartMove (4,1) visits=10 q=Some(-138) prior=Some(0.963815) solved=false terminal=false
-  StartMove (9,4) visits=9 q=Some(-138) prior=Some(0.97097296) solved=false terminal=false
-  StartBlitz (3,6) visits=9 q=Some(-138) prior=Some(0.9504279) solved=false terminal=false
-  StartBlitz (4,1) visits=9 q=Some(-138) prior=Some(0.95047283) solved=false terminal=false
-  StartBlitz (9,4) visits=9 q=Some(-138) prior=Some(0.98546374) solved=false terminal=false
-  StartBlock (9,4) visits=89 q=Some(-128) prior=Some(1.2669102) solved=false terminal=false
-  EndTurn visits=1 q=Some(138) prior=Some(0.94962364) solved=false terminal=false
-arm=nn-tiny budget=200 state=36 pick=StartMove (9,7) root_value=Some(-1000) root_visits=158
-  StartMove (9,7) visits=118 q=Some(-1000) prior=Some(0.9752397) solved=false terminal=false
-  StartMove (13,7) visits=9 q=Some(-139) prior=Some(0.9823119) solved=false terminal=false
-  StartBlitz (9,7) visits=5 q=Some(-139) prior=Some(1.0084429) solved=false terminal=false
-  StartBlitz (13,7) visits=5 q=Some(-139) prior=Some(0.9649922) solved=false terminal=false
-  StartPass (9,7) visits=8 q=Some(138) prior=Some(0.99807805) solved=false terminal=false
-  StartHandoff (9,7) visits=6 q=Some(-139) prior=Some(0.817351) solved=false terminal=false
-  StartBlock (13,7) visits=8 q=Some(-59) prior=Some(1.2964553) solved=false terminal=false
-  EndTurn visits=1 q=Some(138) prior=Some(0.9571288) solved=false terminal=false
-arm=nn-tiny budget=200 state=37 pick=StartPass (13,1) root_value=Some(-140) root_visits=144
-  StartMove (12,2) visits=27 q=Some(-139) prior=Some(0.9843937) solved=false terminal=false
-  StartMove (12,3) visits=31 q=Some(-139) prior=Some(0.9316698) solved=false terminal=false
-  StartMove (13,1) visits=7 q=Some(-139) prior=Some(0.89601564) solved=false terminal=false
-  StartBlitz (12,2) visits=7 q=Some(-139) prior=Some(0.8499088) solved=false terminal=false
-  StartBlitz (12,3) visits=18 q=Some(-139) prior=Some(0.9769276) solved=false terminal=false
-  StartBlitz (13,1) visits=9 q=Some(-139) prior=Some(0.97852707) solved=false terminal=false
-  StartPass (13,1) visits=7 q=Some(-140) prior=Some(0.9316362) solved=false terminal=false
-  StartHandoff (13,1) visits=8 q=Some(-139) prior=Some(0.79268587) solved=false terminal=false
-  StartBlock (12,2) visits=7 q=Some(-139) prior=Some(1.3081372) solved=false terminal=false
-  StartBlock (12,3) visits=13 q=Some(-139) prior=Some(1.2032294) solved=false terminal=false
-  StartBlock (13,1) visits=9 q=Some(-139) prior=Some(1.2283971) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.91847116) solved=false terminal=false
-arm=nn-tiny budget=200 state=38 pick=StartBlitz (13,1) root_value=Some(139) root_visits=119
-  StartMove (13,1) visits=38 q=Some(113) prior=Some(0.91066104) solved=false terminal=false
-  StartBlitz (13,1) visits=65 q=Some(139) prior=Some(0.97764367) solved=false terminal=false
-  StartBlock (13,1) visits=23 q=Some(54) prior=Some(1.205792) solved=false terminal=false
-  EndTurn visits=2 q=Some(-138) prior=Some(0.90590316) solved=false terminal=false
-arm=nn-tiny budget=200 state=39 pick=StartHandoff (8,4) root_value=Some(139) root_visits=144
-  StartMove (6,3) visits=8 q=Some(139) prior=Some(0.92900807) solved=false terminal=false
-  StartMove (6,4) visits=7 q=Some(139) prior=Some(0.9188916) solved=false terminal=false
-  StartMove (6,5) visits=7 q=Some(139) prior=Some(0.94179934) solved=false terminal=false
-  StartMove (8,4) visits=9 q=Some(139) prior=Some(0.9554041) solved=false terminal=false
-  StartBlitz (6,3) visits=6 q=Some(139) prior=Some(0.92509866) solved=false terminal=false
-  StartBlitz (6,4) visits=6 q=Some(139) prior=Some(0.85796106) solved=false terminal=false
-  StartBlitz (6,5) visits=6 q=Some(139) prior=Some(0.91176486) solved=false terminal=false
-  StartBlitz (8,4) visits=6 q=Some(139) prior=Some(0.94295806) solved=false terminal=false
-  StartPass (8,4) visits=6 q=Some(139) prior=Some(0.9588896) solved=false terminal=false
-  StartHandoff (8,4) visits=13 q=Some(139) prior=Some(0.7926702) solved=false terminal=false
-  StartBlock (6,3) visits=6 q=Some(139) prior=Some(1.2386334) solved=false terminal=false
-  StartBlock (6,4) visits=6 q=Some(139) prior=Some(1.2476329) solved=false terminal=false
-  StartBlock (6,5) visits=13 q=Some(128) prior=Some(1.2362204) solved=false terminal=false
-  StartBlock (8,4) visits=51 q=Some(46) prior=Some(1.2073869) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.9356821) solved=false terminal=false
-arm=nn-tiny budget=1000 state=0 pick=StartMove (9,1) root_value=Some(-1000) root_visits=770
-  StartMove (8,4) visits=96 q=Some(-139) prior=Some(1.0209237) solved=false terminal=false
-  StartMove (9,1) visits=612 q=Some(-1000) prior=Some(1.024493) solved=false terminal=false
-  StartMove (11,6) visits=36 q=Some(-139) prior=Some(1.0072335) solved=false terminal=false
-  StartBlitz (8,4) visits=5 q=Some(-139) prior=Some(1.0075876) solved=false terminal=false
-  StartBlitz (9,1) visits=5 q=Some(-139) prior=Some(1.0224419) solved=false terminal=false
-  StartBlitz (11,6) visits=5 q=Some(-139) prior=Some(1.0173295) solved=false terminal=false
-  StartPass (9,1) visits=5 q=Some(-139) prior=Some(1.0374596) solved=false terminal=false
-  StartHandoff (9,1) visits=5 q=Some(-139) prior=Some(0.8395721) solved=false terminal=false
-  EndTurn visits=1 q=Some(138) prior=Some(1.0229594) solved=false terminal=false
-arm=nn-tiny budget=1000 state=1 pick=StartMove (8,6) root_value=Some(-139) root_visits=911
-  StartMove (8,3) visits=35 q=Some(-108) prior=Some(0.9662763) solved=false terminal=false
-  StartMove (8,5) visits=40 q=Some(-108) prior=Some(0.998051) solved=false terminal=false
-  StartMove (8,6) visits=33 q=Some(-139) prior=Some(0.9981807) solved=false terminal=false
-  StartMove (8,7) visits=16 q=Some(-139) prior=Some(0.99756587) solved=false terminal=false
-  StartBlitz (8,3) visits=12 q=Some(-139) prior=Some(0.92690206) solved=false terminal=false
-  StartBlitz (8,5) visits=16 q=Some(-92) prior=Some(0.9660424) solved=false terminal=false
-  StartBlitz (8,6) visits=12 q=Some(-139) prior=Some(0.91843176) solved=false terminal=false
-  StartBlitz (8,7) visits=13 q=Some(-139) prior=Some(0.9715807) solved=false terminal=false
-  StartPass (8,3) visits=95 q=Some(-53) prior=Some(0.976078) solved=false terminal=false
-  StartPass (8,5) visits=83 q=Some(14) prior=Some(0.968524) solved=false terminal=false
-  StartPass (8,6) visits=24 q=Some(28) prior=Some(0.9952409) solved=false terminal=false
-  StartPass (8,7) visits=21 q=Some(56) prior=Some(0.9890231) solved=false terminal=false
-  StartHandoff (8,3) visits=111 q=Some(-53) prior=Some(0.8042012) solved=false terminal=false
-  StartHandoff (8,5) visits=95 q=Some(-42) prior=Some(0.81158966) solved=false terminal=false
-  StartHandoff (8,6) visits=24 q=Some(28) prior=Some(0.8095724) solved=false terminal=false
-  StartHandoff (8,7) visits=22 q=Some(56) prior=Some(0.7966177) solved=false terminal=false
-  StartBlock (8,3) visits=175 q=Some(-92) prior=Some(1.2815101) solved=false terminal=false
-  StartBlock (8,5) visits=59 q=Some(-92) prior=Some(1.2825065) solved=false terminal=false
-  StartBlock (8,6) visits=13 q=Some(-139) prior=Some(1.2952272) solved=false terminal=false
-  StartBlock (8,7) visits=13 q=Some(-139) prior=Some(1.2778398) solved=false terminal=false
-  EndTurn visits=4 q=Some(139) prior=Some(0.9690389) solved=false terminal=false
-arm=nn-tiny budget=1000 state=2 pick=StartMove (10,6) root_value=Some(-138) root_visits=767
-  StartMove (6,4) visits=81 q=Some(-138) prior=Some(0.98745877) solved=false terminal=false
-  StartMove (9,6) visits=210 q=Some(-138) prior=Some(1.0204247) solved=false terminal=false
-  StartMove (10,6) visits=445 q=Some(-138) prior=Some(1.0122195) solved=false terminal=false
-  StartBlitz (6,4) visits=6 q=Some(-138) prior=Some(0.9937274) solved=false terminal=false
-  StartBlitz (9,6) visits=6 q=Some(-138) prior=Some(0.99123836) solved=false terminal=false
-  StartBlitz (10,6) visits=18 q=Some(-138) prior=Some(1.003768) solved=false terminal=false
-  EndTurn visits=1 q=Some(0) prior=Some(0.9911635) solved=true terminal=true
-arm=nn-tiny budget=1000 state=3 pick=StartMove (3,6) root_value=Some(-139) root_visits=633
-  StartMove (3,2) visits=13 q=Some(-139) prior=Some(0.9236285) solved=false terminal=false
-  StartMove (3,3) visits=17 q=Some(-139) prior=Some(0.9231417) solved=false terminal=false
-  StartMove (3,6) visits=206 q=Some(-139) prior=Some(0.9655947) solved=false terminal=false
-  StartMove (4,5) visits=151 q=Some(-139) prior=Some(0.9284141) solved=false terminal=false
-  StartBlitz (3,2) visits=11 q=Some(-139) prior=Some(0.89240044) solved=false terminal=false
-  StartBlitz (3,3) visits=12 q=Some(-139) prior=Some(0.9340083) solved=false terminal=false
-  StartBlitz (3,6) visits=11 q=Some(-139) prior=Some(0.918105) solved=false terminal=false
-  StartBlitz (4,5) visits=12 q=Some(-139) prior=Some(0.942129) solved=false terminal=false
-  StartBlock (3,2) visits=12 q=Some(-139) prior=Some(1.2517824) solved=false terminal=false
-  StartBlock (3,3) visits=12 q=Some(-139) prior=Some(1.2044874) solved=false terminal=false
-  StartBlock (4,5) visits=181 q=Some(-46) prior=Some(1.2103455) solved=false terminal=false
-  EndTurn visits=2 q=Some(139) prior=Some(0.90596205) solved=false terminal=false
-arm=nn-tiny budget=1000 state=4 pick=StartBlitz (4,5) root_value=Some(-138) root_visits=1331
-  StartMove (4,5) visits=477 q=Some(52) prior=Some(1.0123274) solved=false terminal=false
-  StartBlitz (4,5) visits=712 q=Some(-138) prior=Some(1.0075984) solved=false terminal=false
-  EndTurn visits=154 q=Some(736) prior=Some(0.98007417) solved=false terminal=false
-arm=nn-tiny budget=1000 state=5 pick=StartPass (9,5) root_value=Some(140) root_visits=639
-  StartMove (9,5) visits=215 q=Some(139) prior=Some(0.9623446) solved=false terminal=false
-  StartMove (12,5) visits=193 q=Some(139) prior=Some(0.9666508) solved=false terminal=false
-  StartMove (13,4) visits=11 q=Some(139) prior=Some(0.98249394) solved=false terminal=false
-  StartBlitz (9,5) visits=11 q=Some(139) prior=Some(1.0098159) solved=false terminal=false
-  StartBlitz (12,5) visits=14 q=Some(139) prior=Some(0.9234301) solved=false terminal=false
-  StartBlitz (13,4) visits=11 q=Some(139) prior=Some(1.0073621) solved=false terminal=false
-  StartPass (9,5) visits=13 q=Some(140) prior=Some(1.0210491) solved=false terminal=false
-  StartPass (12,5) visits=11 q=Some(-45) prior=Some(0.97262484) solved=false terminal=false
-  StartPass (13,4) visits=13 q=Some(140) prior=Some(0.92320925) solved=false terminal=false
-  StartHandoff (9,5) visits=20 q=Some(139) prior=Some(0.8330873) solved=false terminal=false
-  StartHandoff (12,5) visits=16 q=Some(139) prior=Some(0.8022809) solved=false terminal=false
-  StartHandoff (13,4) visits=16 q=Some(139) prior=Some(0.7797007) solved=false terminal=false
-  StartBlock (9,5) visits=23 q=Some(46) prior=Some(1.2928193) solved=false terminal=false
-  StartBlock (12,5) visits=24 q=Some(139) prior=Some(1.2966801) solved=false terminal=false
-  StartBlock (13,4) visits=47 q=Some(46) prior=Some(1.2638401) solved=false terminal=false
-  EndTurn visits=3 q=Some(-139) prior=Some(0.9626111) solved=false terminal=false
-arm=nn-tiny budget=1000 state=6 pick=StartMove (12,1) root_value=Some(138) root_visits=719
-  StartMove (11,5) visits=52 q=Some(138) prior=Some(0.93658555) solved=false terminal=false
-  StartMove (12,1) visits=109 q=Some(138) prior=Some(0.95080006) solved=false terminal=false
-  StartMove (12,3) visits=49 q=Some(138) prior=Some(0.9160867) solved=false terminal=false
-  StartMove (12,4) visits=52 q=Some(138) prior=Some(0.92808485) solved=false terminal=false
-  StartBlitz (11,5) visits=7 q=Some(138) prior=Some(0.9720116) solved=false terminal=false
-  StartBlitz (12,1) visits=7 q=Some(138) prior=Some(0.9405621) solved=false terminal=false
-  StartBlitz (12,3) visits=7 q=Some(138) prior=Some(0.88362193) solved=false terminal=false
-  StartBlitz (12,4) visits=7 q=Some(138) prior=Some(0.9149157) solved=false terminal=false
-  StartBlock (11,5) visits=227 q=Some(107) prior=Some(1.2022567) solved=false terminal=false
-  StartBlock (12,3) visits=108 q=Some(107) prior=Some(1.2195413) solved=false terminal=false
-  StartBlock (12,4) visits=97 q=Some(107) prior=Some(1.2101022) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.9254315) solved=false terminal=false
-arm=nn-tiny budget=1000 state=7 pick=StartBlitz (2,5) root_value=Some(-139) root_visits=937
-  StartMove (2,5) visits=501 q=Some(-23) prior=Some(1.0197685) solved=false terminal=false
-  StartBlitz (2,5) visits=93 q=Some(-139) prior=Some(0.9775352) solved=false terminal=false
-  EndTurn visits=343 q=Some(139) prior=Some(1.0026964) solved=false terminal=false
-arm=nn-tiny budget=1000 state=8 pick=StartMove (9,5) root_value=Some(338) root_visits=723
-  StartMove (7,6) visits=86 q=Some(140) prior=Some(0.9374205) solved=false terminal=false
-  StartMove (8,4) visits=164 q=Some(139) prior=Some(0.89824474) solved=false terminal=false
-  StartMove (8,5) visits=9 q=Some(139) prior=Some(0.9855688) solved=false terminal=false
-  StartMove (9,5) visits=158 q=Some(338) prior=Some(0.960096) solved=false terminal=false
-  StartBlitz (7,6) visits=9 q=Some(139) prior=Some(0.9946425) solved=false terminal=false
-  StartBlitz (8,4) visits=9 q=Some(139) prior=Some(0.98388964) solved=false terminal=false
-  StartBlitz (8,5) visits=9 q=Some(139) prior=Some(0.8912822) solved=false terminal=false
-  StartBlitz (9,5) visits=9 q=Some(139) prior=Some(0.9247836) solved=false terminal=false
-  StartPass (9,5) visits=6 q=Some(-139) prior=Some(0.9708867) solved=false terminal=false
-  StartHandoff (9,5) visits=14 q=Some(140) prior=Some(0.76913655) solved=false terminal=false
-  StartBlock (7,6) visits=9 q=Some(139) prior=Some(1.2489902) solved=false terminal=false
-  StartBlock (8,4) visits=123 q=Some(108) prior=Some(1.253175) solved=false terminal=false
-  StartBlock (8,5) visits=116 q=Some(108) prior=Some(1.2537718) solved=false terminal=false
-  EndTurn visits=2 q=Some(-140) prior=Some(0.9281108) solved=false terminal=false
-arm=nn-tiny budget=1000 state=9 pick=StartBlock (2,4) root_value=Some(-138) root_visits=892
-  StartMove (2,4) visits=15 q=Some(-138) prior=Some(1.0168133) solved=false terminal=false
-  StartMove (2,7) visits=99 q=Some(-138) prior=Some(0.9883493) solved=false terminal=false
-  StartMove (4,4) visits=15 q=Some(-138) prior=Some(0.9972806) solved=false terminal=false
-  StartMove (6,3) visits=121 q=Some(-138) prior=Some(0.98916095) solved=false terminal=false
-  StartBlitz (2,4) visits=6 q=Some(-135) prior=Some(0.99031657) solved=false terminal=false
-  StartBlitz (2,7) visits=32 q=Some(-138) prior=Some(1.0322199) solved=false terminal=false
-  StartBlitz (4,4) visits=19 q=Some(-138) prior=Some(0.99748987) solved=false terminal=false
-  StartBlitz (6,3) visits=30 q=Some(-138) prior=Some(0.9924941) solved=false terminal=false
-  StartPass (2,4) visits=13 q=Some(-130) prior=Some(1.0044954) solved=false terminal=false
-  StartPass (2,7) visits=9 q=Some(-138) prior=Some(1.0365441) solved=false terminal=false
-  StartPass (4,4) visits=13 q=Some(-129) prior=Some(1.0241741) solved=false terminal=false
-  StartPass (6,3) visits=9 q=Some(-138) prior=Some(1.0127753) solved=false terminal=false
-  StartHandoff (2,4) visits=17 q=Some(-129) prior=Some(0.8157777) solved=false terminal=false
-  StartHandoff (2,7) visits=18 q=Some(-138) prior=Some(0.84593624) solved=false terminal=false
-  StartHandoff (4,4) visits=27 q=Some(-129) prior=Some(0.8334838) solved=false terminal=false
-  StartHandoff (6,3) visits=17 q=Some(-138) prior=Some(0.8330054) solved=false terminal=false
-  StartBlock (2,4) visits=214 q=Some(-138) prior=Some(1.2904267) solved=false terminal=false
-  StartBlock (4,4) visits=210 q=Some(-138) prior=Some(1.302065) solved=false terminal=false
-  EndTurn visits=9 q=Some(-138) prior=Some(0.99719316) solved=false terminal=false
-arm=nn-tiny budget=1000 state=10 pick=StartMove (6,6) root_value=Some(-139) root_visits=837
-  StartMove (4,2) visits=11 q=Some(-138) prior=Some(0.99368596) solved=false terminal=false
-  StartMove (6,2) visits=28 q=Some(-138) prior=Some(0.96900815) solved=false terminal=false
-  StartMove (6,6) visits=119 q=Some(-139) prior=Some(0.96137637) solved=false terminal=false
-  StartMove (7,3) visits=105 q=Some(-139) prior=Some(0.95803493) solved=false terminal=false
-  StartBlitz (4,2) visits=6 q=Some(-138) prior=Some(0.94862735) solved=false terminal=false
-  StartBlitz (6,2) visits=6 q=Some(-138) prior=Some(0.996882) solved=false terminal=false
-  StartBlitz (6,6) visits=6 q=Some(-138) prior=Some(0.9712763) solved=false terminal=false
-  StartBlitz (7,3) visits=6 q=Some(-138) prior=Some(0.9613663) solved=false terminal=false
-  StartPass (4,2) visits=6 q=Some(-139) prior=Some(0.998922) solved=false terminal=false
-  StartHandoff (4,2) visits=14 q=Some(-138) prior=Some(0.78552455) solved=false terminal=false
-  StartBlock (4,2) visits=117 q=Some(-113) prior=Some(1.2483912) solved=false terminal=false
-  StartBlock (6,2) visits=412 q=Some(-114) prior=Some(1.2572771) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.9496285) solved=false terminal=false
-arm=nn-tiny budget=1000 state=11 pick=StartMove (4,3) root_value=Some(1000) root_visits=685
-  StartMove (1,1) visits=147 q=Some(139) prior=Some(0.96007013) solved=false terminal=false
-  StartMove (1,4) visits=161 q=Some(139) prior=Some(0.9531404) solved=false terminal=false
-  StartMove (1,6) visits=90 q=Some(139) prior=Some(0.9338716) solved=false terminal=false
-  StartMove (4,3) visits=140 q=Some(1000) prior=Some(0.96435076) solved=false terminal=false
-  StartBlitz (1,1) visits=47 q=Some(139) prior=Some(1.03445) solved=false terminal=false
-  StartBlitz (1,4) visits=14 q=Some(139) prior=Some(0.9932015) solved=false terminal=false
-  StartBlitz (1,6) visits=12 q=Some(139) prior=Some(0.96449417) solved=false terminal=false
-  StartBlitz (4,3) visits=11 q=Some(139) prior=Some(0.95276) solved=false terminal=false
-  StartPass (4,3) visits=9 q=Some(-139) prior=Some(0.95320594) solved=false terminal=false
-  StartHandoff (4,3) visits=11 q=Some(139) prior=Some(0.79208827) solved=false terminal=false
-  StartBlock (1,1) visits=16 q=Some(21) prior=Some(1.2759355) solved=false terminal=false
-  StartBlock (1,4) visits=24 q=Some(54) prior=Some(1.2604171) solved=false terminal=false
-  EndTurn visits=3 q=Some(-140) prior=Some(0.96201485) solved=false terminal=false
-arm=nn-tiny budget=1000 state=12 pick=StartMove (4,1) root_value=Some(-139) root_visits=665
-  StartMove (2,1) visits=82 q=Some(-139) prior=Some(0.9443489) solved=false terminal=false
-  StartMove (2,3) visits=94 q=Some(-139) prior=Some(0.9505395) solved=false terminal=false
-  StartMove (3,1) visits=126 q=Some(-139) prior=Some(0.97623307) solved=false terminal=false
-  StartMove (4,1) visits=248 q=Some(-139) prior=Some(0.94930667) solved=false terminal=false
-  StartBlitz (2,1) visits=9 q=Some(-138) prior=Some(0.9167497) solved=false terminal=false
-  StartBlitz (2,3) visits=9 q=Some(-138) prior=Some(0.9388898) solved=false terminal=false
-  StartBlitz (3,1) visits=9 q=Some(-138) prior=Some(0.9667239) solved=false terminal=false
-  StartBlitz (4,1) visits=9 q=Some(-138) prior=Some(0.952117) solved=false terminal=false
-  StartBlock (3,1) visits=39 q=Some(-114) prior=Some(1.24172) solved=false terminal=false
-  StartBlock (4,1) visits=39 q=Some(-114) prior=Some(1.2280217) solved=false terminal=false
-  EndTurn visits=3 q=Some(140) prior=Some(0.935349) solved=false terminal=false
-arm=nn-tiny budget=1000 state=13 pick=StartMove (11,3) root_value=Some(138) root_visits=629
-  StartMove (11,3) visits=300 q=Some(138) prior=Some(1.0024266) solved=false terminal=false
-  StartMove (13,4) visits=144 q=Some(138) prior=Some(1.0023255) solved=false terminal=false
-  StartBlitz (11,3) visits=15 q=Some(138) prior=Some(1.0285175) solved=false terminal=false
-  StartBlitz (13,4) visits=15 q=Some(138) prior=Some(0.96461034) solved=false terminal=false
-  StartPass (11,3) visits=15 q=Some(0) prior=Some(0.93003213) solved=false terminal=false
-  StartPass (13,4) visits=21 q=Some(138) prior=Some(0.9962189) solved=false terminal=false
-  StartHandoff (11,3) visits=19 q=Some(138) prior=Some(0.7916559) solved=false terminal=false
-  StartHandoff (13,4) visits=21 q=Some(138) prior=Some(0.7943266) solved=false terminal=false
-  StartBlock (11,3) visits=15 q=Some(138) prior=Some(1.2505252) solved=false terminal=false
-  StartBlock (13,4) visits=62 q=Some(46) prior=Some(1.2702085) solved=false terminal=false
-  EndTurn visits=6 q=Some(-138) prior=Some(0.96915287) solved=false terminal=false
-arm=nn-tiny budget=1000 state=14 pick=StartMove (6,4) root_value=Some(1000) root_visits=984
-  StartMove (3,2) visits=12 q=Some(139) prior=Some(0.9818902) solved=false terminal=false
-  StartMove (3,3) visits=6 q=Some(139) prior=Some(0.9914484) solved=false terminal=false
-  StartMove (4,1) visits=104 q=Some(139) prior=Some(0.9901818) solved=false terminal=false
-  StartMove (6,4) visits=516 q=Some(1000) prior=Some(0.9616613) solved=false terminal=false
-  StartBlitz (3,2) visits=6 q=Some(139) prior=Some(0.9503292) solved=false terminal=false
-  StartBlitz (3,3) visits=6 q=Some(139) prior=Some(0.8650619) solved=false terminal=false
-  StartBlitz (4,1) visits=7 q=Some(139) prior=Some(0.981751) solved=false terminal=false
-  StartBlitz (6,4) visits=7 q=Some(139) prior=Some(0.9667039) solved=false terminal=false
-  StartPass (6,4) visits=6 q=Some(139) prior=Some(0.98923683) solved=false terminal=false
-  StartHandoff (6,4) visits=10 q=Some(139) prior=Some(0.8025336) solved=false terminal=false
-  StartBlock (3,2) visits=195 q=Some(131) prior=Some(1.2593462) solved=false terminal=false
-  StartBlock (3,3) visits=108 q=Some(108) prior=Some(1.2867923) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.97306377) solved=false terminal=false
-arm=nn-tiny budget=1000 state=15 pick=StartMove (1,6) root_value=Some(139) root_visits=727
-  StartMove (1,6) visits=187 q=Some(139) prior=Some(0.9278312) solved=false terminal=false
-  StartMove (2,6) visits=18 q=Some(139) prior=Some(0.96274316) solved=false terminal=false
-  StartMove (3,7) visits=18 q=Some(139) prior=Some(0.9645934) solved=false terminal=false
-  StartBlitz (1,6) visits=24 q=Some(131) prior=Some(0.98585105) solved=false terminal=false
-  StartBlitz (2,6) visits=31 q=Some(139) prior=Some(0.9622767) solved=false terminal=false
-  StartBlitz (3,7) visits=17 q=Some(139) prior=Some(0.94457763) solved=false terminal=false
-  StartPass (3,7) visits=17 q=Some(139) prior=Some(0.939476) solved=false terminal=false
-  StartHandoff (3,7) visits=144 q=Some(-53) prior=Some(0.7459545) solved=false terminal=false
-  StartBlock (1,6) visits=177 q=Some(92) prior=Some(1.255075) solved=false terminal=false
-  StartBlock (2,6) visits=78 q=Some(54) prior=Some(1.1853509) solved=false terminal=false
-  StartBlock (3,7) visits=18 q=Some(139) prior=Some(1.2186544) solved=false terminal=false
-  EndTurn visits=9 q=Some(-139) prior=Some(0.9076178) solved=false terminal=false
-arm=nn-tiny budget=1000 state=16 pick=StartMove (9,2) root_value=Some(-139) root_visits=647
-  StartMove (4,2) visits=181 q=Some(-138) prior=Some(0.9282058) solved=false terminal=false
-  StartMove (4,3) visits=24 q=Some(-108) prior=Some(0.9070865) solved=false terminal=false
-  StartMove (9,2) visits=252 q=Some(-139) prior=Some(0.9214577) solved=false terminal=false
-  StartBlitz (4,2) visits=14 q=Some(-138) prior=Some(0.86647856) solved=false terminal=false
-  StartBlitz (4,3) visits=14 q=Some(-138) prior=Some(0.90449995) solved=false terminal=false
-  StartBlitz (9,2) visits=14 q=Some(-132) prior=Some(0.9053236) solved=false terminal=false
-  StartBlock (4,2) visits=40 q=Some(-108) prior=Some(1.2364147) solved=false terminal=false
-  StartBlock (4,3) visits=57 q=Some(-108) prior=Some(1.1901443) solved=false terminal=false
-  StartBlock (9,2) visits=40 q=Some(-131) prior=Some(1.2078722) solved=false terminal=false
-  EndTurn visits=17 q=Some(138) prior=Some(0.9325172) solved=false terminal=false
-arm=nn-tiny budget=1000 state=17 pick=StartMove (3,2) root_value=Some(-139) root_visits=648
-  StartMove (1,2) visits=83 q=Some(-139) prior=Some(0.9785306) solved=false terminal=false
-  StartMove (2,2) visits=158 q=Some(-139) prior=Some(1.0160801) solved=false terminal=false
-  StartMove (3,2) visits=162 q=Some(-139) prior=Some(0.9340592) solved=false terminal=false
-  StartMove (6,2) visits=19 q=Some(-138) prior=Some(0.9481667) solved=false terminal=false
-  StartBlitz (1,2) visits=8 q=Some(-139) prior=Some(0.9700687) solved=false terminal=false
-  StartBlitz (2,2) visits=7 q=Some(-139) prior=Some(0.92943877) solved=false terminal=false
-  StartBlitz (3,2) visits=7 q=Some(-139) prior=Some(0.8718531) solved=false terminal=false
-  StartBlitz (6,2) visits=8 q=Some(-139) prior=Some(0.9924099) solved=false terminal=false
-  StartPass (1,2) visits=9 q=Some(-139) prior=Some(0.9804412) solved=false terminal=false
-  StartPass (2,2) visits=9 q=Some(-139) prior=Some(1.0176083) solved=false terminal=false
-  StartPass (3,2) visits=18 q=Some(0) prior=Some(1.0708807) solved=false terminal=false
-  StartPass (6,2) visits=16 q=Some(0) prior=Some(0.99761695) solved=false terminal=false
-  StartHandoff (1,2) visits=9 q=Some(-138) prior=Some(0.8008772) solved=false terminal=false
-  StartHandoff (2,2) visits=9 q=Some(-139) prior=Some(0.777536) solved=false terminal=false
-  StartHandoff (3,2) visits=18 q=Some(0) prior=Some(0.8413175) solved=false terminal=false
-  StartHandoff (6,2) visits=16 q=Some(0) prior=Some(0.8213214) solved=false terminal=false
-  StartBlock (1,2) visits=18 q=Some(-107) prior=Some(1.2488734) solved=false terminal=false
-  StartBlock (2,2) visits=13 q=Some(-107) prior=Some(1.2610358) solved=false terminal=false
-  StartBlock (3,2) visits=29 q=Some(-107) prior=Some(1.3110654) solved=false terminal=false
-  StartBlock (6,2) visits=31 q=Some(-46) prior=Some(1.2732874) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.9575308) solved=false terminal=false
-arm=nn-tiny budget=1000 state=18 pick=StartMove (6,4) root_value=Some(139) root_visits=699
-  StartMove (6,1) visits=187 q=Some(139) prior=Some(0.9551492) solved=false terminal=false
-  StartMove (6,4) visits=212 q=Some(139) prior=Some(0.9551523) solved=false terminal=false
-  StartMove (7,6) visits=114 q=Some(139) prior=Some(0.95139956) solved=false terminal=false
-  StartMove (10,1) visits=83 q=Some(139) prior=Some(0.96038145) solved=false terminal=false
-  StartBlitz (6,1) visits=10 q=Some(138) prior=Some(0.98946553) solved=false terminal=false
-  StartBlitz (6,4) visits=10 q=Some(138) prior=Some(1.0111326) solved=false terminal=false
-  StartBlitz (7,6) visits=9 q=Some(138) prior=Some(0.9498471) solved=false terminal=false
-  StartBlitz (10,1) visits=9 q=Some(138) prior=Some(0.9727508) solved=false terminal=false
-  StartPass (10,1) visits=9 q=Some(139) prior=Some(0.9852966) solved=false terminal=false
-  StartHandoff (10,1) visits=13 q=Some(139) prior=Some(0.7881696) solved=false terminal=false
-  StartBlock (6,1) visits=18 q=Some(46) prior=Some(1.2787743) solved=false terminal=false
-  StartBlock (6,4) visits=24 q=Some(92) prior=Some(1.2347573) solved=false terminal=false
-  EndTurn visits=2 q=Some(-139) prior=Some(0.96772295) solved=false terminal=false
-arm=nn-tiny budget=1000 state=19 pick=StartMove (6,6) root_value=Some(713) root_visits=606
-  StartMove (3,5) visits=243 q=Some(139) prior=Some(0.9165035) solved=false terminal=false
-  StartMove (3,6) visits=7 q=Some(139) prior=Some(0.914034) solved=false terminal=false
-  StartMove (4,7) visits=16 q=Some(139) prior=Some(0.9747149) solved=false terminal=false
-  StartMove (6,6) visits=200 q=Some(713) prior=Some(0.9343103) solved=false terminal=false
-  StartBlitz (3,5) visits=17 q=Some(139) prior=Some(0.90192544) solved=false terminal=false
-  StartBlitz (3,6) visits=13 q=Some(139) prior=Some(0.912234) solved=false terminal=false
-  StartBlitz (4,7) visits=7 q=Some(139) prior=Some(0.98813945) solved=false terminal=false
-  StartBlitz (6,6) visits=7 q=Some(139) prior=Some(0.93386346) solved=false terminal=false
-  StartPass (6,6) visits=7 q=Some(140) prior=Some(0.9247386) solved=false terminal=false
-  StartHandoff (6,6) visits=7 q=Some(139) prior=Some(0.7899335) solved=false terminal=false
-  StartBlock (3,5) visits=14 q=Some(54) prior=Some(1.254493) solved=false terminal=false
-  StartBlock (3,6) visits=13 q=Some(139) prior=Some(1.2232789) solved=false terminal=false
-  StartBlock (4,7) visits=8 q=Some(46) prior=Some(1.1977737) solved=false terminal=false
-  StartBlock (6,6) visits=52 q=Some(46) prior=Some(1.209658) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.92440087) solved=false terminal=false
-arm=nn-tiny budget=1000 state=20 pick=StartMove (6,7) root_value=Some(139) root_visits=592
-  StartMove (6,5) visits=129 q=Some(139) prior=Some(0.96187925) solved=false terminal=false
-  StartMove (6,6) visits=102 q=Some(139) prior=Some(0.93478185) solved=false terminal=false
-  StartMove (6,7) visits=250 q=Some(139) prior=Some(0.9941436) solved=false terminal=false
-  StartMove (7,7) visits=13 q=Some(139) prior=Some(0.9868262) solved=false terminal=false
-  StartBlitz (6,5) visits=9 q=Some(46) prior=Some(0.89345294) solved=false terminal=false
-  StartBlitz (6,6) visits=12 q=Some(139) prior=Some(0.87982666) solved=false terminal=false
-  StartBlitz (6,7) visits=11 q=Some(139) prior=Some(0.936246) solved=false terminal=false
-  StartBlitz (7,7) visits=11 q=Some(139) prior=Some(0.97482556) solved=false terminal=false
-  StartBlock (6,5) visits=9 q=Some(46) prior=Some(1.2533475) solved=false terminal=false
-  StartBlock (6,6) visits=44 q=Some(46) prior=Some(1.2264134) solved=false terminal=false
-  EndTurn visits=2 q=Some(-139) prior=Some(0.9582571) solved=false terminal=false
-arm=nn-tiny budget=1000 state=21 pick=StartMove (10,5) root_value=Some(138) root_visits=815
-  StartMove (10,5) visits=188 q=Some(138) prior=Some(0.9447511) solved=false terminal=false
-  StartBlitz (10,5) visits=17 q=Some(138) prior=Some(0.91644853) solved=false terminal=false
-  StartBlock (10,5) visits=602 q=Some(-138) prior=Some(1.2193277) solved=false terminal=false
-  EndTurn visits=8 q=Some(-138) prior=Some(0.9194728) solved=false terminal=false
-arm=nn-tiny budget=1000 state=22 pick=StartMove (9,1) root_value=Some(139) root_visits=650
-  StartMove (2,6) visits=9 q=Some(139) prior=Some(0.99270874) solved=false terminal=false
-  StartMove (5,7) visits=196 q=Some(139) prior=Some(1.007009) solved=false terminal=false
-  StartMove (8,7) visits=9 q=Some(139) prior=Some(0.9700891) solved=false terminal=false
-  StartMove (9,1) visits=208 q=Some(139) prior=Some(1.0081962) solved=false terminal=false
-  StartBlitz (2,6) visits=9 q=Some(139) prior=Some(0.99813545) solved=false terminal=false
-  StartBlitz (5,7) visits=9 q=Some(139) prior=Some(1.041691) solved=false terminal=false
-  StartBlitz (8,7) visits=9 q=Some(139) prior=Some(1.0299842) solved=false terminal=false
-  StartBlitz (9,1) visits=9 q=Some(139) prior=Some(1.019765) solved=false terminal=false
-  StartPass (2,6) visits=17 q=Some(108) prior=Some(1.0314143) solved=false terminal=false
-  StartPass (5,7) visits=10 q=Some(0) prior=Some(1.0575346) solved=false terminal=false
-  StartPass (8,7) visits=53 q=Some(108) prior=Some(1.0313843) solved=false terminal=false
-  StartPass (9,1) visits=10 q=Some(139) prior=Some(1.032539) solved=false terminal=false
-  StartHandoff (2,6) visits=17 q=Some(108) prior=Some(0.8595343) solved=false terminal=false
-  StartHandoff (5,7) visits=10 q=Some(0) prior=Some(0.85578644) solved=false terminal=false
-  StartHandoff (8,7) visits=53 q=Some(108) prior=Some(0.87431824) solved=false terminal=false
-  StartHandoff (9,1) visits=10 q=Some(139) prior=Some(0.8369324) solved=false terminal=false
-  StartBlock (5,7) visits=10 q=Some(139) prior=Some(1.3461255) solved=false terminal=false
-  EndTurn visits=2 q=Some(-139) prior=Some(1.0068514) solved=false terminal=false
-arm=nn-tiny budget=1000 state=23 pick=StartMove (6,3) root_value=Some(-139) root_visits=710
-  StartMove (3,4) visits=8 q=Some(-139) prior=Some(0.9931596) solved=false terminal=false
-  StartMove (4,3) visits=58 q=Some(-139) prior=Some(0.9467706) solved=false terminal=false
-  StartMove (4,5) visits=8 q=Some(-139) prior=Some(0.9435153) solved=false terminal=false
-  StartMove (6,3) visits=215 q=Some(-139) prior=Some(0.93278384) solved=false terminal=false
-  StartBlitz (3,4) visits=17 q=Some(-139) prior=Some(0.9209893) solved=false terminal=false
-  StartBlitz (4,3) visits=8 q=Some(-139) prior=Some(0.94590086) solved=false terminal=false
-  StartBlitz (4,5) visits=8 q=Some(-139) prior=Some(0.886179) solved=false terminal=false
-  StartBlitz (6,3) visits=8 q=Some(-138) prior=Some(0.91660964) solved=false terminal=false
-  StartBlock (4,3) visits=211 q=Some(-123) prior=Some(1.2049003) solved=false terminal=false
-  StartBlock (4,5) visits=87 q=Some(-123) prior=Some(1.2034088) solved=false terminal=false
-  StartBlock (6,3) visits=82 q=Some(-133) prior=Some(1.200236) solved=false terminal=false
-  EndTurn visits=1 q=Some(0) prior=Some(0.9055455) solved=true terminal=true
-arm=nn-tiny budget=1000 state=24 pick=StartMove (7,4) root_value=Some(138) root_visits=735
-  StartMove (3,4) visits=130 q=Some(138) prior=Some(0.9635534) solved=false terminal=false
-  StartMove (7,4) visits=146 q=Some(138) prior=Some(0.9632152) solved=false terminal=false
-  StartMove (7,6) visits=97 q=Some(138) prior=Some(0.9885221) solved=false terminal=false
-  StartMove (8,6) visits=132 q=Some(138) prior=Some(0.99074036) solved=false terminal=false
-  StartBlitz (3,4) visits=13 q=Some(138) prior=Some(1.0340027) solved=false terminal=false
-  StartBlitz (7,4) visits=13 q=Some(138) prior=Some(0.9608435) solved=false terminal=false
-  StartBlitz (7,6) visits=13 q=Some(138) prior=Some(0.9210719) solved=false terminal=false
-  StartBlitz (8,6) visits=13 q=Some(138) prior=Some(0.9583953) solved=false terminal=false
-  StartBlock (3,4) visits=174 q=Some(46) prior=Some(1.2528632) solved=false terminal=false
-  EndTurn visits=5 q=Some(-139) prior=Some(0.96679276) solved=false terminal=false
-arm=nn-tiny budget=1000 state=25 pick=StartBlitz (12,1) root_value=Some(139) root_visits=749
-  StartMove (12,1) visits=119 q=Some(131) prior=Some(0.90729785) solved=false terminal=false
-  StartBlitz (12,1) visits=21 q=Some(139) prior=Some(0.9690674) solved=false terminal=false
-  StartBlock (12,1) visits=602 q=Some(-46) prior=Some(1.206828) solved=false terminal=false
-  EndTurn visits=9 q=Some(-139) prior=Some(0.91680694) solved=false terminal=false
-arm=nn-tiny budget=1000 state=26 pick=StartMove (10,6) root_value=Some(-569) root_visits=666
-  StartMove (10,6) visits=217 q=Some(-569) prior=Some(0.9274691) solved=false terminal=false
-  StartMove (13,3) visits=187 q=Some(-139) prior=Some(0.908322) solved=false terminal=false
-  StartMove (13,6) visits=48 q=Some(-139) prior=Some(0.9474585) solved=false terminal=false
-  StartBlitz (10,6) visits=14 q=Some(-138) prior=Some(0.95468205) solved=false terminal=false
-  StartBlitz (13,3) visits=14 q=Some(-138) prior=Some(0.98618627) solved=false terminal=false
-  StartBlitz (13,6) visits=14 q=Some(-138) prior=Some(0.97169745) solved=false terminal=false
-  StartPass (10,6) visits=14 q=Some(-139) prior=Some(0.9317961) solved=false terminal=false
-  StartHandoff (10,6) visits=18 q=Some(-139) prior=Some(0.77753043) solved=false terminal=false
-  StartBlock (10,6) visits=79 q=Some(-92) prior=Some(1.224419) solved=false terminal=false
-  StartBlock (13,3) visits=35 q=Some(-92) prior=Some(1.2193695) solved=false terminal=false
-  StartBlock (13,6) visits=25 q=Some(-92) prior=Some(1.2131006) solved=false terminal=false
-  EndTurn visits=1 q=Some(0) prior=Some(0.9379687) solved=true terminal=true
-arm=nn-tiny budget=1000 state=27 pick=StartMove (7,6) root_value=Some(138) root_visits=759
-  StartMove (7,6) visits=213 q=Some(138) prior=Some(0.95250946) solved=false terminal=false
-  StartMove (11,7) visits=180 q=Some(138) prior=Some(0.9448324) solved=false terminal=false
-  StartBlitz (7,6) visits=27 q=Some(117) prior=Some(0.9852125) solved=false terminal=false
-  StartBlitz (11,7) visits=21 q=Some(138) prior=Some(0.9439652) solved=false terminal=false
-  StartPass (11,7) visits=23 q=Some(-46) prior=Some(0.98250985) solved=false terminal=false
-  StartHandoff (11,7) visits=35 q=Some(55) prior=Some(0.7870675) solved=false terminal=false
-  StartBlock (7,6) visits=29 q=Some(45) prior=Some(1.2305945) solved=false terminal=false
-  StartBlock (11,7) visits=224 q=Some(46) prior=Some(1.2410264) solved=false terminal=false
-  EndTurn visits=12 q=Some(-139) prior=Some(0.932282) solved=false terminal=false
-arm=nn-tiny budget=1000 state=28 pick=StartMove (4,5) root_value=Some(-139) root_visits=656
-  StartMove (2,4) visits=9 q=Some(-139) prior=Some(0.9571987) solved=false terminal=false
-  StartMove (3,3) visits=155 q=Some(-139) prior=Some(0.9010986) solved=false terminal=false
-  StartMove (4,4) visits=160 q=Some(-139) prior=Some(0.89853585) solved=false terminal=false
-  StartMove (4,5) visits=187 q=Some(-139) prior=Some(0.86019343) solved=false terminal=false
-  StartBlitz (2,4) visits=9 q=Some(-139) prior=Some(0.9515519) solved=false terminal=false
-  StartBlitz (3,3) visits=9 q=Some(-139) prior=Some(0.94426703) solved=false terminal=false
-  StartBlitz (4,4) visits=9 q=Some(-139) prior=Some(0.91396856) solved=false terminal=false
-  StartBlitz (4,5) visits=12 q=Some(-139) prior=Some(0.85338676) solved=false terminal=false
-  StartBlock (2,4) visits=12 q=Some(-139) prior=Some(1.2143927) solved=false terminal=false
-  StartBlock (3,3) visits=70 q=Some(-46) prior=Some(1.1785458) solved=false terminal=false
-  StartBlock (4,4) visits=9 q=Some(-139) prior=Some(1.2284065) solved=false terminal=false
-  StartBlock (4,5) visits=12 q=Some(-139) prior=Some(1.2029622) solved=false terminal=false
-  EndTurn visits=3 q=Some(139) prior=Some(0.8954924) solved=false terminal=false
-arm=nn-tiny budget=1000 state=29 pick=StartMove (12,7) root_value=Some(139) root_visits=717
-  StartMove (12,7) visits=290 q=Some(139) prior=Some(1.027975) solved=false terminal=false
-  StartMove (13,1) visits=97 q=Some(139) prior=Some(0.96138954) solved=false terminal=false
-  StartMove (13,2) visits=91 q=Some(139) prior=Some(0.95259094) solved=false terminal=false
-  StartMove (13,7) visits=94 q=Some(139) prior=Some(0.9819642) solved=false terminal=false
-  StartBlitz (12,7) visits=11 q=Some(139) prior=Some(0.96358204) solved=false terminal=false
-  StartBlitz (13,1) visits=11 q=Some(139) prior=Some(0.91972595) solved=false terminal=false
-  StartBlitz (13,2) visits=11 q=Some(139) prior=Some(0.9585974) solved=false terminal=false
-  StartBlitz (13,7) visits=11 q=Some(139) prior=Some(0.9720982) solved=false terminal=false
-  StartBlock (12,7) visits=118 q=Some(46) prior=Some(1.3013327) solved=false terminal=false
-  EndTurn visits=3 q=Some(-139) prior=Some(0.96074367) solved=false terminal=false
-arm=nn-tiny budget=1000 state=30 pick=StartMove (1,3) root_value=Some(139) root_visits=616
-  StartMove (1,3) visits=232 q=Some(139) prior=Some(0.96288264) solved=false terminal=false
-  StartMove (4,1) visits=213 q=Some(139) prior=Some(0.98203295) solved=false terminal=false
-  StartBlitz (1,3) visits=11 q=Some(139) prior=Some(1.0072033) solved=false terminal=false
-  StartBlitz (4,1) visits=11 q=Some(139) prior=Some(0.9503947) solved=false terminal=false
-  StartPass (1,3) visits=14 q=Some(139) prior=Some(1.0026127) solved=false terminal=false
-  StartPass (4,1) visits=13 q=Some(139) prior=Some(1.0008693) solved=false terminal=false
-  StartHandoff (1,3) visits=14 q=Some(139) prior=Some(0.80359304) solved=false terminal=false
-  StartHandoff (4,1) visits=13 q=Some(139) prior=Some(0.7771908) solved=false terminal=false
-  StartBlock (1,3) visits=61 q=Some(46) prior=Some(1.2799296) solved=false terminal=false
-  StartBlock (4,1) visits=34 q=Some(46) prior=Some(1.279795) solved=false terminal=false
-  EndTurn visits=3 q=Some(-138) prior=Some(0.95349586) solved=false terminal=false
-arm=nn-tiny budget=1000 state=31 pick=StartMove (5,5) root_value=Some(713) root_visits=715
-  StartMove (1,7) visits=101 q=Some(139) prior=Some(0.93144476) solved=false terminal=false
-  StartMove (2,3) visits=11 q=Some(139) prior=Some(0.95110124) solved=false terminal=false
-  StartMove (5,5) visits=223 q=Some(713) prior=Some(0.9485718) solved=false terminal=false
-  StartBlitz (1,7) visits=25 q=Some(139) prior=Some(0.9772729) solved=false terminal=false
-  StartBlitz (2,3) visits=21 q=Some(139) prior=Some(1.0056767) solved=false terminal=false
-  StartBlitz (5,5) visits=16 q=Some(139) prior=Some(0.9938845) solved=false terminal=false
-  StartPass (5,5) visits=11 q=Some(140) prior=Some(0.9589736) solved=false terminal=false
-  StartHandoff (5,5) visits=27 q=Some(425) prior=Some(0.79369515) solved=false terminal=false
-  StartBlock (2,3) visits=23 q=Some(139) prior=Some(1.2496649) solved=false terminal=false
-  StartBlock (5,5) visits=255 q=Some(46) prior=Some(1.2491179) solved=false terminal=false
-  EndTurn visits=3 q=Some(-139) prior=Some(0.9405966) solved=false terminal=false
-arm=nn-tiny budget=1000 state=32 pick=StartMove (13,5) root_value=Some(-713) root_visits=668
-  StartMove (12,5) visits=355 q=Some(-139) prior=Some(0.9784539) solved=false terminal=false
-  StartMove (13,5) visits=160 q=Some(-713) prior=Some(0.97148633) solved=false terminal=false
-  StartBlitz (12,5) visits=7 q=Some(-139) prior=Some(0.9699702) solved=false terminal=false
-  StartBlitz (13,5) visits=93 q=Some(-620) prior=Some(0.9378092) solved=false terminal=false
-  StartPass (13,5) visits=8 q=Some(46) prior=Some(0.93821186) solved=false terminal=false
-  StartHandoff (13,5) visits=8 q=Some(-139) prior=Some(0.7682138) solved=false terminal=false
-  StartBlock (12,5) visits=20 q=Some(-46) prior=Some(1.2382429) solved=false terminal=false
-  StartBlock (13,5) visits=24 q=Some(-139) prior=Some(1.2619324) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.9356788) solved=false terminal=false
-arm=nn-tiny budget=1000 state=33 pick=StartMove (2,3) root_value=Some(-140) root_visits=643
-  StartMove (2,3) visits=166 q=Some(-140) prior=Some(0.95476544) solved=false terminal=false
-  StartMove (6,2) visits=96 q=Some(-139) prior=Some(0.939772) solved=false terminal=false
-  StartMove (6,3) visits=72 q=Some(-139) prior=Some(0.9523481) solved=false terminal=false
-  StartMove (6,5) visits=89 q=Some(-139) prior=Some(0.9536204) solved=false terminal=false
-  StartBlitz (2,3) visits=7 q=Some(-139) prior=Some(0.9362012) solved=false terminal=false
-  StartBlitz (6,2) visits=7 q=Some(-139) prior=Some(0.9633646) solved=false terminal=false
-  StartBlitz (6,3) visits=7 q=Some(-139) prior=Some(0.9409661) solved=false terminal=false
-  StartBlitz (6,5) visits=7 q=Some(-139) prior=Some(0.90770155) solved=false terminal=false
-  StartPass (2,3) visits=7 q=Some(-140) prior=Some(0.96656895) solved=false terminal=false
-  StartHandoff (2,3) visits=12 q=Some(-140) prior=Some(0.7874294) solved=false terminal=false
-  StartBlock (6,2) visits=13 q=Some(-46) prior=Some(1.2518502) solved=false terminal=false
-  StartBlock (6,3) visits=151 q=Some(-108) prior=Some(1.263675) solved=false terminal=false
-  StartBlock (6,5) visits=8 q=Some(-139) prior=Some(1.2360442) solved=false terminal=false
-  EndTurn visits=1 q=Some(139) prior=Some(0.94569296) solved=false terminal=false
-arm=nn-tiny budget=1000 state=34 pick=StartBlitz (2,3) root_value=Some(-138) root_visits=745
-  StartMove (2,3) visits=695 q=Some(-23) prior=Some(1.0127071) solved=false terminal=false
-  StartBlitz (2,3) visits=18 q=Some(-138) prior=Some(1.0039182) solved=false terminal=false
-  EndTurn visits=32 q=Some(138) prior=Some(0.9833746) solved=false terminal=false
-arm=nn-tiny budget=1000 state=35 pick=StartMove (3,6) root_value=Some(-139) root_visits=876
-  StartMove (3,6) visits=10 q=Some(-139) prior=Some(0.9623133) solved=false terminal=false
-  StartMove (4,1) visits=10 q=Some(-138) prior=Some(0.963815) solved=false terminal=false
-  StartMove (9,4) visits=9 q=Some(-138) prior=Some(0.97097296) solved=false terminal=false
-  StartBlitz (3,6) visits=9 q=Some(-138) prior=Some(0.9504279) solved=false terminal=false
-  StartBlitz (4,1) visits=9 q=Some(-138) prior=Some(0.95047283) solved=false terminal=false
-  StartBlitz (9,4) visits=9 q=Some(-138) prior=Some(0.98546374) solved=false terminal=false
-  StartBlock (9,4) visits=818 q=Some(-128) prior=Some(1.2669102) solved=false terminal=false
-  EndTurn visits=2 q=Some(138) prior=Some(0.94962364) solved=false terminal=false
-arm=nn-tiny budget=1000 state=36 pick=StartMove (9,7) root_value=Some(-1000) root_visits=699
-  StartMove (9,7) visits=158 q=Some(-1000) prior=Some(0.9752397) solved=false terminal=false
-  StartMove (13,7) visits=236 q=Some(-139) prior=Some(0.9823119) solved=false terminal=false
-  StartBlitz (9,7) visits=15 q=Some(-139) prior=Some(1.0084429) solved=false terminal=false
-  StartBlitz (13,7) visits=15 q=Some(-139) prior=Some(0.9649922) solved=false terminal=false
-  StartPass (9,7) visits=13 q=Some(138) prior=Some(0.99807805) solved=false terminal=false
-  StartHandoff (9,7) visits=16 q=Some(-139) prior=Some(0.817351) solved=false terminal=false
-  StartBlock (13,7) visits=241 q=Some(-633) prior=Some(1.2964553) solved=false terminal=false
-  EndTurn visits=6 q=Some(138) prior=Some(0.9571288) solved=false terminal=false
-arm=nn-tiny budget=1000 state=37 pick=StartPass (13,1) root_value=Some(-140) root_visits=658
-  StartMove (12,2) visits=206 q=Some(-139) prior=Some(0.9843937) solved=false terminal=false
-  StartMove (12,3) visits=346 q=Some(-139) prior=Some(0.9316698) solved=false terminal=false
-  StartMove (13,1) visits=9 q=Some(-139) prior=Some(0.89601564) solved=false terminal=false
-  StartBlitz (12,2) visits=9 q=Some(-46) prior=Some(0.8499088) solved=false terminal=false
-  StartBlitz (12,3) visits=20 q=Some(-139) prior=Some(0.9769276) solved=false terminal=false
-  StartBlitz (13,1) visits=11 q=Some(-139) prior=Some(0.97852707) solved=false terminal=false
-  StartPass (13,1) visits=9 q=Some(-140) prior=Some(0.9316362) solved=false terminal=false
-  StartHandoff (13,1) visits=10 q=Some(-139) prior=Some(0.79268587) solved=false terminal=false
-  StartBlock (12,2) visits=9 q=Some(-46) prior=Some(1.3081372) solved=false terminal=false
-  StartBlock (12,3) visits=15 q=Some(-139) prior=Some(1.2032294) solved=false terminal=false
-  StartBlock (13,1) visits=11 q=Some(-139) prior=Some(1.2283971) solved=false terminal=false
-  EndTurn visits=3 q=Some(139) prior=Some(0.91847116) solved=false terminal=false
-arm=nn-tiny budget=1000 state=38 pick=StartBlitz (13,1) root_value=Some(139) root_visits=1290
-  StartMove (13,1) visits=309 q=Some(117) prior=Some(0.91066104) solved=false terminal=false
-  StartBlitz (13,1) visits=79 q=Some(139) prior=Some(0.97764367) solved=false terminal=false
-  StartBlock (13,1) visits=889 q=Some(-71) prior=Some(1.205792) solved=false terminal=false
-  EndTurn visits=15 q=Some(-138) prior=Some(0.90590316) solved=false terminal=false
-arm=nn-tiny budget=1000 state=39 pick=StartMove (6,4) root_value=Some(139) root_visits=628
-  StartMove (6,3) visits=9 q=Some(139) prior=Some(0.92900807) solved=false terminal=false
-  StartMove (6,4) visits=225 q=Some(139) prior=Some(0.9188916) solved=false terminal=false
-  StartMove (6,5) visits=224 q=Some(139) prior=Some(0.94179934) solved=false terminal=false
-  StartMove (8,4) visits=10 q=Some(139) prior=Some(0.9554041) solved=false terminal=false
-  StartBlitz (6,3) visits=7 q=Some(139) prior=Some(0.92509866) solved=false terminal=false
-  StartBlitz (6,4) visits=7 q=Some(139) prior=Some(0.85796106) solved=false terminal=false
-  StartBlitz (6,5) visits=7 q=Some(139) prior=Some(0.91176486) solved=false terminal=false
-  StartBlitz (8,4) visits=7 q=Some(139) prior=Some(0.94295806) solved=false terminal=false
-  StartPass (8,4) visits=8 q=Some(139) prior=Some(0.9588896) solved=false terminal=false
-  StartHandoff (8,4) visits=15 q=Some(139) prior=Some(0.7926702) solved=false terminal=false
-  StartBlock (6,3) visits=8 q=Some(139) prior=Some(1.2386334) solved=false terminal=false
-  StartBlock (6,4) visits=8 q=Some(139) prior=Some(1.2476329) solved=false terminal=false
-  StartBlock (6,5) visits=15 q=Some(128) prior=Some(1.2362204) solved=false terminal=false
-  StartBlock (8,4) visits=81 q=Some(46) prior=Some(1.2073869) solved=false terminal=false
-  EndTurn visits=1 q=Some(-139) prior=Some(0.9356821) solved=false terminal=false
+arm=nn-tiny budget=200 state=0 pick=StartBlitz (9,1) root_value=Some(-479) root_visits=142
+  StartMove (8,4) visits=55 q=Some(40) prior=Some(0.79191875) solved=false terminal=false
+  StartMove (9,1) visits=11 q=Some(40) prior=Some(0.79611546) solved=false terminal=false
+  StartMove (11,6) visits=7 q=Some(40) prior=Some(0.78914356) solved=false terminal=false
+  StartBlitz (8,4) visits=12 q=Some(40) prior=Some(1.1272136) solved=false terminal=false
+  StartBlitz (9,1) visits=37 q=Some(-479) prior=Some(1.1307578) solved=false terminal=false
+  StartBlitz (11,6) visits=7 q=Some(40) prior=Some(1.1310086) solved=false terminal=false
+  StartPass (9,1) visits=5 q=Some(40) prior=Some(1.0607333) solved=false terminal=false
+  StartHandoff (9,1) visits=6 q=Some(39) prior=Some(0.9844114) solved=false terminal=false
+  EndTurn visits=13 q=Some(40) prior=Some(1.188697) solved=false terminal=false
+arm=nn-tiny budget=200 state=1 pick=EndTurn root_value=Some(-40) root_visits=120
+  StartMove (8,3) visits=0 q=None prior=Some(0.78690916) solved=false terminal=false
+  StartMove (8,5) visits=0 q=None prior=Some(0.75613964) solved=false terminal=false
+  StartMove (8,6) visits=0 q=None prior=Some(0.72767246) solved=false terminal=false
+  StartMove (8,7) visits=0 q=None prior=Some(0.7723316) solved=false terminal=false
+  StartBlitz (8,3) visits=1 q=Some(40) prior=Some(1.125833) solved=false terminal=false
+  StartBlitz (8,5) visits=1 q=Some(41) prior=Some(1.1187872) solved=false terminal=false
+  StartBlitz (8,6) visits=1 q=Some(41) prior=Some(1.1236613) solved=false terminal=false
+  StartBlitz (8,7) visits=1 q=Some(41) prior=Some(1.1202013) solved=false terminal=false
+  StartPass (8,3) visits=25 q=Some(40) prior=Some(1.0090983) solved=false terminal=false
+  StartPass (8,5) visits=16 q=Some(30) prior=Some(0.9848763) solved=false terminal=false
+  StartPass (8,6) visits=9 q=Some(41) prior=Some(0.96354073) solved=false terminal=false
+  StartPass (8,7) visits=8 q=Some(41) prior=Some(0.9987185) solved=false terminal=false
+  StartHandoff (8,3) visits=25 q=Some(40) prior=Some(0.94157577) solved=false terminal=false
+  StartHandoff (8,5) visits=0 q=None prior=Some(0.9391556) solved=false terminal=false
+  StartHandoff (8,6) visits=9 q=Some(40) prior=Some(0.95004517) solved=false terminal=false
+  StartHandoff (8,7) visits=8 q=Some(40) prior=Some(0.95885646) solved=false terminal=false
+  StartBlock (8,3) visits=7 q=Some(31) prior=Some(1.1488866) solved=false terminal=false
+  StartBlock (8,5) visits=6 q=Some(31) prior=Some(1.1308024) solved=false terminal=false
+  StartBlock (8,6) visits=1 q=Some(41) prior=Some(1.1227813) solved=false terminal=false
+  StartBlock (8,7) visits=1 q=Some(41) prior=Some(1.1243169) solved=false terminal=false
+  EndTurn visits=1 q=Some(-40) prior=Some(1.1958092) solved=false terminal=false
+arm=nn-tiny budget=200 state=2 pick=EndTurn root_value=Some(0) root_visits=142
+  StartMove (6,4) visits=29 q=Some(39) prior=Some(0.7921474) solved=false terminal=false
+  StartMove (9,6) visits=34 q=Some(39) prior=Some(0.785456) solved=false terminal=false
+  StartMove (10,6) visits=33 q=Some(39) prior=Some(0.7762463) solved=false terminal=false
+  StartBlitz (6,4) visits=9 q=Some(40) prior=Some(1.1342319) solved=false terminal=false
+  StartBlitz (9,6) visits=14 q=Some(40) prior=Some(1.1322488) solved=false terminal=false
+  StartBlitz (10,6) visits=25 q=Some(40) prior=Some(1.1599979) solved=false terminal=false
+  EndTurn visits=1 q=Some(0) prior=Some(1.2196718) solved=true terminal=true
+arm=nn-tiny budget=200 state=3 pick=StartBlock (4,5) root_value=Some(11) root_visits=152
+  StartMove (3,2) visits=3 q=Some(40) prior=Some(0.7697612) solved=false terminal=false
+  StartMove (3,3) visits=3 q=Some(40) prior=Some(0.7416867) solved=false terminal=false
+  StartMove (3,6) visits=3 q=Some(40) prior=Some(0.7541355) solved=false terminal=false
+  StartMove (4,5) visits=3 q=Some(40) prior=Some(0.7337072) solved=false terminal=false
+  StartBlitz (3,2) visits=4 q=Some(41) prior=Some(1.1785078) solved=false terminal=false
+  StartBlitz (3,3) visits=4 q=Some(41) prior=Some(1.0730298) solved=false terminal=false
+  StartBlitz (3,6) visits=4 q=Some(40) prior=Some(1.1116772) solved=false terminal=false
+  StartBlitz (4,5) visits=4 q=Some(41) prior=Some(1.0841436) solved=false terminal=false
+  StartBlock (3,2) visits=4 q=Some(40) prior=Some(1.1472391) solved=false terminal=false
+  StartBlock (3,3) visits=4 q=Some(40) prior=Some(1.1220198) solved=false terminal=false
+  StartBlock (4,5) visits=107 q=Some(11) prior=Some(1.1274611) solved=false terminal=false
+  EndTurn visits=16 q=Some(40) prior=Some(1.1566318) solved=false terminal=false
+arm=nn-tiny budget=200 state=4 pick=StartMove (4,5) root_value=Some(-39) root_visits=118
+  StartMove (4,5) visits=106 q=Some(-39) prior=Some(0.7621044) solved=false terminal=false
+  StartBlitz (4,5) visits=6 q=Some(40) prior=Some(1.087512) solved=false terminal=false
+  EndTurn visits=6 q=Some(39) prior=Some(1.1503836) solved=false terminal=false
+arm=nn-tiny budget=200 state=5 pick=StartBlock (9,5) root_value=Some(12) root_visits=127
+  StartMove (9,5) visits=3 q=Some(-40) prior=Some(0.770835) solved=false terminal=false
+  StartMove (12,5) visits=3 q=Some(-40) prior=Some(0.77582467) solved=false terminal=false
+  StartMove (13,4) visits=3 q=Some(-40) prior=Some(0.76349646) solved=false terminal=false
+  StartBlitz (9,5) visits=4 q=Some(-40) prior=Some(1.1441094) solved=false terminal=false
+  StartBlitz (12,5) visits=4 q=Some(-40) prior=Some(1.1406759) solved=false terminal=false
+  StartBlitz (13,4) visits=10 q=Some(-40) prior=Some(1.0739582) solved=false terminal=false
+  StartPass (9,5) visits=5 q=Some(-41) prior=Some(0.98370427) solved=false terminal=false
+  StartPass (12,5) visits=8 q=Some(-41) prior=Some(0.9607266) solved=false terminal=false
+  StartPass (13,4) visits=5 q=Some(-41) prior=Some(1.0262517) solved=false terminal=false
+  StartHandoff (9,5) visits=5 q=Some(-39) prior=Some(0.9365335) solved=false terminal=false
+  StartHandoff (12,5) visits=8 q=Some(-40) prior=Some(0.93144614) solved=false terminal=false
+  StartHandoff (13,4) visits=5 q=Some(-40) prior=Some(0.9469284) solved=false terminal=false
+  StartBlock (9,5) visits=32 q=Some(12) prior=Some(1.0981313) solved=false terminal=false
+  StartBlock (12,5) visits=4 q=Some(-40) prior=Some(1.1656952) solved=false terminal=false
+  StartBlock (13,4) visits=25 q=Some(4) prior=Some(1.1288443) solved=false terminal=false
+  EndTurn visits=4 q=Some(-40) prior=Some(1.1528397) solved=false terminal=false
+arm=nn-tiny budget=200 state=6 pick=StartBlock (12,3) root_value=Some(26) root_visits=128
+  StartMove (11,5) visits=10 q=Some(-39) prior=Some(0.7393576) solved=false terminal=false
+  StartMove (12,1) visits=8 q=Some(-39) prior=Some(0.7751763) solved=false terminal=false
+  StartMove (12,3) visits=10 q=Some(-39) prior=Some(0.7557403) solved=false terminal=false
+  StartMove (12,4) visits=18 q=Some(-39) prior=Some(0.75416565) solved=false terminal=false
+  StartBlitz (11,5) visits=8 q=Some(-40) prior=Some(1.0769631) solved=false terminal=false
+  StartBlitz (12,1) visits=4 q=Some(-40) prior=Some(1.099962) solved=false terminal=false
+  StartBlitz (12,3) visits=5 q=Some(-40) prior=Some(1.1015741) solved=false terminal=false
+  StartBlitz (12,4) visits=10 q=Some(-40) prior=Some(1.1310416) solved=false terminal=false
+  StartBlock (11,5) visits=14 q=Some(-31) prior=Some(1.1341182) solved=false terminal=false
+  StartBlock (12,3) visits=17 q=Some(26) prior=Some(1.1192598) solved=false terminal=false
+  StartBlock (12,4) visits=17 q=Some(-30) prior=Some(1.1256821) solved=false terminal=false
+  EndTurn visits=7 q=Some(-40) prior=Some(1.1869582) solved=false terminal=false
+arm=nn-tiny budget=200 state=7 pick=StartMove (2,5) root_value=Some(-40) root_visits=135
+  StartMove (2,5) visits=46 q=Some(-40) prior=Some(0.76440287) solved=false terminal=false
+  StartBlitz (2,5) visits=10 q=Some(40) prior=Some(1.0791459) solved=false terminal=false
+  EndTurn visits=79 q=Some(40) prior=Some(1.1564513) solved=false terminal=false
+arm=nn-tiny budget=200 state=8 pick=StartBlock (8,5) root_value=Some(-9) root_visits=141
+  StartMove (7,6) visits=2 q=Some(-41) prior=Some(0.7586548) solved=false terminal=false
+  StartMove (8,4) visits=2 q=Some(-41) prior=Some(0.7258909) solved=false terminal=false
+  StartMove (8,5) visits=2 q=Some(-41) prior=Some(0.7593272) solved=false terminal=false
+  StartMove (9,5) visits=3 q=Some(-41) prior=Some(0.76379025) solved=false terminal=false
+  StartBlitz (7,6) visits=3 q=Some(-41) prior=Some(1.1146939) solved=false terminal=false
+  StartBlitz (8,4) visits=3 q=Some(-41) prior=Some(1.1007094) solved=false terminal=false
+  StartBlitz (8,5) visits=3 q=Some(-41) prior=Some(1.1293664) solved=false terminal=false
+  StartBlitz (9,5) visits=6 q=Some(-41) prior=Some(1.0990869) solved=false terminal=false
+  StartPass (9,5) visits=3 q=Some(-41) prior=Some(1.016305) solved=false terminal=false
+  StartHandoff (9,5) visits=3 q=Some(-40) prior=Some(0.95650446) solved=false terminal=false
+  StartBlock (7,6) visits=3 q=Some(-41) prior=Some(1.1515478) solved=false terminal=false
+  StartBlock (8,4) visits=43 q=Some(-24) prior=Some(1.1044433) solved=false terminal=false
+  StartBlock (8,5) visits=62 q=Some(-9) prior=Some(1.1673054) solved=false terminal=false
+  EndTurn visits=3 q=Some(-41) prior=Some(1.152375) solved=false terminal=false
+arm=nn-tiny budget=200 state=9 pick=StartBlock (4,4) root_value=Some(36) root_visits=142
+  StartMove (2,4) visits=3 q=Some(40) prior=Some(0.79294294) solved=false terminal=false
+  StartMove (2,7) visits=14 q=Some(39) prior=Some(0.7723329) solved=false terminal=false
+  StartMove (4,4) visits=3 q=Some(40) prior=Some(0.77421874) solved=false terminal=false
+  StartMove (6,3) visits=35 q=Some(39) prior=Some(0.7723946) solved=false terminal=false
+  StartBlitz (2,4) visits=4 q=Some(40) prior=Some(1.1537517) solved=false terminal=false
+  StartBlitz (2,7) visits=8 q=Some(40) prior=Some(1.0998516) solved=false terminal=false
+  StartBlitz (4,4) visits=4 q=Some(39) prior=Some(1.1269505) solved=false terminal=false
+  StartBlitz (6,3) visits=8 q=Some(40) prior=Some(1.1025412) solved=false terminal=false
+  StartPass (2,4) visits=8 q=Some(37) prior=Some(0.9906651) solved=false terminal=false
+  StartPass (2,7) visits=4 q=Some(40) prior=Some(1.0411633) solved=false terminal=false
+  StartPass (4,4) visits=8 q=Some(36) prior=Some(1.0079273) solved=false terminal=false
+  StartPass (6,3) visits=5 q=Some(39) prior=Some(1.0296861) solved=false terminal=false
+  StartHandoff (2,4) visits=8 q=Some(36) prior=Some(0.95224947) solved=false terminal=false
+  StartHandoff (2,7) visits=4 q=Some(39) prior=Some(0.98267865) solved=false terminal=false
+  StartHandoff (4,4) visits=8 q=Some(36) prior=Some(0.97882533) solved=false terminal=false
+  StartHandoff (6,3) visits=4 q=Some(39) prior=Some(0.9826311) solved=false terminal=false
+  StartBlock (2,4) visits=8 q=Some(39) prior=Some(1.1153796) solved=false terminal=false
+  StartBlock (4,4) visits=9 q=Some(36) prior=Some(1.1481345) solved=false terminal=false
+  EndTurn visits=4 q=Some(38) prior=Some(1.1756768) solved=false terminal=false
+arm=nn-tiny budget=200 state=10 pick=StartBlock (4,2) root_value=Some(33) root_visits=162
+  StartMove (4,2) visits=3 q=Some(40) prior=Some(0.7605119) solved=false terminal=false
+  StartMove (6,2) visits=3 q=Some(40) prior=Some(0.7798045) solved=false terminal=false
+  StartMove (6,6) visits=26 q=Some(40) prior=Some(0.7745885) solved=false terminal=false
+  StartMove (7,3) visits=37 q=Some(40) prior=Some(0.7778755) solved=false terminal=false
+  StartBlitz (4,2) visits=3 q=Some(40) prior=Some(1.1373137) solved=false terminal=false
+  StartBlitz (6,2) visits=3 q=Some(40) prior=Some(1.1553664) solved=false terminal=false
+  StartBlitz (6,6) visits=8 q=Some(40) prior=Some(1.10616) solved=false terminal=false
+  StartBlitz (7,3) visits=8 q=Some(40) prior=Some(1.1099502) solved=false terminal=false
+  StartPass (4,2) visits=3 q=Some(41) prior=Some(0.9993577) solved=false terminal=false
+  StartHandoff (4,2) visits=3 q=Some(40) prior=Some(0.95421875) solved=false terminal=false
+  StartBlock (4,2) visits=48 q=Some(33) prior=Some(1.1217268) solved=false terminal=false
+  StartBlock (6,2) visits=11 q=Some(33) prior=Some(1.1519287) solved=false terminal=false
+  EndTurn visits=6 q=Some(40) prior=Some(1.171198) solved=false terminal=false
+arm=nn-tiny budget=200 state=11 pick=StartMove (4,3) root_value=Some(1000) root_visits=163
+  StartMove (1,1) visits=5 q=Some(-41) prior=Some(0.8059206) solved=false terminal=false
+  StartMove (1,4) visits=5 q=Some(-41) prior=Some(0.7750824) solved=false terminal=false
+  StartMove (1,6) visits=5 q=Some(-41) prior=Some(0.7787448) solved=false terminal=false
+  StartMove (4,3) visits=56 q=Some(1000) prior=Some(0.776891) solved=false terminal=false
+  StartBlitz (1,1) visits=5 q=Some(-41) prior=Some(1.1231005) solved=false terminal=false
+  StartBlitz (1,4) visits=5 q=Some(-40) prior=Some(1.0517069) solved=false terminal=false
+  StartBlitz (1,6) visits=5 q=Some(-40) prior=Some(1.1046717) solved=false terminal=false
+  StartBlitz (4,3) visits=5 q=Some(-40) prior=Some(1.1025742) solved=false terminal=false
+  StartPass (4,3) visits=5 q=Some(-41) prior=Some(1.0276145) solved=false terminal=false
+  StartHandoff (4,3) visits=50 q=Some(755) prior=Some(0.9599377) solved=false terminal=false
+  StartBlock (1,1) visits=7 q=Some(-41) prior=Some(1.2016529) solved=false terminal=false
+  StartBlock (1,4) visits=5 q=Some(-41) prior=Some(1.1134421) solved=false terminal=false
+  EndTurn visits=5 q=Some(-41) prior=Some(1.1786616) solved=false terminal=false
+arm=nn-tiny budget=200 state=12 pick=StartBlock (4,1) root_value=Some(33) root_visits=140
+  StartMove (2,1) visits=5 q=Some(41) prior=Some(0.7767382) solved=false terminal=false
+  StartMove (2,3) visits=13 q=Some(40) prior=Some(0.7709886) solved=false terminal=false
+  StartMove (3,1) visits=6 q=Some(40) prior=Some(0.7725192) solved=false terminal=false
+  StartMove (4,1) visits=10 q=Some(40) prior=Some(0.7756706) solved=false terminal=false
+  StartBlitz (2,1) visits=5 q=Some(41) prior=Some(1.0996988) solved=false terminal=false
+  StartBlitz (2,3) visits=10 q=Some(40) prior=Some(1.0948946) solved=false terminal=false
+  StartBlitz (3,1) visits=6 q=Some(41) prior=Some(1.1280556) solved=false terminal=false
+  StartBlitz (4,1) visits=10 q=Some(41) prior=Some(1.1079484) solved=false terminal=false
+  StartBlock (3,1) visits=35 q=Some(33) prior=Some(1.1642039) solved=false terminal=false
+  StartBlock (4,1) visits=35 q=Some(33) prior=Some(1.1522156) solved=false terminal=false
+  EndTurn visits=8 q=Some(40) prior=Some(1.157066) solved=false terminal=false
+arm=nn-tiny budget=200 state=13 pick=StartBlock (13,4) root_value=Some(12) root_visits=136
+  StartMove (11,3) visits=7 q=Some(-40) prior=Some(0.75228834) solved=false terminal=false
+  StartMove (13,4) visits=7 q=Some(-39) prior=Some(0.76317894) solved=false terminal=false
+  StartBlitz (11,3) visits=6 q=Some(-40) prior=Some(1.1045426) solved=false terminal=false
+  StartBlitz (13,4) visits=8 q=Some(-40) prior=Some(1.0999866) solved=false terminal=false
+  StartPass (11,3) visits=11 q=Some(-39) prior=Some(0.9845335) solved=false terminal=false
+  StartPass (13,4) visits=13 q=Some(-39) prior=Some(1.006008) solved=false terminal=false
+  StartHandoff (11,3) visits=11 q=Some(-38) prior=Some(0.94383895) solved=false terminal=false
+  StartHandoff (13,4) visits=13 q=Some(-38) prior=Some(0.940541) solved=false terminal=false
+  StartBlock (11,3) visits=8 q=Some(-40) prior=Some(1.1350482) solved=false terminal=false
+  StartBlock (13,4) visits=46 q=Some(12) prior=Some(1.1188079) solved=false terminal=false
+  EndTurn visits=8 q=Some(-39) prior=Some(1.1512264) solved=false terminal=false
+arm=nn-tiny budget=200 state=14 pick=StartBlitz (6,4) root_value=Some(1000) root_visits=151
+  StartMove (3,2) visits=3 q=Some(-40) prior=Some(0.7656841) solved=false terminal=false
+  StartMove (3,3) visits=3 q=Some(-40) prior=Some(0.78085834) solved=false terminal=false
+  StartMove (4,1) visits=10 q=Some(-40) prior=Some(0.77902615) solved=false terminal=false
+  StartMove (6,4) visits=3 q=Some(-39) prior=Some(0.7775645) solved=false terminal=false
+  StartBlitz (3,2) visits=6 q=Some(-40) prior=Some(1.1074713) solved=false terminal=false
+  StartBlitz (3,3) visits=4 q=Some(-40) prior=Some(1.109014) solved=false terminal=false
+  StartBlitz (4,1) visits=12 q=Some(-40) prior=Some(1.1110944) solved=false terminal=false
+  StartBlitz (6,4) visits=55 q=Some(1000) prior=Some(1.1137035) solved=false terminal=false
+  StartPass (6,4) visits=4 q=Some(-40) prior=Some(1.0310698) solved=false terminal=false
+  StartHandoff (6,4) visits=7 q=Some(-40) prior=Some(0.9583645) solved=false terminal=false
+  StartBlock (3,2) visits=10 q=Some(-37) prior=Some(1.1240396) solved=false terminal=false
+  StartBlock (3,3) visits=11 q=Some(-31) prior=Some(1.1511291) solved=false terminal=false
+  EndTurn visits=24 q=Some(39) prior=Some(1.1909803) solved=false terminal=false
+arm=nn-tiny budget=200 state=15 pick=StartHandoff (3,7) root_value=Some(40) root_visits=152
+  StartMove (1,6) visits=5 q=Some(-39) prior=Some(0.7456709) solved=false terminal=false
+  StartMove (2,6) visits=5 q=Some(-39) prior=Some(0.7586218) solved=false terminal=false
+  StartMove (3,7) visits=5 q=Some(-40) prior=Some(0.7483262) solved=false terminal=false
+  StartBlitz (1,6) visits=10 q=Some(-40) prior=Some(1.1293156) solved=false terminal=false
+  StartBlitz (2,6) visits=6 q=Some(-41) prior=Some(1.0989935) solved=false terminal=false
+  StartBlitz (3,7) visits=6 q=Some(-40) prior=Some(1.0866816) solved=false terminal=false
+  StartPass (3,7) visits=6 q=Some(-41) prior=Some(0.9440992) solved=false terminal=false
+  StartHandoff (3,7) visits=77 q=Some(40) prior=Some(0.9148264) solved=false terminal=false
+  StartBlock (1,6) visits=6 q=Some(-39) prior=Some(1.2008371) solved=false terminal=false
+  StartBlock (2,6) visits=19 q=Some(-39) prior=Some(1.1601284) solved=false terminal=false
+  StartBlock (3,7) visits=6 q=Some(-40) prior=Some(1.0776653) solved=false terminal=false
+  EndTurn visits=8 q=Some(39) prior=Some(1.1348327) solved=false terminal=false
+arm=nn-tiny budget=200 state=16 pick=StartBlock (4,3) root_value=Some(-27) root_visits=128
+  StartMove (4,2) visits=4 q=Some(40) prior=Some(0.7226578) solved=false terminal=false
+  StartMove (4,3) visits=4 q=Some(40) prior=Some(0.7462721) solved=false terminal=false
+  StartMove (9,2) visits=5 q=Some(40) prior=Some(0.7619733) solved=false terminal=false
+  StartBlitz (4,2) visits=4 q=Some(40) prior=Some(1.1231993) solved=false terminal=false
+  StartBlitz (4,3) visits=4 q=Some(40) prior=Some(1.0840638) solved=false terminal=false
+  StartBlitz (9,2) visits=5 q=Some(40) prior=Some(1.0835736) solved=false terminal=false
+  StartBlock (4,2) visits=25 q=Some(-27) prior=Some(1.0928288) solved=false terminal=false
+  StartBlock (4,3) visits=32 q=Some(-27) prior=Some(1.1129894) solved=false terminal=false
+  StartBlock (9,2) visits=30 q=Some(4) prior=Some(1.1335493) solved=false terminal=false
+  EndTurn visits=15 q=Some(40) prior=Some(1.1388924) solved=false terminal=false
+arm=nn-tiny budget=200 state=17 pick=StartBlock (6,2) root_value=Some(13) root_visits=123
+  StartMove (1,2) visits=2 q=Some(40) prior=Some(0.72436655) solved=false terminal=false
+  StartMove (2,2) visits=2 q=Some(40) prior=Some(0.7754286) solved=false terminal=false
+  StartMove (3,2) visits=2 q=Some(40) prior=Some(0.737793) solved=false terminal=false
+  StartMove (6,2) visits=2 q=Some(40) prior=Some(0.77025867) solved=false terminal=false
+  StartBlitz (1,2) visits=2 q=Some(41) prior=Some(1.1047965) solved=false terminal=false
+  StartBlitz (2,2) visits=3 q=Some(40) prior=Some(1.1044487) solved=false terminal=false
+  StartBlitz (3,2) visits=3 q=Some(40) prior=Some(1.0962516) solved=false terminal=false
+  StartBlitz (6,2) visits=3 q=Some(40) prior=Some(1.087256) solved=false terminal=false
+  StartPass (1,2) visits=4 q=Some(40) prior=Some(0.9776937) solved=false terminal=false
+  StartPass (2,2) visits=4 q=Some(40) prior=Some(1.024677) solved=false terminal=false
+  StartPass (3,2) visits=14 q=Some(40) prior=Some(0.9854469) solved=false terminal=false
+  StartPass (6,2) visits=15 q=Some(40) prior=Some(1.0296192) solved=false terminal=false
+  StartHandoff (1,2) visits=4 q=Some(39) prior=Some(0.9523957) solved=false terminal=false
+  StartHandoff (2,2) visits=4 q=Some(39) prior=Some(0.957238) solved=false terminal=false
+  StartHandoff (3,2) visits=14 q=Some(39) prior=Some(0.9854291) solved=false terminal=false
+  StartHandoff (6,2) visits=15 q=Some(39) prior=Some(0.95330155) solved=false terminal=false
+  StartBlock (1,2) visits=9 q=Some(31) prior=Some(1.1069295) solved=false terminal=false
+  StartBlock (2,2) visits=8 q=Some(31) prior=Some(1.1625928) solved=false terminal=false
+  StartBlock (3,2) visits=9 q=Some(31) prior=Some(1.1631292) solved=false terminal=false
+  StartBlock (6,2) visits=13 q=Some(13) prior=Some(1.1331694) solved=false terminal=false
+  EndTurn visits=3 q=Some(40) prior=Some(1.1677763) solved=false terminal=false
+arm=nn-tiny budget=200 state=18 pick=StartBlock (6,1) root_value=Some(13) root_visits=141
+  StartMove (6,1) visits=3 q=Some(-40) prior=Some(0.7793534) solved=false terminal=false
+  StartMove (6,4) visits=3 q=Some(-40) prior=Some(0.77016586) solved=false terminal=false
+  StartMove (7,6) visits=48 q=Some(-40) prior=Some(0.77450496) solved=false terminal=false
+  StartMove (10,1) visits=3 q=Some(-40) prior=Some(0.7773161) solved=false terminal=false
+  StartBlitz (6,1) visits=10 q=Some(-40) prior=Some(1.1399384) solved=false terminal=false
+  StartBlitz (6,4) visits=12 q=Some(-40) prior=Some(1.0939562) solved=false terminal=false
+  StartBlitz (7,6) visits=13 q=Some(-40) prior=Some(1.1015459) solved=false terminal=false
+  StartBlitz (10,1) visits=5 q=Some(-41) prior=Some(1.1038657) solved=false terminal=false
+  StartPass (10,1) visits=3 q=Some(-40) prior=Some(1.0365152) solved=false terminal=false
+  StartHandoff (10,1) visits=3 q=Some(-39) prior=Some(0.9587518) solved=false terminal=false
+  StartBlock (6,1) visits=18 q=Some(13) prior=Some(1.1639982) solved=false terminal=false
+  StartBlock (6,4) visits=16 q=Some(-36) prior=Some(1.1389142) solved=false terminal=false
+  EndTurn visits=4 q=Some(-40) prior=Some(1.161174) solved=false terminal=false
+arm=nn-tiny budget=200 state=19 pick=StartBlock (6,6) root_value=Some(41) root_visits=156
+  StartMove (3,5) visits=5 q=Some(-40) prior=Some(0.7604259) solved=false terminal=false
+  StartMove (3,6) visits=5 q=Some(-41) prior=Some(0.71347475) solved=false terminal=false
+  StartMove (4,7) visits=5 q=Some(-41) prior=Some(0.75529647) solved=false terminal=false
+  StartMove (6,6) visits=5 q=Some(-40) prior=Some(0.7468055) solved=false terminal=false
+  StartBlitz (3,5) visits=26 q=Some(-40) prior=Some(1.1386188) solved=false terminal=false
+  StartBlitz (3,6) visits=5 q=Some(-41) prior=Some(1.1027446) solved=false terminal=false
+  StartBlitz (4,7) visits=5 q=Some(-41) prior=Some(1.1129017) solved=false terminal=false
+  StartBlitz (6,6) visits=5 q=Some(-41) prior=Some(1.0744677) solved=false terminal=false
+  StartPass (6,6) visits=5 q=Some(-41) prior=Some(1.0073162) solved=false terminal=false
+  StartHandoff (6,6) visits=5 q=Some(-41) prior=Some(0.951923) solved=false terminal=false
+  StartBlock (3,5) visits=11 q=Some(-41) prior=Some(1.1543205) solved=false terminal=false
+  StartBlock (3,6) visits=5 q=Some(-41) prior=Some(1.1040189) solved=false terminal=false
+  StartBlock (4,7) visits=5 q=Some(-41) prior=Some(1.1121448) solved=false terminal=false
+  StartBlock (6,6) visits=58 q=Some(41) prior=Some(1.1214623) solved=false terminal=false
+  EndTurn visits=6 q=Some(-41) prior=Some(1.1440781) solved=false terminal=false
+arm=nn-tiny budget=200 state=20 pick=StartBlock (6,6) root_value=Some(11) root_visits=134
+  StartMove (6,5) visits=11 q=Some(-40) prior=Some(0.7548749) solved=false terminal=false
+  StartMove (6,6) visits=10 q=Some(-40) prior=Some(0.7043924) solved=false terminal=false
+  StartMove (6,7) visits=28 q=Some(-40) prior=Some(0.76956874) solved=false terminal=false
+  StartMove (7,7) visits=5 q=Some(-40) prior=Some(0.75501704) solved=false terminal=false
+  StartBlitz (6,5) visits=6 q=Some(-41) prior=Some(1.147205) solved=false terminal=false
+  StartBlitz (6,6) visits=6 q=Some(-41) prior=Some(1.1815696) solved=false terminal=false
+  StartBlitz (6,7) visits=5 q=Some(-40) prior=Some(1.1307832) solved=false terminal=false
+  StartBlitz (7,7) visits=5 q=Some(-40) prior=Some(1.114629) solved=false terminal=false
+  StartBlock (6,5) visits=5 q=Some(-41) prior=Some(1.1247181) solved=false terminal=false
+  StartBlock (6,6) visits=46 q=Some(11) prior=Some(1.0888766) solved=false terminal=false
+  EndTurn visits=7 q=Some(-40) prior=Some(1.2283658) solved=false terminal=false
+arm=nn-tiny budget=200 state=21 pick=EndTurn root_value=Some(39) root_visits=133
+  StartMove (10,5) visits=7 q=Some(13) prior=Some(0.7301107) solved=false terminal=false
+  StartBlitz (10,5) visits=4 q=Some(-40) prior=Some(1.0687982) solved=false terminal=false
+  StartBlock (10,5) visits=119 q=Some(38) prior=Some(1.0916477) solved=false terminal=false
+  EndTurn visits=6 q=Some(39) prior=Some(1.1094433) solved=false terminal=false
+arm=nn-tiny budget=200 state=22 pick=StartHandoff (2,6) root_value=Some(-33) root_visits=136
+  StartMove (2,6) visits=5 q=Some(-40) prior=Some(0.7852011) solved=false terminal=false
+  StartMove (5,7) visits=4 q=Some(-41) prior=Some(0.7929506) solved=false terminal=false
+  StartMove (8,7) visits=6 q=Some(-40) prior=Some(0.77706826) solved=false terminal=false
+  StartMove (9,1) visits=4 q=Some(-40) prior=Some(0.7861132) solved=false terminal=false
+  StartBlitz (2,6) visits=6 q=Some(-40) prior=Some(1.1206671) solved=false terminal=false
+  StartBlitz (5,7) visits=5 q=Some(-41) prior=Some(1.0941615) solved=false terminal=false
+  StartBlitz (8,7) visits=6 q=Some(-41) prior=Some(1.1103048) solved=false terminal=false
+  StartBlitz (9,1) visits=5 q=Some(-40) prior=Some(1.1191052) solved=false terminal=false
+  StartPass (2,6) visits=11 q=Some(-34) prior=Some(1.0450628) solved=false terminal=false
+  StartPass (5,7) visits=7 q=Some(-41) prior=Some(1.0517949) solved=false terminal=false
+  StartPass (8,7) visits=18 q=Some(-40) prior=Some(1.0447472) solved=false terminal=false
+  StartPass (9,1) visits=6 q=Some(-41) prior=Some(1.0436633) solved=false terminal=false
+  StartHandoff (2,6) visits=11 q=Some(-33) prior=Some(0.97398436) solved=false terminal=false
+  StartHandoff (5,7) visits=7 q=Some(-40) prior=Some(0.95418346) solved=false terminal=false
+  StartHandoff (8,7) visits=19 q=Some(-40) prior=Some(0.9812538) solved=false terminal=false
+  StartHandoff (9,1) visits=6 q=Some(-40) prior=Some(0.96517813) solved=false terminal=false
+  StartBlock (5,7) visits=5 q=Some(-41) prior=Some(1.1574428) solved=false terminal=false
+  EndTurn visits=14 q=Some(-40) prior=Some(1.1971195) solved=false terminal=false
+arm=nn-tiny budget=200 state=23 pick=StartBlock (4,5) root_value=Some(0) root_visits=123
+  StartMove (3,4) visits=4 q=Some(39) prior=Some(0.756873) solved=false terminal=false
+  StartMove (4,3) visits=10 q=Some(39) prior=Some(0.72550535) solved=false terminal=false
+  StartMove (4,5) visits=4 q=Some(40) prior=Some(0.7766478) solved=false terminal=false
+  StartMove (6,3) visits=10 q=Some(39) prior=Some(0.7445882) solved=false terminal=false
+  StartBlitz (3,4) visits=4 q=Some(40) prior=Some(1.1028175) solved=false terminal=false
+  StartBlitz (4,3) visits=12 q=Some(40) prior=Some(1.1229124) solved=false terminal=false
+  StartBlitz (4,5) visits=4 q=Some(40) prior=Some(1.1008655) solved=false terminal=false
+  StartBlitz (6,3) visits=12 q=Some(40) prior=Some(1.111057) solved=false terminal=false
+  StartBlock (4,3) visits=22 q=Some(34) prior=Some(1.1162696) solved=false terminal=false
+  StartBlock (4,5) visits=28 q=Some(0) prior=Some(1.1438942) solved=false terminal=false
+  StartBlock (6,3) visits=12 q=Some(37) prior=Some(1.13617) solved=false terminal=false
+  EndTurn visits=1 q=Some(0) prior=Some(1.1623987) solved=true terminal=true
+arm=nn-tiny budget=200 state=24 pick=StartBlock (3,4) root_value=Some(0) root_visits=152
+  StartMove (3,4) visits=7 q=Some(-40) prior=Some(0.7881477) solved=false terminal=false
+  StartMove (7,4) visits=7 q=Some(-40) prior=Some(0.78380847) solved=false terminal=false
+  StartMove (7,6) visits=5 q=Some(-40) prior=Some(0.7770293) solved=false terminal=false
+  StartMove (8,6) visits=5 q=Some(-40) prior=Some(0.7673824) solved=false terminal=false
+  StartBlitz (3,4) visits=11 q=Some(-40) prior=Some(1.108151) solved=false terminal=false
+  StartBlitz (7,4) visits=10 q=Some(-40) prior=Some(1.138785) solved=false terminal=false
+  StartBlitz (7,6) visits=5 q=Some(-40) prior=Some(1.1398505) solved=false terminal=false
+  StartBlitz (8,6) visits=5 q=Some(-40) prior=Some(1.1291155) solved=false terminal=false
+  StartBlock (3,4) visits=92 q=Some(0) prior=Some(1.1569903) solved=false terminal=false
+  EndTurn visits=5 q=Some(-40) prior=Some(1.2107395) solved=false terminal=false
+arm=nn-tiny budget=200 state=25 pick=StartBlock (12,1) root_value=Some(-32) root_visits=135
+  StartMove (12,1) visits=7 q=Some(-40) prior=Some(0.7629877) solved=false terminal=false
+  StartBlitz (12,1) visits=9 q=Some(-40) prior=Some(1.0435711) solved=false terminal=false
+  StartBlock (12,1) visits=112 q=Some(-32) prior=Some(1.0855801) solved=false terminal=false
+  EndTurn visits=8 q=Some(-40) prior=Some(1.1078609) solved=false terminal=false
+arm=nn-tiny budget=200 state=26 pick=EndTurn root_value=Some(0) root_visits=134
+  StartMove (10,6) visits=3 q=Some(41) prior=Some(0.75401384) solved=false terminal=false
+  StartMove (13,3) visits=4 q=Some(40) prior=Some(0.7573955) solved=false terminal=false
+  StartMove (13,6) visits=4 q=Some(40) prior=Some(0.7445538) solved=false terminal=false
+  StartBlitz (10,6) visits=4 q=Some(41) prior=Some(1.0877798) solved=false terminal=false
+  StartBlitz (13,3) visits=8 q=Some(41) prior=Some(1.0995579) solved=false terminal=false
+  StartBlitz (13,6) visits=4 q=Some(40) prior=Some(1.1171165) solved=false terminal=false
+  StartPass (10,6) visits=4 q=Some(41) prior=Some(1.0166119) solved=false terminal=false
+  StartHandoff (10,6) visits=4 q=Some(41) prior=Some(0.942493) solved=false terminal=false
+  StartBlock (10,6) visits=60 q=Some(13) prior=Some(1.114321) solved=false terminal=false
+  StartBlock (13,3) visits=18 q=Some(13) prior=Some(1.1398485) solved=false terminal=false
+  StartBlock (13,6) visits=20 q=Some(6) prior=Some(1.0834227) solved=false terminal=false
+  EndTurn visits=1 q=Some(0) prior=Some(1.1428845) solved=true terminal=true
+arm=nn-tiny budget=200 state=27 pick=StartBlock (11,7) root_value=Some(-2) root_visits=137
+  StartMove (7,6) visits=3 q=Some(-40) prior=Some(0.7522796) solved=false terminal=false
+  StartMove (11,7) visits=3 q=Some(-40) prior=Some(0.76581025) solved=false terminal=false
+  StartBlitz (7,6) visits=3 q=Some(-40) prior=Some(1.0783076) solved=false terminal=false
+  StartBlitz (11,7) visits=3 q=Some(-40) prior=Some(1.0856069) solved=false terminal=false
+  StartPass (11,7) visits=21 q=Some(-26) prior=Some(1.0103378) solved=false terminal=false
+  StartHandoff (11,7) visits=5 q=Some(-40) prior=Some(0.9311052) solved=false terminal=false
+  StartBlock (7,6) visits=11 q=Some(-6) prior=Some(1.1131597) solved=false terminal=false
+  StartBlock (11,7) visits=86 q=Some(-2) prior=Some(1.124244) solved=false terminal=false
+  EndTurn visits=4 q=Some(-40) prior=Some(1.1391485) solved=false terminal=false
+arm=nn-tiny budget=200 state=28 pick=StartBlock (3,3) root_value=Some(11) root_visits=151
+  StartMove (2,4) visits=7 q=Some(40) prior=Some(0.75283563) solved=false terminal=false
+  StartMove (3,3) visits=8 q=Some(40) prior=Some(0.74926895) solved=false terminal=false
+  StartMove (4,4) visits=7 q=Some(39) prior=Some(0.73209435) solved=false terminal=false
+  StartMove (4,5) visits=7 q=Some(39) prior=Some(0.7525498) solved=false terminal=false
+  StartBlitz (2,4) visits=7 q=Some(40) prior=Some(1.062508) solved=false terminal=false
+  StartBlitz (3,3) visits=7 q=Some(40) prior=Some(1.0978255) solved=false terminal=false
+  StartBlitz (4,4) visits=8 q=Some(39) prior=Some(1.1524464) solved=false terminal=false
+  StartBlitz (4,5) visits=7 q=Some(39) prior=Some(1.0763887) solved=false terminal=false
+  StartBlock (2,4) visits=7 q=Some(40) prior=Some(1.1021596) solved=false terminal=false
+  StartBlock (3,3) visits=65 q=Some(11) prior=Some(1.1083875) solved=false terminal=false
+  StartBlock (4,4) visits=8 q=Some(39) prior=Some(1.1625358) solved=false terminal=false
+  StartBlock (4,5) visits=8 q=Some(39) prior=Some(1.1181036) solved=false terminal=false
+  EndTurn visits=8 q=Some(40) prior=Some(1.1328965) solved=false terminal=false
+arm=nn-tiny budget=200 state=29 pick=StartMove (13,1) root_value=Some(-39) root_visits=140
+  StartMove (12,7) visits=3 q=Some(-40) prior=Some(0.76478946) solved=false terminal=false
+  StartMove (13,1) visits=9 q=Some(-39) prior=Some(0.79587346) solved=false terminal=false
+  StartMove (13,2) visits=8 q=Some(-39) prior=Some(0.74969506) solved=false terminal=false
+  StartMove (13,7) visits=9 q=Some(-39) prior=Some(0.78089964) solved=false terminal=false
+  StartBlitz (12,7) visits=3 q=Some(-40) prior=Some(1.1696441) solved=false terminal=false
+  StartBlitz (13,1) visits=10 q=Some(-40) prior=Some(1.1403852) solved=false terminal=false
+  StartBlitz (13,2) visits=6 q=Some(-40) prior=Some(1.099716) solved=false terminal=false
+  StartBlitz (13,7) visits=3 q=Some(-40) prior=Some(1.1108351) solved=false terminal=false
+  StartBlock (12,7) visits=87 q=Some(-76) prior=Some(1.2010195) solved=false terminal=false
+  EndTurn visits=3 q=Some(-39) prior=Some(1.1871427) solved=false terminal=false
+arm=nn-tiny budget=200 state=30 pick=EndTurn root_value=Some(40) root_visits=120
+  StartMove (1,3) visits=5 q=Some(-39) prior=Some(0.7820885) solved=false terminal=false
+  StartMove (4,1) visits=5 q=Some(-39) prior=Some(0.7801072) solved=false terminal=false
+  StartBlitz (1,3) visits=6 q=Some(-40) prior=Some(1.1141101) solved=false terminal=false
+  StartBlitz (4,1) visits=5 q=Some(-40) prior=Some(1.0948824) solved=false terminal=false
+  StartPass (1,3) visits=7 q=Some(-40) prior=Some(0.9731068) solved=false terminal=false
+  StartPass (4,1) visits=6 q=Some(-40) prior=Some(1.0144136) solved=false terminal=false
+  StartHandoff (1,3) visits=7 q=Some(-38) prior=Some(0.9362755) solved=false terminal=false
+  StartHandoff (4,1) visits=6 q=Some(-38) prior=Some(0.9114227) solved=false terminal=false
+  StartBlock (1,3) visits=25 q=Some(4) prior=Some(1.1075456) solved=false terminal=false
+  StartBlock (4,1) visits=51 q=Some(19) prior=Some(1.1268218) solved=false terminal=false
+  EndTurn visits=7 q=Some(40) prior=Some(1.1592251) solved=false terminal=false
+arm=nn-tiny budget=200 state=31 pick=StartBlock (5,5) root_value=Some(17) root_visits=148
+  StartMove (1,7) visits=3 q=Some(-40) prior=Some(0.77459604) solved=false terminal=false
+  StartMove (2,3) visits=3 q=Some(-41) prior=Some(0.7724289) solved=false terminal=false
+  StartMove (5,5) visits=3 q=Some(-41) prior=Some(0.75375926) solved=false terminal=false
+  StartBlitz (1,7) visits=3 q=Some(-41) prior=Some(1.0965302) solved=false terminal=false
+  StartBlitz (2,3) visits=3 q=Some(-41) prior=Some(1.0855985) solved=false terminal=false
+  StartBlitz (5,5) visits=3 q=Some(-41) prior=Some(1.0678723) solved=false terminal=false
+  StartPass (5,5) visits=3 q=Some(-42) prior=Some(1.0240301) solved=false terminal=false
+  StartHandoff (5,5) visits=3 q=Some(-41) prior=Some(0.9781106) solved=false terminal=false
+  StartBlock (2,3) visits=3 q=Some(-41) prior=Some(1.1336001) solved=false terminal=false
+  StartBlock (5,5) visits=119 q=Some(17) prior=Some(1.1364268) solved=false terminal=false
+  EndTurn visits=3 q=Some(-40) prior=Some(1.1770463) solved=false terminal=false
+arm=nn-tiny budget=200 state=32 pick=StartBlock (12,5) root_value=Some(-28) root_visits=136
+  StartMove (12,5) visits=6 q=Some(39) prior=Some(0.7415295) solved=false terminal=false
+  StartMove (13,5) visits=8 q=Some(39) prior=Some(0.7751434) solved=false terminal=false
+  StartBlitz (12,5) visits=11 q=Some(39) prior=Some(1.0909222) solved=false terminal=false
+  StartBlitz (13,5) visits=5 q=Some(39) prior=Some(1.1026517) solved=false terminal=false
+  StartPass (13,5) visits=14 q=Some(-14) prior=Some(1.0001101) solved=false terminal=false
+  StartHandoff (13,5) visits=9 q=Some(11) prior=Some(0.883063) solved=false terminal=false
+  StartBlock (12,5) visits=57 q=Some(-28) prior=Some(1.1133941) solved=false terminal=false
+  StartBlock (13,5) visits=19 q=Some(39) prior=Some(1.135029) solved=false terminal=false
+  EndTurn visits=7 q=Some(39) prior=Some(1.1581573) solved=false terminal=false
+arm=nn-tiny budget=200 state=33 pick=StartBlock (6,2) root_value=Some(-7) root_visits=138
+  StartMove (2,3) visits=5 q=Some(40) prior=Some(0.7687292) solved=false terminal=false
+  StartMove (6,2) visits=5 q=Some(41) prior=Some(0.74998766) solved=false terminal=false
+  StartMove (6,3) visits=8 q=Some(40) prior=Some(0.74841654) solved=false terminal=false
+  StartMove (6,5) visits=5 q=Some(41) prior=Some(0.79976016) solved=false terminal=false
+  StartBlitz (2,3) visits=5 q=Some(40) prior=Some(1.1073772) solved=false terminal=false
+  StartBlitz (6,2) visits=28 q=Some(41) prior=Some(1.1105868) solved=false terminal=false
+  StartBlitz (6,3) visits=26 q=Some(41) prior=Some(1.0986629) solved=false terminal=false
+  StartBlitz (6,5) visits=5 q=Some(41) prior=Some(1.1159139) solved=false terminal=false
+  StartPass (2,3) visits=5 q=Some(41) prior=Some(1.0296413) solved=false terminal=false
+  StartHandoff (2,3) visits=9 q=Some(41) prior=Some(0.96306914) solved=false terminal=false
+  StartBlock (6,2) visits=19 q=Some(-7) prior=Some(1.1266888) solved=false terminal=false
+  StartBlock (6,3) visits=5 q=Some(40) prior=Some(1.1198078) solved=false terminal=false
+  StartBlock (6,5) visits=7 q=Some(41) prior=Some(1.0883826) solved=false terminal=false
+  EndTurn visits=7 q=Some(41) prior=Some(1.1729759) solved=false terminal=false
+arm=nn-tiny budget=200 state=34 pick=StartMove (2,3) root_value=Some(-39) root_visits=139
+  StartMove (2,3) visits=94 q=Some(-39) prior=Some(0.7598332) solved=false terminal=false
+  StartBlitz (2,3) visits=13 q=Some(40) prior=Some(1.0894231) solved=false terminal=false
+  EndTurn visits=32 q=Some(39) prior=Some(1.1507438) solved=false terminal=false
+arm=nn-tiny budget=200 state=35 pick=StartBlock (9,4) root_value=Some(20) root_visits=149
+  StartMove (3,6) visits=12 q=Some(39) prior=Some(0.7755642) solved=false terminal=false
+  StartMove (4,1) visits=8 q=Some(40) prior=Some(0.7786822) solved=false terminal=false
+  StartMove (9,4) visits=12 q=Some(40) prior=Some(0.77922416) solved=false terminal=false
+  StartBlitz (3,6) visits=9 q=Some(40) prior=Some(1.1109623) solved=false terminal=false
+  StartBlitz (4,1) visits=9 q=Some(39) prior=Some(1.1077248) solved=false terminal=false
+  StartBlitz (9,4) visits=14 q=Some(40) prior=Some(1.1242064) solved=false terminal=false
+  StartBlock (9,4) visits=63 q=Some(20) prior=Some(1.1504613) solved=false terminal=false
+  EndTurn visits=22 q=Some(40) prior=Some(1.1731746) solved=false terminal=false
+arm=nn-tiny budget=200 state=36 pick=StartBlitz (9,7) root_value=Some(-1000) root_visits=135
+  StartMove (9,7) visits=37 q=Some(-1000) prior=Some(0.763256) solved=false terminal=false
+  StartMove (13,7) visits=5 q=Some(39) prior=Some(0.7592003) solved=false terminal=false
+  StartBlitz (9,7) visits=40 q=Some(-1000) prior=Some(1.0835136) solved=false terminal=false
+  StartBlitz (13,7) visits=8 q=Some(39) prior=Some(1.0992198) solved=false terminal=false
+  StartPass (9,7) visits=19 q=Some(38) prior=Some(1.0261029) solved=false terminal=false
+  StartHandoff (9,7) visits=9 q=Some(11) prior=Some(0.9590838) solved=false terminal=false
+  StartBlock (13,7) visits=13 q=Some(16) prior=Some(1.1430678) solved=false terminal=false
+  EndTurn visits=5 q=Some(38) prior=Some(1.1665556) solved=false terminal=false
+arm=nn-tiny budget=200 state=37 pick=StartBlitz (12,2) root_value=Some(40) root_visits=143
+  StartMove (12,2) visits=21 q=Some(40) prior=Some(0.7601118) solved=false terminal=false
+  StartMove (12,3) visits=7 q=Some(40) prior=Some(0.7405076) solved=false terminal=false
+  StartMove (13,1) visits=7 q=Some(40) prior=Some(0.7636342) solved=false terminal=false
+  StartBlitz (12,2) visits=42 q=Some(40) prior=Some(1.1785872) solved=false terminal=false
+  StartBlitz (12,3) visits=13 q=Some(40) prior=Some(1.0706104) solved=false terminal=false
+  StartBlitz (13,1) visits=8 q=Some(41) prior=Some(1.0971663) solved=false terminal=false
+  StartPass (13,1) visits=7 q=Some(41) prior=Some(0.9888556) solved=false terminal=false
+  StartHandoff (13,1) visits=8 q=Some(40) prior=Some(0.9043377) solved=false terminal=false
+  StartBlock (12,2) visits=7 q=Some(41) prior=Some(1.0966727) solved=false terminal=false
+  StartBlock (12,3) visits=8 q=Some(40) prior=Some(1.1132593) solved=false terminal=false
+  StartBlock (13,1) visits=8 q=Some(40) prior=Some(1.1164634) solved=false terminal=false
+  EndTurn visits=8 q=Some(40) prior=Some(1.1697941) solved=false terminal=false
+arm=nn-tiny budget=200 state=38 pick=StartMove (13,1) root_value=Some(-26) root_visits=124
+  StartMove (13,1) visits=46 q=Some(-26) prior=Some(0.7592524) solved=false terminal=false
+  StartBlitz (13,1) visits=58 q=Some(-40) prior=Some(1.0427132) solved=false terminal=false
+  StartBlock (13,1) visits=17 q=Some(-40) prior=Some(1.0901555) solved=false terminal=false
+  EndTurn visits=10 q=Some(-40) prior=Some(1.1078789) solved=false terminal=false
+arm=nn-tiny budget=200 state=39 pick=StartBlock (8,4) root_value=Some(40) root_visits=141
+  StartMove (6,3) visits=3 q=Some(-41) prior=Some(0.7467242) solved=false terminal=false
+  StartMove (6,4) visits=3 q=Some(-41) prior=Some(0.7383709) solved=false terminal=false
+  StartMove (6,5) visits=3 q=Some(-41) prior=Some(0.7614888) solved=false terminal=false
+  StartMove (8,4) visits=3 q=Some(-41) prior=Some(0.73473006) solved=false terminal=false
+  StartBlitz (6,3) visits=4 q=Some(-41) prior=Some(1.123861) solved=false terminal=false
+  StartBlitz (6,4) visits=5 q=Some(-41) prior=Some(1.1318376) solved=false terminal=false
+  StartBlitz (6,5) visits=4 q=Some(-41) prior=Some(1.1307205) solved=false terminal=false
+  StartBlitz (8,4) visits=4 q=Some(-41) prior=Some(1.0969279) solved=false terminal=false
+  StartPass (8,4) visits=4 q=Some(-41) prior=Some(0.97802854) solved=false terminal=false
+  StartHandoff (8,4) visits=4 q=Some(-41) prior=Some(0.9769108) solved=false terminal=false
+  StartBlock (6,3) visits=4 q=Some(-41) prior=Some(1.1093767) solved=false terminal=false
+  StartBlock (6,4) visits=4 q=Some(-41) prior=Some(1.1096236) solved=false terminal=false
+  StartBlock (6,5) visits=11 q=Some(-38) prior=Some(1.0918673) solved=false terminal=false
+  StartBlock (8,4) visits=87 q=Some(40) prior=Some(1.1090156) solved=false terminal=false
+  EndTurn visits=6 q=Some(-39) prior=Some(1.1605173) solved=false terminal=false
+arm=nn-tiny budget=1000 state=0 pick=StartMove (9,1) root_value=Some(-1000) root_visits=744
+  StartMove (8,4) visits=56 q=Some(40) prior=Some(0.79191875) solved=false terminal=false
+  StartMove (9,1) visits=591 q=Some(-1000) prior=Some(0.79611546) solved=false terminal=false
+  StartMove (11,6) visits=7 q=Some(40) prior=Some(0.78914356) solved=false terminal=false
+  StartBlitz (8,4) visits=12 q=Some(40) prior=Some(1.1272136) solved=false terminal=false
+  StartBlitz (9,1) visits=47 q=Some(-479) prior=Some(1.1307578) solved=false terminal=false
+  StartBlitz (11,6) visits=7 q=Some(40) prior=Some(1.1310086) solved=false terminal=false
+  StartPass (9,1) visits=5 q=Some(40) prior=Some(1.0607333) solved=false terminal=false
+  StartHandoff (9,1) visits=6 q=Some(39) prior=Some(0.9844114) solved=false terminal=false
+  EndTurn visits=13 q=Some(40) prior=Some(1.188697) solved=false terminal=false
+arm=nn-tiny budget=1000 state=1 pick=StartBlock (8,3) root_value=Some(-26) root_visits=985
+  StartMove (8,3) visits=6 q=Some(41) prior=Some(0.78690916) solved=false terminal=false
+  StartMove (8,5) visits=6 q=Some(41) prior=Some(0.75613964) solved=false terminal=false
+  StartMove (8,6) visits=6 q=Some(41) prior=Some(0.72767246) solved=false terminal=false
+  StartMove (8,7) visits=6 q=Some(41) prior=Some(0.7723316) solved=false terminal=false
+  StartBlitz (8,3) visits=6 q=Some(40) prior=Some(1.125833) solved=false terminal=false
+  StartBlitz (8,5) visits=6 q=Some(41) prior=Some(1.1187872) solved=false terminal=false
+  StartBlitz (8,6) visits=6 q=Some(41) prior=Some(1.1236613) solved=false terminal=false
+  StartBlitz (8,7) visits=8 q=Some(41) prior=Some(1.1202013) solved=false terminal=false
+  StartPass (8,3) visits=323 q=Some(35) prior=Some(1.0090983) solved=false terminal=false
+  StartPass (8,5) visits=31 q=Some(40) prior=Some(0.9848763) solved=false terminal=false
+  StartPass (8,6) visits=14 q=Some(41) prior=Some(0.96354073) solved=false terminal=false
+  StartPass (8,7) visits=13 q=Some(41) prior=Some(0.9987185) solved=false terminal=false
+  StartHandoff (8,3) visits=266 q=Some(17) prior=Some(0.94157577) solved=false terminal=false
+  StartHandoff (8,5) visits=32 q=Some(11) prior=Some(0.9391556) solved=false terminal=false
+  StartHandoff (8,6) visits=14 q=Some(40) prior=Some(0.95004517) solved=false terminal=false
+  StartHandoff (8,7) visits=13 q=Some(40) prior=Some(0.95885646) solved=false terminal=false
+  StartBlock (8,3) visits=139 q=Some(-26) prior=Some(1.1488866) solved=false terminal=false
+  StartBlock (8,5) visits=67 q=Some(-26) prior=Some(1.1308024) solved=false terminal=false
+  StartBlock (8,6) visits=9 q=Some(41) prior=Some(1.1227813) solved=false terminal=false
+  StartBlock (8,7) visits=9 q=Some(41) prior=Some(1.1243169) solved=false terminal=false
+  EndTurn visits=6 q=Some(41) prior=Some(1.1958092) solved=false terminal=false
+arm=nn-tiny budget=1000 state=2 pick=StartMove (9,6) root_value=Some(0) root_visits=787
+  StartMove (6,4) visits=29 q=Some(39) prior=Some(0.7921474) solved=false terminal=false
+  StartMove (9,6) visits=433 q=Some(0) prior=Some(0.785456) solved=false terminal=false
+  StartMove (10,6) visits=276 q=Some(0) prior=Some(0.7762463) solved=false terminal=false
+  StartBlitz (6,4) visits=9 q=Some(40) prior=Some(1.1342319) solved=false terminal=false
+  StartBlitz (9,6) visits=14 q=Some(40) prior=Some(1.1322488) solved=false terminal=false
+  StartBlitz (10,6) visits=25 q=Some(40) prior=Some(1.1599979) solved=false terminal=false
+  EndTurn visits=1 q=Some(0) prior=Some(1.2196718) solved=true terminal=true
+arm=nn-tiny budget=1000 state=3 pick=StartBlock (4,5) root_value=Some(39) root_visits=712
+  StartMove (3,2) visits=12 q=Some(39) prior=Some(0.7697612) solved=false terminal=false
+  StartMove (3,3) visits=13 q=Some(39) prior=Some(0.7416867) solved=false terminal=false
+  StartMove (3,6) visits=120 q=Some(39) prior=Some(0.7541355) solved=false terminal=false
+  StartMove (4,5) visits=179 q=Some(39) prior=Some(0.7337072) solved=false terminal=false
+  StartBlitz (3,2) visits=10 q=Some(40) prior=Some(1.1785078) solved=false terminal=false
+  StartBlitz (3,3) visits=10 q=Some(41) prior=Some(1.0730298) solved=false terminal=false
+  StartBlitz (3,6) visits=55 q=Some(40) prior=Some(1.1116772) solved=false terminal=false
+  StartBlitz (4,5) visits=39 q=Some(41) prior=Some(1.0841436) solved=false terminal=false
+  StartBlock (3,2) visits=8 q=Some(40) prior=Some(1.1472391) solved=false terminal=false
+  StartBlock (3,3) visits=8 q=Some(40) prior=Some(1.1220198) solved=false terminal=false
+  StartBlock (4,5) visits=238 q=Some(39) prior=Some(1.1274611) solved=false terminal=false
+  EndTurn visits=20 q=Some(40) prior=Some(1.1566318) solved=false terminal=false
+arm=nn-tiny budget=1000 state=4 pick=StartBlitz (4,5) root_value=Some(-14) root_visits=688
+  StartMove (4,5) visits=623 q=Some(39) prior=Some(0.7621044) solved=false terminal=false
+  StartBlitz (4,5) visits=18 q=Some(-14) prior=Some(1.087512) solved=false terminal=false
+  EndTurn visits=47 q=Some(681) prior=Some(1.1503836) solved=false terminal=false
+arm=nn-tiny budget=1000 state=5 pick=StartBlock (13,4) root_value=Some(27) root_visits=684
+  StartMove (9,5) visits=82 q=Some(-40) prior=Some(0.770835) solved=false terminal=false
+  StartMove (12,5) visits=50 q=Some(-40) prior=Some(0.77582467) solved=false terminal=false
+  StartMove (13,4) visits=38 q=Some(-40) prior=Some(0.76349646) solved=false terminal=false
+  StartBlitz (9,5) visits=47 q=Some(-40) prior=Some(1.1441094) solved=false terminal=false
+  StartBlitz (12,5) visits=54 q=Some(-40) prior=Some(1.1406759) solved=false terminal=false
+  StartBlitz (13,4) visits=48 q=Some(-40) prior=Some(1.0739582) solved=false terminal=false
+  StartPass (9,5) visits=13 q=Some(-41) prior=Some(0.98370427) solved=false terminal=false
+  StartPass (12,5) visits=16 q=Some(-41) prior=Some(0.9607266) solved=false terminal=false
+  StartPass (13,4) visits=13 q=Some(-41) prior=Some(1.0262517) solved=false terminal=false
+  StartHandoff (9,5) visits=26 q=Some(-3) prior=Some(0.9365335) solved=false terminal=false
+  StartHandoff (12,5) visits=16 q=Some(-40) prior=Some(0.93144614) solved=false terminal=false
+  StartHandoff (13,4) visits=24 q=Some(-3) prior=Some(0.9469284) solved=false terminal=false
+  StartBlock (9,5) visits=90 q=Some(16) prior=Some(1.0981313) solved=false terminal=false
+  StartBlock (12,5) visits=21 q=Some(-40) prior=Some(1.1656952) solved=false terminal=false
+  StartBlock (13,4) visits=139 q=Some(27) prior=Some(1.1288443) solved=false terminal=false
+  EndTurn visits=11 q=Some(-40) prior=Some(1.1528397) solved=false terminal=false
+arm=nn-tiny budget=1000 state=6 pick=StartBlock (11,5) root_value=Some(0) root_visits=786
+  StartMove (11,5) visits=11 q=Some(-39) prior=Some(0.7393576) solved=false terminal=false
+  StartMove (12,1) visits=9 q=Some(-39) prior=Some(0.7751763) solved=false terminal=false
+  StartMove (12,3) visits=11 q=Some(-39) prior=Some(0.7557403) solved=false terminal=false
+  StartMove (12,4) visits=19 q=Some(-39) prior=Some(0.75416565) solved=false terminal=false
+  StartBlitz (11,5) visits=16 q=Some(-40) prior=Some(1.0769631) solved=false terminal=false
+  StartBlitz (12,1) visits=18 q=Some(-40) prior=Some(1.099962) solved=false terminal=false
+  StartBlitz (12,3) visits=12 q=Some(-40) prior=Some(1.1015741) solved=false terminal=false
+  StartBlitz (12,4) visits=11 q=Some(-40) prior=Some(1.1310416) solved=false terminal=false
+  StartBlock (11,5) visits=82 q=Some(0) prior=Some(1.1341182) solved=false terminal=false
+  StartBlock (12,3) visits=569 q=Some(-12) prior=Some(1.1192598) solved=false terminal=false
+  StartBlock (12,4) visits=21 q=Some(-30) prior=Some(1.1256821) solved=false terminal=false
+  EndTurn visits=8 q=Some(-40) prior=Some(1.1869582) solved=false terminal=false
+arm=nn-tiny budget=1000 state=7 pick=StartMove (2,5) root_value=Some(13) root_visits=708
+  StartMove (2,5) visits=465 q=Some(13) prior=Some(0.76440287) solved=false terminal=false
+  StartBlitz (2,5) visits=46 q=Some(25) prior=Some(1.0791459) solved=false terminal=false
+  EndTurn visits=197 q=Some(40) prior=Some(1.1564513) solved=false terminal=false
+arm=nn-tiny budget=1000 state=8 pick=StartBlock (8,4) root_value=Some(-31) root_visits=720
+  StartMove (7,6) visits=37 q=Some(-41) prior=Some(0.7586548) solved=false terminal=false
+  StartMove (8,4) visits=141 q=Some(-41) prior=Some(0.7258909) solved=false terminal=false
+  StartMove (8,5) visits=8 q=Some(-41) prior=Some(0.7593272) solved=false terminal=false
+  StartMove (9,5) visits=26 q=Some(-41) prior=Some(0.76379025) solved=false terminal=false
+  StartBlitz (7,6) visits=17 q=Some(-41) prior=Some(1.1146939) solved=false terminal=false
+  StartBlitz (8,4) visits=26 q=Some(-41) prior=Some(1.1007094) solved=false terminal=false
+  StartBlitz (8,5) visits=8 q=Some(-41) prior=Some(1.1293664) solved=false terminal=false
+  StartBlitz (9,5) visits=26 q=Some(-41) prior=Some(1.0990869) solved=false terminal=false
+  StartPass (9,5) visits=8 q=Some(-41) prior=Some(1.016305) solved=false terminal=false
+  StartHandoff (9,5) visits=13 q=Some(-41) prior=Some(0.95650446) solved=false terminal=false
+  StartBlock (7,6) visits=15 q=Some(-41) prior=Some(1.1515478) solved=false terminal=false
+  StartBlock (8,4) visits=165 q=Some(-31) prior=Some(1.1044433) solved=false terminal=false
+  StartBlock (8,5) visits=225 q=Some(-33) prior=Some(1.1673054) solved=false terminal=false
+  EndTurn visits=9 q=Some(-41) prior=Some(1.152375) solved=false terminal=false
+arm=nn-tiny budget=1000 state=9 pick=EndTurn root_value=Some(-38) root_visits=5061
+  StartMove (2,4) visits=5 q=Some(40) prior=Some(0.79294294) solved=false terminal=false
+  StartMove (2,7) visits=15 q=Some(39) prior=Some(0.7723329) solved=false terminal=false
+  StartMove (4,4) visits=5 q=Some(40) prior=Some(0.77421874) solved=false terminal=false
+  StartMove (6,3) visits=36 q=Some(39) prior=Some(0.7723946) solved=false terminal=false
+  StartBlitz (2,4) visits=6 q=Some(40) prior=Some(1.1537517) solved=false terminal=false
+  StartBlitz (2,7) visits=10 q=Some(40) prior=Some(1.0998516) solved=false terminal=false
+  StartBlitz (4,4) visits=6 q=Some(39) prior=Some(1.1269505) solved=false terminal=false
+  StartBlitz (6,3) visits=10 q=Some(40) prior=Some(1.1025412) solved=false terminal=false
+  StartPass (2,4) visits=10 q=Some(37) prior=Some(0.9906651) solved=false terminal=false
+  StartPass (2,7) visits=7 q=Some(40) prior=Some(1.0411633) solved=false terminal=false
+  StartPass (4,4) visits=10 q=Some(36) prior=Some(1.0079273) solved=false terminal=false
+  StartPass (6,3) visits=7 q=Some(39) prior=Some(1.0296861) solved=false terminal=false
+  StartHandoff (2,4) visits=10 q=Some(36) prior=Some(0.95224947) solved=false terminal=false
+  StartHandoff (2,7) visits=7 q=Some(39) prior=Some(0.98267865) solved=false terminal=false
+  StartHandoff (4,4) visits=24 q=Some(35) prior=Some(0.97882533) solved=false terminal=false
+  StartHandoff (6,3) visits=16 q=Some(37) prior=Some(0.9826311) solved=false terminal=false
+  StartBlock (2,4) visits=2665 q=Some(-26) prior=Some(1.1153796) solved=false terminal=false
+  StartBlock (4,4) visits=1936 q=Some(-23) prior=Some(1.1481345) solved=false terminal=false
+  EndTurn visits=277 q=Some(-38) prior=Some(1.1756768) solved=false terminal=false
+arm=nn-tiny budget=1000 state=10 pick=StartMove (7,3) root_value=Some(-40) root_visits=705
+  StartMove (4,2) visits=5 q=Some(40) prior=Some(0.7605119) solved=false terminal=false
+  StartMove (6,2) visits=9 q=Some(40) prior=Some(0.7798045) solved=false terminal=false
+  StartMove (6,6) visits=141 q=Some(-40) prior=Some(0.7745885) solved=false terminal=false
+  StartMove (7,3) visits=357 q=Some(-40) prior=Some(0.7778755) solved=false terminal=false
+  StartBlitz (4,2) visits=6 q=Some(40) prior=Some(1.1373137) solved=false terminal=false
+  StartBlitz (6,2) visits=12 q=Some(40) prior=Some(1.1553664) solved=false terminal=false
+  StartBlitz (6,6) visits=11 q=Some(40) prior=Some(1.10616) solved=false terminal=false
+  StartBlitz (7,3) visits=11 q=Some(40) prior=Some(1.1099502) solved=false terminal=false
+  StartPass (4,2) visits=6 q=Some(41) prior=Some(0.9993577) solved=false terminal=false
+  StartHandoff (4,2) visits=24 q=Some(13) prior=Some(0.95421875) solved=false terminal=false
+  StartBlock (4,2) visits=51 q=Some(33) prior=Some(1.1217268) solved=false terminal=false
+  StartBlock (6,2) visits=63 q=Some(9) prior=Some(1.1519287) solved=false terminal=false
+  EndTurn visits=9 q=Some(40) prior=Some(1.171198) solved=false terminal=false
+arm=nn-tiny budget=1000 state=11 pick=StartMove (4,3) root_value=Some(1000) root_visits=690
+  StartMove (1,1) visits=22 q=Some(-41) prior=Some(0.8059206) solved=false terminal=false
+  StartMove (1,4) visits=262 q=Some(25) prior=Some(0.7750824) solved=false terminal=false
+  StartMove (1,6) visits=10 q=Some(-41) prior=Some(0.7787448) solved=false terminal=false
+  StartMove (4,3) visits=145 q=Some(1000) prior=Some(0.776891) solved=false terminal=false
+  StartBlitz (1,1) visits=46 q=Some(-41) prior=Some(1.1231005) solved=false terminal=false
+  StartBlitz (1,4) visits=31 q=Some(-40) prior=Some(1.0517069) solved=false terminal=false
+  StartBlitz (1,6) visits=11 q=Some(-40) prior=Some(1.1046717) solved=false terminal=false
+  StartBlitz (4,3) visits=22 q=Some(45) prior=Some(1.1025742) solved=false terminal=false
+  StartPass (4,3) visits=28 q=Some(39) prior=Some(1.0276145) solved=false terminal=false
+  StartHandoff (4,3) visits=89 q=Some(757) prior=Some(0.9599377) solved=false terminal=false
+  StartBlock (1,1) visits=14 q=Some(-41) prior=Some(1.2016529) solved=false terminal=false
+  StartBlock (1,4) visits=17 q=Some(-41) prior=Some(1.1134421) solved=false terminal=false
+  EndTurn visits=11 q=Some(-41) prior=Some(1.1786616) solved=false terminal=false
+arm=nn-tiny budget=1000 state=12 pick=StartMove (2,1) root_value=Some(-40) root_visits=655
+  StartMove (2,1) visits=124 q=Some(-40) prior=Some(0.7767382) solved=false terminal=false
+  StartMove (2,3) visits=99 q=Some(-40) prior=Some(0.7709886) solved=false terminal=false
+  StartMove (3,1) visits=207 q=Some(-13) prior=Some(0.7725192) solved=false terminal=false
+  StartMove (4,1) visits=54 q=Some(40) prior=Some(0.7756706) solved=false terminal=false
+  StartBlitz (2,1) visits=19 q=Some(41) prior=Some(1.0996988) solved=false terminal=false
+  StartBlitz (2,3) visits=14 q=Some(40) prior=Some(1.0948946) solved=false terminal=false
+  StartBlitz (3,1) visits=25 q=Some(41) prior=Some(1.1280556) solved=false terminal=false
+  StartBlitz (4,1) visits=23 q=Some(41) prior=Some(1.1079484) solved=false terminal=false
+  StartBlock (3,1) visits=40 q=Some(33) prior=Some(1.1642039) solved=false terminal=false
+  StartBlock (4,1) visits=40 q=Some(33) prior=Some(1.1522156) solved=false terminal=false
+  EndTurn visits=12 q=Some(40) prior=Some(1.157066) solved=false terminal=false
+arm=nn-tiny budget=1000 state=13 pick=StartBlock (13,4) root_value=Some(14) root_visits=613
+  StartMove (11,3) visits=346 q=Some(13) prior=Some(0.75228834) solved=false terminal=false
+  StartMove (13,4) visits=11 q=Some(-39) prior=Some(0.76317894) solved=false terminal=false
+  StartBlitz (11,3) visits=74 q=Some(-40) prior=Some(1.1045426) solved=false terminal=false
+  StartBlitz (13,4) visits=16 q=Some(-40) prior=Some(1.0999866) solved=false terminal=false
+  StartPass (11,3) visits=15 q=Some(-39) prior=Some(0.9845335) solved=false terminal=false
+  StartPass (13,4) visits=17 q=Some(-39) prior=Some(1.006008) solved=false terminal=false
+  StartHandoff (11,3) visits=15 q=Some(-38) prior=Some(0.94383895) solved=false terminal=false
+  StartHandoff (13,4) visits=17 q=Some(-38) prior=Some(0.940541) solved=false terminal=false
+  StartBlock (11,3) visits=12 q=Some(-40) prior=Some(1.1350482) solved=false terminal=false
+  StartBlock (13,4) visits=84 q=Some(14) prior=Some(1.1188079) solved=false terminal=false
+  EndTurn visits=12 q=Some(-39) prior=Some(1.1512264) solved=false terminal=false
+arm=nn-tiny budget=1000 state=14 pick=StartMove (6,4) root_value=Some(1000) root_visits=1005
+  StartMove (3,2) visits=3 q=Some(-40) prior=Some(0.7656841) solved=false terminal=false
+  StartMove (3,3) visits=3 q=Some(-40) prior=Some(0.78085834) solved=false terminal=false
+  StartMove (4,1) visits=10 q=Some(-40) prior=Some(0.77902615) solved=false terminal=false
+  StartMove (6,4) visits=856 q=Some(1000) prior=Some(0.7775645) solved=false terminal=false
+  StartBlitz (3,2) visits=6 q=Some(-40) prior=Some(1.1074713) solved=false terminal=false
+  StartBlitz (3,3) visits=4 q=Some(-40) prior=Some(1.109014) solved=false terminal=false
+  StartBlitz (4,1) visits=12 q=Some(-40) prior=Some(1.1110944) solved=false terminal=false
+  StartBlitz (6,4) visits=55 q=Some(1000) prior=Some(1.1137035) solved=false terminal=false
+  StartPass (6,4) visits=4 q=Some(-40) prior=Some(1.0310698) solved=false terminal=false
+  StartHandoff (6,4) visits=8 q=Some(-40) prior=Some(0.9583645) solved=false terminal=false
+  StartBlock (3,2) visits=10 q=Some(-37) prior=Some(1.1240396) solved=false terminal=false
+  StartBlock (3,3) visits=11 q=Some(-31) prior=Some(1.1511291) solved=false terminal=false
+  EndTurn visits=24 q=Some(39) prior=Some(1.1909803) solved=false terminal=false
+arm=nn-tiny budget=1000 state=15 pick=StartHandoff (3,7) root_value=Some(40) root_visits=748
+  StartMove (1,6) visits=185 q=Some(-39) prior=Some(0.7456709) solved=false terminal=false
+  StartMove (2,6) visits=15 q=Some(-39) prior=Some(0.7586218) solved=false terminal=false
+  StartMove (3,7) visits=15 q=Some(-40) prior=Some(0.7483262) solved=false terminal=false
+  StartBlitz (1,6) visits=39 q=Some(-40) prior=Some(1.1293156) solved=false terminal=false
+  StartBlitz (2,6) visits=15 q=Some(-41) prior=Some(1.0989935) solved=false terminal=false
+  StartBlitz (3,7) visits=15 q=Some(-40) prior=Some(1.0866816) solved=false terminal=false
+  StartPass (3,7) visits=15 q=Some(-41) prior=Some(0.9440992) solved=false terminal=false
+  StartHandoff (3,7) visits=86 q=Some(40) prior=Some(0.9148264) solved=false terminal=false
+  StartBlock (1,6) visits=222 q=Some(26) prior=Some(1.2008371) solved=false terminal=false
+  StartBlock (2,6) visits=29 q=Some(-39) prior=Some(1.1601284) solved=false terminal=false
+  StartBlock (3,7) visits=15 q=Some(-40) prior=Some(1.0776653) solved=false terminal=false
+  EndTurn visits=99 q=Some(-39) prior=Some(1.1348327) solved=false terminal=false
+arm=nn-tiny budget=1000 state=16 pick=StartBlock (4,3) root_value=Some(-40) root_visits=693
+  StartMove (4,2) visits=137 q=Some(40) prior=Some(0.7226578) solved=false terminal=false
+  StartMove (4,3) visits=11 q=Some(40) prior=Some(0.7462721) solved=false terminal=false
+  StartMove (9,2) visits=35 q=Some(40) prior=Some(0.7619733) solved=false terminal=false
+  StartBlitz (4,2) visits=60 q=Some(40) prior=Some(1.1231993) solved=false terminal=false
+  StartBlitz (4,3) visits=11 q=Some(40) prior=Some(1.0840638) solved=false terminal=false
+  StartBlitz (9,2) visits=69 q=Some(40) prior=Some(1.0835736) solved=false terminal=false
+  StartBlock (4,2) visits=71 q=Some(-36) prior=Some(1.0928288) solved=false terminal=false
+  StartBlock (4,3) visits=90 q=Some(-40) prior=Some(1.1129894) solved=false terminal=false
+  StartBlock (9,2) visits=150 q=Some(-14) prior=Some(1.1335493) solved=false terminal=false
+  EndTurn visits=59 q=Some(40) prior=Some(1.1388924) solved=false terminal=false
+arm=nn-tiny budget=1000 state=17 pick=StartBlock (1,2) root_value=Some(-39) root_visits=662
+  StartMove (1,2) visits=65 q=Some(40) prior=Some(0.72436655) solved=false terminal=false
+  StartMove (2,2) visits=73 q=Some(40) prior=Some(0.7754286) solved=false terminal=false
+  StartMove (3,2) visits=25 q=Some(40) prior=Some(0.737793) solved=false terminal=false
+  StartMove (6,2) visits=67 q=Some(40) prior=Some(0.77025867) solved=false terminal=false
+  StartBlitz (1,2) visits=40 q=Some(40) prior=Some(1.1047965) solved=false terminal=false
+  StartBlitz (2,2) visits=38 q=Some(40) prior=Some(1.1044487) solved=false terminal=false
+  StartBlitz (3,2) visits=21 q=Some(40) prior=Some(1.0962516) solved=false terminal=false
+  StartBlitz (6,2) visits=21 q=Some(40) prior=Some(1.087256) solved=false terminal=false
+  StartPass (1,2) visits=9 q=Some(40) prior=Some(0.9776937) solved=false terminal=false
+  StartPass (2,2) visits=9 q=Some(40) prior=Some(1.024677) solved=false terminal=false
+  StartPass (3,2) visits=27 q=Some(40) prior=Some(0.9854469) solved=false terminal=false
+  StartPass (6,2) visits=21 q=Some(40) prior=Some(1.0296192) solved=false terminal=false
+  StartHandoff (1,2) visits=9 q=Some(39) prior=Some(0.9523957) solved=false terminal=false
+  StartHandoff (2,2) visits=9 q=Some(39) prior=Some(0.957238) solved=false terminal=false
+  StartHandoff (3,2) visits=27 q=Some(39) prior=Some(0.9854291) solved=false terminal=false
+  StartHandoff (6,2) visits=21 q=Some(39) prior=Some(0.95330155) solved=false terminal=false
+  StartBlock (1,2) visits=39 q=Some(-39) prior=Some(1.1069295) solved=false terminal=false
+  StartBlock (2,2) visits=22 q=Some(-39) prior=Some(1.1625928) solved=false terminal=false
+  StartBlock (3,2) visits=23 q=Some(-27) prior=Some(1.1631292) solved=false terminal=false
+  StartBlock (6,2) visits=89 q=Some(-15) prior=Some(1.1331694) solved=false terminal=false
+  EndTurn visits=8 q=Some(40) prior=Some(1.1677763) solved=false terminal=false
+arm=nn-tiny budget=1000 state=18 pick=StartMove (7,6) root_value=Some(41) root_visits=688
+  StartMove (6,1) visits=106 q=Some(-40) prior=Some(0.7793534) solved=false terminal=false
+  StartMove (6,4) visits=205 q=Some(-40) prior=Some(0.77016586) solved=false terminal=false
+  StartMove (7,6) visits=130 q=Some(41) prior=Some(0.77450496) solved=false terminal=false
+  StartMove (10,1) visits=7 q=Some(-40) prior=Some(0.7773161) solved=false terminal=false
+  StartBlitz (6,1) visits=29 q=Some(-40) prior=Some(1.1399384) solved=false terminal=false
+  StartBlitz (6,4) visits=28 q=Some(-40) prior=Some(1.0939562) solved=false terminal=false
+  StartBlitz (7,6) visits=17 q=Some(-40) prior=Some(1.1015459) solved=false terminal=false
+  StartBlitz (10,1) visits=23 q=Some(-40) prior=Some(1.1038657) solved=false terminal=false
+  StartPass (10,1) visits=7 q=Some(-40) prior=Some(1.0365152) solved=false terminal=false
+  StartHandoff (10,1) visits=22 q=Some(0) prior=Some(0.9587518) solved=false terminal=false
+  StartBlock (6,1) visits=82 q=Some(15) prior=Some(1.1639982) solved=false terminal=false
+  StartBlock (6,4) visits=24 q=Some(-36) prior=Some(1.1389142) solved=false terminal=false
+  EndTurn visits=8 q=Some(-40) prior=Some(1.161174) solved=false terminal=false
+arm=nn-tiny budget=1000 state=19 pick=StartMove (6,6) root_value=Some(653) root_visits=698
+  StartMove (3,5) visits=206 q=Some(13) prior=Some(0.7604259) solved=false terminal=false
+  StartMove (3,6) visits=7 q=Some(-41) prior=Some(0.71347475) solved=false terminal=false
+  StartMove (4,7) visits=7 q=Some(-41) prior=Some(0.75529647) solved=false terminal=false
+  StartMove (6,6) visits=223 q=Some(653) prior=Some(0.7468055) solved=false terminal=false
+  StartBlitz (3,5) visits=34 q=Some(-40) prior=Some(1.1386188) solved=false terminal=false
+  StartBlitz (3,6) visits=8 q=Some(-41) prior=Some(1.1027446) solved=false terminal=false
+  StartBlitz (4,7) visits=8 q=Some(-41) prior=Some(1.1129017) solved=false terminal=false
+  StartBlitz (6,6) visits=46 q=Some(653) prior=Some(1.0744677) solved=false terminal=false
+  StartPass (6,6) visits=7 q=Some(-41) prior=Some(1.0073162) solved=false terminal=false
+  StartHandoff (6,6) visits=9 q=Some(-40) prior=Some(0.951923) solved=false terminal=false
+  StartBlock (3,5) visits=13 q=Some(-41) prior=Some(1.1543205) solved=false terminal=false
+  StartBlock (3,6) visits=8 q=Some(-41) prior=Some(1.1040189) solved=false terminal=false
+  StartBlock (4,7) visits=8 q=Some(-41) prior=Some(1.1121448) solved=false terminal=false
+  StartBlock (6,6) visits=106 q=Some(-7) prior=Some(1.1214623) solved=false terminal=false
+  EndTurn visits=8 q=Some(-41) prior=Some(1.1440781) solved=false terminal=false
+arm=nn-tiny budget=1000 state=20 pick=StartMove (6,7) root_value=Some(39) root_visits=673
+  StartMove (6,5) visits=21 q=Some(-40) prior=Some(0.7548749) solved=false terminal=false
+  StartMove (6,6) visits=54 q=Some(-40) prior=Some(0.7043924) solved=false terminal=false
+  StartMove (6,7) visits=346 q=Some(39) prior=Some(0.76956874) solved=false terminal=false
+  StartMove (7,7) visits=7 q=Some(-40) prior=Some(0.75501704) solved=false terminal=false
+  StartBlitz (6,5) visits=8 q=Some(-41) prior=Some(1.147205) solved=false terminal=false
+  StartBlitz (6,6) visits=25 q=Some(-41) prior=Some(1.1815696) solved=false terminal=false
+  StartBlitz (6,7) visits=40 q=Some(-41) prior=Some(1.1307832) solved=false terminal=false
+  StartBlitz (7,7) visits=7 q=Some(-40) prior=Some(1.114629) solved=false terminal=false
+  StartBlock (6,5) visits=7 q=Some(-41) prior=Some(1.1247181) solved=false terminal=false
+  StartBlock (6,6) visits=149 q=Some(-3) prior=Some(1.0888766) solved=false terminal=false
+  EndTurn visits=9 q=Some(-40) prior=Some(1.2283658) solved=false terminal=false
+arm=nn-tiny budget=1000 state=21 pick=StartMove (10,5) root_value=Some(13) root_visits=5491
+  StartMove (10,5) visits=179 q=Some(13) prior=Some(0.7301107) solved=false terminal=false
+  StartBlitz (10,5) visits=30 q=Some(-40) prior=Some(1.0687982) solved=false terminal=false
+  StartBlock (10,5) visits=4825 q=Some(-23) prior=Some(1.0916477) solved=false terminal=false
+  EndTurn visits=458 q=Some(-40) prior=Some(1.1094433) solved=false terminal=false
+arm=nn-tiny budget=1000 state=22 pick=StartMove (9,1) root_value=Some(40) root_visits=742
+  StartMove (2,6) visits=9 q=Some(-40) prior=Some(0.7852011) solved=false terminal=false
+  StartMove (5,7) visits=13 q=Some(-40) prior=Some(0.7929506) solved=false terminal=false
+  StartMove (8,7) visits=9 q=Some(-40) prior=Some(0.77706826) solved=false terminal=false
+  StartMove (9,1) visits=489 q=Some(40) prior=Some(0.7861132) solved=false terminal=false
+  StartBlitz (2,6) visits=39 q=Some(-34) prior=Some(1.1206671) solved=false terminal=false
+  StartBlitz (5,7) visits=12 q=Some(-40) prior=Some(1.0941615) solved=false terminal=false
+  StartBlitz (8,7) visits=9 q=Some(-41) prior=Some(1.1103048) solved=false terminal=false
+  StartBlitz (9,1) visits=27 q=Some(-40) prior=Some(1.1191052) solved=false terminal=false
+  StartPass (2,6) visits=15 q=Some(-34) prior=Some(1.0450628) solved=false terminal=false
+  StartPass (5,7) visits=11 q=Some(-41) prior=Some(1.0517949) solved=false terminal=false
+  StartPass (8,7) visits=21 q=Some(-40) prior=Some(1.0447472) solved=false terminal=false
+  StartPass (9,1) visits=9 q=Some(-41) prior=Some(1.0436633) solved=false terminal=false
+  StartHandoff (2,6) visits=15 q=Some(-33) prior=Some(0.97398436) solved=false terminal=false
+  StartHandoff (5,7) visits=11 q=Some(-40) prior=Some(0.95418346) solved=false terminal=false
+  StartHandoff (8,7) visits=22 q=Some(-40) prior=Some(0.9812538) solved=false terminal=false
+  StartHandoff (9,1) visits=9 q=Some(-40) prior=Some(0.96517813) solved=false terminal=false
+  StartBlock (5,7) visits=8 q=Some(-41) prior=Some(1.1574428) solved=false terminal=false
+  EndTurn visits=20 q=Some(-40) prior=Some(1.1971195) solved=false terminal=false
+arm=nn-tiny budget=1000 state=23 pick=StartBlock (4,3) root_value=Some(0) root_visits=768
+  StartMove (3,4) visits=11 q=Some(39) prior=Some(0.756873) solved=false terminal=false
+  StartMove (4,3) visits=11 q=Some(39) prior=Some(0.72550535) solved=false terminal=false
+  StartMove (4,5) visits=5 q=Some(40) prior=Some(0.7766478) solved=false terminal=false
+  StartMove (6,3) visits=11 q=Some(39) prior=Some(0.7445882) solved=false terminal=false
+  StartBlitz (3,4) visits=14 q=Some(40) prior=Some(1.1028175) solved=false terminal=false
+  StartBlitz (4,3) visits=18 q=Some(40) prior=Some(1.1229124) solved=false terminal=false
+  StartBlitz (4,5) visits=5 q=Some(40) prior=Some(1.1008655) solved=false terminal=false
+  StartBlitz (6,3) visits=18 q=Some(40) prior=Some(1.111057) solved=false terminal=false
+  StartBlock (4,3) visits=585 q=Some(0) prior=Some(1.1162696) solved=false terminal=false
+  StartBlock (4,5) visits=76 q=Some(0) prior=Some(1.1438942) solved=false terminal=false
+  StartBlock (6,3) visits=13 q=Some(37) prior=Some(1.13617) solved=false terminal=false
+  EndTurn visits=1 q=Some(0) prior=Some(1.1623987) solved=true terminal=true
+arm=nn-tiny budget=1000 state=24 pick=StartBlock (3,4) root_value=Some(14) root_visits=737
+  StartMove (3,4) visits=15 q=Some(-40) prior=Some(0.7881477) solved=false terminal=false
+  StartMove (7,4) visits=33 q=Some(-40) prior=Some(0.78380847) solved=false terminal=false
+  StartMove (7,6) visits=6 q=Some(-40) prior=Some(0.7770293) solved=false terminal=false
+  StartMove (8,6) visits=6 q=Some(-40) prior=Some(0.7673824) solved=false terminal=false
+  StartBlitz (3,4) visits=16 q=Some(-40) prior=Some(1.108151) solved=false terminal=false
+  StartBlitz (7,4) visits=15 q=Some(-40) prior=Some(1.138785) solved=false terminal=false
+  StartBlitz (7,6) visits=6 q=Some(-40) prior=Some(1.1398505) solved=false terminal=false
+  StartBlitz (8,6) visits=6 q=Some(-40) prior=Some(1.1291155) solved=false terminal=false
+  StartBlock (3,4) visits=628 q=Some(14) prior=Some(1.1569903) solved=false terminal=false
+  EndTurn visits=6 q=Some(-40) prior=Some(1.2107395) solved=false terminal=false
+arm=nn-tiny budget=1000 state=25 pick=StartMove (12,1) root_value=Some(14) root_visits=763
+  StartMove (12,1) visits=20 q=Some(14) prior=Some(0.7629877) solved=false terminal=false
+  StartBlitz (12,1) visits=49 q=Some(-27) prior=Some(1.0435711) solved=false terminal=false
+  StartBlock (12,1) visits=683 q=Some(-32) prior=Some(1.0855801) solved=false terminal=false
+  EndTurn visits=11 q=Some(-40) prior=Some(1.1078609) solved=false terminal=false
+arm=nn-tiny budget=1000 state=26 pick=StartMove (10,6) root_value=Some(-480) root_visits=659
+  StartMove (10,6) visits=218 q=Some(-480) prior=Some(0.75401384) solved=false terminal=false
+  StartMove (13,3) visits=49 q=Some(40) prior=Some(0.7573955) solved=false terminal=false
+  StartMove (13,6) visits=39 q=Some(40) prior=Some(0.7445538) solved=false terminal=false
+  StartBlitz (10,6) visits=49 q=Some(-479) prior=Some(1.0877798) solved=false terminal=false
+  StartBlitz (13,3) visits=32 q=Some(41) prior=Some(1.0995579) solved=false terminal=false
+  StartBlitz (13,6) visits=40 q=Some(40) prior=Some(1.1171165) solved=false terminal=false
+  StartPass (10,6) visits=11 q=Some(41) prior=Some(1.0166119) solved=false terminal=false
+  StartHandoff (10,6) visits=16 q=Some(40) prior=Some(0.942493) solved=false terminal=false
+  StartBlock (10,6) visits=103 q=Some(0) prior=Some(1.114321) solved=false terminal=false
+  StartBlock (13,3) visits=57 q=Some(0) prior=Some(1.1398485) solved=false terminal=false
+  StartBlock (13,6) visits=45 q=Some(1) prior=Some(1.0834227) solved=false terminal=false
+  EndTurn visits=1 q=Some(0) prior=Some(1.1428845) solved=true terminal=true
+arm=nn-tiny budget=1000 state=27 pick=StartBlock (11,7) root_value=Some(17) root_visits=602
+  StartMove (7,6) visits=383 q=Some(13) prior=Some(0.7522796) solved=false terminal=false
+  StartMove (11,7) visits=7 q=Some(-40) prior=Some(0.76581025) solved=false terminal=false
+  StartBlitz (7,6) visits=38 q=Some(-40) prior=Some(1.0783076) solved=false terminal=false
+  StartBlitz (11,7) visits=7 q=Some(-40) prior=Some(1.0856069) solved=false terminal=false
+  StartPass (11,7) visits=27 q=Some(-40) prior=Some(1.0103378) solved=false terminal=false
+  StartHandoff (11,7) visits=12 q=Some(-21) prior=Some(0.9311052) solved=false terminal=false
+  StartBlock (7,6) visits=26 q=Some(5) prior=Some(1.1131597) solved=false terminal=false
+  StartBlock (11,7) visits=95 q=Some(17) prior=Some(1.124244) solved=false terminal=false
+  EndTurn visits=7 q=Some(-40) prior=Some(1.1391485) solved=false terminal=false
+arm=nn-tiny budget=1000 state=28 pick=StartBlock (3,3) root_value=Some(-13) root_visits=666
+  StartMove (2,4) visits=19 q=Some(39) prior=Some(0.75283563) solved=false terminal=false
+  StartMove (3,3) visits=170 q=Some(40) prior=Some(0.74926895) solved=false terminal=false
+  StartMove (4,4) visits=9 q=Some(39) prior=Some(0.73209435) solved=false terminal=false
+  StartMove (4,5) visits=109 q=Some(40) prior=Some(0.7525498) solved=false terminal=false
+  StartBlitz (2,4) visits=21 q=Some(40) prior=Some(1.062508) solved=false terminal=false
+  StartBlitz (3,3) visits=30 q=Some(40) prior=Some(1.0978255) solved=false terminal=false
+  StartBlitz (4,4) visits=10 q=Some(39) prior=Some(1.1524464) solved=false terminal=false
+  StartBlitz (4,5) visits=41 q=Some(40) prior=Some(1.0763887) solved=false terminal=false
+  StartBlock (2,4) visits=10 q=Some(40) prior=Some(1.1021596) solved=false terminal=false
+  StartBlock (3,3) visits=219 q=Some(-13) prior=Some(1.1083875) solved=false terminal=false
+  StartBlock (4,4) visits=10 q=Some(39) prior=Some(1.1625358) solved=false terminal=false
+  StartBlock (4,5) visits=10 q=Some(39) prior=Some(1.1181036) solved=false terminal=false
+  EndTurn visits=11 q=Some(40) prior=Some(1.1328965) solved=false terminal=false
+arm=nn-tiny budget=1000 state=29 pick=StartMove (13,2) root_value=Some(40) root_visits=705
+  StartMove (12,7) visits=160 q=Some(13) prior=Some(0.76478946) solved=false terminal=false
+  StartMove (13,1) visits=101 q=Some(40) prior=Some(0.79587346) solved=false terminal=false
+  StartMove (13,2) visits=142 q=Some(40) prior=Some(0.74969506) solved=false terminal=false
+  StartMove (13,7) visits=27 q=Some(-39) prior=Some(0.78089964) solved=false terminal=false
+  StartBlitz (12,7) visits=23 q=Some(-40) prior=Some(1.1696441) solved=false terminal=false
+  StartBlitz (13,1) visits=15 q=Some(-40) prior=Some(1.1403852) solved=false terminal=false
+  StartBlitz (13,2) visits=16 q=Some(-40) prior=Some(1.099716) solved=false terminal=false
+  StartBlitz (13,7) visits=19 q=Some(-14) prior=Some(1.1108351) solved=false terminal=false
+  StartBlock (12,7) visits=194 q=Some(-269) prior=Some(1.2010195) solved=false terminal=false
+  EndTurn visits=8 q=Some(-39) prior=Some(1.1871427) solved=false terminal=false
+arm=nn-tiny budget=1000 state=30 pick=EndTurn root_value=Some(40) root_visits=631
+  StartMove (1,3) visits=80 q=Some(-39) prior=Some(0.7820885) solved=false terminal=false
+  StartMove (4,1) visits=161 q=Some(-39) prior=Some(0.7801072) solved=false terminal=false
+  StartBlitz (1,3) visits=58 q=Some(-40) prior=Some(1.1141101) solved=false terminal=false
+  StartBlitz (4,1) visits=63 q=Some(-40) prior=Some(1.0948824) solved=false terminal=false
+  StartPass (1,3) visits=14 q=Some(-40) prior=Some(0.9731068) solved=false terminal=false
+  StartPass (4,1) visits=16 q=Some(-40) prior=Some(1.0144136) solved=false terminal=false
+  StartHandoff (1,3) visits=14 q=Some(-38) prior=Some(0.9362755) solved=false terminal=false
+  StartHandoff (4,1) visits=13 q=Some(-38) prior=Some(0.9114227) solved=false terminal=false
+  StartBlock (1,3) visits=96 q=Some(14) prior=Some(1.1075456) solved=false terminal=false
+  StartBlock (4,1) visits=104 q=Some(14) prior=Some(1.1268218) solved=false terminal=false
+  EndTurn visits=14 q=Some(40) prior=Some(1.1592251) solved=false terminal=false
+arm=nn-tiny budget=1000 state=31 pick=StartMove (5,5) root_value=Some(653) root_visits=696
+  StartMove (1,7) visits=13 q=Some(-40) prior=Some(0.77459604) solved=false terminal=false
+  StartMove (2,3) visits=12 q=Some(-41) prior=Some(0.7724289) solved=false terminal=false
+  StartMove (5,5) visits=227 q=Some(653) prior=Some(0.75375926) solved=false terminal=false
+  StartBlitz (1,7) visits=12 q=Some(-41) prior=Some(1.0965302) solved=false terminal=false
+  StartBlitz (2,3) visits=12 q=Some(-41) prior=Some(1.0855985) solved=false terminal=false
+  StartBlitz (5,5) visits=73 q=Some(653) prior=Some(1.0678723) solved=false terminal=false
+  StartPass (5,5) visits=54 q=Some(-40) prior=Some(1.0240301) solved=false terminal=false
+  StartHandoff (5,5) visits=30 q=Some(306) prior=Some(0.9781106) solved=false terminal=false
+  StartBlock (2,3) visits=22 q=Some(-40) prior=Some(1.1336001) solved=false terminal=false
+  StartBlock (5,5) visits=245 q=Some(-24) prior=Some(1.1364268) solved=false terminal=false
+  EndTurn visits=12 q=Some(-40) prior=Some(1.1770463) solved=false terminal=false
+arm=nn-tiny budget=1000 state=32 pick=StartBlitz (13,5) root_value=Some(-893) root_visits=714
+  StartMove (12,5) visits=177 q=Some(-14) prior=Some(0.7415295) solved=false terminal=false
+  StartMove (13,5) visits=181 q=Some(-653) prior=Some(0.7751434) solved=false terminal=false
+  StartBlitz (12,5) visits=21 q=Some(39) prior=Some(1.0909222) solved=false terminal=false
+  StartBlitz (13,5) visits=192 q=Some(-893) prior=Some(1.1026517) solved=false terminal=false
+  StartPass (13,5) visits=16 q=Some(-14) prior=Some(1.0001101) solved=false terminal=false
+  StartHandoff (13,5) visits=11 q=Some(11) prior=Some(0.883063) solved=false terminal=false
+  StartBlock (12,5) visits=87 q=Some(-29) prior=Some(1.1133941) solved=false terminal=false
+  StartBlock (13,5) visits=21 q=Some(39) prior=Some(1.135029) solved=false terminal=false
+  EndTurn visits=9 q=Some(39) prior=Some(1.1581573) solved=false terminal=false
+arm=nn-tiny budget=1000 state=33 pick=StartBlock (6,3) root_value=Some(-34) root_visits=668
+  StartMove (2,3) visits=91 q=Some(41) prior=Some(0.7687292) solved=false terminal=false
+  StartMove (6,2) visits=112 q=Some(40) prior=Some(0.74998766) solved=false terminal=false
+  StartMove (6,3) visits=177 q=Some(40) prior=Some(0.74841654) solved=false terminal=false
+  StartMove (6,5) visits=7 q=Some(41) prior=Some(0.79976016) solved=false terminal=false
+  StartBlitz (2,3) visits=28 q=Some(41) prior=Some(1.1073772) solved=false terminal=false
+  StartBlitz (6,2) visits=36 q=Some(41) prior=Some(1.1105868) solved=false terminal=false
+  StartBlitz (6,3) visits=42 q=Some(21) prior=Some(1.0986629) solved=false terminal=false
+  StartBlitz (6,5) visits=7 q=Some(41) prior=Some(1.1159139) solved=false terminal=false
+  StartPass (2,3) visits=7 q=Some(41) prior=Some(1.0296413) solved=false terminal=false
+  StartHandoff (2,3) visits=12 q=Some(41) prior=Some(0.96306914) solved=false terminal=false
+  StartBlock (6,2) visits=61 q=Some(-9) prior=Some(1.1266888) solved=false terminal=false
+  StartBlock (6,3) visits=70 q=Some(-34) prior=Some(1.1198078) solved=false terminal=false
+  StartBlock (6,5) visits=9 q=Some(41) prior=Some(1.0883826) solved=false terminal=false
+  EndTurn visits=9 q=Some(41) prior=Some(1.1729759) solved=false terminal=false
+arm=nn-tiny budget=1000 state=34 pick=StartMove (2,3) root_value=Some(24) root_visits=697
+  StartMove (2,3) visits=302 q=Some(24) prior=Some(0.7598332) solved=false terminal=false
+  StartBlitz (2,3) visits=15 q=Some(40) prior=Some(1.0894231) solved=false terminal=false
+  EndTurn visits=381 q=Some(39) prior=Some(1.1507438) solved=false terminal=false
+arm=nn-tiny budget=1000 state=35 pick=StartBlock (9,4) root_value=Some(38) root_visits=732
+  StartMove (3,6) visits=29 q=Some(39) prior=Some(0.7755642) solved=false terminal=false
+  StartMove (4,1) visits=21 q=Some(40) prior=Some(0.7786822) solved=false terminal=false
+  StartMove (9,4) visits=15 q=Some(40) prior=Some(0.77922416) solved=false terminal=false
+  StartBlitz (3,6) visits=36 q=Some(40) prior=Some(1.1109623) solved=false terminal=false
+  StartBlitz (4,1) visits=71 q=Some(40) prior=Some(1.1077248) solved=false terminal=false
+  StartBlitz (9,4) visits=85 q=Some(40) prior=Some(1.1242064) solved=false terminal=false
+  StartBlock (9,4) visits=452 q=Some(38) prior=Some(1.1504613) solved=false terminal=false
+  EndTurn visits=25 q=Some(40) prior=Some(1.1731746) solved=false terminal=false
+arm=nn-tiny budget=1000 state=36 pick=StartMove (9,7) root_value=Some(-1000) root_visits=692
+  StartMove (9,7) visits=304 q=Some(-1000) prior=Some(0.763256) solved=false terminal=false
+  StartMove (13,7) visits=36 q=Some(38) prior=Some(0.7592003) solved=false terminal=false
+  StartBlitz (9,7) visits=42 q=Some(-1000) prior=Some(1.0835136) solved=false terminal=false
+  StartBlitz (13,7) visits=10 q=Some(39) prior=Some(1.0992198) solved=false terminal=false
+  StartPass (9,7) visits=21 q=Some(38) prior=Some(1.0261029) solved=false terminal=false
+  StartHandoff (9,7) visits=11 q=Some(11) prior=Some(0.9590838) solved=false terminal=false
+  StartBlock (13,7) visits=269 q=Some(-654) prior=Some(1.1430678) solved=false terminal=false
+  EndTurn visits=7 q=Some(38) prior=Some(1.1665556) solved=false terminal=false
+arm=nn-tiny budget=1000 state=37 pick=StartMove (12,3) root_value=Some(-13) root_visits=772
+  StartMove (12,2) visits=21 q=Some(40) prior=Some(0.7601118) solved=false terminal=false
+  StartMove (12,3) visits=604 q=Some(-13) prior=Some(0.7405076) solved=false terminal=false
+  StartMove (13,1) visits=8 q=Some(40) prior=Some(0.7636342) solved=false terminal=false
+  StartBlitz (12,2) visits=42 q=Some(40) prior=Some(1.1785872) solved=false terminal=false
+  StartBlitz (12,3) visits=38 q=Some(40) prior=Some(1.0706104) solved=false terminal=false
+  StartBlitz (13,1) visits=9 q=Some(41) prior=Some(1.0971663) solved=false terminal=false
+  StartPass (13,1) visits=8 q=Some(41) prior=Some(0.9888556) solved=false terminal=false
+  StartHandoff (13,1) visits=9 q=Some(40) prior=Some(0.9043377) solved=false terminal=false
+  StartBlock (12,2) visits=8 q=Some(41) prior=Some(1.0966727) solved=false terminal=false
+  StartBlock (12,3) visits=8 q=Some(40) prior=Some(1.1132593) solved=false terminal=false
+  StartBlock (13,1) visits=8 q=Some(40) prior=Some(1.1164634) solved=false terminal=false
+  EndTurn visits=9 q=Some(40) prior=Some(1.1697941) solved=false terminal=false
+arm=nn-tiny budget=1000 state=38 pick=StartBlitz (13,1) root_value=Some(0) root_visits=1032
+  StartMove (13,1) visits=308 q=Some(-12) prior=Some(0.7592524) solved=false terminal=false
+  StartBlitz (13,1) visits=688 q=Some(0) prior=Some(1.0427132) solved=false terminal=false
+  StartBlock (13,1) visits=24 q=Some(-40) prior=Some(1.0901555) solved=false terminal=false
+  EndTurn visits=17 q=Some(-40) prior=Some(1.1078789) solved=false terminal=false
+arm=nn-tiny budget=1000 state=39 pick=StartBlock (6,5) root_value=Some(40) root_visits=673
+  StartMove (6,3) visits=19 q=Some(-41) prior=Some(0.7467242) solved=false terminal=false
+  StartMove (6,4) visits=110 q=Some(-41) prior=Some(0.7383709) solved=false terminal=false
+  StartMove (6,5) visits=114 q=Some(-41) prior=Some(0.7614888) solved=false terminal=false
+  StartMove (8,4) visits=28 q=Some(-41) prior=Some(0.73473006) solved=false terminal=false
+  StartBlitz (6,3) visits=19 q=Some(-41) prior=Some(1.123861) solved=false terminal=false
+  StartBlitz (6,4) visits=32 q=Some(-41) prior=Some(1.1318376) solved=false terminal=false
+  StartBlitz (6,5) visits=30 q=Some(-41) prior=Some(1.1307205) solved=false terminal=false
+  StartBlitz (8,4) visits=26 q=Some(-41) prior=Some(1.0969279) solved=false terminal=false
+  StartPass (8,4) visits=9 q=Some(-41) prior=Some(0.97802854) solved=false terminal=false
+  StartHandoff (8,4) visits=17 q=Some(-41) prior=Some(0.9769108) solved=false terminal=false
+  StartBlock (6,3) visits=9 q=Some(-41) prior=Some(1.1093767) solved=false terminal=false
+  StartBlock (6,4) visits=9 q=Some(-41) prior=Some(1.1096236) solved=false terminal=false
+  StartBlock (6,5) visits=55 q=Some(40) prior=Some(1.0918673) solved=false terminal=false
+  StartBlock (8,4) visits=180 q=Some(39) prior=Some(1.1090156) solved=false terminal=false
+  EndTurn visits=17 q=Some(38) prior=Some(1.1605173) solved=false terminal=false
