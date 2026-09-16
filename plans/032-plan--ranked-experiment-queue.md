@@ -425,8 +425,8 @@ The response is a clean restart, not a rollback:
 | models | `models/` | `models/az/` |
 | gen-0 champion | trained on a **heuristic** corpus (the scripted bot is the teacher) | **random weights**, `scripts/make_random_net.py --seed 0` |
 | gen01 training | warm start from gen00 at `WARM_LR` | random init at `SCRATCH_LR` (`NO_WARM_FROM`) |
-| anchor | `bbnet_14x7_gen03.onnx` | the random seed net — a true zero on the fixed engine |
-| fixed rungs | none (saturated) | `random,scripted` again |
+| anchor | `bbnet_14x7_gen03.onnx` | the random seed net — **re-anchored to gen01 after one generation, see below** |
+| fixed rungs | none (saturated) | `random,scripted` again — **`random` dropped after one generation** |
 
 Nothing reads the old data: not as a corpus, not as a warm start, not as the anchor. It is all kept
 on disk — the reset is about contamination, not disk.
@@ -439,6 +439,30 @@ and not accidents: `POLICY_TARGET=cq` rather than `visits` (plan 031 D2's findin
 not converged at 1000 iterations over a wide fan is engine-independent and still holds), and
 `--mode random-start`, drive-bounded, rather than whole games from kickoff (the value backfill is
 drive-relative per plan 023, and it is what makes 4800 games/generation affordable).
+
+### The random-net anchor lasted one generation (2026-09-16)
+
+gen01 beat the random seed net **40-0-0, pts 1.000**, and swept the `random` rung 30-0-0. Both were
+chosen on the expectation that a from-scratch net would take several generations to saturate what
+the old contaminated nets had saturated long ago. It took one. A pinned anchor is not a weak
+measurement, it is no measurement: the rolling mean sits at its ceiling and the REGRESSION/PLATEAU
+flags go with it.
+
+Re-anchored to **gen01** and `random` dropped; `EVAL_RUNGS=scripted` only. The loop was stopped
+between gen02's generate and its eval, so **gen02 is the first generation measured against the new
+anchor and no `anchor_backfill.sh` run is needed** — the corpus was kept by the `.generated` marker
+and the relaunch resumed at prepare.
+
+What the eval card actually bought, and the reason to keep a fixed rung on it: **`scripted` was the
+only number in gen01's report that carried information.** gen01 scores **0.383** there (W7 D9 L14,
+TD/g 4.80 at 2.07 for / 2.73 against) against the old nets' 0.87-0.95 — unsaturated, and the only
+*absolute* yardstick on the card, since every other measurement is relative to a net this run
+trained. Had the run gone out with the anchor alone, gen01's eval would have produced no usable
+number at all.
+
+Generalisation worth keeping: **an anchor for a from-scratch run should be a net from that run, not
+a floor.** Anything weak enough to be the zero point is weak enough to be swept immediately.
+
 
 ### Touchdown rate is now tracked on both sides of the loop
 

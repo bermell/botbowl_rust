@@ -49,15 +49,25 @@ export INIT_CHAMPION="$SEED_NET.onnx"
 # gen01 must train from random init at SCRATCH_LR, not fine-tune the seed at
 # WARM_LR. gen02+ warm-start from gen01 as usual.
 export NO_WARM_FROM="$SEED_NET.pt"
-# The frozen yardstick is the random net: a true zero, on the fixed engine.
-# Re-anchor (add a second, overlap three generations, drop this one) once the
-# rolling mean passes ~0.75 — a saturated anchor stops discriminating, and
-# this one will saturate sooner than gen03 did.
-export ANCHOR="$SEED_NET.onnx"
-# Back on, because they discriminate again. They were dropped when the trained
-# nets saturated them (`random` read 1.000 nine generations running); a net
-# starting from random weights will not, so they are the absolute yardstick
-# for the early part of this curve. Drop them again once they saturate.
-export EVAL_RUNGS="random,scripted"
+# Re-anchored to gen01 on 2026-09-16, after ONE generation. The random seed
+# net was the first anchor — a true zero on the fixed engine — on the
+# expectation that it would last a few generations. It lasted none: gen01 beat
+# it 40-0-0 (pts 1.000), which pins the curve at its ceiling and takes the
+# REGRESSION/PLATEAU flags with it. gen01 has real headroom (it scores 0.383
+# against `scripted`, where the old contaminated nets sat at 0.87-0.95) and is
+# the natural "progress since the first trained generation" baseline.
+#
+# The switch cost nothing: the loop was stopped between gen02's generate and
+# its eval, so gen02 is the first generation measured and no backfill is
+# needed. Re-anchor again (per plan 030: add a second, overlap three
+# generations, then drop this one) once the rolling mean passes ~0.75.
+export ANCHOR="$MODEL_DIR/bbnet_14x7_gen01.onnx"
+# `random` went the same way as the anchor — gen01 swept it 30-0-0 — so it is
+# back off after one generation, and its 30 games/gen with it. `scripted` is
+# the one rung still doing work: gen01 scores 0.383 there, so it is both
+# unsaturated and the only *absolute* yardstick on the card (every other
+# measurement is relative to a net this run trained). Drop it too once it
+# saturates, and expect that to take a while.
+export EVAL_RUNGS="scripted"
 
 exec "$REPO/scripts/train_loop.sh" "$@"
