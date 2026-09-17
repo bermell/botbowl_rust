@@ -86,16 +86,27 @@ EVAL_RUNGS="${EVAL_RUNGS:-}"
 # roughly halving that false-promotion rate. The fixed rungs stay at 30:
 # they are already decisive (p < 0.01) and are the cheap information here.
 MIRROR_GAMES="${MIRROR_GAMES:-100}"         # pre-flight heuristic mirror match
-# Plan 036 W6 (shrink the budget) is deliberately NOT adopted, and the reason
-# is the opposite of what the plan guessed. Shrinking was attractive while the
-# restore landed at epoch 0-1 and the other nine were waste. With the knobs
-# above the restore moves to **epoch 7 of 10** (gen02 window: step 57500 of
-# 72500), and the lambda=0.3 arm was still improving when the budget ran out at
-# epoch 9. The plan's own rule — budget ~1.5x the observed restore step — gives
-# ~86k steps, which is *more* than 10 epochs of this window, not less. The fix
-# did not save compute; it turned wasted compute into useful compute. Revisit
-# only against a freshly measured restore step.
-EPOCHS="${EPOCHS:-10}"
+# Plan 036 W6 (shrink the budget) is NOT adopted, and the budget went the other
+# way instead — 10 -> 15 on 2026-09-17.
+#
+# Shrinking was attractive while the restore landed at epoch 0-1 and the other
+# nine epochs were waste: gen02 and gen03 both restored inside epoch 0 of 10.
+# The value-target knobs above removed that symptom rather than the budget
+# needing to. Offline on the gen02 window the restore moved to epoch 7 of 10,
+# and gen04 — the first generation actually trained this way — restored at
+# **step 90000, epoch 9 of 10**, i.e. against the ceiling, with the policy
+# optimum 5000 steps further out still.
+#
+# So the budget is now the binding constraint, not the overfit. Plan 036's own
+# rule (budget ~1.5x the observed restore step) gives ~135k steps against
+# gen04's ~95k for ten epochs — 15 epochs. Costs roughly 34 -> 50 min of train
+# phase per generation, against a phase that was otherwise stopping while the
+# net was still improving.
+#
+# Re-read this the next time the restore step moves: if a generation restores
+# in the first third of 15 epochs, the budget is too big and the value target
+# has drifted; if it restores at epoch 14 again, raise it again.
+EPOCHS="${EPOCHS:-15}"
                                             # (was wins/N until 2026-09-02 — see eval_summary.py)
 TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
 # Which leaf/prior source the bot plays with. `nn-value` = NN leaf values but

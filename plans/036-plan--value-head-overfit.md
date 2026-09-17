@@ -264,6 +264,14 @@ wrong on this data:
    between the heads" idea in **Selection rule** above is answered: not needed, there is nothing to
    split.
 
+### Follow-on: the budget became the binding constraint (2026-09-17)
+
+gen04, the first generation trained with the adopted recipe, restored at **step 90000, epoch 9 of
+10** — against gen02's and gen03's epoch 0 — with the policy optimum a further 5000 steps out. The
+overfit is gone and the budget is now what stops training. `EPOCHS` raised 10 → 15 (plan 036's own
+1.5× rule gives ~135k steps against ~95k for ten epochs of that window). This is the exact opposite
+of W6 and follows from the same rule.
+
 ### Still open
 
 E4 — the winner vs baseline over 600 games vs `scripted`. The val numbers selected the arm; per
