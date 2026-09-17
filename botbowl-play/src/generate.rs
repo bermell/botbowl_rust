@@ -59,6 +59,24 @@ pub struct RandomStartBias {
     pub pocket_fraction: f32,
 }
 
+/// The defaults `botbowl-ui dataset` and `botbowl-hub job generate` share.
+impl Default for RandomStartBias {
+    fn default() -> Self {
+        RandomStartBias {
+            ball_distance: 1.30,
+            front_line: 2.20,
+            mark_teammate: 1.5,
+            mark_opponent: 1.5,
+            own_side: 1.5,
+            temperature: 0.60,
+            temperature2: 1.5,
+            carried_prob: 0.75,
+            line_fraction: 0.80,
+            pocket_fraction: 0.25,
+        }
+    }
+}
+
 impl RandomStartBias {
     pub fn to_config(&self) -> RandomStartConfig {
         RandomStartConfig {
@@ -76,8 +94,9 @@ impl RandomStartBias {
     }
 }
 
-/// Everything one trajectory needs besides its seed.
-#[derive(Clone, Debug)]
+/// Everything one trajectory needs besides its seed. Serializable so a
+/// hub can ship it to workers verbatim (plan 040).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GenerateConfig {
     pub mode: GenMode,
     pub search: SearchConfig,

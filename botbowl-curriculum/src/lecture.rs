@@ -2,7 +2,7 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::TeamType;
 use rand_chacha::ChaCha8Rng;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Difficulty {
     Easy,
     Medium,

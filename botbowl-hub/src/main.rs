@@ -4,11 +4,16 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use botbowl_hub::api::{BotReq, EvalJobRequest, HubStatus, JobState, JobStatus, RungReq, Submitted};
+use botbowl_curriculum::lecture::Difficulty;
+use botbowl_hub::api::{
+    BotReq, EvalJobRequest, GenerateJobRequest, HubStatus, JobKind, JobRequest, JobState, JobStatus, RungReq, ShardReq,
+    Submitted,
+};
 use botbowl_hub::http::request;
 use botbowl_hub::{Hub, HubConfig};
-use botbowl_hub_proto::{Evaluator, SearchConfig};
+use botbowl_hub_proto::{Evaluator, GenerateConfig, SearchConfig};
 use botbowl_play::bots::{candidate_label, evaluator_label, parse_backup, parse_puct, CandidateBot};
+use botbowl_play::generate::{GenMode, RandomStartBias};
 
 #[derive(Parser, Debug)]
 #[command(name = "botbowl-hub", about = "Job queue for distributed generation/eval (plan 040)")]
@@ -55,6 +60,233 @@ struct ClientArgs {
 enum JobCommand {
     /// Opponent-ladder eval of a candidate; same flags as `botbowl-ui eval`'s ladder.
     Eval(EvalJobArgs),
+    /// Corpus shards; same flags as `botbowl-ui dataset`, plus which shards.
+    Generate(GenerateJobArgs),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Default)]
+enum CliGenMode {
+    #[default]
+    SelfPlay,
+    Curriculum,
+    RandomStart,
+}
+
+impl From<CliGenMode> for GenMode {
+    fn from(m: CliGenMode) -> Self {
+        match m {
+            CliGenMode::SelfPlay => GenMode::SelfPlay,
+            CliGenMode::Curriculum => GenMode::Curriculum,
+            CliGenMode::RandomStart => GenMode::RandomStart,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Default)]
+enum CliDifficulty {
+    #[default]
+    Easy,
+    Medium,
+    Hard,
+}
+
+impl From<CliDifficulty> for Difficulty {
+    fn from(d: CliDifficulty) -> Self {
+        match d {
+            CliDifficulty::Easy => Difficulty::Easy,
+            CliDifficulty::Medium => Difficulty::Medium,
+            CliDifficulty::Hard => Difficulty::Hard,
+        }
+    }
+}
+
+/// `botbowl-ui dataset` flag-for-flag, except that one job writes several
+/// shards: `--out-dir D --shards "0 1 2"` writes `D/shard0.jsonl` .. with
+/// shard `K` seeded at `seed_base + K * shard_seed_stride`, which is the
+/// `SEED_BASE + G*1e6 + K*1e5` layout `train_loop.sh` has always used.
+/// `--heuristic-shards` names shards that ignore `--evaluator/--model`
+/// (the loop's heuristic hedge). `--out FILE` is the single-shard form.
+#[derive(Args, Debug)]
+struct GenerateJobArgs {
+    #[command(flatten)]
+    client: ClientArgs,
+    #[arg(long, value_enum, default_value_t = CliGenMode::SelfPlay)]
+    mode: CliGenMode,
+    /// Directory for `shard<K>.jsonl`; required unless --out is given.
+    #[arg(long, conflicts_with = "out")]
+    out_dir: Option<PathBuf>,
+    /// One shard, this file (as `botbowl-ui dataset --out`).
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Shard indices, space- or comma-separated.
+    #[arg(long, default_value = "0")]
+    shards: String,
+    /// Shards played with the heuristic evaluator regardless of --evaluator.
+    #[arg(long, default_value = "")]
+    heuristic_shards: String,
+    /// Truncate shard files at submit instead of appending.
+    #[arg(long, default_value_t = false)]
+    truncate: bool,
+    /// Games per shard.
+    #[arg(long, default_value_t = 1)]
+    games: u32,
+    /// Shard K's first seed is `seed_base + K * shard_seed_stride`; game g adds g.
+    #[arg(long, default_value_t = 0, alias = "seed")]
+    seed_base: u64,
+    #[arg(long, default_value_t = 100_000)]
+    shard_seed_stride: u64,
+    #[arg(long, default_value_t = 1000)]
+    mcts_iters: usize,
+    #[arg(long)]
+    mcts_time_ms: Option<u64>,
+    #[arg(long, default_value_t = 1)]
+    mcts_workers: usize,
+    #[arg(long, default_value_t = 100_000)]
+    max_steps: u32,
+    /// (curriculum mode) Lecture name.
+    #[arg(long)]
+    lecture: Option<String>,
+    #[arg(long, value_enum, default_value_t = CliDifficulty::Easy)]
+    difficulty: CliDifficulty,
+    // Random-start placement biases; unset = `RandomStartBias::default()`,
+    // the same numbers `botbowl-ui dataset` defaults to.
+    #[arg(long)]
+    ball_distance: Option<f32>,
+    #[arg(long)]
+    front_line: Option<f32>,
+    #[arg(long)]
+    mark_teammate: Option<f32>,
+    #[arg(long)]
+    mark_opponent: Option<f32>,
+    #[arg(long)]
+    own_side: Option<f32>,
+    #[arg(long)]
+    temperature: Option<f32>,
+    #[arg(long)]
+    temperature2: Option<f32>,
+    #[arg(long)]
+    carried_prob: Option<f32>,
+    #[arg(long)]
+    line_fraction: Option<f32>,
+    #[arg(long)]
+    pocket_fraction: Option<f32>,
+    #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
+    evaluator: CliEvaluator,
+    /// ONNX path; stamped into the corpus provenance exactly as written.
+    #[arg(long)]
+    model: Option<String>,
+    /// Games per task handed to a worker.
+    #[arg(long, default_value_t = 4)]
+    batch: u16,
+    /// Block until the job finishes; exit nonzero if it failed.
+    #[arg(long, default_value_t = false)]
+    wait: bool,
+    /// Accepted and ignored (the hub sizes workers, not jobs).
+    #[arg(long, hide = true)]
+    parallel_games: Option<u32>,
+    /// Accepted and ignored (workers own their sidecar).
+    #[arg(long, hide = true)]
+    nn_server: Option<String>,
+}
+
+fn parse_shards(s: &str) -> Result<Vec<u32>, String> {
+    s.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<u32>().map_err(|e| format!("--shards: {t:?}: {e}")))
+        .collect()
+}
+
+fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, String> {
+    let budget = match a.mcts_time_ms {
+        Some(ms) => botbowl_mcts::SearchBudget::Time(Duration::from_millis(ms)),
+        None => botbowl_mcts::SearchBudget::Iterations(a.mcts_iters),
+    };
+    let d = RandomStartBias::default();
+    let bias = RandomStartBias {
+        ball_distance: a.ball_distance.unwrap_or(d.ball_distance),
+        front_line: a.front_line.unwrap_or(d.front_line),
+        mark_teammate: a.mark_teammate.unwrap_or(d.mark_teammate),
+        mark_opponent: a.mark_opponent.unwrap_or(d.mark_opponent),
+        own_side: a.own_side.unwrap_or(d.own_side),
+        temperature: a.temperature.unwrap_or(d.temperature),
+        temperature2: a.temperature2.unwrap_or(d.temperature2),
+        carried_prob: a.carried_prob.unwrap_or(d.carried_prob),
+        line_fraction: a.line_fraction.unwrap_or(d.line_fraction),
+        pocket_fraction: a.pocket_fraction.unwrap_or(d.pocket_fraction),
+    };
+    let evaluator = Evaluator::from(a.evaluator);
+    if evaluator.needs_model() && a.model.is_none() {
+        return Err("--evaluator nn/nn-value requires --model PATH".into());
+    }
+    let base = GenerateConfig {
+        mode: a.mode.into(),
+        search: SearchConfig {
+            budget,
+            workers: a.mcts_workers,
+            // `dataset` leaves these to the bot's env-driven defaults. The
+            // backup rule is stamped into the provenance label, so resolve
+            // it *here*, from the submitting environment, rather than on
+            // whichever worker happens to play the game.
+            puct: None,
+            horizon_turns: None,
+            backup: Some(botbowl_mcts::BackupMode::from_env()),
+            fpu_reduction: None,
+        },
+        evaluator,
+        model: a.model.clone(),
+        max_steps: a.max_steps,
+        lecture: a.lecture.clone(),
+        difficulty: a.difficulty.into(),
+        bias,
+    };
+    let heuristic = GenerateConfig {
+        evaluator: Evaluator::Heuristic,
+        model: None,
+        ..base.clone()
+    };
+    let model_path = a.model.as_ref().map(|m| abs(&PathBuf::from(m)));
+    let mut shards = Vec::new();
+    if let Some(out) = &a.out {
+        shards.push(ShardReq {
+            name: out
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "out".into()),
+            out: abs(out),
+            seed: a.seed_base,
+            games: a.games,
+            cfg: base.clone(),
+            model_path: model_path.clone(),
+        });
+    } else {
+        let Some(dir) = &a.out_dir else {
+            return Err("pass --out-dir DIR (with --shards) or --out FILE".into());
+        };
+        let heur = parse_shards(&a.heuristic_shards)?;
+        let mut ks = parse_shards(&a.shards)?;
+        ks.extend(heur.iter().copied());
+        ks.sort_unstable();
+        ks.dedup();
+        if ks.is_empty() {
+            return Err("--shards is empty".into());
+        }
+        for k in ks {
+            let is_heur = heur.contains(&k);
+            shards.push(ShardReq {
+                name: format!("shard{k}"),
+                out: abs(&dir.join(format!("shard{k}.jsonl"))),
+                seed: a.seed_base + k as u64 * a.shard_seed_stride,
+                games: a.games,
+                cfg: if is_heur { heuristic.clone() } else { base.clone() },
+                model_path: if is_heur { None } else { model_path.clone() },
+            });
+        }
+    }
+    Ok(GenerateJobRequest {
+        shards,
+        truncate: a.truncate,
+        batch: a.batch,
+    })
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, Default)]
@@ -309,6 +541,24 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
     })
 }
 
+fn print_generate_lines(s: &JobStatus) {
+    let (mut games, mut samples) = (0u64, 0u64);
+    for u in &s.units {
+        println!(
+            "  {:12} {:>5}/{:<5} games  {:>8} samples",
+            u.name, u.done, u.total, u.samples
+        );
+        games += u.done as u64;
+        samples += u.samples;
+    }
+    println!(
+        "wrote {games} trajectories / {samples} samples in {} s (commit {}{})",
+        s.elapsed_secs,
+        botbowl_data::git_commit(),
+        if botbowl_data::git_dirty() { "-dirty" } else { "" },
+    );
+}
+
 fn botbowl_mcts_budget(iters: usize) -> botbowl_mcts::SearchBudget {
     botbowl_mcts::SearchBudget::Iterations(iters)
 }
@@ -413,39 +663,55 @@ fn main() {
                 }
             }
         }
-        Command::Job {
-            job: JobCommand::Eval(a),
-        } => {
-            let token = read_token(&a.client.token_file);
-            let req = build_request(&a).unwrap_or_else(|e| {
-                eprintln!("{e}");
-                std::process::exit(2)
-            });
+        Command::Job { job } => {
+            let (client, wait, req, what) = match &job {
+                JobCommand::Eval(a) => {
+                    let req = build_request(a).unwrap_or_else(|e| {
+                        eprintln!("{e}");
+                        std::process::exit(2)
+                    });
+                    let what = format!(
+                        "eval job: {} rung(s), {} games",
+                        req.rungs.len(),
+                        req.rungs.iter().map(|r| r.games).sum::<u32>()
+                    );
+                    (a.client.clone(), a.wait, JobRequest::Eval(req), what)
+                }
+                JobCommand::Generate(a) => {
+                    let req = build_generate_request(a).unwrap_or_else(|e| {
+                        eprintln!("{e}");
+                        std::process::exit(2)
+                    });
+                    let what = format!(
+                        "generate job: {} shard(s), {} games",
+                        req.shards.len(),
+                        req.shards.iter().map(|s| s.games).sum::<u32>()
+                    );
+                    (a.client.clone(), a.wait, JobRequest::Generate(req), what)
+                }
+            };
+            let token = read_token(&client.token_file);
             let body = serde_json::to_string(&req).unwrap();
-            let id = match request("POST", &format!("{}/api/jobs", a.client.hub), &token, Some(&body)) {
+            let id = match request("POST", &format!("{}/api/jobs", client.hub), &token, Some(&body)) {
                 Ok((200, body)) => serde_json::from_str::<Submitted>(&body).expect("submit json").id,
                 Ok((code, body)) => {
                     eprintln!("hub refused the job ({code}): {body}");
                     std::process::exit(1)
                 }
                 Err(e) => {
-                    eprintln!("cannot reach hub at {}: {e}", a.client.hub);
+                    eprintln!("cannot reach hub at {}: {e}", client.hub);
                     std::process::exit(1)
                 }
             };
-            eprintln!(
-                "[hub job] submitted eval job {id}: {} rung(s), {} games",
-                req.rungs.len(),
-                req.rungs.iter().map(|r| r.games).sum::<u32>()
-            );
-            if !a.wait {
+            eprintln!("[hub job] submitted {what} (job {id})");
+            if !wait {
                 println!("{id}");
                 return;
             }
             let mut idle_polls: u64 = 0;
             loop {
                 std::thread::sleep(Duration::from_secs(5));
-                let (code, body) = match request("GET", &format!("{}/api/jobs/{id}", a.client.hub), &token, None) {
+                let (code, body) = match request("GET", &format!("{}/api/jobs/{id}", client.hub), &token, None) {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("[hub job] poll failed ({e}); retrying");
@@ -474,8 +740,13 @@ fn main() {
                         }
                     }
                     JobState::Done => {
-                        print_report_lines(&s);
-                        println!("wrote {}", req.report_out.display());
+                        match (&s.kind, &req) {
+                            (JobKind::Eval, JobRequest::Eval(r)) => {
+                                print_report_lines(&s);
+                                println!("wrote {}", r.report_out.display());
+                            }
+                            _ => print_generate_lines(&s),
+                        }
                         return;
                     }
                     JobState::Failed { error } => {

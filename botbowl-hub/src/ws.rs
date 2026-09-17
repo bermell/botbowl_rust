@@ -126,6 +126,18 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
                     hub.inner.lock().unwrap().eval_game_done(wid, task, line);
                     hub.changed.notify_waiters();
                 }
+                Ok(ToHub::TrajectoryDone {
+                    task,
+                    game,
+                    samples,
+                    zstd_json,
+                }) => {
+                    hub.inner
+                        .lock()
+                        .unwrap()
+                        .trajectory_done(wid, task, game, samples, zstd_json);
+                    hub.changed.notify_waiters();
+                }
                 Ok(ToHub::TaskFailed { task, error }) => {
                     hub.inner.lock().unwrap().task_failed(wid, task, error);
                     hub.changed.notify_waiters();

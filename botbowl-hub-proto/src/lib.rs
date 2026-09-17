@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 
 pub use botbowl_play::bots::{Evaluator, SearchConfig};
 pub use botbowl_play::eval::EvalGameLine;
+pub use botbowl_play::generate::GenerateConfig;
 
 /// Bump on any change to the frames below.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Content hash of an ONNX file (BLAKE3). Model identity is bytes, never a
 /// path, so two workers with the same cache can never disagree about which
@@ -135,12 +136,26 @@ pub enum Task {
         candidate: BotSpec,
         opponent: BotSpec,
     },
+    /// Play these games of one corpus shard. Game `g`'s seed is
+    /// `seed_base + g`, exactly as `botbowl-ui dataset --seed seed_base`
+    /// numbers them, so a hub-generated shard has the same seed set as the
+    /// single-process one it replaces.
+    Generate {
+        id: TaskId,
+        shard: String,
+        games: Vec<u32>,
+        seed_base: u64,
+        /// `cfg.model` is the hub-side path, used only for the provenance
+        /// label; the bytes come from `model`.
+        cfg: GenerateConfig,
+        model: Option<ModelId>,
+    },
 }
 
 impl Task {
     pub fn id(&self) -> TaskId {
         match self {
-            Task::Eval { id, .. } => *id,
+            Task::Eval { id, .. } | Task::Generate { id, .. } => *id,
         }
     }
 
@@ -150,6 +165,7 @@ impl Task {
             Task::Eval {
                 candidate, opponent, ..
             } => candidate.model().into_iter().chain(opponent.model()).collect(),
+            Task::Generate { model, .. } => model.iter().copied().collect(),
         }
     }
 }
@@ -173,6 +189,17 @@ pub enum ToHub {
     EvalGameDone {
         task: TaskId,
         line: EvalGameLine,
+    },
+    /// One finished trajectory: its JSON line (without the newline), zstd
+    /// compressed. The hub appends the decompressed bytes verbatim, so the
+    /// shard file is byte-for-byte what `DatasetWriter` writes. Empty
+    /// `zstd_json` means the game legitimately produced nothing (a
+    /// curriculum trial the mode skipped); the game still counts as done.
+    TrajectoryDone {
+        task: TaskId,
+        game: u32,
+        samples: u32,
+        zstd_json: Vec<u8>,
     },
     /// A game (or a whole task) could not be played. The hub requeues it
     /// elsewhere; a task that fails everywhere fails the job.

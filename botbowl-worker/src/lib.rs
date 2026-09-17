@@ -33,7 +33,12 @@ use botbowl_hub_proto::{
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::make_mcts;
 use botbowl_play::eval::{ladder_assignment, play_ladder_game};
+use botbowl_play::generate::play_trajectory;
 use botbowl_play::GAME_STACK_SIZE;
+
+/// zstd level for trajectory frames: ~575 KB of JSON -> ~30 KB, fast
+/// enough to be invisible next to the game that produced it.
+const TRAJECTORY_ZSTD_LEVEL: i32 = 3;
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -278,6 +283,74 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>)
                 // unbounded and outlives the socket, so this only fails
                 // when the whole worker is shutting down.
                 let _ = out.send(ToHub::EvalGameDone { task: *id, line });
+            }
+        }
+        Task::Generate {
+            id,
+            shard,
+            games,
+            seed_base,
+            cfg,
+            model,
+        } => {
+            let nn = match (cfg.evaluator.needs_model(), model) {
+                (true, Some(m)) => match store.get(m) {
+                    Ok(e) => Some(e),
+                    Err(e) => {
+                        let _ = out.send(ToHub::TaskFailed {
+                            task: *id,
+                            error: format!("model: {e}"),
+                        });
+                        return;
+                    }
+                },
+                (true, None) => {
+                    let _ = out.send(ToHub::TaskFailed {
+                        task: *id,
+                        error: "nn evaluator without a model id".into(),
+                    });
+                    return;
+                }
+                (false, _) => None,
+            };
+            for &g in games {
+                // Same numbering as `botbowl-ui dataset --seed seed_base`.
+                let seed = seed_base.wrapping_add(g as u64);
+                match play_trajectory(cfg, nn.as_ref(), seed) {
+                    Err(e) => {
+                        // A configuration error (unknown lecture) recurs on
+                        // every seed; fail the whole task.
+                        let _ = out.send(ToHub::TaskFailed { task: *id, error: e });
+                        return;
+                    }
+                    Ok(None) => {
+                        let _ = out.send(ToHub::TrajectoryDone {
+                            task: *id,
+                            game: g,
+                            samples: 0,
+                            zstd_json: Vec::new(),
+                        });
+                    }
+                    Ok(Some(traj)) => {
+                        let json = serde_json::to_vec(&traj).expect("trajectory serializes");
+                        let zstd_json = zstd::encode_all(&json[..], TRAJECTORY_ZSTD_LEVEL).expect("zstd encode");
+                        eprintln!(
+                            "[worker] {shard} seed={seed} samples={} z_home={:+} score={}-{} ({} KB -> {} KB)",
+                            traj.samples.len(),
+                            traj.outcome.z_home,
+                            traj.outcome.home_score,
+                            traj.outcome.away_score,
+                            json.len() / 1024,
+                            zstd_json.len() / 1024
+                        );
+                        let _ = out.send(ToHub::TrajectoryDone {
+                            task: *id,
+                            game: g,
+                            samples: traj.samples.len() as u32,
+                            zstd_json,
+                        });
+                    }
+                }
             }
         }
     }

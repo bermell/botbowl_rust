@@ -3,24 +3,28 @@
 //! method here; the websocket and HTTP layers only translate.
 //!
 //! Scheduling is deliberately simple (plan 040 decision 7): jobs run in
-//! submission order, a task is a small batch of games from one rung, a
+//! submission order, a task is a small batch of games from one *unit* (a
+//! ladder rung of an eval job, a corpus shard of a generate job), a
 //! worker holds at most `parallel_games` tasks, and anything a departed
 //! worker had in flight goes back on the queue. Results are deduplicated
-//! on `(job, rung, game)` so a slow worker that reappears can never double
+//! on `(job, unit, game)` so a slow worker that reappears can never double
 //! count.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
 
-use botbowl_hub_proto::{BotSpec, BuildInfo, EvalGameLine, ModelId, Task, TaskId, ToWorker};
+use botbowl_hub_proto::{BotSpec, BuildInfo, EvalGameLine, GenerateConfig, ModelId, Task, TaskId, ToWorker};
 use botbowl_play::eval::{LadderRow, Report};
 
-use crate::api::{BotReq, EvalJobRequest, HubStatus, JobId, JobState, JobStatus, RungProgress, WorkerStatus};
+use crate::api::{
+    BotReq, EvalJobRequest, GenerateJobRequest, HubStatus, JobId, JobKind, JobRequest, JobState, JobStatus,
+    UnitProgress, WorkerStatus,
+};
 
 pub type WorkerId = u64;
 
@@ -50,50 +54,148 @@ struct Rung {
     done: HashSet<u32>,
 }
 
+struct Shard {
+    name: String,
+    out: PathBuf,
+    seed: u64,
+    total: u32,
+    cfg: GenerateConfig,
+    model: Option<ModelId>,
+    done: HashSet<u32>,
+    written: u32,
+    samples: u64,
+    writer: io::BufWriter<std::fs::File>,
+}
+
+enum Kind {
+    Eval {
+        req: EvalJobRequest,
+        candidate: BotSpec,
+        rungs: Vec<Rung>,
+        per_game: io::BufWriter<std::fs::File>,
+        report: Option<Report>,
+    },
+    Generate {
+        shards: Vec<Shard>,
+    },
+}
+
 struct InFlight {
     job: JobId,
-    rung: usize,
+    unit: usize,
     remaining: HashSet<u32>,
     worker: WorkerId,
 }
 
 pub struct Job {
     id: JobId,
-    req: EvalJobRequest,
-    candidate: BotSpec,
-    rungs: Vec<Rung>,
-    /// `(rung index, game)` not yet handed out.
+    kind: Kind,
+    batch: u16,
+    /// `(unit index, game)` not yet handed out.
     pending: VecDeque<(usize, u32)>,
     failures: HashMap<(usize, u32), u32>,
-    per_game: io::BufWriter<std::fs::File>,
     state: JobState,
     started: Instant,
-    report: Option<Report>,
 }
 
 impl Job {
+    fn units(&self) -> Vec<UnitProgress> {
+        match &self.kind {
+            Kind::Eval { rungs, .. } => rungs
+                .iter()
+                .map(|r| UnitProgress {
+                    name: r.name.clone(),
+                    done: r.done.len() as u32,
+                    total: r.total,
+                    samples: 0,
+                })
+                .collect(),
+            Kind::Generate { shards } => shards
+                .iter()
+                .map(|s| UnitProgress {
+                    name: s.name.clone(),
+                    done: s.done.len() as u32,
+                    total: s.total,
+                    samples: s.samples,
+                })
+                .collect(),
+        }
+    }
+
+    fn unit_name(&self, unit: usize) -> &str {
+        match &self.kind {
+            Kind::Eval { rungs, .. } => &rungs[unit].name,
+            Kind::Generate { shards } => &shards[unit].name,
+        }
+    }
+
     fn all_done(&self) -> bool {
-        self.rungs.iter().all(|r| r.done.len() as u32 >= r.total)
+        self.units().iter().all(|u| u.done >= u.total)
     }
 
     fn status(&self, workers_connected: usize) -> JobStatus {
         JobStatus {
             id: self.id,
+            kind: match self.kind {
+                Kind::Eval { .. } => JobKind::Eval,
+                Kind::Generate { .. } => JobKind::Generate,
+            },
             workers_connected,
             state: self.state.clone(),
-            rungs: self
-                .rungs
-                .iter()
-                .map(|r| RungProgress {
-                    name: r.name.clone(),
-                    done: r.done.len() as u32,
-                    total: r.total,
-                })
-                .collect(),
+            units: self.units(),
             elapsed_secs: self.started.elapsed().as_secs(),
-            report: self.report.clone(),
+            report: match &self.kind {
+                Kind::Eval { report, .. } => report.clone(),
+                Kind::Generate { .. } => None,
+            },
         }
     }
+
+    /// The task for `games` of `unit`, built from this job's configuration.
+    fn make_task(&self, id: TaskId, unit: usize, games: Vec<u32>) -> Task {
+        match &self.kind {
+            Kind::Eval {
+                req, candidate, rungs, ..
+            } => Task::Eval {
+                id,
+                rung: rungs[unit].name.clone(),
+                games,
+                seed: req.seed,
+                max_steps: req.max_steps,
+                candidate: candidate.clone(),
+                opponent: rungs[unit].opponent.clone(),
+            },
+            Kind::Generate { shards } => {
+                let s = &shards[unit];
+                Task::Generate {
+                    id,
+                    shard: s.name.clone(),
+                    games,
+                    seed_base: s.seed,
+                    cfg: s.cfg.clone(),
+                    model: s.model,
+                }
+            }
+        }
+    }
+
+    fn fail(&mut self, error: String) {
+        eprintln!("[hub] job {} failed: {error}", self.id);
+        self.state = JobState::Failed { error };
+        self.pending.clear();
+    }
+}
+
+fn open_out(path: &Path, truncate: bool) -> io::Result<io::BufWriter<std::fs::File>> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let f = if truncate {
+        std::fs::File::create(path)?
+    } else {
+        std::fs::File::options().create(true).append(true).open(path)?
+    };
+    Ok(io::BufWriter::new(f))
 }
 
 #[derive(Default)]
@@ -111,7 +213,7 @@ impl Inner {
     // -- models ------------------------------------------------------------
 
     /// Read an ONNX file, hash it, keep the bytes for shipping.
-    pub fn load_model(&mut self, path: &PathBuf) -> io::Result<ModelId> {
+    pub fn load_model(&mut self, path: &Path) -> io::Result<ModelId> {
         let bytes =
             std::fs::read(path).map_err(|e| io::Error::new(e.kind(), format!("model {}: {e}", path.display())))?;
         let id = ModelId::of(&bytes);
@@ -149,6 +251,13 @@ impl Inner {
 
     // -- jobs --------------------------------------------------------------
 
+    pub fn submit(&mut self, req: JobRequest) -> io::Result<JobId> {
+        match req {
+            JobRequest::Eval(r) => self.submit_eval(r),
+            JobRequest::Generate(r) => self.submit_generate(r),
+        }
+    }
+
     pub fn submit_eval(&mut self, req: EvalJobRequest) -> io::Result<JobId> {
         let candidate = self.resolve_bot(&req.candidate)?;
         let mut rungs = Vec::new();
@@ -164,37 +273,87 @@ impl Inner {
             });
             pending.extend((0..r.games).map(|g| (i, g)));
         }
-        if let Some(dir) = req.per_game_out.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         if let Some(dir) = req.report_out.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let per_game = io::BufWriter::new(
-            std::fs::File::options()
-                .create(true)
-                .append(true)
-                .open(&req.per_game_out)?,
-        );
+        let per_game = open_out(&req.per_game_out, false)?;
+        let batch = req.batch;
+        let kind = Kind::Eval {
+            req,
+            candidate,
+            rungs,
+            per_game,
+            report: None,
+        };
+        Ok(self.insert_job(kind, batch, pending))
+    }
+
+    pub fn submit_generate(&mut self, req: GenerateJobRequest) -> io::Result<JobId> {
+        if req.shards.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "generate job with no shards",
+            ));
+        }
+        let mut shards = Vec::new();
+        let mut pending = VecDeque::new();
+        for (i, s) in req.shards.iter().enumerate() {
+            let model = match (s.cfg.evaluator.needs_model(), &s.model_path) {
+                (true, Some(p)) => Some(self.load_model(p)?),
+                (true, None) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{}: nn evaluator requires a model path", s.name),
+                    ))
+                }
+                (false, _) => None,
+            };
+            if s.cfg.mode == botbowl_play::generate::GenMode::Curriculum && s.cfg.lecture.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{}: curriculum mode requires a lecture", s.name),
+                ));
+            }
+            shards.push(Shard {
+                name: s.name.clone(),
+                out: s.out.clone(),
+                seed: s.seed,
+                total: s.games,
+                cfg: s.cfg.clone(),
+                model,
+                done: HashSet::new(),
+                written: 0,
+                samples: 0,
+                writer: open_out(&s.out, req.truncate)?,
+            });
+            pending.extend((0..s.games).map(|g| (i, g)));
+        }
+        Ok(self.insert_job(Kind::Generate { shards }, req.batch, pending))
+    }
+
+    fn insert_job(&mut self, kind: Kind, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
         let id = self.next_job;
         self.next_job += 1;
-        self.jobs.insert(
+        let job = Job {
             id,
-            Job {
-                id,
-                req,
-                candidate,
-                rungs,
-                pending,
-                failures: HashMap::new(),
-                per_game,
-                state: JobState::Running,
-                started: Instant::now(),
-                report: None,
-            },
+            kind,
+            batch,
+            pending,
+            failures: HashMap::new(),
+            state: JobState::Running,
+            started: Instant::now(),
+        };
+        eprintln!(
+            "[hub] job {id} submitted: {}",
+            job.units()
+                .iter()
+                .map(|u| format!("{} x{}", u.name, u.total))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
+        self.jobs.insert(id, job);
         self.dispatch();
-        Ok(id)
+        id
     }
 
     pub fn job_status(&self, id: JobId) -> Option<JobStatus> {
@@ -266,7 +425,7 @@ impl Inner {
         }
         if let Some(job) = self.jobs.get_mut(&f.job) {
             for g in f.remaining {
-                job.pending.push_front((f.rung, g));
+                job.pending.push_front((f.unit, g));
             }
         }
     }
@@ -289,13 +448,13 @@ impl Inner {
                     break;
                 }
                 let job = self.jobs.get_mut(&job_id).expect("job exists");
-                let Some(&(rung, _)) = job.pending.front() else { break };
-                // One rung per task: take up to `batch` consecutive games
-                // from the same rung.
+                let Some(&(unit, _)) = job.pending.front() else { break };
+                // One unit per task: take up to `batch` consecutive games
+                // from the same rung/shard.
                 let mut games = Vec::new();
-                while games.len() < job.req.batch.max(1) as usize {
+                while games.len() < job.batch.max(1) as usize {
                     match job.pending.front() {
-                        Some(&(r, g)) if r == rung => {
+                        Some(&(u, g)) if u == unit => {
                             games.push(g);
                             job.pending.pop_front();
                         }
@@ -304,21 +463,13 @@ impl Inner {
                 }
                 let task_id = self.next_task;
                 self.next_task += 1;
-                let task = Task::Eval {
-                    id: task_id,
-                    rung: job.rungs[rung].name.clone(),
-                    games: games.clone(),
-                    seed: job.req.seed,
-                    max_steps: job.req.max_steps,
-                    candidate: job.candidate.clone(),
-                    opponent: job.rungs[rung].opponent.clone(),
-                };
+                let task = job.make_task(task_id, unit, games.clone());
                 let needed = task.models();
                 self.in_flight.insert(
                     task_id,
                     InFlight {
                         job: job_id,
-                        rung,
+                        unit,
                         remaining: games.into_iter().collect(),
                         worker: wid,
                     },
@@ -346,18 +497,16 @@ impl Inner {
 
     // -- results -----------------------------------------------------------
 
-    pub fn eval_game_done(&mut self, worker: WorkerId, task: TaskId, line: EvalGameLine) {
+    /// Book-keeping shared by every result frame: which job/unit the task
+    /// belongs to, the game struck off the task, the task retired when
+    /// empty. `None` for a task we no longer track (requeued and finished
+    /// elsewhere).
+    fn game_arrived(&mut self, worker: WorkerId, task: TaskId, game: u32) -> Option<(JobId, usize)> {
         self.seen(worker);
-        let Some(f) = self.in_flight.get_mut(&task) else {
-            // Late result for a task we already requeued and finished
-            // elsewhere; still worth recording if the game is not done.
-            return;
-        };
-        let job_id = f.job;
-        let rung = f.rung;
-        f.remaining.remove(&line.game);
-        let task_finished = f.remaining.is_empty();
-        if task_finished {
+        let f = self.in_flight.get_mut(&task)?;
+        let (job_id, unit) = (f.job, f.unit);
+        f.remaining.remove(&game);
+        if f.remaining.is_empty() {
             self.in_flight.remove(&task);
             if let Some(w) = self.workers.get_mut(&worker) {
                 w.tasks.remove(&task);
@@ -366,19 +515,72 @@ impl Inner {
         if let Some(w) = self.workers.get_mut(&worker) {
             w.games_done += 1;
         }
+        Some((job_id, unit))
+    }
+
+    pub fn eval_game_done(&mut self, worker: WorkerId, task: TaskId, line: EvalGameLine) {
+        let Some((job_id, unit)) = self.game_arrived(worker, task, line.game) else {
+            return;
+        };
         let Some(job) = self.jobs.get_mut(&job_id) else { return };
-        let r = &mut job.rungs[rung];
+        let Kind::Eval {
+            rungs, per_game, req, ..
+        } = &mut job.kind
+        else {
+            return;
+        };
+        let r = &mut rungs[unit];
         if r.name == line.rung && r.done.insert(line.game) {
             r.row.record(&line);
-            if let Err(e) = serde_json::to_writer(&mut job.per_game, &line)
+            if let Err(e) = serde_json::to_writer(&mut *per_game, &line)
                 .map_err(io::Error::other)
-                .and_then(|_| job.per_game.write_all(b"\n"))
-                .and_then(|_| job.per_game.flush())
+                .and_then(|_| per_game.write_all(b"\n"))
+                .and_then(|_| per_game.flush())
             {
-                job.state = JobState::Failed {
-                    error: format!("writing {}: {e}", job.req.per_game_out.display()),
-                };
+                let msg = format!("writing {}: {e}", req.per_game_out.display());
+                job.fail(msg);
                 return;
+            }
+        }
+        if job.all_done() {
+            Self::finish(job);
+        }
+        self.dispatch();
+    }
+
+    pub fn trajectory_done(&mut self, worker: WorkerId, task: TaskId, game: u32, samples: u32, zstd_json: Vec<u8>) {
+        let Some((job_id, unit)) = self.game_arrived(worker, task, game) else {
+            return;
+        };
+        let Some(job) = self.jobs.get_mut(&job_id) else { return };
+        let Kind::Generate { shards } = &mut job.kind else {
+            return;
+        };
+        let s = &mut shards[unit];
+        if s.done.insert(game) && !zstd_json.is_empty() {
+            let written = zstd::decode_all(&zstd_json[..])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("zstd: {e}")))
+                .and_then(|json| {
+                    if json.is_empty() || json.contains(&b'\n') {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "trajectory is not a single JSON line",
+                        ));
+                    }
+                    s.writer.write_all(&json)?;
+                    s.writer.write_all(b"\n")?;
+                    s.writer.flush()
+                });
+            match written {
+                Ok(()) => {
+                    s.written += 1;
+                    s.samples += samples as u64;
+                }
+                Err(e) => {
+                    let msg = format!("writing {}: {e}", s.out.display());
+                    job.fail(msg);
+                    return;
+                }
             }
         }
         if job.all_done() {
@@ -390,22 +592,19 @@ impl Inner {
     pub fn task_failed(&mut self, worker: WorkerId, task: TaskId, error: String) {
         self.seen(worker);
         let Some(f) = self.in_flight.get(&task) else { return };
-        let (job_id, rung) = (f.job, f.rung);
+        let (job_id, unit) = (f.job, f.unit);
         let games: Vec<u32> = f.remaining.iter().copied().collect();
         eprintln!("[hub] task {task} failed on worker {worker}: {error}");
         self.requeue(task);
         if let Some(job) = self.jobs.get_mut(&job_id) {
             for g in games {
-                let n = job.failures.entry((rung, g)).or_insert(0);
+                let n = job.failures.entry((unit, g)).or_insert(0);
                 *n += 1;
                 if *n >= MAX_GAME_FAILURES {
-                    job.state = JobState::Failed {
-                        error: format!(
-                            "rung {:?} game {g} failed {n} times; last: {error}",
-                            job.rungs[rung].name
-                        ),
-                    };
-                    job.pending.clear();
+                    let n = *n;
+                    let msg = format!("{} game {g} failed {n} times; last: {error}", job.unit_name(unit));
+                    job.fail(msg);
+                    break;
                 }
             }
         }
@@ -413,36 +612,61 @@ impl Inner {
     }
 
     fn finish(job: &mut Job) {
-        let report = Report {
-            candidate: job.req.candidate_label.clone(),
-            mcts_iters: job.req.mcts_iters,
-            seed: job.req.seed,
-            board_env: format!("{:?}", botbowl_engine::core::model::BoardDims::from_env()),
-            git_commit: botbowl_data::git_commit().to_string(),
-            git_dirty: botbowl_data::git_dirty(),
-            lectures: Vec::new(),
-            ladder: job.rungs.iter().map(|r| r.row.clone().finish()).collect(),
-        };
-        match serde_json::to_string_pretty(&report)
-            .map_err(io::Error::other)
-            .and_then(|s| std::fs::write(&job.req.report_out, s))
-        {
-            Ok(()) => {
-                eprintln!(
-                    "[hub] job {} done in {} s -> {}",
-                    job.id,
-                    job.started.elapsed().as_secs(),
-                    job.req.report_out.display()
-                );
-                job.state = JobState::Done;
+        let elapsed = job.started.elapsed().as_secs();
+        match &mut job.kind {
+            Kind::Eval { req, rungs, report, .. } => {
+                let r = Report {
+                    candidate: req.candidate_label.clone(),
+                    mcts_iters: req.mcts_iters,
+                    seed: req.seed,
+                    board_env: format!("{:?}", botbowl_engine::core::model::BoardDims::from_env()),
+                    git_commit: botbowl_data::git_commit().to_string(),
+                    git_dirty: botbowl_data::git_dirty(),
+                    lectures: Vec::new(),
+                    ladder: rungs.iter().map(|r| r.row.clone().finish()).collect(),
+                };
+                match serde_json::to_string_pretty(&r)
+                    .map_err(io::Error::other)
+                    .and_then(|s| std::fs::write(&req.report_out, s))
+                {
+                    Ok(()) => {
+                        eprintln!(
+                            "[hub] job {} done in {elapsed} s -> {}",
+                            job.id,
+                            req.report_out.display()
+                        );
+                        job.state = JobState::Done;
+                    }
+                    Err(e) => {
+                        job.state = JobState::Failed {
+                            error: format!("writing {}: {e}", req.report_out.display()),
+                        }
+                    }
+                }
+                *report = Some(r);
             }
-            Err(e) => {
-                job.state = JobState::Failed {
-                    error: format!("writing {}: {e}", job.req.report_out.display()),
+            Kind::Generate { shards } => {
+                let mut err = None;
+                for s in shards.iter_mut() {
+                    if let Err(e) = s.writer.flush() {
+                        err = Some(format!("writing {}: {e}", s.out.display()));
+                    }
+                }
+                match err {
+                    Some(error) => job.state = JobState::Failed { error },
+                    None => {
+                        eprintln!(
+                            "[hub] job {} done in {elapsed} s: {} trajectories / {} samples over {} shard(s)",
+                            job.id,
+                            shards.iter().map(|s| s.written as u64).sum::<u64>(),
+                            shards.iter().map(|s| s.samples).sum::<u64>(),
+                            shards.len()
+                        );
+                        job.state = JobState::Done;
+                    }
                 }
             }
         }
-        job.report = Some(report);
     }
 
     /// Any job still running?

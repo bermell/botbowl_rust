@@ -10,6 +10,7 @@ botbowl-play = { version = "0.1.0", path = "../botbowl-play/" }
 botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
 botbowl-mcts = { version = "0.1.0", path = "../botbowl-mcts/" }
 botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
+botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 futures-util = "0.3"
@@ -17,6 +18,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"
+zstd = "0.13"
 
 [dev-dependencies]
 botbowl-worker = { version = "0.1.0", path = "../botbowl-worker/" }

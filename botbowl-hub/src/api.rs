@@ -6,8 +6,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use botbowl_hub_proto::{Evaluator, SearchConfig};
+use botbowl_hub_proto::{Evaluator, GenerateConfig, SearchConfig};
 use botbowl_play::eval::Report;
+
+/// `POST /api/jobs` body.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum JobRequest {
+    Eval(EvalJobRequest),
+    Generate(GenerateJobRequest),
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BotReq {
@@ -46,6 +53,32 @@ pub struct EvalJobRequest {
     pub batch: u16,
 }
 
+/// One corpus shard of a generate job: `games` trajectories with seeds
+/// `seed + g`, appended to `out`, all with the same configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ShardReq {
+    /// Progress label, e.g. `shard3`.
+    pub name: String,
+    pub out: PathBuf,
+    pub seed: u64,
+    pub games: u32,
+    /// `cfg.model` is the path *string* as the user typed it: it is stamped
+    /// into the corpus provenance and must match what `botbowl-ui dataset`
+    /// would have written. `model_path` is where the hub reads the bytes.
+    pub cfg: GenerateConfig,
+    pub model_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GenerateJobRequest {
+    pub shards: Vec<ShardReq>,
+    /// Truncate each shard file at submit (`botbowl-ui dataset --truncate`);
+    /// otherwise append.
+    pub truncate: bool,
+    /// Games per task handed to a worker.
+    pub batch: u16,
+}
+
 pub type JobId = u64;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -55,18 +88,28 @@ pub enum JobState {
     Failed { error: String },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobKind {
+    Eval,
+    Generate,
+}
+
+/// Progress of one rung (eval) or one shard (generate).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RungProgress {
+pub struct UnitProgress {
     pub name: String,
     pub done: u32,
     pub total: u32,
+    /// Samples written so far (generate only; 0 for eval).
+    pub samples: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobStatus {
     pub id: JobId,
+    pub kind: JobKind,
     pub state: JobState,
-    pub rungs: Vec<RungProgress>,
+    pub units: Vec<UnitProgress>,
     pub elapsed_secs: u64,
     /// Workers connected to the hub right now; `job --wait` warns when a
     /// running job has none.

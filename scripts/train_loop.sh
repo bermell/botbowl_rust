@@ -269,6 +269,15 @@ NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
 # Plans 020/021 record real OOM kills here, so 2 it is. Raise it on a box
 # with more RAM: the throughput sweep peaked at 4.
 PARALLEL_GAMES="${PARALLEL_GAMES:-2}"
+# Plan 040: the generate phase is one local worker (plus remote ones), not
+# 8 shard processes, so its concurrency is the worker's stream count. The
+# old shape was 8 shards x PARALLEL_GAMES trees; the same tree count is the
+# safe default here, and the RAM note above applies unchanged (one tree per
+# stream, ~400-500 MB each at 1000 iters).
+GEN_PARALLEL_GAMES="${GEN_PARALLEL_GAMES:-$((PARALLEL_GAMES * 8))}"
+# The bootstrap corpus is heuristic-only: no sidecar, so nothing to batch
+# for; it just wants the cores.
+BOOTSTRAP_PARALLEL_GAMES="${BOOTSTRAP_PARALLEL_GAMES:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
 # Same knob for the eval phase, tuned separately. Eval has the box to
 # itself (no generate shards competing), but each rung worker holds *two*
 # MCTS trees — candidate and opponent — against a dataset worker's one, so
@@ -555,25 +564,24 @@ if [ ! -f "$(champion)" ]; then
 
     if [ ! -e "$GEN_DIR/.generated" ]; then
         SECONDS=0
-        status "gen00 generate: 8x$BOOTSTRAP_GAMES_PER_SHARD heuristic games, disk free $(free_gb)"
-        PIDS=""
-        for K in $NN_SHARDS $HEUR_SHARDS; do
-            SEED=$((SEED_BASE + K * 100000))     # G=0 — disjoint from every gen
-            "$UI" dataset --mode random-start --games "$BOOTSTRAP_GAMES_PER_SHARD" \
-                --seed "$SEED" --mcts-iters "$MCTS_ITERS" --evaluator heuristic \
-                --truncate --out "$GEN_DIR/shard$K.jsonl" \
-                > "$GEN_DIR/shard$K.log" 2>&1 &
-            PIDS="$PIDS $!:$K"
-        done
-        for P in $PIDS; do
-            PID="${P%%:*}"; K="${P##*:}"
-            if ! wait "$PID"; then
-                log "WARN: gen00 shard$K generator exited nonzero (partial shard kept)"
-            fi
-        done
+        status "gen00 generate: 8x$BOOTSTRAP_GAMES_PER_SHARD heuristic games, local x$BOOTSTRAP_PARALLEL_GAMES + hub workers, disk free $(free_gb)"
+        # Plan 040: one hub job writes every shard; shard K's seeds are
+        # SEED_BASE + K*1e5 + g (G=0 — disjoint from every gen), the layout
+        # the per-shard processes used. Heuristic games need no sidecar.
+        worker_start "$BOOTSTRAP_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
+        if ! "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+                --mode random-start --games "$BOOTSTRAP_GAMES_PER_SHARD" \
+                --seed-base "$SEED_BASE" --shard-seed-stride 100000 \
+                --mcts-iters "$MCTS_ITERS" --evaluator heuristic \
+                --shards "$NN_SHARDS $HEUR_SHARDS" \
+                --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
+            worker_stop
+            die "gen00 generate failed — see generate.log, hub.log and generate.worker.log"
+        fi
+        worker_stop
         GAMES=0
         for K in $NN_SHARDS $HEUR_SHARDS; do
-            [ -s "$GEN_DIR/shard$K.jsonl" ] || die "gen00 shard$K.jsonl empty/missing — see shard$K.log"
+            [ -s "$GEN_DIR/shard$K.jsonl" ] || die "gen00 shard$K.jsonl empty/missing — see generate.log"
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
         status "gen00 generate done ($((SECONDS / 60)) min): $GAMES/$((BOOTSTRAP_GAMES_PER_SHARD * 8)) games"
@@ -637,47 +645,38 @@ while [ "$G" -le "$MAX_GENS" ]; do
         SECONDS=0
         CHAMP="$(champion)"
         nn_server_start "$CHAMP"
-        # Only the nn shards talk to the sidecar, and only they get
-        # parallel games: a heuristic shard has no NN call to batch, so
-        # extra games there would just take cores away from the ones that
-        # do. `--nn-server` is harmless if the server never came up (the
-        # client falls back to tract and warns once).
-        if [ -n "$NN_SERVER_PID" ]; then
-            NN_EXTRA="--nn-server $NN_SOCKET --parallel-games $PARALLEL_GAMES"
-        else
-            NN_EXTRA=""
+        # Plan 040: the games run on whatever workers are connected to the
+        # hub — this box's local worker (started here, inside the sidecar's
+        # lifetime, with GEN_PARALLEL_GAMES streams) plus any remote ones,
+        # which use tract. One job writes all 8 shards; shard K's seeds are
+        # SEED_BASE + G*1e6 + K*1e5 + g, exactly the per-shard layout the
+        # `botbowl-ui dataset` processes used, and --heuristic-shards keeps
+        # the hedge shards on the heuristic evaluator. `--nn-server` on the
+        # worker is harmless if the server never came up (it falls back to
+        # tract and warns once, in generate.worker.log).
+        worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
+        status "$GG generate: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)"
+        if ! "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+                --mode random-start --games "$GAMES_PER_SHARD" \
+                --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
+                --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$CHAMP" \
+                --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" \
+                --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
+            worker_stop
+            nn_server_stop
+            die "$GG generate failed — see generate.log, hub.log and generate.worker.log"
         fi
-        status "$GG generate: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_EXTRA:+ via sidecar x$PARALLEL_GAMES}${HEUR_SHARDS:+ + heuristic hedge}), disk free $(free_gb)"
-        PIDS=""
-        for K in $NN_SHARDS $HEUR_SHARDS; do
-            SEED=$((SEED_BASE + G * 1000000 + K * 100000))
-            case " $NN_SHARDS " in
-                *" $K "*) EV_ARGS="--evaluator $EVALUATOR --model $CHAMP $NN_EXTRA" ;;
-                *)        EV_ARGS="--evaluator heuristic" ;;
-            esac
-            # shellcheck disable=SC2086
-            "$UI" dataset --mode random-start --games "$GAMES_PER_SHARD" \
-                --seed "$SEED" --mcts-iters "$MCTS_ITERS" $EV_ARGS \
-                --truncate --out "$GEN_DIR/shard$K.jsonl" \
-                > "$GEN_DIR/shard$K.log" 2>&1 &
-            PIDS="$PIDS $!:$K"
-        done
-        for P in $PIDS; do
-            PID="${P%%:*}"; K="${P##*:}"
-            if ! wait "$PID"; then
-                log "WARN: $GG shard$K generator exited nonzero (partial shard kept)"
-            fi
-        done
-        # A shard that silently ran on tract all generation is the failure
-        # this phase can otherwise hide: it finishes, its corpus is
+        # A local worker that silently ran on tract all generation is the
+        # failure this phase can otherwise hide: it finishes, its corpus is
         # correct, and it is just 4x slower. Surface it.
-        FELL_BACK=$(grep -l 'NN_SERVER_FALLBACK' "$GEN_DIR"/shard*.log 2>/dev/null | wc -l)
-        [ "$FELL_BACK" -eq 0 ] || status "WARN: $GG had $FELL_BACK shard(s) fall back to tract — see shard*.log and nn_server.log"
+        grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/generate.worker.log" \
+            && status "WARN: $GG had the local worker fall back to tract — see generate.worker.log and nn_server.log"
+        worker_stop
         # The trainer needs the whole card; never let the two contend.
         nn_server_stop
         GAMES=0
         for K in $NN_SHARDS $HEUR_SHARDS; do
-            [ -s "$GEN_DIR/shard$K.jsonl" ] || die "$GG shard$K.jsonl empty/missing — see shard$K.log"
+            [ -s "$GEN_DIR/shard$K.jsonl" ] || die "$GG shard$K.jsonl empty/missing — see generate.log"
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
         status "$GG generate done ($((SECONDS / 60)) min): $GAMES/$((GAMES_PER_SHARD * 8)) games"

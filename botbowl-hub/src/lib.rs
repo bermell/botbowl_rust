@@ -3,8 +3,9 @@
 //! One axum server exposes
 //!
 //! - `GET /ws` — the worker websocket ([`ws`]);
-//! - `POST /api/jobs`, `GET /api/jobs/{id}`, `GET /api/status` — the
-//!   control API the `botbowl-hub job` CLI uses (bearer token);
+//! - `POST /api/jobs` (an [`api::JobRequest`]: eval or generate),
+//!   `GET /api/jobs/{id}`, `GET /api/status` — the control API the
+//!   `botbowl-hub job` CLI uses (bearer token);
 //! - `GET /` — a plain-text status page for watching a run from a phone.
 //!
 //! All state is [`state::Inner`] behind one mutex; `changed` wakes anyone
@@ -26,7 +27,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::sync::Notify;
 
-use api::{EvalJobRequest, JobId, JobState, JobStatus, Submitted};
+use api::{EvalJobRequest, GenerateJobRequest, JobId, JobRequest, JobState, JobStatus, Submitted};
 use state::Inner;
 
 #[derive(Clone, Debug)]
@@ -78,10 +79,18 @@ impl Hub {
         Ok((hub, addr, task))
     }
 
-    pub fn submit_eval(&self, req: EvalJobRequest) -> std::io::Result<JobId> {
-        let id = self.inner.lock().unwrap().submit_eval(req)?;
+    pub fn submit(&self, req: JobRequest) -> std::io::Result<JobId> {
+        let id = self.inner.lock().unwrap().submit(req)?;
         self.changed.notify_waiters();
         Ok(id)
+    }
+
+    pub fn submit_eval(&self, req: EvalJobRequest) -> std::io::Result<JobId> {
+        self.submit(JobRequest::Eval(req))
+    }
+
+    pub fn submit_generate(&self, req: GenerateJobRequest) -> std::io::Result<JobId> {
+        self.submit(JobRequest::Generate(req))
     }
 
     pub fn job_status(&self, id: JobId) -> Option<JobStatus> {
@@ -122,11 +131,11 @@ async fn api_status(State(hub): State<Hub>, headers: HeaderMap) -> impl IntoResp
     Json(hub.inner.lock().unwrap().status()).into_response()
 }
 
-async fn api_submit(State(hub): State<Hub>, headers: HeaderMap, Json(req): Json<EvalJobRequest>) -> impl IntoResponse {
+async fn api_submit(State(hub): State<Hub>, headers: HeaderMap, Json(req): Json<JobRequest>) -> impl IntoResponse {
     if !authed(&hub, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match hub.submit_eval(req) {
+    match hub.submit(req) {
         Ok(id) => Json(Submitted { id }).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
@@ -158,9 +167,22 @@ async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
     }
     out.push_str(&format!("\njobs ({}):\n", s.jobs.len()));
     for j in &s.jobs {
-        out.push_str(&format!("  job {}  {:?}  {}s\n", j.id, j.state, j.elapsed_secs));
-        for r in &j.rungs {
-            out.push_str(&format!("      {:40} {:>5}/{:<5}\n", r.name, r.done, r.total));
+        out.push_str(&format!(
+            "  job {}  {:?}  {:?}  {}s\n",
+            j.id, j.kind, j.state, j.elapsed_secs
+        ));
+        for u in &j.units {
+            out.push_str(&format!(
+                "      {:40} {:>5}/{:<5}{}\n",
+                u.name,
+                u.done,
+                u.total,
+                if u.samples > 0 {
+                    format!("  {} samples", u.samples)
+                } else {
+                    String::new()
+                }
+            ));
         }
     }
     (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], out)

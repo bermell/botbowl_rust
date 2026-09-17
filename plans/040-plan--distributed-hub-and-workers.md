@@ -12,7 +12,17 @@ probe-forwarded before use — a panic inside `MctsBot` poisons the tree and abo
 Deviations from the design below: proto depends on `botbowl-play` (not engine-free — no wasm
 target exists to protect); `job.json` persistence and `Drain`-on-shutdown deferred to phase 3;
 the `mcts-heuristic` rung and `--vs` opponent both use the same `opponent_search` knobs as
-before. Phases 2+ not started.
+before. **Phase 2 done 2026-09-17**: `job generate` — one job writes every shard of a
+generation (`--out-dir`, `--shards`, `--heuristic-shards`; shard K seeded at
+`seed_base + K*stride`, so the seed sets are exactly the per-shard `botbowl-ui dataset`
+ones — round-robin by seed was dropped in favour of that); workers zstd-compress each
+trajectory's JSON line and the hub appends the bytes verbatim, so shard files are
+`DatasetWriter` format; the corpus label's backup rule is resolved on the hub at submit, not
+on the worker. `train_loop.sh`'s bootstrap and per-generation generate phases run through the
+hub (`GEN_PARALLEL_GAMES`, default `8*PARALLEL_GAMES`, sizes the local worker). Verified with
+real 14x7 binaries against `botbowl-ui dataset` on the same seeds: identical seed sets and
+provenance metadata per shard, nn shard shipped by hash, heuristic hedge shard on the
+heuristic evaluator. Phases 3+ not started.
 Decided: dirty-tree workers are refused (no exception); Windows deferred until a box exists;
 `job --wait` progress output still open. Independent of plan 039 (mixed board sizes);
 the two compose because board dims are a runtime `GameState` field within one compiled capacity.
