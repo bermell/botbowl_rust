@@ -151,7 +151,10 @@ log "window $GEN, warm start $(basename "$INIT") at $LR, seed $TRAIN_SEED, commi
 
 stopped && exit 0
 prep base
-prep blend "$NEW_PREPARE"
+# Unquoted on purpose: NEW_PREPARE holds a flag *and* its value, and quoting
+# it hands prepare one argument called "--value-blend 0.5".
+# shellcheck disable=SC2086
+prep blend $NEW_PREPARE
 
 stopped && exit 0
 # shellcheck disable=SC2086
