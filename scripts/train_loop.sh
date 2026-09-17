@@ -129,7 +129,7 @@ POLICY_TARGET="${POLICY_TARGET:-cq}"        # visits|cq
 CQ_TAU="${CQ_TAU:-100}"                     # in Q points (1000 = one TD); only for cq
 PREPARE_TARGET_ARGS="--policy-target $POLICY_TARGET"
 [ "$POLICY_TARGET" = cq ] && PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --tau $CQ_TAU"
-# Plan 036, adopted 2026-09-17 from gen05 on. The value head was fitting the
+# Plan 036, adopted 2026-09-17 from gen04 on. The value head was fitting the
 # window: measured on this run's own gen02 window, the baseline restored its
 # best checkpoint at epoch 1 of 10 and val_value then degraded 16% of the
 # label's variance over the remaining nine, while train value_loss fell

@@ -236,7 +236,7 @@ val_value/var(label), `drift` = (val_value@end − @restore)/var(label).
 | +W4 per-drive | 57500 | 0.591 | 0.003 | 5.75× | 4.00× |
 | +W5 dedup | 47500 | 0.591 | 0.005 | 4.75× | 3.67× |
 
-**Adopted from gen05 (`train_loop.sh`): W1 at 0.25, W3 at λ=0.5, W4 on.**
+**Adopted from gen04 (`train_loop.sh`): W1 at 0.25, W3 at λ=0.5, W4 on.**
 
 - λ=0.5 over λ=0.3 despite 0.3's better R²: that label is 70% the net's own search output, so part
   of the fit is the self-confirmation this plan's W3 section warned about. The R² gain is not
