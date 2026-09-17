@@ -212,6 +212,63 @@ val_value@end)`. Baseline = current loop settings.
 
 The `val_*` numbers select the arm for E4 but do not decide it (plan 032 ground rule).
 
+## Results (2026-09-17) — E1-E3 run, adopted
+
+Two windows of `runs/az14x7v6`, nine arms each, offline: `gen01` (random init, 1e-3 — mechanism 2
+only) and `gen02` (warm start from gen01 at 2e-4 — the regime the symptom was observed in).
+Raw tables in `runs/exp036/{gen01,gen02}/`.
+
+**The premise is confirmed.** The loop's own fine-tunes, independent of these arms: gen01 (from
+scratch) restored at epoch 2, gen02 and gen03 (both warm-started) restored inside **epoch 0** of 10.
+
+**`val_value` is not comparable across W3 arms** — the blend changes the label, and its variance
+falls from 0.495 to 0.180 on the gen02 val set. Everything below is normalised: `R²` = 1 −
+val_value/var(label), `drift` = (val_value@end − @restore)/var(label).
+
+| arm | gen02 restore | R² | drift | vs base | gen01 vs base |
+|---|---|---|---|---|---|
+| baseline | 10000 (ep 1) | 0.331 | 0.157 | 1.00× | 1.00× |
+| W1 value-weight 0.25 | 17500 | 0.341 | 0.107 | 1.75× | 1.67× |
+| W2 weight-decay 1e-4 | 10000 | 0.331 | 0.147 | **1.00×** | **1.00×** |
+| W1+W2 | 17500 | 0.342 | 0.122 | 1.75× | 2.33× |
+| W3 λ=0.5 | 57500 (ep 7) | 0.573 | 0.005 | 5.75× | 3.67× |
+| W3 λ=0.3 | 70000 (ep 9) | 0.682 | 0.000 | 7.00× | 4.33× |
+| +W4 per-drive | 57500 | 0.591 | 0.003 | 5.75× | 4.00× |
+| +W5 dedup | 47500 | 0.591 | 0.005 | 4.75× | 3.67× |
+
+**Adopted from gen05 (`train_loop.sh`): W1 at 0.25, W3 at λ=0.5, W4 on.**
+
+- λ=0.5 over λ=0.3 despite 0.3's better R²: that label is 70% the net's own search output, so part
+  of the fit is the self-confirmation this plan's W3 section warned about. The R² gain is not
+  evidence of better positional judgement.
+- **W2 rejected.** Inert on both windows — identical restore step and R² to baseline — and added
+  nothing on top of W1. AlphaZero's 1e-4 is an SGD L2 coefficient; it does not transfer to AdamW at
+  2e-4. Retry at 1e-3 or drop.
+- **W5 rejected.** 2.7% duplicates here, not plan 031 D3's 12.8% — that figure was measured on the
+  old identical-lineman corpus, and varied players make exact state collisions rare. It cost policy
+  quality on both windows (val_policy 1.6445 vs 1.6124; 1.8059 vs 1.7771). Delete D3's 12.8% from
+  your priors for this corpus.
+
+### W6 is rejected, for the opposite of the expected reason
+
+The plan assumed epochs 2-9 were burned compute carrying discarded policy gains. Both halves are
+wrong on this data:
+
+1. After W1+W3+W4 the restore moves to **epoch 7 of 10**, and λ=0.3 was still improving when the
+   budget ran out at epoch 9. The plan's own rule — budget ≈ 1.5× the observed restore — gives ~86k
+   steps against 72.5k for ten epochs of the gen02 window, i.e. the budget should grow, not shrink.
+   The fix did not save compute; it converted wasted compute into useful compute.
+2. There were no policy gains to discard. gen02 baseline `val_policy` reaches 1.6290 by step 10000
+   and then sits at 1.626 ± 0.001 for 60,000 more steps. The large `pgap` values in the raw tables
+   are noise picking a winner off a plateau, not a head still learning — so the "split the restore
+   between the heads" idea in **Selection rule** above is answered: not needed, there is nothing to
+   split.
+
+### Still open
+
+E4 — the winner vs baseline over 600 games vs `scripted`. The val numbers selected the arm; per
+plan 032's ground rule they do not decide it. Not yet run.
+
 ## Non-goals
 
 - Carrying Adam moments across warm starts. Not the mechanism; the 2e-4 warm LR already

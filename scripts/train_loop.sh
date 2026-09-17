@@ -86,6 +86,15 @@ EVAL_RUNGS="${EVAL_RUNGS:-}"
 # roughly halving that false-promotion rate. The fixed rungs stay at 30:
 # they are already decisive (p < 0.01) and are the cheap information here.
 MIRROR_GAMES="${MIRROR_GAMES:-100}"         # pre-flight heuristic mirror match
+# Plan 036 W6 (shrink the budget) is deliberately NOT adopted, and the reason
+# is the opposite of what the plan guessed. Shrinking was attractive while the
+# restore landed at epoch 0-1 and the other nine were waste. With the knobs
+# above the restore moves to **epoch 7 of 10** (gen02 window: step 57500 of
+# 72500), and the lambda=0.3 arm was still improving when the budget ran out at
+# epoch 9. The plan's own rule — budget ~1.5x the observed restore step — gives
+# ~86k steps, which is *more* than 10 epochs of this window, not less. The fix
+# did not save compute; it turned wasted compute into useful compute. Revisit
+# only against a freshly measured restore step.
 EPOCHS="${EPOCHS:-10}"
                                             # (was wins/N until 2026-09-02 — see eval_summary.py)
 TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
@@ -120,6 +129,49 @@ POLICY_TARGET="${POLICY_TARGET:-cq}"        # visits|cq
 CQ_TAU="${CQ_TAU:-100}"                     # in Q points (1000 = one TD); only for cq
 PREPARE_TARGET_ARGS="--policy-target $POLICY_TARGET"
 [ "$POLICY_TARGET" = cq ] && PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --tau $CQ_TAU"
+# Plan 036, adopted 2026-09-17 from gen05 on. The value head was fitting the
+# window: measured on this run's own gen02 window, the baseline restored its
+# best checkpoint at epoch 1 of 10 and val_value then degraded 16% of the
+# label's variance over the remaining nine, while train value_loss fell
+# monotonically. Both of the loop's own warm-started fine-tunes (gen02, gen03)
+# restored inside epoch 0.
+#
+# Three knobs, measured together against the baseline on two windows (gen01
+# from-scratch, gen02 warm-started), runs/exp036:
+#
+#   VALUE_BLEND=0.5   (W3) the value label becomes
+#                     0.5*drive_outcome + 0.5*root_search_value, both
+#                     mover-signed. The outcome is one dice-driven scalar per
+#                     drive copied to all ~30 of its positions; the root value
+#                     averages ~1000 leaf scores. Much the largest effect:
+#                     restore step 5.75x later, and the post-optimum drift
+#                     goes from 16% of label variance to 0.5%.
+#   VALUE_WEIGHT=0.25 (W1) scales the value loss in the backward pass only —
+#                     Leela Zero's MSE/4, adopted there after this same
+#                     symptom. Worth 1.75x on its own.
+#   PER_DRIVE_VALUE_WEIGHT=on
+#                     (W4) weights each sample's value loss by 1/len(drive),
+#                     so a drive contributes one unit of value gradient per
+#                     epoch instead of one per position. The one clean
+#                     same-label gain in the table: R^2 0.573 -> 0.591.
+#
+# Rejected, with the numbers, so nobody re-runs them:
+#   W2 weight decay 1e-4 — inert on both windows (identical restore step and
+#     R^2 to baseline) and added nothing on top of W1. Retry at 1e-3 if
+#     anyone wants it; do not assume AlphaZero's SGD 1e-4 transfers to AdamW.
+#   W5 prepare --dedup — found only 2.7% exact duplicates here (varied players
+#     make collisions rare; plan 031 D3's 12.8% was the old identical-lineman
+#     corpus) and cost policy quality on both windows. Not worth it.
+#
+# NOTE the value head's output is no longer calibrated as "expected score
+# delta" — it is a blend. `nn-value` leaf scoring and td_rate.py consume the
+# sign/ordering and are unaffected, and the manifest records the blend.
+VALUE_BLEND="${VALUE_BLEND:-0.5}"           # W3; 1.0 = pure drive outcome
+VALUE_WEIGHT="${VALUE_WEIGHT:-0.25}"        # W1; 1.0 = the old unweighted sum
+PER_DRIVE_VALUE_WEIGHT="${PER_DRIVE_VALUE_WEIGHT:-on}"   # W4; on|off
+PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --value-blend $VALUE_BLEND"
+TRAIN_TARGET_ARGS="--value-weight $VALUE_WEIGHT"
+[ "$PER_DRIVE_VALUE_WEIGHT" = on ] && TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS --per-drive-value-weight"
 # Validate every N optimizer steps instead of once per epoch (plan 031 D4/D5,
 # adopted 2026-09-07). The warm-started fine-tunes gen04-07 all restored at
 # epoch 0-2 of 10 because val_value bottoms out inside the first epoch or two
@@ -472,8 +524,10 @@ if [ ! -f "$(champion)" ]; then
 
     if [ ! -e "$GEN_DIR/.trained" ]; then
         SECONDS=0
+        # shellcheck disable=SC2086
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
                 --epochs "$EPOCHS" --device "$TRAIN_DEVICE" \
+                $TRAIN_TARGET_ARGS \
                 --out "$MODEL.pt" --onnx "$MODEL.onnx" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "gen00 training failed — see train.log"
@@ -633,6 +687,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
                 --epochs "$EPOCHS" --device "$TRAIN_DEVICE" $INIT_ARGS \
                 --select-on "$SELECT_ON" --eval-every "$EVAL_EVERY" \
+                $TRAIN_TARGET_ARGS \
                 --out "$MODEL.pt" --onnx "$MODEL.onnx" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "$GG training failed — see train.log"
