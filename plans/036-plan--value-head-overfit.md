@@ -272,10 +272,29 @@ overfit is gone and the budget is now what stops training. `EPOCHS` raised 10 �
 1.5× rule gives ~135k steps against ~95k for ten epochs of that window). This is the exact opposite
 of W6 and follows from the same rule.
 
+### E4 — run 2026-09-17, recipe confirmed
+
+**new 0.605 ± 0.029 paired (110 pairs, 220 games), z = 3.62, p = 0.0003, 95% CI [0.548, 0.662].**
+
+Head to head rather than the plan's "600 games vs `scripted`" each: the two nets share a window, a
+warm start, a seed and a batch order, so the difference is estimated directly for half the games.
+Both arms trained at 10 epochs on purpose, so `EPOCHS=15` could not confound the value-target
+comparison. Candidate `new` = blend 0.5 + value-weight 0.25 + per-drive; opponent `base` = the old
+recipe on the same gen03 window from the same gen02 warm start.
+
+The effect is **+0.105** — three times plan 036's +0.03 bar and twice the +0.05 the 600 games were
+sized for. The stopping rule was pre-committed at n=200 in `036-e4-preregistration.md` before the
+data was looked at again; it landed at 220 because the enforcing watcher polls every 120 s and four
+parallel games finish inside a poll gap. That is poll granularity on a fixed schedule, not
+look-and-decide, and the overshoot carries no bias.
+
+Per the pre-registered decision table the CI excludes 0.50 from above: **recipe confirmed, E4
+closed.** The adopted knobs stay.
+
 ### Still open
 
-E4 — the winner vs baseline over 600 games vs `scripted`. The val numbers selected the arm; per
-plan 032's ground rule they do not decide it. Not yet run.
+Nothing in this plan. The value-target recipe is adopted (`train_loop.sh`, from gen04) and measured.
+`EPOCHS` follow-ups are tracked in the loop's own comment, not here.
 
 ## Non-goals
 

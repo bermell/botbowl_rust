@@ -35,3 +35,16 @@ and the honest report is the CI, not a verdict.
 
 `EPOCHS=15` is not under test here — both E4 arms trained at 10 epochs on purpose, so the budget
 could not confound the value-target comparison.
+
+
+---
+
+## Outcome (recorded 2026-09-17 22:00)
+
+Stopped at 220 games (poll granularity: the watcher checks every 120 s and four parallel games
+finish inside a gap; the condition was `>= 200` on a fixed schedule, not look-and-decide).
+
+**Paired 0.605 ± 0.029 over 110 pairs. z = 3.62, p = 0.0003, 95% CI [0.548, 0.662].**
+
+CI excludes 0.50 from above → **row 1: keep the recipe, E4 confirmed.** Effect +0.105, versus the
++0.063 this n could resolve and the +0.03 plan 036 asked for.
