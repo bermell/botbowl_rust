@@ -193,3 +193,35 @@ def test_concurrent_clients_are_batched_and_batch_invariant(served):
     # requests share a batch, so fewer batches than samples.
     assert server.stats.samples - samples0 >= n_clients * per_client
     assert server.stats.batches - batches0 < n_clients * per_client
+
+
+def test_content_addressed_cache_path_resolves_to_the_real_weights(tmp_path):
+    """A hub worker names `<cache>/<model-id>.onnx`, which has no `.pt` beside it.
+
+    Resolving by sibling alone rejected every such client and sent the whole
+    phase to tract with the GPU idle (2026-09-18, gen09 eval), so the server
+    matches the bytes against the directory it was started on instead. The
+    result must be the *same* absolute `.pt` the direct path gives, or the
+    registry would hold two entries for one net and halve its batches.
+    """
+    real = tmp_path / "models"
+    real.mkdir()
+    (real / "bbnet.onnx").write_bytes(b"onnx-bytes")
+    (real / "bbnet.pt").write_bytes(b"weights")
+    (real / "other.onnx").write_bytes(b"different-bytes")
+    (real / "other.pt").write_bytes(b"other-weights")
+    cache = tmp_path / "worker-cache"
+    cache.mkdir()
+    (cache / "deadbeef.onnx").write_bytes(b"onnx-bytes")
+
+    ns.WEIGHTS_DIRS.append(real)
+    try:
+        assert ns.resolve_weights(str(cache / "deadbeef.onnx")) == (real / "bbnet.pt").resolve()
+        assert ns.resolve_weights(str(real / "bbnet.onnx")) == (real / "bbnet.pt").resolve()
+        # A net that is genuinely absent still fails loudly rather than
+        # being served someone else's weights.
+        (cache / "unknown.onnx").write_bytes(b"not-in-the-dir")
+        with pytest.raises(FileNotFoundError):
+            ns.resolve_weights(str(cache / "unknown.onnx"))
+    finally:
+        ns.WEIGHTS_DIRS.remove(real)

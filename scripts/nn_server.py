@@ -218,8 +218,59 @@ def resolve_weights(path: str) -> Path:
         p = REPO / p
     p = p.resolve()
     if not p.exists():
+        alias = resolve_content_addressed(path)
+        if alias is not None:
+            return alias
         raise FileNotFoundError(f"no weights at {p} (from client model path {path!r})")
     return p
+
+
+# Directories to search when a client names a model that has no `.pt` beside
+# it. Populated from `--model`: the net this server was started on lives next
+# to the rest of the run's exports, which is exactly the set a worker can ask
+# for. Empty unless `--model` was given, so the plain path rule is unchanged.
+WEIGHTS_DIRS: list[Path] = []
+
+
+def resolve_content_addressed(path: str) -> Path | None:
+    """`<worker-cache>/<blake3>.onnx` → the `.pt` of the net it is a copy of.
+
+    A `botbowl-worker` fed by the hub holds models by content: the bytes
+    arrive over the websocket and land in its cache as `<model-id>.onnx`,
+    with no `.pt` anywhere near them (the hub ships ONNX only — the `.pt` is
+    the trainer's, and a remote worker has no use for it). Resolving by
+    sibling alone therefore rejects every hub worker, and the *only* symptom
+    is one `NN_SERVER_FALLBACK` line before it runs the whole phase on tract
+    at ~12.5x the cost per forward — the GPU sits idle with the right weights
+    loaded. Seen 2026-09-18 on gen09's eval.
+
+    So fall back to matching by content against `WEIGHTS_DIRS`: find an
+    `.onnx` there with the same bytes as the one the client named, and use
+    *its* `.pt`. Identity stays what `Registry` requires — the resolved,
+    absolute `.pt` — so the cache copy and the original collapse to one entry
+    and one batch queue, and a net that genuinely is not here still raises.
+    """
+    src = Path(path)
+    if src.suffix != ".onnx":
+        return None
+    try:
+        want = src.read_bytes()
+    except OSError:
+        return None
+    for d in WEIGHTS_DIRS:
+        for cand in sorted(d.glob("*.onnx")):
+            pt = cand.with_suffix(".pt")
+            if not pt.exists() or cand.stat().st_size != len(want):
+                continue
+            try:
+                if cand.read_bytes() != want:
+                    continue
+            except OSError:
+                continue
+            pt = pt.resolve()
+            log(f"resolved content-addressed {src.name} -> {cand.name} ({pt})")
+            return pt
+    return None
 
 
 def maybe_trace(module: torch.nn.Module, device: str, jit: str) -> torch.nn.Module:
@@ -1243,6 +1294,8 @@ def main() -> int:
     torch.backends.cudnn.benchmark = True
 
     registry = Registry(args.device, args.max_models, args.jit)
+    if args.model:
+        WEIGHTS_DIRS.append(Path(args.model).resolve().parent)
     if args.bench:
         if not args.model:
             log("FATAL --bench needs --model")
