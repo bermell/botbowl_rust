@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -413,6 +413,35 @@ impl Inner {
         if let Some(w) = self.workers.get_mut(&id) {
             w.last_seen = Instant::now();
         }
+    }
+
+    /// Drop every worker silent for longer than `timeout` and requeue what it
+    /// held. Returns the ids dropped.
+    ///
+    /// Worker ids are never reused, so the websocket task's own
+    /// `remove_worker` when it finally notices the dead socket is a no-op,
+    /// and a reaped worker that comes back to life reconnects as a new id —
+    /// results it still sends under the old one are deduped on
+    /// `(job, unit, game)` like any other late result, so reaping can
+    /// duplicate work but never double-count it.
+    pub fn reap_stale(&mut self, timeout: Duration) -> Vec<WorkerId> {
+        let stale: Vec<WorkerId> = self
+            .workers
+            .iter()
+            .filter(|(_, w)| w.last_seen.elapsed() > timeout)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &stale {
+            if let Some(w) = self.workers.get(id) {
+                eprintln!(
+                    "[hub] worker {id} {:?} timed out ({} s without a heartbeat)",
+                    w.name,
+                    w.last_seen.elapsed().as_secs()
+                );
+            }
+            self.remove_worker(*id);
+        }
+        stale
     }
 
     // -- scheduling --------------------------------------------------------

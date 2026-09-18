@@ -18,6 +18,7 @@ pub mod ws;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Path, State};
@@ -36,6 +37,10 @@ pub struct HubConfig {
     pub token: String,
     /// Accept workers built from a different commit (plan 041 decision 5).
     pub allow_commit_mismatch: bool,
+    /// Drop a worker that has not been heard from for this long, and requeue
+    /// the games it was holding. Workers heartbeat every 30 s whether or not
+    /// they are mid-game, so this is about a lost *machine*, not a slow one.
+    pub worker_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -71,9 +76,17 @@ impl Hub {
         let listener = tokio::net::TcpListener::bind(hub.cfg.bind).await?;
         let addr = listener.local_addr()?;
         let router = hub.router();
+        let reaper = hub.clone();
         let task = tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, router).await {
-                eprintln!("[hub] server error: {e}");
+            // The reaper never returns, so the select ends with the server
+            // and the loop is dropped with it — no task outlives its hub.
+            tokio::select! {
+                r = axum::serve(listener, router) => {
+                    if let Err(e) = r {
+                        eprintln!("[hub] server error: {e}");
+                    }
+                }
+                _ = reap_loop(reaper) => {}
             }
         });
         Ok((hub, addr, task))
@@ -116,6 +129,28 @@ fn authed(hub: &Hub, headers: &HeaderMap) -> bool {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .is_some_and(|t| t == hub.cfg.token)
+}
+
+/// Drop workers that have gone silent, for as long as the hub serves.
+///
+/// A worker whose *process* dies closes its socket and the websocket task
+/// requeues its games immediately. A worker whose *machine* goes away — a
+/// laptop that sleeps, a dropped VPN — leaves an ESTABLISHED socket the hub
+/// cannot tell from a healthy one, and its in-flight games are stranded: the
+/// job then sits at 4791/4800 with every live worker idle until someone
+/// notices. (Seen 2026-09-18: gen10 generate stalled just under three hours
+/// on nine games held by a slept laptop.) Heartbeats are what distinguishes
+/// the two, so act on them.
+async fn reap_loop(hub: Hub) -> ! {
+    let timeout = hub.cfg.worker_timeout;
+    let mut tick = tokio::time::interval((timeout / 4).max(Duration::from_millis(250)));
+    loop {
+        tick.tick().await;
+        let dropped = hub.inner.lock().unwrap().reap_stale(timeout);
+        if !dropped.is_empty() {
+            hub.changed.notify_waiters();
+        }
+    }
 }
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(hub): State<Hub>) -> impl IntoResponse {

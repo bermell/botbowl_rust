@@ -40,10 +40,17 @@ fn tmp(tag: &str) -> PathBuf {
 }
 
 async fn start_hub() -> (Hub, String) {
+    // Long enough that a real worker in these tests is never reaped for
+    // being busy; the reaper's own test sets its own.
+    start_hub_with(Duration::from_secs(300)).await
+}
+
+async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
     let (hub, addr, _task) = Hub::start(HubConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
         token: TOKEN.into(),
         allow_commit_mismatch: false,
+        worker_timeout,
     })
     .await
     .unwrap();

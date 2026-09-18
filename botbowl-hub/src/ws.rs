@@ -121,34 +121,40 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
     // -- serve -------------------------------------------------------------
     while let Some(frame) = stream.next().await {
         match frame {
-            Ok(Message::Binary(b)) => match decode::<ToHub>(&b) {
-                Ok(ToHub::EvalGameDone { task, line }) => {
-                    hub.inner.lock().unwrap().eval_game_done(wid, task, line);
-                    hub.changed.notify_waiters();
+            Ok(Message::Binary(b)) => {
+                // Every frame is proof of life, not just the heartbeat: a
+                // worker streaming results is plainly alive even if its
+                // heartbeat task were wedged.
+                hub.inner.lock().unwrap().seen(wid);
+                match decode::<ToHub>(&b) {
+                    Ok(ToHub::EvalGameDone { task, line }) => {
+                        hub.inner.lock().unwrap().eval_game_done(wid, task, line);
+                        hub.changed.notify_waiters();
+                    }
+                    Ok(ToHub::TrajectoryDone {
+                        task,
+                        game,
+                        samples,
+                        zstd_json,
+                    }) => {
+                        hub.inner
+                            .lock()
+                            .unwrap()
+                            .trajectory_done(wid, task, game, samples, zstd_json);
+                        hub.changed.notify_waiters();
+                    }
+                    Ok(ToHub::TaskFailed { task, error }) => {
+                        hub.inner.lock().unwrap().task_failed(wid, task, error);
+                        hub.changed.notify_waiters();
+                    }
+                    Ok(ToHub::Heartbeat { .. }) => {}
+                    Ok(ToHub::Hello { .. }) => {}
+                    Err(e) => {
+                        eprintln!("[hub] worker {wid} sent an undecodable frame: {e}");
+                        break;
+                    }
                 }
-                Ok(ToHub::TrajectoryDone {
-                    task,
-                    game,
-                    samples,
-                    zstd_json,
-                }) => {
-                    hub.inner
-                        .lock()
-                        .unwrap()
-                        .trajectory_done(wid, task, game, samples, zstd_json);
-                    hub.changed.notify_waiters();
-                }
-                Ok(ToHub::TaskFailed { task, error }) => {
-                    hub.inner.lock().unwrap().task_failed(wid, task, error);
-                    hub.changed.notify_waiters();
-                }
-                Ok(ToHub::Heartbeat { .. }) => hub.inner.lock().unwrap().seen(wid),
-                Ok(ToHub::Hello { .. }) => {}
-                Err(e) => {
-                    eprintln!("[hub] worker {wid} sent an undecodable frame: {e}");
-                    break;
-                }
-            },
+            }
             Ok(Message::Close(_)) | Err(_) => break,
             Ok(_) => {}
         }

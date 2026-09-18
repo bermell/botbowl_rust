@@ -45,6 +45,12 @@ struct ServeArgs {
     /// Accept workers built from another commit (plan 041 decision 5).
     #[arg(long, default_value_t = false)]
     allow_commit_mismatch: bool,
+    /// Seconds of silence before a worker is dropped and its games requeued.
+    /// Workers heartbeat every 30 s; this catches the machine that goes away
+    /// without closing its socket (a slept laptop), which is otherwise
+    /// indistinguishable from a healthy one and strands its games.
+    #[arg(long, default_value_t = 120)]
+    worker_timeout: u64,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -628,6 +634,7 @@ fn main() {
                     bind: a.bind,
                     token,
                     allow_commit_mismatch: a.allow_commit_mismatch,
+                    worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
                 })
                 .await
                 .unwrap_or_else(|e| {

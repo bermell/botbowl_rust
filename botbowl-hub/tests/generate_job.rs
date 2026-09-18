@@ -43,10 +43,17 @@ fn tmp(tag: &str) -> PathBuf {
 }
 
 async fn start_hub() -> (Hub, String) {
+    // Long enough that a real worker in these tests is never reaped for
+    // being busy; the reaper's own test sets its own.
+    start_hub_with(Duration::from_secs(300)).await
+}
+
+async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
     let (hub, addr, _task) = Hub::start(HubConfig {
         bind: "127.0.0.1:0".parse().unwrap(),
         token: TOKEN.into(),
         allow_commit_mismatch: false,
+        worker_timeout,
     })
     .await
     .unwrap();
@@ -275,4 +282,62 @@ async fn a_vanishing_worker_gets_its_seeds_requeued() {
     assert_eq!(status.state, JobState::Done, "{status:?}");
     assert_shard(&dir, 0);
     assert_shard(&dir, 1);
+}
+
+/// A worker whose machine goes away without closing the socket — a laptop
+/// that sleeps — must not strand the games it holds.
+///
+/// This is the case `a_vanishing_worker_gets_its_seeds_requeued` does *not*
+/// cover: there the socket closes and the websocket task requeues at once.
+/// Here the connection stays ESTABLISHED and silent, which is what actually
+/// happened on 2026-09-18 (gen10 generate sat at 4791/4800 for three hours
+/// with every live worker idle). Only the heartbeat timeout can tell the two
+/// apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_silent_worker_is_reaped_and_its_seeds_requeued() {
+    let (hub, url) = start_hub_with(Duration::from_secs(2)).await;
+    let dir = tmp("reap");
+    let id = hub.submit_generate(job(&dir, true)).unwrap();
+
+    // Connect, take work, then hold the socket open and say nothing.
+    let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let (mut sink, mut stream) = ws.split();
+    let hello = ToHub::Hello {
+        protocol: PROTOCOL_VERSION,
+        token: TOKEN.into(),
+        build: BuildInfo::current(),
+        triple: "test".into(),
+        name: "sleeper".into(),
+        cores: 1,
+        ram_mb: 0,
+        cached_models: vec![],
+        parallel_games: Some(2),
+    };
+    sink.send(Message::Binary(encode(&hello).into())).await.unwrap();
+    let mut tasks = 0;
+    while let Ok(Some(Ok(Message::Binary(b)))) = tokio::time::timeout(Duration::from_secs(2), stream.next()).await {
+        match decode::<ToWorker>(&b).unwrap() {
+            ToWorker::Welcome { .. } => {}
+            ToWorker::Task(_) => tasks += 1,
+            other => panic!("{other:?}"),
+        }
+        if tasks == 2 {
+            break;
+        }
+    }
+    assert_eq!(tasks, 2, "sleeper should have been handed 2 tasks");
+
+    let live = spawn_worker(worker_cfg(&url, "real", 2));
+    let status = tokio::time::timeout(Duration::from_secs(300), hub.wait(id))
+        .await
+        .expect("job finished in time — the sleeper's games must be requeued")
+        .unwrap();
+    assert_eq!(status.state, JobState::Done, "{status:?}");
+    assert_shard(&dir, 0);
+    assert_shard(&dir, 1);
+    // The socket was never closed by either side: the reaper, not a
+    // disconnect, is what freed the work.
+    drop(sink);
+    drop(stream);
+    drop(live);
 }

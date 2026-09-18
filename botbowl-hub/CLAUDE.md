@@ -43,6 +43,13 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   a corpus shard; a vanished worker's in-flight games are requeued at the front; a slow worker
   that reappears cannot double count. The worker's result channel outlives its socket, so
   nothing finished is lost on a reconnect.
+- **Liveness is the heartbeat, not the socket.** A worker whose *process* dies closes its
+  socket and `ws.rs` requeues immediately; a worker whose *machine* leaves — a slept laptop, a
+  dropped VPN — leaves an ESTABLISHED socket the hub cannot tell from a healthy one. Workers
+  heartbeat every 30 s and `reap_loop` drops anything silent for `--worker-timeout` (120 s)
+  and requeues its games. Without it a job strands on its last few games with every live
+  worker idle: gen10 generate sat at 4791/4800 for three hours on 2026-09-18. Worker ids are
+  never reused, so a late result from a reaped worker is deduped like any other.
 - **Output equals `botbowl-ui eval`'s.** `eval.games.jsonl` lines are `EvalGameLine`
   (serde, field order is the format), `report.json` is `botbowl_play::eval::Report` with
   `lectures: []` — the hub never runs the lecture battery. Rung labels are built by the same
@@ -72,5 +79,6 @@ so compare seed sets, labels and counts, not lines.
 
 ## Not yet (plan 041 phases 3-5)
 
-Heartbeat-timeout requeue and hub restart recovery (`job.json`), `Drain` on shutdown, serving
-the worker binary + self-update, TLS with a pinned cert.
+Hub restart recovery (`job.json`) — in-memory job state still dies with the daemon, and there
+is no `job cancel`, so an orphaned job has to be cleared by restarting the hub. `Drain` on
+shutdown, serving the worker binary + self-update, TLS with a pinned cert.
