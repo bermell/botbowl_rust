@@ -1,5 +1,5 @@
 //! A forty-line blocking HTTP/1.1 client for `botbowl-hub job` to talk to
-//! the daemon on `http://host:port`. No TLS (plan 040 phase 5 adds it, and
+//! the daemon on `http://host:port`. No TLS (plan 041 phase 5 adds it, and
 //! will replace this), no redirects, no chunked responses — axum sends
 //! `content-length` for every JSON reply we read.
 

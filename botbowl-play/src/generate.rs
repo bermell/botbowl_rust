@@ -95,7 +95,7 @@ impl RandomStartBias {
 }
 
 /// Everything one trajectory needs besides its seed. Serializable so a
-/// hub can ship it to workers verbatim (plan 040).
+/// hub can ship it to workers verbatim (plan 041).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GenerateConfig {
     pub mode: GenMode,

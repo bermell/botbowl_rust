@@ -1,4 +1,4 @@
-//! Wire types between `botbowl-hub` and `botbowl-worker` (plan 040).
+//! Wire types between `botbowl-hub` and `botbowl-worker` (plan 041).
 //!
 //! One websocket per worker, binary frames, `postcard` encoding. The
 //! worker dials the hub, sends [`ToHub::Hello`], and from then on the hub
@@ -10,7 +10,7 @@
 //! any frame-layout change), the git commit baked into both binaries
 //! (exact match unless the hub was started with `--allow-commit-mismatch`;
 //! a dirty tree is refused unless the hub is dirty too), and the compiled
-//! board capacity. The rationale is in `plans/040-plan--distributed-hub-and-workers.md`
+//! board capacity. The rationale is in `plans/041-plan--distributed-hub-and-workers.md`
 //! decision 5.
 
 use serde::{Deserialize, Serialize};

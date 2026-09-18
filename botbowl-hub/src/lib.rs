@@ -1,4 +1,4 @@
-//! `botbowl-hub`: the job queue and result sink of plan 040.
+//! `botbowl-hub`: the job queue and result sink of plan 041.
 //!
 //! One axum server exposes
 //!
@@ -34,7 +34,7 @@ use state::Inner;
 pub struct HubConfig {
     pub bind: SocketAddr,
     pub token: String,
-    /// Accept workers built from a different commit (plan 040 decision 5).
+    /// Accept workers built from a different commit (plan 041 decision 5).
     pub allow_commit_mismatch: bool,
 }
 

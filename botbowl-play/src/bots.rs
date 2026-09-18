@@ -1,7 +1,7 @@
 //! Bot construction shared by generation and eval.
 //!
 //! Every knob is explicit here; the CLI layer maps its flags onto these
-//! types, and the plan-040 wire protocol will carry them verbatim. The
+//! types, and the plan-041 wire protocol will carry them verbatim. The
 //! `Option` search knobs mean "leave `MctsBot`'s default (which may come
 //! from the environment)": `dataset` never set them, `eval` always did,
 //! and both behaviours must survive the extraction unchanged.

@@ -4,7 +4,7 @@
 //! alternating Home/Away on a fixed seed set so candidates are compared on
 //! identical situations. Each game yields one [`EvalGameLine`]; a rung's
 //! lines fold into one [`LadderRow`] via [`LadderRow::record`]. Keeping the
-//! fold here, next to the per-game record, is what lets the plan-040 hub
+//! fold here, next to the per-game record, is what lets the plan-041 hub
 //! rebuild `report.json` from lines that arrived from many workers.
 
 use rand::SeedableRng;

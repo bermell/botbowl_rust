@@ -1,6 +1,6 @@
 # botbowl-hub, botbowl-worker, botbowl-hub-proto
 
-Plan 040: distribute the loop's game-playing phases over machines that dial in. The **hub**
+Plan 041: distribute the loop's game-playing phases over machines that dial in. The **hub**
 (on the training box) owns a job queue and writes results in the exact layout `train_loop.sh`
 consumes; **workers** connect outbound over a websocket, receive small game batches, and stream
 one result per game. The **proto** crate is the wire vocabulary shared by both. The game code
@@ -58,7 +58,7 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   never from a worker's environment. Other `BLOOD_MCTS_*` knobs the config leaves `None` are
   still read on the worker — keep helper boxes' environments clean.
 - **Control API and workers share one bearer token** (`hub.token`, random on first start).
-  No TLS yet (plan 040 phase 5); `http.rs` is a deliberately tiny client that will go with it.
+  No TLS yet (plan 041 phase 5); `http.rs` is a deliberately tiny client that will go with it.
 
 ## Tests
 
@@ -70,7 +70,7 @@ its reason. For MCTS/NN paths, run real binaries at 14x7 against a current-schem
 (`scripts/make_random_net.py` makes one) — search output is not reproducible across processes,
 so compare seed sets, labels and counts, not lines.
 
-## Not yet (plan 040 phases 3-5)
+## Not yet (plan 041 phases 3-5)
 
 Heartbeat-timeout requeue and hub restart recovery (`job.json`), `Drain` on shutdown, serving
 the worker binary + self-update, TLS with a pinned cert.

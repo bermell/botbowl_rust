@@ -2,7 +2,7 @@
 name = "botbowl-worker"
 version = "0.1.0"
 edition = "2021"
-description = "Dials a botbowl-hub and plays the games it hands out (plan 040)"
+description = "Dials a botbowl-hub and plays the games it hands out (plan 041)"
 
 [dependencies]
 botbowl-hub-proto = { version = "0.1.0", path = "../botbowl-hub-proto/" }

@@ -1,6 +1,6 @@
 //! Headless training-data generator (grand-plan steps 6–7).
 //!
-//! The game-playing core lives in `botbowl_play::generate` (plan 040 phase
+//! The game-playing core lives in `botbowl_play::generate` (plan 041 phase
 //! 0); this module is the single-process shell around it: CLI flags to a
 //! `GenerateConfig`, a shared JSONL writer, N game workers pulling seeds off
 //! one counter, and the profile/provenance lines the loop scripts grep for.

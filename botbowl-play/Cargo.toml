@@ -2,7 +2,7 @@
 name = "botbowl-play"
 version = "0.1.0"
 edition = "2021"
-description = "Play one game and return its record: the shared core under `botbowl-ui dataset`/`eval` and the plan-040 worker"
+description = "Play one game and return its record: the shared core under `botbowl-ui dataset`/`eval` and the plan-041 worker"
 
 [dependencies]
 botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }

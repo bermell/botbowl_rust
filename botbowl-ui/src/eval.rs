@@ -14,7 +14,7 @@
 //!    identical situations. Win rate + TDs for/against.
 //!
 //! The per-game core and the report types live in `botbowl_play::eval`
-//! (plan 040 phase 0); this module is the single-process shell: CLI flags
+//! (plan 041 phase 0); this module is the single-process shell: CLI flags
 //! to configs, rung workers, the per-game JSONL file, the printed table.
 //!
 //! Output: a printed table and (optionally) a JSON report for tracking

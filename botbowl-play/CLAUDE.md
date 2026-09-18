@@ -1,14 +1,14 @@
 # botbowl-play
 
 "Play one game, return its record." Extracted from `botbowl-ui`'s `dataset.rs`/`eval.rs` in
-plan 040 phase 0 so the single-box CLI and the distributed worker run the *same* code path.
+plan 041 phase 0 so the single-box CLI and the distributed worker run the *same* code path.
 
 ## Contract
 
 - **No process concerns.** Nothing here opens files, spawns threads, prints progress or parses
   flags. A caller hands in a config + seed and gets back a value. `botbowl-ui` is the
   single-process shell (parallel workers, JSONL writer, `NN_PROFILE`/`NN_SERVER` lines the loop
-  greps); the plan-040 worker is the other.
+  greps); the plan-041 worker is the other.
 - **Byte-compatible records.** `eval::EvalGameLine`'s field order *is* the `--per-game-out` file
   format read by `scripts/paired_summary.py` and friends; `generate::budget_label` is the
   provenance string stamped into every corpus. Both are pinned by tests — change them only with

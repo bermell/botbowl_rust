@@ -10,8 +10,8 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
   - `botbowl-engine/` — pure rules library, procedure-stack state machine. No dependency on the other crates. Board/team size is build-time configurable via env vars (see its CLAUDE.md).
   - `botbowl-curriculum/` — training scenarios (`Lecture` trait, `run_trials`). Depends on `botbowl-engine`.
   - `botbowl-mcts/` — `BloodBowlDynamics` + `MctsBot`, the adapter onto `recon_mcts`. Depends on `botbowl-engine` + `recon_mcts`.
-  - `botbowl-play/` — "play one game, return its record": the process-agnostic core under `botbowl-ui dataset`/`eval` (trajectory generation, ladder games, `EvalGameLine`/`LadderRow`/`Report`, bot construction). No files, threads or CLI in it; plan 040's hub/worker reuse it verbatim. Depends on engine, curriculum, mcts, nn, data.
-  - `botbowl-hub/`, `botbowl-worker/`, `botbowl-hub-proto/` — distributed generation and eval (plan 040): the hub on the training box queues game batches, workers on any machine dial in over a websocket and stream results back (trajectories zstd-compressed); the hub writes the same files (`shard$K.jsonl`, `eval.games.jsonl`, `report.json`) the local phases wrote. Shared `CLAUDE.md` in `botbowl-hub/`. Depend on `botbowl-play`.
+  - `botbowl-play/` — "play one game, return its record": the process-agnostic core under `botbowl-ui dataset`/`eval` (trajectory generation, ladder games, `EvalGameLine`/`LadderRow`/`Report`, bot construction). No files, threads or CLI in it; plan 041's hub/worker reuse it verbatim. Depends on engine, curriculum, mcts, nn, data.
+  - `botbowl-hub/`, `botbowl-worker/`, `botbowl-hub-proto/` — distributed generation and eval (plan 041): the hub on the training box queues game batches, workers on any machine dial in over a websocket and stream results back (trajectories zstd-compressed); the hub writes the same files (`shard$K.jsonl`, `eval.games.jsonl`, `report.json`) the local phases wrote. Shared `CLAUDE.md` in `botbowl-hub/`. Depend on `botbowl-play`.
   - `botbowl-ui/` — `ratatui` terminal frontend with `live` / `replay` / `snapshot` / `curriculum` subcommands, plus the headless `dataset` / `eval` shells over `botbowl-play`. Depends on the other four.
   - `botbowl-web/{proto,server,client}/` — human-vs-bot play in a browser, with the bot's search shown next to the board (plan 034). `proto` is engine-free and compiles to wasm32; `server` owns the `GameState` and the bots; `client` is a Leptos CSR app built with `trunk`. Has its own `CLAUDE.md`.
 - `recon_mcts/` — generic **re**combining, **con**current MCTS library (safe std-only Rust). A **nested, separate Cargo workspace**, deliberately in the botbowl workspace's `exclude` list — don't merge it in (its `tests/nim/` member compiles with `--features test_internals` by default). Has its own `CLAUDE.md`. No dependency on the botbowl crates.
@@ -46,7 +46,7 @@ cargo run --release -p botbowl-web-server -- \
 Both commands work from any directory — the server's `--dist-dir`/`--models-dir` defaults are
 resolved from its own crate path, not the cwd.
 
-Distributed generate/eval (plan 040; `train_loop.sh` starts the hub and the local worker itself):
+Distributed generate/eval (plan 041; `train_loop.sh` starts the hub and the local worker itself):
 
 ```sh
 cargo run --release -p botbowl-hub -- serve --bind 0.0.0.0:7777 --token-file runs/<run>/hub.token

@@ -16,7 +16,7 @@ use botbowl_play::bots::{candidate_label, evaluator_label, parse_backup, parse_p
 use botbowl_play::generate::{GenMode, RandomStartBias};
 
 #[derive(Parser, Debug)]
-#[command(name = "botbowl-hub", about = "Job queue for distributed generation/eval (plan 040)")]
+#[command(name = "botbowl-hub", about = "Job queue for distributed generation/eval (plan 041)")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -42,7 +42,7 @@ struct ServeArgs {
     /// Shared secret. Created (random) and printed if the file does not exist.
     #[arg(long, default_value = "hub.token")]
     token_file: PathBuf,
-    /// Accept workers built from another commit (plan 040 decision 5).
+    /// Accept workers built from another commit (plan 041 decision 5).
     #[arg(long, default_value_t = false)]
     allow_commit_mismatch: bool,
 }

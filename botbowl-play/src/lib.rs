@@ -1,7 +1,7 @@
 //! Play one game, return its record.
 //!
 //! This is the process-agnostic core that `botbowl-ui dataset` and
-//! `botbowl-ui eval` used to carry inline, split out (plan 040 phase 0) so
+//! `botbowl-ui eval` used to carry inline, split out (plan 041 phase 0) so
 //! a remote worker can run the exact same code path. Nothing here knows
 //! about files, CLI flags, progress output or threads: a caller hands in a
 //! config and a seed and gets back a [`botbowl_data::Trajectory`] or an

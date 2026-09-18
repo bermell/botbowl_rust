@@ -496,7 +496,7 @@ fn parse_size(s: &str) -> Result<(u16, u16), String> {
     Ok((w, h))
 }
 
-// ---- CLI enum -> `botbowl-play` config mappings (plan 040 phase 0) ----
+// ---- CLI enum -> `botbowl-play` config mappings (plan 041 phase 0) ----
 //
 // The CLI keeps its own `ValueEnum` types so `botbowl-play` stays clap-free;
 // these are the only place the two vocabularies meet.

@@ -2,7 +2,7 @@
 name = "botbowl-hub"
 version = "0.1.0"
 edition = "2021"
-description = "Job queue and result sink for distributed generation/eval (plan 040)"
+description = "Job queue and result sink for distributed generation/eval (plan 041)"
 
 [dependencies]
 botbowl-hub-proto = { version = "0.1.0", path = "../botbowl-hub-proto/" }

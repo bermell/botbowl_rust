@@ -2,7 +2,7 @@
 //! model bytes, jobs and their queues. Every transition is a synchronous
 //! method here; the websocket and HTTP layers only translate.
 //!
-//! Scheduling is deliberately simple (plan 040 decision 7): jobs run in
+//! Scheduling is deliberately simple (plan 041 decision 7): jobs run in
 //! submission order, a task is a small batch of games from one *unit* (a
 //! ladder rung of an eval job, a corpus shard of a generate job), a
 //! worker holds at most `parallel_games` tasks, and anything a departed

@@ -1,6 +1,6 @@
 //! `botbowl-worker`: dial a hub, play what it hands out, stream results back.
 //!
-//! Layout (plan 040):
+//! Layout (plan 041):
 //!
 //! - one tokio task reads hub frames: `Model` goes to the on-disk
 //!   [`ModelStore`], `Task` goes onto a queue, `Drain` closes the queue;

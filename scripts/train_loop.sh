@@ -269,7 +269,7 @@ NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
 # Plans 020/021 record real OOM kills here, so 2 it is. Raise it on a box
 # with more RAM: the throughput sweep peaked at 4.
 PARALLEL_GAMES="${PARALLEL_GAMES:-2}"
-# Plan 040: the generate phase is one local worker (plus remote ones), not
+# Plan 041: the generate phase is one local worker (plus remote ones), not
 # 8 shard processes, so its concurrency is the worker's stream count. The
 # old shape was 8 shards x PARALLEL_GAMES trees; the same tree count is the
 # safe default here, and the RAM note above applies unchanged (one tree per
@@ -321,7 +321,7 @@ CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target/14x7}"
 export CARGO_TARGET_DIR
 UI="$CARGO_TARGET_DIR/release/botbowl-ui"
 PREPARE="$CARGO_TARGET_DIR/release/prepare"
-# Plan 040: the eval phase runs on the hub. The daemon lives for the whole
+# Plan 041: the eval phase runs on the hub. The daemon lives for the whole
 # loop (remote workers stay connected across generations); the *local*
 # worker is started per phase, inside the sidecar's lifetime, because its
 # loaded nets hold the sidecar socket. Remote machines join with
@@ -443,7 +443,7 @@ nn_server_stop() {
     NN_SERVER_PID=""
     rm -f "$NN_SOCKET"
 }
-# ---- hub + local worker lifecycle (plan 040) --------------------------------
+# ---- hub + local worker lifecycle (plan 041) --------------------------------
 # The hub is idempotent to start: if one already answers on $HUB_PORT (a
 # previous loop instance, or started by hand so remote workers could join
 # early) it is reused and left running on exit.
@@ -565,7 +565,7 @@ if [ ! -f "$(champion)" ]; then
     if [ ! -e "$GEN_DIR/.generated" ]; then
         SECONDS=0
         status "gen00 generate: 8x$BOOTSTRAP_GAMES_PER_SHARD heuristic games, local x$BOOTSTRAP_PARALLEL_GAMES + hub workers, disk free $(free_gb)"
-        # Plan 040: one hub job writes every shard; shard K's seeds are
+        # Plan 041: one hub job writes every shard; shard K's seeds are
         # SEED_BASE + K*1e5 + g (G=0 — disjoint from every gen), the layout
         # the per-shard processes used. Heuristic games need no sidecar.
         worker_start "$BOOTSTRAP_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
@@ -645,7 +645,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         SECONDS=0
         CHAMP="$(champion)"
         nn_server_start "$CHAMP"
-        # Plan 040: the games run on whatever workers are connected to the
+        # Plan 041: the games run on whatever workers are connected to the
         # hub — this box's local worker (started here, inside the sidecar's
         # lifetime, with GEN_PARALLEL_GAMES streams) plus any remote ones,
         # which use tract. One job writes all 8 shards; shard K's seeds are
@@ -801,7 +801,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # dataset's one, so this is deliberately below the generate phase's
         # concurrency even though eval has the box to itself.
         nn_server_start "$CHAMP"
-        # Plan 040: the games run on whatever workers are connected to the
+        # Plan 041: the games run on whatever workers are connected to the
         # hub — this box's local worker (started here, inside the sidecar's
         # lifetime, with the eval-phase parallelism) plus any remote ones.
         # `job eval` takes the same flags `botbowl-ui eval` did and blocks
