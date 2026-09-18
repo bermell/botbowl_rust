@@ -86,27 +86,32 @@ EVAL_RUNGS="${EVAL_RUNGS:-}"
 # roughly halving that false-promotion rate. The fixed rungs stay at 30:
 # they are already decisive (p < 0.01) and are the cheap information here.
 MIRROR_GAMES="${MIRROR_GAMES:-100}"         # pre-flight heuristic mirror match
-# Plan 036 W6 (shrink the budget) is NOT adopted, and the budget went the other
-# way instead — 10 -> 15 on 2026-09-17.
+# Budget history, and the correction that matters: 10 -> 15 (2026-09-17) ->
+# 3 (2026-09-18).
 #
-# Shrinking was attractive while the restore landed at epoch 0-1 and the other
-# nine epochs were waste: gen02 and gen03 both restored inside epoch 0 of 10.
-# The value-target knobs above removed that symptom rather than the budget
-# needing to. Offline on the gen02 window the restore moved to epoch 7 of 10,
-# and gen04 — the first generation actually trained this way — restored at
-# **step 90000, epoch 9 of 10**, i.e. against the ceiling, with the policy
-# optimum 5000 steps further out still.
+# Plan 036's W6 said shrink; I argued against it and raised the budget instead,
+# on the grounds that gen04 restored at epoch 9 of 10 and so was budget-bound.
+# That reading was wrong. Under the adopted value-target recipe the whole
+# validation curve is flat — total val_value spread across a 15-epoch run is
+# ~0.009, against 0.08-0.10 under the old recipe — so the restore step is drawn
+# from noise, not signal. gen04/05/06/07 restored at epochs 9, 7, 9 and 2; those
+# are draws, not a trend, and "epoch 9" never meant the budget was binding.
 #
-# So the budget is now the binding constraint, not the overfit. Plan 036's own
-# rule (budget ~1.5x the observed restore step) gives ~135k steps against
-# gen04's ~95k for ten epochs — 15 epochs. Costs roughly 34 -> 50 min of train
-# phase per generation, against a phase that was otherwise stopping while the
-# net was still improving.
+# Plan 029 conclusion 4 had already measured the same thing from the other side:
+# warm-started training barely moves the net at all (turnover at step 2,500 and
+# 20,000, against 17,500-92,500 from scratch). Between generations val_policy
+# falls hard (1.63 -> 1.15 over gen02-07); within a fine-tune it moves 0.005.
+# The learning is in the data distribution changing, not in fitting longer.
 #
-# Re-read this the next time the restore step moves: if a generation restores
-# in the first third of 15 epochs, the budget is too big and the value target
-# has drifted; if it restores at epoch 14 again, raise it again.
-EPOCHS="${EPOCHS:-15}"
+# So W6 is adopted after all, for the correct reason: not "the value head turns
+# over after epoch 1" but "the curve is flat, so the epochs do nothing". 3
+# epochs gives back ~50 min of train phase per generation.
+#
+# This is the *budget*, not the fix. The reason the fine-tune has little to
+# learn is plan 036's mechanism 1 — two thirds of every window was in the
+# previous fine-tune's training set — and no epoch count addresses that. See
+# plans/039 for the window/from-scratch experiment that does.
+EPOCHS="${EPOCHS:-3}"
                                             # (was wins/N until 2026-09-02 — see eval_summary.py)
 TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
 # Which leaf/prior source the bot plays with. `nn-value` = NN leaf values but

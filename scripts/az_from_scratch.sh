@@ -73,7 +73,25 @@ export NO_WARM_FROM="$SEED_NET.pt"
 #
 # Re-anchor again by hand (per plan 030: add a second, overlap three
 # generations, then drop this one) once the rolling mean passes ~0.75.
-if [ -f "$MODEL_DIR/bbnet_14x7_gen01.onnx" ]; then
+# Re-anchored to gen07 on 2026-09-18. gen01 had saturated exactly as plan 030
+# says to watch for: rolling3 reached 0.883 against it (gen06 alone scored
+# 0.925), well past the ~0.75 trigger, so it had stopped discriminating — gen07
+# reading 0.875 against gen06's 0.925 said almost nothing about the two nets.
+#
+# Not the literal plan-030 procedure (add a second anchor, overlap three
+# generations, then drop the old one): the loop takes one ANCHOR and a second
+# would double the 40-game eval every generation. The splice is instead covered
+# by the `scripted` rung, which is an absolute yardstick and spans the switch.
+# Read the anchor curve as two segments, gen02-07 against gen01 and gen08+
+# against gen07; the rolling mean resets at the switch by construction.
+#
+# Pick the *strongest* net, not a middling one: anchoring to the current best
+# puts the next generation near 0.5, which is where the measurement has the most
+# resolving power. Re-anchor again when rolling3 passes ~0.75.
+ANCHOR_GEN="${ANCHOR_GEN:-07}"
+if [ -f "$MODEL_DIR/bbnet_14x7_gen$ANCHOR_GEN.onnx" ]; then
+    export ANCHOR="${ANCHOR:-$MODEL_DIR/bbnet_14x7_gen$ANCHOR_GEN.onnx}"
+elif [ -f "$MODEL_DIR/bbnet_14x7_gen01.onnx" ]; then
     export ANCHOR="${ANCHOR:-$MODEL_DIR/bbnet_14x7_gen01.onnx}"
 else
     export ANCHOR="${ANCHOR:-$SEED_NET.onnx}"
