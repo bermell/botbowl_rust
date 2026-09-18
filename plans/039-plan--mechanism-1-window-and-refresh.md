@@ -1,6 +1,6 @@
 # Plan 039 — the fine-tune has nothing left to learn (mechanism 1)
 
-**Status:** Proposed 2026-09-18, on `runs/az14x7v6` at gen07.
+**Status:** ANSWERED 2026-09-18 — both hypotheses rejected, no games bought. Results at the bottom.
 
 ## The observation
 
@@ -86,3 +86,57 @@ moves.
 Then the lever is not the training set but the data: more *new* drives per generation (plan 036 W7),
 which is the one thing that raises the fraction of each window the net has not already fitted. It
 costs generation time, which is the loop's dominant phase, so it is last.
+
+
+## Results (2026-09-18, on gen08)
+
+Three arms, 110,000 steps each, one held-out val set (gen08 shards 4/7, in no training pool),
+identical label (`cq tau 100`, blend 0.5) so `val_policy` is comparable across arms.
+
+| arm | pool | samples | vp_spread | val_policy@restore | restore |
+|---|---|---|---|---|---|
+| `w3_warm` | gen06-08 | 347,501 | 0.0074 | **1.0382** | 55000 (0.50) |
+| `wide_warm` | gen02-08 | 787,896 | 0.0140 | 1.0794 (+0.041) | 27500 (0.25) |
+| `wide_scratch` | gen02-08 | 787,896 | 0.1380 | 1.1053 (+0.067) | 90000 (0.82) |
+
+**Both rejected. Neither arm bought games** — the pre-stated rule was that a flat arm has not
+addressed mechanism 1, and that a val_policy better than `w3_warm` is necessary before paying for a
+match. Neither condition was met by either arm.
+
+### The window hypothesis — no, again
+
+`wide_warm` is still flat (0.0140 against production's 0.0074 — twice a very small number) and is
+**worse** at the restore, +0.041 val_policy. 2.3× the training pool changed nothing about whether
+the fine-tune learns. This independently reproduces plan 029 stage 3 (0.487, z=−0.30) on a different
+engine, encoder, generator and value target, and settles the wide CI that justified re-measuring.
+
+### The refresh hypothesis — it learns, and still loses
+
+`wide_scratch` is the only arm that genuinely moves: vp_spread 0.138, 18× production's. It is doing
+real learning, 1.2412 → 1.1053. And it is not budget-starved — the curve flattens by ~40k steps
+(1.1199) and the last five checkpoints oscillate around 1.105 with no trend, so the restore at 90000
+is convergence, not a truncation.
+
+It converges **worse than the warm net starts**. `w3_warm`'s very first checkpoint is 1.0435, better
+than `wide_scratch` ever reaches. Eight generations of accumulated weights are worth more than a
+full retrain on the entire accumulated corpus.
+
+Note this does not contradict plan 029, which compared from-scratch against from-scratch at
+different data volumes (+0.05-0.06 per doubling) and never claimed from-scratch beats warm. What it
+does do is close the "periodic from-scratch retrain" follow-up ranked in plan 032: at this corpus
+size, a refresh costs an hour and gives back a weaker net.
+
+### What this means
+
+Mechanism 1 is not reachable by rearranging the training set. The flatness is not "the window is too
+small" or "the net is stuck in a warm-start basin" — it is that the net has already extracted what
+this corpus contains, and the corpus is what has to change.
+
+Per the plan's own "If both fail": the remaining lever is more *new* drives per generation
+(plan 036 W7) — the only thing that raises the fraction of a window the net has not already fitted.
+It costs generation time, which is the loop's dominant phase, so it is a real trade rather than a
+free win.
+
+Read positively: the loop **is** compounding, just through the weights rather than through any
+single fine-tune. val_policy fell 1.63 → 1.04 over gen02-08 while no individual fine-tune moved more
+than 0.01.

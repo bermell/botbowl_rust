@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 STEP = re.compile(r"^step\s+(\d+).*?val_policy\s+([\d.]+)\s+val_value\s+([\d.]+)")
-RESTORE = re.compile(r"^restored best-val weights: step (\d+)")
+RESTORE = re.compile(r"^restored best-val weights: step (\d+)", re.M)
 
 # What production currently does, for the comparison that matters.
 REF = {"val_policy": 0.0050, "val_value": 0.0077, "label": "gen07 production"}
