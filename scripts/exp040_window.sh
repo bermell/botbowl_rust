@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 039 — does anything make the fine-tune learn again? (mechanism 1)
+# Plan 040 — does anything make the fine-tune learn again? (mechanism 1)
 #
 # Three arms, one held-out val set, one fixed step budget. The arms differ only
 # in their *training pool* and their initialisation:
@@ -31,9 +31,9 @@
 # An arm that stays flat has not addressed mechanism 1 whatever its loss says,
 # and buys no games.
 #
-#   nohup scripts/exp039_window.sh > /dev/null 2>&1 &
-#   tail -f runs/exp039/exp039.log
-#   touch runs/exp039/STOP
+#   nohup scripts/exp040_window.sh > /dev/null 2>&1 &
+#   tail -f runs/exp040/exp040.log
+#   touch runs/exp040/STOP
 set -u
 
 WT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -44,7 +44,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$WT/target/14x7}"
 
 MAIN="${MAIN:-/home/mattias/repos/botbowl_rust}"
 RUN_DIR="${RUN_DIR:-$MAIN/runs/az14x7v6}"
-OUT="${OUT:-$MAIN/runs/exp039}"
+OUT="${OUT:-$MAIN/runs/exp040}"
 MODEL_DIR="${MODEL_DIR:-$MAIN/models/az_v6}"
 GEN="${GEN:-gen08}"                       # newest generation; its val shards are the common hold-out
 FIRST_WIDE="${FIRST_WIDE:-2}"             # gen01 excluded, see header
@@ -64,7 +64,7 @@ POLL="${POLL:-60}"
 PREPARE="$CARGO_TARGET_DIR/release/prepare"
 PY="${PY:-$MAIN/train/.venv/bin/python}"
 mkdir -p "$OUT"
-LOG="$OUT/exp039.log"
+LOG="$OUT/exp040.log"
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 die() { log "FATAL: $*"; exit 1; }
 stopped() { [ -e "$OUT/STOP" ] && { log "STOP present — exiting"; return 0; }; return 1; }
@@ -130,7 +130,7 @@ arm() {  # arm NAME PREP INIT_ARGS...
     log "arm $name done ($(((SECONDS-t0)/60)) min): $(grep 'restored best-val' "$tlog" | tail -1)"
 }
 
-log "=== plan 039: mechanism 1, on $GEN ==="
+log "=== plan 040: mechanism 1, on $GEN ==="
 log "pools: narrow gen$(printf '%02d' $((N-NARROW+1)))-$GEN | wide gen$(printf '%02d' $FIRST_WIDE)-$GEN (gen01 excluded)"
 log "budget $MAX_STEPS steps, warm init $(basename "$INIT") @ $WARM_LR, scratch @ $SCRATCH_LR, seed $TRAIN_SEED"
 
@@ -144,4 +144,4 @@ stopped && exit 0; arm wide_warm    wide   --init "$INIT" --lr "$WARM_LR"
 stopped && exit 0; arm wide_scratch wide   --lr "$SCRATCH_LR"
 
 log "=== all arms done ==="
-"$PY" "$WT/scripts/exp039_report.py" "$OUT" | tee -a "$LOG"
+"$PY" "$WT/scripts/exp040_report.py" "$OUT" | tee -a "$LOG"

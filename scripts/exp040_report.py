@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan 039: did the fine-tune start learning again?
+"""Plan 040: did the fine-tune start learning again?
 
 The primary column is **spread** — max-min of each validation series across the
 whole run. Since gen04 the production fine-tune has moved val_policy by ~0.005
@@ -11,7 +11,7 @@ does not has not fixed it, whatever its absolute loss says.
 flat curve it is uniform noise, so values near 0 or 1 across arms mean nothing
 on their own — read them next to the spread.
 
-    scripts/exp039_report.py runs/exp039
+    scripts/exp040_report.py runs/exp040
 """
 
 import re
@@ -49,7 +49,7 @@ def parse(path):
 
 
 def main(argv):
-    out = Path(argv[1] if len(argv) > 1 else "runs/exp039")
+    out = Path(argv[1] if len(argv) > 1 else "runs/exp040")
     rows = [r for r in (parse(p) for p in sorted(out.glob("*.train.log"))) if r]
     if not rows:
         print(f"no finished arms in {out}")

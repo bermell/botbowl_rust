@@ -1,4 +1,4 @@
-# Plan 039 — the fine-tune has nothing left to learn (mechanism 1)
+# Plan 040 — the fine-tune has nothing left to learn (mechanism 1)
 
 **Status:** ANSWERED 2026-09-18 — both hypotheses rejected, no games bought. Results at the bottom.
 

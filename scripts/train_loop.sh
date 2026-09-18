@@ -110,7 +110,7 @@ MIRROR_GAMES="${MIRROR_GAMES:-100}"         # pre-flight heuristic mirror match
 # This is the *budget*, not the fix. The reason the fine-tune has little to
 # learn is plan 036's mechanism 1 — two thirds of every window was in the
 # previous fine-tune's training set — and no epoch count addresses that. See
-# plans/039 for the window/from-scratch experiment that does.
+# plans/040 for the window/from-scratch experiment that does.
 EPOCHS="${EPOCHS:-3}"
                                             # (was wins/N until 2026-09-02 — see eval_summary.py)
 TRAIN_DEVICE="${TRAIN_DEVICE:-auto}"        # trainer device: auto|cpu|cuda|cuda:N
