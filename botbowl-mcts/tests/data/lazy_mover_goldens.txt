@@ -104,7 +104,7 @@ arm=heuristic budget=200 state=8 pick=StartBlitz (9,5) root_value=Some(1522) roo
   StartBlock (8,4) visits=35 q=Some(1518) prior=Some(1.0) solved=false terminal=false
   StartBlock (8,5) visits=37 q=Some(1518) prior=Some(1.0) solved=false terminal=false
   EndTurn visits=10 q=Some(1518) prior=Some(0.2) solved=false terminal=false
-arm=heuristic budget=200 state=9 pick=StartPass (6,3) root_value=Some(-411) root_visits=1016
+arm=heuristic budget=200 state=9 pick=StartPass (6,3) root_value=Some(-411) root_visits=836
   StartMove (2,4) visits=3 q=Some(-200) prior=Some(1.0) solved=false terminal=false
   StartMove (2,7) visits=3 q=Some(-200) prior=Some(1.0) solved=false terminal=false
   StartMove (4,4) visits=3 q=Some(-200) prior=Some(1.0) solved=false terminal=false
@@ -113,9 +113,9 @@ arm=heuristic budget=200 state=9 pick=StartPass (6,3) root_value=Some(-411) root
   StartBlitz (2,7) visits=7 q=Some(-200) prior=Some(1.0) solved=false terminal=false
   StartBlitz (4,4) visits=3 q=Some(-200) prior=Some(1.0) solved=false terminal=false
   StartBlitz (6,3) visits=7 q=Some(-200) prior=Some(1.0) solved=false terminal=false
-  StartPass (2,4) visits=427 q=Some(-194) prior=Some(1.0) solved=false terminal=false
+  StartPass (2,4) visits=343 q=Some(-161) prior=Some(1.0) solved=false terminal=false
   StartPass (2,7) visits=10 q=Some(-411) prior=Some(1.0) solved=false terminal=false
-  StartPass (4,4) visits=487 q=Some(-194) prior=Some(1.0) solved=false terminal=false
+  StartPass (4,4) visits=391 q=Some(-161) prior=Some(1.0) solved=false terminal=false
   StartPass (6,3) visits=10 q=Some(-411) prior=Some(1.0) solved=false terminal=false
   StartHandoff (2,4) visits=12 q=Some(-250) prior=Some(1.0) solved=false terminal=false
   StartHandoff (2,7) visits=8 q=Some(-239) prior=Some(1.0) solved=false terminal=false

@@ -250,9 +250,13 @@ impl Formation {
     /// offered on boards that can't hold them. `Line` is always available.
     pub fn fits(self, dims: &BoardDims) -> bool {
         let depth = Self::max_back(dims);
+        // Spread stacks two players on each outer wing row, so it needs a wing
+        // that may legally hold two. On narrower boards the wing cap drops to
+        // one (or to none at all) and the shape stops being Spread.
+        let wide_wings = dims.max_players_per_wing() >= 2;
         match self {
             Formation::Line => true,
-            Formation::Spread => dims.team_size >= 4 && depth >= 3,
+            Formation::Spread => dims.team_size >= 4 && depth >= 3 && wide_wings,
             Formation::Wedge => dims.team_size >= 4 && depth >= 5,
             Formation::Zone => dims.team_size >= 4 && depth >= 4,
         }
@@ -339,7 +343,11 @@ impl Formation {
     /// The board's LOS rows ordered centre-out; `Row::Los(i)` indexes this.
     fn los_rows_center_out(dims: &BoardDims) -> Vec<Coord> {
         let band = dims.los_y_range();
-        let center = dims.height / 2;
+        // Clamped into the band: on an even playable height the band has an
+        // even number of rows, so `height / 2` is half a square off centre and
+        // (on the shortest boards) could fall outside it entirely — which would
+        // spin the loop below forever.
+        let center = (dims.height / 2).clamp(*band.start(), *band.end());
         let mut rows = vec![center];
         let mut step = 1;
         while rows.len() < band.clone().count() {
@@ -361,8 +369,10 @@ impl Formation {
         let y = match row {
             Row::Los(i) => *Self::los_rows_center_out(dims).get(i)?,
             Row::Off(k) => (center + k).clamp(1, dims.height - 2),
-            Row::Wing(-1) => *dims.north_wing_y_range().start(),
-            Row::Wing(_) => *dims.south_wing_y_range().end(),
+            // A short board has no wing rows at all; the slot is then skipped
+            // rather than collapsing onto row 1, which belongs to the LOS band.
+            Row::Wing(-1) => dims.north_wing_y_range().next()?,
+            Row::Wing(_) => dims.south_wing_y_range().last()?,
         };
         let back = back.min(Self::max_back(dims));
         let x_delta_sign = if team == TeamType::Home { 1 } else { -1 };
@@ -609,7 +619,20 @@ mod tests {
     fn test_boards() -> Vec<BoardDims> {
         let capacity = BoardDims::default();
         let mut boards = vec![capacity];
-        for (w, h, players) in [(28, 17, 11), (22, 11, 8), (18, 11, 6), (16, 9, 4)] {
+        for (w, h, players) in [
+            (28, 17, 11),
+            (22, 11, 8),
+            (18, 11, 6),
+            (16, 9, 4),
+            // Even heights (no longer rejected) and the short boards where the
+            // wings empty out and the LOS band is the whole pitch.
+            (16, 10, 4),
+            (16, 8, 4),
+            (16, 7, 3),
+            (18, 6, 3),
+            (12, 5, 2),
+            (10, 5, 2),
+        ] {
             if (w, h, players) != (capacity.width, capacity.height, capacity.team_size)
                 && w <= capacity.width
                 && h <= capacity.height
