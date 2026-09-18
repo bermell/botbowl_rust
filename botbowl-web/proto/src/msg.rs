@@ -42,8 +42,8 @@ impl BoardSpec {
         if self.width < 8 || self.width % 2 != 0 {
             return Err(format!("width {} must be even and >= 8", self.width));
         }
-        if self.height < 3 || self.height % 2 == 0 {
-            return Err(format!("height {} must be odd and >= 3", self.height));
+        if self.height < 3 {
+            return Err(format!("height {} must be >= 3", self.height));
         }
         if self.team_size < 1 {
             return Err("team size must be >= 1".into());

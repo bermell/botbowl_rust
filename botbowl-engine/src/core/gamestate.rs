@@ -1566,7 +1566,14 @@ impl GameState {
         let num_available_players = num_players_on_bench + num_players_on_pitch;
         let team_size = self.board_dims.team_size;
         let min_people_on_pitch = team_size.min(num_available_players);
-        let min_people_on_scrimage = 3.min(num_available_players);
+        // Three on the line, or the whole band when the board is too short to
+        // hold three rows — otherwise a short board's setup is unsatisfiable.
+        let min_people_on_scrimage = self
+            .board_dims
+            .min_players_on_los()
+            .min(num_available_players)
+            .min(team_size);
+        let max_per_wing = self.board_dims.max_players_per_wing();
 
         if num_players_on_pitch < min_people_on_pitch || num_players_on_pitch > team_size {
             return false;
@@ -1592,7 +1599,7 @@ impl GameState {
                 north_wing += 1;
             }
         }
-        north_wing <= 2 && south_wing <= 2 && line_of_scrimage >= min_people_on_scrimage
+        north_wing <= max_per_wing && south_wing <= max_per_wing && line_of_scrimage >= min_people_on_scrimage
     }
 
     pub fn step_simple(&mut self, action: SimpleAT) {

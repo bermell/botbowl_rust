@@ -133,13 +133,23 @@ impl Default for BoardDims {
 
 impl BoardDims {
     /// `width`/`height` are engine dimensions (playable + 2 border); validates
-    /// the same parity/floor rules as `build.rs` and that nothing exceeds the
-    /// compiled capacity. Panics on violation.
+    /// the same rules as `build.rs` and that nothing exceeds the compiled
+    /// capacity. Panics on violation.
+    ///
+    /// **Width must stay even.** The whole codebase mirrors a state with
+    /// `x -> width - 1 - x` (`GameState::mirrored`, `AvailableActions::mirrored`,
+    /// the NN's perspective canonicalisation). That map only exchanges the two
+    /// LOS columns — and therefore the two halves — when the width is even; on
+    /// an odd width `los_home_x` is a fixed point inside Home's own half, so a
+    /// mirrored state puts Away players on Home's side and the halves differ by
+    /// a column. Height carries no such constraint: `bands()` keeps the wings
+    /// equal at any height, so odd and even both mirror cleanly about the
+    /// centre row.
     pub fn new(width: Coord, height: Coord, team_size: usize) -> BoardDims {
         let pw = width - 2; // playable width
         let ph = height - 2; // playable height
         assert!(pw >= 8 && pw % 2 == 0, "playable width must be even and >= 8, got {pw}");
-        assert!(ph >= 3 && ph % 2 == 1, "playable height must be odd and >= 3, got {ph}");
+        assert!(ph >= 3, "playable height must be >= 3, got {ph}");
         assert!(team_size >= 1, "team_size must be >= 1, got {team_size}");
         assert!(
             (width as usize) <= WIDTH && (height as usize) <= HEIGHT && team_size <= TEAM_SIZE,
@@ -151,11 +161,14 @@ impl BoardDims {
             height,
             team_size,
         };
-        // Derived setup ranges must stay non-empty and on-pitch (mirrors build.rs).
-        let los = dims.los_y_range();
-        assert!(1 <= *los.start() && los.start() <= los.end() && *los.end() <= height - 2);
-        assert!(!dims.north_wing_y_range().is_empty(), "north wing y-range empty");
-        assert!(!dims.south_wing_y_range().is_empty(), "south wing y-range empty");
+        // The bands must tile the playable rows exactly, with equal wings. A
+        // wing may legitimately be empty on a short board; the LOS may not.
+        let (los, wing) = dims.bands();
+        assert!(los >= 1 && wing >= 0 && los + 2 * wing == ph, "bands {los}+2x{wing} != {ph}");
+        assert_eq!(*dims.los_y_range().start(), wing + 1);
+        assert_eq!(*dims.los_y_range().end(), height - 2 - wing);
+        assert_eq!(dims.north_wing_y_range().count(), wing as usize);
+        assert_eq!(dims.south_wing_y_range().count(), wing as usize);
         dims
     }
 
@@ -180,11 +193,44 @@ impl BoardDims {
         BoardDims::new(width, height, team_size)
     }
 
-    fn center_y(&self) -> Coord {
-        self.height / 2
+    /// Split the playable rows into `wing | LOS | wing`, wings always equal so
+    /// the board stays mirror-symmetric about its centre row. Returns
+    /// `(los_rows, wing_rows)`; `los_rows + 2 * wing_rows == playable height`.
+    ///
+    /// As the board gets shorter the bands shrink in a fixed priority order —
+    /// wings 4→1 first, then the LOS 7→5, then wings →0 — so the contact line
+    /// (which has to hold three players) survives longest. The LOS is capped at
+    /// 7 rows, matched to the playable height's parity so the wings divide
+    /// evenly; on an even height the cap is 6. Reproduces the historical
+    /// 28x17 bands exactly (LOS 7, wings 4).
+    fn bands(&self) -> (Coord, Coord) {
+        let ph = self.height - 2; // playable rows
+        let cap = if ph % 2 == 1 { 7 } else { 6 };
+        let mut wing = ((ph - cap) / 2).max(0);
+        // A one-row wing is worth more than the last two LOS rows, but only
+        // while the LOS can still stay at 5.
+        if wing == 0 && ph - 2 >= 5 {
+            wing = 1;
+        }
+        (ph - 2 * wing, wing)
     }
-    fn los_half(&self) -> Coord {
-        (self.height - 4) / 4
+    /// Rows in the line-of-scrimmage band. Always >= 1.
+    pub fn los_rows(&self) -> Coord {
+        self.bands().0
+    }
+    /// Rows in *each* wing; 0 on boards too short to spare any.
+    pub fn wing_rows(&self) -> Coord {
+        self.bands().1
+    }
+    /// Players a team may set up in one wing: half the wing's rows, rounded up
+    /// (2 on the full pitch's 4-row wings). 0 when there are no wing rows.
+    pub fn max_players_per_wing(&self) -> usize {
+        ((self.wing_rows() + 1) / 2) as usize
+    }
+    /// Players a team must put on the line of scrimmage — three, or the whole
+    /// band when it is narrower than that.
+    pub fn min_players_on_los(&self) -> usize {
+        (self.los_rows().min(3)) as usize
     }
     pub fn los_home_x(&self) -> Coord {
         self.width / 2
@@ -199,13 +245,18 @@ impl BoardDims {
         }
     }
     pub fn los_y_range(&self) -> RangeInclusive<Coord> {
-        (self.center_y() - self.los_half())..=(self.center_y() + self.los_half())
+        let (los, wing) = self.bands();
+        (wing + 1)..=(wing + los)
     }
+    /// Empty when the board is too short for wings — callers must treat an
+    /// empty range as "this board has no wing", not as row 1.
     pub fn north_wing_y_range(&self) -> RangeInclusive<Coord> {
-        1..=(self.center_y() - self.los_half() - 1)
+        1..=self.wing_rows()
     }
+    /// Empty when the board is too short for wings (see `north_wing_y_range`).
     pub fn south_wing_y_range(&self) -> RangeInclusive<Coord> {
-        (self.center_y() + self.los_half() + 1)..=(self.height - 2)
+        let (los, wing) = self.bands();
+        (wing + los + 1)..=(self.height - 2)
     }
     pub fn endzone_x(&self, team: TeamType) -> Coord {
         match team {
@@ -981,6 +1032,95 @@ pub enum InjuryOutcome {
     Stunned,
     KO,
     Casualty,
+}
+
+#[cfg(test)]
+mod board_dims_tests {
+    use super::{BoardDims, Coord, HEIGHT, WIDTH};
+
+    /// `(playable height, LOS rows, wing rows)`. The bands shrink in a fixed
+    /// priority order as the board gets shorter — wings 4→1, then the LOS 7→5,
+    /// then wings →0 — so the contact line outlives the flanks.
+    const DESCENT: [(Coord, Coord, Coord); 13] = [
+        (15, 7, 4), // the historical full pitch
+        (14, 6, 4),
+        (13, 7, 3),
+        (12, 6, 3),
+        (11, 7, 2),
+        (10, 6, 2),
+        (9, 7, 1),
+        (8, 6, 1),
+        (7, 5, 1),
+        (6, 6, 0),
+        (5, 5, 0),
+        (4, 4, 0),
+        (3, 3, 0),
+    ];
+
+    fn dims_for(ph: Coord) -> Option<BoardDims> {
+        let (w, h) = (10, ph + 2);
+        ((w as usize) <= WIDTH && (h as usize) <= HEIGHT).then(|| BoardDims::new(w, h, 1))
+    }
+
+    #[test]
+    fn bands_follow_the_descent_order_and_always_tile_the_pitch() {
+        for (ph, los, wing) in DESCENT {
+            let Some(dims) = dims_for(ph) else { continue };
+            assert_eq!(
+                (dims.los_rows(), dims.wing_rows()),
+                (los, wing),
+                "playable height {ph} should split {los} + 2x{wing}"
+            );
+            // Equal wings, and the three bands tile the playable rows exactly.
+            assert_eq!(los + 2 * wing, ph);
+            assert_eq!(dims.north_wing_y_range().count(), wing as usize);
+            assert_eq!(dims.south_wing_y_range().count(), wing as usize);
+            assert_eq!(dims.los_y_range().count(), los as usize);
+            let covered: Vec<Coord> = dims
+                .north_wing_y_range()
+                .chain(dims.los_y_range())
+                .chain(dims.south_wing_y_range())
+                .collect();
+            assert_eq!(covered, (1..=ph).collect::<Vec<_>>(), "bands must tile rows 1..={ph}");
+        }
+    }
+
+    /// The bands are symmetric about the centre row, so a state mirrored in y
+    /// still has its LOS band and wings where the rules put them.
+    #[test]
+    fn bands_are_symmetric_in_y_at_every_height() {
+        for (ph, ..) in DESCENT {
+            let Some(dims) = dims_for(ph) else { continue };
+            let flip = |y: Coord| dims.height - 1 - y;
+            assert_eq!(
+                flip(*dims.los_y_range().end()),
+                *dims.los_y_range().start(),
+                "LOS band not y-symmetric at playable height {ph}"
+            );
+            let north: Vec<Coord> = dims.north_wing_y_range().map(flip).collect();
+            let south: Vec<Coord> = dims.south_wing_y_range().rev().collect();
+            assert_eq!(north, south, "wings not y-mirrors at playable height {ph}");
+        }
+    }
+
+    /// Setup caps derive from the band sizes, and reproduce the full pitch's
+    /// historical "three on the line, two per wing".
+    #[test]
+    fn setup_caps_scale_with_the_bands() {
+        for (ph, los, wing) in DESCENT {
+            let Some(dims) = dims_for(ph) else { continue };
+            assert_eq!(dims.max_players_per_wing(), ((wing + 1) / 2) as usize);
+            assert_eq!(dims.min_players_on_los(), los.min(3) as usize);
+            // A board can always satisfy its own line requirement.
+            assert!(dims.min_players_on_los() <= los as usize);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "must be even")]
+    fn odd_width_is_rejected() {
+        BoardDims::new(11, 9, 2);
+    }
 }
 
 #[cfg(test)]
