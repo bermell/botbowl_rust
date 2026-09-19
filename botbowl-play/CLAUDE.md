@@ -20,6 +20,17 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   become the report row, in any order from any number of producers. The hub rebuilds
   `report.json` from workers' lines with exactly this.
 - **Clap-free.** CLI enums live in `botbowl-ui/src/cli.rs` with `From` impls onto the types here.
+- **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
+  weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform
+  floor); `GenerateConfig.board_sizes: Option<SizeDist>` and `SizeDist::sample(seed)` pick the
+  board for game `seed` as a pure function, so a hub-shipped config draws the same board on every
+  worker. `None` = the env board. `play_ladder_game(.., board)` takes the board explicitly;
+  `LadderRow::on_board` / `eval::rung_name` spell a multi-size rung `opponent@14x7/4`.
+- **`EvalGameLine::serialize` is hand-written, and the reason matters.** Its `board` tag must be
+  omitted from JSON when absent (the line format is pinned byte for byte) but must *always* be on
+  the postcard wire, which is not self-describing — a `skip_serializing_if` there made the hub
+  read every worker frame as "end of buffer". `is_human_readable()` is the switch;
+  `board_tag_survives_a_non_self_describing_encoding` pins it.
 
 ## Verifying a change is behaviour-neutral
 

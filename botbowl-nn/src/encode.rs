@@ -78,9 +78,9 @@ const SKILL_PLANES: [Skill; Skill::COUNT] = Skill::ALL;
 const SHARED_BASE: usize = SKILL_BASE + Skill::COUNT;
 
 /// Spatial channel count `C`.
-pub const SPATIAL_CHANNELS: usize = SHARED_BASE + 10;
+pub const SPATIAL_CHANNELS: usize = SHARED_BASE + 12;
 /// Non-spatial feature count `F`.
-pub const GLOBAL_FEATURES: usize = 15;
+pub const GLOBAL_FEATURES: usize = 18;
 
 // Planes that belong to no single player.
 const C_BALL_GROUND: usize = SHARED_BASE;
@@ -108,6 +108,19 @@ const C_THEM_TD_ZONE: usize = SHARED_BASE + 8;
 /// [`PATH_PROB_NORM`], so the raw/normalised identity still holds exactly —
 /// the loss is at the input, not between the two views.
 const C_PATH_PROB: usize = SHARED_BASE + 9;
+/// Plan 042 (schema v7): board geometry the net can otherwise only infer
+/// from its distance to the zero-padded tensor edge — which is exactly the
+/// shortcut mixed-size training exists to take away. Both are in the
+/// **canonical** frame (mover attacks toward `x = 1`), zero on OOB cells.
+///
+/// `dist_to_us_endzone` is `x - 1`: "three squares from scoring" is a direct
+/// input instead of something to read off the border. Its opposite-end
+/// twin is `playable_w - 1 - this`, recoverable once the width is a global.
+/// Absolute coordinate planes were rejected: they are the memorisable
+/// feature, this is the relative one that transfers.
+const C_DIST_US_ENDZONE: usize = SHARED_BASE + 10;
+/// `min(y - 1, height - 2 - y)`: how close to either sideline.
+const C_DIST_SIDELINE: usize = SHARED_BASE + 11;
 
 // Per-player normalisers. These are the engine's characteristic caps, not
 // arbitrary round numbers: every per-player plane must land in `[0, 1]` or the
@@ -120,6 +133,14 @@ const AG_NORM: f32 = PlayerStats::MAX_AG as f32;
 const AV_NORM: f32 = PlayerStats::MAX_AV as f32;
 /// Full `u8` range: path probabilities are a fraction, not a characteristic.
 const PATH_PROB_NORM: f32 = 255.0;
+// Geometry normalisers (plan 042): the full 26x15/11 pitch reads as 1.0, so
+// every smaller board sits inside the unit interval and the same numbers
+// serve the spatial distance planes and the global size features.
+const PITCH_W_NORM: f32 = 26.0;
+const PITCH_H_NORM: f32 = 15.0;
+const TEAM_NORM: f32 = 11.0;
+/// Largest sideline distance on the full pitch: `(15 - 1) / 2`.
+const SIDELINE_DIST_NORM: f32 = 7.0;
 
 // Global-feature divisors — arbitrary but fixed, so train and inference agree
 // (both go through this file). BN in the tower absorbs the rest. The `[0, 1]`
@@ -145,6 +166,8 @@ pub fn spatial_channel_scales() -> Vec<f32> {
     scales[PLAYER_BASE + P_AG] = AG_NORM;
     scales[PLAYER_BASE + P_AV] = AV_NORM;
     scales[C_PATH_PROB] = PATH_PROB_NORM;
+    scales[C_DIST_US_ENDZONE] = PITCH_W_NORM;
+    scales[C_DIST_SIDELINE] = SIDELINE_DIST_NORM;
     scales
 }
 
@@ -206,6 +229,8 @@ pub fn spatial_channel_names() -> Vec<String> {
             "us_td_zone",
             "them_td_zone",
             "path_prob",
+            "dist_to_us_endzone",
+            "dist_to_sideline",
         ]
         .into_iter()
         .map(String::from),
@@ -232,6 +257,12 @@ pub fn global_feature_names() -> Vec<String> {
         "handoff_available",
         "foul_available",
         "turnover",
+        // Plan 042 (schema v7): the board itself. A pooled, fully
+        // convolutional value head has no other way to know how long the
+        // pitch is, and the chance of a TD in the turns left depends on it.
+        "playable_w",
+        "playable_h",
+        "team_size",
     ]
     .into_iter()
     .map(String::from)
@@ -357,6 +388,19 @@ pub fn encode_raw(state: &GameState) -> EncodedRaw {
         }
     }
 
+    // --- Board geometry (plan 042) ---
+    // Defined directly in the canonical frame, so no mirror is applied: the
+    // mover's endzone is `x = 1` whoever moves, and the sideline distance is
+    // symmetric in `y`. Tests pin both under either mover.
+    for y in 1..h - 1 {
+        let sideline = (y - 1).min((h - 2) - y);
+        for x in 1..w - 1 {
+            let pos = Position::new((x as i8, y as i8));
+            spatial[idx(C_DIST_US_ENDZONE, pos)] = (x - 1) as u8;
+            spatial[idx(C_DIST_SIDELINE, pos)] = sideline as u8;
+        }
+    }
+
     // --- Path probabilities for the active player ---
     //
     // **Recomputed, never read from `state.path_buffer`.** That field is
@@ -412,6 +456,9 @@ pub fn encode_raw(state: &GameState) -> EncodedRaw {
         state.info.handoff_available as u8 as f32,
         state.info.foul_available as u8 as f32,
         state.info.turnover as u8 as f32,
+        (dims.width - 2) as f32 / PITCH_W_NORM,
+        (dims.height - 2) as f32 / PITCH_H_NORM,
+        dims.team_size as f32 / TEAM_NORM,
     ];
     debug_assert_eq!(global.len(), GLOBAL_FEATURES);
 
@@ -434,13 +481,75 @@ mod tests {
     fn name_lengths_match_channel_counts() {
         assert_eq!(spatial_channel_names().len(), SPATIAL_CHANNELS);
         assert_eq!(global_feature_names().len(), GLOBAL_FEATURES);
-        // 2 present + 8 shared per-player + 39 skill + 7 shared. Pinned so a
+        // 2 present + 8 shared per-player + 39 skill + 12 shared. Pinned so a
         // change to the engine's `Skill` enum shows up here as a failing
         // test, next to the `NN_SCHEMA_VERSION` bump it requires.
-        assert_eq!(SPATIAL_CHANNELS, 2 + PLAYER_SCALARS + Skill::COUNT + 10);
-        assert_eq!(SPATIAL_CHANNELS, 59);
+        assert_eq!(SPATIAL_CHANNELS, 2 + PLAYER_SCALARS + Skill::COUNT + 12);
+        assert_eq!(SPATIAL_CHANNELS, 61);
         assert_eq!(spatial_channel_scales().len(), SPATIAL_CHANNELS);
-        assert_eq!(GLOBAL_FEATURES, 15);
+        assert_eq!(GLOBAL_FEATURES, 18);
+    }
+
+    /// Plan 042: the geometry planes are canonical-frame distances, the same
+    /// under either mover, zero on the border, and the size globals read the
+    /// runtime board. This is what makes a 12x5 and a 16x9 sample
+    /// distinguishable to a translation-equivariant tower by something other
+    /// than its distance to the zero padding.
+    #[test]
+    fn geometry_planes_and_size_globals_follow_the_runtime_board() {
+        use botbowl_engine::core::gamestate::DiceMode;
+        use botbowl_engine::core::table::SimpleAT;
+        botbowl_engine::skip_if_board_smaller_than!(16, 9);
+        let dims = BoardDims::new(16, 9, 4);
+        let mut home = GameStateBuilder::new().with_board_dims(dims).build();
+        home.set_logging_state(false);
+        let mut away = GameStateBuilder::new().with_board_dims(dims).build();
+        away.set_logging_state(false);
+        away.set_dice_mode(DiceMode::RollDice);
+        away.set_seed(0);
+        away.step_simple(SimpleAT::EndTurn);
+        assert_eq!(mover_for(&away), TeamType::Away, "expected the turn to pass");
+
+        for state in [&home, &away] {
+            let raw = encode_raw(state);
+            let (h, w) = (raw.h, raw.w);
+            let plane = h * w;
+            let at = |c: usize, x: usize, y: usize| raw.spatial[c * plane + y * w + x];
+            for y in 0..h {
+                for x in 0..w {
+                    let oob = x == 0 || x == w - 1 || y == 0 || y == h - 1;
+                    if oob {
+                        assert_eq!(at(C_DIST_US_ENDZONE, x, y), 0);
+                        assert_eq!(at(C_DIST_SIDELINE, x, y), 0);
+                    } else {
+                        assert_eq!(at(C_DIST_US_ENDZONE, x, y) as usize, x - 1, "endzone dist at ({x},{y})");
+                        assert_eq!(
+                            at(C_DIST_SIDELINE, x, y) as usize,
+                            (y - 1).min(h - 2 - y),
+                            "sideline dist at ({x},{y})"
+                        );
+                    }
+                }
+            }
+            // The mover's endzone column is distance 0 — the two planes agree.
+            for y in 1..h - 1 {
+                assert_eq!(at(C_US_TD_ZONE, 1, y), 1);
+                assert_eq!(at(C_DIST_US_ENDZONE, 1, y), 0);
+                assert_eq!(at(C_DIST_US_ENDZONE, w - 2, y) as usize, w - 3);
+            }
+            let g = &raw.global;
+            assert_eq!(g[GLOBAL_FEATURES - 3], 14.0 / PITCH_W_NORM);
+            assert_eq!(g[GLOBAL_FEATURES - 2], 7.0 / PITCH_H_NORM);
+            assert_eq!(g[GLOBAL_FEATURES - 1], 4.0 / TEAM_NORM);
+        }
+        // The normalised view stays inside the unit interval for any board
+        // up to the full pitch, and is exactly raw / scale.
+        let enc = encode(&home);
+        let plane = enc.h * enc.w;
+        for c in [C_DIST_US_ENDZONE, C_DIST_SIDELINE] {
+            let max = enc.spatial[c * plane..(c + 1) * plane].iter().copied().fold(0.0f32, f32::max);
+            assert!(max <= 1.0, "channel {c} reached {max}");
+        }
     }
 
     #[test]

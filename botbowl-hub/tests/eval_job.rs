@@ -15,11 +15,13 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use botbowl_engine::bots::RandomBot;
+use botbowl_engine::core::model::{BoardDims, HEIGHT, TEAM_SIZE, WIDTH};
 use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_hub::api::{BotReq, EvalJobRequest, JobState, RungReq};
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{decode, encode, BuildInfo, EvalGameLine, RejectReason, ToHub, ToWorker, PROTOCOL_VERSION};
-use botbowl_play::eval::{ladder_assignment, play_ladder_game, LadderRow};
+use botbowl_play::board_sizes::board_label;
+use botbowl_play::eval::{ladder_assignment, play_ladder_game, rung_name, LadderRow};
 use botbowl_worker::{run_once, Ended, Fatal, ModelStore, WorkerConfig};
 
 const TOKEN: &str = "test-token";
@@ -87,11 +89,13 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
                 name: "random".into(),
                 games: GAMES,
                 opponent: BotReq::Random,
+                board: None,
             },
             RungReq {
                 name: "scripted".into(),
                 games: GAMES,
                 opponent: BotReq::Scripted,
+                board: None,
             },
         ],
         seed: SEED,
@@ -112,8 +116,8 @@ fn expected() -> (Vec<EvalGameLine>, Vec<LadderRow>) {
         for g in 0..GAMES {
             let (team, seed) = ladder_assignment(SEED, g);
             let line = match rung {
-                "random" => play_ladder_game(&mut cand, &mut RandomBot::new(), rung, g, team, seed, 100_000),
-                _ => play_ladder_game(&mut cand, &mut ScriptedBot::new(), rung, g, team, seed, 100_000),
+                "random" => play_ladder_game(&mut cand, &mut RandomBot::new(), rung, g, team, seed, 100_000, None),
+                _ => play_ladder_game(&mut cand, &mut ScriptedBot::new(), rung, g, team, seed, 100_000, None),
             };
             row.record(&line);
             lines.push(line);
@@ -169,6 +173,78 @@ async fn two_workers_reproduce_the_single_process_eval() {
     let done: BTreeSet<(String, u64)> = st.workers.iter().map(|w| (w.name.clone(), w.games_done)).collect();
     assert_eq!(done.iter().map(|(_, n)| n).sum::<u64>(), 2 * GAMES as u64, "{done:?}");
     assert!(done.iter().all(|(_, n)| *n > 0), "a worker sat idle: {done:?}");
+}
+
+/// Plan 042: a rung that names a board plays on it, on every worker, and
+/// the lines and rows say which board — reproduced line for line by the
+/// direct computation with the same `board`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rungs_on_explicit_boards_carry_the_board_through() {
+    let boards = [BoardDims::try_new(12, 7, 2), BoardDims::try_new(16, 9, 4)];
+    if boards.iter().any(|b| b.is_err()) {
+        eprintln!("skipped: capacity {WIDTH}x{HEIGHT}/{TEAM_SIZE} too small for the test boards");
+        return;
+    }
+    let boards: Vec<BoardDims> = boards.into_iter().map(Result::unwrap).collect();
+    let (hub, url) = start_hub().await;
+    let _w1 = spawn_worker(worker_cfg(&url, "w1", 2));
+    let _w2 = spawn_worker(worker_cfg(&url, "w2", 1));
+
+    let dir = tmp("boards");
+    let games = 4u32;
+    let req = EvalJobRequest {
+        candidate: BotReq::Scripted,
+        candidate_label: "scripted".into(),
+        mcts_iters: 0,
+        rungs: boards
+            .iter()
+            .map(|&b| RungReq {
+                name: rung_name("scripted", Some(b)),
+                games,
+                opponent: BotReq::Scripted,
+                board: Some(b),
+            })
+            .collect(),
+        seed: SEED,
+        max_steps: 100_000,
+        per_game_out: dir.join("eval.games.jsonl"),
+        report_out: dir.join("report.json"),
+        batch: 2,
+    };
+    let id = hub.submit_eval(req).unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
+        .await
+        .expect("job finished in time")
+        .expect("job exists");
+    assert_eq!(status.state, JobState::Done, "{status:?}");
+
+    let mut want_lines = Vec::new();
+    let mut want_rows = Vec::new();
+    for &b in &boards {
+        let name = rung_name("scripted", Some(b));
+        let mut row = LadderRow::on_board("scripted", Some(b));
+        let mut cand = ScriptedBot::new();
+        for g in 0..games {
+            let (team, seed) = ladder_assignment(SEED, g);
+            let line = play_ladder_game(&mut cand, &mut ScriptedBot::new(), &name, g, team, seed, 100_000, Some(b));
+            assert_eq!(line.board.as_deref(), Some(board_label(b).as_str()));
+            row.record(&line);
+            want_lines.push(line);
+        }
+        want_rows.push(row.finish());
+    }
+    let mut got = read_lines(&dir.join("eval.games.jsonl"));
+    got.sort_by_key(key);
+    want_lines.sort_by_key(key);
+    assert_eq!(got, want_lines, "per-game lines differ from the direct computation");
+    // The file carries the board tag on every line.
+    let text = std::fs::read_to_string(dir.join("eval.games.jsonl")).unwrap();
+    assert!(text.lines().all(|l| l.contains("\"board\":\"")), "{text}");
+    let report = status.report.expect("report attached");
+    assert_eq!(report.ladder, want_rows);
+    assert_eq!(report.board_env, "10x5/2,14x7/4");
+    assert_eq!(report.ladder[0].opponent, "scripted@10x5/2");
+    assert_eq!(report.ladder[0].board.as_deref(), Some("10x5/2"));
 }
 
 /// A worker that takes tasks and vanishes must not lose games: they are

@@ -64,7 +64,45 @@ fi
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
 
-export BOARD_SIZE_W=14 BOARD_SIZE_H=7 BOARD_PLAYERS=4
+# ---- board size (plan 042) --------------------------------------------------
+# SIZE_MODE=fixed    one board, the historical 14x7/4 loop. BUILD_* is both the
+#                    compiled capacity and the board every game is played on.
+# SIZE_MODE=centred  each game draws its board from a log-normal in playable
+#                    area around a moving centre, mixed with a uniform floor so
+#                    every size stays in every generation. The centre starts
+#                    at SIZE_CENTRE and scripts/size_curriculum.py advances it
+#                    from the corpus's own per-board TD rate after every
+#                    generate phase (advisory: overwrite size_centre.txt by
+#                    hand at any phase boundary). BUILD_* is the *capacity* —
+#                    the largest board the sampler may draw — and the eval
+#                    ladder runs every rung on each of EVAL_BOARD_SIZES.
+# SIZE_MODE=list     as centred, but the fixed weighted list SIZE_LIST
+#                    (`12x5,14x7:3,16x9`) instead of a moving centre.
+# Board size is a *build-time* capacity (FullPitch arrays are sized by it), so
+# a mixed run builds at the largest board it will ever sample — 16x9/6 covers
+# plan 039's table; 20x11/7 is the next tier and needs its own build.
+SIZE_MODE="${SIZE_MODE:-fixed}"             # fixed|centred|list
+if [ "$SIZE_MODE" = fixed ]; then
+    BUILD_W="${BUILD_W:-14}"; BUILD_H="${BUILD_H:-7}"; BUILD_PLAYERS="${BUILD_PLAYERS:-4}"
+else
+    BUILD_W="${BUILD_W:-16}"; BUILD_H="${BUILD_H:-9}"; BUILD_PLAYERS="${BUILD_PLAYERS:-6}"
+fi
+export BOARD_SIZE_W="$BUILD_W" BOARD_SIZE_H="$BUILD_H" BOARD_PLAYERS="$BUILD_PLAYERS"
+TIER="${TIER:-${BUILD_W}x${BUILD_H}}"        # model-name tag: bbnet_${TIER}_genNN
+[ "$SIZE_MODE" = fixed ] || TIER="${TIER_OVERRIDE:-mix${BUILD_W}x${BUILD_H}}"
+SIZE_CENTRE="${SIZE_CENTRE:-98}"            # initial playable area (14x7 = 98)
+SIZE_TEMPERATURE="${SIZE_TEMPERATURE:-0.3}" # std-dev of ln(area/centre)
+SIZE_FLOOR="${SIZE_FLOOR:-0.2}"             # uniform share over every legal board
+SIZE_ASPECT="${SIZE_ASPECT:-1.5-2.8}"       # playable w/h band the grid keeps
+SIZE_CELLS_PER_PLAYER="${SIZE_CELLS_PER_PLAYER:-26}"
+SIZE_LIST="${SIZE_LIST:-12x5,14x7:3,16x9}"  # SIZE_MODE=list only
+SIZE_ADVANCE_TD="${SIZE_ADVANCE_TD:-0.75}"  # relative TD/drive at/above centre that moves it
+SIZE_STEP="${SIZE_STEP:-1.25}"              # centre *= this on advance
+SIZE_MAX_AREA="${SIZE_MAX_AREA:-$((BUILD_W * BUILD_H))}"
+# Fixed eval set, independent of the training centre — that independence is
+# what keeps the per-size ladder honest. Every rung (and the anchor) runs once
+# per board; cost scales with the count.
+EVAL_BOARD_SIZES="${EVAL_BOARD_SIZES:-12x5,14x7,16x9}"
 
 # ---- knobs (env-overridable) ------------------------------------------------
 MAX_GENS="${MAX_GENS:-30}"
@@ -297,6 +335,9 @@ SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e
                                             # (old corpora used 8e5.. and 2e6..)
 RUN_DIR="${RUN_DIR:-$REPO/runs/loop14x7}"   # override both for dry runs so a
 MODEL_DIR="${MODEL_DIR:-$REPO/models}"      # test never touches real models/
+# Mixed-size runs keep their own run dir by default so a 14x7 run's markers
+# and champion are never mistaken for a mixed one's.
+[ "$SIZE_MODE" = fixed ] || RUN_DIR="${RUN_DIR_OVERRIDE:-$REPO/runs/loop$TIER}"
 # Plan 030: the frozen benchmark opponent. gen03 was the last net promoted on
 # merit under the gate and every plan-032 match is already on its scale (Q7
 # 0.625, D7 0.396). Never retrain or overwrite it. Re-anchor (add a second,
@@ -317,7 +358,7 @@ VAL_SHARDS="4 7"            # held out whole, one per generation
 # binaries and a default-board `cargo test --workspace` would otherwise evict
 # each other from a shared target dir and force a full rebuild on every switch.
 # Nested under /target so the existing .gitignore entry still covers it.
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target/14x7}"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target/${BUILD_W}x${BUILD_H}}"
 export CARGO_TARGET_DIR
 UI="$CARGO_TARGET_DIR/release/botbowl-ui"
 PREPARE="$CARGO_TARGET_DIR/release/prepare"
@@ -491,6 +532,32 @@ worker_stop() {
     WORKER_PID=""
 }
 cleanup() { worker_stop; nn_server_stop; hub_stop; }
+
+# ---- board-size flags (plan 042) --------------------------------------------
+# Generate: the distribution every game of this generation draws from. In
+# centred mode the centre is whatever size_curriculum.py last wrote.
+size_gen_args() {
+    case "$SIZE_MODE" in
+        fixed)   echo "" ;;
+        list)    echo "--board-sizes $SIZE_LIST --cells-per-player $SIZE_CELLS_PER_PLAYER" ;;
+        centred)
+            local c
+            c=$(cat "$RUN_DIR/size_centre.txt" 2>/dev/null || echo "$SIZE_CENTRE")
+            echo "--size-centre $c --size-temperature $SIZE_TEMPERATURE --size-floor $SIZE_FLOOR \
+--size-aspect $SIZE_ASPECT --size-max-area $SIZE_MAX_AREA --cells-per-player $SIZE_CELLS_PER_PLAYER" ;;
+    esac
+}
+# Eval: the fixed board set, one rung per board.
+size_eval_args() {
+    [ "$SIZE_MODE" = fixed ] && echo "" || echo "--board-sizes $EVAL_BOARD_SIZES --cells-per-player $SIZE_CELLS_PER_PLAYER"
+}
+# The per-size anchor curve reads one board's rows; the pooled line reads
+# the 14x7 row when present so it stays comparable with the fixed loop.
+ANCHOR_BOARD="${ANCHOR_BOARD:-14x7/4}"
+size_curve_args() {
+    [ "$SIZE_MODE" = fixed ] && echo "" || echo "--board $ANCHOR_BOARD"
+}
+[ "$SIZE_MODE" = fixed ] || { [ -s "$RUN_DIR/size_centre.txt" ] || echo "$SIZE_CENTRE" > "$RUN_DIR/size_centre.txt"; }
 # Never leave a server (and its 400 MB of VRAM) behind on any exit path.
 trap cleanup EXIT INT TERM
 
@@ -504,7 +571,7 @@ if [ -f "$(champion)" ]; then
 else
     CHAMP_DESC="no champion yet — will bootstrap gen-0 from a heuristic corpus"
 fi
-status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gateless, anchor $(basename "$ANCHOR") x$ANCHOR_GAMES, max $MAX_GENS gens"
+status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gateless, anchor $(basename "$ANCHOR") x$ANCHOR_GAMES, max $MAX_GENS gens, board capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, sizes $SIZE_MODE$([ "$SIZE_MODE" = fixed ] || echo " ($(size_gen_args | tr -s ' \\\n' ' ')); eval on $EVAL_BOARD_SIZES")"
 [ -f "$ANCHOR" ] || die "anchor model not found: $ANCHOR"
 
 # ---- build ------------------------------------------------------------------
@@ -519,7 +586,7 @@ case ":$PATH:" in
 esac
 command -v cargo >/dev/null 2>&1 || die "cargo not on PATH (looked in \$HOME/.cargo/bin) — cannot build"
 
-log "building release binaries (14x7) with $(cargo --version)"
+log "building release binaries (capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}) with $(cargo --version)"
 if ! cargo build --release -p botbowl-ui -p botbowl-nn -p botbowl-hub -p botbowl-worker >> "$LOG" 2>&1; then
     die "cargo build failed — see loop.log"
 fi
@@ -558,7 +625,7 @@ fi
 if [ ! -f "$(champion)" ]; then
     check_stop "before gen-0 bootstrap"
     GEN_DIR="$RUN_DIR/gen00"
-    MODEL="$MODEL_DIR/bbnet_14x7_gen00"
+    MODEL="$MODEL_DIR/bbnet_${TIER}_gen00"
     mkdir -p "$GEN_DIR"
     status "gen-0 bootstrap: $(basename "$(champion)") not found — building a champion from a heuristic corpus"
 
@@ -573,6 +640,7 @@ if [ ! -f "$(champion)" ]; then
                 --mode random-start --games "$BOOTSTRAP_GAMES_PER_SHARD" \
                 --seed-base "$SEED_BASE" --shard-seed-stride 100000 \
                 --mcts-iters "$MCTS_ITERS" --evaluator heuristic \
+                $(size_gen_args) \
                 --shards "$NN_SHARDS $HEUR_SHARDS" \
                 --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
             worker_stop
@@ -585,6 +653,12 @@ if [ ! -f "$(champion)" ]; then
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
         status "gen00 generate done ($((SECONDS / 60)) min): $GAMES/$((BOOTSTRAP_GAMES_PER_SHARD * 8)) games"
+        # Plan 042: the heuristic bootstrap corpus doubles as the per-board
+        # TD-rate baseline the size curriculum measures the net against.
+        "$PY" "$REPO/scripts/td_rate.py" "$GEN_DIR" --json "$GEN_DIR/td_rate.json" > /dev/null 2>&1 \
+            && [ "$SIZE_MODE" != fixed ] && [ ! -s "$RUN_DIR/size_baseline.json" ] \
+            && cp "$GEN_DIR/td_rate.json" "$RUN_DIR/size_baseline.json" \
+            && status "gen00 corpus is the size baseline: $("$PY" "$REPO/scripts/td_rate.py" "$GEN_DIR" | head -1)"
         touch "$GEN_DIR/.generated"
     fi
 
@@ -602,9 +676,12 @@ if [ ! -f "$(champion)" ]; then
         status "gen00 prepare done ($((SECONDS / 60)) min), target $PREPARE_TARGET_ARGS"
         touch "$GEN_DIR/.prepared"
     fi
-    DIMS_TRAIN=$(ls -d "$GEN_DIR"/prepared_train/dims_* 2>/dev/null | head -1)
-    DIMS_VAL=$(ls -d "$GEN_DIR"/prepared_val/dims_* 2>/dev/null | head -1)
-    [ -n "$DIMS_TRAIN" ] && [ -n "$DIMS_VAL" ] || die "gen00 prepared dims dirs missing"
+    # Plan 042: hand the trainer the whole prepared dir — it reads every
+    # dims_* subdir (batches never mix boards). `head -1` here used to drop
+    # every board but the first, silently.
+    DIMS_TRAIN="$GEN_DIR/prepared_train"; DIMS_VAL="$GEN_DIR/prepared_val"
+    ls -d "$DIMS_TRAIN"/dims_* > /dev/null 2>&1 && ls -d "$DIMS_VAL"/dims_* > /dev/null 2>&1 \
+        || die "gen00 prepared dims dirs missing"
 
     if [ ! -e "$GEN_DIR/.trained" ]; then
         SECONDS=0
@@ -636,7 +713,7 @@ G=1
 while [ "$G" -le "$MAX_GENS" ]; do
     GG=$(printf 'gen%02d' "$G")
     GEN_DIR="$RUN_DIR/$GG"
-    MODEL="$MODEL_DIR/bbnet_14x7_$GG"
+    MODEL="$MODEL_DIR/bbnet_${TIER}_$GG"
     mkdir -p "$GEN_DIR"
 
     # -- 1. generate ----------------------------------------------------------
@@ -655,11 +732,14 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # worker is harmless if the server never came up (it falls back to
         # tract and warns once, in generate.worker.log).
         worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
-        status "$GG generate: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)"
+        SIZE_ARGS=$(size_gen_args)
+        status "$GG generate: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
+        # shellcheck disable=SC2086
         if ! "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
                 --mode random-start --games "$GAMES_PER_SHARD" \
                 --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
                 --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$CHAMP" \
+                $SIZE_ARGS \
                 --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" \
                 --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
             worker_stop
@@ -685,8 +765,16 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # the share the bots converted — the generation-side twin of the TD/g
         # the eval phase prints. A loop that is learning to stall rather than
         # to score shows it here first, while the anchor score still looks fine.
-        TD=$("$PY" "$REPO/scripts/td_rate.py" "$GEN_DIR" 2>&1) || TD="td_rate.py failed: $TD"
+        TD=$("$PY" "$REPO/scripts/td_rate.py" "$GEN_DIR" --json "$GEN_DIR/td_rate.json" 2>&1 | tr '\n' ' ') || TD="td_rate.py failed: $TD"
         status "$GG corpus: $TD"
+        # Plan 042: does the size centre move? Reads this generation's
+        # per-board TD rates against the gen00 baseline; advisory, logged.
+        if [ "$SIZE_MODE" = centred ]; then
+            SC=$("$PY" "$REPO/scripts/size_curriculum.py" "$RUN_DIR" --gen "$G" \
+                    --advance "$SIZE_ADVANCE_TD" --step "$SIZE_STEP" --max-area "$SIZE_MAX_AREA" 2>&1) \
+                || SC="size_curriculum.py failed: $SC"
+            status "$GG $SC"
+        fi
         touch "$GEN_DIR/.generated"
     fi
 
@@ -719,9 +807,10 @@ while [ "$G" -le "$MAX_GENS" ]; do
         touch "$GEN_DIR/.prepared"
     fi
     if [ ! -e "$GEN_DIR/.trained" ]; then
-        DIMS_TRAIN=$(ls -d "$GEN_DIR"/prepared_train/dims_* 2>/dev/null | head -1)
-        DIMS_VAL=$(ls -d "$GEN_DIR"/prepared_val/dims_* 2>/dev/null | head -1)
-        [ -n "$DIMS_TRAIN" ] && [ -n "$DIMS_VAL" ] || die "$GG prepared dims dirs missing"
+        # Plan 042: the whole prepared dir, every dims_* inside it (see gen00).
+        DIMS_TRAIN="$GEN_DIR/prepared_train"; DIMS_VAL="$GEN_DIR/prepared_val"
+        ls -d "$DIMS_TRAIN"/dims_* > /dev/null 2>&1 && ls -d "$DIMS_VAL"/dims_* > /dev/null 2>&1 \
+            || die "$GG prepared dims dirs missing"
     fi
 
     # -- 3. train ---------------------------------------------------------------
@@ -817,12 +906,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
             RUNG_ARGS="--skip-fixed-rungs"
             RUNG_DESC="no fixed rungs, "
         fi
-        status "$GG eval: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR"), local x$EVAL_PARALLEL_GAMES + hub workers"
+        status "$GG eval: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR")$([ "$SIZE_MODE" = fixed ] || echo ", on each of $EVAL_BOARD_SIZES"), local x$EVAL_PARALLEL_GAMES + hub workers"
         # shellcheck disable=SC2086
         if ! "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
                 --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
                 --mcts-iters "$MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
-                $RUNG_ARGS \
+                $RUNG_ARGS $(size_eval_args) \
                 --vs-games "$ANCHOR_GAMES" \
                 --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
                 --per-game-out "$GEN_DIR/eval.games.jsonl" \
@@ -855,9 +944,20 @@ while [ "$G" -le "$MAX_GENS" ]; do
     # The curve is what the benchmark is for: this generation's point, the
     # 3-gen rolling mean, and the advisory flags — all against the same
     # frozen opponent, so successive lines are directly comparable.
-    CURVE=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" 2>&1) \
+    # shellcheck disable=SC2046
+    CURVE=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" $(size_curve_args) 2>&1) \
         || CURVE="anchor_curve.py failed: $CURVE"
     status "$GG curve: $CURVE"
+    # Plan 042: the other boards' anchor points, one line each, so a size
+    # that lags is visible next to the pooled curve.
+    if [ "$SIZE_MODE" != fixed ]; then
+        for B in $(echo "$EVAL_BOARD_SIZES" | tr ',' ' '); do
+            BL=$(grep -o "\"board\": *\"$B/[0-9]*\"" "$GEN_DIR/report.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -n "$BL" ] && [ "$BL" != "$ANCHOR_BOARD" ] || continue
+            PB=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" --board "$BL" 2>&1) || continue
+            status "$GG curve: $PB"
+        done
+    fi
     case "$CURVE" in
         *REGRESSION*|*PLATEAU*) status "ALERT $GG: $(echo "$CURVE" | grep -o '\(REGRESSION\|PLATEAU\)[^|]*' | tr '\n' ' ')— advisory (plan 030): inspect, and roll back champion.txt by hand if warranted" ;;
     esac

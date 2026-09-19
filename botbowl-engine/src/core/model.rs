@@ -146,16 +146,34 @@ impl BoardDims {
     /// equal at any height, so odd and even both mirror cleanly about the
     /// centre row.
     pub fn new(width: Coord, height: Coord, team_size: usize) -> BoardDims {
+        match BoardDims::try_new(width, height, team_size) {
+            Ok(d) => d,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// [`BoardDims::new`] without the panic: the same rules, as an `Err`
+    /// message, for callers that enumerate or parse candidate boards (the
+    /// plan-042 size sampler) and want to reject a bad one before it costs a
+    /// game.
+    pub fn try_new(width: Coord, height: Coord, team_size: usize) -> std::result::Result<BoardDims, String> {
         let pw = width - 2; // playable width
         let ph = height - 2; // playable height
-        assert!(pw >= 8 && pw % 2 == 0, "playable width must be even and >= 8, got {pw}");
-        assert!(ph >= 3, "playable height must be >= 3, got {ph}");
-        assert!(team_size >= 1, "team_size must be >= 1, got {team_size}");
-        assert!(
-            (width as usize) <= WIDTH && (height as usize) <= HEIGHT && team_size <= TEAM_SIZE,
-            "board {width}x{height}/{team_size} exceeds compiled capacity {WIDTH}x{HEIGHT}/{TEAM_SIZE} \
-             — recompile with larger BOARD_SIZE_W/BOARD_SIZE_H/BOARD_PLAYERS",
-        );
+        if !(pw >= 8 && pw % 2 == 0) {
+            return Err(format!("playable width must be even and >= 8, got {pw}"));
+        }
+        if ph < 3 {
+            return Err(format!("playable height must be >= 3, got {ph}"));
+        }
+        if team_size < 1 {
+            return Err(format!("team_size must be >= 1, got {team_size}"));
+        }
+        if !((width as usize) <= WIDTH && (height as usize) <= HEIGHT && team_size <= TEAM_SIZE) {
+            return Err(format!(
+                "board {width}x{height}/{team_size} exceeds compiled capacity {WIDTH}x{HEIGHT}/{TEAM_SIZE} \
+                 — recompile with larger BOARD_SIZE_W/BOARD_SIZE_H/BOARD_PLAYERS"
+            ));
+        }
         let dims = BoardDims {
             width,
             height,
@@ -169,7 +187,7 @@ impl BoardDims {
         assert_eq!(*dims.los_y_range().end(), height - 2 - wing);
         assert_eq!(dims.north_wing_y_range().count(), wing as usize);
         assert_eq!(dims.south_wing_y_range().count(), wing as usize);
-        dims
+        Ok(dims)
     }
 
     /// Read the active board from `BOARD_SIZE_W`/`BOARD_SIZE_H`/`BOARD_PLAYERS`
@@ -1120,6 +1138,20 @@ mod board_dims_tests {
     #[should_panic(expected = "must be even")]
     fn odd_width_is_rejected() {
         BoardDims::new(11, 9, 2);
+    }
+
+    /// `try_new` is `new` as a `Result`: the same rules, the same message,
+    /// no unwinding — so a size sampler can enumerate candidates.
+    #[test]
+    fn try_new_reports_every_rule_new_panics_on() {
+        assert!(BoardDims::try_new(11, 9, 2).unwrap_err().contains("must be even"));
+        assert!(BoardDims::try_new(8, 9, 2).unwrap_err().contains(">= 8"));
+        assert!(BoardDims::try_new(10, 4, 2).unwrap_err().contains(">= 3"));
+        assert!(BoardDims::try_new(10, 5, 0).unwrap_err().contains("team_size"));
+        assert!(BoardDims::try_new(WIDTH as Coord + 2, 5, 1)
+            .unwrap_err()
+            .contains("exceeds compiled capacity"));
+        assert_eq!(BoardDims::try_new(10, 5, 1).unwrap(), BoardDims::new(10, 5, 1));
     }
 }
 

@@ -64,6 +64,14 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   `ModelId`. The label's backup rule is resolved from the hub's `BLOOD_MCTS_BACKUP` at submit,
   never from a worker's environment. Other `BLOOD_MCTS_*` knobs the config leaves `None` are
   still read on the worker — keep helper boxes' environments clean.
+- **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
+  task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries
+  `RungReq.board` → `Task::Eval.board`, and a multi-size ladder names rungs `opponent@14x7/4`
+  (`botbowl_play::eval::rung_name`), one `LadderRow` per (opponent, board), `board_env` listing
+  the boards. `job generate` takes `dataset`'s `--board-sizes` / `--size-*` flags, `job eval`
+  takes `--board-sizes`. The capacity check still applies — a worker must be *built* large enough
+  for every board a job may draw — but its env board no longer decides anything for a job that
+  names its boards.
 - **Control API and workers share one bearer token** (`hub.token`, random on first start).
   No TLS yet (plan 041 phase 5); `http.rs` is a deliberately tiny client that will go with it.
 

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use botbowl_hub_proto::{Evaluator, GenerateConfig, SearchConfig};
+use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig};
 use botbowl_play::eval::Report;
 
 /// `POST /api/jobs` body.
@@ -30,9 +30,14 @@ pub enum BotReq {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RungReq {
+    /// Already board-suffixed on a multi-size ladder (`scripted@14x7/4`,
+    /// via `botbowl_play::eval::rung_name`).
     pub name: String,
     pub games: u32,
     pub opponent: BotReq,
+    /// Plan 042: the board this rung plays on; `None` = the env board.
+    #[serde(default)]
+    pub board: Option<BoardDims>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -9,11 +9,14 @@
 //! belong to the caller — `botbowl-ui` for the single-box path, the hub
 //! and worker for the distributed one.
 //!
+//! - [`board_sizes`] — weighted board-size distributions and the seed-keyed
+//!   draw that decides which board a game is played on (plan 042).
 //! - [`bots`] — evaluator/search configuration and `MctsBot` construction.
 //! - [`generate`] — self-play, random-start and curriculum trajectories.
 //! - [`eval`] — one ladder game, its per-game record, and the report rows
 //!   the per-game records fold into.
 
+pub mod board_sizes;
 pub mod bots;
 pub mod eval;
 pub mod generate;

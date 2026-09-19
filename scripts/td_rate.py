@@ -21,6 +21,11 @@ defend faster than it learns to attack.
 Streaming and O(1) in corpus size: `meta` is at the head of each line and
 `outcome` at the tail, so neither the samples nor the whole line are parsed.
 A generation is ~850 MB across 8 shards and takes a few seconds.
+
+Plan 042: every trajectory's `meta.board_dims` is read too, so a mixed-size
+corpus reports TD/drive **per board** (`--per-board`, and always in `--json`
+under `per_board`, keyed `14x7/4` in playable terms). That breakdown is what
+`size_curriculum.py` reads to decide whether the size centre moves.
 """
 
 from __future__ import annotations
@@ -35,13 +40,30 @@ from pathlib import Path
 # `"outcome":{...}` is the last object on it. Both are unique per line.
 START_RE = re.compile(rb'"start_score":"(\d+)-(\d+)"')
 OUTCOME_RE = re.compile(rb'"outcome":\{"home_score":(\d+),"away_score":(\d+)')
+# `"board_dims":{"width":16,"height":9,"team_size":4}` — engine dims incl. the
+# 2-cell border; reported as playable `14x7/4`.
+BOARD_RE = re.compile(rb'"board_dims":\{"width":(\d+),"height":(\d+),"team_size":(\d+)\}')
 
 HEAD = 4096   # bytes of the line scanned for meta.extra
 TAIL = 256    # bytes scanned for the outcome object
 
 
+def empty() -> dict:
+    return {"drives": 0, "scored": 0, "home_tds": 0, "away_tds": 0, "unparsed": 0}
+
+
+def bump(acc: dict, h: int, a: int) -> None:
+    acc["drives"] += 1
+    acc["home_tds"] += h
+    acc["away_tds"] += a
+    if h or a:
+        acc["scored"] += 1
+
+
 def scan(path: Path) -> dict:
-    acc = {"drives": 0, "scored": 0, "home_tds": 0, "away_tds": 0, "unparsed": 0}
+    """Aggregate for one shard, plus `per_board` (label -> aggregate)."""
+    acc = empty()
+    acc["per_board"] = {}
     with open(path, "rb") as f:
         for line in f:
             m0 = START_RE.search(line, 0, HEAD)
@@ -51,12 +73,21 @@ def scan(path: Path) -> dict:
                 continue
             h = int(m1.group(1)) - int(m0.group(1))
             a = int(m1.group(2)) - int(m0.group(2))
-            acc["drives"] += 1
-            acc["home_tds"] += h
-            acc["away_tds"] += a
-            if h or a:
-                acc["scored"] += 1
+            bump(acc, h, a)
+            mb = BOARD_RE.search(line, 0, HEAD)
+            board = (
+                f"{int(mb.group(1)) - 2}x{int(mb.group(2)) - 2}/{mb.group(3).decode()}" if mb else "unknown"
+            )
+            bump(acc["per_board"].setdefault(board, empty()), h, a)
     return acc
+
+
+def board_area(label: str) -> int:
+    try:
+        w, h = label.split("/")[0].split("x")
+        return int(w) * int(h)
+    except ValueError:
+        return 1 << 30
 
 
 def summarize(acc: dict) -> str:
@@ -79,6 +110,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("paths", nargs="+", help="shard .jsonl files, or a generation dir")
     ap.add_argument("--per-shard", action="store_true", help="also print a line per shard")
+    ap.add_argument("--per-board", action="store_true", help="also print a line per board (automatic when mixed)")
     ap.add_argument("--json", default=None, help="write the aggregate here")
     a = ap.parse_args()
 
@@ -89,16 +121,25 @@ def main() -> int:
         print("no shards found", file=sys.stderr)
         return 1
 
-    total = {"drives": 0, "scored": 0, "home_tds": 0, "away_tds": 0, "unparsed": 0}
+    total = empty()
+    per_board: dict = {}
     for s in shards:
         acc = scan(s)
         if a.per_shard:
             print(f"{s.name}: {summarize(acc)}")
         for k in total:
             total[k] += acc[k]
+        for board, b in acc["per_board"].items():
+            t = per_board.setdefault(board, empty())
+            for k in t:
+                t[k] += b[k]
 
     print(summarize(total))
+    if a.per_board or len(per_board) > 1:
+        for board in sorted(per_board, key=board_area):
+            print(f"  {board}: {summarize(per_board[board])}")
     if a.json:
+        total["per_board"] = per_board
         Path(a.json).write_text(json.dumps(total, indent=2) + "\n")
     return 0
 

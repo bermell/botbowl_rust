@@ -67,7 +67,11 @@ use botbowl_nn::targets::{policy_target_of, value_target_blended, PolicyTargetKi
 // so even the shared planes differ.
 // v6: adds `path_prob`, the active player's per-square path probability —
 // recomputed by the encoder, never read from the (unserialised) path_buffer.
-const NN_SCHEMA_VERSION: u32 = 6;
+// v7 (plan 042): two geometry planes (`dist_to_us_endzone`, `dist_to_sideline`,
+// C 59 → 61) and three size globals (`playable_w`, `playable_h`, `team_size`,
+// F 15 → 18), so a net trained on mixed board sizes can tell the boards apart
+// by something other than its distance to the zero padding.
+const NN_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {

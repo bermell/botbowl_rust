@@ -265,6 +265,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>)
             max_steps,
             candidate,
             opponent,
+            board,
         } => {
             let (mut cand, mut opp) = match (make_bot(candidate, store), make_bot(opponent, store)) {
                 (Ok(c), Ok(o)) => (c, o),
@@ -278,7 +279,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>)
             };
             for &g in games {
                 let (team, game_seed) = ladder_assignment(*seed, g);
-                let line = play_ladder_game(&mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps);
+                let line = play_ladder_game(&mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps, *board);
                 // Send failures mean the hub is gone; the channel is
                 // unbounded and outlives the socket, so this only fails
                 // when the whole worker is shutting down.
