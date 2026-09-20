@@ -71,6 +71,7 @@ what the eval ladder takes: each listed board is its own rung set.
 | `scripts/td_rate.py` | per-board breakdown (`per_board` in `--json`) |
 | `scripts/size_curriculum.py` | the advance rule (below) |
 | `scripts/eval_summary.py`, `anchor_curve.py` | `--board` filters a multi-size report |
+| `train/bbnn/migrate.py` | `python -m bbnn.migrate old.pt --out new.pt --onnx new.onnx`: schema detected from shapes, registered steps applied one at a time, each verified function-preserving (v6→v7 inserts zero columns for the new planes/globals, so a v6 champion plays at its current strength on v7 and learns the geometry features from there) |
 
 Every default is the old behaviour: no size flag → the env board, bare rung names, unchanged line
 bytes. `SIZE_MODE=fixed` is the 14x7 loop as it was, except that models are named by `$TIER`.
@@ -117,12 +118,16 @@ target/16x9/release/botbowl-ui eval --evaluator nn --model $(cat runs/loop14x7/c
 train/.venv/bin/python scripts/eval_summary.py runs/exp042/e0_report.json
 ```
 
-Note the champion is a schema-v6 net and this commit's encoder is v7: **E0 must run on the
-parent commit's binaries** (v6 encoder, no size sampler needed — `--board-sizes` on eval is the
-only 042 feature it uses, so cherry-pick the eval-side change or rebuild the ladder by hand from
-`BOARD_SIZE_*` env per size). The cheapest honest route: one `eval` process per board with the
-env board set, on the pre-042 binary, same games and seed. Record per board: points vs scripted,
-TD/g for and against, draw rate.
+The champion is a schema-v6 net and this commit's encoder is v7, so first migrate it —
+`python -m bbnn.migrate champion.pt --out champion_v7.pt --onnx champion_v7.onnx` — which is
+function-preserving (the new planes and globals enter with zero weights, verified by forward
+comparison), so E0 on the v7 binary measures exactly the v6 net. Record per board: points vs
+scripted, TD/g for and against, draw rate.
+
+The same migration is how the **production loop** crosses the bump without a from-scratch
+restart: migrate the champion's `.pt` and `.onnx`, point `champion.txt`/`latest_net.txt` at them,
+and the next fine-tune starts from the champion's strength and learns the geometry features. This
+is for continuity only — E2's arms start from a shared random gen00 on purpose.
 
 Decision rule (plan 039's, unchanged): drop < 5 pp at 12x5 and 16x9 relative to 14x7 → the net
 is already size-robust, run E2 with a lower prior and move the centre faster; ≥ 15 pp → E2 as
