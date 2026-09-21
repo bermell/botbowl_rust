@@ -96,7 +96,7 @@ impl Push {
     }
 
     fn handle_aftermath(&mut self, game_state: &mut GameState) -> ProcState {
-        let mut procs: Vec<AnyProc> = Vec::with_capacity(2);
+        let mut procs: Vec<AnyProc> = Vec::with_capacity(3);
         let (last_push_from, last_push_to) = self.moves_to_make.pop().unwrap();
         if game_state.is_out(last_push_to) {
             let id = game_state.get_player_id_at(last_push_to).unwrap();
@@ -109,6 +109,13 @@ impl Push {
                 //Means there was only one push which was the already handled crowd push, so we can forget about any knockdown proc
                 self.knockdown_proc = None;
             }
+        } else if matches!(game_state.ball, BallState::OnGround(ball_pos) if ball_pos == last_push_to) {
+            // A player shoved onto a loose ball dislodges it — the ball may
+            // never come to rest under a player. Only the *last* square of a
+            // chain push can hold a loose ball; every earlier one was occupied.
+            // Queued before the knockdown so it resolves after it (procs run
+            // last-in-first-out), matching the reference implementation.
+            procs.push(ball_procs::Bounce::new());
         }
         if let Some(proc) = self.knockdown_proc.take() {
             procs.push(AnyProc::KnockDown(proc));
@@ -479,7 +486,7 @@ impl Procedure for Block {
 
 #[cfg(test)]
 mod tests {
-    use crate::core::dices::BlockDice;
+    use crate::core::dices::{BlockDice, D8};
     use crate::core::model::*;
     use crate::core::table::*;
     use crate::core::{
@@ -743,5 +750,69 @@ mod tests {
 
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
         state.step_positional(PosAT::StartMove, away_pos);
+    }
+
+    /// A player pushed onto a square holding a loose ball must make the ball
+    /// bounce - a loose ball may never come to rest under a player. Recorded
+    /// in `data/web-games/web-gamestunned_ball_carrier.json`: a blocked
+    /// catcher was pushed onto the loose ball and stunned on top of it, and
+    /// the ball sat under them for the rest of the game.
+    #[test]
+    fn push_onto_loose_ball_bounces_it() {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let ball_pos = Position::new((7, 7)); // straight-ahead push square
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+
+        assert_eq!(state.ball, BallState::OnGround(ball_pos));
+
+        let d8_fix = D8::One;
+        let direction = Direction::from(d8_fix);
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::Block, away_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, ball_pos);
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.fix_d8(d8_fix as u8); //bounce
+        state.step_positional(PosAT::FollowUp, home_pos);
+
+        assert_eq!(state.get_player_at(ball_pos).unwrap().status, PlayerStatus::Down);
+        assert_eq!(state.ball, BallState::OnGround(ball_pos + direction));
+        assert!(state.fixes_is_empty());
+    }
+
+    /// Same rule without a knockdown: the push alone dislodges the ball.
+    #[test]
+    fn push_without_knockdown_onto_loose_ball_bounces_it() {
+        let home_pos = Position::new((5, 5));
+        let away_pos = Position::new((6, 6));
+        let ball_pos = Position::new((7, 7)); // straight-ahead push square
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+
+        let d8_fix = D8::One;
+        let direction = Direction::from(d8_fix);
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, away_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, ball_pos);
+        state.fix_d8(d8_fix as u8); //bounce
+        state.step_positional(PosAT::FollowUp, home_pos);
+
+        assert_eq!(state.get_player_at(ball_pos).unwrap().status, PlayerStatus::Up);
+        assert_eq!(state.ball, BallState::OnGround(ball_pos + direction));
+        assert!(state.fixes_is_empty());
     }
 }
