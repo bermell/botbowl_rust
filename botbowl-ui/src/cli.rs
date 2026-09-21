@@ -192,6 +192,100 @@ pub struct PlacementArgs {
     pub bias: BiasArgs,
 }
 
+/// Plan 042: which boards a run plays on. Unset = the process's env board
+/// (`BOARD_SIZE_*`), exactly as before. Playable dims throughout.
+#[derive(Args, Debug, Clone)]
+pub struct SizeArgs {
+    /// Comma-separated playable boards to draw each game from, each `WxH`,
+    /// `WxH/T` (explicit team size) or with a `:weight` suffix, e.g.
+    /// `12x5,14x7:3,16x9/6`. Team size defaults to the density rule
+    /// (`--cells-per-player`). Every entry must fit the compiled capacity.
+    #[arg(long)]
+    pub board_sizes: Option<String>,
+    /// Playable cells per fielded player when a size names no team
+    /// (`round(w*h / this)`, clamped to `[2, capacity]`). Plan 017's tiers
+    /// sit at 25-35.
+    #[arg(long, default_value_t = botbowl_play::board_sizes::DEFAULT_CELLS_PER_PLAYER)]
+    pub cells_per_player: f64,
+    /// Centred distribution instead of a list: the playable area to centre
+    /// on. Weights every legal board in the aspect band by a log-normal in
+    /// area around this, then mixes in `--size-floor` of uniform.
+    #[arg(long, conflicts_with = "board_sizes")]
+    pub size_centre: Option<f64>,
+    /// Std-dev of `ln(area / centre)`. 0 = the nearest legal area only;
+    /// large = uniform over the band.
+    #[arg(long, default_value_t = 0.3)]
+    pub size_temperature: f64,
+    /// Share of games drawn uniformly over every legal board regardless of
+    /// the centre, so no size ever leaves the corpus.
+    #[arg(long, default_value_t = 0.2)]
+    pub size_floor: f64,
+    /// Aspect band `min-max` (playable width / height) the centred grid keeps.
+    #[arg(long, default_value = "1.5-2.8")]
+    pub size_aspect: String,
+    /// Largest playable area the centred grid enumerates; default = capacity.
+    #[arg(long)]
+    pub size_max_area: Option<f64>,
+}
+
+impl SizeArgs {
+    /// Resolve to a distribution, or `None` for the env board. Errors name
+    /// the flag so a bad size fails before the first game.
+    pub fn to_dist(&self) -> Result<Option<botbowl_play::board_sizes::SizeDist>, String> {
+        use botbowl_play::board_sizes::{CentredSpec, SizeDist};
+        if let Some(list) = &self.board_sizes {
+            return SizeDist::parse_list(list, self.cells_per_player)
+                .map(Some)
+                .map_err(|e| format!("--board-sizes: {e}"));
+        }
+        let Some(centre) = self.size_centre else { return Ok(None) };
+        let (lo, hi) = self
+            .size_aspect
+            .split_once('-')
+            .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
+            .ok_or_else(|| format!("--size-aspect: expected `min-max`, got {:?}", self.size_aspect))?;
+        SizeDist::centred(&CentredSpec {
+            centre_area: centre,
+            temperature: self.size_temperature,
+            floor: self.size_floor,
+            aspect_min: lo,
+            aspect_max: hi,
+            cells_per_player: self.cells_per_player,
+            max_area: self.size_max_area,
+        })
+        .map(Some)
+        .map_err(|e| format!("--size-centre: {e}"))
+    }
+}
+
+/// The eval ladder's board set: a fixed list, each board its own rung.
+#[derive(Args, Debug, Clone)]
+pub struct EvalSizeArgs {
+    /// Comma-separated playable boards to run every rung on, e.g.
+    /// `12x5,14x7,16x9` (`WxH` or `WxH/T`). Each rung is then named
+    /// `<opponent>@<board>` and reported per board. Unset = the env board
+    /// and the historical rung names.
+    #[arg(long)]
+    pub board_sizes: Option<String>,
+    /// Team size for a board that names none: `round(w*h / this)`.
+    #[arg(long, default_value_t = botbowl_play::board_sizes::DEFAULT_CELLS_PER_PLAYER)]
+    pub cells_per_player: f64,
+}
+
+impl EvalSizeArgs {
+    /// `None` = one env-board rung set; `Some(boards)` = one per board.
+    pub fn boards(&self) -> Result<Vec<Option<botbowl_engine::core::model::BoardDims>>, String> {
+        match &self.board_sizes {
+            None => Ok(vec![None]),
+            Some(list) => Ok(botbowl_play::board_sizes::SizeDist::parse_list(list, self.cells_per_player)
+                .map_err(|e| format!("--board-sizes: {e}"))?
+                .boards()
+                .map(Some)
+                .collect()),
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct DatasetArgs {
     /// What to generate.
@@ -240,6 +334,9 @@ pub struct DatasetArgs {
     /// (random-start mode) Placement bias variables.
     #[command(flatten)]
     pub bias: BiasArgs,
+    /// (self-play / random-start) Board-size distribution (plan 042).
+    #[command(flatten)]
+    pub sizes: SizeArgs,
     /// Leaf-value source for the MCTS bot.
     #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
     pub evaluator: CliEvaluator,
@@ -387,6 +484,9 @@ pub struct EvalArgs {
     /// side-relative scores and who kicked off in half 1 (plan 023).
     #[arg(long)]
     pub per_game_out: Option<String>,
+    /// Boards to run the ladder on (plan 042).
+    #[command(flatten)]
+    pub sizes: EvalSizeArgs,
 }
 
 /// Resolve the inference-sidecar socket: the `--nn-server` flag, else the

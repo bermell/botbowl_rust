@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use botbowl_hub_proto::{BotSpec, BuildInfo, EvalGameLine, GenerateConfig, ModelId, Task, TaskId, ToWorker};
+use botbowl_hub_proto::{BoardDims, BotSpec, BuildInfo, EvalGameLine, GenerateConfig, ModelId, Task, TaskId, ToWorker};
+use botbowl_play::board_sizes::board_label;
 use botbowl_play::eval::{LadderRow, Report};
 
 use crate::api::{
@@ -50,6 +51,7 @@ struct Rung {
     name: String,
     total: u32,
     opponent: BotSpec,
+    board: Option<BoardDims>,
     row: LadderRow,
     done: HashSet<u32>,
 }
@@ -164,6 +166,7 @@ impl Job {
                 max_steps: req.max_steps,
                 candidate: candidate.clone(),
                 opponent: rungs[unit].opponent.clone(),
+                board: rungs[unit].board,
             },
             Kind::Generate { shards } => {
                 let s = &shards[unit];
@@ -268,7 +271,11 @@ impl Inner {
                 name: r.name.clone(),
                 total: r.games,
                 opponent,
-                row: LadderRow::new(&r.name),
+                board: r.board,
+                row: LadderRow {
+                    board: r.board.map(board_label),
+                    ..LadderRow::new(&r.name)
+                },
                 done: HashSet::new(),
             });
             pending.extend((0..r.games).map(|g| (i, g)));
@@ -644,11 +651,19 @@ impl Inner {
         let elapsed = job.started.elapsed().as_secs();
         match &mut job.kind {
             Kind::Eval { req, rungs, report, .. } => {
+                // Plan 042: a multi-size ladder reports its board list, the
+                // same string `botbowl-ui eval --board-sizes` writes.
+                let mut boards: Vec<String> = rungs.iter().filter_map(|r| r.board.map(board_label)).collect();
+                boards.dedup();
                 let r = Report {
                     candidate: req.candidate_label.clone(),
                     mcts_iters: req.mcts_iters,
                     seed: req.seed,
-                    board_env: format!("{:?}", botbowl_engine::core::model::BoardDims::from_env()),
+                    board_env: if boards.is_empty() {
+                        format!("{:?}", BoardDims::from_env())
+                    } else {
+                        boards.join(",")
+                    },
                     git_commit: botbowl_data::git_commit().to_string(),
                     git_dirty: botbowl_data::git_dirty(),
                     lectures: Vec::new(),

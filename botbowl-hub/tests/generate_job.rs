@@ -89,6 +89,7 @@ fn cfg() -> GenerateConfig {
         lecture: None,
         difficulty: botbowl_curriculum::lecture::Difficulty::Easy,
         bias: RandomStartBias::default(),
+        board_sizes: None,
     }
 }
 

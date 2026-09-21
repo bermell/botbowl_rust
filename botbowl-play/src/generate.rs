@@ -23,6 +23,7 @@ use botbowl_engine::core::model::TeamType;
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 
+use crate::board_sizes::SizeDist;
 use crate::bots::{make_mcts, Evaluator, SearchConfig};
 
 // Mirror the seed-mixing constants in `botbowl-curriculum`'s runner so a
@@ -110,6 +111,19 @@ pub struct GenerateConfig {
     pub difficulty: Difficulty,
     /// Random-start mode only.
     pub bias: RandomStartBias,
+    /// Plan 042: which board each game is played on, drawn per game from
+    /// this distribution by the game's seed. `None` keeps the process's
+    /// env board (`BoardDims::from_env()`), exactly as before. Curriculum
+    /// mode ignores it — lectures place on the full pitch.
+    #[serde(default)]
+    pub board_sizes: Option<SizeDist>,
+}
+
+impl GenerateConfig {
+    /// The board game `seed` plays on, or `None` for the env board.
+    pub fn board_for(&self, seed: u64) -> Option<botbowl_engine::core::model::BoardDims> {
+        self.board_sizes.as_ref().map(|d| d.sample(seed))
+    }
 }
 
 /// Play one trajectory for `seed`. `Ok(None)` is reserved for modes that
@@ -193,7 +207,12 @@ fn mcts_vs_mcts_samples(
 
 /// One full MctsBot-vs-MctsBot game, from kickoff.
 fn self_play_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, seed: u64) -> Trajectory {
-    let mut state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
+    let mut builder = GameStateBuilder::new();
+    builder.set_state(BuilderState::CoinToss);
+    if let Some(dims) = cfg.board_for(seed) {
+        builder.with_board_dims(dims);
+    }
+    let mut state = builder.build();
     state.set_seed(seed);
     state.set_dice_mode(DiceMode::RollDice);
     state.set_logging_state(false);
@@ -202,11 +221,14 @@ fn self_play_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, see
     let samples = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |_| false);
 
     let label = budget_label(cfg);
-    let meta = TrajectoryMeta::new("self-play", board_dims)
+    let mut meta = TrajectoryMeta::new("self-play", board_dims)
         .with_bots(label.clone(), label)
         .with_seed(seed)
         .with_extra("mode", "self-play")
         .with_extra("max_steps", cfg.max_steps.to_string());
+    if let Some(d) = &cfg.board_sizes {
+        meta = meta.with_extra("size_dist", d.label.clone());
+    }
     let outcome = Outcome::from_state(&state, None);
     Trajectory::new(meta, samples, outcome)
 }
@@ -224,6 +246,7 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
     if seed % 2 == 1 {
         rs.temperature = cfg.bias.temperature2;
     }
+    rs.board_dims = cfg.board_for(seed);
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut state = generate_random_start(&rs, &mut rng);
     state.set_logging_state(false);
@@ -238,7 +261,7 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
 
     let label = budget_label(cfg);
     let bias = &cfg.bias;
-    let meta = TrajectoryMeta::new("random-start", board_dims)
+    let mut meta = TrajectoryMeta::new("random-start", board_dims)
         .with_bots(label.clone(), label)
         .with_seed(seed)
         .with_extra("mode", "random-start")
@@ -258,6 +281,9 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
         .with_extra("start_home_turn", start_home_turn.to_string())
         .with_extra("start_away_turn", start_away_turn.to_string())
         .with_extra("start_score", start_score);
+    if let Some(d) = &cfg.board_sizes {
+        meta = meta.with_extra("size_dist", d.label.clone());
+    }
     let outcome = Outcome::from_state(&state, None);
     Trajectory::new(meta, samples, outcome)
 }

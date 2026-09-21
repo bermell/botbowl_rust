@@ -15,12 +15,15 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use botbowl_engine::core::model::BoardDims;
+pub use botbowl_play::board_sizes::SizeDist;
 pub use botbowl_play::bots::{Evaluator, SearchConfig};
 pub use botbowl_play::eval::EvalGameLine;
 pub use botbowl_play::generate::GenerateConfig;
 
 /// Bump on any change to the frames below.
-pub const PROTOCOL_VERSION: u32 = 2;
+// v3 (plan 042): `Task::Eval.board` and `GenerateConfig.board_sizes`.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Content hash of an ONNX file (BLAKE3). Model identity is bytes, never a
 /// path, so two workers with the same cache can never disagree about which
@@ -135,6 +138,9 @@ pub enum Task {
         max_steps: u32,
         candidate: BotSpec,
         opponent: BotSpec,
+        /// Plan 042: the board this rung plays on; `None` = the worker's
+        /// env board (which the capacity check makes the same as the hub's).
+        board: Option<BoardDims>,
     },
     /// Play these games of one corpus shard. Game `g`'s seed is
     /// `seed_base + g`, exactly as `botbowl-ui dataset --seed seed_base`
@@ -287,6 +293,7 @@ mod tests {
                 model: Some(ModelId::of(b"net")),
             },
             opponent: BotSpec::Scripted,
+            board: Some(BoardDims::default()),
         };
         let bytes = encode(&ToWorker::Task(task.clone()));
         let back: ToWorker = decode(&bytes).unwrap();

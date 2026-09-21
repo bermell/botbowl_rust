@@ -1,8 +1,11 @@
 # Mixed-board-size training: make the net size-robust before the 26x15 jump
 
-**Status:** Designed 2026-09-16, **not started**. Gated on having a 14x7 network worth testing
-(a from-scratch run that beats the scripted baseline by a clear margin on 14x7). Run phase 0 as soon
-as that exists; phases 1–3 only if phase 0 says the current net does not already generalise.
+**Status:** Designed 2026-09-16. **Absorbed into `plans/042-plan--board-size-curriculum.md` on
+2026-09-19**: phases 1–2 are implemented there (a centred size distribution with a uniform floor
+generalises the uniform sampler; schema v7 carries the geometry features of §2a; the trainer reads
+every `dims_*` dir), phase 0 is 042's E0, and the gate below is dropped — plan 040 found the
+corpus is what has to change, and mixed sizes are that change. Kept for the size table, the
+density argument and the capacity-build note, which all still hold.
 
 ## Idea
 

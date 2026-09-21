@@ -44,22 +44,27 @@ def points_and_var(row):
     return m, var
 
 
-def anchor_row(report, anchor):
+def anchor_row(report, anchor, board=None):
+    """The vs-anchor row — on `board` (`14x7/4`) when given, else the first
+    (plan 042 multi-size reports carry one row per board)."""
     for row in report.get("ladder", []):
         opp = row["opponent"]
-        if opp.startswith("vs:mcts(nn:") and os.path.basename(anchor) in opp:
-            return row
+        if not (opp.startswith("vs:mcts(nn:") and os.path.basename(anchor) in opp):
+            continue
+        if board is not None and row.get("board") != board:
+            continue
+        return row
     return None
 
 
-def heuristic_row(report):
+def heuristic_row(report, board=None):
     for row in report.get("ladder", []):
-        if row["opponent"] == "mcts-heuristic":
+        if row["opponent"].split("@")[0] == "mcts-heuristic" and (board is None or row.get("board") == board):
             return row
     return None
 
 
-def load(run_dir, anchor):
+def load(run_dir, anchor, board=None):
     gens = []
     for d in sorted(glob.glob(os.path.join(run_dir, "gen[0-9][0-9]"))):
         m = re.search(r"gen(\d\d)$", d)
@@ -76,9 +81,9 @@ def load(run_dir, anchor):
             except (OSError, ValueError):
                 continue
             if heur is None:
-                heur = heuristic_row(rep)
+                heur = heuristic_row(rep, board)
             if row is None:
-                r = anchor_row(rep, anchor)
+                r = anchor_row(rep, anchor, board)
                 if r is not None:
                     row, src = r, fname
         if row is None:
@@ -137,9 +142,11 @@ def main():
     p.add_argument("--plateau-gens", type=int, default=6)
     p.add_argument("--summary", type=int, default=None, metavar="GEN",
                    help="one status.md line for this generation instead of the table")
+    p.add_argument("--board", default=None,
+                   help="read the anchor row on this board only (`14x7/4`); plan 042 multi-size ladders")
     a = p.parse_args()
 
-    gens = load(a.run_dir, a.anchor)
+    gens = load(a.run_dir, a.anchor, a.board)
     if not gens:
         print(f"no vs-{a.anchor} rows under {a.run_dir}", file=sys.stderr)
         return 1
@@ -155,7 +162,8 @@ def main():
         se = math.sqrt(g["var"] / g["n"]) if g["n"] > 1 else float("nan")
         full = [r[0] for r in roll[: i + 1] if r[3] >= a.window]
         best = f"{max(full):.3f}" if full else f"n/a (window not full until gen{gens[0]['gen'] + a.window - 1:02d})"
-        line = (f"anchor {os.path.basename(a.anchor)}: gen{g['gen']:02d} {g['pts']:.3f} ± {se:.3f} "
+        tag = f"@{a.board}" if a.board else ""
+        line = (f"anchor {os.path.basename(a.anchor)}{tag}: gen{g['gen']:02d} {g['pts']:.3f} ± {se:.3f} "
                 f"(W{g['w']} D{g['d']} L{g['l']}, n={g['n']}) | rolling{rk} {rm:.3f} ± {rse:.3f} (n={rn})"
                 f" | best rolling {best} | heuristic rung {g['heur']:.3f}")
         if i == len(gens) - 1 and fl:

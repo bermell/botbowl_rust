@@ -28,12 +28,16 @@ use botbowl_play::GAME_STACK_SIZE;
 
 use crate::cli::DatasetArgs;
 
-fn config_of(args: &DatasetArgs) -> GenerateConfig {
+fn config_of(args: &DatasetArgs) -> io::Result<GenerateConfig> {
+    let board_sizes = args
+        .sizes
+        .to_dist()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let budget = match args.mcts_time_ms {
         Some(ms) => SearchBudget::Time(Duration::from_millis(ms)),
         None => SearchBudget::Iterations(args.mcts_iters),
     };
-    GenerateConfig {
+    Ok(GenerateConfig {
         mode: args.mode.into(),
         search: SearchConfig {
             budget,
@@ -51,7 +55,8 @@ fn config_of(args: &DatasetArgs) -> GenerateConfig {
         lecture: args.lecture.clone(),
         difficulty: args.difficulty.into(),
         bias: args.bias.to_bias(),
-    }
+        board_sizes,
+    })
 }
 
 /// What the parallel game workers share.
@@ -136,7 +141,18 @@ fn run_games(
 }
 
 pub fn run(args: DatasetArgs) -> io::Result<()> {
-    let cfg = config_of(&args);
+    let cfg = config_of(&args)?;
+    if let Some(d) = &cfg.board_sizes {
+        println!(
+            "board sizes: {} -> {}",
+            d.label,
+            d.table()
+                .iter()
+                .map(|(b, p)| format!("{b} {:.1}%", p * 100.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     // Load the ONNX evaluator once; every bot in every game shares the
     // Arc (the net is frozen — pure function of state).
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());

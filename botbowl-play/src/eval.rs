@@ -9,11 +9,14 @@
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
-use botbowl_engine::core::model::TeamType;
+use botbowl_engine::core::model::{BoardDims, TeamType};
+
+use crate::board_sizes::board_label;
 
 const OPPONENT_SEED_MIX: u64 = 0xC3C3_C3C3_C3C3_C3C3;
 const CANDIDATE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
@@ -22,7 +25,14 @@ const CANDIDATE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
 /// rung row cannot distinguish a scoring-rate bias from a win-conversion
 /// one, nor see who received the opening kickoff. One JSON line per game
 /// in `--per-game-out`; field order is the file format, so don't reorder.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` is hand-written (below) so that `board` is **omitted from
+/// JSON when absent** — keeping every env-board line byte-identical to the
+/// pre-042 format — but **always present on the binary wire** (`postcard`
+/// is not self-describing, so a skipped field there is a decode error on
+/// the hub). `Deserialize` is derived with `#[serde(default)]`, which reads
+/// both.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct EvalGameLine {
     pub rung: String,
     pub game: u32,
@@ -32,6 +42,32 @@ pub struct EvalGameLine {
     pub away_score: u8,
     pub kicking_first_half: TeamType,
     pub finished: bool,
+    /// Plan 042: the playable board (`14x7/4`) when the rung named one
+    /// explicitly. Absent for env-board games, so those lines are
+    /// byte-identical to the pre-042 format.
+    #[serde(default)]
+    pub board: Option<String>,
+}
+
+impl Serialize for EvalGameLine {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // JSON (human-readable): the trailing key only when set. Binary
+        // (postcard, not self-describing): always, or the decoder starves.
+        let with_board = self.board.is_some() || !serializer.is_human_readable();
+        let mut s = serializer.serialize_struct("EvalGameLine", if with_board { 9 } else { 8 })?;
+        s.serialize_field("rung", &self.rung)?;
+        s.serialize_field("game", &self.game)?;
+        s.serialize_field("seed", &self.seed)?;
+        s.serialize_field("candidate_team", &self.candidate_team)?;
+        s.serialize_field("home_score", &self.home_score)?;
+        s.serialize_field("away_score", &self.away_score)?;
+        s.serialize_field("kicking_first_half", &self.kicking_first_half)?;
+        s.serialize_field("finished", &self.finished)?;
+        if with_board {
+            s.serialize_field("board", &self.board)?;
+        }
+        s.end()
+    }
 }
 
 impl EvalGameLine {
@@ -55,7 +91,7 @@ pub fn ladder_assignment(base_seed: u64, g: u32) -> (TeamType, u64) {
 }
 
 /// One full game from kickoff between `candidate` (playing
-/// `candidate_team`) and `opponent`.
+/// `candidate_team`) and `opponent`, on `board` (`None` = the env board).
 pub fn play_ladder_game(
     candidate: &mut dyn Bot,
     opponent: &mut dyn Bot,
@@ -64,8 +100,14 @@ pub fn play_ladder_game(
     candidate_team: TeamType,
     seed: u64,
     max_steps: u32,
+    board: Option<BoardDims>,
 ) -> EvalGameLine {
-    let mut state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
+    let mut builder = GameStateBuilder::new();
+    builder.set_state(BuilderState::CoinToss);
+    if let Some(dims) = board {
+        builder.with_board_dims(dims);
+    }
+    let mut state = builder.build();
     state.set_seed(seed);
     state.set_dice_mode(DiceMode::RollDice);
     state.set_logging_state(false);
@@ -83,10 +125,17 @@ pub fn play_ladder_game(
         steps += 1;
     }
 
-    line_of(&state, rung, game, candidate_team, seed)
+    line_of(&state, rung, game, candidate_team, seed, board)
 }
 
-fn line_of(state: &GameState, rung: &str, game: u32, candidate_team: TeamType, seed: u64) -> EvalGameLine {
+fn line_of(
+    state: &GameState,
+    rung: &str,
+    game: u32,
+    candidate_team: TeamType,
+    seed: u64,
+    board: Option<BoardDims>,
+) -> EvalGameLine {
     EvalGameLine {
         rung: rung.to_string(),
         game,
@@ -96,6 +145,17 @@ fn line_of(state: &GameState, rung: &str, game: u32, candidate_team: TeamType, s
         away_score: state.away.score,
         kicking_first_half: state.info.kicking_first_half,
         finished: state.info.game_over,
+        board: board.map(board_label),
+    }
+}
+
+/// The rung label a multi-size ladder uses for `opponent` on `board`:
+/// `scripted@14x7/4`. Single-board ladders keep the bare opponent name so
+/// every downstream script keeps matching.
+pub fn rung_name(opponent: &str, board: Option<BoardDims>) -> String {
+    match board {
+        Some(d) => format!("{opponent}@{}", board_label(d)),
+        None => opponent.to_string(),
     }
 }
 
@@ -137,12 +197,25 @@ pub struct LadderRow {
     /// both sides and so are balanced by construction in a mirror.
     pub tds_by_home: u32,
     pub tds_by_away: u32,
+    /// Plan 042: the playable board this rung ran on, when the ladder named
+    /// one (`14x7/4`); absent on an env-board ladder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<String>,
 }
 
 impl LadderRow {
     pub fn new(opponent: &str) -> Self {
         LadderRow {
             opponent: opponent.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A rung on an explicit board: named `opponent@board`, `board` set.
+    pub fn on_board(opponent: &str, board: Option<BoardDims>) -> Self {
+        LadderRow {
+            opponent: rung_name(opponent, board),
+            board: board.map(board_label),
             ..Default::default()
         }
     }
@@ -220,6 +293,7 @@ mod tests {
             away_score: a,
             kicking_first_half: TeamType::Away,
             finished,
+            board: None,
         }
     }
 
@@ -261,6 +335,35 @@ mod tests {
         assert_eq!((row.tds_by_home, row.tds_by_away), (5, 2));
         assert_eq!(row.unfinished, 1);
         assert_eq!(row.win_rate, 0.5);
+    }
+
+    /// A board-tagged line adds one trailing key and nothing else, so the
+    /// old readers keep working and the tag is where a grouper looks for it.
+    #[test]
+    fn board_tag_is_a_trailing_optional_key() {
+        let mut l = line(3, TeamType::Away, 1, 2, true);
+        l.board = Some("14x7/4".into());
+        let s = serde_json::to_string(&l).unwrap();
+        assert!(s.ends_with(r#","finished":true,"board":"14x7/4"}"#), "{s}");
+        assert_eq!(serde_json::from_str::<EvalGameLine>(&s).unwrap(), l);
+        let row = LadderRow::on_board("scripted", None);
+        assert_eq!((row.opponent.as_str(), row.board.as_deref()), ("scripted", None));
+        assert_eq!(rung_name("scripted", None), "scripted");
+    }
+
+    /// The binary wire must round-trip both an absent and a present board:
+    /// `postcard` cannot skip a field, so the JSON-only omission above must
+    /// not leak into it (it did once — the hub read every worker frame as
+    /// "end of buffer").
+    #[test]
+    fn board_tag_survives_a_non_self_describing_encoding() {
+        for board in [None, Some("12x5/2".to_string())] {
+            let mut l = line(1, TeamType::Home, 0, 0, true);
+            l.board = board;
+            let bytes = postcard::to_allocvec(&l).unwrap();
+            let back: EvalGameLine = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(back, l);
+        }
     }
 
     #[test]

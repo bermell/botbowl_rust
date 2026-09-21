@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use botbowl_curriculum::{available_lectures, make_lecture, run_trials, TrialStats};
 use botbowl_engine::bots::{Bot, RandomBot};
+use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_mcts::{BackupMode, PuctMode};
 use botbowl_nn::eval::NnEvaluator;
@@ -33,7 +34,8 @@ use botbowl_play::bots::{
     candidate_label, evaluator_label, load_nn, make_candidate_bot, make_mcts, parse_backup, parse_puct, CandidateBot,
     Evaluator, SearchConfig,
 };
-use botbowl_play::eval::{ladder_assignment, play_ladder_game, LadderRow, LectureRow, Report};
+use botbowl_play::board_sizes::board_label;
+use botbowl_play::eval::{ladder_assignment, play_ladder_game, rung_name, LadderRow, LectureRow, Report};
 use botbowl_play::GAME_STACK_SIZE;
 
 use crate::cli::EvalArgs;
@@ -106,10 +108,15 @@ struct RungState {
 fn run_ladder_rung(
     args: &EvalArgs,
     nn: Option<&Arc<NnEvaluator>>,
-    name: &str,
+    opponent: &str,
+    board: Option<BoardDims>,
     games: u32,
     make_opponent: impl Fn() -> Box<dyn Bot> + Sync,
 ) -> LadderRow {
+    // Plan 042: on a multi-size ladder the rung is `opponent@board`, so the
+    // per-game lines and the report rows group by board without a new
+    // file format; on an env-board ladder it is the bare opponent name.
+    let name = &rung_name(opponent, board);
     // Per-game side-relative record (plan 023 deferred item 5): the pooled
     // report line cannot distinguish a scoring-rate bias from a
     // win-conversion one, nor see who received the opening kickoff.
@@ -123,7 +130,7 @@ fn run_ladder_rung(
         )
     });
     let state = RungState {
-        row: Mutex::new(LadderRow::new(name)),
+        row: Mutex::new(LadderRow::on_board(opponent, board)),
         next_game: AtomicU32::new(0),
         per_game: Mutex::new(per_game),
     };
@@ -138,7 +145,7 @@ fn run_ladder_rung(
     // than tract.
     let parallel = args.parallel_games.clamp(1, games.max(1)) as usize;
     if parallel == 1 {
-        run_rung_games(args, nn, name, games, &make_opponent, &state);
+        run_rung_games(args, nn, name, board, games, &make_opponent, &state);
     } else {
         eprintln!("  vs {name}: {parallel} games in parallel");
         std::thread::scope(|s| {
@@ -148,7 +155,7 @@ fn run_ladder_rung(
                 std::thread::Builder::new()
                     .name(format!("rung-{i}"))
                     .stack_size(GAME_STACK_SIZE)
-                    .spawn_scoped(s, move || run_rung_games(args, nn, name, games, mk, st))
+                    .spawn_scoped(s, move || run_rung_games(args, nn, name, board, games, mk, st))
                     .expect("spawn rung worker");
             }
         });
@@ -166,10 +173,12 @@ fn run_ladder_rung(
 /// reused across the games of a rung, and `MctsBot`'s cached tree is
 /// discarded anyway when the horizon anchor fails to match at a new
 /// game's kickoff.
+#[allow(clippy::too_many_arguments)]
 fn run_rung_games(
     args: &EvalArgs,
     nn: Option<&Arc<NnEvaluator>>,
     name: &str,
+    board: Option<BoardDims>,
     games: u32,
     make_opponent: &(impl Fn() -> Box<dyn Bot> + Sync),
     state: &RungState,
@@ -190,6 +199,7 @@ fn run_rung_games(
             candidate_team,
             seed,
             args.max_steps,
+            board,
         );
 
         if let Some(w) = state.per_game.lock().expect("per-game mutex").as_mut() {
@@ -283,12 +293,25 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         }
     }
 
+    // Plan 042: every rung runs once per board; `[None]` is the env board.
+    let boards = args
+        .sizes
+        .boards()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let mut ladder: Vec<LadderRow> = Vec::new();
     if !args.skip_ladder {
         eprintln!(
-            "== opponent ladder ({} games per rung, {} on the vs rung) ==",
+            "== opponent ladder ({} games per rung, {} on the vs rung{}) ==",
             args.games,
-            args.vs_games.unwrap_or(args.games)
+            args.vs_games.unwrap_or(args.games),
+            if boards[0].is_some() {
+                format!(
+                    ", boards {}",
+                    boards.iter().flatten().map(|d| board_label(*d)).collect::<Vec<_>>().join(" ")
+                )
+            } else {
+                String::new()
+            }
         );
         let cand = candidate_search(&args);
         let opp = opponent_search(&args);
@@ -299,24 +322,27 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     panic!("--rungs: expected `random`, `scripted` or `mcts-heuristic`, got `{name}`");
                 }
             }
-            if wanted.contains(&"random") {
-                ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", args.games, || {
-                    Box::new(RandomBot::new())
-                }));
-            }
-            if wanted.contains(&"scripted") {
-                ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", args.games, || {
-                    Box::new(ScriptedBot::new())
-                }));
-            }
-            if wanted.contains(&"mcts-heuristic") {
-                ladder.push(run_ladder_rung(
-                    &args,
-                    nn.as_ref(),
-                    "mcts-heuristic",
-                    args.games,
-                    || Box::new(make_mcts(&opp, Evaluator::Heuristic, None)),
-                ));
+            for &board in &boards {
+                if wanted.contains(&"random") {
+                    ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", board, args.games, || {
+                        Box::new(RandomBot::new())
+                    }));
+                }
+                if wanted.contains(&"scripted") {
+                    ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", board, args.games, || {
+                        Box::new(ScriptedBot::new())
+                    }));
+                }
+                if wanted.contains(&"mcts-heuristic") {
+                    ladder.push(run_ladder_rung(
+                        &args,
+                        nn.as_ref(),
+                        "mcts-heuristic",
+                        board,
+                        args.games,
+                        || Box::new(make_mcts(&opp, Evaluator::Heuristic, None)),
+                    ));
+                }
             }
         }
         if let Some(vs) = vs_evaluator {
@@ -353,9 +379,11 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             );
             // The gating rung: `--vs-games` if given, else `--games`.
             let vs_games = args.vs_games.unwrap_or(args.games);
-            ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, vs_games, || {
-                Box::new(make_mcts(&opp, vs, vs_nn.as_ref()))
-            }));
+            for &board in &boards {
+                ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, board, vs_games, || {
+                    Box::new(make_mcts(&opp, vs, vs_nn.as_ref()))
+                }));
+            }
         }
     }
 
@@ -368,7 +396,11 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         ),
         mcts_iters: args.mcts_iters,
         seed: args.seed,
-        board_env: format!("{:?}", botbowl_engine::core::model::BoardDims::from_env()),
+        board_env: if boards[0].is_some() {
+            boards.iter().flatten().map(|d| board_label(*d)).collect::<Vec<_>>().join(",")
+        } else {
+            format!("{:?}", BoardDims::from_env())
+        },
         git_commit: botbowl_data::git_commit().to_string(),
         git_dirty: botbowl_data::git_dirty(),
         lectures,

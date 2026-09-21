@@ -21,6 +21,7 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 - `plans/001-grand-plan.md` — strategic roadmap (AlphaZero-style MCTS via curriculum learning → scripted baseline → heuristic/rollout/NN-guided MCTS → self-play). Read it before proposing architecture changes that span the engine and `recon_mcts`.
 - `plans/NNN-idea--*.md` / `plans/NNN-plan--*.md` — designs not yet started or in-flight. `plans/completed/` — closed-out plans with **Status:** headers; historical context, not live work.
 - **Live experimental programme:** `plans/031-plan--audit-diagnostics.md` (cheap diagnostics, run first) and `plans/032-plan--ranked-experiment-queue.md` (ranked longer experiments and open questions). New results go there, not into completed plans.
+- **Board-size curriculum:** `plans/042-plan--board-size-curriculum.md` — mixed-size generation (`--board-sizes` / `--size-centre …` on `dataset` and `job generate`, per-board eval rungs via `eval --board-sizes`), schema v7, the trainer's multi-dims loader and `train_loop.sh`'s `SIZE_MODE`. Experiments E0–E5 there are the next thing to run.
 - **Current focus: bot capability** (priors, leaf-score, pruning, scripted heuristics, new lectures). Performance work is deprioritized — don't propose perf tuning, profiling reruns, or speed micro-benchmarks unless explicitly asked.
 
 ## Commands
@@ -45,6 +46,15 @@ cargo run --release -p botbowl-web-server -- \
 
 Both commands work from any directory — the server's `--dist-dir`/`--models-dir` defaults are
 resolved from its own crate path, not the cwd.
+
+Mixed board sizes (plan 042; every flag is optional — unset means the env board, exactly as before):
+
+```sh
+botbowl-ui dataset --mode random-start --board-sizes 12x5,14x7:3,16x9 ...        # weighted list, playable WxH[/T][:w]
+botbowl-ui dataset --mode random-start --size-centre 98 --size-temperature 0.3 --size-floor 0.2 ...   # centred grid
+botbowl-ui eval --board-sizes 12x5,14x7,16x9 ...                                  # every rung once per board, named opponent@14x7/4
+SIZE_MODE=centred scripts/train_loop.sh    # builds at 16x9/6 capacity, schedules the centre from the corpus TD rate
+```
 
 Distributed generate/eval (plan 041; `train_loop.sh` starts the hub and the local worker itself):
 

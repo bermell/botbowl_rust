@@ -1,4 +1,5 @@
-"""Train the value/policy net on one prepared board-dims directory.
+"""Train the value/policy net on a prepared corpus: one board-dims directory,
+or (plan 042) a directory of ``dims_*`` subdirs from a mixed-size corpus.
 
 Loss = masked policy cross-entropy (per-sample log-softmax over the legal
 action set) + value MSE. Logs total loss and chosen-action top-1 accuracy.
@@ -15,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from .data import PreparedDataset, collate
+from .data import MultiDimsDataset, PreparedDataset, collate, make_loader, open_prepared
 from .export import export_onnx
 from .model import BBNet, masked_policy_logits
 
@@ -115,18 +116,32 @@ def compute_losses(model, batch, device, per_drive_value_weight=False):
 
 
 def evaluate(model, loader, device, per_drive_value_weight=False):
-    """Mean policy loss / value MSE / top-1 over a held-out loader."""
+    """Mean policy loss / value MSE / top-1 over a held-out loader.
+
+    Sample-weighted, not batch-weighted: a mixed corpus's per-group loader
+    ends each group on a short batch, and weighting those equally with full
+    ones would tilt the pooled number toward the smallest board.
+    """
     model.eval()
     tot_p = tot_v = tot_a = 0.0
-    nb = 0
+    n = 0
     with torch.no_grad():
         for batch in loader:
             pl, vl, acc = compute_losses(model, batch, device, per_drive_value_weight)
-            tot_p += pl.item()
-            tot_v += vl.item()
-            tot_a += acc.item()
-            nb += 1
-    return tot_p / nb, tot_v / nb, tot_a / nb
+            b = batch["value"].shape[0]
+            tot_p += pl.item() * b
+            tot_v += vl.item() * b
+            tot_a += acc.item() * b
+            n += b
+    return tot_p / n, tot_v / n, tot_a / n
+
+
+def describe_data(tag, ds):
+    """One line saying what a dataset holds — per board when mixed."""
+    if isinstance(ds, MultiDimsDataset):
+        parts = ", ".join(f"{k} {v}" for k, v in ds.group_sizes().items())
+        return f"{tag}: {len(ds)} samples over {len(ds.groups)} board shapes ({parts})"
+    return f"{tag}: {len(ds)} samples"
 
 
 def train(
@@ -157,27 +172,40 @@ def train(
         seed_everything(seed)
         print(f"seed: {seed}")
 
-    ds = PreparedDataset(dims_dir, augment=augment)
+    # Plan 042: `dims_dir` may be one prepared dims dir or the parent of
+    # several (a mixed-size corpus). Batches never mix board shapes.
+    ds = open_prepared(dims_dir, augment=augment)
+    print(describe_data("train", ds))
     if limit is not None:
         # Overfit smoke: restrict to the first `limit` samples.
+        if isinstance(ds, MultiDimsDataset):
+            raise ValueError("--limit is only supported on a single dims dir")
         ds.spatial = ds.spatial[:limit]
         ds.global_ = ds.global_[:limit]
         ds.value = ds.value[:limit]
         ds.chosen = ds.chosen[:limit]
         ds.offsets = ds.offsets[: limit + 1]
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
+    loader = make_loader(ds, batch_size, shuffle=True)
 
     # Held-out set: must be prepared from *disjoint games* (hold out whole
     # generation shards) — samples within a game are consecutive states, so
     # a sample-level split leaks. No augmentation on the val pass.
+    #
+    # On a mixed corpus the pooled val numbers drive the restore, and each
+    # board's own numbers are printed beside them: a size that lags is the
+    # first thing plan 042's experiments need to see, and the pooled number
+    # cannot show it.
     val_loader = None
+    val_group_loaders = {}
     if val_dir is not None:
-        val_loader = DataLoader(
-            PreparedDataset(val_dir, augment=False),
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=collate,
-        )
+        val_ds = open_prepared(val_dir, augment=False)
+        print(describe_data("val", val_ds))
+        val_loader = make_loader(val_ds, batch_size, shuffle=False)
+        if isinstance(val_ds, MultiDimsDataset):
+            val_group_loaders = {
+                name: DataLoader(g, batch_size=batch_size, shuffle=False, collate_fn=collate)
+                for name, g in zip(val_ds.names, val_ds.groups)
+            }
 
     device = resolve_device(device) if isinstance(device, str) else device
     # --init decides the architecture when given (a shape mismatch against
@@ -293,6 +321,11 @@ def train(
         if val_loader is None:
             return ""
         vp, vv, va = evaluate(model, val_loader, device, per_drive_value_weight)
+        # Per-board validation (plan 042). Printed on their own lines so the
+        # pooled line — the one train_loop.sh greps — keeps its shape.
+        for name, gl in val_group_loaders.items():
+            gp, gv, ga = evaluate(model, gl, device, per_drive_value_weight)
+            print(f"    val@{name}: val_policy {gp:.4f}  val_value {gv:.4f}  val_top1 {ga:.3f}", flush=True)
         model.train()
         if best_vp is None or vp < best_vp:
             best_vp, best_vp_step = vp, step
@@ -378,7 +411,12 @@ def train(
 
 def main():
     ap = argparse.ArgumentParser(description="Train the Blood Bowl value/policy net.")
-    ap.add_argument("--data", required=True, help="prepared board-dims dir (contains spatial.npy, ...)")
+    ap.add_argument(
+        "--data",
+        required=True,
+        help="prepared board-dims dir (contains spatial.npy, ...), or a directory of dims_* subdirs "
+             "from a mixed-board-size corpus (plan 042; batches never mix boards)",
+    )
     ap.add_argument("--epochs", type=int, default=20, help="ignored when --max-steps is given")
     ap.add_argument(
         "--max-steps",
@@ -401,7 +439,12 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--limit", type=int, default=None, help="overfit only the first N samples")
     ap.add_argument("--no-augment", action="store_true", help="disable random y-flip augmentation")
-    ap.add_argument("--val-data", default=None, help="held-out prepared dims dir (disjoint games!)")
+    ap.add_argument(
+        "--val-data",
+        default=None,
+        help="held-out prepared dims dir or directory of dims_* subdirs (disjoint games!); "
+             "a mixed one also reports val loss per board",
+    )
     ap.add_argument(
         "--select-on",
         choices=["value", "combined"],

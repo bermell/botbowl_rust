@@ -61,6 +61,7 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("report")
     p.add_argument("--gate", type=float, default=None)
+    p.add_argument("--board", default=None, help="only rows on this board (`14x7/4`) — plan 042 multi-size reports")
     a = p.parse_args()
 
     with open(a.report) as f:
@@ -79,6 +80,11 @@ def main() -> int:
             side = f", side H{home_side}-{away_side} TD {row['tds_by_home']}:{row['tds_by_away']}"
         # `pts` is what the gate reads; `win_rate` is kept in the line so a
         # verdict stays re-derivable and old status lines stay comparable.
+        # Plan 042: a multi-size ladder names rungs `opponent@board`; the
+        # name already carries the board, so nothing is appended here, and
+        # the gate reads the first `vs:` row unless --board picks one.
+        if a.board and row.get("board") != a.board:
+            continue
         parts.append(
             f"{row['opponent']} pts {points(row):.3f} (w {row['win_rate']:.2f}) "
             f"{td_rate(row)} "
@@ -87,7 +93,7 @@ def main() -> int:
             f"home {row['wins_as_home']}-{row['losses_as_home']} "
             f"away {row['wins_as_away']}-{row['losses_as_away']}{side})"
         )
-        if row["opponent"].startswith("vs:"):
+        if row["opponent"].startswith("vs:") and vs_row is None:
             vs_row = row
     print(" | ".join(parts) if parts else "empty ladder")
 

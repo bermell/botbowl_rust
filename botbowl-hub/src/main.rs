@@ -11,8 +11,10 @@ use botbowl_hub::api::{
 };
 use botbowl_hub::http::request;
 use botbowl_hub::{Hub, HubConfig};
-use botbowl_hub_proto::{Evaluator, GenerateConfig, SearchConfig};
+use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, SizeDist};
+use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
 use botbowl_play::bots::{candidate_label, evaluator_label, parse_backup, parse_puct, CandidateBot};
+use botbowl_play::eval::rung_name;
 use botbowl_play::generate::{GenMode, RandomStartBias};
 
 #[derive(Parser, Debug)]
@@ -181,6 +183,23 @@ struct GenerateJobArgs {
     /// ONNX path; stamped into the corpus provenance exactly as written.
     #[arg(long)]
     model: Option<String>,
+    // Plan 042 board-size distribution, flag-for-flag `botbowl-ui dataset`.
+    /// `12x5,14x7:3,16x9/6` — playable boards (optional `/T`, `:weight`).
+    #[arg(long)]
+    board_sizes: Option<String>,
+    #[arg(long, default_value_t = DEFAULT_CELLS_PER_PLAYER)]
+    cells_per_player: f64,
+    /// Centred distribution: the playable area to centre on.
+    #[arg(long, conflicts_with = "board_sizes")]
+    size_centre: Option<f64>,
+    #[arg(long, default_value_t = 0.3)]
+    size_temperature: f64,
+    #[arg(long, default_value_t = 0.2)]
+    size_floor: f64,
+    #[arg(long, default_value = "1.5-2.8")]
+    size_aspect: String,
+    #[arg(long)]
+    size_max_area: Option<f64>,
     /// Games per task handed to a worker.
     #[arg(long, default_value_t = 4)]
     batch: u16,
@@ -193,6 +212,32 @@ struct GenerateJobArgs {
     /// Accepted and ignored (workers own their sidecar).
     #[arg(long, hide = true)]
     nn_server: Option<String>,
+}
+
+/// Same resolution as `botbowl-ui`'s `SizeArgs::to_dist`.
+fn size_dist_of(a: &GenerateJobArgs) -> Result<Option<SizeDist>, String> {
+    if let Some(list) = &a.board_sizes {
+        return SizeDist::parse_list(list, a.cells_per_player)
+            .map(Some)
+            .map_err(|e| format!("--board-sizes: {e}"));
+    }
+    let Some(centre) = a.size_centre else { return Ok(None) };
+    let (lo, hi) = a
+        .size_aspect
+        .split_once('-')
+        .and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)))
+        .ok_or_else(|| format!("--size-aspect: expected `min-max`, got {:?}", a.size_aspect))?;
+    SizeDist::centred(&CentredSpec {
+        centre_area: centre,
+        temperature: a.size_temperature,
+        floor: a.size_floor,
+        aspect_min: lo,
+        aspect_max: hi,
+        cells_per_player: a.cells_per_player,
+        max_area: a.size_max_area,
+    })
+    .map(Some)
+    .map_err(|e| format!("--size-centre: {e}"))
 }
 
 fn parse_shards(s: &str) -> Result<Vec<u32>, String> {
@@ -244,7 +289,19 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         lecture: a.lecture.clone(),
         difficulty: a.difficulty.into(),
         bias,
+        board_sizes: size_dist_of(a)?,
     };
+    if let Some(d) = &base.board_sizes {
+        eprintln!(
+            "[hub job] board sizes: {} -> {}",
+            d.label,
+            d.table()
+                .iter()
+                .map(|(b, p)| format!("{b} {:.1}%", p * 100.0))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     let heuristic = GenerateConfig {
         evaluator: Evaluator::Heuristic,
         model: None,
@@ -399,6 +456,12 @@ struct EvalJobArgs {
     /// One JSON line per game.
     #[arg(long)]
     per_game_out: PathBuf,
+    /// Plan 042: playable boards to run every rung on (`12x5,14x7,16x9`);
+    /// each rung becomes `<opponent>@<board>`. Unset = the env board.
+    #[arg(long)]
+    board_sizes: Option<String>,
+    #[arg(long, default_value_t = DEFAULT_CELLS_PER_PLAYER)]
+    cells_per_player: f64,
     /// Games per task handed to a worker.
     #[arg(long, default_value_t = 4)]
     batch: u16,
@@ -457,6 +520,15 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         CandidateBot::Scripted => BotReq::Scripted,
         CandidateBot::Random => BotReq::Random,
     };
+    // Plan 042: one rung set per board; `[None]` is the env board.
+    let boards: Vec<Option<BoardDims>> = match &a.board_sizes {
+        None => vec![None],
+        Some(list) => SizeDist::parse_list(list, a.cells_per_player)
+            .map_err(|e| format!("--board-sizes: {e}"))?
+            .boards()
+            .map(Some)
+            .collect(),
+    };
     let mut rungs = Vec::new();
     if !a.skip_fixed_rungs {
         for name in a.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -474,11 +546,14 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
                     ))
                 }
             };
-            rungs.push(RungReq {
-                name: name.to_string(),
-                games: a.games,
-                opponent,
-            });
+            for &board in &boards {
+                rungs.push(RungReq {
+                    name: rung_name(name, board),
+                    games: a.games,
+                    opponent: opponent.clone(),
+                    board,
+                });
+            }
         }
     }
     if let Some(vs) = a.vs_evaluator {
@@ -516,15 +591,18 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
                 String::new()
             },
         );
-        rungs.push(RungReq {
-            name: label,
-            games: a.vs_games.unwrap_or(a.games),
-            opponent: BotReq::Mcts {
-                search: opp,
-                evaluator: vs,
-                model: a.vs_model.as_ref().map(abs),
-            },
-        });
+        for &board in &boards {
+            rungs.push(RungReq {
+                name: rung_name(&label, board),
+                games: a.vs_games.unwrap_or(a.games),
+                opponent: BotReq::Mcts {
+                    search: opp,
+                    evaluator: vs,
+                    model: a.vs_model.as_ref().map(abs),
+                },
+                board,
+            });
+        }
     }
     if rungs.is_empty() {
         return Err("no rungs: pass --rungs and/or --vs-evaluator".into());
