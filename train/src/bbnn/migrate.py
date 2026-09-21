@@ -130,12 +130,25 @@ class Migration:
     embed: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]] | None = None
     exact: bool = True
 
-    def verify(self, old: StateDict, new: StateDict, trials: int = 4, atol: float = 1e-5, seed: int = 0) -> float:
+    def verify(
+        self, old: StateDict, new: StateDict, trials: int = 4, atol: float = 1e-5, rtol: float = 1e-5, seed: int = 0
+    ) -> float:
         """Build both nets, run them on random inputs, return the max abs
-        output difference. Raises when ``exact`` and it exceeds ``atol``.
+        output difference. Raises when ``exact`` and it exceeds
+        ``atol + rtol * max|output|``.
 
         The nets are in eval mode with the checkpoint's own BatchNorm stats,
         which is how tract and the sidecar run them.
+
+        **The bound has to scale with the outputs.** A zero-column insertion is
+        exact in arithmetic — in float64 the two nets agree bit-for-bit — but in
+        float32 a wider conv accumulates in a different order, so the difference
+        grows with the magnitude of what is being accumulated. A freshly
+        initialised net's logits are O(1) and a fixed 1e-5 held; a trained
+        champion's reach ±140, where the same float32 noise is 5e-5. Judging
+        that absolutely would reject exactly the checkpoints this module exists
+        to carry, while a genuinely non-preserving step is off by O(1) and is
+        still caught by a mile.
         """
         a = BBNet(**shape_of(old))
         a.load_state_dict(old)
@@ -145,6 +158,7 @@ class Migration:
         b.eval()
         g = torch.Generator().manual_seed(seed)
         worst = 0.0
+        scale = 0.0
         sa, fa = SCHEMAS[self.src]["C"], SCHEMAS[self.src]["F"]
         with torch.no_grad():
             for (h, w) in [(9, 16), (7, 14), (11, 18)][:trials]:
@@ -154,8 +168,13 @@ class Migration:
                 s2, g2 = self.embed(spatial, global_) if self.embed else (spatial, global_)
                 pb, vb = b(s2, g2)
                 worst = max(worst, (pa - pb).abs().max().item(), (va - vb).abs().max().item())
-        if self.exact and worst > atol:
-            raise AssertionError(f"v{self.src}->v{self.dst} is not function-preserving: max |diff| {worst:.3e}")
+                scale = max(scale, pa.abs().max().item(), va.abs().max().item())
+        bound = atol + rtol * scale
+        if self.exact and worst > bound:
+            raise AssertionError(
+                f"v{self.src}->v{self.dst} is not function-preserving: "
+                f"max |diff| {worst:.3e} > {bound:.3e} (max |out| {scale:.3g})"
+            )
         return worst
 
 

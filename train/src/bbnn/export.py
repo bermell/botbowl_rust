@@ -18,10 +18,17 @@ PARITY_SIZES = [(17, 28), (9, 16)]
 
 
 def export_onnx(model, path, opset: int = 17):
-    """Export `model` to ONNX with dynamic batch, height and width."""
+    """Export `model` to ONNX with dynamic batch, height and width.
+
+    The dummy input's widths come from ``model``, not from the module
+    constants, so an older-schema net (one being round-tripped through
+    `bbnn.from_onnx`, say) exports at its own shape rather than failing
+    against the current one.
+    """
     model.eval()
-    dummy_spatial = torch.zeros(1, SPATIAL_CHANNELS, 17, 28)
-    dummy_global = torch.zeros(1, GLOBAL_FEATURES)
+    embed = model.global_fc.out_features
+    dummy_spatial = torch.zeros(1, model.stem.in_channels - embed, 17, 28)
+    dummy_global = torch.zeros(1, model.global_fc.in_features)
     torch.onnx.export(
         model,
         (dummy_spatial, dummy_global),
