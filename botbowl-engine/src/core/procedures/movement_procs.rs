@@ -958,6 +958,31 @@ mod tests {
     }
 
     #[test]
+    fn standup_in_place_without_moving() {
+        let start_pos = Position::new((2, 1));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Move, start_pos)));
+
+        state.step_positional(PosAT::Move, start_pos);
+
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Up);
+        assert_eq!(state.get_player_unsafe(id).position, start_pos);
+        assert_eq!(
+            state.get_player_unsafe(id).moves_left(),
+            state.get_player_unsafe(id).stats.ma - 3
+        );
+        assert!(!state.get_player_unsafe(id).used);
+
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        assert!(state.get_player_unsafe(id).used);
+    }
+
+    #[test]
     fn move_into_fail_gfi_into_stun_into_move_again() {
         let start_pos = Position::new((1, 1));
         let move_target = Position::new((8, 1));

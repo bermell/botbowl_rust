@@ -792,8 +792,13 @@ impl<'a> PathFinder<'a> {
             return Ok(());
         }
         let info = GameInfo::new(game_state, player);
-        let mut root_node = Node::new(None, info.start_pos, player.moves_left(), player.gfis_left());
-        if player.status != PlayerStatus::Up {
+        let start_pos = info.start_pos;
+        let mut root_node = Node::new(None, start_pos, player.moves_left(), player.gfis_left());
+        // Prone players standing up in place (without moving anywhere else) must be
+        // an offered path too, not just a stepping stone toward further movement —
+        // e.g. a player with MA <= 3 has no movement left to expand from here at all.
+        let standing_up = player.status != PlayerStatus::Up;
+        if standing_up {
             assert!(player.moves_left() == player.stats.ma);
             debug_assert!(matches!(player.status, PlayerStatus::Down));
             root_node.apply_standup();
@@ -802,12 +807,15 @@ impl<'a> PathFinder<'a> {
         let root_node = Arc::new(root_node);
 
         if !info.can_continue_expanding(&root_node) {
+            if standing_up {
+                out[start_pos] = Some(root_node);
+            }
             return Ok(());
         }
 
         let mut pf = PathFinder::new(info);
 
-        pf.open_set.push(root_node);
+        pf.open_set.push(root_node.clone());
 
         loop {
             //expansion
@@ -836,6 +844,12 @@ impl<'a> PathFinder<'a> {
         // was None-everywhere at the start (Default in PathFinder::new) so
         // the swap leaves us with an empty FullPitch to drop with pf.
         std::mem::swap(&mut pf.locked_nodes, out);
+        if standing_up {
+            // The root node itself (stand up, then stop) is never reached by
+            // expansion — it's the search's starting point, not a discovered
+            // neighbor — so it's never in `pf.locked_nodes`. Add it back in.
+            out[start_pos] = Some(root_node);
+        }
         Ok(())
     }
 
@@ -1100,6 +1114,32 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item, PositionOrEvent::Event(PathingEvent::StandUp))),
             "path must contain a StandUp event, got {:?}",
+            items
+        );
+    }
+
+    #[test]
+    fn downed_player_can_stand_up_without_moving() {
+        let start = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start)
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(start).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+
+        let path = PathFinder::safest_path_to(&state, id, start)
+            .unwrap()
+            .expect("expected a stand-up-in-place path at the player's own square");
+
+        let items: Vec<PositionOrEvent> = path.iter().collect();
+        assert_eq!(
+            items,
+            vec![PositionOrEvent::Event(PathingEvent::StandUp)],
+            "stand-up-in-place path should contain only the StandUp event, no move, got {:?}",
             items
         );
     }
