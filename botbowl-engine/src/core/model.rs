@@ -793,6 +793,9 @@ impl TeamState {
         self.reroll_used = true;
         self.rerolls -= 1;
     }
+    pub fn reset_reroll_used(&mut self) {
+        self.reroll_used = false;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

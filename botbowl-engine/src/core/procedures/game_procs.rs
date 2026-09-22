@@ -105,6 +105,8 @@ impl Procedure for Half {
         info.pass_available = true;
         info.turnover = false;
 
+        game_state.get_mut_team(next_team).reset_reroll_used();
+
         game_state.get_players_on_pitch_mut().for_each(|p| p.used = false);
 
         game_state
@@ -514,6 +516,33 @@ mod tests {
         assert!(state.away_to_act());
         assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Stunned);
         assert!(!state.get_player_unsafe(id).used);
+    }
+
+    #[test]
+    fn reroll_available_again_next_turn() {
+        let start_pos = Position::new((1, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((1, 8)))
+            .build();
+        state.get_mut_team(TeamType::Home).rerolls = 2;
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fix_d6(1); //fail gfi (2+)
+        state.step_positional(PosAT::Move, start_pos + (7, 0));
+        state.fix_d6(2); //succeed with team reroll
+        state.step_simple(SimpleAT::UseReroll);
+
+        assert!(!state.get_team(TeamType::Home).can_use_reroll());
+        assert_eq!(state.get_team(TeamType::Home).rerolls, 1);
+
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        state.step_simple(SimpleAT::EndTurn);
+        assert!(state.away_to_act());
+        state.step_simple(SimpleAT::EndTurn);
+
+        assert!(state.home_to_act());
+        assert!(state.get_team(TeamType::Home).can_use_reroll());
     }
 
     /// Regression: a player who got stunned during their own action stays Stunned
