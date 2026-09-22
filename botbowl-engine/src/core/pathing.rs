@@ -331,13 +331,10 @@ impl Node {
     fn is_dominant_over(&self, othr: &Node) -> bool {
         assert_eq!(self.position, othr.position);
 
-        if self.prob > othr.prob
-            && self.remaining_movement() > othr.remaining_movement()
-            && self.block_dice > othr.block_dice
-        {
-            return true;
-        }
-        false
+        self.prob >= othr.prob
+            && self.moves_left >= othr.moves_left
+            && self.remaining_movement() >= othr.remaining_movement()
+            && self.block_dice >= othr.block_dice
     }
 
     fn is_better_than(&self, othr: &Node) -> bool {
@@ -564,7 +561,7 @@ impl<'a> GameInfo<'a> {
         // and we'd otherwise be heap-allocating just to throw it away.
         if let Some(best_before) = &best {
             debug_assert!(best_before.prob > new_node.prob);
-            if !best_before.is_dominant_over(&new_node) {
+            if best_before.is_dominant_over(&new_node) {
                 return NodeType::NoNode;
             }
         }
@@ -1156,19 +1153,29 @@ mod tests {
     /// below, with the teammates placed directly at their final squares, is
     /// enough on its own.
     ///
-    /// The actual root cause: `PathFinder` locks in only the single
-    /// highest-*local*-probability node per square (`Node::is_better_than`),
-    /// ignoring `moves_left`/`gfis_left`. For the square (5,3), a long
-    /// GFI-only detour (83%) locally beats the direct route's one dodge
-    /// (66.7%), so the search discards the dodge route — even though it
-    /// preserves movement and lets the rest of the trip to (2,1) finish with
-    /// zero further rolls (66.7% overall), while the "locally safer" detour
-    /// has burned a GFI it can't recover, forcing more risk later (37%
-    /// overall). This test pins the current (buggy) output as a reference
-    /// point for that discussion; it is expected to need updating once the
-    /// dominance check accounts for remaining movement.
+    /// Root cause was the dominance check in `GameInfo::expand_to`: it read
+    /// `if !best_before.is_dominant_over(&new_node) { discard }` — the
+    /// inverse of its sibling in `prepare_nodes` — so a node was thrown away
+    /// precisely when the already-locked node did *not* dominate it. With
+    /// `is_dominant_over` also requiring strict `>` on all three axes (and
+    /// `block_dice` being `None` on both sides of any move-vs-move
+    /// comparison, so never strictly greater) the test was constant `false`,
+    /// making the discard unconditional: the first batch to reach a square
+    /// owned it outright.
+    ///
+    /// For (5,3) that meant a 9-step GFI detour around the north edge (83%,
+    /// 0 movement banked) locked the square, and the direct `(6,4)->(5,3)`
+    /// dodge (66.7%, 5 moves left) was dropped even though it is the route
+    /// that finishes the trip to (2,1) with no further rolls. What survived
+    /// was the 37% southern detour in the screenshot.
+    ///
+    /// Both halves are fixed: the polarity is flipped, and
+    /// `is_dominant_over` is a real Pareto test (`>=` on prob, `moves_left`,
+    /// `remaining_movement` and `block_dice`) so it still prunes genuinely
+    /// dominated nodes — without that second half the lost pruning costs
+    /// ~15% on the curriculum benchmarks.
     #[test]
-    fn hovering_two_one_offers_a_suboptimal_detour_not_the_direct_diagonal() {
+    fn hovering_two_one_offers_the_direct_diagonal() {
         crate::skip_if_board_smaller_than!(14, 7);
 
         let mut mover_stats = PlayerStats::new_catcher(TeamType::Home);
@@ -1207,34 +1214,21 @@ mod tests {
             vec![
                 PositionOrEvent::Position(Position::new((7, 5))),
                 PositionOrEvent::Position(Position::new((6, 4))),
-                PositionOrEvent::Position(Position::new((5, 4))),
+                PositionOrEvent::Position(Position::new((5, 3))),
                 PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
-                PositionOrEvent::Position(Position::new((4, 5))),
-                PositionOrEvent::Position(Position::new((3, 5))),
-                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
-                PositionOrEvent::Position(Position::new((2, 4))),
-                PositionOrEvent::Position(Position::new((2, 3))),
-                PositionOrEvent::Position(Position::new((2, 2))),
+                PositionOrEvent::Position(Position::new((4, 2))),
+                PositionOrEvent::Position(Position::new((3, 1))),
                 PositionOrEvent::Position(Position::new((2, 1))),
-                PositionOrEvent::Event(PathingEvent::GFI(D6Target::TwoPlus)),
             ],
-            "this pins today's (buggy) route: two dodges + a GFI detouring south, \
-             matching the screenshot's 37% tooltip. Got {:?}",
+            "expected the direct diagonal: a single dodge out of (6,4) and no \
+             GFIs. Got {:?}",
             items
         );
         assert!(
-            (node.prob - (4.0 / 6.0 * 4.0 / 6.0 * 5.0 / 6.0)).abs() < 1e-6,
-            "expected the screenshot's ~37% success probability, got {}",
+            (node.prob - 4.0 / 6.0).abs() < 1e-6,
+            "expected the single dodge's 2/3, got {}",
             node.prob
         );
-
-        // The direct diagonal — (7,5)->(6,4)->(5,3)->(4,2)->(3,1)->(2,1), one
-        // dodge (ThreePlus) and zero GFIs — is legal and strictly safer
-        // (2/3 ≈ 66.7%) than the route above, but isn't reachable through this
-        // API: `PathFinder` locks in only the single highest-probability node
-        // per square, so the direct route's node at (5,3) never survives long
-        // enough to be offered as this player's path to (2,1). See the
-        // doc comment above for the mechanism.
     }
 }
 

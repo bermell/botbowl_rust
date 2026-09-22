@@ -1,8 +1,6 @@
 ---
-source: tests/snapshots.rs
-assertion_line: 9
+source: botbowl-ui/tests/snapshots.rs
 expression: "render(42, 0)"
-snapshot_kind: text
 ---
 "                                              H1  Home T0   0 - 0   Away T0                                             "
 "                                                                                  │Proc: CoinToss                       "
