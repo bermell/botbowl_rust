@@ -1143,4 +1143,98 @@ mod tests {
             items
         );
     }
+
+    /// Board reconstructed from a web-UI screenshot where hovering (2,1) showed
+    /// a 37% route (Dodge 3+, Dodge 3+, GFI 2+) that detours south after the
+    /// first dodge instead of taking the direct diagonal.
+    ///
+    /// Confirmed *not* a turn-order/staleness issue: walking the three
+    /// teammates into (8,5)/(7,4)/(8,3) via real `StartMove`/`Move` actions
+    /// before activating the ball carrier (ruling out the path buffer's
+    /// `NeedActionInPlace` reuse in `gamestate.rs::micro_step` leaving stale
+    /// data) reproduces the identical 37% detour — so the plain static board
+    /// below, with the teammates placed directly at their final squares, is
+    /// enough on its own.
+    ///
+    /// The actual root cause: `PathFinder` locks in only the single
+    /// highest-*local*-probability node per square (`Node::is_better_than`),
+    /// ignoring `moves_left`/`gfis_left`. For the square (5,3), a long
+    /// GFI-only detour (83%) locally beats the direct route's one dodge
+    /// (66.7%), so the search discards the dodge route — even though it
+    /// preserves movement and lets the rest of the trip to (2,1) finish with
+    /// zero further rolls (66.7% overall), while the "locally safer" detour
+    /// has burned a GFI it can't recover, forcing more risk later (37%
+    /// overall). This test pins the current (buggy) output as a reference
+    /// point for that discussion; it is expected to need updating once the
+    /// dominance check accounts for remaining movement.
+    #[test]
+    fn hovering_two_one_offers_a_suboptimal_detour_not_the_direct_diagonal() {
+        crate::skip_if_board_smaller_than!(14, 7);
+
+        let mut mover_stats = PlayerStats::new_catcher(TeamType::Home);
+        mover_stats.ag = 3; // roster value observed in the screenshot's tooltip (Dodge 3+).
+        let start = Position::new((8, 6));
+        let target = Position::new((2, 1));
+
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(BoardDims::new(14, 7, 4))
+            .add_player_details(start, TeamType::Home, mover_stats)
+            .add_home_player(Position::new((8, 5)))
+            .add_home_player(Position::new((7, 4)))
+            .add_home_player(Position::new((8, 3)))
+            .add_away_player(Position::new((7, 3)))
+            .add_away_player(Position::new((5, 6)))
+            .add_away_player(Position::new((6, 6)))
+            .add_away_player(Position::new((6, 3)))
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        for prone_pos in [Position::new((6, 6)), Position::new((6, 3))] {
+            let prone_id = state.get_player_id_at(prone_pos).unwrap();
+            state.get_mut_player_unsafe(prone_id).status = PlayerStatus::Down;
+        }
+
+        let id = state.get_player_id_at(start).unwrap();
+        let node = PathFinder::safest_path_to(&state, id, target)
+            .unwrap()
+            .expect("expected a path to (2,1)");
+
+        let items: Vec<PositionOrEvent> = node.iter().collect();
+        assert_eq!(
+            items,
+            vec![
+                PositionOrEvent::Position(Position::new((7, 5))),
+                PositionOrEvent::Position(Position::new((6, 4))),
+                PositionOrEvent::Position(Position::new((5, 4))),
+                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+                PositionOrEvent::Position(Position::new((4, 5))),
+                PositionOrEvent::Position(Position::new((3, 5))),
+                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+                PositionOrEvent::Position(Position::new((2, 4))),
+                PositionOrEvent::Position(Position::new((2, 3))),
+                PositionOrEvent::Position(Position::new((2, 2))),
+                PositionOrEvent::Position(Position::new((2, 1))),
+                PositionOrEvent::Event(PathingEvent::GFI(D6Target::TwoPlus)),
+            ],
+            "this pins today's (buggy) route: two dodges + a GFI detouring south, \
+             matching the screenshot's 37% tooltip. Got {:?}",
+            items
+        );
+        assert!(
+            (node.prob - (4.0 / 6.0 * 4.0 / 6.0 * 5.0 / 6.0)).abs() < 1e-6,
+            "expected the screenshot's ~37% success probability, got {}",
+            node.prob
+        );
+
+        // The direct diagonal — (7,5)->(6,4)->(5,3)->(4,2)->(3,1)->(2,1), one
+        // dodge (ThreePlus) and zero GFIs — is legal and strictly safer
+        // (2/3 ≈ 66.7%) than the route above, but isn't reachable through this
+        // API: `PathFinder` locks in only the single highest-probability node
+        // per square, so the direct route's node at (5,3) never survives long
+        // enough to be offered as this player's path to (2,1). See the
+        // doc comment above for the mechanism.
+    }
 }
+
