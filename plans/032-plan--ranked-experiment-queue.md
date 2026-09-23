@@ -490,6 +490,35 @@ column is the *delta over a random net at the same budget*, not the absolute rat
 learned nothing the search did not already do on its own.
 
 
+### Board-size transfer, measured (plan 042 E0/E1, 2026-09-23)
+
+480 + 480 games, the az14x7v6 gen23 champion migrated v6 -> v7. Two results,
+both of which change what the next corpus should contain.
+
+**1. Upward size transfer is free; downward is not.** Against scripted at 120
+games a board: 14x7 (trained) 0.958, 16x9 **0.938**, 12x9 **0.950** — and 12x9
+is outside the aspect band, so nothing has ever trained on it. 12x5 is 0.662.
+A net trained on one tier already plays a 47%-larger board at full strength.
+Plan 042's premise was the reverse — small boards as the sparse-reward ladder
+up to big ones — so the curriculum's *direction* is not what buys anything
+here; the variety might still.
+
+**2. Below ~70 playable cells there is no game to learn.** The density rule
+gives 2 players a side at area <= 60, and the scripted-vs-scripted mirror
+scores 15.17 TD/g there against 3.55-5.33 on every larger board. The
+champion's attack ratio (its TD/g over that mirror rate) is 0.95x at 12x5 —
+*below* two scripted bots — against 1.60-1.97x everywhere else. Those boards
+neither discriminate on a ladder nor yield usable policy targets. Adopted:
+`--size-min-area 70` (`SIZE_MIN_AREA`, default 70), which drops the seven
+team-size-2 boards, ~12% of what the centred sampler would have generated.
+
+**What to read off this for the queue.** "Points vs scripted" saturates near
+0.95 and cannot rank the boards the net is actually good at; the attack ratio
+does, and it falls 1.97x -> 1.60x from 14x7 to 16x9 while relative defence
+improves 0.42x -> 0.32x. Any future size claim should quote the ratio against
+that board's own scripted-mirror rate, not the raw points, and the mirror
+reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
+
 ## The queue
 
 ### 1. D7 vs champion gen03 — does a from-scratch retrain on the whole corpus beat eight incremental generations?

@@ -99,6 +99,15 @@ SIZE_LIST="${SIZE_LIST:-12x5,14x7:3,16x9}"  # SIZE_MODE=list only
 SIZE_ADVANCE_TD="${SIZE_ADVANCE_TD:-0.75}"  # relative TD/drive at/above centre that moves it
 SIZE_STEP="${SIZE_STEP:-1.25}"              # centre *= this on advance
 SIZE_MAX_AREA="${SIZE_MAX_AREA:-$((BUILD_W * BUILD_H))}"
+# Smallest playable area the centred grid draws. Plan 042 E0 (2026-09-23, 480
+# games): at the density rule's 26 cells/player every board of area <= 60 is a
+# 2v2, and there the champion's attack ratio against the scripted mirror was
+# 0.95x — it scored *less* than two scripted bots do — against 1.60-1.97x on
+# every larger board. Those games are a scoring free-for-all in which skill
+# does not express, so their policy targets are noise; at centre 98 with floor
+# 0.2 they would have been ~12% of the corpus. 70 is the bound that clears
+# every team-size-2 board. Unset for the old behaviour (no lower bound).
+SIZE_MIN_AREA="${SIZE_MIN_AREA:-70}"
 # Fixed eval set, independent of the training centre — that independence is
 # what keeps the per-size ladder honest. Every rung (and the anchor) runs once
 # per board; cost scales with the count.
@@ -544,7 +553,7 @@ size_gen_args() {
             local c
             c=$(cat "$RUN_DIR/size_centre.txt" 2>/dev/null || echo "$SIZE_CENTRE")
             echo "--size-centre $c --size-temperature $SIZE_TEMPERATURE --size-floor $SIZE_FLOOR \
---size-aspect $SIZE_ASPECT --size-max-area $SIZE_MAX_AREA --cells-per-player $SIZE_CELLS_PER_PLAYER" ;;
+--size-aspect $SIZE_ASPECT --size-max-area $SIZE_MAX_AREA${SIZE_MIN_AREA:+ --size-min-area $SIZE_MIN_AREA} --cells-per-player $SIZE_CELLS_PER_PLAYER" ;;
     esac
 }
 # Eval: the fixed board set, one rung per board.

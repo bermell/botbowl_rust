@@ -133,6 +133,54 @@ Decision rule (plan 039's, unchanged): drop < 5 pp at 12x5 and 16x9 relative to 
 is already size-robust, run E2 with a lower prior and move the centre faster; ≥ 15 pp → E2 as
 written; between → E2 with the schema change treated as the primary intervention.
 
+### E0 — RESULT (2026-09-23): transfer is free upward, and 12x5 is not a board
+
+480 games, the az14x7v6 gen23 champion migrated v6 -> v7 (function-preserving,
+max |diff| 4.6e-05), 120 games per board vs scripted at 1000 iters.
+`runs/exp042/e0_report.json`, `e1_scripted_ref.json`.
+
+| board | pts | TD/g for-against | mirror TD/g (E1) | attack | defence | Δ vs 14x7 |
+|---|---|---|---|---|---|---|
+| 12x5/2 | 0.662 | 7.22 - 6.05 | 7.58 | 0.95x | 0.80x | **-29.6 pp** |
+| 14x7/4 | 0.958 | 4.42 - 0.95 | 2.24 | 1.97x | 0.42x | — |
+| 16x9/6 | 0.938 | 2.83 - 0.57 | 1.77 | 1.60x | 0.32x | -2.0 pp |
+| 12x9/4 | 0.950 | 5.07 - 1.62 | 2.67 | 1.90x | 0.61x | -0.8 pp |
+
+"attack" is the candidate's TD/g over the same board's scripted-mirror TD/g
+(E1's reference, which is 0.500 by symmetry and therefore informative only in
+its *rate*); "defence" is TD/g conceded over that same rate.
+
+**The decision rule splits, and the split is the finding.** The rule reads
+"< 5 pp at 12x5 *and* 16x9 -> already size-robust; >= 15 pp -> E2 as written",
+assuming both ends move together. They do not: 16x9 is -2.0 pp and 12x9 — never
+trained on, outside the aspect band — is -0.8 pp, while 12x5 is -29.6 pp. **The
+net generalises upward in board size essentially for free and fails downward.**
+That inverts the plan's premise, which was that small boards are the
+sparse-reward ladder you climb to reach big ones; this net did not need the
+ladder.
+
+**12x5 is degenerate, not hard.** Under the density rule every board of area
+<= 60 is a 2v2, and E1 shows the scripted mirror scoring 15.17 TD/g there
+against 3.55-5.33 elsewhere. The candidate's attack ratio of 0.95x means it
+scores *less* than two scripted bots do. The board is a scoring free-for-all in
+which skill does not express — so it neither discriminates on the ladder nor
+produces usable policy targets, and at centre 98 / floor 0.2 the seven
+team-size-2 boards would have taken ~12% of the corpus.
+
+**Adopted, this commit:** a `min_area` bound on the centred grid
+(`--size-min-area`, `SIZE_MIN_AREA`, default 70 in `train_loop.sh`) clears every
+team-size-2 board; the resolved distribution is 12 boards, 14x7 at 10.1% down to
+16x9 at 5.4%. `EVAL_BOARD_SIZES` drops 12x5 and picks up 12x9 as the held-out
+probe (outside the aspect band, so no arm trains on it). The open question
+"E0 decides whether 12x5 stays in the set" is closed: it does not.
+
+**Caveat on reading these as strength.** Points against *scripted* saturate —
+0.938 at 16x9 means "beats a weak bot", not "plays 16x9 well". The attack ratio
+is the more sensitive read and it does fall, 1.97x at 14x7 to 1.60x at 16x9,
+partly offset by better relative defence (0.42x -> 0.32x). So mixed-size
+training still has headroom to buy at 16x9; it is just not buying basic
+competence, which is already there.
+
 ### E1 — per-board baselines (cheap, no GPU)
 
 Two reference rates the rest reads against.

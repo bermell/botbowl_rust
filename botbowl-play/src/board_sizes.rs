@@ -66,6 +66,14 @@ pub struct CentredSpec {
     pub aspect_min: f64,
     pub aspect_max: f64,
     pub cells_per_player: f64,
+    /// Smallest playable area to enumerate; `None` = no lower bound.
+    ///
+    /// Plan 042 E0: at the default density every board of area <= 60 is a
+    /// 2v2, where the champion scored *less* than a scripted mirror (attack
+    /// 0.95x, against 1.6-2.0x on every other board). Skill does not express
+    /// on those boards, so a run that wants only boards a bot can actually
+    /// play sets this to 70.
+    pub min_area: Option<f64>,
     /// Largest playable area to enumerate; `None` = the compiled capacity.
     pub max_area: Option<f64>,
 }
@@ -79,6 +87,7 @@ impl Default for CentredSpec {
             aspect_min: DEFAULT_ASPECT.0,
             aspect_max: DEFAULT_ASPECT.1,
             cells_per_player: DEFAULT_CELLS_PER_PLAYER,
+            min_area: None,
             max_area: None,
         }
     }
@@ -123,9 +132,14 @@ pub fn parse_board(s: &str, cells_per_player: f64) -> Result<BoardDims, String> 
 }
 
 /// Every board the compiled binary can play whose aspect lies in the band
-/// and whose playable area is at most `max_area`, with the density rule's
-/// team size. Sorted by area, then width.
-pub fn legal_grid(aspect: (f64, f64), cells_per_player: f64, max_area: Option<f64>) -> Vec<BoardDims> {
+/// and whose playable area is within `min_area..=max_area`, with the density
+/// rule's team size. Sorted by area, then width.
+pub fn legal_grid(
+    aspect: (f64, f64),
+    cells_per_player: f64,
+    min_area: Option<f64>,
+    max_area: Option<f64>,
+) -> Vec<BoardDims> {
     let cap_w = (WIDTH as i64) - 2;
     let cap_h = (HEIGHT as i64) - 2;
     let mut out = Vec::new();
@@ -137,7 +151,7 @@ pub fn legal_grid(aspect: (f64, f64), cells_per_player: f64, max_area: Option<f6
             if ratio < aspect.0 || ratio > aspect.1 {
                 continue;
             }
-            if max_area.is_some_and(|m| area > m) {
+            if max_area.is_some_and(|m| area > m) || min_area.is_some_and(|m| area < m) {
                 continue;
             }
             let team = team_size_for(area, cells_per_player);
@@ -223,12 +237,18 @@ impl SizeDist {
                 spec.aspect_min, spec.aspect_max
             ));
         }
-        let grid = legal_grid((spec.aspect_min, spec.aspect_max), spec.cells_per_player, spec.max_area);
+        let grid = legal_grid(
+            (spec.aspect_min, spec.aspect_max),
+            spec.cells_per_player,
+            spec.min_area,
+            spec.max_area,
+        );
         if grid.is_empty() {
             return Err(format!(
-                "no legal board fits aspect {}-{} and max area {:?} within capacity {}x{}/{}",
+                "no legal board fits aspect {}-{} and area {:?}..={:?} within capacity {}x{}/{}",
                 spec.aspect_min,
                 spec.aspect_max,
+                spec.min_area,
                 spec.max_area,
                 WIDTH - 2,
                 HEIGHT - 2,
@@ -267,7 +287,11 @@ impl SizeDist {
             spec.aspect_min,
             spec.aspect_max,
             spec.cells_per_player,
-            spec.max_area.map(|m| format!(",max={m:.0}")).unwrap_or_default()
+            format!(
+                "{}{}",
+                spec.min_area.map(|m| format!(",min={m:.0}")).unwrap_or_default(),
+                spec.max_area.map(|m| format!(",max={m:.0}")).unwrap_or_default()
+            )
         );
         Ok(Self::normalised(entries, label))
     }
@@ -363,7 +387,7 @@ mod tests {
 
     #[test]
     fn legal_grid_respects_capacity_aspect_and_the_engine() {
-        let grid = legal_grid(DEFAULT_ASPECT, 26.0, None);
+        let grid = legal_grid(DEFAULT_ASPECT, 26.0, None, None);
         assert!(!grid.is_empty());
         for d in &grid {
             let (pw, ph) = ((d.width - 2) as f64, (d.height - 2) as f64);
@@ -378,9 +402,51 @@ mod tests {
         for w in grid.windows(2) {
             assert!(playable_area(w[0]) <= playable_area(w[1]));
         }
-        let small = legal_grid(DEFAULT_ASPECT, 26.0, Some(60.0));
+        let small = legal_grid(DEFAULT_ASPECT, 26.0, None, Some(60.0));
         assert!(small.iter().all(|d| playable_area(*d) <= 60.0));
         assert!(small.len() < grid.len());
+    }
+
+    /// Plan 042 E0: at the density rule's 26 cells/player every board of area
+    /// <= 60 is a 2v2, and the ladder showed the champion scores *less* there
+    /// than a scripted mirror does (attack 0.95x, against 1.6-2.0x everywhere
+    /// else) — the board is a scoring free-for-all in which skill does not
+    /// express, so those games are not worth generating. `min_area` is how a
+    /// run excludes them.
+    #[test]
+    fn min_area_excludes_the_degenerate_small_boards() {
+        let grid = legal_grid(DEFAULT_ASPECT, 26.0, None, None);
+        let big = legal_grid(DEFAULT_ASPECT, 26.0, Some(70.0), None);
+        assert!(big.iter().all(|d| playable_area(*d) >= 70.0));
+        assert!(big.len() < grid.len());
+        // 70 is exactly the bound that clears every team-size-2 board.
+        assert!(big.iter().all(|d| d.team_size >= 3), "{:?}", big.iter().map(|d| board_label(*d)).collect::<Vec<_>>());
+        // Both bounds compose.
+        let band = legal_grid(DEFAULT_ASPECT, 26.0, Some(70.0), Some(112.0));
+        assert!(band
+            .iter()
+            .all(|d| (70.0..=112.0).contains(&playable_area(*d))));
+    }
+
+    #[test]
+    fn centred_respects_min_area() {
+        if !cap_fits(16, 9, 6) {
+            return;
+        }
+        let spec = CentredSpec {
+            min_area: Some(70.0),
+            max_area: Some(144.0),
+            ..CentredSpec::default()
+        };
+        let d = SizeDist::centred(&spec).unwrap();
+        assert!(d.entries.iter().all(|e| e.dims.team_size >= 3));
+        assert!(d.label.contains("min=70"), "{}", d.label);
+        // An empty band is an error, not a silent empty distribution.
+        assert!(SizeDist::centred(&CentredSpec {
+            min_area: Some(1000.0),
+            ..CentredSpec::default()
+        })
+        .is_err());
     }
 
     #[test]

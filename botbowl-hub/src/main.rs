@@ -200,6 +200,9 @@ struct GenerateJobArgs {
     size_aspect: String,
     #[arg(long)]
     size_max_area: Option<f64>,
+    /// Smallest playable area the centred grid enumerates (plan 042 E0).
+    #[arg(long)]
+    size_min_area: Option<f64>,
     /// Games per task handed to a worker.
     #[arg(long, default_value_t = 4)]
     batch: u16,
@@ -234,6 +237,7 @@ fn size_dist_of(a: &GenerateJobArgs) -> Result<Option<SizeDist>, String> {
         aspect_min: lo,
         aspect_max: hi,
         cells_per_player: a.cells_per_player,
+        min_area: a.size_min_area,
         max_area: a.size_max_area,
     })
     .map(Some)

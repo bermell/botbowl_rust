@@ -18,6 +18,11 @@ cd "$(dirname "$0")/.."
 export SIZE_MODE=centred
 export BUILD_W=16 BUILD_H=9 BUILD_PLAYERS=6
 export SIZE_CENTRE=98 SIZE_TEMPERATURE=0.3 SIZE_FLOOR=0.2 SIZE_MAX_AREA=144
+# Plan 042 E0 (2026-09-23): boards below area 70 are 2v2 under the density
+# rule, and the champion's attack ratio there was 0.95x against a scripted
+# mirror — worse than two scripted bots — against 1.60-1.97x everywhere else.
+# Skill does not express, so 70 keeps those ~12% of games out of the corpus.
+export SIZE_MIN_AREA=70
 
 # Keep this run's nets out of models/ root, where the v6-schema nets live. A
 # v7 net and a v6 net are not interchangeable and must not share a directory.
@@ -40,9 +45,14 @@ export ANCHOR="$PWD/models/az_v7/bbnet_14x7_gen23_v7.onnx"
 export ANCHOR_GAMES=40
 
 # Fixed eval set, independent of the training centre — that independence is
-# what keeps the per-size ladder honest (plan 042). E0 says whether 12x5 earns
-# its place; drop it here if not.
-export EVAL_BOARD_SIZES=12x5,14x7,16x9
+# what keeps the per-size ladder honest (plan 042). E0 answered the question
+# the plan left open: 12x5 does not earn its place. At 120 games the champion
+# read 0.662 there against 0.958/0.938 at 14x7/16x9, but E1's scripted mirror
+# put up 15.17 TD/g on the same board — it is a 2v2 free-for-all that does not
+# discriminate between bots, so it would only add noise to the curve.
+# 12x9 is in as the held-out probe: outside the aspect band (1.33), so no arm
+# ever trains on it, and E0 measured it at 0.950 zero-shot.
+export EVAL_BOARD_SIZES=14x7,16x9,12x9
 export EVAL_RUNGS=scripted
 export EVAL_GAMES=30
 

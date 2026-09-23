@@ -226,6 +226,12 @@ pub struct SizeArgs {
     /// Largest playable area the centred grid enumerates; default = capacity.
     #[arg(long)]
     pub size_max_area: Option<f64>,
+    /// Smallest playable area the centred grid enumerates; default = no bound.
+    /// Plan 042 E0 measured every board below 70 as a 2v2 in which the
+    /// champion scored *less* than a scripted mirror, so `--size-min-area 70`
+    /// is how a run keeps only boards where skill expresses.
+    #[arg(long)]
+    pub size_min_area: Option<f64>,
 }
 
 impl SizeArgs {
@@ -251,6 +257,7 @@ impl SizeArgs {
             aspect_min: lo,
             aspect_max: hi,
             cells_per_player: self.cells_per_player,
+            min_area: self.size_min_area,
             max_area: self.size_max_area,
         })
         .map(Some)
