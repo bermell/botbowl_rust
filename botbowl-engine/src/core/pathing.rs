@@ -325,7 +325,10 @@ impl Node {
     }
     fn apply_standup(&mut self) {
         self.events.push_back(PathingEvent::StandUp);
-        self.moves_left -= 3;
+        // Real rules: standing up costs 3 squares, but a player with MA < 3
+        // just spends their whole movement allowance rather than going
+        // negative (reachable once `BoardDims::ma_cap` allows MA < 3).
+        self.moves_left = self.moves_left.saturating_sub(3);
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -1127,6 +1130,38 @@ mod tests {
         }
         let id = state.get_player_id_at(start).unwrap();
         state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+
+        let path = PathFinder::safest_path_to(&state, id, start)
+            .unwrap()
+            .expect("expected a stand-up-in-place path at the player's own square");
+
+        let items: Vec<PositionOrEvent> = path.iter().collect();
+        assert_eq!(
+            items,
+            vec![PositionOrEvent::Event(PathingEvent::StandUp)],
+            "stand-up-in-place path should contain only the StandUp event, no move, got {:?}",
+            items
+        );
+    }
+
+    /// A player with MA < 3 (possible on narrow eval boards, see
+    /// `BoardDims::ma_cap`) still costs 3 squares to stand up in real rules —
+    /// it just uses up the whole movement allowance instead of going
+    /// negative. The naive `moves_left -= 3` panics on underflow instead.
+    #[test]
+    fn downed_player_with_ma_below_3_can_stand_up_without_moving() {
+        let start = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start)
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(start).unwrap();
+        let player = state.get_mut_player_unsafe(id);
+        player.stats.ma = 2;
+        player.status = PlayerStatus::Down;
 
         let path = PathFinder::safest_path_to(&state, id, start)
             .unwrap()

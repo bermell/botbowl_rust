@@ -282,6 +282,22 @@ impl BoardDims {
             TeamType::Away => self.width - 2,
         }
     }
+    /// LOS-to-endzone distance is `width/2 - 1` for either team (the pitch is
+    /// symmetric), so this is team-independent.
+    pub fn los_to_endzone_distance(&self) -> Coord {
+        self.width / 2 - 1
+    }
+    /// The greatest MA a player can have and still be unable to reach the
+    /// opponent's endzone from a standing start on their own LOS in one turn
+    /// — even with the two GFI squares this engine allows beyond MA
+    /// (`FieldedPlayer::total_movement_left` is `ma + 2`). Not applied to the
+    /// stock roster by the engine itself; callers that want it opt in (eval
+    /// games, to force a multi-turn advance instead of a reliable one-turn
+    /// score on a narrow board — see `botbowl-play::eval`). No-op ceiling on
+    /// the full pitch, where it already exceeds every stock role's MA.
+    pub fn ma_cap(&self) -> Coord {
+        (self.los_to_endzone_distance() - 3).max(0)
+    }
     /// Kickoff scatter/deviate & throw-in distances are capped here so the ball
     /// can't be flung clear across a narrow board.
     pub fn max_scatter(&self) -> Coord {
@@ -1170,6 +1186,25 @@ mod board_dims_tests {
         if let Ok(dims) = BoardDims::try_new(14, 7, 3) {
             assert_eq!(dims.scatter_divisor(), 3);
             assert!(12 / dims.scatter_divisor() <= 5);
+        }
+    }
+
+    /// `ma_cap` must guarantee a player can't reach the endzone from a
+    /// standing LOS start in one turn, on every board the compiled capacity
+    /// supports: `ma_cap() + 2` (the engine's GFI ceiling) always falls
+    /// short of `los_to_endzone_distance()`.
+    #[test]
+    fn ma_cap_always_falls_short_of_the_endzone() {
+        assert_eq!(BoardDims::default().ma_cap(), 10, "full pitch must be a no-op (exceeds every stock MA)");
+
+        for (w, h, players) in [(16, 9, 3), (14, 7, 3), (12, 5, 1), (10, 5, 1), (8, 5, 1)] {
+            let Ok(dims) = BoardDims::try_new(w, h, players) else { continue };
+            assert!(
+                dims.ma_cap() + 2 < dims.los_to_endzone_distance(),
+                "{w}x{h}: ma_cap {} + 2 GFI must fall short of the {}-square LOS-to-endzone distance",
+                dims.ma_cap(),
+                dims.los_to_endzone_distance(),
+            );
         }
     }
 
