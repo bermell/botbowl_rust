@@ -42,9 +42,11 @@ impl Procedure for Kickoff {
             _ => panic!("Unexpected input {:?}", input),
         };
 
-        // Cap deviate distance at half the board width so the kick can't be
-        // flung out of bounds on narrow tiers (no-op on the full pitch).
-        let len = (len_roll as Coord).min(game_state.board_dims.max_scatter());
+        // Scale the roll down on narrow tiers (no-op on the full pitch) so an
+        // aim-middle kickoff rarely deviates out of bounds, then cap at half
+        // the board width as a final safety net.
+        let dims = game_state.board_dims;
+        let len = ((len_roll as Coord) / dims.scatter_divisor()).min(dims.max_scatter());
         let ball_pos = self.aim + Direction::from(dir_roll) * len;
         game_state.set_ball(BallState::InAir(ball_pos));
         if game_state.board_dims.kickoff_table_enabled() {
@@ -550,7 +552,8 @@ impl Procedure for Setup {
 
 #[cfg(test)]
 mod tests {
-    use super::Formation;
+    use super::{Formation, Kickoff};
+    use crate::core::dices::{RollResult, D6, D8};
     use crate::core::gamestate::{BuilderState, GameState, GameStateBuilder};
     use crate::core::model::*;
     use crate::core::table::*;
@@ -810,6 +813,33 @@ mod tests {
 
         assert_eq!(state.info.home_turn, 6);
         assert_eq!(state.info.away_turn, 5);
+    }
+
+    /// A kickoff aimed at the middle scales the D6 deviate roll down on a
+    /// narrow board, so it can't fling the ball as far out as an unscaled
+    /// roll would — the dice rolled (D6 length, D8 direction) are unchanged,
+    /// only how far the length carries the ball.
+    #[test]
+    fn kickoff_deviate_distance_is_scaled_down_on_a_narrow_board() {
+        let dims = BoardDims::new(16, 9, 3); // 14x7 playable
+        assert_eq!(dims.scatter_divisor(), 2, "test assumes a divisor of 2");
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(dims)
+            .set_state(BuilderState::CoinToss)
+            .build();
+        let aim = Position::new((8, 4));
+        let mut kickoff = Kickoff { aim };
+
+        kickoff.step(&mut state, ProcInput::Roll(RollResult::Deviate(D6::Six, D8::from(Direction::right()))));
+
+        let BallState::InAir(pos) = state.ball else {
+            panic!("ball should be airborne right after the deviate roll")
+        };
+        assert_eq!(
+            pos,
+            aim + Direction::right() * 3,
+            "raw roll 6 / scatter_divisor 2 == 3, not the unscaled 6"
+        );
     }
     // #[test]
     // fn kickoff_solid_defence() {

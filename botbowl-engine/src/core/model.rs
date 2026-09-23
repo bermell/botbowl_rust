@@ -287,6 +287,17 @@ impl BoardDims {
     pub fn max_scatter(&self) -> Coord {
         self.width / 2
     }
+    /// Divides the raw kickoff-deviate (D6) and throw-in (2D6) roll down on a
+    /// narrow board, so a kickoff aimed at the middle — or a throw-in back
+    /// onto the pitch — rarely scatters out of bounds. The dice themselves
+    /// (D6/D8 for deviate, 2D6/D3 for throw-in) are unchanged; only how far
+    /// the roll carries the ball is scaled down. No-op (divisor 1) once the
+    /// narrower playable axis (excluding the 2-cell OOB border) is at least
+    /// as wide as the largest roll it scales, 2D6 = 12.
+    pub fn scatter_divisor(&self) -> Coord {
+        let axis = (self.width.min(self.height) - 2).max(1);
+        (12 + axis - 1) / axis
+    }
     pub fn kickoff_table_enabled(&self) -> bool {
         self.team_size >= 7
     }
@@ -1141,6 +1152,25 @@ mod board_dims_tests {
     #[should_panic(expected = "must be even")]
     fn odd_width_is_rejected() {
         BoardDims::new(11, 9, 2);
+    }
+
+    /// No-op on the full pitch; on a narrow board it shrinks the roll enough
+    /// that the largest kickoff-deviate/throw-in roll (2D6 = 12) fits inside
+    /// the narrower playable axis from a centred aim.
+    #[test]
+    fn scatter_divisor_is_a_noop_on_full_pitch_and_shrinks_narrow_boards() {
+        assert_eq!(BoardDims::default().scatter_divisor(), 1, "full pitch must be a no-op");
+
+        // 16x9 engine (14x7 playable, plan 042's small tier): narrow axis 7.
+        if let Ok(dims) = BoardDims::try_new(16, 9, 3) {
+            assert_eq!(dims.scatter_divisor(), 2);
+            assert!(12 / dims.scatter_divisor() <= 7);
+        }
+        // 14x7 engine (12x5 playable): narrow axis 5.
+        if let Ok(dims) = BoardDims::try_new(14, 7, 3) {
+            assert_eq!(dims.scatter_divisor(), 3);
+            assert!(12 / dims.scatter_divisor() <= 5);
+        }
     }
 
     /// `try_new` is `new` as a `Result`: the same rules, the same message,
