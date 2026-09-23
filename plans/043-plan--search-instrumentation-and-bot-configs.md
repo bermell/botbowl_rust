@@ -115,8 +115,12 @@ recombination: hit rate 10.2% · eq_reject_rate 82% · 85% of comparisons are fu
 Three things worth following up, in `plans/032`:
 
 1. **`Block` never reuses.** Nine block decisions, nine lookup misses. `MoveAction` reuses two
-   thirds of the time, so this is not a general failure — something about the block-resolution
-   transition means the state the game reaches was never materialised by the previous search.
+   thirds of the time, so this is not a general failure. *(Chased down — `botbowl-mcts/tests/
+   block_reuse.rs` and plans/032 item 13. Two mechanisms, 14 + 12 of 26 sampled misses: the
+   quiescent loop resolves the die with `scripted_pick` so no node is ever built, and where a node
+   **is** built it carries `block_outcomes`' representative dice rather than the faces rolled. The
+   real finding was downstream of that: the bot picks a different die from the script **51%** of
+   the time, so the tree values every future block under a policy it then overrules.)*
 2. **`Turn` splits evenly between reuse and `anchor_miss`.** The anchor misses are turn boundaries
    and unavoidable. Fine, and it is the baseline the other rows should be read against.
 3. **The state hash is not discriminating, and now we know what that costs.** *(Fixed — see
