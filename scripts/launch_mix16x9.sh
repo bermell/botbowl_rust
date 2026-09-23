@@ -56,4 +56,11 @@ export EVAL_BOARD_SIZES=14x7,16x9,12x9
 export EVAL_RUNGS=scripted
 export EVAL_GAMES=30
 
+# The port forwarded through the home NAT, so a worker on another network can
+# dial in. The hub binds 0.0.0.0, so this is reachable from the internet with
+# only the shared token in front of it — the worker protocol is plain ws://,
+# unencrypted. Fine for handing out self-play games; don't put anything else
+# on this port.
+export HUB_PORT=13337
+
 exec scripts/train_loop.sh "$@"
