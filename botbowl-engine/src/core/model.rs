@@ -182,7 +182,10 @@ impl BoardDims {
         // The bands must tile the playable rows exactly, with equal wings. A
         // wing may legitimately be empty on a short board; the LOS may not.
         let (los, wing) = dims.bands();
-        assert!(los >= 1 && wing >= 0 && los + 2 * wing == ph, "bands {los}+2x{wing} != {ph}");
+        assert!(
+            los >= 1 && wing >= 0 && los + 2 * wing == ph,
+            "bands {los}+2x{wing} != {ph}"
+        );
         assert_eq!(*dims.los_y_range().start(), wing + 1);
         assert_eq!(*dims.los_y_range().end(), height - 2 - wing);
         assert_eq!(dims.north_wing_y_range().count(), wing as usize);
@@ -329,7 +332,7 @@ macro_rules! skip_if_board_smaller_than {
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct Direction {
     pub dx: Coord,
     pub dy: Coord,
@@ -568,13 +571,13 @@ impl std::fmt::Debug for Action {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum ActionChoice {
     Positional(Vec<Position>),
     Simple,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
 pub enum PlayerStatus {
     Up,
     Down,
@@ -663,7 +666,7 @@ impl PlayerStats {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum DugoutPlace {
     Reserves,
     Heated,
@@ -672,7 +675,7 @@ pub enum DugoutPlace {
     Ejected,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
@@ -689,6 +692,52 @@ pub struct FieldedPlayer {
     pub moves: u8,
     pub used_skills: HashSet<Skill>,
 }
+
+/// Order-independent hash of a set.
+///
+/// `HashSet` has no `Hash` impl because its iteration order is not stable, but set *equality* is
+/// order-independent — so the hash has to be too, or two equal states could hash differently and
+/// split the MCTS DAG. Summing per-element hashes is commutative, which is exactly the property
+/// needed; the length is mixed in so `{}` and a set of hash-zero elements stay distinguishable.
+pub(crate) fn hash_set_unordered<T: std::hash::Hash, H: std::hash::Hasher>(set: &HashSet<T>, h: &mut H) {
+    use std::hash::Hash as _;
+    let mut acc: u64 = 0;
+    for item in set {
+        let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
+        item.hash(&mut item_hasher);
+        acc = acc.wrapping_add(std::hash::Hasher::finish(&item_hasher));
+    }
+    set.len().hash(h);
+    acc.hash(h);
+}
+
+impl std::hash::Hash for PlayerStats {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.str_.hash(h);
+        self.ma.hash(h);
+        self.ag.hash(h);
+        self.pass.hash(h);
+        self.av.hash(h);
+        self.team.hash(h);
+        hash_set_unordered(&self.skills, h);
+        self.role.hash(h);
+    }
+}
+
+impl std::hash::Hash for FieldedPlayer {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.stats.hash(h);
+        self.position.hash(h);
+        self.status.hash(h);
+        self.used.hash(h);
+        self.moves.hash(h);
+        // A Dodge or Block skill already spent this activation is a different situation from one
+        // still in hand, and `PartialEq` agrees — so it has to move the hash.
+        hash_set_unordered(&self.used_skills, h);
+    }
+}
+
 impl FieldedPlayer {
     pub fn armor_target(&self) -> Sum2D6Target {
         Sum2D6Target::try_from(self.stats.av + 1).unwrap()
@@ -757,7 +806,7 @@ impl FieldedPlayer {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TeamState {
     pub bribes: u8,
     //babes: u8,
@@ -811,7 +860,7 @@ pub fn other_team(team: TeamType) -> TeamType {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
 pub enum BallState {
     OffPitch,
     OnGround(Position),
@@ -819,7 +868,7 @@ pub enum BallState {
     InAir(Position),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub enum Weather {
     Nice,
     Sunny,
@@ -828,7 +877,7 @@ pub enum Weather {
     Sweltering,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum SomeProcInput {
     Action(Action),
     Roll(RollResult),
@@ -844,7 +893,7 @@ impl From<RollResult> for SomeProcInput {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum ProcInput {
     Nothing,
     Action(Action),
@@ -877,7 +926,7 @@ pub enum ProcState {
 }
 
 //rename to something more descriptive
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum MicroStepState {
     RunAgain,
     NeedAction,
@@ -936,6 +985,15 @@ impl std::fmt::Debug for AvailableActions {
         info.finish()
     }
 }
+impl std::hash::Hash for AvailableActions {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.team.hash(h);
+        hash_set_unordered(&self.simple, h);
+        self.positional.hash(h);
+        self.has_paths.hash(h);
+    }
+}
+
 impl AvailableActions {
     pub fn get_simple(&self) -> &HashSet<SimpleAT> {
         &self.simple
@@ -1042,7 +1100,7 @@ impl AvailableActions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct BlockActionChoice {
     // This will have all things needed in the Block procedure. Might as well merge them. Slightly funny code but it's ok!
     pub num_dices: NumBlockDices,

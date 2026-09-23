@@ -12,13 +12,13 @@ use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
 use super::AnyProc;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 enum PushSquares {
     Crowd(Position),
     ChainPush(Vec<Position>),
     FreeSquares(Vec<Position>),
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Push {
     from: Position,
     on: Position,
@@ -162,7 +162,7 @@ impl Procedure for Push {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FollowUp {
     to: Position,
     //from is active player,
@@ -201,7 +201,7 @@ impl Procedure for FollowUp {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct KnockDown {
     id: Option<PlayerID>,
     second_id: Option<PlayerID>,
@@ -266,7 +266,7 @@ impl Procedure for KnockDown {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct BlockAction {}
 
 impl BlockAction {
@@ -329,7 +329,7 @@ impl Procedure for BlockAction {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Block {
     dices: NumBlockDices,
     defender: PlayerID,
@@ -337,7 +337,7 @@ pub struct Block {
     roll: [Option<BlockDice>; 3],
     is_uphill: bool,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 enum BlockProcState {
     Init,               //step shall roll first dice
     SelectDice,         //attacker (or defender if uphill) to choose dice

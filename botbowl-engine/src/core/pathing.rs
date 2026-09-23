@@ -11,7 +11,7 @@ use super::table::{NumBlockDices, PosAT};
 
 type OptRcNode = Option<Arc<Node>>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum PathingEvent {
     Dodge(D6Target),
     GFI(D6Target),
@@ -102,13 +102,13 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PositionOrEvent {
     Position(Position),
     Event(PathingEvent),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct NodeIterator {
     stack: Vec<PositionOrEvent>,
 }
@@ -482,8 +482,7 @@ impl<'a> GameInfo<'a> {
             game_state,
             team: player.stats.team,
             dir_order: Direction::all_directions_toward(
-                game_state.get_endzone_x(player.stats.team)
-                    - game_state.get_endzone_x(other_team(player.stats.team)),
+                game_state.get_endzone_x(player.stats.team) - game_state.get_endzone_x(other_team(player.stats.team)),
             ),
             player_action,
             id: player.id,
@@ -1231,4 +1230,3 @@ mod tests {
         );
     }
 }
-

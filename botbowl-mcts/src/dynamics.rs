@@ -2389,6 +2389,33 @@ impl MctsBot {
         self.last_search.as_ref()
     }
 
+    /// Every distinct state in the DAG the last search built.
+    ///
+    /// A diagnostic, in the same read-only spirit as [`MctsBot::explore`], and the corpus the
+    /// hash-quality experiment runs on: the registry is precisely the set of states the search
+    /// considered distinct, which is exactly the population a state hash has to separate.
+    ///
+    /// **Expensive** — clones every stored state, so the result is as large as the search was.
+    /// `None` under `MemoryMode::GetState`, which does not keep states.
+    pub fn dag_states(&self) -> Option<Vec<GameState>> {
+        macro_rules! collect {
+            ($tree:expr) => {{
+                Some(
+                    $tree
+                        .get_registry_nodes()
+                        .iter()
+                        .filter_map(|weak| weak.upgrade())
+                        .filter_map(|arc| arc.get_node_info().state)
+                        .collect(),
+                )
+            }};
+        }
+        match self.cached_tree.as_ref()? {
+            CachedTree::StoreState(t) => collect!(t),
+            CachedTree::GetState(_) => None,
+        }
+    }
+
     /// Walk into the tree that produced the last decision.
     ///
     /// `path` is the edge sequence from that search's root. Returns `None`

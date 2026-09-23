@@ -15,7 +15,7 @@ use crate::core::table::*;
 use crate::core::gamestate::GameState;
 
 use super::AnyProc;
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Kickoff {
     aim: Position,
 }
@@ -55,7 +55,7 @@ impl Procedure for Kickoff {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct KickoffTable {}
 impl KickoffTable {
     pub fn new() -> AnyProc {
@@ -122,7 +122,7 @@ impl Procedure for KickoffTable {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ChangingWeather {}
 impl ChangingWeather {
     pub fn new() -> AnyProc {
@@ -152,7 +152,7 @@ impl Procedure for ChangingWeather {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct LandKickoff {}
 impl LandKickoff {
     pub fn new() -> AnyProc {
@@ -184,7 +184,7 @@ impl Procedure for LandKickoff {
 /// Where a formation slot sits along the y axis. Resolved against the *active*
 /// board, never against hard-coded offsets, so a formation means the same thing
 /// on every board size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Row {
     /// `i`-th row of the line-of-scrimmage band, counted outwards from the
     /// centre (0 = centre, 1 = one south, 2 = one north, …). Yields nothing
@@ -208,7 +208,7 @@ type Slot = (PlayerRole, Coord, Row);
 /// formation opens with three line-of-scrimmage slots, so any of them is legal
 /// (`GameState::is_setup_legal`) on any board whose LOS band is three rows
 /// wide.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Formation {
     /// The historical auto-setup: everything on the line, catchers just behind
     /// it, throwers deep. Reproduces the pre-`Formation` layout exactly on the
@@ -380,7 +380,7 @@ impl Formation {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Setup {
     team: TeamType,
 }

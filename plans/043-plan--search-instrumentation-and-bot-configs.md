@@ -119,7 +119,9 @@ Three things worth following up, in `plans/032`:
    transition means the state the game reaches was never materialised by the previous search.
 2. **`Turn` splits evenly between reuse and `anchor_miss`.** The anchor misses are turn boundaries
    and unavoidable. Fine, and it is the baseline the other rows should be read against.
-3. **The state hash is not discriminating, and now we know what that costs.** 82% of state
+3. **The state hash is not discriminating, and now we know what that costs.** *(Fixed — see
+   `plans/044-plan--state-hash-discrimination.md`: 36.8% -> 0% colliding states, 4.07 -> 0.12
+   comparisons per probe, 6-9% faster search.)* 82% of state
    comparisons are rejected, and 85% of them had *equal 64-bit hashes* — far beyond chance.
    `GameState::hash` (`botbowl-engine/src/core/gamestate.rs:566`) deliberately hashes only
    `proc_stack.len()` and `proc_stack_top()`, with the comment "collisions are corrected by
