@@ -10,6 +10,7 @@
 //! which, and the server refuses a stale one rather than answering about the
 //! wrong position.
 
+use botbowl_web_proto::action::TeamType;
 use botbowl_web_proto::msg::ClientMsg;
 use botbowl_web_proto::search::{ChildReport, NodeStats, SearchEdge};
 use leptos::prelude::*;
@@ -38,6 +39,7 @@ pub fn Inspector() -> impl IntoView {
                         view! {
                             <div class="inspector-body">
                                 <Summary />
+                                <Health />
                                 <Candidates />
                                 <Pv search_id=search_id />
                                 <Explorer search_id=search_id />
@@ -53,6 +55,16 @@ pub fn Inspector() -> impl IntoView {
 
 fn pct(x: f32) -> String {
     format!("{:.0}%", x * 100.0)
+}
+
+/// Render a Home-centric value in `[-1, 1]` as the side it favours (plan 043).
+///
+/// A bare `+0.42` requires the reader to remember whose frame it is in, and the question people
+/// actually ask of a value head is "who does it think scores next" — so name that side and keep
+/// the magnitude as the confidence.
+pub fn favours(value_home: f32) -> String {
+    let team = if value_home >= 0.0 { "Home" } else { "Away" };
+    format!("{team} {:.2}", value_home.abs())
 }
 
 /// Q in the searching agent's frame, where ±1 is a touchdown. Positive is
@@ -82,8 +94,66 @@ fn Summary() -> impl IntoView {
                     </span>
                     <span>{format!("{} visits", r.root_visits)}</span>
                     <span class="eval">{r.evaluator.clone()}</span>
-                    {r.evaluator_value.map(|v| view! { <span class="nn">{format!("net value {v:+.3}")}</span> })}
+                    {r.evaluator_value
+                        .map(|v| {
+                            // `evaluator_value` is in the *searching agent's* frame; put it back
+                            // into Home's so the label means the same thing everywhere.
+                            let home = match r.agent {
+                                TeamType::Home => v,
+                                TeamType::Away => -v,
+                            };
+                            view! { <span class="nn">{format!("net favours {}", favours(home))}</span> }
+                        })}
                     {r.solved.then(|| view! { <span class="solved">"solved"</span> })}
+                </div>
+            }
+        })
+    }
+}
+
+/// Search health (plan 043): did this decision start from the tree the last one built, and is
+/// recombination earning what it costs.
+///
+/// Both are things you can only see over time, so each line pairs *this decision's* answer with
+/// the rate so far. A reuse outcome of `anchor_miss` at a turn boundary is expected; the same
+/// outcome mid-turn, or a `lookup_miss`, is not.
+#[component]
+fn Health() -> impl IntoView {
+    let app = expect_context::<App>();
+    move || {
+        app.report.get().map(|r| {
+            let h = r.health;
+            let reuse_class = if h.reuse == "reused" { "ok" } else { "warn" };
+            let rate = |v: Option<f32>| v.map_or_else(|| "—".to_string(), pct);
+            view! {
+                <div class="health">
+                    <h3>"Search health"</h3>
+                    <div class="health-row">
+                        <span class="k">"tree reuse"</span>
+                        <span class=format!("v {reuse_class}")>{h.reuse.clone()}</span>
+                        <span class="note">
+                            {format!("{} of {} decisions ({})", h.reused, h.searches, rate(h.reuse_rate()))}
+                        </span>
+                    </div>
+                    <div class="health-row">
+                        <span class="k">"decision"</span>
+                        <span class="v">{h.proc.clone().unwrap_or_else(|| "—".to_string())}</span>
+                        <span class="note">{format!("{} legal actions", h.n_actions)}</span>
+                    </div>
+                    <div class="health-row">
+                        <span class="k">"recombination"</span>
+                        <span class="v">{rate(h.recomb_hit_rate())}</span>
+                        <span class="note">
+                            {format!("{} hits / {} probes", h.recomb_hits, h.recomb_probes)}
+                        </span>
+                    </div>
+                    <div class="health-row">
+                        <span class="k">"wasted compares"</span>
+                        <span class="v">{rate(h.eq_reject_rate())}</span>
+                        <span class="note">
+                            {format!("{} of {} state comparisons", h.eq_rejects, h.eq_checks)}
+                        </span>
+                    </div>
                 </div>
             }
         })

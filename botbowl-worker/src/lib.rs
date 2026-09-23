@@ -279,7 +279,11 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>)
             };
             for &g in games {
                 let (team, game_seed) = ladder_assignment(*seed, g);
-                let line = play_ladder_game(&mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps, *board);
+                // No `--trace-reuse` on the distributed path: a per-decision trace is a local
+                // diagnostic, and the telemetry the hub's report needs already rides in the line.
+                let line = play_ladder_game(
+                    &mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps, *board, None,
+                );
                 // Send failures mean the hub is gone; the channel is
                 // unbounded and outlives the socket, so this only fails
                 // when the whole worker is shutting down.

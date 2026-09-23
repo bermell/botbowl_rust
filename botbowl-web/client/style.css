@@ -368,6 +368,16 @@ td.bar .bar-text { position: absolute; right: 4px; top: 0; font-size: 10px; colo
 .node-stats .proc { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--accent); }
 .node-stats .solved { color: var(--good); }
 
+/* Search health (plan 043): reuse + recombination, this decision and the rate so far. */
+.health { margin-bottom: 12px; }
+.health h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--ink-dim); }
+.health-row { display: flex; gap: 8px; align-items: baseline; font-size: 12px; padding: 2px 0; }
+.health-row .k { flex: 0 0 110px; color: var(--ink-dim); }
+.health-row .v { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+.health-row .v.ok { color: var(--good); }
+.health-row .v.warn { color: var(--warn); }
+.health-row .note { color: var(--ink-dim); font-size: 11px; }
+
 /* ---------------------------------------------------------- debug drawer */
 
 .debug { background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
@@ -377,6 +387,7 @@ td.bar .bar-text { position: absolute; right: 4px; top: 0; font-size: 10px; colo
   display: block; font-size: 10px; text-transform: uppercase;
   letter-spacing: 1.2px; color: var(--ink-dim); margin-bottom: 6px;
 }
+.valuation .value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--warn); font-size: 13px; }
 .pin-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
 .pin-buttons button { padding: 3px 8px; }
 .pin-buttons img { width: 18px; height: 18px; image-rendering: pixelated; display: block; }

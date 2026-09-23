@@ -35,9 +35,40 @@ Clones the root state, sets `DiceMode::RegisterRolls`, force-disables logging an
 
 Every knob that shapes a search lives in `MctsConfig` (`dynamics.rs`): `workers`, `memory_mode`, `tree_reuse`, `virtual_loss`, `puct`, `tie_break`, `backup`, `fpu_reduction`, `horizon_turns`, `horizon`, `stats`, `leaf_stats`, `debug_root`. `MctsBot::new` uses `MctsConfig::from_env()`, so every CLI path keeps its `BLOOD_MCTS_*` A/B knobs; `MctsBot::with_budget_and_config(budget, MctsConfig::new())` builds a bot that ignores the environment entirely, which is what lets one process (the web server, plan 034) run several differently-tuned bots.
 
+**Plan 043 makes it a committable preset.** `MctsConfig` is `Copy` + serde, and its serde default is `MctsConfig::new` — **not** `Default`, which is `from_env()`: a named configuration that absorbed a stray `BLOOD_MCTS_*` would not be reproducible, which is the entire point of naming one. `deny_unknown_fields` turns a typo into an error rather than a knob that silently stays put. Enum variants are `snake_case` on the wire so a preset reads in the same vocabulary as the CLI flags; renaming them is safe because they cross the hub under postcard (variant-by-index) and no persisted JSON names them. `cfgs/` holds the presets, `botbowl_play::bots::load_mcts_config` loads one, and `SearchConfig.config` carries it — see `cfgs/README.md`.
+
 **Env vars are read once, at `::new`** — setting one between building a bot and calling it no longer does anything. Before plan 034, `BLOOD_MCTS_HORIZON`, `_WORKERS` and `_MEMORY` were re-read inside *every* `get_action` and therefore **overrode** an explicit `with_workers(...)`; the builders now actually win.
 
 `BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_HORIZON_TURNS=N`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_PUCT_MODE`/`_C`/`_RANGE_FLOOR`, `BLOOD_MCTS_TIE_BREAK`, `BLOOD_MCTS_BACKUP=mean`, `BLOOD_MCTS_FPU_REDUCTION=k`, `BLOOD_MCTS_STATS=1`, `BLOOD_MCTS_LEAF_STATS=1`, `BLOOD_MCTS_DEBUG_ROOT=1` (dump top-10 root children by visits/Q after each search — first thing to reach for when the bot plays nonsense; all-zero Q means backprop is broken).
+
+## Search telemetry (`telemetry.rs`, plan 043)
+
+Two things the bot does every decision that used to be invisible. Both are **always on** — plain
+`u64`s on `MctsBot`, written on the owning thread in `run_search` before any worker spawns, so a
+process running several differently-tuned bots (the web server) gets one tally per bot rather than
+a global it cannot attribute.
+
+- **`ReuseOutcome`** classifies the tree-reuse attempt into `Reused | Disabled | NoCache |
+  AnchorMiss | MarkerMiss | LookupMiss | NoPath`, recorded per decision with the top proc name and
+  the pruned action fan. `AnchorMiss` is the expected one (turn boundary / score); `LookupMiss` and
+  `NoPath` are the ones worth chasing. Broken down by procedure in `TreeReuseStats::by_proc`.
+- **`RecombinationCounts`** mirrors `recon_mcts::RecombinationStats` (which cannot derive serde —
+  that crate is std-only by design). Per search it is a **delta**, read from the tree the search
+  actually ran on. **Read the baseline after the reuse attempt resolves**, never before: a lookup
+  miss probes the cached tree and then searches a brand-new one, and differencing those saturates
+  to zero and drops the decision's whole cost. `tests/tree_reuse_stats.rs` pins it.
+
+`MctsBot::telemetry()` reads the totals; `take_telemetry()` drains them, which is how eval makes a
+per-game record mean "this game" without differencing maps. `telemetry_of` / `take_telemetry_of` /
+`last_search_of` reach them through a `dyn Bot` via the engine's `Bot::as_any` hook. Every field is
+a commutative counter, so `merge` folds games, threads and worker machines in any order.
+`BLOOD_MCTS_STATS=1` adds a grep-able `MCTS_TELEMETRY …` line.
+
+**What it measured first time out** (heuristic, 14x7): reuse ~48%, with `MoveAction` reusing but
+`Block` never doing so; recombination hit rate ~10% against an **82% eq-reject rate**, of which
+~85% are *full 64-bit hash agreements* — `GameState`'s `Hash` deliberately hashes only
+`proc_stack.len()` and `proc_stack_top()` (`gamestate.rs:566`, "collisions are corrected by
+PartialEq"), and this is the first measurement of what that costs.
 
 ## Reading a finished search (`report.rs`)
 

@@ -168,6 +168,13 @@ impl GameSession {
             paused: self.paused,
         };
         out.send(ServerMsg::View(Box::new(view::derive(&self.state, &ctx))));
+        // Plan 043: one forward pass per board change, so the debug drawer answers "who does the
+        // net think scores next" during the human's turn too — `SearchReport.evaluator_value`
+        // only ever appears after a *bot* move. Negligible next to a search, and it cannot
+        // perturb the game: a frozen net is a pure function of the state.
+        if let Some(value_home) = self.bot.evaluate_home(&self.state) {
+            out.send(ServerMsg::Valuation { value_home });
+        }
     }
 
     /// Resolve one requested roll: a pinned value if it fits, else the

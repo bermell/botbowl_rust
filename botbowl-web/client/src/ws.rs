@@ -127,6 +127,7 @@ fn handle(app: App, msg: ServerMsg) {
             app.node_path.set(node.path.clone());
             app.node.set(Some(*node));
         }
+        ServerMsg::Valuation { value_home } => app.valuation.set(Some(value_home)),
         ServerMsg::RollPinned(roll) => app.pinned.set(roll),
         ServerMsg::Saved { path } => app.saved.set(Some(path)),
         ServerMsg::GameOver {

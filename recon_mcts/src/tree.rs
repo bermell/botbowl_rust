@@ -1518,7 +1518,16 @@ where
     P: Hash + PartialEq<P>,
 {
     fn eq(&self, rhs: &Self) -> bool {
-        <Self as StateMemory>::eq(self, rhs)
+        let matched = <Self as StateMemory>::eq(self, rhs);
+        // Counted here rather than around the probe because `HashSet::get` hides the bucket stage
+        // entirely — a `None` return cannot be told apart from "a candidate was compared and
+        // rejected", which is exactly the number we are after. `ProbeGuard` scopes the tally to a
+        // registry probe so the `parents` set's own comparisons stay out of it.
+        note_eq(
+            self.hash.load(Ordering::Relaxed) == rhs.hash.load(Ordering::Relaxed),
+            matched,
+        );
+        matched
     }
 }
 
@@ -1707,6 +1716,25 @@ pub struct RegistryInfo {
     pub misses: AtomicUsize,
     /// The number of nodes in the [`Tree`].
     pub len: AtomicUsize,
+    /// Expansion probes of the registry: `hits + misses`. Counted separately so the accounting can
+    /// be checked rather than assumed.
+    pub probes: AtomicUsize,
+    /// `StateMemory::eq` calls made *inside* a registry probe — i.e. candidates the hash table
+    /// thought might match. The table only reaches this stage after a 7-bit tag match, so this is
+    /// the real comparison workload, and under [`StoreState`] each call compares two whole states.
+    pub eq_checks: AtomicUsize,
+    /// Of [`RegistryInfo::eq_checks`], those whose cached 64-bit hashes were also equal — a genuine
+    /// hash agreement rather than a tag brush.
+    pub eq_hash_equal: AtomicUsize,
+    /// Of [`RegistryInfo::eq_checks`], those that returned `false`: comparison work that bought
+    /// nothing. A high count against few [`RegistryInfo::hits`] means recombination is costing more
+    /// than it returns.
+    pub eq_rejects: AtomicUsize,
+    /// [`Tree::lookup_state`] probes — the tree-reuse entry point into the same table, counted
+    /// apart from expansion so re-rooting is never mistaken for recombination.
+    pub lookup_probes: AtomicUsize,
+    /// [`Tree::lookup_state`] probes that found a registered node.
+    pub lookup_hits: AtomicUsize,
 }
 
 impl RegistryInfo {
@@ -1715,7 +1743,185 @@ impl RegistryInfo {
             hits: AtomicUsize::new(0),
             misses: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
+            probes: AtomicUsize::new(0),
+            eq_checks: AtomicUsize::new(0),
+            eq_hash_equal: AtomicUsize::new(0),
+            eq_rejects: AtomicUsize::new(0),
+            lookup_probes: AtomicUsize::new(0),
+            lookup_hits: AtomicUsize::new(0),
         }
+    }
+
+    /// Read every counter into a plain value.
+    ///
+    /// A `Tree`'s counters are live atomics that workers keep bumping; a snapshot is a stable
+    /// number a caller can subtract from a later one to get the cost of one search, or add to
+    /// another tree's to get a run total.
+    pub fn snapshot(&self) -> RecombinationStats {
+        let g = |a: &AtomicUsize| a.load(Ordering::Relaxed) as u64;
+        RecombinationStats {
+            hits: g(&self.hits),
+            misses: g(&self.misses),
+            len: g(&self.len),
+            probes: g(&self.probes),
+            eq_checks: g(&self.eq_checks),
+            eq_hash_equal: g(&self.eq_hash_equal),
+            eq_rejects: g(&self.eq_rejects),
+            lookup_probes: g(&self.lookup_probes),
+            lookup_hits: g(&self.lookup_hits),
+        }
+    }
+}
+
+/// A stable reading of a [`RegistryInfo`], as taken by [`RegistryInfo::snapshot`].
+///
+/// Deltas (`later - earlier`) give the cost of one search; sums fold several trees, or several
+/// games, into a run total. Both operations are saturating, so a snapshot taken while workers are
+/// still running can never underflow into a nonsense number.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecombinationStats {
+    /// See [`RegistryInfo::hits`].
+    pub hits: u64,
+    /// See [`RegistryInfo::misses`].
+    pub misses: u64,
+    /// See [`RegistryInfo::len`]. Not a counter — a level. Deltas and sums of it are meaningless;
+    /// it is carried so a single snapshot can report the tree's size.
+    pub len: u64,
+    /// See [`RegistryInfo::probes`].
+    pub probes: u64,
+    /// See [`RegistryInfo::eq_checks`].
+    pub eq_checks: u64,
+    /// See [`RegistryInfo::eq_hash_equal`].
+    pub eq_hash_equal: u64,
+    /// See [`RegistryInfo::eq_rejects`].
+    pub eq_rejects: u64,
+    /// See [`RegistryInfo::lookup_probes`].
+    pub lookup_probes: u64,
+    /// See [`RegistryInfo::lookup_hits`].
+    pub lookup_hits: u64,
+}
+
+impl RecombinationStats {
+    /// Comparisons that matched only hashbrown's 7-bit tag, not the full 64-bit hash — noise
+    /// inherent to the table rather than a property of the game's hash.
+    pub fn eq_tag_only(&self) -> u64 {
+        self.eq_checks.saturating_sub(self.eq_hash_equal)
+    }
+
+    /// Share of expansion probes that found an existing node: how much the DAG actually
+    /// recombines. `None` before the first probe.
+    pub fn hit_rate(&self) -> Option<f64> {
+        (self.probes > 0).then(|| self.hits as f64 / self.probes as f64)
+    }
+
+    /// Share of comparisons that bought nothing. `None` before the first comparison.
+    pub fn reject_rate(&self) -> Option<f64> {
+        (self.eq_checks > 0).then(|| self.eq_rejects as f64 / self.eq_checks as f64)
+    }
+}
+
+impl std::ops::Sub for RecombinationStats {
+    type Output = Self;
+    /// Saturating field-wise difference — what happened between two snapshots. `len` is a level,
+    /// so it is taken from `self` (the later reading) rather than subtracted.
+    fn sub(self, earlier: Self) -> Self {
+        Self {
+            hits: self.hits.saturating_sub(earlier.hits),
+            misses: self.misses.saturating_sub(earlier.misses),
+            len: self.len,
+            probes: self.probes.saturating_sub(earlier.probes),
+            eq_checks: self.eq_checks.saturating_sub(earlier.eq_checks),
+            eq_hash_equal: self.eq_hash_equal.saturating_sub(earlier.eq_hash_equal),
+            eq_rejects: self.eq_rejects.saturating_sub(earlier.eq_rejects),
+            lookup_probes: self.lookup_probes.saturating_sub(earlier.lookup_probes),
+            lookup_hits: self.lookup_hits.saturating_sub(earlier.lookup_hits),
+        }
+    }
+}
+
+impl std::ops::AddAssign for RecombinationStats {
+    /// Field-wise sum, for folding many trees (or many games) into one total. `len` accumulates
+    /// too, which only reads sensibly as "nodes built across all of them".
+    fn add_assign(&mut self, rhs: Self) {
+        self.hits += rhs.hits;
+        self.misses += rhs.misses;
+        self.len += rhs.len;
+        self.probes += rhs.probes;
+        self.eq_checks += rhs.eq_checks;
+        self.eq_hash_equal += rhs.eq_hash_equal;
+        self.eq_rejects += rhs.eq_rejects;
+        self.lookup_probes += rhs.lookup_probes;
+        self.lookup_hits += rhs.lookup_hits;
+    }
+}
+
+/// Per-thread tally of `StateMemory::eq` calls, harvested by [`ProbeGuard`].
+///
+/// The counters cannot live on the `Tree`: `PartialEq for Node` sees only two `&Node`s, and a
+/// `Node` holds the registry but not the `RegistryInfo`. They cannot be global either, because the
+/// same `PartialEq` backs each node's `parents` set — so a raw count would mix graph bookkeeping
+/// into the recombination numbers. A thread-local read *within a probe window* is exact: the probe
+/// is a single synchronous call under the registry lock on the calling thread.
+#[derive(Debug, Clone, Copy, Default)]
+struct ProbeCounters {
+    checks: u64,
+    hash_equal: u64,
+    rejects: u64,
+}
+
+thread_local! {
+    static PROBE_COUNTERS: std::cell::Cell<ProbeCounters> = const { std::cell::Cell::new(ProbeCounters {
+        checks: 0,
+        hash_equal: 0,
+        rejects: 0,
+    }) };
+}
+
+/// Record one `StateMemory::eq` call. Called unconditionally — a `Cell` bump is nothing next to the
+/// state comparison it is measuring, and `botbowl-mcts`'s always-on `LEAF_STATS` is the precedent.
+fn note_eq(hash_equal: bool, matched: bool) {
+    PROBE_COUNTERS.with(|c| {
+        let mut p = c.get();
+        p.checks += 1;
+        p.hash_equal += u64::from(hash_equal);
+        p.rejects += u64::from(!matched);
+        c.set(p);
+    });
+}
+
+/// Scopes the thread-local eq tally to one registry probe and folds the delta into the tree's
+/// `RegistryInfo` on drop.
+///
+/// Held across `HashSet::get`/`insert` and nothing else, so comparisons made by the `parents` set
+/// (same `PartialEq`, different table) never land in the numbers.
+struct ProbeGuard<'a> {
+    info: &'a RegistryInfo,
+    start: ProbeCounters,
+}
+
+impl<'a> ProbeGuard<'a> {
+    fn new(info: &'a RegistryInfo) -> Self {
+        ProbeGuard {
+            info,
+            start: PROBE_COUNTERS.with(|c| c.get()),
+        }
+    }
+}
+
+impl Drop for ProbeGuard<'_> {
+    fn drop(&mut self) {
+        let end = PROBE_COUNTERS.with(|c| c.get());
+        let add = |a: &AtomicUsize, delta: u64| {
+            if delta > 0 {
+                a.fetch_add(delta as usize, Ordering::Relaxed);
+            }
+        };
+        add(&self.info.eq_checks, end.checks.wrapping_sub(self.start.checks));
+        add(
+            &self.info.eq_hash_equal,
+            end.hash_equal.wrapping_sub(self.start.hash_equal),
+        );
+        add(&self.info.eq_rejects, end.rejects.wrapping_sub(self.start.rejects));
     }
 }
 
@@ -2081,9 +2287,16 @@ where
         // connect node to tree
         debug_assert!(node.state.read().unwrap().is_some());
         let mut reg_wlk = self.registry.write().unwrap();
-        match reg_wlk.get(&ArcNode::downgrade(&node)) {
+        // Scoped exactly as in `materialize_placeholder` — `connect_child` below writes to the
+        // `parents` set, which shares this `PartialEq`.
+        let existing = {
+            let _probe = ProbeGuard::new(&self.reg_info);
+            reg_wlk.get(&ArcNode::downgrade(&node)).cloned()
+        };
+        self.reg_info.probes.fetch_add(1, Ordering::Relaxed);
+        match existing {
             Some(existing_node) => {
-                let node = WeakNode::upgrade(existing_node);
+                let node = WeakNode::upgrade(&existing_node);
                 Node::connect_child(parent_node, action, &node);
                 drop(reg_wlk);
 
@@ -2100,7 +2313,10 @@ where
                 // threads block on trying to read `node.score` before it is calculated
                 let mut score_wlk = node.score.write().unwrap();
                 Node::connect_child(parent_node, action, &node);
-                Node::register(&node, Some(&mut reg_wlk));
+                {
+                    let _probe = ProbeGuard::new(&self.reg_info);
+                    Node::register(&node, Some(&mut reg_wlk));
+                }
                 drop(reg_wlk);
 
                 self.reg_info.misses.fetch_add(1, Ordering::Relaxed);
@@ -2290,12 +2506,18 @@ where
         node.hash.store(h, Ordering::Relaxed);
         *node.state.write().unwrap() = Some(node_state.clone());
 
-        // Registry probe.
+        // Registry probe. The `ProbeGuard` spans the `get` and nothing else: the arms below insert
+        // into `parents` maps, whose `PartialEq` is the same one the eq counters hook.
         let mut reg_wlk = self.registry.write().unwrap();
-        match reg_wlk.get(&ArcNode::downgrade(node)) {
+        let existing = {
+            let _probe = ProbeGuard::new(&self.reg_info);
+            reg_wlk.get(&ArcNode::downgrade(node)).cloned()
+        };
+        self.reg_info.probes.fetch_add(1, Ordering::Relaxed);
+        match existing {
             Some(existing) => {
                 // Twin exists — splice it in to replace the placeholder.
-                let twin = WeakNode::upgrade(existing);
+                let twin = WeakNode::upgrade(&existing);
                 drop(reg_wlk);
                 self.reg_info.hits.fetch_add(1, Ordering::Relaxed);
 
@@ -2345,7 +2567,12 @@ where
             None => {
                 // Miss — register the placeholder and score it. Mirror
                 // the create_scored_child None-arm critical section.
-                Node::register(node, Some(&mut reg_wlk));
+                // The insert re-hashes and re-compares, so a miss pays two probes' worth of
+                // comparison work; count it, or `eq_checks` understates the real cost.
+                {
+                    let _probe = ProbeGuard::new(&self.reg_info);
+                    Node::register(node, Some(&mut reg_wlk));
+                }
                 drop(reg_wlk);
                 self.reg_info.misses.fetch_add(1, Ordering::Relaxed);
 
@@ -2561,9 +2788,18 @@ where
         };
         let probe_weak = ArcNode::downgrade(&probe);
         let reg_rlk = self.registry.read().unwrap();
-        let hit = reg_rlk.get(&probe_weak).cloned();
+        let hit = {
+            let _probe = ProbeGuard::new(&self.reg_info);
+            reg_rlk.get(&probe_weak).cloned()
+        };
         drop(reg_rlk);
         drop(probe);
+        // Counted apart from expansion: this is the tree-reuse entry point, and folding it into
+        // `hits`/`misses` would make re-rooting look like recombination.
+        self.reg_info.lookup_probes.fetch_add(1, Ordering::Relaxed);
+        if hit.is_some() {
+            self.reg_info.lookup_hits.fetch_add(1, Ordering::Relaxed);
+        }
         hit.map(|w| WeakNode::upgrade(&w))
     }
 

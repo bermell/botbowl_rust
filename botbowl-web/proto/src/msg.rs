@@ -334,6 +334,16 @@ pub enum ServerMsg {
         report: Option<Box<SearchReport>>,
     },
     Node(Box<NodeExpansion>),
+    /// Plan 043: the net's read of the **current** position, Home-centric in `[-1, 1]` — `+1`
+    /// means it expects Home to score next.
+    ///
+    /// Sent with every board change, not only after a bot move, so the debug read-out stays live
+    /// during the human's turn. Absent for bots without an NN evaluator, which is why this is a
+    /// message of its own rather than a field on `ViewState`: the view is re-sent in full on
+    /// every step and should not carry a value most sessions do not have.
+    Valuation {
+        value_home: f32,
+    },
     /// A pinned roll is queued (or was cleared).
     RollPinned(Option<RollResult>),
     Saved {

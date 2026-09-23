@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::scripted_bot::ScriptedBot;
-use botbowl_mcts::{BackupMode, MctsBot, PuctMode, SearchBudget};
+use botbowl_mcts::{BackupMode, MctsBot, MctsConfig, PuctMode, SearchBudget};
 use botbowl_nn::eval::NnEvaluator;
 
 /// Which leaf evaluator the MCTS bot uses.
@@ -36,6 +36,12 @@ impl Evaluator {
 }
 
 /// Search knobs for one `MctsBot`. `None` keeps the bot's own default.
+///
+/// Two ways to configure a bot live here, and they are deliberately exclusive. The `Option` knobs
+/// are the historical per-flag overrides on top of `MctsBot`'s env-driven default. `config` is a
+/// whole [`MctsConfig`] loaded from a named preset (plan 043); when it is `Some` it replaces that
+/// default outright — environment included — so an A/B run is reproducible and the preset's name
+/// says exactly what played.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SearchConfig {
     pub budget: SearchBudget,
@@ -44,6 +50,10 @@ pub struct SearchConfig {
     pub horizon_turns: Option<u8>,
     pub backup: Option<BackupMode>,
     pub fpu_reduction: Option<f32>,
+    /// A named preset, wholesale. Serde-defaulted so a worker built before plan 043 is the only
+    /// thing that changes shape on the wire, not every existing caller.
+    #[serde(default)]
+    pub config: Option<MctsConfig>,
 }
 
 impl SearchConfig {
@@ -56,15 +66,62 @@ impl SearchConfig {
             horizon_turns: None,
             backup: None,
             fpu_reduction: None,
+            config: None,
         }
     }
+}
+
+/// A [`MctsConfig`] together with the name it is known by.
+///
+/// The name is what reaches `report.json`, a rung label and a trajectory's provenance, so a result
+/// can be traced back to the configuration that produced it. Kept beside the config rather than in
+/// it because `SearchConfig` must stay `Copy` to cross the hub protocol unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedConfig {
+    pub name: String,
+    pub config: MctsConfig,
+}
+
+/// Read a bot preset from a TOML file.
+///
+/// The file names only the knobs it overrides; everything else comes from [`MctsConfig::new`], the
+/// shipped defaults, **not** from the environment. The config's name is the file stem, so
+/// `cfgs/aggressive.toml` plays as `aggressive`.
+///
+/// ```toml
+/// backup = "mean"
+/// fpu_reduction = 0.25
+/// puct = { mode = "normalised_q", c = 1.4, range_floor = 0.1 }
+/// ```
+pub fn load_mcts_config(path: &Path) -> io::Result<NamedConfig> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| io::Error::new(e.kind(), format!("failed to read bot config {}: {e}", path.display())))?;
+    let config: MctsConfig = toml::from_str(&text).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse bot config {}: {e}", path.display()),
+        )
+    })?;
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("config")
+        .to_string();
+    Ok(NamedConfig { name, config })
 }
 
 /// Build an `MctsBot` from a search config and an evaluator. Panics if the
 /// evaluator needs a net and none was passed — callers load it up front
 /// with [`load_nn`] so a bad path fails before hours of games.
 pub fn make_mcts(search: &SearchConfig, evaluator: Evaluator, nn: Option<&Arc<NnEvaluator>>) -> MctsBot {
-    let mut bot = MctsBot::new(search.budget).with_workers(search.workers);
+    // A preset wins wholesale: `with_budget_and_config` is the env-free constructor, so nothing the
+    // environment says can reach a named configuration. `workers` stays a CLI concern either way —
+    // it is a property of the machine, not of the bot being compared.
+    let mut bot = match search.config {
+        Some(config) => MctsBot::with_budget_and_config(search.budget, config).with_workers(search.workers),
+        None => MctsBot::new(search.budget).with_workers(search.workers),
+    };
     if let Some(p) = search.puct {
         bot = bot.with_puct(p);
     }
@@ -160,7 +217,17 @@ pub fn make_candidate_bot(
 
 /// Self-describing candidate label for a report: non-default search knobs
 /// go in so plan-032 arms that differ only in them are distinguishable.
-pub fn candidate_label(kind: CandidateBot, search: &SearchConfig, evaluator: Evaluator, model: Option<&str>) -> String {
+///
+/// `config_name` is the plan-043 preset, if one was named. It appends as `@name`, because with a
+/// preset the individual knobs no longer describe the bot — the name does, and it is the thing
+/// that can be looked up in `cfgs/`.
+pub fn candidate_label(
+    kind: CandidateBot,
+    search: &SearchConfig,
+    evaluator: Evaluator,
+    model: Option<&str>,
+    config_name: Option<&str>,
+) -> String {
     match kind {
         CandidateBot::Mcts => {
             let base = evaluator_label(evaluator, model);
@@ -171,6 +238,10 @@ pub fn candidate_label(kind: CandidateBot, search: &SearchConfig, evaluator: Eva
             if let Some(k) = search.fpu_reduction.filter(|k| *k > 0.0) {
                 knobs.push(format!("fpu_k={k}"));
             }
+            let base = match config_name {
+                Some(name) => format!("{base}@{name}"),
+                None => base,
+            };
             if knobs.is_empty() {
                 base
             } else {

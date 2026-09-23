@@ -102,6 +102,10 @@ pub struct App {
     pub game_over: RwSignal<Option<(Option<TeamType>, u8, u8)>>,
     pub pinned: RwSignal<Option<RollResult>>,
     pub saved: RwSignal<Option<String>>,
+    /// Plan 043: the net's read of the *current* position, Home-centric in `[-1, 1]`. Updated on
+    /// every board change, so the debug drawer stays live during the human's turn. `None` when
+    /// the session's bot has no network.
+    pub valuation: RwSignal<Option<f32>>,
     /// How the server is pacing the bot. Set from the step control and then
     /// echoed back on every view, which is the authority; kept here because
     /// it outlives one game — "New game" keeps the pacing you chose.
@@ -145,6 +149,7 @@ impl App {
             game_over: RwSignal::new(None),
             pinned: RwSignal::new(None),
             saved: RwSignal::new(None),
+            valuation: RwSignal::new(None),
             step_mode: RwSignal::new(StepMode::default()),
             step_ms: RwSignal::new(600),
             overlay: RwSignal::new(Overlay::default()),

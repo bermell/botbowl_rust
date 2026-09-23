@@ -30,12 +30,13 @@ use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_mcts::{BackupMode, PuctMode};
 use botbowl_nn::eval::NnEvaluator;
-use botbowl_play::bots::{
-    candidate_label, evaluator_label, load_nn, make_candidate_bot, make_mcts, parse_backup, parse_puct, CandidateBot,
-    Evaluator, SearchConfig,
-};
 use botbowl_play::board_sizes::board_label;
+use botbowl_play::bots::{
+    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_backup,
+    parse_puct, CandidateBot, Evaluator, NamedConfig, SearchConfig,
+};
 use botbowl_play::eval::{ladder_assignment, play_ladder_game, rung_name, LadderRow, LectureRow, Report};
+use botbowl_play::trace::ReuseTraceWriter;
 use botbowl_play::GAME_STACK_SIZE;
 
 use crate::cli::EvalArgs;
@@ -55,38 +56,68 @@ fn backup_of(s: &str) -> BackupMode {
 /// The candidate's search knobs. Every one is `Some`: `eval` has always
 /// set them explicitly (the CLI defaults stand in for the bot's), so the
 /// environment never reaches the candidate here.
-fn candidate_search(args: &EvalArgs) -> SearchConfig {
+///
+/// Plan 043: `--bot-config` replaces all of them with a named preset. The per-knob flags are
+/// `conflicts_with` it in clap, so the two can never be mixed — a run is described entirely by a
+/// preset or entirely by flags.
+fn candidate_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConfig {
     SearchConfig {
         budget: botbowl_mcts::SearchBudget::Iterations(args.mcts_iters),
         workers: args.mcts_workers,
-        puct: Some(puct_of(&args.puct_mode, args.puct_c)),
-        horizon_turns: Some(args.horizon_turns),
-        backup: Some(backup_of(&args.backup)),
-        fpu_reduction: Some(args.fpu_reduction),
+        puct: preset.is_none().then(|| puct_of(&args.puct_mode, args.puct_c)),
+        horizon_turns: preset.is_none().then_some(args.horizon_turns),
+        backup: preset.is_none().then(|| backup_of(&args.backup)),
+        fpu_reduction: preset.is_none().then_some(args.fpu_reduction),
+        config: preset.map(|p| p.config),
     }
 }
 
 /// The opponent's search knobs. Unset `--vs-*` means "match the candidate",
 /// so existing invocations are unchanged and setting one flag alone makes
 /// it a head-to-head on that knob.
-fn opponent_search(args: &EvalArgs) -> SearchConfig {
+///
+/// `--vs-config` follows the same rule: unset, the opponent inherits the candidate's preset, so
+/// `--bot-config` alone configures both sides and setting `--vs-config` alone is a
+/// configuration head-to-head — the same net under two configurations.
+fn opponent_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConfig {
     SearchConfig {
         budget: botbowl_mcts::SearchBudget::Iterations(args.opponent_iters.unwrap_or(args.mcts_iters)),
         workers: args.mcts_workers,
-        puct: Some(puct_of(
-            args.vs_puct_mode.as_deref().unwrap_or(&args.puct_mode),
-            args.vs_puct_c.or(args.puct_c),
-        )),
-        horizon_turns: Some(args.vs_horizon_turns.unwrap_or(args.horizon_turns)),
-        backup: Some(backup_of(args.vs_backup.as_deref().unwrap_or(&args.backup))),
-        fpu_reduction: Some(args.vs_fpu_reduction.unwrap_or(args.fpu_reduction)),
+        puct: preset.is_none().then(|| {
+            puct_of(
+                args.vs_puct_mode.as_deref().unwrap_or(&args.puct_mode),
+                args.vs_puct_c.or(args.puct_c),
+            )
+        }),
+        horizon_turns: preset
+            .is_none()
+            .then(|| args.vs_horizon_turns.unwrap_or(args.horizon_turns)),
+        backup: preset
+            .is_none()
+            .then(|| backup_of(args.vs_backup.as_deref().unwrap_or(&args.backup))),
+        fpu_reduction: preset
+            .is_none()
+            .then(|| args.vs_fpu_reduction.unwrap_or(args.fpu_reduction)),
+        config: preset.map(|p| p.config),
     }
 }
 
-fn candidate_bot(args: &EvalArgs, nn: Option<&Arc<NnEvaluator>>) -> Box<dyn Bot> {
+/// Resolve `--bot-config` and `--vs-config` once, up front, so a bad path or a typo'd knob fails
+/// before hours of games rather than after.
+fn presets(args: &EvalArgs) -> io::Result<(Option<NamedConfig>, Option<NamedConfig>)> {
+    let candidate = args.bot_config.as_deref().map(load_mcts_config).transpose()?;
+    // Unset `--vs-config` inherits the candidate's, matching every other `--vs-` flag.
+    let opponent = match args.vs_config.as_deref() {
+        Some(p) => Some(load_mcts_config(p)?),
+        None => candidate.clone(),
+    };
+    Ok((candidate, opponent))
+}
+
+fn candidate_bot(args: &EvalArgs, preset: Option<&NamedConfig>, nn: Option<&Arc<NnEvaluator>>) -> Box<dyn Bot> {
     make_candidate_bot(
         CandidateBot::from(args.candidate_bot),
-        &candidate_search(args),
+        &candidate_search(args, preset),
         Evaluator::from(args.evaluator),
         nn,
     )
@@ -103,10 +134,15 @@ struct RungState {
     next_game: AtomicU32,
     /// `writeln!` of a whole JSONL line must be atomic against its peers.
     per_game: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
+    /// Plan 043 `--trace-reuse`: `None` unless the flag was given. Shared across the rung's
+    /// workers, and its own mutex keeps a row atomic.
+    reuse_trace: Option<ReuseTraceWriter>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_ladder_rung(
     args: &EvalArgs,
+    preset: Option<&NamedConfig>,
     nn: Option<&Arc<NnEvaluator>>,
     opponent: &str,
     board: Option<BoardDims>,
@@ -133,6 +169,10 @@ fn run_ladder_rung(
         row: Mutex::new(LadderRow::on_board(opponent, board)),
         next_game: AtomicU32::new(0),
         per_game: Mutex::new(per_game),
+        reuse_trace: args
+            .trace_reuse
+            .as_deref()
+            .map(|path| ReuseTraceWriter::create(path).expect("--trace-reuse: cannot open")),
     };
 
     // Plan 024 Stage 4b. Eval was the loop's one wholly serial phase, and
@@ -145,7 +185,7 @@ fn run_ladder_rung(
     // than tract.
     let parallel = args.parallel_games.clamp(1, games.max(1)) as usize;
     if parallel == 1 {
-        run_rung_games(args, nn, name, board, games, &make_opponent, &state);
+        run_rung_games(args, preset, nn, name, board, games, &make_opponent, &state);
     } else {
         eprintln!("  vs {name}: {parallel} games in parallel");
         std::thread::scope(|s| {
@@ -155,7 +195,7 @@ fn run_ladder_rung(
                 std::thread::Builder::new()
                     .name(format!("rung-{i}"))
                     .stack_size(GAME_STACK_SIZE)
-                    .spawn_scoped(s, move || run_rung_games(args, nn, name, board, games, mk, st))
+                    .spawn_scoped(s, move || run_rung_games(args, preset, nn, name, board, games, mk, st))
                     .expect("spawn rung worker");
             }
         });
@@ -176,6 +216,7 @@ fn run_ladder_rung(
 #[allow(clippy::too_many_arguments)]
 fn run_rung_games(
     args: &EvalArgs,
+    preset: Option<&NamedConfig>,
     nn: Option<&Arc<NnEvaluator>>,
     name: &str,
     board: Option<BoardDims>,
@@ -183,7 +224,7 @@ fn run_rung_games(
     make_opponent: &(impl Fn() -> Box<dyn Bot> + Sync),
     state: &RungState,
 ) {
-    let mut candidate = candidate_bot(args, nn);
+    let mut candidate = candidate_bot(args, preset, nn);
     let mut opponent = make_opponent();
     loop {
         let g = state.next_game.fetch_add(1, Ordering::Relaxed);
@@ -200,6 +241,7 @@ fn run_rung_games(
             seed,
             args.max_steps,
             board,
+            state.reuse_trace.as_ref(),
         );
 
         if let Some(w) = state.per_game.lock().expect("per-game mutex").as_mut() {
@@ -219,6 +261,9 @@ fn run_rung_games(
 
 pub fn run(args: EvalArgs) -> io::Result<()> {
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());
+    // Plan 043: resolve the bot presets before anything else, so a bad path or a misspelled knob
+    // fails in the first second rather than after the lecture battery.
+    let (cand_preset, opp_preset) = presets(&args)?;
     let evaluator = Evaluator::from(args.evaluator);
     let nn = load_nn(
         evaluator,
@@ -244,7 +289,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         eprintln!("== lecture battery ({} trials per cell) ==", args.trials);
         for &(name, difficulty) in available_lectures() {
             let lecture = make_lecture(name, difficulty).expect("available_lectures entry must construct");
-            let mut agent = candidate_bot(&args, nn.as_ref());
+            let mut agent = candidate_bot(&args, cand_preset.as_ref(), nn.as_ref());
             // Lectures place players at hard-coded full-pitch coordinates;
             // on smaller compiled boards a cell can panic mid-setup. Run
             // the whole cell under catch_unwind (quiet panic hook) and
@@ -307,14 +352,19 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             if boards[0].is_some() {
                 format!(
                     ", boards {}",
-                    boards.iter().flatten().map(|d| board_label(*d)).collect::<Vec<_>>().join(" ")
+                    boards
+                        .iter()
+                        .flatten()
+                        .map(|d| board_label(*d))
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 )
             } else {
                 String::new()
             }
         );
-        let cand = candidate_search(&args);
-        let opp = opponent_search(&args);
+        let cand = candidate_search(&args, cand_preset.as_ref());
+        let opp = opponent_search(&args, opp_preset.as_ref());
         if !args.skip_fixed_rungs {
             let wanted: Vec<&str> = args.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
             for name in &wanted {
@@ -324,18 +374,31 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             }
             for &board in &boards {
                 if wanted.contains(&"random") {
-                    ladder.push(run_ladder_rung(&args, nn.as_ref(), "random", board, args.games, || {
-                        Box::new(RandomBot::new())
-                    }));
+                    ladder.push(run_ladder_rung(
+                        &args,
+                        cand_preset.as_ref(),
+                        nn.as_ref(),
+                        "random",
+                        board,
+                        args.games,
+                        || Box::new(RandomBot::new()),
+                    ));
                 }
                 if wanted.contains(&"scripted") {
-                    ladder.push(run_ladder_rung(&args, nn.as_ref(), "scripted", board, args.games, || {
-                        Box::new(ScriptedBot::new())
-                    }));
+                    ladder.push(run_ladder_rung(
+                        &args,
+                        cand_preset.as_ref(),
+                        nn.as_ref(),
+                        "scripted",
+                        board,
+                        args.games,
+                        || Box::new(ScriptedBot::new()),
+                    ));
                 }
                 if wanted.contains(&"mcts-heuristic") {
                     ladder.push(run_ladder_rung(
                         &args,
+                        cand_preset.as_ref(),
                         nn.as_ref(),
                         "mcts-heuristic",
                         board,
@@ -346,43 +409,61 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             }
         }
         if let Some(vs) = vs_evaluator {
-            let (opp_puct, opp_horizon, opp_backup, opp_fpu) = (
-                opp.puct.expect("set above"),
-                opp.horizon_turns.expect("set above"),
-                opp.backup.expect("set above"),
-                opp.fpu_reduction.expect("set above"),
-            );
-            let (cand_horizon, cand_backup, cand_fpu) = (
-                cand.horizon_turns.expect("set above"),
-                cand.backup.expect("set above"),
-                cand.fpu_reduction.expect("set above"),
-            );
-            let label = format!(
-                "vs:{} [{}{}{}{}]",
-                evaluator_label(vs, args.vs_model.as_deref()),
-                opp_puct.label(),
-                if opp_horizon != cand_horizon {
-                    format!(" horizon={opp_horizon}v{cand_horizon}")
+            // The label says how the opponent differs from the candidate. Under a preset the
+            // per-knob fields are deliberately `None` — the configuration name is the difference,
+            // and it is the thing you can look up in `cfgs/`.
+            let label = if let (Some(o), Some(c)) = (&opp_preset, &cand_preset) {
+                let base = evaluator_label(vs, args.vs_model.as_deref());
+                if o.name == c.name {
+                    format!("vs:{base} [{}]", o.name)
                 } else {
-                    String::new()
-                },
-                if opp_backup != cand_backup {
-                    format!(" {}v{}", opp_backup.label(), cand_backup.label())
-                } else {
-                    String::new()
-                },
-                if opp_fpu != cand_fpu {
-                    format!(" fpu_k={opp_fpu}v{cand_fpu}")
-                } else {
-                    String::new()
+                    format!("vs:{base} [{} v {}]", o.name, c.name)
                 }
-            );
+            } else {
+                let (opp_puct, opp_horizon, opp_backup, opp_fpu) = (
+                    opp.puct.expect("set when no preset is named"),
+                    opp.horizon_turns.expect("set when no preset is named"),
+                    opp.backup.expect("set when no preset is named"),
+                    opp.fpu_reduction.expect("set when no preset is named"),
+                );
+                let (cand_horizon, cand_backup, cand_fpu) = (
+                    cand.horizon_turns.expect("set when no preset is named"),
+                    cand.backup.expect("set when no preset is named"),
+                    cand.fpu_reduction.expect("set when no preset is named"),
+                );
+                format!(
+                    "vs:{} [{}{}{}{}]",
+                    evaluator_label(vs, args.vs_model.as_deref()),
+                    opp_puct.label(),
+                    if opp_horizon != cand_horizon {
+                        format!(" horizon={opp_horizon}v{cand_horizon}")
+                    } else {
+                        String::new()
+                    },
+                    if opp_backup != cand_backup {
+                        format!(" {}v{}", opp_backup.label(), cand_backup.label())
+                    } else {
+                        String::new()
+                    },
+                    if opp_fpu != cand_fpu {
+                        format!(" fpu_k={opp_fpu}v{cand_fpu}")
+                    } else {
+                        String::new()
+                    }
+                )
+            };
             // The gating rung: `--vs-games` if given, else `--games`.
             let vs_games = args.vs_games.unwrap_or(args.games);
             for &board in &boards {
-                ladder.push(run_ladder_rung(&args, nn.as_ref(), &label, board, vs_games, || {
-                    Box::new(make_mcts(&opp, vs, vs_nn.as_ref()))
-                }));
+                ladder.push(run_ladder_rung(
+                    &args,
+                    cand_preset.as_ref(),
+                    nn.as_ref(),
+                    &label,
+                    board,
+                    vs_games,
+                    || Box::new(make_mcts(&opp, vs, vs_nn.as_ref())),
+                ));
             }
         }
     }
@@ -390,14 +471,23 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
     let report = Report {
         candidate: candidate_label(
             CandidateBot::from(args.candidate_bot),
-            &candidate_search(&args),
+            &candidate_search(&args, cand_preset.as_ref()),
             evaluator,
             args.model.as_deref(),
+            cand_preset.as_ref().map(|p| p.name.as_str()),
         ),
+        candidate_config: cand_preset.as_ref().map(|p| p.name.clone()),
+        opponent_config: opp_preset.as_ref().map(|p| p.name.clone()),
+        telemetry: Report::telemetry_of(&ladder),
         mcts_iters: args.mcts_iters,
         seed: args.seed,
         board_env: if boards[0].is_some() {
-            boards.iter().flatten().map(|d| board_label(*d)).collect::<Vec<_>>().join(",")
+            boards
+                .iter()
+                .flatten()
+                .map(|d| board_label(*d))
+                .collect::<Vec<_>>()
+                .join(",")
         } else {
             format!("{:?}", BoardDims::from_env())
         },

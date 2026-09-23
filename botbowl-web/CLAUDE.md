@@ -131,6 +131,24 @@ could not run two differently-tuned bots at all. `MctsConfig` (in `botbowl-mcts`
   for exactly that reason, and the heatmap normalises against the busiest sibling rather than the
   root's own counter.
 
+## Two read-outs, and they answer different questions (plan 043)
+
+- **`SearchReport.health`** is the search's own vitals, next to what it concluded: this decision's
+  tree-reuse outcome plus the rate so far, and recombination's hit rate against its wasted-compare
+  rate. Rendered as the inspector's "Search health" block. `anchor_miss` at a turn boundary is
+  expected; the same outcome mid-turn, or a `lookup_miss`, is not.
+- **`ServerMsg::Valuation`** is the net's read of the **current** position, Home-centric in
+  `[-1, 1]`, emitted from `GameSession::view` on *every* board change. It is a message of its own,
+  not a `ViewState` field, for two reasons: the view is re-sent in full on every step and should
+  not carry a value most sessions do not have, and the point is that it updates during the
+  **human's** turn — `SearchReport.evaluator_value` only ever appears after a bot move. One forward
+  pass per ply is nothing next to a search, and it cannot perturb the game because a frozen net is
+  a pure function of the state.
+- **Both name a team rather than printing a bare signed number.** `inspector::favours` turns a
+  Home-centric value into `Home 0.42`, because the question people ask of a value head is "who does
+  it think scores next", and a bare `+0.42` makes the reader remember whose frame it is in.
+  `evaluator_value` arrives in the *searching agent's* frame and is flipped back to Home's first.
+
 ## Sprites come from the sibling checkout, never from git
 
 `--assets-dir /path/to/botbowl/botbowl/web/static/img` is mounted at `/img/`. The player icons are

@@ -29,11 +29,12 @@ use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, 
 
 use crate::action::{BbAction, BbPlayer};
 use crate::priors::prior_for_engine_action;
-use crate::pruning::should_prune;
+use crate::pruning::{self, should_prune};
 use crate::report::{self, Edge, NodeStats, NodeView, SearchSummary};
 use crate::roll_outcomes;
 use crate::score::leaf_score;
 use crate::scripted;
+use crate::telemetry::{RecombinationCounts, ReuseDecision, ReuseOutcome, SearchTelemetry};
 
 /// PUCT exploration constant. Sized so that the `c · P · √N(parent) /
 /// (1 + N(a))` term is comparable to leaf-score magnitudes (game score
@@ -86,7 +87,11 @@ const NORM_VL_REFERENCE: f32 = 300.0;
 ///
 /// `c` lives inside each variant so "normalised mode still carrying the
 /// Raw constant" is unrepresentable.
+// snake_case so a preset file reads in the same vocabulary as `--puct-mode`. Safe to rename:
+// these cross the hub protocol under postcard, which encodes a variant by index, and no persisted
+// JSON artifact names them.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PuctMode {
     /// Historical behaviour: `Q_raw + c * P * sqrt(N) / (1 + n)`.
     Raw { c: f32 },
@@ -143,6 +148,7 @@ impl PuctMode {
 /// `PUCT_C` see — the parent is no longer its best child — so a `c`
 /// re-tune belongs with any switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BackupMode {
     /// Home max / Away min over child Q; visits sum.
     #[default]
@@ -354,7 +360,8 @@ pub enum Evaluator {
 /// `Asc` and `Desc` bracket the largest side bias any action-ordering
 /// preference inside the search could produce. If a mirror match does
 /// not move between them, ordering is exonerated. Leave it at `Hash`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TieBreak {
     /// Arbitrary (whatever the children `HashMap` yields last). Shipped.
     #[default]
@@ -1594,7 +1601,8 @@ fn puct_value(
 ///
 /// Selectable at runtime via `with_memory_mode` or the `BLOOD_MCTS_MEMORY`
 /// env var (`get` / `store` only). Env var wins when set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryMode {
     GetState,
     StoreState,
@@ -1649,7 +1657,12 @@ pub enum SearchBudget {
 /// exactly as before; `run_search` now reads only `self.config`. Env vars are
 /// therefore resolved **once, at construction** — setting one between building
 /// a bot and calling it no longer has any effect.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+// `MctsConfig::new`, not `Default` — `Default` is `from_env()`, and a preset that silently
+// absorbed a stray `BLOOD_MCTS_*` would not be reproducible, which is the whole point of
+// naming a configuration. `deny_unknown_fields` turns a typo into an error instead of a knob
+// that quietly stays at its default.
+#[serde(default = "MctsConfig::new", deny_unknown_fields)]
 pub struct MctsConfig {
     /// Worker threads driving `tree.step()`. `Iterations` budgets split the
     /// total across them; `Time` budgets run every worker to the deadline.
@@ -1782,6 +1795,10 @@ pub struct MctsBot {
     last_anchor: Option<HorizonAnchor>,
     /// Summary of the most recent search, for [`MctsBot::last_search`].
     last_search: Option<report::SearchSummary>,
+    /// Plan 043: lifetime counters for this bot's searches. Plain `u64`s, not atomics —
+    /// `get_action` takes `&mut self` and every write happens on the owning thread, before
+    /// the search workers spawn.
+    telemetry: SearchTelemetry,
 }
 
 impl MctsBot {
@@ -1800,6 +1817,7 @@ impl MctsBot {
             cached_tree: None,
             last_anchor: None,
             last_search: None,
+            telemetry: SearchTelemetry::default(),
         }
     }
 
@@ -1921,6 +1939,11 @@ struct SearchResult {
     root_info: BbNodeInfo,
     agent_team: TeamType,
     elapsed: Duration,
+    /// Plan 043: whether this search inherited the previous tree, and the context needed to read
+    /// that answer.
+    reuse: ReuseDecision,
+    /// What this search alone cost the registry.
+    recombination: RecombinationCounts,
 }
 
 impl MctsBot {
@@ -2015,6 +2038,33 @@ impl MctsBot {
             ))
         };
         let anchor_matches = self.config.tree_reuse && self.cached_tree.is_some() && new_anchor == self.last_anchor;
+
+        // Plan 043: classify the reuse attempt. The three causes that are already decided here are
+        // recorded now; the macro below refines the remaining case into Reused / MarkerMiss /
+        // LookupMiss / NoPath. The context (proc, action fan) is captured before `root_state` is
+        // moved into the tree.
+        let reuse_proc = root_state.proc_stack_top().map(str::to_string);
+        let reuse_n_actions = root_state
+            .get_all_actions()
+            .into_iter()
+            .filter(|a| !pruning::should_prune(&root_state, a))
+            .count();
+        let mut reuse_outcome = if !self.config.tree_reuse {
+            ReuseOutcome::Disabled
+        } else if self.cached_tree.is_none() {
+            ReuseOutcome::NoCache
+        } else if !anchor_matches {
+            // Reuse is on and a tree is cached, so the anchor is the only thing left that can have
+            // failed the gate above.
+            ReuseOutcome::AnchorMiss
+        } else {
+            // Placeholder: overwritten unconditionally in the macro's `anchor_matches` branch.
+            ReuseOutcome::MarkerMiss
+        };
+        let mut reuse_path_len = 0usize;
+        // Assigned by `run_with_marker!`, which every arm of the `memory_mode` match runs.
+        let recomb_delta: RecombinationCounts;
+
         // If anchor changed (or reuse disabled), discard the cache up
         // front so we don't hold the prior tree alive past the search.
         if !anchor_matches {
@@ -2039,16 +2089,29 @@ impl MctsBot {
                         Some(CachedTree::$cached_arm(t)) => match t.lookup_state(root_player, root_state.clone()) {
                             Some(node) => match t.find_path_to(&node) {
                                 Some(path) => {
+                                    reuse_path_len = path.len();
                                     for a in &path {
                                         t.apply_action(a);
                                     }
+                                    reuse_outcome = ReuseOutcome::Reused;
                                     Some(t)
                                 }
-                                None => None,
+                                None => {
+                                    reuse_outcome = ReuseOutcome::NoPath;
+                                    None
+                                }
                             },
-                            None => None,
+                            None => {
+                                reuse_outcome = ReuseOutcome::LookupMiss;
+                                None
+                            }
                         },
-                        _ => None,
+                        // `anchor_matches` implies a cached tree, so the only way here is a tree
+                        // built under the other `MemoryMode`.
+                        _ => {
+                            reuse_outcome = ReuseOutcome::MarkerMiss;
+                            None
+                        }
                     }
                 } else {
                     None
@@ -2058,6 +2121,12 @@ impl MctsBot {
                     Some(t) => t,
                     None => Arc::new(Tree::new(gd, $marker, root_player, root_state)),
                 };
+                // Baseline for this search's recombination cost, read from the tree we are
+                // actually about to search. It must be read *here*, after the reuse attempt has
+                // resolved: a lookup miss snapshots a cached tree and then searches a brand new
+                // one, and differencing those two would saturate to zero and silently drop the
+                // whole decision's cost. A fresh tree reads zero, which is what it is.
+                let recomb_before: recon_mcts::RecombinationStats = tree.get_registry_info().snapshot();
                 // Plan 008: workers spawn via `std::thread::scope`.
                 // Bigger stack than the platform default (2 MB on macOS /
                 // Linux pthread): `recon_mcts`'s `Node::get_state` and
@@ -2136,6 +2205,10 @@ impl MctsBot {
                         });
                     }
                 }
+                // What this search cost the registry. A reused tree carries its counters forward,
+                // so only the difference belongs to this decision; a fresh tree started at zero,
+                // where `recomb_before` also is.
+                recomb_delta = (tree.get_registry_info().snapshot() - recomb_before).into();
                 if dump_leaf_stats {
                     // Cumulative over the process, not per search — plan 031
                     // D8 wants a rate over a whole run, so the last line wins.
@@ -2230,12 +2303,83 @@ impl MctsBot {
             self.last_anchor = None;
         }
 
+        let reuse = ReuseDecision {
+            outcome: reuse_outcome,
+            proc: reuse_proc,
+            n_actions: reuse_n_actions,
+            path_len: reuse_path_len,
+        };
+        self.telemetry.record(&reuse, recomb_delta);
+        if dump_stats {
+            eprintln!("MCTS_TELEMETRY {}", self.telemetry.summary());
+        }
+
         SearchResult {
             move_info,
             root_info,
             agent_team,
             elapsed: search_started.elapsed(),
+            reuse,
+            recombination: recomb_delta,
         }
+    }
+
+    /// Everything this bot has accumulated across its decisions: how often it kept its tree, and
+    /// what recombination cost. Folded per `get_action`, so reading it is free.
+    ///
+    /// One tally per bot rather than a process global, because a process may run several
+    /// differently-tuned bots at once (the web server, plan 034) and a global could not be
+    /// attributed to either.
+    pub fn telemetry(&self) -> &SearchTelemetry {
+        &self.telemetry
+    }
+
+    /// Take the accumulated telemetry, leaving the bot's counters at zero.
+    ///
+    /// Eval reuses one bot across the games of a rung, so draining per game is what makes a
+    /// per-game record mean "this game" — the alternative, subtracting two snapshots, would have
+    /// to difference the per-procedure and fan maps as well, for no gain.
+    pub fn take_telemetry(&mut self) -> SearchTelemetry {
+        std::mem::take(&mut self.telemetry)
+    }
+
+    /// Read the telemetry off a bot that may or may not be an `MctsBot`.
+    ///
+    /// Eval and generation hold `Box<dyn Bot>` — the concrete type is erased by
+    /// `make_candidate_bot` — so this is how a ladder row gets at the numbers without every
+    /// caller having to know which bot it built.
+    pub fn telemetry_of(bot: &dyn botbowl_engine::bots::Bot) -> Option<&SearchTelemetry> {
+        bot.as_any()?.downcast_ref::<MctsBot>().map(|b| &b.telemetry)
+    }
+
+    /// The evaluator's own value for `state`, **Home-centric** in `[-1, 1]`: `+1` means the net
+    /// expects Home to score next, `-1` Away.
+    ///
+    /// `None` for the heuristic and pure-TD evaluators, which have no separate value to report
+    /// that `leaf_score` would not already imply.
+    ///
+    /// Independent of any search — one forward pass over a state the bot need not be playing. The
+    /// web debug view uses it to keep a live read-out during the *human's* turn, which the
+    /// post-search `SearchSummary::evaluator_value` cannot do. Safe to call at any time: a frozen
+    /// net is a pure function of the state, the same property recombination relies on.
+    pub fn evaluate_home(&self, state: &GameState) -> Option<f32> {
+        match &self.evaluator {
+            Evaluator::Nn(nn) | Evaluator::NnValue(nn) => Some(nn.value_home_i64(state) as f32 / report::Q_SCALE),
+            Evaluator::Heuristic | Evaluator::PureTd => None,
+        }
+    }
+
+    /// [`MctsBot::last_search`] through a `dyn Bot`, for callers that built the bot behind a
+    /// `Box<dyn Bot>` and want the decision they just asked for.
+    pub fn last_search_of(bot: &dyn botbowl_engine::bots::Bot) -> Option<&SearchSummary> {
+        bot.as_any()?.downcast_ref::<MctsBot>()?.last_search()
+    }
+
+    /// [`MctsBot::take_telemetry`] through a `dyn Bot`. `None` for a bot that does not search.
+    pub fn take_telemetry_of(bot: &mut dyn botbowl_engine::bots::Bot) -> Option<SearchTelemetry> {
+        bot.as_any_mut()?
+            .downcast_mut::<MctsBot>()
+            .map(|b| std::mem::take(&mut b.telemetry))
     }
 
     /// Summary of the most recent `get_action`, or `None` before the first
@@ -2413,6 +2557,9 @@ impl MctsBot {
                 Evaluator::NnValue(_) => "nn-value".to_string(),
             },
             evaluator_value,
+            reuse: result.reuse.clone(),
+            recombination: result.recombination,
+            telemetry: self.telemetry.clone(),
         }
     }
 
@@ -2558,6 +2705,14 @@ impl Bot for MctsBot {
         );
         self.last_search = Some(self.summarise(state, &result, action));
         action
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 

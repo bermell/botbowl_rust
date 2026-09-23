@@ -20,7 +20,7 @@ use botbowl_data::{Outcome, Sample, Trajectory, TrajectoryMeta};
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::TeamType;
-use botbowl_mcts::SearchBudget;
+use botbowl_mcts::{SearchBudget, SearchTelemetry};
 use botbowl_nn::eval::NnEvaluator;
 
 use crate::board_sizes::SizeDist;
@@ -117,6 +117,10 @@ pub struct GenerateConfig {
     /// mode ignores it — lectures place on the full pitch.
     #[serde(default)]
     pub board_sizes: Option<SizeDist>,
+    /// Plan 043: the name of the preset in `search.config`, for provenance only — the knobs
+    /// themselves travel in `SearchConfig`. `None` when no preset was named.
+    #[serde(default)]
+    pub config_name: Option<String>,
 }
 
 impl GenerateConfig {
@@ -157,10 +161,20 @@ pub fn budget_label(cfg: &GenerateConfig) -> String {
         botbowl_mcts::BackupMode::Minimax => String::new(),
         b => format!(",{}", b.label()),
     };
+    // A named preset (plan 043) replaces the whole configuration, so the individual knobs above
+    // stop describing the bot — the name is what does. Stamp it so a corpus can be traced back to
+    // the configuration that generated it.
+    let config = match &cfg.config_name {
+        Some(name) => format!(",cfg={name}"),
+        None => String::new(),
+    };
     let workers = cfg.search.workers;
     match cfg.search.budget {
-        SearchBudget::Time(d) => format!("mcts(time={}ms,workers={workers},eval={eval}{backup})", d.as_millis()),
-        SearchBudget::Iterations(n) => format!("mcts(iters={n},workers={workers},eval={eval}{backup})"),
+        SearchBudget::Time(d) => format!(
+            "mcts(time={}ms,workers={workers},eval={eval}{backup}{config})",
+            d.as_millis()
+        ),
+        SearchBudget::Iterations(n) => format!("mcts(iters={n},workers={workers},eval={eval}{backup}{config})"),
     }
 }
 
@@ -174,7 +188,7 @@ fn mcts_vs_mcts_samples(
     nn: Option<&Arc<NnEvaluator>>,
     seed: u64,
     stop: impl Fn(&GameState) -> bool,
-) -> Vec<Sample> {
+) -> (Vec<Sample>, SearchTelemetry) {
     let mut home = make_mcts(&cfg.search, cfg.evaluator, nn);
     let mut away = make_mcts(&cfg.search, cfg.evaluator, nn);
     home.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xA));
@@ -202,7 +216,41 @@ fn mcts_vs_mcts_samples(
         state.step(action).expect("engine step failed during self-play");
         steps += 1;
     }
-    samples
+    // Plan 043: both bots' search health, pooled. A self-play trajectory has no "candidate" side
+    // to single out, and the two are configured identically, so one number is the honest summary.
+    let mut telemetry = home.take_telemetry();
+    telemetry.merge(away.telemetry());
+    (samples, telemetry)
+}
+
+/// Stamp a trajectory's search health into its provenance.
+///
+/// `TrajectoryMeta.extra` is the documented extension point ("adding one never breaks the
+/// schema"), so this needs no `FORMAT_VERSION` bump and no reader change. Flattened to a handful
+/// of scalars rather than the whole nested structure — a corpus wants the rates, and the
+/// per-procedure breakdown belongs in an eval report where it can be read.
+fn with_telemetry(mut meta: TrajectoryMeta, t: &SearchTelemetry) -> TrajectoryMeta {
+    if t.searches == 0 {
+        return meta;
+    }
+    let r = &t.reuse.total;
+    meta = meta
+        .with_extra("searches", t.searches.to_string())
+        .with_extra("reuse_reused", r.reused.to_string())
+        .with_extra("reuse_anchor_miss", r.anchor_miss.to_string())
+        .with_extra("reuse_lookup_miss", r.lookup_miss.to_string())
+        .with_extra("reuse_no_path", r.no_path.to_string())
+        .with_extra("recomb_hits", t.recombination.hits.to_string())
+        .with_extra("recomb_probes", t.recombination.probes.to_string())
+        .with_extra("eq_checks", t.recombination.eq_checks.to_string())
+        .with_extra("eq_rejects", t.recombination.eq_rejects.to_string());
+    if let Some(p) = t.fan.percentile(0.5) {
+        meta = meta.with_extra("fan_p50", p.to_string());
+    }
+    if let Some(p) = t.fan.percentile(0.9) {
+        meta = meta.with_extra("fan_p90", p.to_string());
+    }
+    meta
 }
 
 /// One full MctsBot-vs-MctsBot game, from kickoff.
@@ -218,7 +266,7 @@ fn self_play_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, see
     state.set_logging_state(false);
 
     let board_dims = state.board_dims;
-    let samples = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |_| false);
+    let (samples, telemetry) = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |_| false);
 
     let label = budget_label(cfg);
     let mut meta = TrajectoryMeta::new("self-play", board_dims)
@@ -229,6 +277,10 @@ fn self_play_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, see
     if let Some(d) = &cfg.board_sizes {
         meta = meta.with_extra("size_dist", d.label.clone());
     }
+    if let Some(name) = &cfg.config_name {
+        meta = meta.with_extra("mcts_config", name.clone());
+    }
+    let meta = with_telemetry(meta, &telemetry);
     let outcome = Outcome::from_state(&state, None);
     Trajectory::new(meta, samples, outcome)
 }
@@ -255,7 +307,7 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
     let (start_half, start_home_turn, start_away_turn) = (state.info.half, state.info.home_turn, state.info.away_turn);
     let (start_home_score, start_away_score) = (state.home.score, state.away.score);
     let start_score = format!("{start_home_score}-{start_away_score}");
-    let samples = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |s| {
+    let (samples, telemetry) = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |s| {
         s.home.score != start_home_score || s.away.score != start_away_score || s.info.half != start_half
     });
 
@@ -284,6 +336,10 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
     if let Some(d) = &cfg.board_sizes {
         meta = meta.with_extra("size_dist", d.label.clone());
     }
+    if let Some(name) = &cfg.config_name {
+        meta = meta.with_extra("mcts_config", name.clone());
+    }
+    let meta = with_telemetry(meta, &telemetry);
     let outcome = Outcome::from_state(&state, None);
     Trajectory::new(meta, samples, outcome)
 }
@@ -344,12 +400,17 @@ fn curriculum_trajectory(
         status = lecture.evaluate(&state, &context);
     }
 
-    let meta = TrajectoryMeta::new(lecture.name(), board_dims)
+    let mut meta = TrajectoryMeta::new(lecture.name(), board_dims)
         .with_bots(budget_label(cfg), "random")
         .with_seed(seed)
         .with_extra("mode", "curriculum")
         .with_extra("difficulty", format!("{difficulty:?}"))
         .with_extra("lecture_status", format!("{status:?}"));
+    if let Some(name) = &cfg.config_name {
+        meta = meta.with_extra("mcts_config", name.clone());
+    }
+    // Only the agent searches here; the opponent is a RandomBot.
+    let meta = with_telemetry(meta, &agent.take_telemetry());
     let outcome = Outcome::from_state(&state, Some(format!("{status:?}")));
     Ok(Some(Trajectory::new(meta, samples, outcome)))
 }
