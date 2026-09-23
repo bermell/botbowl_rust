@@ -6,7 +6,8 @@ Adapter between `botbowl-engine` and the `recon_mcts` search library (path dep o
 
 - Three "players": `Home`, `Away`, `Chance`. Chance nodes appear whenever `state.pending_roll.is_some()` and their children are `BbAction::Chance { result, prob_bits }`, where `result` is the concrete engine `RollResult` that `apply_action` feeds straight into `SomeProcInput::Roll` (`roll_outcomes::enumerate` picks it — there is no intermediate outcome abstraction). **Pass/fail rolls (pickup/dodge/GFI/catch — `D6PassFail`/`Sum2D6PassFail`) are first-class chance nodes in the tree (plan 018):** `available_actions` enumerates them into weighted `RollResult::Pass`+`RollResult::Fail` children, `score_leaf` returns `None` for the chance node (expanded, *not* scored), and its Q is the probability-weighted backprop of its outcomes. **Block rolls are chance nodes too (plan 036):** `roll_outcomes::block_outcomes` enumerates all `6^n` face combinations, classifies each die by its *effect* given both players' skills (Block, Dodge) and the push geometry (a push into the crowd counts as defender-removed), resolves each combination by whoever picks (attacker on `One/Two/Three`, defender on the uphill variants), and emits one child per resolved outcome with an exact probability and a representative dice array that forces that outcome through the engine. The attacker-Block-only roll showing both a knockdown-and-push die and `BothDown` is its own child (`[Pow, BothDown, ..]`): `scripted_pick` declines it, so down-in-place vs down-and-pushed is a real player decision in the tree. Only scatter/deviate/throw-in/foul-armour/etc. still collapse to a single deterministic child (`roll_outcomes::scripted_result`). (Plan 018 reversed plan 010 Track A.alt's optimistic fast-forward, which over-valued risky rolls — e.g. a marked-ball pickup scored as guaranteed success.)
 - **Each node's mover comes from `player_for_child`, not from `available_actions` (plan 035).** recon_mcts tags a node with the mover of *that* node, and plan 023 established that reading it off the *parent* is wrong on exactly the transitions that matter (turnovers, rolls, follow-up decisions like a push square after a `Pow`) — the tag feeds `select_node`'s `home_perspective` and `backprop_scores`'s `want_max` directly, so a wrong one silently minimises a Home decision or maximises an Away one. Plan 023's fix, `peek_mover`, got the right answer by running a full `apply_action` per candidate at every expansion and throwing the state away; plan 035 deletes it, because `recon_mcts` now hands the child state to `player_for_child` at materialisation, where `player_for_state(child_state)` is free. Byte-identical search output (`tests/lazy_mover_identity.rs` gates it), 80% fewer engine advances and 4.2x the throughput on a wide mid-turn fan.
-- `available_actions` filters via `pruning::should_prune`. `block_dice::scripted_pick` collapses block-die fan-out to a single scripted choice when the engine offers one (except the attacker's Pow-vs-BothDown choice above, which it leaves to the search), and `scripted::scripted_player_pick` collapses coin toss / kick-receive inside `apply_action`'s quiescent loop.
+- `available_actions` filters via `pruning::should_prune`. Block-die fan-out, coin toss and kick-receive are all collapsed by `scripted::scripted_player_pick` **inside `apply_action`'s quiescent loop** — `block_dice::scripted_pick` is its first arm, and is *not* called from `available_actions` at all (a comment there points at it, which is easy to misread). The exception it declines is the attacker's Pow-vs-BothDown choice above, which stays a real node.
+  - **Consequence, measured (plans/032 item 13, `tests/block_reuse.rs`):** because the quiescent loop walks past the die choice, the search never builds a post-roll `Block` node for it — but the *engine* stops and asks the bot. So every real block-die decision arrives at a root the previous search could not have materialised: `Block` reuses the cached tree in **0.8%** of decisions against 65-100% elsewhere, and rebuilds every time. Worse, at that root the bot searches the choice and picks a **different die from the script 51%** of the time, so the tree values every future block under a policy the bot does not follow. Open question, not a settled design.
 - `available_actions` is **horizon-bounded** (plan 014): once the state has moved past the root's `HorizonAnchor` (turn boundary, score change, game over), it returns `None` and MCTS treats the state as terminal.
 - Selection uses PUCT with `prior_for(state, action)` priors (`priors.rs`, ~5 multipliers — see plan 004). **`PUCT_C = 10.0` (`dynamics.rs`) is tuned against the leaf-score magnitudes in `score.rs` and they are coupled — changing one without the other silently degrades search.** Unexplored children get **FPU = the parent's Q** (from the descending player's perspective), not `Q = 0` — `leaf_score`'s ~+520 constant offset (ball control) otherwise buries unexplored children ~500 points below any explored sibling and starves wide move fans of exploration. Plan 032 #3 adds an optional **FPU reduction** (`BLOOD_MCTS_FPU_REDUCTION=k`, `MctsBot::with_fpu_reduction`, `eval --fpu-reduction/--vs-fpu-reduction`): `parent_Q − k·√(visited prior share)`, Leela/KataGo form; `k = 0` (default) is the shipped plain FPU.
 - **`PUCT_C` has never been re-tuned for NN priors.** `Evaluator::Nn` priors are softmax×`len` (`botbowl-nn/src/eval.rs`), so the mean matches the scripted `BASE = 1.0` but the spread does not: a confident action among 60 legal ones gets `P ≈ 30` against the scripted maximum of 10, and the tail gets `P ≈ 0` and is never revisited after its FPU visit. Plan 026's `c` sweep used the heuristic evaluator. Open item in plan 032.
@@ -35,9 +36,48 @@ Clones the root state, sets `DiceMode::RegisterRolls`, force-disables logging an
 
 Every knob that shapes a search lives in `MctsConfig` (`dynamics.rs`): `workers`, `memory_mode`, `tree_reuse`, `virtual_loss`, `puct`, `tie_break`, `backup`, `fpu_reduction`, `horizon_turns`, `horizon`, `stats`, `leaf_stats`, `debug_root`. `MctsBot::new` uses `MctsConfig::from_env()`, so every CLI path keeps its `BLOOD_MCTS_*` A/B knobs; `MctsBot::with_budget_and_config(budget, MctsConfig::new())` builds a bot that ignores the environment entirely, which is what lets one process (the web server, plan 034) run several differently-tuned bots.
 
+**Plan 043 makes it a committable preset.** `MctsConfig` is `Copy` + serde, and its serde default is `MctsConfig::new` — **not** `Default`, which is `from_env()`: a named configuration that absorbed a stray `BLOOD_MCTS_*` would not be reproducible, which is the entire point of naming one. `deny_unknown_fields` turns a typo into an error rather than a knob that silently stays put. Enum variants are `snake_case` on the wire so a preset reads in the same vocabulary as the CLI flags; renaming them is safe because they cross the hub under postcard (variant-by-index) and no persisted JSON names them. `cfgs/` holds the presets, `botbowl_play::bots::load_mcts_config` loads one, and `SearchConfig.config` carries it — see `cfgs/README.md`.
+
 **Env vars are read once, at `::new`** — setting one between building a bot and calling it no longer does anything. Before plan 034, `BLOOD_MCTS_HORIZON`, `_WORKERS` and `_MEMORY` were re-read inside *every* `get_action` and therefore **overrode** an explicit `with_workers(...)`; the builders now actually win.
 
 `BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_HORIZON_TURNS=N`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_PUCT_MODE`/`_C`/`_RANGE_FLOOR`, `BLOOD_MCTS_TIE_BREAK`, `BLOOD_MCTS_BACKUP=mean`, `BLOOD_MCTS_FPU_REDUCTION=k`, `BLOOD_MCTS_STATS=1`, `BLOOD_MCTS_LEAF_STATS=1`, `BLOOD_MCTS_DEBUG_ROOT=1` (dump top-10 root children by visits/Q after each search — first thing to reach for when the bot plays nonsense; all-zero Q means backprop is broken).
+
+## Search telemetry (`telemetry.rs`, plan 043)
+
+Two things the bot does every decision that used to be invisible. Both are **always on** — plain
+`u64`s on `MctsBot`, written on the owning thread in `run_search` before any worker spawns, so a
+process running several differently-tuned bots (the web server) gets one tally per bot rather than
+a global it cannot attribute.
+
+- **`ReuseOutcome`** classifies the tree-reuse attempt into `Reused | Disabled | NoCache |
+  AnchorMiss | MarkerMiss | LookupMiss | NoPath`, recorded per decision with the top proc name and
+  the pruned action fan. `AnchorMiss` is the expected one (turn boundary / score); `LookupMiss` and
+  `NoPath` are the ones worth chasing. Broken down by procedure in `TreeReuseStats::by_proc`.
+- **`RecombinationCounts`** mirrors `recon_mcts::RecombinationStats` (which cannot derive serde —
+  that crate is std-only by design). Per search it is a **delta**, read from the tree the search
+  actually ran on. **Read the baseline after the reuse attempt resolves**, never before: a lookup
+  miss probes the cached tree and then searches a brand-new one, and differencing those saturates
+  to zero and drops the decision's whole cost. `tests/tree_reuse_stats.rs` pins it.
+
+`MctsBot::telemetry()` reads the totals; `take_telemetry()` drains them, which is how eval makes a
+per-game record mean "this game" without differencing maps. `telemetry_of` / `take_telemetry_of` /
+`last_search_of` reach them through a `dyn Bot` via the engine's `Bot::as_any` hook. Every field is
+a commutative counter, so `merge` folds games, threads and worker machines in any order.
+`BLOOD_MCTS_STATS=1` adds a grep-able `MCTS_TELEMETRY …` line.
+
+**What it measured first time out**, and what came of each (heuristic, 16x9):
+
+- **Recombination cost ~8 state comparisons per registry probe**, 82% rejected, ~85% of them
+  between states whose full 64-bit hashes agreed — because `GameState::hash` hashed only
+  `proc_stack.len()` and `proc_stack_top()`. **Fixed** in plan 044: colliding states 36.8% -> 0%,
+  comparisons per probe 4.07 -> 0.12, search 6-9% faster with byte-identical output. The
+  `eq_hash_equal` counter is what separated real hash collisions from hashbrown's 7-bit tag
+  brushes, and it is still the way to tell them apart.
+- **Tree reuse ~48-54% overall**, but wildly uneven by procedure: `FollowUp`/`DodgeProc`/`GfiProc`
+  100%, `Push` 78%, `MoveAction` 65%, **`Block` 0.8%**. The `Block` figure is structural, not bad
+  luck — `botbowl-mcts/tests/block_reuse.rs` explains it and plans/032 item 13 carries the open
+  question it exposed (the bot overrules its own block-die script half the time). See the
+  block-die note under "Search shape".
 
 ## Reading a finished search (`report.rs`)
 

@@ -1300,6 +1300,31 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   `WARM_FROM=latest` (no gate, so "champion" and "latest" coincide). Window 10 is moot under
   the fine-tune (W3 vs W1, plan 029) and is dropped from the gateless design.
 
+### 13. The bot overrules its own block-die script half the time (found 2026-09-23)
+
+- **Mechanism, measured.** `apply_action`'s quiescent loop resolves block-die choices with
+  `block_dice::scripted_pick`, so the search almost never creates a node for one; but the *real
+  game* stops and asks. Plan 043's telemetry: `Block` reuses the tree in **1 of 128 decisions**
+  (0.8%) against 100% for `FollowUp`/`DodgeProc`/`GfiProc`, 78% for `Push`, 65% for `MoveAction`.
+  `botbowl-mcts/tests/block_reuse.rs` classifies all 26 sampled misses: **14** had no post-roll
+  `Block` node at all (walked past), **12** had one carrying `block_outcomes`' *representative*
+  dice array rather than the faces rolled — `Block` keeps `roll` in its procedure state and
+  equality compares the stack. Nothing unexplained.
+- **The finding is not the cache miss.** At such a root the bot searches the die choice properly
+  (mean fan 2.2) and picks a **different die from `scripted_pick` 51% of the time** (20/41 agreed).
+  So inside the tree it values every future block under a policy it then overrules in half the
+  cases that actually arise. Either the script is wrong often enough to matter — in which case the
+  in-tree model is systematically mis-valuing blocks — or the root search is noise on a decision
+  the script already gets right, in which case the rebuild is pure cost.
+- **Cheap discriminating test.** Head-to-head at equal budget: candidate as shipped vs a candidate
+  whose *root* block-die choice is forced to `scripted_pick` (skip the search entirely, which also
+  removes the rebuild). If forcing the script is neutral or better, the script is fine and the
+  search at that root should go; if it is worse, the script is the thing to fix, and fixing it also
+  fixes the in-tree valuation. `eval --rungs scripted` at 400+ games, paired seeds.
+- **Why it might matter beyond speed.** Blocks are the main way a drive is disrupted, and
+  `score_leaf` is evaluated on the states blocks lead to. A systematically wrong in-tree block
+  policy biases every line that contains a block, which is most of them.
+
 ### Deprioritised, with the reason
 
 - Ensembles of k short searches (plan 028 A-arms): a converging tree makes this a labels

@@ -343,7 +343,7 @@ impl Default for GameStateBuilder {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GameInfo {
     pub half: u8,
     pub home_turn: u8,
@@ -558,96 +558,81 @@ impl Clone for GameState {
     }
 }
 
-// Hand-rolled Hash that covers the canonical "situation" fields only.
-// Used by MCTS-style transposition tables. The hash is intentionally
-// conservative — collisions are corrected by PartialEq, so undercounting
-// fields is safe; overcounting (e.g. hashing the RNG state or the log)
-// would prevent useful recombination.
+// Hand-rolled Hash, kept in lockstep with the `derivative(PartialEq)` field list above.
+//
+// **The rule: hash a field if and only if `PartialEq` compares it.** Hashing less than equality
+// compares is merely slow — the extra candidates are rejected by `PartialEq` — while hashing more
+// is a correctness bug: two *equal* states would land in different buckets, and the MCTS registry
+// would silently split one DAG node into several, breaking recombination. So the ignored fields
+// (`path_buffer`, `registered_roll`, `next_input`, `rng`, `log`, `print_log`) must stay out, and
+// everything else must stay in.
+//
+// This used to hash a hand-picked subset: most of `GameInfo`, scores only from the team states,
+// a subset of each fielded player, and — for the procedure stack — only its length and the *name*
+// of the top procedure, with a comment arguing that "collisions are corrected by PartialEq".
+// Correct, but plan 043's telemetry priced it: **36.8% of the distinct states in a real search DAG
+// shared a hash**, one bucket held 84 of them, and the search was paying ~8 full two-state
+// comparisons per registry probe — each one cloning two whole `GameState`s. Measured causes were
+// the procedure-stack payload (73% of colliding states) and `info.player_action_type` (27%).
+//
+// Hashing everything `PartialEq` looks at costs a deeper walk per node insert and buys back all of
+// those comparisons. See `botbowl-mcts/tests/hash_quality.rs`, which gates the collision rate.
 impl std::hash::Hash for GameState {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
-        // GameInfo discriminators
-        self.info.half.hash(h);
-        self.info.home_turn.hash(h);
-        self.info.away_turn.hash(h);
-        (self.info.team_turn as u8).hash(h);
-        self.info.game_over.hash(h);
-        self.info.turnover.hash(h);
-        self.info.active_player.hash(h);
-        self.info.pickup_this_activation.hash(h);
-        self.info.blitz_this_activation.hash(h);
-        self.info.handle_td_by.hash(h);
-        (self.info.kicking_first_half as u8).hash(h);
-        (self.info.kicking_this_drive as u8).hash(h);
-        self.info.kickoff_by_team.map(|t| t as u8).hash(h);
+        // Whole-struct hashes where the struct is small and every field can move during a search.
+        // `GameInfo` in full rather than a hand-picked field list: `player_action_type` alone was
+        // 27% of the old collisions, and a hand-maintained subset is exactly how that drift
+        // happened. The team states carry rerolls and `reroll_used`, which the old hash missed.
+        self.info.hash(h);
+        self.home.hash(h);
+        self.away.hash(h);
 
-        // Scores
-        self.home.score.hash(h);
-        self.away.score.hash(h);
-
-        // Fielded players slot-by-slot
+        // Fielded players, but only the parts that *change*. The stat block (`str_`, `ma`, `ag`,
+        // `av`, `pass`, `role`, `skills`) is fixed for the life of a game and is implied by `id`,
+        // so hashing it is pure cost — and `skills` is a `HashSet`, the most expensive field here.
+        // `used_skills` is different: a Dodge already spent this activation is a genuinely
+        // different situation, and it is usually empty so it costs almost nothing.
         for slot in &self.fielded_players {
             match slot {
                 None => 0u8.hash(h),
                 Some(p) => {
                     1u8.hash(h);
                     p.id.hash(h);
-                    p.position.x.hash(h);
-                    p.position.y.hash(h);
-                    (p.status as u8).hash(h);
+                    p.position.hash(h);
+                    p.status.hash(h);
                     p.used.hash(h);
                     p.moves.hash(h);
-                    (p.stats.team as u8).hash(h);
-                    p.stats.str_.hash(h);
-                    p.stats.ma.hash(h);
-                    p.stats.ag.hash(h);
-                    p.stats.av.hash(h);
+                    hash_set_unordered(&p.used_skills, h);
                 }
             }
         }
+        // `board_dims` is constant for the life of a game, `board` is a position index derived
+        // from `fielded_players`, and `dugout_players` never separated a pair in the measured
+        // corpus. All three stay in `PartialEq`, which is the direction that is always safe.
 
-        // Ball
-        match &self.ball {
-            BallState::OffPitch => 0u8.hash(h),
-            BallState::OnGround(p) => {
-                1u8.hash(h);
-                p.x.hash(h);
-                p.y.hash(h);
-            }
-            BallState::Carried(id) => {
-                2u8.hash(h);
-                id.hash(h);
-            }
-            BallState::InAir(p) => {
-                3u8.hash(h);
-                p.x.hash(h);
-                p.y.hash(h);
-            }
-        }
-        // Two in-air states with different already-bounced-through squares are
-        // distinct search situations (they permit different next bounces).
-        for p in &self.bounce_squares {
-            p.x.hash(h);
-            p.y.hash(h);
-        }
+        // Ball, plus the squares it has already bounced through — two in-air states with
+        // different bounce histories permit different next bounces.
+        self.ball.hash(h);
+        self.bounce_squares.hash(h);
 
-        // Dice mode + procedure-stack-top discriminator. The full
-        // proc_stack is heavy and changes shape often — using only the
-        // top procedure's name catches "what the engine is about to do
-        // next" without paying for a deep recursive hash. Per-variant
-        // payloads (fixed-dice queue, policy parameters) are search-
-        // irrelevant — collisions are corrected by PartialEq.
+        // **The procedure stack in full — this is the whole point.** What the engine is about to
+        // do, and with what parameters, was 73% of the collisions the old hash produced; it used
+        // to contribute only its length and the *name* of its top frame. `AnyProc` derives `Hash`
+        // right next to its `PartialEq` so the two cannot drift apart.
+        self.proc_stack.hash(h);
+
+        // `pending_roll` in full, not just its discriminant: "about to resolve a 3+ dodge" and
+        // "about to resolve a 5+ dodge" are different situations.
+        self.pending_roll.hash(h);
+
+        // Dice mode by discriminant only — its payloads (the fixed-dice queue, policy parameters)
+        // are search-irrelevant scratch.
         std::mem::discriminant(&self.dice_mode).hash(h);
-        self.proc_stack.len().hash(h);
-        self.proc_stack_top().hash(h);
-        // pending_roll is part of "what happens next" — two states that
-        // differ only in whether they're paused on a roll are distinct.
-        match &self.pending_roll {
-            None => 0u8.hash(h),
-            Some(r) => {
-                1u8.hash(h);
-                std::mem::discriminant(r).hash(h);
-            }
-        }
+
+        // `available_actions` is deliberately **not** hashed. It is derived from the procedure
+        // stack, it separated only 8 of 6607 colliding states in the measured corpus, and its
+        // `positional` field is a `FullPitch` — hashing it walks the whole board on every node
+        // insert, which measurably cost more than the comparisons it saved.
     }
 }
 

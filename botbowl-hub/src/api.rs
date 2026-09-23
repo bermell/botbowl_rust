@@ -46,6 +46,12 @@ pub struct EvalJobRequest {
     /// Self-describing label for `report.candidate` (built by the CLI with
     /// `botbowl_play::bots::candidate_label`, same as `botbowl-ui eval`).
     pub candidate_label: String,
+    /// Plan 043: the named preset each side plays under, for `report.json`. The knobs themselves
+    /// ride in each `BotReq`'s `SearchConfig`; this is the name they are known by.
+    #[serde(default)]
+    pub candidate_config: Option<String>,
+    #[serde(default)]
+    pub opponent_config: Option<String>,
     pub mcts_iters: usize,
     pub rungs: Vec<RungReq>,
     pub seed: u64,

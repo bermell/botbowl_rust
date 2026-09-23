@@ -34,13 +34,13 @@ impl From<Vec<AnyProc>> for ProcState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum RollProcState {
     Init,
     RerollUsed,
     //WaitingForSkillReroll,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SimpleProcContainer<T: SimpleProc + std::fmt::Debug> {
     proc: T,
     state: RollProcState,

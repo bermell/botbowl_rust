@@ -16,6 +16,15 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
 - **`SearchConfig` knobs are `Option`: `None` means "leave `MctsBot`'s (env-driven) default".**
   `dataset` has always left them unset; `eval` has always set all four. Keep that split or the
   two paths' bots silently diverge from their pre-extraction behaviour.
+- **`SearchConfig.config` is the plan-043 sibling, and it is exclusive with those four.** A named
+  preset (`load_mcts_config`, `cfgs/*.toml`) replaces the bot's configuration wholesale —
+  environment included — so `make_mcts` routes through `with_budget_and_config` and every `Option`
+  knob must be `None`. Clap enforces the split with `conflicts_with`; a run is described entirely
+  by a preset or entirely by flags, never half of each. `workers` is the exception either way: it
+  is a property of the machine, not of the bot being compared.
+- **`SearchConfig` must stay `Copy`.** `botbowl-hub-proto` re-exports it verbatim, so a non-`Copy`
+  field ripples through the whole worker protocol. That is why the preset's *name* travels
+  separately (the rung label, `TrajectoryMeta.extra`) rather than inside the struct.
 - **Fold logic lives next to the record.** `LadderRow::record` is how a rung's per-game lines
   become the report row, in any order from any number of producers. The hub rebuilds
   `report.json` from workers' lines with exactly this.
@@ -26,11 +35,19 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   board for game `seed` as a pure function, so a hub-shipped config draws the same board on every
   worker. `None` = the env board. `play_ladder_game(.., board)` takes the board explicitly;
   `LadderRow::on_board` / `eval::rung_name` spell a multi-size rung `opponent@14x7/4`.
+- **Telemetry folds like every other counter (plan 043).** `EvalGameLine.telemetry` is
+  `botbowl_mcts::SearchTelemetry` — the bot's own type, not a copy — so `LadderRow::record` folds
+  it with `SearchTelemetry::merge` and the hub gets the identical number from workers' lines.
+  `play_ladder_game` **drains** the bot (`take_telemetry_of`) rather than reading it: a rung reuses
+  one bot across its games, so draining is what makes a line mean "this game".
 - **`EvalGameLine::serialize` is hand-written, and the reason matters.** Its `board` tag must be
   omitted from JSON when absent (the line format is pinned byte for byte) but must *always* be on
   the postcard wire, which is not self-describing — a `skip_serializing_if` there made the hub
   read every worker frame as "end of buffer". `is_human_readable()` is the switch;
-  `board_tag_survives_a_non_self_describing_encoding` pins it.
+  `board_tag_survives_a_non_self_describing_encoding` pins it. `telemetry` is the second such
+  trailing field and plays by exactly the same rules —
+  `telemetry_survives_a_non_self_describing_encoding`. **Update the field count when you add
+  another.**
 
 ## Verifying a change is behaviour-neutral
 

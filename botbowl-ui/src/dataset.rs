@@ -37,6 +37,13 @@ fn config_of(args: &DatasetArgs) -> io::Result<GenerateConfig> {
         Some(ms) => SearchBudget::Time(Duration::from_millis(ms)),
         None => SearchBudget::Iterations(args.mcts_iters),
     };
+    // Plan 043: a named preset replaces the bot's whole configuration, environment included.
+    // Unset leaves the historical behaviour untouched.
+    let preset = args
+        .bot_config
+        .as_deref()
+        .map(botbowl_play::bots::load_mcts_config)
+        .transpose()?;
     Ok(GenerateConfig {
         mode: args.mode.into(),
         search: SearchConfig {
@@ -48,7 +55,9 @@ fn config_of(args: &DatasetArgs) -> io::Result<GenerateConfig> {
             horizon_turns: None,
             backup: None,
             fpu_reduction: None,
+            config: preset.as_ref().map(|p| p.config),
         },
+        config_name: preset.map(|p| p.name),
         evaluator: args.evaluator.into(),
         model: args.model.clone(),
         max_steps: args.max_steps,

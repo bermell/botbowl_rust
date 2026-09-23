@@ -135,6 +135,26 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                 assert_eq!(report.evaluator, "heuristic");
                 assert_eq!(report.budget, "60 iterations");
                 assert!(report.evaluator_value.is_none(), "only the NN evaluators have one");
+                // Plan 043: search health rides along with every report.
+                let h = &report.health;
+                assert!(
+                    matches!(
+                        h.reuse.as_str(),
+                        "reused" | "no_cache" | "anchor_miss" | "lookup_miss" | "no_path"
+                    ),
+                    "unexpected reuse outcome {:?}",
+                    h.reuse
+                );
+                assert!(h.proc.is_some(), "a decision state always has a procedure on top");
+                assert!(h.n_actions > 0, "a decision offers at least one legal action");
+                assert!(h.searches > 0, "this decision is counted");
+                assert!(h.reused <= h.searches);
+                assert!(h.recomb_probes > 0, "a search must probe the registry");
+                assert!(h.recomb_hits <= h.recomb_probes, "hits cannot exceed probes");
+                assert!(
+                    h.eq_rejects <= h.eq_checks,
+                    "a rejection is a comparison that returned false"
+                );
                 assert!(!report.children.is_empty(), "a searched root has children");
                 assert!(
                     report.children.iter().any(|c| c.stats.visits > 0),
@@ -196,6 +216,11 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                         send(&mut socket, ClientMsg::Act(first_legal(&view))).await;
                     }
                 }
+            }
+            // Plan 043: the live valuation is an NN read-out. This session's bot is the
+            // heuristic one, so it must stay silent rather than publish a meaningless number.
+            ServerMsg::Valuation { value_home } => {
+                panic!("a heuristic bot has no network to value with, got {value_home}")
             }
             ServerMsg::Error(e) => panic!("server error: {e}"),
             _ => {}

@@ -21,6 +21,8 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 - `plans/001-grand-plan.md` — strategic roadmap (AlphaZero-style MCTS via curriculum learning → scripted baseline → heuristic/rollout/NN-guided MCTS → self-play). Read it before proposing architecture changes that span the engine and `recon_mcts`.
 - `plans/NNN-idea--*.md` / `plans/NNN-plan--*.md` — designs not yet started or in-flight. `plans/completed/` — closed-out plans with **Status:** headers; historical context, not live work.
 - **Live experimental programme:** `plans/031-plan--audit-diagnostics.md` (cheap diagnostics, run first) and `plans/032-plan--ranked-experiment-queue.md` (ranked longer experiments and open questions). New results go there, not into completed plans.
+- **Search instrumentation + bot presets:** `plans/043-plan--search-instrumentation-and-bot-configs.md` — tree-reuse and recombination counters that reach `report.json`, a trajectory's provenance and the web debug drawer, plus `cfgs/*.toml` bot presets (`--bot-config` / `--vs-config`) so the same net can play itself under two configurations.
+- **State-hash discrimination:** `plans/044-plan--state-hash-discrimination.md` — `GameState::hash` now walks the procedure stack and `GameInfo` whole, taking colliding states from 36.8% to 0% and wasted state comparisons from 4.07 to 0.12 per registry probe.
 - **Board-size curriculum:** `plans/042-plan--board-size-curriculum.md` — mixed-size generation (`--board-sizes` / `--size-centre …` on `dataset` and `job generate`, per-board eval rungs via `eval --board-sizes`), schema v7, the trainer's multi-dims loader and `train_loop.sh`'s `SIZE_MODE`. Experiments E0–E5 there are the next thing to run.
 - **Current focus: bot capability** (priors, leaf-score, pruning, scripted heuristics, new lectures). Performance work is deprioritized — don't propose perf tuning, profiling reruns, or speed micro-benchmarks unless explicitly asked.
 
@@ -46,6 +48,19 @@ cargo run --release -p botbowl-web-server -- \
 
 Both commands work from any directory — the server's `--dist-dir`/`--models-dir` defaults are
 resolved from its own crate path, not the cwd.
+
+Bot presets and search telemetry (plan 043; every flag is optional — unset is exactly the old behaviour):
+
+```sh
+botbowl-ui eval --bot-config cfgs/aggressive.toml --vs-config cfgs/baseline.toml ...   # same net, two configurations
+botbowl-ui dataset --bot-config cfgs/baseline.toml ...                                 # name stamped into the corpus
+botbowl-ui eval --trace-reuse /tmp/reuse.jsonl ...                                     # opt-in per-decision trace
+BLOOD_MCTS_STATS=1 ...                                                                 # MCTS_TELEMETRY line on stderr
+```
+
+`report.json` and `eval.games.jsonl` always carry a `telemetry` block (tree-reuse by procedure,
+recombination hits vs wasted state comparisons); `dataset` stamps the same numbers into each
+trajectory's `meta.extra`. See `cfgs/README.md`.
 
 Mixed board sizes (plan 042; every flag is optional — unset means the env board, exactly as before):
 
@@ -78,5 +93,6 @@ These can be violated from any crate, so they live here; the detail behind each 
 
 - **Dice discipline (engine):** all randomness goes through `state.dice_mode: DiceMode` (`RollDice` / `FixedDice` / `RegisterRolls` / `DicePolicy`) — never call `state.rng` directly inside a procedure. Tests get `FixedDice` by default from `GameStateBuilder::build()`; production/MCTS/lectures must `set_dice_mode` explicitly.
 - **Recombination purity (mcts):** pruning rules (`botbowl-mcts/src/pruning.rs`) and priors (`priors.rs`) must be pure functions of `(state, action)`. Impurity silently splits the DAG and breaks recombination.
+- **`GameState`'s `Hash` and `PartialEq` must agree, field for field (engine).** Hash a field iff `PartialEq` compares it. Hashing *less* is only slow — the extra candidates get rejected by `PartialEq` — but hashing *more* is a correctness bug: two equal states would land in different registry buckets and the MCTS DAG would silently split. A new procedure must derive `Hash` next to its `Eq` (`AnyProc` derives both), and a new `GameState` field must be added to both or neither. `botbowl-mcts/tests/hash_quality.rs` gates it from both directions.
 - **HashOnly is forbidden:** `recon_mcts`'s `HashOnly` memory mode corrupts Blood Bowl search (hash collisions merge distinct states). It's been removed from `MctsBot`'s `MemoryMode`; never reintroduce it.
 - **TDD-first (engine):** new rules get a failing test first. "If code can be removed without breaking tests, it should be."

@@ -739,6 +739,19 @@ fn Debug() -> impl IntoView {
             </button>
             <Show when=move || open.get()>
                 <div class="debug-body">
+                    // Plan 043: the net's read of the position *right now*. Unlike the
+                    // inspector's `net favours …`, which is a by-product of the bot's last
+                    // search, this updates on every board change — so it answers "who does the
+                    // network think scores next" during your own turn.
+                    <div class="valuation">
+                        <span class="label">"Net valuation"</span>
+                        <span class="value">
+                            {move || match app.valuation.get() {
+                                Some(v) => format!("favours {}", crate::inspector::favours(v)),
+                                None => "— (no network in play)".to_string(),
+                            }}
+                        </span>
+                    </div>
                     <div class="pin">
                         <span class="label">"Pin next roll"</span>
                         <div class="pin-buttons">

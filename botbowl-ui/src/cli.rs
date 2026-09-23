@@ -1,4 +1,6 @@
 use botbowl_curriculum::RandomStartConfig;
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
@@ -244,7 +246,9 @@ impl SizeArgs {
                 .map(Some)
                 .map_err(|e| format!("--board-sizes: {e}"));
         }
-        let Some(centre) = self.size_centre else { return Ok(None) };
+        let Some(centre) = self.size_centre else {
+            return Ok(None);
+        };
         let (lo, hi) = self
             .size_aspect
             .split_once('-')
@@ -284,11 +288,13 @@ impl EvalSizeArgs {
     pub fn boards(&self) -> Result<Vec<Option<botbowl_engine::core::model::BoardDims>>, String> {
         match &self.board_sizes {
             None => Ok(vec![None]),
-            Some(list) => Ok(botbowl_play::board_sizes::SizeDist::parse_list(list, self.cells_per_player)
-                .map_err(|e| format!("--board-sizes: {e}"))?
-                .boards()
-                .map(Some)
-                .collect()),
+            Some(list) => Ok(
+                botbowl_play::board_sizes::SizeDist::parse_list(list, self.cells_per_player)
+                    .map_err(|e| format!("--board-sizes: {e}"))?
+                    .boards()
+                    .map(Some)
+                    .collect(),
+            ),
         }
     }
 }
@@ -319,6 +325,12 @@ pub struct DatasetArgs {
     /// Worker threads for the MCTS bot.
     #[arg(long, default_value_t = 1)]
     pub mcts_workers: usize,
+    /// Bot preset: a TOML `MctsConfig` (plan 043). Unset keeps the historical behaviour —
+    /// `dataset` leaves every search knob at `MctsBot`'s env-driven default. Setting it replaces
+    /// that configuration wholesale and stamps the preset's name into each trajectory's
+    /// provenance. See `cfgs/README.md`.
+    #[arg(long)]
+    pub bot_config: Option<PathBuf>,
     /// Games to play concurrently in this process (plan 024 Stage 4).
     ///
     /// Games are independent — own state, own bots, own seed — so this
@@ -432,6 +444,28 @@ pub struct EvalArgs {
     /// ONNX model for the --vs-evaluator opponent (required for nn/nn-value).
     #[arg(long)]
     pub vs_model: Option<String>,
+    /// Candidate bot preset: a TOML `MctsConfig` (plan 043). The file stem names the
+    /// configuration and is stamped into the rung label and `report.json`, so a result can be
+    /// traced back to what produced it. A preset replaces the bot's whole configuration —
+    /// including anything `BLOOD_MCTS_*` would have said — so it is exclusive with the per-knob
+    /// flags below. See `cfgs/README.md`.
+    #[arg(
+        long,
+        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "backup", "fpu_reduction"]
+    )]
+    pub bot_config: Option<PathBuf>,
+    /// Per-decision tree-reuse trace, as JSONL (plan 043). Off by default: `report.json` always
+    /// carries the reuse rates broken down by procedure, and this is for the next question —
+    /// which concrete actions a procedure with an odd miss rate was facing. Appends.
+    #[arg(long)]
+    pub trace_reuse: Option<PathBuf>,
+    /// Opponent bot preset; defaults to the candidate's. Set this alone to run a
+    /// configuration head-to-head: the same net under two configurations.
+    #[arg(
+        long,
+        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_backup", "vs_fpu_reduction"]
+    )]
+    pub vs_config: Option<PathBuf>,
     /// Candidate PUCT selection rule: `raw` or `normalised` (plan 026).
     #[arg(long, default_value = "raw")]
     pub puct_mode: String,

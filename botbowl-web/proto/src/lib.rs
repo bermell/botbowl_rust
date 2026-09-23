@@ -31,4 +31,4 @@ pub use view::{Dims, PlayerView, SquareView, ViewState};
 
 /// Bumped whenever a wire type changes shape. The client refuses to render a
 /// view from a server it does not match.
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;

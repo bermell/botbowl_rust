@@ -655,6 +655,7 @@ impl Inner {
                 // same string `botbowl-ui eval --board-sizes` writes.
                 let mut boards: Vec<String> = rungs.iter().filter_map(|r| r.board.map(board_label)).collect();
                 boards.dedup();
+                let ladder: Vec<LadderRow> = rungs.iter().map(|r| r.row.clone().finish()).collect();
                 let r = Report {
                     candidate: req.candidate_label.clone(),
                     mcts_iters: req.mcts_iters,
@@ -667,7 +668,12 @@ impl Inner {
                     git_commit: botbowl_data::git_commit().to_string(),
                     git_dirty: botbowl_data::git_dirty(),
                     lectures: Vec::new(),
-                    ladder: rungs.iter().map(|r| r.row.clone().finish()).collect(),
+                    // Plan 043: the same fold as the single-process driver, over lines the
+                    // workers sent — one implementation, two callers.
+                    telemetry: Report::telemetry_of(&ladder),
+                    ladder,
+                    candidate_config: req.candidate_config.clone(),
+                    opponent_config: req.opponent_config.clone(),
                 };
                 match serde_json::to_string_pretty(&r)
                     .map_err(io::Error::other)

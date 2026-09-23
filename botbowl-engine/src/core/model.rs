@@ -182,7 +182,10 @@ impl BoardDims {
         // The bands must tile the playable rows exactly, with equal wings. A
         // wing may legitimately be empty on a short board; the LOS may not.
         let (los, wing) = dims.bands();
-        assert!(los >= 1 && wing >= 0 && los + 2 * wing == ph, "bands {los}+2x{wing} != {ph}");
+        assert!(
+            los >= 1 && wing >= 0 && los + 2 * wing == ph,
+            "bands {los}+2x{wing} != {ph}"
+        );
         assert_eq!(*dims.los_y_range().start(), wing + 1);
         assert_eq!(*dims.los_y_range().end(), height - 2 - wing);
         assert_eq!(dims.north_wing_y_range().count(), wing as usize);
@@ -282,10 +285,37 @@ impl BoardDims {
             TeamType::Away => self.width - 2,
         }
     }
+    /// LOS-to-endzone distance is `width/2 - 1` for either team (the pitch is
+    /// symmetric), so this is team-independent.
+    pub fn los_to_endzone_distance(&self) -> Coord {
+        self.width / 2 - 1
+    }
+    /// The greatest MA a player can have and still be unable to reach the
+    /// opponent's endzone from a standing start on their own LOS in one turn
+    /// — even with the two GFI squares this engine allows beyond MA
+    /// (`FieldedPlayer::total_movement_left` is `ma + 2`). Not applied to the
+    /// stock roster by the engine itself; callers that want it opt in (eval
+    /// games, to force a multi-turn advance instead of a reliable one-turn
+    /// score on a narrow board — see `botbowl-play::eval`). No-op ceiling on
+    /// the full pitch, where it already exceeds every stock role's MA.
+    pub fn ma_cap(&self) -> Coord {
+        (self.los_to_endzone_distance() - 3).max(0)
+    }
     /// Kickoff scatter/deviate & throw-in distances are capped here so the ball
     /// can't be flung clear across a narrow board.
     pub fn max_scatter(&self) -> Coord {
         self.width / 2
+    }
+    /// Divides the raw kickoff-deviate (D6) and throw-in (2D6) roll down on a
+    /// narrow board, so a kickoff aimed at the middle — or a throw-in back
+    /// onto the pitch — rarely scatters out of bounds. The dice themselves
+    /// (D6/D8 for deviate, 2D6/D3 for throw-in) are unchanged; only how far
+    /// the roll carries the ball is scaled down. No-op (divisor 1) once the
+    /// narrower playable axis (excluding the 2-cell OOB border) is at least
+    /// as wide as the largest roll it scales, 2D6 = 12.
+    pub fn scatter_divisor(&self) -> Coord {
+        let axis = (self.width.min(self.height) - 2).max(1);
+        (12 + axis - 1) / axis
     }
     pub fn kickoff_table_enabled(&self) -> bool {
         self.team_size >= 7
@@ -329,7 +359,7 @@ macro_rules! skip_if_board_smaller_than {
 // Change the alias to `Box<error::Error>`.
 pub type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct Direction {
     pub dx: Coord,
     pub dy: Coord,
@@ -568,13 +598,13 @@ impl std::fmt::Debug for Action {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum ActionChoice {
     Positional(Vec<Position>),
     Simple,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
 pub enum PlayerStatus {
     Up,
     Down,
@@ -663,7 +693,7 @@ impl PlayerStats {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum DugoutPlace {
     Reserves,
     Heated,
@@ -672,7 +702,7 @@ pub enum DugoutPlace {
     Ejected,
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug, Hash)]
 pub struct DugoutPlayer {
     pub stats: PlayerStats,
     pub place: DugoutPlace,
@@ -689,6 +719,52 @@ pub struct FieldedPlayer {
     pub moves: u8,
     pub used_skills: HashSet<Skill>,
 }
+
+/// Order-independent hash of a set.
+///
+/// `HashSet` has no `Hash` impl because its iteration order is not stable, but set *equality* is
+/// order-independent — so the hash has to be too, or two equal states could hash differently and
+/// split the MCTS DAG. Summing per-element hashes is commutative, which is exactly the property
+/// needed; the length is mixed in so `{}` and a set of hash-zero elements stay distinguishable.
+pub(crate) fn hash_set_unordered<T: std::hash::Hash, H: std::hash::Hasher>(set: &HashSet<T>, h: &mut H) {
+    use std::hash::Hash as _;
+    let mut acc: u64 = 0;
+    for item in set {
+        let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
+        item.hash(&mut item_hasher);
+        acc = acc.wrapping_add(std::hash::Hasher::finish(&item_hasher));
+    }
+    set.len().hash(h);
+    acc.hash(h);
+}
+
+impl std::hash::Hash for PlayerStats {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.str_.hash(h);
+        self.ma.hash(h);
+        self.ag.hash(h);
+        self.pass.hash(h);
+        self.av.hash(h);
+        self.team.hash(h);
+        hash_set_unordered(&self.skills, h);
+        self.role.hash(h);
+    }
+}
+
+impl std::hash::Hash for FieldedPlayer {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.id.hash(h);
+        self.stats.hash(h);
+        self.position.hash(h);
+        self.status.hash(h);
+        self.used.hash(h);
+        self.moves.hash(h);
+        // A Dodge or Block skill already spent this activation is a different situation from one
+        // still in hand, and `PartialEq` agrees — so it has to move the hash.
+        hash_set_unordered(&self.used_skills, h);
+    }
+}
+
 impl FieldedPlayer {
     pub fn armor_target(&self) -> Sum2D6Target {
         Sum2D6Target::try_from(self.stats.av + 1).unwrap()
@@ -757,7 +833,7 @@ impl FieldedPlayer {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TeamState {
     pub bribes: u8,
     //babes: u8,
@@ -811,7 +887,7 @@ pub fn other_team(team: TeamType) -> TeamType {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
 pub enum BallState {
     OffPitch,
     OnGround(Position),
@@ -819,7 +895,7 @@ pub enum BallState {
     InAir(Position),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub enum Weather {
     Nice,
     Sunny,
@@ -828,7 +904,7 @@ pub enum Weather {
     Sweltering,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum SomeProcInput {
     Action(Action),
     Roll(RollResult),
@@ -844,7 +920,7 @@ impl From<RollResult> for SomeProcInput {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum ProcInput {
     Nothing,
     Action(Action),
@@ -877,7 +953,7 @@ pub enum ProcState {
 }
 
 //rename to something more descriptive
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum MicroStepState {
     RunAgain,
     NeedAction,
@@ -936,6 +1012,15 @@ impl std::fmt::Debug for AvailableActions {
         info.finish()
     }
 }
+impl std::hash::Hash for AvailableActions {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.team.hash(h);
+        hash_set_unordered(&self.simple, h);
+        self.positional.hash(h);
+        self.has_paths.hash(h);
+    }
+}
+
 impl AvailableActions {
     pub fn get_simple(&self) -> &HashSet<SimpleAT> {
         &self.simple
@@ -1042,7 +1127,7 @@ impl AvailableActions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub struct BlockActionChoice {
     // This will have all things needed in the Block procedure. Might as well merge them. Slightly funny code but it's ok!
     pub num_dices: NumBlockDices,
@@ -1141,6 +1226,44 @@ mod board_dims_tests {
     #[should_panic(expected = "must be even")]
     fn odd_width_is_rejected() {
         BoardDims::new(11, 9, 2);
+    }
+
+    /// No-op on the full pitch; on a narrow board it shrinks the roll enough
+    /// that the largest kickoff-deviate/throw-in roll (2D6 = 12) fits inside
+    /// the narrower playable axis from a centred aim.
+    #[test]
+    fn scatter_divisor_is_a_noop_on_full_pitch_and_shrinks_narrow_boards() {
+        assert_eq!(BoardDims::default().scatter_divisor(), 1, "full pitch must be a no-op");
+
+        // 16x9 engine (14x7 playable, plan 042's small tier): narrow axis 7.
+        if let Ok(dims) = BoardDims::try_new(16, 9, 3) {
+            assert_eq!(dims.scatter_divisor(), 2);
+            assert!(12 / dims.scatter_divisor() <= 7);
+        }
+        // 14x7 engine (12x5 playable): narrow axis 5.
+        if let Ok(dims) = BoardDims::try_new(14, 7, 3) {
+            assert_eq!(dims.scatter_divisor(), 3);
+            assert!(12 / dims.scatter_divisor() <= 5);
+        }
+    }
+
+    /// `ma_cap` must guarantee a player can't reach the endzone from a
+    /// standing LOS start in one turn, on every board the compiled capacity
+    /// supports: `ma_cap() + 2` (the engine's GFI ceiling) always falls
+    /// short of `los_to_endzone_distance()`.
+    #[test]
+    fn ma_cap_always_falls_short_of_the_endzone() {
+        assert_eq!(BoardDims::default().ma_cap(), 10, "full pitch must be a no-op (exceeds every stock MA)");
+
+        for (w, h, players) in [(16, 9, 3), (14, 7, 3), (12, 5, 1), (10, 5, 1), (8, 5, 1)] {
+            let Ok(dims) = BoardDims::try_new(w, h, players) else { continue };
+            assert!(
+                dims.ma_cap() + 2 < dims.los_to_endzone_distance(),
+                "{w}x{h}: ma_cap {} + 2 GFI must fall short of the {}-square LOS-to-endzone distance",
+                dims.ma_cap(),
+                dims.los_to_endzone_distance(),
+            );
+        }
     }
 
     /// `try_new` is `new` as a `Result`: the same rules, the same message,

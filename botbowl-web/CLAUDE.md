@@ -131,6 +131,24 @@ could not run two differently-tuned bots at all. `MctsConfig` (in `botbowl-mcts`
   for exactly that reason, and the heatmap normalises against the busiest sibling rather than the
   root's own counter.
 
+## Two read-outs, and they answer different questions (plan 043)
+
+- **`SearchReport.health`** is the search's own vitals, next to what it concluded: this decision's
+  tree-reuse outcome plus the rate so far, and recombination's hit rate against its wasted-compare
+  rate. Rendered as the inspector's "Search health" block. `anchor_miss` at a turn boundary is
+  expected; the same outcome mid-turn, or a `lookup_miss`, is not.
+- **`ServerMsg::Valuation`** is the net's read of the **current** position, Home-centric in
+  `[-1, 1]`, emitted from `GameSession::view` on *every* board change. It is a message of its own,
+  not a `ViewState` field, for two reasons: the view is re-sent in full on every step and should
+  not carry a value most sessions do not have, and the point is that it updates during the
+  **human's** turn — `SearchReport.evaluator_value` only ever appears after a bot move. One forward
+  pass per ply is nothing next to a search, and it cannot perturb the game because a frozen net is
+  a pure function of the state.
+- **Both name a team rather than printing a bare signed number.** `inspector::favours` turns a
+  Home-centric value into `Home 0.42`, because the question people ask of a value head is "who does
+  it think scores next", and a bare `+0.42` makes the reader remember whose frame it is in.
+  `evaluator_value` arrives in the *searching agent's* frame and is flipped back to Home's first.
+
 ## Sprites come from the sibling checkout, never from git
 
 `--assets-dir /path/to/botbowl/botbowl/web/static/img` is mounted at `/img/`. The player icons are
@@ -146,10 +164,20 @@ backgrounds — those exist for six fixed sizes, none of which are the tiers we 
 - **The dev server sends `cache-control: no-cache` on everything.** Without it a browser keeps
   serving the previous `index.html` after a `trunk build` and the page silently runs stale wasm —
   which looks exactly like a code bug and costs an hour the first time.
-- **A ball in flight can be off the grid.** `Kickoff` sets `BallState::InAir(aim + direction * len)`
-  with `len` capped only at `max_scatter()`, which on a narrow board reaches past the border ring
-  into negative coordinates. `Position` is `i8`, so an unchecked `pos.y as usize` wraps to ~2^64;
-  `view::index_of` is fallible for this reason and off-grid balls are simply not drawn.
+- **A ball in flight can be off the grid.** `Kickoff` sets `BallState::InAir(aim + direction * len)`,
+  `len` capped at `max_scatter()` and (on a narrow board) scaled down by `scatter_divisor()` — still
+  possible to land past the border ring into negative coordinates, just rarer than before that
+  scaling existed. `Position` is `i8`, so an unchecked `pos.y as usize` wraps to ~2^64; `view::index_of`
+  is fallible for this reason and off-grid balls are simply not drawn. Pinned by
+  `a_kickoff_deviate_off_the_grid_does_not_panic_the_view` (`derive_every_state.rs`), which forces
+  the roll rather than waiting for random play to find it, since `scatter_divisor` made that unreliable.
+- **A player pushed into the crowd is briefly at an out-of-bounds position while still "on
+  pitch."** `Push::do_moves` moves them to the (out-of-bounds) crowd square; `Injury::new_crowd`,
+  queued right after, is what actually unfields them — so `view::derive` can be called in between
+  (a `check()` mid-game, or a real session's dice-pending hold) with a fielded player whose position
+  fails `BoardDims::is_out`. `tackle_zones` must skip such a player rather than call
+  `get_adj_positions` on them, which asserts in-bounds. Pinned by
+  `a_player_mid_crowd_push_does_not_panic_the_view` (`view.rs`).
 - **Manual setup is not possible.** The engine's `Setup` procedure offers one action per
   pre-configured formation that fits the board — `SetupLine | SetupSpread | SetupWedge | SetupZone`
   (`Formation` in `kickoff_procs.rs`) — and then `EndSetup`. There is no per-square placement

@@ -29,6 +29,7 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, TeamType};
 
 use crate::action::{BbAction, BbPlayer};
+use crate::telemetry::{RecombinationCounts, ReuseDecision, SearchTelemetry};
 
 /// The `leaf_score` value of a touchdown — the scale `q_home` is on.
 pub const Q_SCALE: f32 = 1000.0;
@@ -99,6 +100,16 @@ pub struct SearchSummary {
     /// The evaluator's own value at the root, mover-centric in `[-1, 1]`.
     /// Only the NN evaluators have one to report.
     pub evaluator_value: Option<f32>,
+    /// Plan 043: whether this search inherited the previous decision's tree, and why not when it
+    /// did not. A `Reused` search began from a DAG that already held a plan; anything else threw
+    /// that plan away and rebuilt.
+    pub reuse: ReuseDecision,
+    /// What this search alone cost the transposition table. Cumulative totals for the whole bot
+    /// are on [`crate::MctsBot::telemetry`].
+    pub recombination: RecombinationCounts,
+    /// The bot's totals so far, of which this search is the latest contribution. Carried here so a
+    /// per-decision read-out can show a rate as well as the current answer.
+    pub telemetry: SearchTelemetry,
 }
 
 impl SearchSummary {

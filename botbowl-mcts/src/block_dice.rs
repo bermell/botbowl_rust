@@ -7,9 +7,25 @@
 //! Blood Bowl resolve deterministically given attacker/defender skills.
 //!
 //! `scripted_pick` returns the best die for whichever side is currently
-//! picking. The dynamics wires this into `available_actions`: when a
-//! scripted choice exists, MCTS sees only that single action, never the
-//! fan-out.
+//! picking. It is wired in at exactly one place: the first arm of
+//! `scripted::scripted_player_pick`, which `apply_action`'s quiescent loop
+//! consults before every advance. So the search does not *see* a collapsed
+//! fan-out — it never creates the node at all, because the loop plays the
+//! die and walks on.
+//!
+//! **It is deliberately not called from `available_actions`.** That matters
+//! more than it looks. The engine stops and asks a real player which die to
+//! use, so `MctsBot::get_action` does get called on a mid-block-die root —
+//! and there `available_actions` offers the full fan, which the search then
+//! explores. Two consequences, both measured in
+//! `tests/block_reuse.rs` (and queued as plans/032 item 13):
+//!
+//! * the previous search cannot have materialised that root, so a block-die
+//!   decision reuses the cached tree **0.8%** of the time against 65-100%
+//!   for every other procedure, and rebuilds instead;
+//! * the bot picks a different die from this script **51%** of the time, so
+//!   the tree is valuing every future block under a policy the bot does not
+//!   actually follow.
 //!
 //! The picker is identified by `state.available_actions.team`: when
 //! that team matches the active player's team, the attacker is picking

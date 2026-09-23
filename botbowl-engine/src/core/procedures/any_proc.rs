@@ -19,7 +19,12 @@ use crate::core::procedures::procedure_tools::SimpleProcContainer;
 /// single source of truth so each new procedure only has to be added once.
 macro_rules! any_proc {
     ( $( $variant:ident($ty:ty) ),* $(,)? ) => {
-        #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+        // `Hash` alongside `PartialEq`/`Eq` on purpose: `GameState`'s hash walks the whole
+        // procedure stack. Every procedure already derived `Eq`, which rules out floats, so
+        // `Hash` derives cleanly and is consistent with equality by construction. A new
+        // procedure must derive both or neither — hashing a field that equality ignores (or
+        // vice versa) silently splits the MCTS DAG.
+        #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
         pub enum AnyProc {
             $( $variant($ty), )*
         }

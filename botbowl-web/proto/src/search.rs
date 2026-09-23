@@ -108,6 +108,57 @@ pub struct SearchReport {
     pub evaluator_value: Option<f32>,
     /// True when the whole tree was solved and the workers stopped early.
     pub solved: bool,
+    /// Plan 043: search health for this decision and for the bot's life so far.
+    #[serde(default)]
+    pub health: SearchHealth,
+}
+
+/// How the search is doing, as opposed to what it concluded (plan 043).
+///
+/// Two questions the inspector could not answer before: did this decision start from the tree the
+/// last one built, and is the DAG's recombination earning its keep. Both are mirrors of
+/// `botbowl_mcts`'s own telemetry, flattened — this crate is deliberately engine-free and must
+/// compile to wasm, so it cannot name the bot's types.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SearchHealth {
+    /// This decision's tree-reuse outcome: `reused`, `anchor_miss`, `lookup_miss`, ... An empty
+    /// string when the bot reports none.
+    pub reuse: String,
+    /// The procedure on top of the stack when the decision was made — what *kind* of decision it
+    /// was.
+    pub proc: Option<String>,
+    /// Legal actions at the root after pruning.
+    pub n_actions: usize,
+    /// Decisions this bot has made, of which this is the latest.
+    pub searches: u64,
+    /// How many of those started from an existing tree.
+    pub reused: u64,
+    /// Registry probes that found the state already in the DAG, over the bot's life.
+    pub recomb_hits: u64,
+    /// Registry probes over the bot's life.
+    pub recomb_probes: u64,
+    /// State comparisons made inside a probe, over the bot's life. Each compares two whole game
+    /// states.
+    pub eq_checks: u64,
+    /// Of those, the ones that returned `false` — comparison work that bought nothing.
+    pub eq_rejects: u64,
+}
+
+impl SearchHealth {
+    /// Share of decisions that began from an existing tree. `None` before the first decision.
+    pub fn reuse_rate(&self) -> Option<f32> {
+        (self.searches > 0).then(|| self.reused as f32 / self.searches as f32)
+    }
+
+    /// Share of probes that recombined. `None` before the first probe.
+    pub fn recomb_hit_rate(&self) -> Option<f32> {
+        (self.recomb_probes > 0).then(|| self.recomb_hits as f32 / self.recomb_probes as f32)
+    }
+
+    /// Share of state comparisons that bought nothing. `None` before the first comparison.
+    pub fn eq_reject_rate(&self) -> Option<f32> {
+        (self.eq_checks > 0).then(|| self.eq_rejects as f32 / self.eq_checks as f32)
+    }
 }
 
 /// One step of the principal variation.

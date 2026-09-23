@@ -15,11 +15,13 @@
 //! - [`generate`] — self-play, random-start and curriculum trajectories.
 //! - [`eval`] — one ladder game, its per-game record, and the report rows
 //!   the per-game records fold into.
+//! - [`trace`] — the opt-in per-decision tree-reuse trace (plan 043).
 
 pub mod board_sizes;
 pub mod bots;
 pub mod eval;
 pub mod generate;
+pub mod trace;
 
 /// Game workers only orchestrate — the search runs on `MctsBot`'s own
 /// threads — but they do build a `GameState` on the stack, so match the

@@ -11,7 +11,7 @@ use super::table::{NumBlockDices, PosAT};
 
 type OptRcNode = Option<Arc<Node>>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum PathingEvent {
     Dodge(D6Target),
     GFI(D6Target),
@@ -102,13 +102,13 @@ impl<T> From<Vec<T>> for FixedQueue<T> {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PositionOrEvent {
     Position(Position),
     Event(PathingEvent),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct NodeIterator {
     stack: Vec<PositionOrEvent>,
 }
@@ -325,7 +325,10 @@ impl Node {
     }
     fn apply_standup(&mut self) {
         self.events.push_back(PathingEvent::StandUp);
-        self.moves_left -= 3;
+        // Real rules: standing up costs 3 squares, but a player with MA < 3
+        // just spends their whole movement allowance rather than going
+        // negative (reachable once `BoardDims::ma_cap` allows MA < 3).
+        self.moves_left = self.moves_left.saturating_sub(3);
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -482,8 +485,7 @@ impl<'a> GameInfo<'a> {
             game_state,
             team: player.stats.team,
             dir_order: Direction::all_directions_toward(
-                game_state.get_endzone_x(player.stats.team)
-                    - game_state.get_endzone_x(other_team(player.stats.team)),
+                game_state.get_endzone_x(player.stats.team) - game_state.get_endzone_x(other_team(player.stats.team)),
             ),
             player_action,
             id: player.id,
@@ -1141,6 +1143,38 @@ mod tests {
         );
     }
 
+    /// A player with MA < 3 (possible on narrow eval boards, see
+    /// `BoardDims::ma_cap`) still costs 3 squares to stand up in real rules —
+    /// it just uses up the whole movement allowance instead of going
+    /// negative. The naive `moves_left -= 3` panics on underflow instead.
+    #[test]
+    fn downed_player_with_ma_below_3_can_stand_up_without_moving() {
+        let start = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start)
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(start).unwrap();
+        let player = state.get_mut_player_unsafe(id);
+        player.stats.ma = 2;
+        player.status = PlayerStatus::Down;
+
+        let path = PathFinder::safest_path_to(&state, id, start)
+            .unwrap()
+            .expect("expected a stand-up-in-place path at the player's own square");
+
+        let items: Vec<PositionOrEvent> = path.iter().collect();
+        assert_eq!(
+            items,
+            vec![PositionOrEvent::Event(PathingEvent::StandUp)],
+            "stand-up-in-place path should contain only the StandUp event, no move, got {:?}",
+            items
+        );
+    }
+
     /// Board reconstructed from a web-UI screenshot where hovering (2,1) showed
     /// a 37% route (Dodge 3+, Dodge 3+, GFI 2+) that detours south after the
     /// first dodge instead of taking the direct diagonal.
@@ -1231,4 +1265,3 @@ mod tests {
         );
     }
 }
-

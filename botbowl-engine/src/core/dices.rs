@@ -211,7 +211,7 @@ impl Distribution<D3> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize, Hash)]
     pub enum D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -290,7 +290,7 @@ impl Distribution<Sum2D6> for Standard {
 
 impl_enum_try_from! {
     #[repr(u8)]
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize, Hash)]
     pub enum Sum2D6Target {
         TwoPlus = 2,
         ThreePlus,
@@ -681,7 +681,7 @@ impl DicePolicy {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
 pub enum RequestedRoll {
     BlockDice(NumBlockDices),
     Coin,

@@ -43,6 +43,35 @@ All gameplay geometry is a method on `BoardDims` (mirrors the old `build.rs` for
 
 Small-board notes: `GameStateBuilder::build()` fast-forwards the (discarded) kickoff under `RollDice` with a fixed seed so it's board-independent; setup formations are **board-relative**, not clamped offsets (`Formation` in `procedures/kickoff_procs.rs`): `Line | Spread | Wedge | Zone`, each a pure function of `(BoardDims, TeamType)` whose slots resolve against `los_y_range`/wing ranges, each opening with three line-of-scrimmage slots so it satisfies `is_setup_legal` on every board, and each offered as its own `SimpleAT` only when the board can hold it (`Formation::fits`). Slots the board has no row for are skipped; leftover players go to `reserve_square` (shallow ranks first, wings last, since `is_setup_legal` caps each wing at two). The three actions beyond `SetupLine` share `SetupLine`'s policy channel in `botbowl-nn` — the search picks between formations, a net cannot, until the head is widened and retrained. **Setups must field in a fixed role order, never dugout-slot order:** the dugout is one shared slot array refilled first-free-slot by `unfield_player`, so whichever team sets up first (the receiver, here) pushes the other team's bench behind its own players. Below `team_size` = formation role slots that used to swap Home's Catcher for its Thrower from the second drive on whenever Away received — a one-seat handicap worth −0.06 in NN games and the Away skew in the gen05-07 value labels (plan 032 #11). Pinned by `lineups_do_not_drift_with_setup_order`; `tests/seat_probe.rs` (`#[ignore]`d, 14x7 build) is the drive-level probe that found it. **Test floor:** the unit suite is green for boards down to engine 16×9 (plan tier 14×7) *except* `blitz_flag_cleared_on_post_block_move_selection`, which has hard-coded edge coords and fails at 16×9 on master too (pre-existing, un-guarded). Tests pinning full-pitch behavior carry `skip_if_board_smaller_than!(W, H)` guards. Runtime-sizing tests live in `gamestate.rs::runtime_board_dims_tests` (build a smaller board via `with_board_dims`, no recompile).
 
+## `GameState`'s Hash is the MCTS transposition key
+
+`GameState` has a hand-rolled `Hash` and a `derivative(PartialEq)` that ignores scratch
+(`path_buffer`, `registered_roll`, `next_input`, `rng`, `log`, `print_log`). They are the key of
+`recon_mcts`'s transposition table, and the rule between them is one-directional:
+
+> **Hash a field if and only if `PartialEq` compares it.** Hashing *less* is merely slow — the
+> extra candidates are rejected by `PartialEq`. Hashing *more* is a correctness bug: two equal
+> states land in different buckets and the MCTS DAG silently splits.
+
+So a new field goes into both or neither, and a new procedure derives `Hash` next to its `Eq`
+(`AnyProc` derives both, and every procedure already derives `Eq`, which rules out floats).
+`botbowl-mcts/tests/hash_quality.rs` gates both directions: `equal_states_hash_equally` for
+correctness, `hash_separates_the_states_a_search_builds` for the collision rate.
+
+The hash used to cover a hand-picked subset — most of `GameInfo`, scores only, part of each
+player, and for the procedure stack only its *length and the name of the top frame* ("collisions
+are corrected by PartialEq"). Plan 043's telemetry priced that: **36.8% of the distinct states in
+a real search DAG shared a hash**, one bucket held 84, and the search paid ~4 full two-state
+comparisons per registry probe — each cloning two whole `GameState`s. Hashing the procedure stack
+in full and `GameInfo` whole took it to **0%**.
+
+It is deliberately *not* everything `PartialEq` compares. `available_actions` is skipped because
+it is derived from the procedure stack, separated only 8 of 6607 colliding states, and holds a
+`FullPitch` whose hash walks the entire board on every node insert — it measurably cost more than
+it saved. `board`, `board_dims`, `dugout_players` and the fixed per-player stat block are skipped
+for the same reason: derived, constant, or never discriminating. Skipping is always safe;
+measure before adding.
+
 ## Other key points
 
 - `GameStateBuilder` has `new_at_*` constructors (`new_start_of_game`, `new_at_setup`, `new_at_kickoff`) that fast-forward through earlier procedures so tests can jump straight to the situation under test.

@@ -51,6 +51,15 @@ impl SessionBot {
         }
     }
 
+    /// The net's value for `state`, Home-centric in `[-1, 1]`. `None` unless this is an MCTS bot
+    /// with an NN evaluator.
+    pub fn evaluate_home(&self, state: &GameState) -> Option<f32> {
+        match self {
+            SessionBot::Mcts(b) => b.evaluate_home(state),
+            _ => None,
+        }
+    }
+
     pub fn principal_variation(&self, max_depth: usize) -> Vec<botbowl_mcts::report::Edge> {
         match self {
             SessionBot::Mcts(b) => b.principal_variation(max_depth),

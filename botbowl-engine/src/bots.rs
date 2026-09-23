@@ -6,6 +6,19 @@ use rand_chacha::ChaCha8Rng;
 pub trait Bot {
     fn get_action(&mut self, state: &GameState) -> Action;
     fn set_seed(&mut self, _rng: ChaCha8Rng) {}
+
+    /// Downcast hook, so a caller holding a `dyn Bot` can reach a concrete bot's own read-outs —
+    /// `MctsBot`'s search telemetry (plan 043) is the reason this exists. Returning the erased
+    /// `Any` rather than a named type keeps the engine free of any knowledge of what a particular
+    /// bot reports. The default is "nothing to offer", which is right for every bot without one.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    /// Mutable half of [`Bot::as_any`], for read-outs that are drained rather than copied.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 pub struct RandomBot {

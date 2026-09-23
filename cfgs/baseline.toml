@@ -1,0 +1,25 @@
+# The shipped configuration — the named control for every A/B.
+#
+# Deliberately empty of knobs. Every field falls back to `MctsConfig::new()`, which is the
+# defaults compiled into the bot, *not* the environment: a preset run ignores `BLOOD_MCTS_*`
+# entirely so that "baseline" means the same thing on every machine and in every run.
+#
+# Copy this file to name a variant and set only what you are changing:
+#
+#   backup = "mean"            # minimax (default) | mean
+#   fpu_reduction = 0.25       # Leela/KataGo FPU reduction k, in Q points
+#   horizon_turns = 2          # own-turns of lookahead before a state counts terminal
+#   tie_break = "hash"         # hash (default) | asc | desc | endzone
+#   memory_mode = "store_state"
+#   tree_reuse = true
+#   virtual_loss = 30
+#
+#   [puct.raw]                 # Q_raw + c·P·√N/(1+n); c is coupled to leaf_score's magnitudes
+#   c = 10.0
+#
+#   [puct.normalised_q]        # c is ~10x smaller in this frame — do not carry `c` across modes
+#   c = 1.4
+#   range_floor = 0.1
+#
+# `workers` is accepted but always overridden by `--mcts-workers`: it is a property of the
+# machine, not of the bot being compared.

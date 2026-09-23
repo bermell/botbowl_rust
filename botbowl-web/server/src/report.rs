@@ -108,6 +108,17 @@ pub fn summary_to_proto(search_id: u64, summary: &SearchSummary, pv: &[Edge], so
         evaluator: summary.evaluator.clone(),
         evaluator_value: summary.evaluator_value,
         solved,
+        health: ps::SearchHealth {
+            reuse: summary.reuse.outcome.label().to_string(),
+            proc: summary.reuse.proc.clone(),
+            n_actions: summary.reuse.n_actions,
+            searches: summary.telemetry.searches,
+            reused: summary.telemetry.reuse.total.reused,
+            recomb_hits: summary.telemetry.recombination.hits,
+            recomb_probes: summary.telemetry.recombination.probes,
+            eq_checks: summary.telemetry.recombination.eq_checks,
+            eq_rejects: summary.telemetry.recombination.eq_rejects,
+        },
     }
 }
 

@@ -481,11 +481,7 @@ mod tests {
         let top = &sharp.table()[0];
         assert!((top.1 - (0.8 + 0.2 / n)).abs() < 1e-9, "{:?}", sharp.table());
         // Bad knobs are refused up front.
-        assert!(SizeDist::centred(&CentredSpec {
-            floor: 1.5,
-            ..spec
-        })
-        .is_err());
+        assert!(SizeDist::centred(&CentredSpec { floor: 1.5, ..spec }).is_err());
         assert!(SizeDist::centred(&CentredSpec {
             aspect_min: 3.0,
             aspect_max: 2.0,

@@ -23,7 +23,9 @@ pub use botbowl_play::generate::GenerateConfig;
 
 /// Bump on any change to the frames below.
 // v3 (plan 042): `Task::Eval.board` and `GenerateConfig.board_sizes`.
-pub const PROTOCOL_VERSION: u32 = 3;
+// v4 (plan 043): `SearchConfig.config` (a named `MctsConfig` preset) and
+// `GenerateConfig.config_name`.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Content hash of an ONNX file (BLAKE3). Model identity is bytes, never a
 /// path, so two workers with the same cache can never disagree about which

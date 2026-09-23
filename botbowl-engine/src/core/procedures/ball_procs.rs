@@ -14,7 +14,7 @@ use crate::core::procedures::any_proc::AnyProc;
 use super::procedure_tools::{SimpleProc, SimpleProcContainer};
 use super::TurnoverIfPossessionLost;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct PickupProc {
     target: D6Target,
     id: PlayerID,
@@ -57,7 +57,7 @@ impl SimpleProc for PickupProc {
         self.id
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Bounce {
     kick: bool,
 }
@@ -127,7 +127,7 @@ impl Procedure for Bounce {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ThrowIn {
     from: Position,
 }
@@ -168,14 +168,15 @@ impl ThrowIn {
     }
 
     /// The square this throw-in roll would land on (before occupancy is
-    /// considered): `from + direction * min(distance, max_scatter)`. Pure.
+    /// considered): `from + direction * min(distance / scatter_divisor,
+    /// max_scatter)`. Pure, and must mirror `step`'s arithmetic exactly.
     /// Used by the MCTS scripted-outcome picker to choose a roll that keeps
     /// the ball in bounds — an out-of-bounds landing re-requests the roll,
     /// which under a deterministic scripted pick can loop forever on small
     /// boards.
     pub fn target_square(&self, direction: D3, distance: Sum2D6, dims: BoardDims) -> Position {
         let dir = self.get_throw_in_direction(direction, dims);
-        let length = (distance as i8).min(dims.max_scatter());
+        let length = ((distance as i8) / dims.scatter_divisor()).min(dims.max_scatter());
         self.from + dir * length
     }
 }
@@ -186,12 +187,13 @@ impl Procedure for ThrowIn {
                 return ProcState::NeedRoll(RequestedRoll::ThrowIn);
             }
             ProcInput::Roll(RollResult::ThrowIn { direction, distance }) => {
-                // Cap distance at half the board width so a throw-in can't fling
-                // the ball clear across a narrow board (no-op on the full pitch).
+                // Scale distance down on narrow boards (no-op on the full
+                // pitch) so a throw-in rarely lands out of bounds again, then
+                // cap at half the board width as a final safety net.
                 let dims = game_state.board_dims;
                 (
                     self.get_throw_in_direction(direction, dims),
-                    (distance as i8).min(dims.max_scatter()),
+                    ((distance as i8) / dims.scatter_divisor()).min(dims.max_scatter()),
                 )
             }
             _ => panic!("Unexpected input {:?} for ThrowIn", input),
@@ -223,7 +225,7 @@ impl Procedure for ThrowIn {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Catch {
     id: PlayerID,
     target: D6Target,
@@ -280,7 +282,7 @@ impl SimpleProc for Catch {
         self.id
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Touchback {}
 impl Touchback {
     pub fn new() -> AnyProc {
@@ -317,7 +319,7 @@ impl Procedure for Touchback {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Touchdown {
     id: PlayerID,
 }
@@ -344,7 +346,7 @@ impl Procedure for Touchdown {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PassResult {
     Accurate,
     Inaccurate,
@@ -352,7 +354,7 @@ pub enum PassResult {
     Fumble,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Pass {
     pos: Position,
     pass: D6Target,
@@ -431,7 +433,7 @@ impl Procedure for Pass {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct DeflectOrResolve {
     from: Position,
     to: Position,
@@ -529,7 +531,7 @@ impl Procedure for DeflectOrResolve {
         // In a square that is at least partially beneath the range ruler when placed as described above.
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Deflect {
     id: PlayerID,
     target: D6Target,
@@ -810,6 +812,49 @@ mod tests {
             matches!(state.ball, BallState::OnGround(pos) if pos == catcher_pos + up),
             "throw-in catch failure must bounce from the catcher's square, got {:?}",
             state.ball
+        );
+    }
+
+    /// A throw-in scales the 2D6 distance roll down on a narrow board, so it
+    /// can't carry the ball back out of bounds as easily as an unscaled roll
+    /// would — the dice rolled (D3 direction, 2D6 distance) are unchanged,
+    /// only how far the distance carries the ball.
+    #[test]
+    fn throw_in_distance_is_scaled_down_on_a_narrow_board() {
+        use crate::core::dices::{RollResult, Sum2D6, D3};
+        use crate::core::procedures::ball_procs::ThrowIn;
+        use crate::core::procedures::AnyProc;
+        use crate::core::gamestate::BuilderState;
+
+        let dims = BoardDims::new(16, 9, 3); // 14x7 playable
+        assert_eq!(dims.scatter_divisor(), 2, "test assumes a divisor of 2");
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(dims)
+            .set_state(BuilderState::CoinToss)
+            .build();
+
+        // Corner origin: D3::One maps to straight along +x (see
+        // `get_throw_in_direction`), so the landing square is easy to predict.
+        let from = Position::new((1, 1));
+        let AnyProc::ThrowIn(mut throw_in) = ThrowIn::new(from) else {
+            unreachable!()
+        };
+
+        throw_in.step(
+            &mut state,
+            ProcInput::Roll(RollResult::ThrowIn {
+                direction: D3::One,
+                distance: Sum2D6::Twelve,
+            }),
+        );
+
+        let BallState::InAir(pos) = state.ball else {
+            panic!("ball should be airborne after landing in bounds, got {:?}", state.ball)
+        };
+        assert_eq!(
+            pos,
+            from + Direction::right() * 6,
+            "raw distance 12 / scatter_divisor 2 == 6, not the unscaled 12"
         );
     }
 

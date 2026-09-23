@@ -83,6 +83,8 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
     EvalJobRequest {
         candidate: BotReq::Scripted,
         candidate_label: "scripted".into(),
+        candidate_config: None,
+        opponent_config: None,
         mcts_iters: 0,
         rungs: vec![
             RungReq {
@@ -116,8 +118,28 @@ fn expected() -> (Vec<EvalGameLine>, Vec<LadderRow>) {
         for g in 0..GAMES {
             let (team, seed) = ladder_assignment(SEED, g);
             let line = match rung {
-                "random" => play_ladder_game(&mut cand, &mut RandomBot::new(), rung, g, team, seed, 100_000, None),
-                _ => play_ladder_game(&mut cand, &mut ScriptedBot::new(), rung, g, team, seed, 100_000, None),
+                "random" => play_ladder_game(
+                    &mut cand,
+                    &mut RandomBot::new(),
+                    rung,
+                    g,
+                    team,
+                    seed,
+                    100_000,
+                    None,
+                    None,
+                ),
+                _ => play_ladder_game(
+                    &mut cand,
+                    &mut ScriptedBot::new(),
+                    rung,
+                    g,
+                    team,
+                    seed,
+                    100_000,
+                    None,
+                    None,
+                ),
             };
             row.record(&line);
             lines.push(line);
@@ -195,6 +217,8 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
     let req = EvalJobRequest {
         candidate: BotReq::Scripted,
         candidate_label: "scripted".into(),
+        candidate_config: None,
+        opponent_config: None,
         mcts_iters: 0,
         rungs: boards
             .iter()
@@ -226,7 +250,17 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
         let mut cand = ScriptedBot::new();
         for g in 0..games {
             let (team, seed) = ladder_assignment(SEED, g);
-            let line = play_ladder_game(&mut cand, &mut ScriptedBot::new(), &name, g, team, seed, 100_000, Some(b));
+            let line = play_ladder_game(
+                &mut cand,
+                &mut ScriptedBot::new(),
+                &name,
+                g,
+                team,
+                seed,
+                100_000,
+                Some(b),
+                None,
+            );
             assert_eq!(line.board.as_deref(), Some(board_label(b).as_str()));
             row.record(&line);
             want_lines.push(line);

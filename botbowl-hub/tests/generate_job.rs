@@ -81,6 +81,7 @@ fn spawn_worker(cfg: WorkerConfig) -> tokio::task::JoinHandle<Result<Ended, Fata
 
 fn cfg() -> GenerateConfig {
     GenerateConfig {
+        config_name: None,
         mode: GenMode::RandomStart,
         search: SearchConfig::iterations(2),
         evaluator: Evaluator::Heuristic,

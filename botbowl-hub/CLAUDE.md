@@ -29,7 +29,17 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
 - **Compatibility is exact commit + clean tree + board capacity** (`Hello` → `Reject{reason}`).
   `--allow-commit-mismatch` on the hub relaxes only the commit check. Dirty workers are refused
   unless the hub is dirty too — commit, then rebuild. `PROTOCOL_VERSION` in proto is bumped on
-  any frame change; `postcard` encoding, so field order matters.
+  any frame change; `postcard` encoding, so field order matters. **v4** (plan 043) added
+  `SearchConfig.config` — a named `MctsConfig` preset — and `GenerateConfig.config_name`; both ride
+  inside the re-exported `botbowl-play` types, so no new frame was needed.
+- **Bot presets resolve on the submitter, never on the worker** (`--bot-config` / `--vs-config`, the
+  same flags as `botbowl-ui`). Same rule as the backup mode: a preset must describe the games, not
+  whichever machine happened to play them. The preset's *name* travels separately from its knobs —
+  `EvalJobRequest.candidate_config` / `opponent_config` for the report, `GenerateConfig.config_name`
+  for corpus provenance — because `SearchConfig` has to stay `Copy`.
+- **Search telemetry rides on `EvalGameLine`** and folds through `LadderRow::record`, so the hub's
+  `report.json` carries the identical `telemetry` block the single-process driver writes. There is
+  no distributed `--trace-reuse`: a per-decision trace is a local diagnostic.
 - **Models are bytes, identified by BLAKE3.** `ModelId::of(onnx)`. The hub reads a path once at
   submit and ships bytes only to workers whose `Hello.cached_models` lack the id. Worker cache:
   `~/.cache/botbowl/models/<hex>.onnx`, verified by rehash on startup.

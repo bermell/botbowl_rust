@@ -13,7 +13,7 @@ use botbowl_hub::http::request;
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, SizeDist};
 use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
-use botbowl_play::bots::{candidate_label, evaluator_label, parse_backup, parse_puct, CandidateBot};
+use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_backup, parse_puct, CandidateBot};
 use botbowl_play::eval::rung_name;
 use botbowl_play::generate::{GenMode, RandomStartBias};
 
@@ -149,6 +149,11 @@ struct GenerateJobArgs {
     mcts_time_ms: Option<u64>,
     #[arg(long, default_value_t = 1)]
     mcts_workers: usize,
+    /// Bot preset: a TOML `MctsConfig` (plan 043). Flag-for-flag with `botbowl-ui dataset`.
+    /// Resolved **here**, on the submitter, so every worker plays the identical configuration and
+    /// the name is stamped into the corpus provenance.
+    #[arg(long)]
+    bot_config: Option<PathBuf>,
     #[arg(long, default_value_t = 100_000)]
     max_steps: u32,
     /// (curriculum mode) Lecture name.
@@ -273,6 +278,14 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
     if evaluator.needs_model() && a.model.is_none() {
         return Err("--evaluator nn/nn-value requires --model PATH".into());
     }
+    // Resolved on the submitter for the same reason the backup rule is: a preset must describe
+    // the games, not the machine that happened to play them.
+    let preset = a
+        .bot_config
+        .as_deref()
+        .map(load_mcts_config)
+        .transpose()
+        .map_err(|e| e.to_string())?;
     let base = GenerateConfig {
         mode: a.mode.into(),
         search: SearchConfig {
@@ -286,7 +299,9 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
             horizon_turns: None,
             backup: Some(botbowl_mcts::BackupMode::from_env()),
             fpu_reduction: None,
+            config: preset.as_ref().map(|p| p.config),
         },
+        config_name: preset.as_ref().map(|p| p.name.clone()),
         evaluator,
         model: a.model.clone(),
         max_steps: a.max_steps,
@@ -428,6 +443,18 @@ struct EvalJobArgs {
     vs_evaluator: Option<CliEvaluator>,
     #[arg(long)]
     vs_model: Option<PathBuf>,
+    /// Candidate bot preset (plan 043). Flag-for-flag with `botbowl-ui eval`.
+    #[arg(
+        long,
+        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "backup", "fpu_reduction"]
+    )]
+    bot_config: Option<PathBuf>,
+    /// Opponent bot preset; defaults to the candidate's.
+    #[arg(
+        long,
+        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_backup", "vs_fpu_reduction"]
+    )]
+    vs_config: Option<PathBuf>,
     #[arg(long, default_value = "raw")]
     puct_mode: String,
     #[arg(long)]
@@ -490,29 +517,57 @@ fn abs(p: &PathBuf) -> PathBuf {
 
 fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
     let evaluator = Evaluator::from(a.evaluator);
+    // Same rule as `botbowl-ui eval`: a preset replaces every per-knob field, and clap keeps the
+    // two from being mixed. Unset `--vs-config` inherits the candidate's.
+    let cand_preset = a
+        .bot_config
+        .as_deref()
+        .map(load_mcts_config)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let opp_preset = match a.vs_config.as_deref() {
+        Some(p) => Some(load_mcts_config(p).map_err(|e| e.to_string())?),
+        None => cand_preset.clone(),
+    };
     let cand = SearchConfig {
         budget: botbowl_mcts_budget(a.mcts_iters),
         workers: a.mcts_workers,
-        puct: Some(parse_puct(&a.puct_mode, a.puct_c).map_err(|e| format!("--puct-mode: {e}"))?),
-        horizon_turns: Some(a.horizon_turns),
-        backup: Some(parse_backup(&a.backup).map_err(|e| format!("--backup: {e}"))?),
-        fpu_reduction: Some(a.fpu_reduction),
+        puct: cand_preset
+            .is_none()
+            .then(|| parse_puct(&a.puct_mode, a.puct_c).map_err(|e| format!("--puct-mode: {e}")))
+            .transpose()?,
+        horizon_turns: cand_preset.is_none().then_some(a.horizon_turns),
+        backup: cand_preset
+            .is_none()
+            .then(|| parse_backup(&a.backup).map_err(|e| format!("--backup: {e}")))
+            .transpose()?,
+        fpu_reduction: cand_preset.is_none().then_some(a.fpu_reduction),
+        config: cand_preset.as_ref().map(|p| p.config),
     };
     let opp = SearchConfig {
         budget: botbowl_mcts_budget(a.opponent_iters.unwrap_or(a.mcts_iters)),
         workers: a.mcts_workers,
-        puct: Some(
-            parse_puct(
-                a.vs_puct_mode.as_deref().unwrap_or(&a.puct_mode),
-                a.vs_puct_c.or(a.puct_c),
-            )
-            .map_err(|e| format!("--vs-puct-mode: {e}"))?,
-        ),
-        horizon_turns: Some(a.vs_horizon_turns.unwrap_or(a.horizon_turns)),
-        backup: Some(
-            parse_backup(a.vs_backup.as_deref().unwrap_or(&a.backup)).map_err(|e| format!("--vs-backup: {e}"))?,
-        ),
-        fpu_reduction: Some(a.vs_fpu_reduction.unwrap_or(a.fpu_reduction)),
+        puct: opp_preset
+            .is_none()
+            .then(|| {
+                parse_puct(
+                    a.vs_puct_mode.as_deref().unwrap_or(&a.puct_mode),
+                    a.vs_puct_c.or(a.puct_c),
+                )
+                .map_err(|e| format!("--vs-puct-mode: {e}"))
+            })
+            .transpose()?,
+        horizon_turns: opp_preset
+            .is_none()
+            .then(|| a.vs_horizon_turns.unwrap_or(a.horizon_turns)),
+        backup: opp_preset
+            .is_none()
+            .then(|| parse_backup(a.vs_backup.as_deref().unwrap_or(&a.backup)).map_err(|e| format!("--vs-backup: {e}")))
+            .transpose()?,
+        fpu_reduction: opp_preset
+            .is_none()
+            .then(|| a.vs_fpu_reduction.unwrap_or(a.fpu_reduction)),
+        config: opp_preset.as_ref().map(|p| p.config),
     };
     let model_str = a.model.as_ref().map(|p| p.to_string_lossy().into_owned());
     let candidate = match CandidateBot::from(a.candidate_bot) {
@@ -618,7 +673,10 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             &cand,
             evaluator,
             model_str.as_deref(),
+            cand_preset.as_ref().map(|p| p.name.as_str()),
         ),
+        candidate_config: cand_preset.as_ref().map(|p| p.name.clone()),
+        opponent_config: opp_preset.as_ref().map(|p| p.name.clone()),
         mcts_iters: a.mcts_iters,
         rungs,
         seed: a.seed,

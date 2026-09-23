@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize, Serializer};
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::{BoardDims, TeamType};
+use botbowl_mcts::SearchTelemetry;
 
 use crate::board_sizes::board_label;
+use crate::trace::{ReuseTraceRow, ReuseTraceWriter};
 
 const OPPONENT_SEED_MIX: u64 = 0xC3C3_C3C3_C3C3_C3C3;
 const CANDIDATE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
@@ -47,14 +49,27 @@ pub struct EvalGameLine {
     /// byte-identical to the pre-042 format.
     #[serde(default)]
     pub board: Option<String>,
+    /// Plan 043: the candidate's search health over this game — how often it kept its tree, and
+    /// what recombination cost. Absent when the candidate is not an MCTS bot (the random and
+    /// scripted rungs have no search to report on). Same omit-from-JSON-when-absent rule as
+    /// `board`, and for the same reason.
+    ///
+    /// This is the bot's own type rather than a flattened copy, so the fold into
+    /// [`LadderRow::record`] is `SearchTelemetry::merge` — one implementation, used identically by
+    /// `botbowl-ui eval` and by the hub rebuilding a report from workers' lines.
+    #[serde(default)]
+    pub telemetry: Option<SearchTelemetry>,
 }
 
 impl Serialize for EvalGameLine {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // JSON (human-readable): the trailing key only when set. Binary
         // (postcard, not self-describing): always, or the decoder starves.
-        let with_board = self.board.is_some() || !serializer.is_human_readable();
-        let mut s = serializer.serialize_struct("EvalGameLine", if with_board { 9 } else { 8 })?;
+        let binary = !serializer.is_human_readable();
+        let with_board = self.board.is_some() || binary;
+        let with_telemetry = self.telemetry.is_some() || binary;
+        let n = 8 + usize::from(with_board) + usize::from(with_telemetry);
+        let mut s = serializer.serialize_struct("EvalGameLine", n)?;
         s.serialize_field("rung", &self.rung)?;
         s.serialize_field("game", &self.game)?;
         s.serialize_field("seed", &self.seed)?;
@@ -65,6 +80,9 @@ impl Serialize for EvalGameLine {
         s.serialize_field("finished", &self.finished)?;
         if with_board {
             s.serialize_field("board", &self.board)?;
+        }
+        if with_telemetry {
+            s.serialize_field("telemetry", &self.telemetry)?;
         }
         s.end()
     }
@@ -90,8 +108,23 @@ pub fn ladder_assignment(base_seed: u64, g: u32) -> (TeamType, u64) {
     (team, base_seed.wrapping_add((g / 2) as u64))
 }
 
+/// Clamp every player's MA to `BoardDims::ma_cap()` so a standing start on
+/// their own LOS can't reach the opponent's endzone in one turn, even with
+/// GFIs — forcing a secure multi-turn advance instead of a reliable
+/// one-turn score, which the stock roster's MA otherwise allows on the
+/// smaller board-size tiers (plan 042). A no-op on the full pitch. Eval-only
+/// (not applied to training/generation): called right after `build()`,
+/// before anyone is fielded, so every player is still in the dugout.
+fn cap_ma_to_board(state: &mut GameState) {
+    let cap = state.board_dims.ma_cap() as u8;
+    for player in state.get_dugout_mut() {
+        player.stats.ma = player.stats.ma.min(cap);
+    }
+}
+
 /// One full game from kickoff between `candidate` (playing
 /// `candidate_team`) and `opponent`, on `board` (`None` = the env board).
+#[allow(clippy::too_many_arguments)]
 pub fn play_ladder_game(
     candidate: &mut dyn Bot,
     opponent: &mut dyn Bot,
@@ -101,6 +134,10 @@ pub fn play_ladder_game(
     seed: u64,
     max_steps: u32,
     board: Option<BoardDims>,
+    // Plan 043: `--trace-reuse`. `None` in every normal run, including every distributed one —
+    // the aggregate in `report.json` is what a run reports, and this is for chasing an aggregate
+    // that looks wrong.
+    trace: Option<&ReuseTraceWriter>,
 ) -> EvalGameLine {
     let mut builder = GameStateBuilder::new();
     builder.set_state(BuilderState::CoinToss);
@@ -108,6 +145,7 @@ pub fn play_ladder_game(
         builder.with_board_dims(dims);
     }
     let mut state = builder.build();
+    cap_ma_to_board(&mut state);
     state.set_seed(seed);
     state.set_dice_mode(DiceMode::RollDice);
     state.set_logging_state(false);
@@ -115,9 +153,21 @@ pub fn play_ladder_game(
     opponent.set_seed(ChaCha8Rng::seed_from_u64(seed ^ OPPONENT_SEED_MIX));
 
     let mut steps = 0u32;
+    let mut decision = 0u32;
     while !state.info.game_over && steps < max_steps {
         let action = match state.available_actions.team {
-            Some(t) if t == candidate_team => candidate.get_action(&state),
+            Some(t) if t == candidate_team => {
+                let a = candidate.get_action(&state);
+                if let Some(w) = trace {
+                    // Read the decision *before* stepping, so the action list is the fan the
+                    // search actually faced.
+                    if let Some(summary) = botbowl_mcts::MctsBot::last_search_of(&*candidate) {
+                        w.write(&ReuseTraceRow::new(game, decision, &summary.reuse, &state));
+                    }
+                    decision += 1;
+                }
+                a
+            }
             Some(_) => opponent.get_action(&state),
             None => break,
         };
@@ -125,7 +175,12 @@ pub fn play_ladder_game(
         steps += 1;
     }
 
-    line_of(&state, rung, game, candidate_team, seed, board)
+    // Plan 043: drain rather than read. A rung reuses one bot across its games, so taking the
+    // counters here is what makes this line's telemetry mean *this game*. `None` for a bot that
+    // does not search — the random and scripted rungs.
+    let telemetry = botbowl_mcts::MctsBot::take_telemetry_of(candidate);
+
+    line_of(&state, rung, game, candidate_team, seed, board, telemetry)
 }
 
 fn line_of(
@@ -135,6 +190,7 @@ fn line_of(
     candidate_team: TeamType,
     seed: u64,
     board: Option<BoardDims>,
+    telemetry: Option<SearchTelemetry>,
 ) -> EvalGameLine {
     EvalGameLine {
         rung: rung.to_string(),
@@ -146,6 +202,7 @@ fn line_of(
         kicking_first_half: state.info.kicking_first_half,
         finished: state.info.game_over,
         board: board.map(board_label),
+        telemetry,
     }
 }
 
@@ -201,6 +258,11 @@ pub struct LadderRow {
     /// one (`14x7/4`); absent on an env-board ladder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board: Option<String>,
+    /// Plan 043: the candidate's search health summed over this rung's games. Absent when the
+    /// candidate does not search. Folded by [`LadderRow::record`] like every other counter here,
+    /// so the hub rebuilding a report from workers' lines gets the identical number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<SearchTelemetry>,
 }
 
 impl LadderRow {
@@ -253,6 +315,11 @@ impl LadderRow {
                 }
             }
         }
+        // Plan 043: every field of `SearchTelemetry` is a commutative counter, so this obeys the
+        // same "any order, any number of producers" rule as the counters above.
+        if let Some(t) = &line.telemetry {
+            self.telemetry.get_or_insert_with(SearchTelemetry::default).merge(t);
+        }
     }
 
     /// Derive `win_rate` once all games are in.
@@ -277,6 +344,27 @@ pub struct Report {
     pub git_dirty: bool,
     pub lectures: Vec<LectureRow>,
     pub ladder: Vec<LadderRow>,
+    /// Plan 043: the named preset each side played under, if any. `None` means the historical
+    /// per-flag configuration. Serde-defaulted so an older `report.json` still parses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_config: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opponent_config: Option<String>,
+    /// Plan 043: the candidate's search health over the whole ladder — the sum of every rung's
+    /// [`LadderRow::telemetry`]. Build it with [`Report::telemetry_of`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<SearchTelemetry>,
+}
+
+impl Report {
+    /// Sum the ladder's per-rung telemetry. `None` when no rung had a searching candidate.
+    pub fn telemetry_of(ladder: &[LadderRow]) -> Option<SearchTelemetry> {
+        ladder.iter().filter_map(|r| r.telemetry.as_ref()).fold(None, |acc, t| {
+            let mut acc = acc.unwrap_or_default();
+            acc.merge(t);
+            Some(acc)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -294,7 +382,32 @@ mod tests {
             kicking_first_half: TeamType::Away,
             finished,
             board: None,
+            telemetry: None,
         }
+    }
+
+    /// On a narrow board, every dugout player's MA must be clamped to
+    /// `BoardDims::ma_cap()`; on the full pitch (cap exceeds every stock
+    /// role's MA) it must be a no-op.
+    #[test]
+    fn cap_ma_to_board_shrinks_ma_on_a_narrow_board_and_is_a_noop_on_the_full_pitch() {
+        if let Ok(dims) = BoardDims::try_new(16, 9, 3) {
+            let cap = dims.ma_cap() as u8;
+            assert!(cap < 6, "test assumes the cap is below the lineman's stock MA (6)");
+            let mut state = GameStateBuilder::new()
+                .with_board_dims(dims)
+                .set_state(BuilderState::CoinToss)
+                .build();
+            cap_ma_to_board(&mut state);
+            assert!(state.get_dugout().next().is_some(), "sanity: dugout must be non-empty");
+            assert!(state.get_dugout().all(|p| p.stats.ma <= cap));
+        }
+
+        let mut full_state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
+        let before: Vec<u8> = full_state.get_dugout().map(|p| p.stats.ma).collect();
+        cap_ma_to_board(&mut full_state);
+        let after: Vec<u8> = full_state.get_dugout().map(|p| p.stats.ma).collect();
+        assert_eq!(before, after, "full pitch cap must not touch stock MA");
     }
 
     /// The per-game line is a file format read by `scripts/paired_summary.py`
@@ -364,6 +477,96 @@ mod tests {
             let back: EvalGameLine = postcard::from_bytes(&bytes).unwrap();
             assert_eq!(back, l);
         }
+    }
+
+    /// A sample telemetry blob, shaped like a real one: a couple of procedures and a fan.
+    fn sample_telemetry() -> SearchTelemetry {
+        let mut t = SearchTelemetry::default();
+        for (outcome, proc, fan) in [
+            (botbowl_mcts::ReuseOutcome::NoCache, "Turn", 4),
+            (botbowl_mcts::ReuseOutcome::Reused, "MoveAction", 21),
+            (botbowl_mcts::ReuseOutcome::AnchorMiss, "Turn", 6),
+        ] {
+            t.record(
+                &botbowl_mcts::ReuseDecision {
+                    outcome,
+                    proc: Some(proc.to_string()),
+                    n_actions: fan,
+                    path_len: 0,
+                },
+                botbowl_mcts::RecombinationCounts {
+                    hits: 3,
+                    misses: 40,
+                    probes: 43,
+                    eq_checks: 300,
+                    eq_hash_equal: 290,
+                    eq_rejects: 297,
+                    lookup_probes: 1,
+                    lookup_hits: 1,
+                },
+            );
+        }
+        t
+    }
+
+    /// Plan 043's trailing field plays by the same rules as `board`: invisible in JSON when
+    /// absent, so every existing line and every downstream script is untouched.
+    #[test]
+    fn telemetry_is_a_trailing_optional_key() {
+        let mut l = line(3, TeamType::Away, 1, 2, true);
+        assert!(
+            !serde_json::to_string(&l).unwrap().contains("telemetry"),
+            "a non-searching candidate must not add a key"
+        );
+
+        l.telemetry = Some(sample_telemetry());
+        let json = serde_json::to_string(&l).unwrap();
+        assert!(json.contains(r#""telemetry":{"#), "got {json}");
+        assert_eq!(serde_json::from_str::<EvalGameLine>(&json).unwrap(), l);
+    }
+
+    /// The postcard trap, again. `board`'s comment explains it: a field skipped on a
+    /// non-self-describing wire makes the hub read every worker frame as end-of-buffer.
+    #[test]
+    fn telemetry_survives_a_non_self_describing_encoding() {
+        for telemetry in [None, Some(sample_telemetry())] {
+            let mut l = line(1, TeamType::Home, 0, 0, true);
+            l.telemetry = telemetry;
+            let bytes = postcard::to_allocvec(&l).unwrap();
+            let back: EvalGameLine = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(back, l);
+        }
+    }
+
+    /// The fold is what the hub relies on: a rung's telemetry is the sum of its games',
+    /// regardless of which worker sent which line or in what order.
+    #[test]
+    fn ladder_row_sums_telemetry_over_its_games() {
+        let with = |g: u32| {
+            let mut l = line(g, TeamType::Home, 1, 0, true);
+            l.telemetry = Some(sample_telemetry());
+            l
+        };
+
+        let mut forward = LadderRow::new("mcts");
+        forward.record(&with(0));
+        forward.record(&with(1));
+
+        let mut backward = LadderRow::new("mcts");
+        backward.record(&with(1));
+        backward.record(&with(0));
+
+        assert_eq!(forward.telemetry, backward.telemetry, "the fold is order-independent");
+        let t = forward.telemetry.expect("two searching games");
+        assert_eq!(t.searches, 6, "three decisions per game, two games");
+        assert_eq!(t.reuse.total.reused, 2);
+        assert_eq!(t.reuse.by_proc["Turn"].attempts(), 4, "two Turn decisions per game");
+        assert_eq!(t.recombination.hits, 18);
+
+        // A rung whose candidate does not search stays absent rather than reading as all-zero.
+        let mut plain = LadderRow::new("random");
+        plain.record(&line(0, TeamType::Home, 1, 0, true));
+        assert_eq!(plain.telemetry, None);
     }
 
     #[test]
