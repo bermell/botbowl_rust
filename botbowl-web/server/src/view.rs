@@ -124,7 +124,11 @@ fn player_view(state: &GameState, p: &em::FieldedPlayer, has_ball: bool) -> pv::
 fn tackle_zones(state: &GameState, squares: &mut [pv::SquareView]) {
     let dims = state.board_dims;
     for p in state.get_players_on_pitch() {
-        if !p.has_tackle_zone() {
+        // A player pushed into the crowd sits at an out-of-bounds position
+        // between `Push` moving them there and the queued crowd injury
+        // unfielding them — still "on pitch" the whole time. `get_adj_positions`
+        // asserts its input is in bounds, so skip them rather than panic.
+        if !p.has_tackle_zone() || dims.is_out(p.position) {
             continue;
         }
         for adj in state.get_adj_positions(p.position) {
@@ -501,6 +505,26 @@ mod tests {
             after.square(pa::Position::new(8, 3)).unwrap().tz_away
                 < before.square(pa::Position::new(8, 3)).unwrap().tz_away,
             "knocking a marker down must reduce the tackle zones it exerts"
+        );
+    }
+
+    /// A player pushed into the crowd sits at a genuinely out-of-bounds
+    /// square for the span between `Push::do_moves` (which moves them there)
+    /// and the queued `Injury::new_crowd` actually unfielding them — still
+    /// "on pitch" per `get_players_on_pitch` the whole time. `tackle_zones`
+    /// used to call `get_adj_positions` on every fielded player unconditionally,
+    /// which panics (`!position.is_out()`) on that transient square. Found by
+    /// `derive_every_state.rs`'s full-random-game fuzz test.
+    #[test]
+    fn a_player_mid_crowd_push_does_not_panic_the_view() {
+        let mut state = a_position();
+        let id = state.get_player_id_at(em::Position::new((7, 3))).unwrap();
+        state.get_mut_player(id).unwrap().position = em::Position::new((0, 3));
+        let v = view_of(&state); // must not panic
+        assert_eq!(
+            v.square(pa::Position::new(1, 3)).unwrap().tz_away,
+            0,
+            "a player in the crowd exerts no tackle zone"
         );
     }
 

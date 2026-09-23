@@ -108,6 +108,20 @@ pub fn ladder_assignment(base_seed: u64, g: u32) -> (TeamType, u64) {
     (team, base_seed.wrapping_add((g / 2) as u64))
 }
 
+/// Clamp every player's MA to `BoardDims::ma_cap()` so a standing start on
+/// their own LOS can't reach the opponent's endzone in one turn, even with
+/// GFIs — forcing a secure multi-turn advance instead of a reliable
+/// one-turn score, which the stock roster's MA otherwise allows on the
+/// smaller board-size tiers (plan 042). A no-op on the full pitch. Eval-only
+/// (not applied to training/generation): called right after `build()`,
+/// before anyone is fielded, so every player is still in the dugout.
+fn cap_ma_to_board(state: &mut GameState) {
+    let cap = state.board_dims.ma_cap() as u8;
+    for player in state.get_dugout_mut() {
+        player.stats.ma = player.stats.ma.min(cap);
+    }
+}
+
 /// One full game from kickoff between `candidate` (playing
 /// `candidate_team`) and `opponent`, on `board` (`None` = the env board).
 #[allow(clippy::too_many_arguments)]
@@ -131,6 +145,7 @@ pub fn play_ladder_game(
         builder.with_board_dims(dims);
     }
     let mut state = builder.build();
+    cap_ma_to_board(&mut state);
     state.set_seed(seed);
     state.set_dice_mode(DiceMode::RollDice);
     state.set_logging_state(false);
@@ -369,6 +384,30 @@ mod tests {
             board: None,
             telemetry: None,
         }
+    }
+
+    /// On a narrow board, every dugout player's MA must be clamped to
+    /// `BoardDims::ma_cap()`; on the full pitch (cap exceeds every stock
+    /// role's MA) it must be a no-op.
+    #[test]
+    fn cap_ma_to_board_shrinks_ma_on_a_narrow_board_and_is_a_noop_on_the_full_pitch() {
+        if let Ok(dims) = BoardDims::try_new(16, 9, 3) {
+            let cap = dims.ma_cap() as u8;
+            assert!(cap < 6, "test assumes the cap is below the lineman's stock MA (6)");
+            let mut state = GameStateBuilder::new()
+                .with_board_dims(dims)
+                .set_state(BuilderState::CoinToss)
+                .build();
+            cap_ma_to_board(&mut state);
+            assert!(state.get_dugout().next().is_some(), "sanity: dugout must be non-empty");
+            assert!(state.get_dugout().all(|p| p.stats.ma <= cap));
+        }
+
+        let mut full_state = GameStateBuilder::new().set_state(BuilderState::CoinToss).build();
+        let before: Vec<u8> = full_state.get_dugout().map(|p| p.stats.ma).collect();
+        cap_ma_to_board(&mut full_state);
+        let after: Vec<u8> = full_state.get_dugout().map(|p| p.stats.ma).collect();
+        assert_eq!(before, after, "full pitch cap must not touch stock MA");
     }
 
     /// The per-game line is a file format read by `scripts/paired_summary.py`
