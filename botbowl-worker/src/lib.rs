@@ -285,11 +285,13 @@ fn admit_game<'a>(governor: &'a MemGovernor, area: u32, ctx: &str) -> GameSlot<'
             Some(mb) => mb as u64 * 1024,
             // Can't read memory on this platform/box — never block on a
             // signal we don't have.
-            None => return GameSlot::new(governor, area),
+            None => return governor.admit_unconditionally(area),
         };
+        // Calibrate from what's already reserved and (mostly) manifested,
+        // before this call's own reservation attempt changes that count.
         governor.observe(avail_kb, governor.active_area());
-        if governor.admits(area, avail_kb) {
-            return GameSlot::new(governor, area);
+        if let Some(slot) = governor.try_admit(area, avail_kb) {
+            return slot;
         }
         if !warned {
             eprintln!(
