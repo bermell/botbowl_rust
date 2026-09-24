@@ -321,7 +321,26 @@ PARALLEL_GAMES="${PARALLEL_GAMES:-2}"
 # old shape was 8 shards x PARALLEL_GAMES trees; the same tree count is the
 # safe default here, and the RAM note above applies unchanged (one tree per
 # stream, ~400-500 MB each at 1000 iters).
-GEN_PARALLEL_GAMES="${GEN_PARALLEL_GAMES:-$((PARALLEL_GAMES * 8))}"
+# 2026-09-24: mem_governor (botbowl-worker/src/mem_governor.rs) makes an
+# oversized ceiling safe against OOM — it throttles admission — but not
+# efficient: once a mixed-size run's curriculum centre saturates near its
+# compiled max (as mix16x9's did at 144, a generation after launch), almost
+# every game is near-maximum size and most of a 16-stream ceiling sits
+# permanently blocked retrying every 5s instead of running, which reads as
+# "the box isn't doing anything" even though nothing is wrong. The figures
+# below were calibrated at 98 cells (14x7); scale them down against the
+# largest board this run can ever draw (SIZE_MAX_AREA — BUILD_W*BUILD_H for
+# a fixed-board run, so this is a no-op there) so the ceiling stays sized
+# for what the run actually plays, not for 14x7. Clamped to >= 2 so a huge
+# compiled capacity never zeroes it out.
+scale_parallel_games() {
+    local base="$1" scaled
+    scaled=$((base * 98 / SIZE_MAX_AREA))
+    [ "$scaled" -lt 2 ] && scaled=2
+    [ "$scaled" -gt "$base" ] && scaled="$base"
+    echo "$scaled"
+}
+GEN_PARALLEL_GAMES="${GEN_PARALLEL_GAMES:-$(scale_parallel_games $((PARALLEL_GAMES * 8)))}"
 # The bootstrap corpus is heuristic-only: no sidecar, so nothing to batch
 # for; it just wants the cores.
 BOOTSTRAP_PARALLEL_GAMES="${BOOTSTRAP_PARALLEL_GAMES:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
@@ -337,15 +356,16 @@ BOOTSTRAP_PARALLEL_GAMES="${BOOTSTRAP_PARALLEL_GAMES:-$(nproc 2>/dev/null || sys
 # sidecar round trip), server 0.7 core, GPU ~70% at mean batch 1.16 and
 # 2773 samples/s — 1.46x the x4 rate for 1.5x the streams, i.e. not yet
 # GPU-bound. 8 streams is 16 trees at ~250 MB each; eval held 3.0 GB at 6
-# against 10.7 GB available, so 8 fits with room.
-EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-8}"
-# Plan TBD: memory-aware admission control. The worker already predicts
-# each game's tree cost from its board's cell count and self-throttles
-# below the concurrency above when headroom gets tight, so the parallelism
-# knobs stay a starting point rather than the last word — see
-# botbowl-worker/src/mem_governor.rs. Only override this on a box that
-# needs a bigger reserve than the worker's 1024 MB default (e.g. one also
-# running a desktop session, per the 2026-09-24 systemd-oomd kill).
+# against 10.7 GB available, so 8 fits with room. Scaled by SIZE_MAX_AREA
+# same as GEN_PARALLEL_GAMES, for the same reason.
+EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-$(scale_parallel_games 8)}"
+# The worker's own admission control (botbowl-worker/src/mem_governor.rs)
+# is what actually prevents an OOM if the scaling above still undershoots
+# real per-tree cost on a given box/net — treat the two figures above as
+# "sized to run continuously," this as "the backstop if they're wrong."
+# Only override this on a box that needs a bigger reserve than the
+# worker's 1024 MB default (e.g. one also running a desktop session, per
+# the 2026-09-24 systemd-oomd kill).
 WORKER_MEM_FLOOR_MB="${WORKER_MEM_FLOOR_MB:-}"
 NN_SERVER_RESTARTS="${NN_SERVER_RESTARTS:-3}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
