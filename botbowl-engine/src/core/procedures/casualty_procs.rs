@@ -74,12 +74,32 @@ impl Procedure for Ejection {
         let position = game_state.get_player_unsafe(self.id).position;
         let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
             game_state.set_ball(BallState::InAir(position));
-            ProcState::DoneNew(ball_procs::Bounce::new())
+            // Defer the turnover until the loose ball has finished bouncing,
+            // mirroring `TurnoverIfPossessionLost`'s push-after-`Bounce` order.
+            ProcState::DoneNewProcs(vec![EjectionTurnover::new(), ball_procs::Bounce::new()])
         } else {
+            game_state.info.turnover = true;
             ProcState::Done
         };
         game_state.unfield_player(self.id, DugoutPlace::Ejected).unwrap();
         ret
+    }
+}
+
+/// A foul that gets a player sent off is always a turnover, regardless of
+/// where the ball ends up. Pushed after `Bounce` (see `Ejection::step`) so
+/// it resolves once the loose ball has settled.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct EjectionTurnover;
+impl EjectionTurnover {
+    pub fn new() -> AnyProc {
+        AnyProc::EjectionTurnover(EjectionTurnover)
+    }
+}
+impl Procedure for EjectionTurnover {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
+        game_state.info.turnover = true;
+        ProcState::Done
     }
 }
 
@@ -264,5 +284,81 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn ejection_without_ball_causes_turnover() {
+        let start_pos = Position::new((5, 5));
+        let foul_pos = start_pos + (2, 0);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(foul_pos)
+            .build();
+
+        let victim_id = state.get_player_id_at(foul_pos).unwrap();
+        state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+
+        assert!(state.home_to_act());
+
+        state.step_positional(PosAT::StartFoul, start_pos);
+
+        state.fix_d6(1); //armor: doubles -> ejected, sum too low to break armor
+        state.fix_d6(1); //armor
+
+        state.step_positional(PosAT::Foul, foul_pos);
+
+        assert!(
+            matches!(
+                state.get_dugout().next(),
+                Some(DugoutPlayer {
+                    place: DugoutPlace::Ejected,
+                    ..
+                })
+            ),
+            "fouler should have been ejected"
+        );
+        assert!(state.away_to_act(), "ejection must always cause a turnover");
+    }
+
+    #[test]
+    fn ejection_of_ball_carrier_causes_turnover_after_bounce() {
+        let start_pos = Position::new((5, 5));
+        let foul_pos = start_pos + (2, 0);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(foul_pos)
+            .add_ball_pos(start_pos)
+            .build();
+
+        let fouler_id = state.get_player_id_at(start_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(fouler_id));
+
+        let victim_id = state.get_player_id_at(foul_pos).unwrap();
+        state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+
+        state.step_positional(PosAT::StartFoul, start_pos);
+
+        state.fix_d6(1); //armor: doubles -> ejected, sum too low to break armor
+        state.fix_d6(1); //armor
+        state.fix_d8(D8::Four as u8); //bounce direction once the ball is dropped, away from the downed victim
+
+        state.step_positional(PosAT::Foul, foul_pos);
+
+        assert!(
+            matches!(
+                state.get_dugout().next(),
+                Some(DugoutPlayer {
+                    place: DugoutPlace::Ejected,
+                    ..
+                })
+            ),
+            "fouler should have been ejected"
+        );
+        assert!(
+            matches!(state.ball, BallState::OnGround(_)),
+            "ball should have bounced free of the ejected carrier, got {:?}",
+            state.ball
+        );
+        assert!(state.away_to_act(), "ejecting the ball carrier must still cause a turnover");
     }
 }
