@@ -14,6 +14,8 @@
 //! `(job, rung, game)`. Un-started tasks are dropped on disconnect because
 //! the hub requeues them elsewhere.
 
+mod mem_governor;
+
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,6 +28,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use botbowl_engine::bots::{Bot, RandomBot};
+use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_hub_proto::{
     decode, encode, BotSpec, BuildInfo, ModelId, RejectReason, Task, ToHub, ToWorker, PROTOCOL_VERSION,
@@ -35,10 +38,17 @@ use botbowl_play::bots::make_mcts;
 use botbowl_play::eval::{ladder_assignment, play_ladder_game};
 use botbowl_play::generate::play_trajectory;
 use botbowl_play::GAME_STACK_SIZE;
+use mem_governor::{GameSlot, MemGovernor};
 
 /// zstd level for trajectory frames: ~575 KB of JSON -> ~30 KB, fast
 /// enough to be invisible next to the game that produced it.
 const TRAJECTORY_ZSTD_LEVEL: i32 = 3;
+
+/// Default floor left unpredicted-for (MB) below which a game thread backs
+/// off rather than starting its next game. Leaves headroom for the
+/// nn_server sidecar, the hub, and (on the local worker) a desktop session
+/// sharing the box — see `mem_governor` for why this exists at all.
+pub const DEFAULT_MEM_FLOOR_MB: u32 = 1024;
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -52,6 +62,9 @@ pub struct WorkerConfig {
     pub nn_server: Option<PathBuf>,
     /// Where `<model-id>.onnx` files live between runs.
     pub cache_dir: PathBuf,
+    /// Memory headroom (MB) a game thread keeps in reserve, on top of its
+    /// predicted tree cost, before starting its next game.
+    pub mem_floor_mb: u32,
 }
 
 #[derive(Debug)]
@@ -255,7 +268,41 @@ impl Queue {
     }
 }
 
-fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>) {
+/// Playable cell count of a board — the unit `MemGovernor` predicts tree
+/// memory from. Matches `botbowl_play::board_sizes`'s private `playable_area`
+/// (engine dims include a 1-cell border on each side).
+fn cell_area(d: BoardDims) -> u32 {
+    (d.width as i64 - 2).max(0) as u32 * (d.height as i64 - 2).max(0) as u32
+}
+
+/// Blocks (with backoff) until the governor judges a game of `area` cells
+/// safe to start, then accounts for it; logs once per stall so a stuck
+/// worker is visible in its log rather than silently idle.
+fn admit_game<'a>(governor: &'a MemGovernor, area: u32, ctx: &str) -> GameSlot<'a> {
+    let mut warned = false;
+    loop {
+        let avail_kb = match available_memory_mb() {
+            Some(mb) => mb as u64 * 1024,
+            // Can't read memory on this platform/box — never block on a
+            // signal we don't have.
+            None => return GameSlot::new(governor, area),
+        };
+        governor.observe(avail_kb, governor.active_area());
+        if governor.admits(area, avail_kb) {
+            return GameSlot::new(governor, area);
+        }
+        if !warned {
+            eprintln!(
+                "[worker] {ctx}: holding back a {area}-cell game, {} MB available — waiting for headroom",
+                avail_kb / 1024
+            );
+            warned = true;
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+}
+
+fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>, governor: &MemGovernor) {
     match task {
         Task::Eval {
             id,
@@ -277,8 +324,11 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>)
                     return;
                 }
             };
+            // Two trees per game (candidate + opponent) against `Generate`'s one.
+            let area = cell_area(board.unwrap_or_else(BoardDims::from_env)) * 2;
             for &g in games {
                 let (team, game_seed) = ladder_assignment(*seed, g);
+                let _slot = admit_game(governor, area, rung);
                 // No `--trace-reuse` on the distributed path: a per-decision trace is a local
                 // diagnostic, and the telemetry the hub's report needs already rides in the line.
                 let line = play_ladder_game(
@@ -321,6 +371,8 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>)
             for &g in games {
                 // Same numbering as `botbowl-ui dataset --seed seed_base`.
                 let seed = seed_base.wrapping_add(g as u64);
+                let area = cell_area(cfg.board_for(seed).unwrap_or_else(BoardDims::from_env));
+                let _slot = admit_game(governor, area, shard);
                 match play_trajectory(cfg, nn.as_ref(), seed) {
                     Err(e) => {
                         // A configuration error (unknown lecture) recurs on
@@ -367,6 +419,7 @@ fn spawn_game_threads(
     store: Arc<ModelStore>,
     out: mpsc::UnboundedSender<ToHub>,
     in_flight: Arc<AtomicU16>,
+    governor: Arc<MemGovernor>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     (0..n)
         .map(|i| {
@@ -374,6 +427,7 @@ fn spawn_game_threads(
             let store = Arc::clone(&store);
             let out = out.clone();
             let in_flight = Arc::clone(&in_flight);
+            let governor = Arc::clone(&governor);
             std::thread::Builder::new()
                 .name(format!("game-{i}"))
                 .stack_size(GAME_STACK_SIZE)
@@ -384,8 +438,9 @@ fn spawn_game_threads(
                         // schema does not match this binary) must reach the
                         // hub as a failure, not leave the task in flight
                         // forever on a worker that is still heartbeating.
-                        let r =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_task(&task, &store, &out)));
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            run_task(&task, &store, &out, &governor)
+                        }));
                         if let Err(p) = r {
                             let msg = p
                                 .downcast_ref::<String>()
@@ -457,12 +512,17 @@ pub async fn run_once(
 
     let queue = Arc::new(Queue::new());
     let in_flight = Arc::new(AtomicU16::new(0));
+    // Sampled fresh each connection, before this connection's game threads
+    // exist — see `mem_governor` for why a static thread-pool size can't
+    // track a variable board-size curriculum on its own.
+    let governor = Arc::new(MemGovernor::new(cfg.mem_floor_mb, available_memory_mb()));
     let threads = spawn_game_threads(
         parallel,
         Arc::clone(&queue),
         Arc::clone(&store),
         results_tx.clone(),
         Arc::clone(&in_flight),
+        governor,
     );
 
     // Writer: results + heartbeats out. Owns the sink.
@@ -620,4 +680,50 @@ fn total_ram_mb() -> u32 {
         }
     }
     0
+}
+
+/// Memory the kernel would hand out right now without swapping — the
+/// signal `MemGovernor` gates game admission on. `None` when it can't be
+/// read, which `admit_game` treats as "never block" rather than guessing.
+fn available_memory_mb() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(s) = std::fs::read_to_string("/proc/meminfo") {
+            for line in s.lines() {
+                if let Some(rest) = line.strip_prefix("MemAvailable:") {
+                    let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+                    return Some((kb / 1024) as u32);
+                }
+            }
+        }
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `vm_stat` reports page counts, not MB. Free + inactive + speculative
+        // pages approximate what the kernel would hand out before it would
+        // need to compress or swap — inactive pages are reclaimable, and
+        // speculative pages are read-ahead nothing has actually touched.
+        let out = std::process::Command::new("vm_stat").output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let page_size = text
+            .lines()
+            .next()
+            .and_then(|l| l.split("page size of").nth(1))
+            .and_then(|s| s.trim().split(' ').next())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(4096);
+        let page_count = |key: &str| -> u64 {
+            text.lines()
+                .find(|l| l.starts_with(key))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|n| n.trim().trim_end_matches('.').parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let pages =
+            page_count("Pages free") + page_count("Pages inactive") + page_count("Pages speculative");
+        return Some(((pages * page_size) / (1024 * 1024)) as u32);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    None
 }

@@ -339,6 +339,14 @@ BOOTSTRAP_PARALLEL_GAMES="${BOOTSTRAP_PARALLEL_GAMES:-$(nproc 2>/dev/null || sys
 # GPU-bound. 8 streams is 16 trees at ~250 MB each; eval held 3.0 GB at 6
 # against 10.7 GB available, so 8 fits with room.
 EVAL_PARALLEL_GAMES="${EVAL_PARALLEL_GAMES:-8}"
+# Plan TBD: memory-aware admission control. The worker already predicts
+# each game's tree cost from its board's cell count and self-throttles
+# below the concurrency above when headroom gets tight, so the parallelism
+# knobs stay a starting point rather than the last word — see
+# botbowl-worker/src/mem_governor.rs. Only override this on a box that
+# needs a bigger reserve than the worker's 1024 MB default (e.g. one also
+# running a desktop session, per the 2026-09-24 systemd-oomd kill).
+WORKER_MEM_FLOOR_MB="${WORKER_MEM_FLOOR_MB:-}"
 NN_SERVER_RESTARTS="${NN_SERVER_RESTARTS:-3}"
 SEED_BASE=10000000                          # gen G shard K: BASE + G*1e6 + K*1e5
                                             # (old corpora used 8e5.. and 2e6..)
@@ -527,6 +535,7 @@ hub_stop() {
 worker_start() {
     local extra=""
     [ -n "$NN_SERVER_PID" ] && extra="--nn-server $NN_SOCKET"
+    [ -n "$WORKER_MEM_FLOOR_MB" ] && extra="$extra --mem-floor-mb $WORKER_MEM_FLOOR_MB"
     # shellcheck disable=SC2086
     "$WORKER" --hub "ws://127.0.0.1:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
         --name "local" --parallel-games "$1" --cache-dir "$WORKER_CACHE" $extra \

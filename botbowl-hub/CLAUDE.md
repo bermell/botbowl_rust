@@ -14,6 +14,7 @@ botbowl-hub serve --bind 0.0.0.0:7777 --token-file runs/<run>/hub.token
 # any machine, same commit, same BOARD_SIZE_* build:
 botbowl-worker --hub ws://<office-ip>:7777/ws --token-file hub.token        # sizes itself from cores/RAM
 botbowl-worker ... --parallel-games 4 --nn-server /tmp/nn.sock              # the local worker, with the GPU sidecar
+botbowl-worker ... --mem-floor-mb 2048                                      # raise the headroom reserve (default 1024 MB)
 # submit (flag-compatible with `botbowl-ui eval`'s ladder half):
 botbowl-hub job eval --evaluator nn --model X.onnx --vs-evaluator nn --vs-model anchor.onnx \
     --vs-games 40 --skip-fixed-rungs --per-game-out eval.games.jsonl --out report.json --wait
@@ -84,6 +85,16 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   names its boards.
 - **Control API and workers share one bearer token** (`hub.token`, random on first start).
   No TLS yet (plan 041 phase 5); `http.rs` is a deliberately tiny client that will go with it.
+- **A worker's `--parallel-games` is a ceiling, not a promise (`mem_governor.rs`).** Each game
+  thread predicts its next game's tree cost from the board's cell count (calibrated at runtime
+  from observed system memory, seeded at ~4.5 MB/cell) and blocks rather than start a game likely
+  to push the box under `--mem-floor-mb` (default 1024) of headroom. This exists because the
+  board-size curriculum (plan 042) varies tree memory several-fold within one generation while
+  the concurrency knobs (`GEN_PARALLEL_GAMES` etc.) stay fixed — a fixed pool size tuned against
+  one board size silently overcommits once the curriculum grows past it (2026-09-24: `systemd-oomd`
+  killed a training box's entire user session at 54% sustained memory pressure, mid-generation, on
+  boards several times 14x7's cell count). The check is per-worker and self-correcting, not a
+  static retune.
 
 ## Tests
 

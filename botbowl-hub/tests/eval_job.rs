@@ -67,6 +67,7 @@ fn worker_cfg(url: &str, name: &str, parallel: u16) -> WorkerConfig {
         parallel_games: Some(parallel),
         nn_server: None,
         cache_dir: tmp(&format!("cache-{name}")),
+        mem_floor_mb: 0,
     }
 }
 

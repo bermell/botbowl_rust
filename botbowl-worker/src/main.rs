@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use botbowl_worker::{run, WorkerConfig};
+use botbowl_worker::{run, WorkerConfig, DEFAULT_MEM_FLOOR_MB};
 
 /// Dial a botbowl-hub and play the games it hands out.
 #[derive(Parser, Debug)]
@@ -29,6 +29,12 @@ struct Cli {
     /// Model cache directory.
     #[arg(long, default_value_os_t = default_cache_dir())]
     cache_dir: PathBuf,
+    /// Memory headroom (MB) a game thread keeps in reserve before starting
+    /// its next game, on top of a running per-board-cell cost estimate
+    /// (see `mem_governor`). Set 0 only for a box with no other memory
+    /// pressure to worry about.
+    #[arg(long, default_value_t = DEFAULT_MEM_FLOOR_MB)]
+    mem_floor_mb: u32,
 }
 
 fn default_cache_dir() -> PathBuf {
@@ -71,6 +77,7 @@ async fn main() {
         parallel_games: cli.parallel_games,
         nn_server: cli.nn_server,
         cache_dir: cli.cache_dir,
+        mem_floor_mb: cli.mem_floor_mb,
     };
     if let Err(e) = run(cfg).await {
         eprintln!("[worker] {e}");
