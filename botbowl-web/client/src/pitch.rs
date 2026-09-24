@@ -251,6 +251,7 @@ fn square(
                             class="player"
                             class:active=p.active
                             class:down=p.status != botbowl_web_proto::view::PlayerStatus::Up
+                            class:used=p.used
                             src=format!("/img/{}", p.sprite)
                             alt=p.role.label()
                         />
