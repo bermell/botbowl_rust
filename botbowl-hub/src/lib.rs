@@ -200,6 +200,26 @@ async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
         if s.dirty { "-dirty" } else { "" },
         s.workers.len()
     );
+    if !s.dirty {
+        out.push_str(&format!(
+            "\njoin as a worker (needs ~/hub.token already on that machine):\n\
+             \x20 git fetch origin && git checkout {commit}\n\
+             \x20 BOARD_SIZE_W={pw} BOARD_SIZE_H={ph} BOARD_PLAYERS={team} cargo build --release -p botbowl-worker\n\
+             \x20 ./target/release/botbowl-worker --hub ws://<this-host-or-forwarded-address>:{port}/ws \\\n\
+             \x20     --token-file ~/hub.token --name <yours>\n",
+            commit = s.commit,
+            pw = s.capacity.width.saturating_sub(2),
+            ph = s.capacity.height.saturating_sub(2),
+            team = s.capacity.team_size,
+            port = hub.cfg.bind.port(),
+        ));
+    } else {
+        out.push_str(
+            "\njoin as a worker: this hub is running a dirty tree, so there's no commit a \
+             worker can check out to match it exactly — start it with --allow-commit-mismatch \
+             or commit and restart the hub first.\n",
+        );
+    }
     for w in &s.workers {
         out.push_str(&format!(
             "  {:20} {:>3} streams  {:>3} tasks in flight  {:>6} games  {}  seen {}s ago\n",

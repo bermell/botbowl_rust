@@ -371,6 +371,7 @@ impl Inner {
         HubStatus {
             commit: botbowl_data::git_commit().to_string(),
             dirty: botbowl_data::git_dirty(),
+            capacity: botbowl_hub_proto::Capacity::compiled(),
             workers: self
                 .workers
                 .values()

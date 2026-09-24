@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig};
+use botbowl_hub_proto::{BoardDims, Capacity, Evaluator, GenerateConfig, SearchConfig};
 use botbowl_play::eval::Report;
 
 /// `POST /api/jobs` body.
@@ -144,6 +144,10 @@ pub struct WorkerStatus {
 pub struct HubStatus {
     pub commit: String,
     pub dirty: bool,
+    /// The board capacity this hub (and every worker it accepts) is
+    /// compiled for — echoed on the status page so a new worker knows
+    /// what `BOARD_SIZE_W`/`BOARD_SIZE_H`/`BOARD_PLAYERS` to build with.
+    pub capacity: Capacity,
     pub workers: Vec<WorkerStatus>,
     pub jobs: Vec<JobStatus>,
 }
