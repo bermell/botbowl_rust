@@ -267,6 +267,41 @@ mod tests {
     }
 
     #[test]
+    fn failed_dodge_onto_loose_ball_bounces_it() -> Result<()> {
+        // Regression for a bug seen in a real game: a player dodging into a
+        // square that already has a loose ball on it fails the dodge and
+        // falls Down on that square before ever attempting the Pickup. The
+        // ball must bounce away — a loose ball may never come to rest under
+        // a player, same invariant as `Push::handle_aftermath`.
+        let start_pos = Position::new((2, 2));
+        let move_to = Position::new((3, 2));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(Position::new((1, 1)))
+            .add_ball_pos(move_to)
+            .build();
+
+        state.step_positional(PosAT::StartMove, start_pos);
+
+        state.fix_d6(1); //fail the dodge leaving the marked start square
+
+        state.step_positional(PosAT::Move, move_to);
+
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        let direction = Direction::from((1, 1));
+        state.fix_d8_direction(direction);
+
+        state.step_simple(SimpleAT::DontUseReroll);
+
+        assert_eq!(state.get_player_at(move_to).unwrap().status, PlayerStatus::Down);
+        assert_ne!(state.ball, BallState::OnGround(move_to));
+        assert_eq!(state.ball, BallState::OnGround(move_to + direction));
+
+        Ok(())
+    }
+
+    #[test]
     fn failed_dodge_ko() -> Result<()> {
         let mut state = standard_state();
         let id = state.get_player_id_at_coord(2, 2).unwrap();

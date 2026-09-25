@@ -237,26 +237,33 @@ fn knock_down_player(game_state: &mut GameState, id: PlayerID) -> (bool, bool) {
     let player_position = player.position;
     // let armor_proc = casualty_procs::Armor::new(id);
 
-    if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == id) {
-        game_state.set_ball(BallState::InAir(player_position));
-        (true, true)
-    } else {
-        (true, false)
+    match game_state.ball {
+        BallState::Carried(carrier_id) if carrier_id == id => {
+            game_state.set_ball(BallState::InAir(player_position));
+            (true, true)
+        }
+        // A player who falls onto a loose ball dislodges it — the ball may
+        // never come to rest under a player, same invariant as
+        // `Push::handle_aftermath`. Unlike the carried case, the ball is
+        // already `OnGround` at this position, so no state change is needed
+        // before `Bounce` picks it up.
+        BallState::OnGround(ball_pos) if ball_pos == player_position => (true, true),
+        _ => (true, false),
     }
 }
 impl Procedure for KnockDown {
     fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
         let mut procs: Vec<AnyProc> = Vec::with_capacity(3);
         let mut armor_procs: Vec<AnyProc> = Vec::with_capacity(2);
-        let mut ball_in_air = false;
+        let mut should_bounce_ball = false;
         for id in [self.id, self.second_id].iter().flatten() {
-            let (knocked_down, p_ball_in_air) = knock_down_player(game_state, *id);
-            ball_in_air |= p_ball_in_air;
+            let (knocked_down, p_should_bounce_ball) = knock_down_player(game_state, *id);
+            should_bounce_ball |= p_should_bounce_ball;
             if knocked_down {
                 armor_procs.push(casualty_procs::Armor::new(*id))
             }
         }
-        if ball_in_air {
+        if should_bounce_ball {
             procs.push(ball_procs::Bounce::new());
         }
         for armor_proc in armor_procs {
