@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use botbowl_hub_proto::{decode, encode, BuildInfo, Capacity, RejectReason, ToHub, ToWorker, PROTOCOL_VERSION};
 
+use crate::allowlist::Allowlist;
 use crate::state::WorkerConn;
 use crate::Hub;
 
@@ -23,7 +24,15 @@ fn size_parallel(cores: u16, ram_mb: u32) -> u16 {
     cores.max(1).min(by_ram)
 }
 
-fn check(hub: &Hub, protocol: u32, token: &str, build: &BuildInfo) -> Result<(), RejectReason> {
+/// How a worker's commit was cleared, for the log line. An admission through the allowlist is
+/// an assertion by the operator that wants to be visible after the fact, not a silent success.
+pub(crate) enum CommitVerdict {
+    Same,
+    AnyAllowed,
+    Allowlisted,
+}
+
+fn check(hub: &Hub, protocol: u32, token: &str, build: &BuildInfo) -> Result<CommitVerdict, RejectReason> {
     if protocol != PROTOCOL_VERSION {
         return Err(RejectReason::Protocol { hub: PROTOCOL_VERSION });
     }
@@ -31,20 +40,43 @@ fn check(hub: &Hub, protocol: u32, token: &str, build: &BuildInfo) -> Result<(),
         return Err(RejectReason::BadToken);
     }
     let mine = BuildInfo::current();
-    if !hub.cfg.allow_commit_mismatch {
-        if build.commit != mine.commit {
-            return Err(RejectReason::Commit { hub: mine.commit });
-        }
-        if build.dirty && !mine.dirty {
-            return Err(RejectReason::Dirty);
-        }
-    }
+    // Capacity first: a board the worker cannot hold is a hard fact about its binary, and no
+    // allowlist entry should ever be read as excusing it.
     if build.capacity != mine.capacity {
         return Err(RejectReason::Capacity {
             hub: Capacity::compiled(),
         });
     }
-    Ok(())
+    // Plan 042 left this open: `capacity` is the *compile-time* ceiling, but a task that names no
+    // board plays `BoardDims::from_env()` on whichever worker gets it. Two boxes built from the
+    // same commit with different `BOARD_SIZE_*` would then quietly contribute different games to
+    // one corpus or one rung. The active board is part of the handshake for the same reason the
+    // commit is.
+    if build.env_board != mine.env_board {
+        return Err(RejectReason::Board { hub: mine.env_board });
+    }
+    // A dirty worker is refused whatever the commit says, unless the hub is dirty too — a dirty
+    // tree has no name, so neither an allowlist nor `--allow-commit-mismatch` can assert anything
+    // about it. (Developing the worker itself means a dirty hub, which does relax this.)
+    if build.dirty && !mine.dirty {
+        return Err(RejectReason::Dirty);
+    }
+    if hub.cfg.allow_commit_mismatch {
+        return Ok(CommitVerdict::AnyAllowed);
+    }
+    if build.commit == mine.commit {
+        return Ok(CommitVerdict::Same);
+    }
+    // Re-read per handshake: the operator updates the file *after* committing, and a worker
+    // retrying every 30 s then rejoins on its own (see `botbowl-worker`'s reconnect loop).
+    match Allowlist::load(&hub.cfg.allowed_commits, &mine.commit) {
+        Some(list) if list.admits(&build.commit) => Ok(CommitVerdict::Allowlisted),
+        Some(list) => {
+            eprintln!("[hub] {}", list.describe());
+            Err(RejectReason::Commit { hub: mine.commit })
+        }
+        None => Err(RejectReason::Commit { hub: mine.commit }),
+    }
 }
 
 pub async fn handle(mut socket: WebSocket, hub: Hub) {
@@ -69,13 +101,34 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
         let _ = socket.close().await;
         return;
     };
-    if let Err(reason) = check(&hub, protocol, &token, &build) {
-        eprintln!("[hub] rejected {name:?} ({triple}): {reason}");
-        let _ = socket
-            .send(Message::Binary(encode(&ToWorker::Reject { reason }).into()))
-            .await;
-        let _ = socket.close().await;
-        return;
+    match check(&hub, protocol, &token, &build) {
+        Ok(CommitVerdict::Same) => {}
+        Ok(CommitVerdict::AnyAllowed) if build.commit != BuildInfo::current().commit => {
+            eprintln!(
+                "[hub] {name:?} ({triple}) is on commit {} vs the hub's {} -- admitted by --allow-commit-mismatch",
+                short(&build.commit),
+                short(&BuildInfo::current().commit),
+            );
+        }
+        Ok(CommitVerdict::AnyAllowed) => {}
+        Ok(CommitVerdict::Allowlisted) => {
+            // Loud on purpose: these games are written into the corpus under the *hub's*
+            // commit, so this line is the only record of which binary actually played them.
+            eprintln!(
+                "[hub] {name:?} ({triple}) is on commit {} vs the hub's {} -- admitted by {}",
+                short(&build.commit),
+                short(&BuildInfo::current().commit),
+                hub.cfg.allowed_commits.display(),
+            );
+        }
+        Err(reason) => {
+            eprintln!("[hub] rejected {name:?} ({triple}): {reason}");
+            let _ = socket
+                .send(Message::Binary(encode(&ToWorker::Reject { reason }).into()))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
     }
     let parallel = parallel_games.unwrap_or_else(|| size_parallel(cores, ram_mb)).max(1);
     if socket
@@ -163,4 +216,8 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
     hub.inner.lock().unwrap().remove_worker(wid);
     hub.changed.notify_waiters();
     writer.abort();
+}
+
+fn short(commit: &str) -> String {
+    commit.chars().take(12).collect()
 }

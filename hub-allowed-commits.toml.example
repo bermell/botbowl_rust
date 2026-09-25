@@ -1,0 +1,44 @@
+# Worker commits this hub will accept besides its own (plan 041).
+#
+# Copy to `hub-allowed-commits.toml` (untracked) in the directory the hub runs from, or pass
+# `botbowl-hub serve --allowed-commits <path>`. Without such a file the rule is what it has always
+# been: a worker must be built from exactly the hub's commit, from a clean tree.
+#
+# WHAT THIS IS FOR
+#
+# A commit that cannot change a game — a plan, a README, a python script under train/, a
+# `botbowl-ui` label — still invalidates every helper box, which then has to pull and rebuild
+# before it can rejoin. This file lets the author say "I looked, and those commits play the same
+# game", so the boxes reconnect on their own instead.
+#
+# WHAT IT IS NOT FOR
+#
+# Anything that touches botbowl-engine, botbowl-mcts, botbowl-nn or botbowl-play. Games played by
+# an admitted worker are written into the corpus and into `report.json` stamped with the *hub's*
+# commit, because that is where provenance is resolved. A wrong entry here does not produce a
+# warning or a mixed label; it produces data that says it came from code that did not produce it.
+# The hub logs every admission, so `hub.log` is the audit trail.
+#
+# HOW IT GOES STALE
+#
+# `hub_commit` must be the commit the hub is running. Commit anything and this file stops applying
+# — wholesale, silently as far as workers are concerned, loudly in the hub's log. That is the
+# point: it is re-checked by a human after each commit, not maintained as a growing list. Update
+# it *after* committing and *before* starting the hub; the hub re-reads it on every handshake, so
+# a worker that is sitting in its 30 s reconnect loop rejoins by itself once you save it.
+#
+# A good check before adding an entry:
+#
+#     git diff --stat <their-commit>..<hub-commit> -- \
+#         botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-hub-proto recon_mcts
+#
+# Empty output is the only thing that justifies a line below. Note that an empty diff over those
+# paths still leaves the *protocol* check in force, so a genuinely incompatible worker is refused
+# regardless of what this file says.
+
+hub_commit = "5f818d2"
+allow = [
+    "db7fc9c",   # feat(web-client): gray out player sprites — web client only
+    "5a60d25",   # plan(045) — documentation only
+]
+note = "checked: no diff under botbowl-engine/mcts/nn/play"

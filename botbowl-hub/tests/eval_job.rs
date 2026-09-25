@@ -41,6 +41,12 @@ fn tmp(tag: &str) -> PathBuf {
     d
 }
 
+/// A path that does not exist, so these hubs run the default exact-commit rule. The allowlist's
+/// own behaviour is unit-tested in `botbowl_hub::allowlist`.
+fn allowlist_path() -> PathBuf {
+    std::env::temp_dir().join("botbowl-hub-test-no-such-allowlist.toml")
+}
+
 async fn start_hub() -> (Hub, String) {
     // Long enough that a real worker in these tests is never reaped for
     // being busy; the reaper's own test sets its own.
@@ -52,6 +58,7 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         bind: "127.0.0.1:0".parse().unwrap(),
         token: TOKEN.into(),
         allow_commit_mismatch: false,
+        allowed_commits: allowlist_path(),
         worker_timeout,
     })
     .await
@@ -68,6 +75,7 @@ fn worker_cfg(url: &str, name: &str, parallel: u16) -> WorkerConfig {
         nn_server: None,
         cache_dir: tmp(&format!("cache-{name}")),
         mem_floor_mb: 0,
+        reconnect_max: Duration::from_secs(1),
     }
 }
 
@@ -385,6 +393,14 @@ async fn incompatible_workers_are_rejected_with_a_reason() {
         reject_reason(&url, base(TOKEN, small, PROTOCOL_VERSION)).await,
         RejectReason::Capacity { hub: me.capacity }
     );
+    // Same build, different `BOARD_SIZE_*` on the worker: `capacity` is only the compile-time
+    // ceiling, and a task that names no board would otherwise play a different game there.
+    let mut other_board = me.clone();
+    other_board.env_board.width -= 2;
+    assert_eq!(
+        reject_reason(&url, base(TOKEN, other_board, PROTOCOL_VERSION)).await,
+        RejectReason::Board { hub: me.env_board }
+    );
     // A dirty worker is refused only when the hub itself is clean.
     if !me.dirty {
         let dirty = BuildInfo {
@@ -395,5 +411,85 @@ async fn incompatible_workers_are_rejected_with_a_reason() {
             reject_reason(&url, base(TOKEN, dirty, PROTOCOL_VERSION)).await,
             RejectReason::Dirty
         );
+    }
+}
+
+/// The plan-041 escape hatch: a commit the operator has deliberately named in the hub's untracked
+/// allowlist connects; one that is not named still does not; and the file stops applying the
+/// moment the hub is on a commit it was not written for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allowlisted_commits_connect_and_a_stale_file_admits_nobody() {
+    let me = BuildInfo::current();
+    if me.dirty {
+        // A dirty hub accepts everything anyway; nothing to assert.
+        return;
+    }
+    let other = "0000000000000000000000000000000000000000";
+    let hello = |build: BuildInfo| ToHub::Hello {
+        protocol: PROTOCOL_VERSION,
+        token: TOKEN.into(),
+        build,
+        triple: "test".into(),
+        name: "old".into(),
+        cores: 1,
+        ram_mb: 0,
+        cached_models: vec![],
+        parallel_games: None,
+    };
+    let their_build = BuildInfo {
+        commit: other.into(),
+        ..me.clone()
+    };
+
+    let dir = tmp("allowlist");
+    let path = dir.join("hub-allowed-commits.toml");
+
+    // Written for this hub's commit, naming theirs: admitted.
+    std::fs::write(
+        &path,
+        format!("hub_commit = \"{}\"\nallow = [\"{other}\"]\n", me.commit),
+    )
+    .unwrap();
+    let (_hub, url) = start_hub_with_allowlist(&path).await;
+    assert!(
+        connects(&url, hello(their_build.clone())).await,
+        "a listed commit must be admitted"
+    );
+    // An unlisted commit is still refused by the same file.
+    let unlisted = BuildInfo {
+        commit: "1111111111111111111111111111111111111111".into(),
+        ..me.clone()
+    };
+    assert!(!connects(&url, hello(unlisted)).await);
+
+    // Someone commits: the file now names a commit the hub is not on, and applies to nobody.
+    std::fs::write(&path, format!("hub_commit = \"{other}\"\nallow = [\"{other}\"]\n")).unwrap();
+    assert!(
+        !connects(&url, hello(their_build)).await,
+        "a file written for another hub commit must admit nobody — it is re-read per handshake"
+    );
+}
+
+async fn start_hub_with_allowlist(path: &std::path::Path) -> (Hub, String) {
+    let (hub, addr, _task) = Hub::start(HubConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        token: TOKEN.into(),
+        allow_commit_mismatch: false,
+        allowed_commits: path.to_path_buf(),
+        worker_timeout: Duration::from_secs(300),
+    })
+    .await
+    .unwrap();
+    (hub, format!("ws://{addr}/ws"))
+}
+
+/// `true` when the handshake ends in `Welcome` rather than `Reject`.
+async fn connects(url: &str, hello: ToHub) -> bool {
+    let (ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let (mut sink, mut stream) = ws.split();
+    sink.send(Message::Binary(encode(&hello).into())).await.unwrap();
+    match stream.next().await {
+        Some(Ok(Message::Binary(b))) => matches!(decode::<ToWorker>(&b).unwrap(), ToWorker::Welcome { .. }),
+        other => panic!("expected a frame, got {other:?}"),
     }
 }

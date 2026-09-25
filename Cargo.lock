@@ -406,6 +406,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "toml 0.8.23",
  "zstd",
 ]
 
@@ -534,6 +535,7 @@ version = "0.1.0"
 dependencies = [
  "botbowl-engine",
  "botbowl-hub-proto",
+ "botbowl-mcts",
  "botbowl-nn",
  "botbowl-play",
  "clap",

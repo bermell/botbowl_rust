@@ -23,8 +23,30 @@ hub (`GEN_PARALLEL_GAMES`, default `8*PARALLEL_GAMES`, sizes the local worker). 
 real 14x7 binaries against `botbowl-ui dataset` on the same seeds: identical seed sets and
 provenance metadata per shard, nn shard shipped by hash, heuristic hedge shard on the
 heuristic evaluator. Phases 3+ not started.
-Decided: dirty-tree workers are refused (no exception); Windows deferred until a box exists;
-`job --wait` progress output still open. Independent of plan 039 (mixed board sizes);
+**Phase 3 done 2026-09-25** except hub restart recovery and hub-side `Drain` (both listed in
+`botbowl-hub/CLAUDE.md`): token auth, heartbeats, requeue timeouts and the status page were
+already in. Added the same day, from running experiments rather than the loop on the fleet:
+a **per-commit worker allowlist** (`--allowed-commits`, untracked, keyed on the hub's commit so
+it self-invalidates — decision 5's "docs-only commit invalidates workers" problem, solved without
+phase 4's binary serving); a **30 s reconnect** that resets after a good connection and retries
+rejections, so a hub restarted for a new commit gets its fleet back by itself; **every search knob
+resolved on the submitter** (`SearchConfig::pinned_to_env`) instead of `MctsConfig::from_env()` on
+whichever worker picked the task up; the **active board** added to the handshake (protocol v5) —
+capacity is only the compile-time ceiling, so two boxes from one commit with different
+`BOARD_SIZE_*` used to contribute different games to one corpus; the memory governor's prediction
+scaled by the task's **iteration budget**; and the `--bot-config` + `--vs-evaluator` submitter
+panic fixed.
+
+**Phase 5 (TLS) is not planned as designed below.** The pinned self-signed cert earns its keep
+against a tampered *served binary*, which is phase 4 and does not exist. What is actually exposed
+is a bearer token and trajectory bytes, and the cheaper, stronger answer is a tunnel (WireGuard /
+Tailscale / SSH reverse) with workers dialling `ws://127.0.0.1:…` — mutual auth and encryption for
+zero code and no cert to distribute or rotate. If the port must be public, terminate TLS in a
+reverse proxy and give the worker's `tokio-tungstenite` a TLS feature so it can dial `wss://`;
+that is a one-line dependency change against a hub that stays plaintext behind it.
+
+Decided: dirty-tree workers are refused (no exception, and not even `--allow-commit-mismatch`
+relaxes it); Windows deferred until a box exists; `job --wait` progress output still open. Independent of plan 039 (mixed board sizes);
 the two compose because board dims are a runtime `GameState` field within one compiled capacity.
 
 ## Problem

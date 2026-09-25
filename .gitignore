@@ -4,3 +4,7 @@
 __pycache__/
 train/.venv
 /runs
+# Plan 041: the hub's per-commit worker allowlist. Deliberately untracked — it asserts something
+# about a specific commit and must never travel with the code it talks about. See
+# hub-allowed-commits.toml.example and botbowl-hub/CLAUDE.md.
+/hub-allowed-commits.toml

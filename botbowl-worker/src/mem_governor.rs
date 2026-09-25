@@ -42,10 +42,35 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Convert a game into the governor's cost unit: playable cells scaled by how much search runs on
+/// them.
+///
+/// A DAG's footprint grows with the number of iterations that expand it, not only with the board
+/// it sits on, and the calibration behind [`DEFAULT_KB_PER_CELL`] was taken at
+/// [`REFERENCE_ITERS`]. Left unscaled, a 4000-iteration job (plan 045's arms, and any experiment
+/// that moves the budget) starts out predicting a quarter of its true cost and only catches up
+/// through the EWMA — which is several games of over-admission on exactly the runs where one tree
+/// is multiple GB. Scaling here keeps the stored constant meaning one thing, so a fleet mixing
+/// budgets still shares one calibration.
+///
+/// `iters` is `None` for a time-budgeted search, where iteration count is not known up front;
+/// that falls back to the reference, i.e. the old behaviour.
+pub fn cost_units(area: u32, iters: Option<u64>) -> u32 {
+    let iters = iters.unwrap_or(REFERENCE_ITERS).max(1);
+    let scaled = (area as u64 * iters).div_ceil(REFERENCE_ITERS);
+    scaled.min(u32::MAX as u64) as u32
+}
+
 /// Seed estimate: `scripts/train_loop.sh`'s `GEN_PARALLEL_GAMES` comment
 /// measured ~400-500 MB per tree at 1000 iters on a 98-cell (14x7) board,
 /// i.e. ~4.5 MB/cell. Refined at runtime by [`MemGovernor::observe`].
+///
+/// The unit is a **cost unit**, not a raw cell: one cell searched for
+/// [`REFERENCE_ITERS`] iterations. See [`cost_units`].
 const DEFAULT_KB_PER_CELL: u64 = 4_500;
+
+/// The iteration count [`DEFAULT_KB_PER_CELL`] was measured at.
+pub const REFERENCE_ITERS: u64 = 1_000;
 
 /// EWMA smoothing for `kb_per_cell`, in permille (0..1000). Low, since a
 /// single observation mixes in every game currently in flight and can be
@@ -187,6 +212,26 @@ mod tests {
     fn larger_board_costs_more() {
         let g = MemGovernor::new(0, Some(8 * 1024));
         assert!(g.predicted_cost_kb(400) > g.predicted_cost_kb(98));
+    }
+
+    #[test]
+    fn cost_scales_with_the_search_budget() {
+        // The whole point: a 4000-iteration game on 14x7 must not be predicted as cheaply as a
+        // 1000-iteration one, or plan-045-style arms over-admit until the EWMA catches up.
+        assert_eq!(cost_units(98, Some(1_000)), 98);
+        assert_eq!(cost_units(98, Some(4_000)), 98 * 4);
+        assert_eq!(cost_units(98, Some(500)), 49);
+        // A time budget is unknowable up front: fall back to the calibration point.
+        assert_eq!(cost_units(98, None), 98);
+        // A search-free bot still rounds up to something non-zero rather than wrapping.
+        assert_eq!(cost_units(98, Some(0)), 1);
+        // And a 16x9 board at 4000 iters outprices a 14x7 board at 1000, which is the ordering
+        // the admission decision actually rests on.
+        let g = MemGovernor::new(0, Some(8 * 1024));
+        assert!(
+            g.predicted_cost_kb(cost_units(144, Some(4_000)) as u64)
+                > g.predicted_cost_kb(cost_units(98, Some(1_000)) as u64)
+        );
     }
 
     #[test]

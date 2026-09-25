@@ -44,9 +44,15 @@ struct ServeArgs {
     /// Shared secret. Created (random) and printed if the file does not exist.
     #[arg(long, default_value = "hub.token")]
     token_file: PathBuf,
-    /// Accept workers built from another commit (plan 041 decision 5).
+    /// Accept workers built from *any* commit (plan 041 decision 5). The blunt instrument, for
+    /// hacking on the worker itself; use `--allowed-commits` to run a programme.
     #[arg(long, default_value_t = false)]
     allow_commit_mismatch: bool,
+    /// Named commits a worker may also connect on, as TOML keyed by the hub's own commit — see
+    /// `botbowl_hub::allowlist`. Untracked, and stale the moment you commit again. Absent file =
+    /// exact match only, which is the default.
+    #[arg(long, default_value = botbowl_hub::allowlist::DEFAULT_PATH)]
+    allowed_commits: PathBuf,
     /// Seconds of silence before a worker is dropped and its games requeued.
     /// Workers heartbeat every 30 s; this catches the machine that goes away
     /// without closing its socket (a slept laptop), which is otherwise
@@ -291,16 +297,21 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         search: SearchConfig {
             budget,
             workers: a.mcts_workers,
-            // `dataset` leaves these to the bot's env-driven defaults. The
-            // backup rule is stamped into the provenance label, so resolve
-            // it *here*, from the submitting environment, rather than on
-            // whichever worker happens to play the game.
+            // `dataset` leaves these `None`, meaning "the bot's env-driven default"; keep that,
+            // because `candidate_label`/the provenance label read these fields and a `Some` here
+            // would change every corpus label. The backup rule is the exception — it is stamped
+            // into the label, so it is resolved here, from the submitting environment.
+            //
+            // `pinned_to_env` below then fills `config` with the *whole* resolved `MctsConfig`
+            // from this same environment, so "env-driven default" means the hub's environment,
+            // once, and not whichever worker happened to pick the shard up.
             puct: None,
             horizon_turns: None,
             backup: Some(botbowl_mcts::BackupMode::from_env()),
             fpu_reduction: None,
             config: preset.as_ref().map(|p| p.config),
-        },
+        }
+        .pinned_to_env(),
         config_name: preset.as_ref().map(|p| p.name.clone()),
         evaluator,
         model: a.model.clone(),
@@ -543,7 +554,10 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             .transpose()?,
         fpu_reduction: cand_preset.is_none().then_some(a.fpu_reduction),
         config: cand_preset.as_ref().map(|p| p.config),
-    };
+    }
+    // Everything a search depends on is resolved here, from the hub's environment, and shipped.
+    // A helper box's `BLOOD_MCTS_*` never reaches a job.
+    .pinned_to_env();
     let opp = SearchConfig {
         budget: botbowl_mcts_budget(a.opponent_iters.unwrap_or(a.mcts_iters)),
         workers: a.mcts_workers,
@@ -568,7 +582,8 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             .is_none()
             .then(|| a.vs_fpu_reduction.unwrap_or(a.fpu_reduction)),
         config: opp_preset.as_ref().map(|p| p.config),
-    };
+    }
+    .pinned_to_env();
     let model_str = a.model.as_ref().map(|p| p.to_string_lossy().into_owned());
     let candidate = match CandidateBot::from(a.candidate_bot) {
         CandidateBot::Mcts => BotReq::Mcts {
@@ -617,39 +632,52 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
     }
     if let Some(vs) = a.vs_evaluator {
         let vs = Evaluator::from(vs);
-        let (opp_puct, opp_h, opp_b, opp_f) = (
-            opp.puct.unwrap(),
-            opp.horizon_turns.unwrap(),
-            opp.backup.unwrap(),
-            opp.fpu_reduction.unwrap(),
-        );
-        let (cand_h, cand_b, cand_f) = (
-            cand.horizon_turns.unwrap(),
-            cand.backup.unwrap(),
-            cand.fpu_reduction.unwrap(),
-        );
-        // Same label as `botbowl-ui eval` builds, so downstream scripts
-        // keep matching on it.
-        let label = format!(
-            "vs:{} [{}{}{}{}]",
-            evaluator_label(vs, a.vs_model.as_ref().map(|p| p.to_string_lossy()).as_deref()),
-            opp_puct.label(),
-            if opp_h != cand_h {
-                format!(" horizon={opp_h}v{cand_h}")
-            } else {
-                String::new()
-            },
-            if opp_b != cand_b {
-                format!(" {}v{}", opp_b.label(), cand_b.label())
-            } else {
-                String::new()
-            },
-            if opp_f != cand_f {
-                format!(" fpu_k={opp_f}v{cand_f}")
-            } else {
-                String::new()
-            },
-        );
+        // Same label as `botbowl-ui eval` builds, so downstream scripts keep matching on it —
+        // including the preset branch, where the per-knob fields are deliberately `None` and the
+        // configuration *name* is the difference worth printing. Unwrapping them here used to
+        // panic the submitter for every `--bot-config` + `--vs-evaluator` job.
+        let vs_model = a.vs_model.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let base = evaluator_label(vs, vs_model.as_deref());
+        // Four cases, none of them a panic. `--vs-config` alone (the opponent named, the
+        // candidate on flags) is reachable and used to be the same unwrap.
+        let label = match (&opp_preset, &cand_preset) {
+            (Some(o), Some(c)) if o.name == c.name => format!("vs:{base} [{}]", o.name),
+            (Some(o), Some(c)) => format!("vs:{base} [{} v {}]", o.name, c.name),
+            (Some(o), None) => format!("vs:{base} [{o_name} v flags]", o_name = o.name),
+            (None, Some(c)) => format!("vs:{base} [flags v {c_name}]", c_name = c.name),
+            (None, None) => {
+                let (opp_puct, opp_h, opp_b, opp_f) = (
+                    opp.puct.expect("set when no preset is named"),
+                    opp.horizon_turns.expect("set when no preset is named"),
+                    opp.backup.expect("set when no preset is named"),
+                    opp.fpu_reduction.expect("set when no preset is named"),
+                );
+                let (cand_h, cand_b, cand_f) = (
+                    cand.horizon_turns.expect("set when no preset is named"),
+                    cand.backup.expect("set when no preset is named"),
+                    cand.fpu_reduction.expect("set when no preset is named"),
+                );
+                format!(
+                    "vs:{base} [{}{}{}{}]",
+                    opp_puct.label(),
+                    if opp_h != cand_h {
+                        format!(" horizon={opp_h}v{cand_h}")
+                    } else {
+                        String::new()
+                    },
+                    if opp_b != cand_b {
+                        format!(" {}v{}", opp_b.label(), cand_b.label())
+                    } else {
+                        String::new()
+                    },
+                    if opp_f != cand_f {
+                        format!(" fpu_k={opp_f}v{cand_f}")
+                    } else {
+                        String::new()
+                    },
+                )
+            }
+        };
         for &board in &boards {
             rungs.push(RungReq {
                 name: rung_name(&label, board),
@@ -770,10 +798,19 @@ fn main() {
             let token = or_create_token(&a.token_file);
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             rt.block_on(async move {
+                // Say at startup what the allowlist does, if there is one: a file that has gone
+                // stale (the usual case — someone committed after writing it) is the thing an
+                // operator most needs told *before* a worker is turned away for it.
+                if let Some(list) =
+                    botbowl_hub::allowlist::Allowlist::load(&a.allowed_commits, botbowl_data::git_commit())
+                {
+                    eprintln!("[hub] {}", list.describe());
+                }
                 let (_hub, addr, task) = Hub::start(HubConfig {
                     bind: a.bind,
                     token,
                     allow_commit_mismatch: a.allow_commit_mismatch,
+                    allowed_commits: a.allowed_commits.clone(),
                     worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
                 })
                 .await

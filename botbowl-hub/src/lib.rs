@@ -11,12 +11,14 @@
 //! All state is [`state::Inner`] behind one mutex; `changed` wakes anyone
 //! waiting on a job.
 
+pub mod allowlist;
 pub mod api;
 pub mod http;
 pub mod state;
 pub mod ws;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,8 +37,12 @@ use state::Inner;
 pub struct HubConfig {
     pub bind: SocketAddr,
     pub token: String,
-    /// Accept workers built from a different commit (plan 041 decision 5).
+    /// Accept workers built from *any* commit (plan 041 decision 5). The blunt instrument,
+    /// for hacking on the worker; a programme uses `allowed_commits` instead.
     pub allow_commit_mismatch: bool,
+    /// Path to the untracked per-commit allowlist ([`allowlist`]). Read on every handshake, so
+    /// editing it admits waiting workers on their next reconnect without restarting the hub.
+    pub allowed_commits: PathBuf,
     /// Drop a worker that has not been heard from for this long, and requeue
     /// the games it was holding. Workers heartbeat every 30 s whether or not
     /// they are mid-game, so this is about a lost *machine*, not a slow one.

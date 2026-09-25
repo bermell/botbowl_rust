@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use botbowl_worker::{run, WorkerConfig, DEFAULT_MEM_FLOOR_MB};
+use botbowl_worker::{run, WorkerConfig, DEFAULT_MEM_FLOOR_MB, DEFAULT_RECONNECT_MAX_SECS};
 
 /// Dial a botbowl-hub and play the games it hands out.
 #[derive(Parser, Debug)]
@@ -35,6 +35,29 @@ struct Cli {
     /// pressure to worry about.
     #[arg(long, default_value_t = DEFAULT_MEM_FLOOR_MB)]
     mem_floor_mb: u32,
+    /// Longest gap between connection attempts, in seconds. The worker starts at 5 s, doubles up
+    /// to this, and resets after any connection that worked — so a hub restarted for a new commit
+    /// gets its fleet back within this long, without anyone touching the helper boxes.
+    #[arg(long, default_value_t = DEFAULT_RECONNECT_MAX_SECS)]
+    reconnect_max_secs: u64,
+}
+
+/// Since the hub pins a complete `MctsConfig` into every task (`SearchConfig::pinned_to_env`),
+/// these no longer do anything here — and someone who set one is expecting otherwise. Say so
+/// once, loudly, rather than let them believe a knob is live.
+fn warn_about_stale_env() {
+    let stale: Vec<String> = std::env::vars()
+        .map(|(k, _)| k)
+        .filter(|k| k.starts_with("BLOOD_MCTS_"))
+        .collect();
+    if !stale.is_empty() {
+        eprintln!(
+            "[worker] WARN: {} set in this environment but ignored — the hub decides every search knob for the games it hands out",
+            stale.join(", ")
+        );
+    }
+    // The board is not a search knob: it is checked at the handshake instead, and a mismatch is
+    // a rejection rather than a warning.
 }
 
 fn default_cache_dir() -> PathBuf {
@@ -70,6 +93,7 @@ async fn main() {
             std::process::exit(2)
         }),
     };
+    warn_about_stale_env();
     let cfg = WorkerConfig {
         hub_url: cli.hub,
         token,
@@ -78,6 +102,7 @@ async fn main() {
         nn_server: cli.nn_server,
         cache_dir: cli.cache_dir,
         mem_floor_mb: cli.mem_floor_mb,
+        reconnect_max: std::time::Duration::from_secs(cli.reconnect_max_secs.max(1)),
     };
     if let Err(e) = run(cfg).await {
         eprintln!("[worker] {e}");

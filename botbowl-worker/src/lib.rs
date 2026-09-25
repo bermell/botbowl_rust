@@ -33,6 +33,7 @@ use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_hub_proto::{
     decode, encode, BotSpec, BuildInfo, ModelId, RejectReason, Task, ToHub, ToWorker, PROTOCOL_VERSION,
 };
+use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::make_mcts;
 use botbowl_play::eval::{ladder_assignment, play_ladder_game};
@@ -65,7 +66,16 @@ pub struct WorkerConfig {
     /// Memory headroom (MB) a game thread keeps in reserve, on top of its
     /// predicted tree cost, before starting its next game.
     pub mem_floor_mb: u32,
+    /// Longest wait between connection attempts. The hub is restarted whenever the code changes,
+    /// so this is the worst case for a helper box noticing it is back.
+    pub reconnect_max: Duration,
 }
+
+/// Where the reconnect backoff starts, and what it resets to after a connection that worked.
+const RECONNECT_MIN: Duration = Duration::from_secs(5);
+
+/// Default for [`WorkerConfig::reconnect_max`].
+pub const DEFAULT_RECONNECT_MAX_SECS: u64 = 30;
 
 #[derive(Debug)]
 pub enum Fatal {
@@ -275,7 +285,23 @@ fn cell_area(d: BoardDims) -> u32 {
     (d.width as i64 - 2).max(0) as u32 * (d.height as i64 - 2).max(0) as u32
 }
 
-/// Blocks (with backoff) until the governor judges a game of `area` cells
+/// Iteration budget of a bot, for the memory prediction. Search-free bots hold no tree at all,
+/// hence `Some(0)`; a time budget is unknowable up front, hence `None`.
+fn iters_of(spec: &BotSpec) -> Option<u64> {
+    match spec {
+        BotSpec::Random | BotSpec::Scripted => Some(0),
+        BotSpec::Mcts { search, .. } => budget_iters(&search.budget),
+    }
+}
+
+fn budget_iters(budget: &SearchBudget) -> Option<u64> {
+    match budget {
+        SearchBudget::Iterations(n) => Some(*n as u64),
+        SearchBudget::Time(_) => None,
+    }
+}
+
+/// Blocks (with backoff) until the governor judges a game of `area` cost units
 /// safe to start, then accounts for it; logs once per stall so a stuck
 /// worker is visible in its log rather than silently idle.
 fn admit_game<'a>(governor: &'a MemGovernor, area: u32, ctx: &str) -> GameSlot<'a> {
@@ -295,7 +321,7 @@ fn admit_game<'a>(governor: &'a MemGovernor, area: u32, ctx: &str) -> GameSlot<'
         }
         if !warned {
             eprintln!(
-                "[worker] {ctx}: holding back a {area}-cell game, {} MB available — waiting for headroom",
+                "[worker] {ctx}: holding back a game costing {area} cell-kiloiterations, {} MB available — waiting for headroom",
                 avail_kb / 1024
             );
             warned = true;
@@ -326,8 +352,12 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
                     return;
                 }
             };
-            // Two trees per game (candidate + opponent) against `Generate`'s one.
-            let area = cell_area(board.unwrap_or_else(BoardDims::from_env)) * 2;
+            // Two trees per game (candidate + opponent) against `Generate`'s one, each scaled by
+            // its own budget — an asymmetric arm (plan 045 runs 4000 against 1000) costs the sum,
+            // not twice the larger or twice the smaller.
+            let cells = cell_area(board.unwrap_or_else(BoardDims::from_env));
+            let area = mem_governor::cost_units(cells, iters_of(candidate))
+                + mem_governor::cost_units(cells, iters_of(opponent));
             for &g in games {
                 let (team, game_seed) = ladder_assignment(*seed, g);
                 let _slot = admit_game(governor, area, rung);
@@ -373,7 +403,10 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
             for &g in games {
                 // Same numbering as `botbowl-ui dataset --seed seed_base`.
                 let seed = seed_base.wrapping_add(g as u64);
-                let area = cell_area(cfg.board_for(seed).unwrap_or_else(BoardDims::from_env));
+                let area = mem_governor::cost_units(
+                    cell_area(cfg.board_for(seed).unwrap_or_else(BoardDims::from_env)),
+                    budget_iters(&cfg.search.budget),
+                );
                 let _slot = admit_game(governor, area, shard);
                 match play_trajectory(cfg, nn.as_ref(), seed) {
                     Err(e) => {
@@ -627,25 +660,48 @@ pub async fn run_once(
     Ok(ended)
 }
 
-/// Reconnect loop with exponential backoff. Returns only on a fatal
-/// rejection or after a `Drain`.
+/// Reconnect loop. Returns only on a bad token or after a `Drain`.
+///
+/// A helper box is expected to outlive many hub restarts: the hub goes down whenever the training
+/// box takes a new commit, and it comes back within seconds. So the backoff is short (5 s,
+/// doubling to [`WorkerConfig::reconnect_max`], 30 s by default) and — the part that used to be
+/// missing — **resets after every connection that worked**, instead of creeping to five minutes
+/// and staying there for the rest of the week.
+///
+/// A rejection is also retried rather than fatal, with one exception. The hub restarted on a new
+/// commit is exactly the case the operator resolves *on the hub* — by updating
+/// `hub-allowed-commits.toml` — and a worker that has exited cannot benefit from that. So it keeps
+/// dialling and rejoins by itself, typically before anyone looks. `BadToken` is the exception: no
+/// action on the hub makes a wrong secret right, so that one stops.
 pub async fn run(cfg: WorkerConfig) -> Result<(), Fatal> {
     let store = Arc::new(ModelStore::open(&cfg.cache_dir, cfg.nn_server.clone())?);
     let (tx, mut rx) = mpsc::unbounded_channel::<ToHub>();
-    let mut backoff = Duration::from_secs(5);
+    let mut backoff = RECONNECT_MIN;
+    // Say a repeated reason once, not every 30 s forever: a worker waiting out a commit mismatch
+    // overnight should leave a readable log, not 1200 identical lines.
+    let mut last_complaint: Option<String> = None;
     loop {
-        match run_once(&cfg, Arc::clone(&store), &mut rx, &tx).await {
+        let outcome = run_once(&cfg, Arc::clone(&store), &mut rx, &tx).await;
+        let why = match outcome {
             Ok(Ended::Drained) => return Ok(()),
             Ok(Ended::Lost(why)) => {
-                eprintln!("[worker] connection lost ({why}); retrying in {backoff:?}");
+                // We got as far as a working connection, so the next outage starts over.
+                backoff = RECONNECT_MIN;
+                last_complaint = None;
+                format!("connection lost ({why})")
             }
-            Err(Fatal::Io(e)) => {
-                eprintln!("[worker] {e}; retrying in {backoff:?}");
+            Err(Fatal::Rejected(RejectReason::BadToken)) => {
+                return Err(Fatal::Rejected(RejectReason::BadToken));
             }
-            Err(fatal @ Fatal::Rejected(_)) => return Err(fatal),
+            Err(Fatal::Rejected(r)) => format!("hub rejected us: {r}"),
+            Err(Fatal::Io(e)) => e.to_string(),
+        };
+        if last_complaint.as_deref() != Some(why.as_str()) {
+            eprintln!("[worker] {why}; retrying every {}s until it changes", backoff.as_secs());
+            last_complaint = Some(why);
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(300));
+        backoff = (backoff * 2).min(cfg.reconnect_max.max(RECONNECT_MIN));
     }
 }
 
@@ -722,8 +778,7 @@ fn available_memory_mb() -> Option<u32> {
                 .and_then(|n| n.trim().trim_end_matches('.').parse::<u64>().ok())
                 .unwrap_or(0)
         };
-        let pages =
-            page_count("Pages free") + page_count("Pages inactive") + page_count("Pages speculative");
+        let pages = page_count("Pages free") + page_count("Pages inactive") + page_count("Pages speculative");
         return Some(((pages * page_size) / (1024 * 1024)) as u32);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

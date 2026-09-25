@@ -104,6 +104,28 @@ keep 1000.
 
 Everything below runs from the repo root on **one idle box**. Budget: 10 h wall.
 
+**Or run Part B on the fleet.** Every arm is a plain ladder job, so `botbowl-hub job eval` takes
+the same flags as `botbowl-ui eval` and both seats are fully described by the submission — as of
+2026-09-25 the hub pins a complete `MctsConfig` into each task, so no helper box's `BLOOD_MCTS_*`
+or `BOARD_SIZE_*` can reach an arm. Swap `$UI eval` for:
+
+```sh
+$HUB job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+    --evaluator nn --model $NET --mcts-iters $X \
+    --vs-evaluator nn --vs-model $NET --opponent-iters 1000 \
+    --skip-fixed-rungs --board-sizes $BOARDS --games $N --vs-games $N \
+    --seed 45000 --mcts-workers 1 \
+    --per-game-out $OUT/$tag.games.jsonl --out $OUT/$tag.report.json --wait
+```
+
+Three things change with the hub and nothing else does: `--parallel-games` is ignored (each worker
+sizes itself, and its memory governor — which now scales its prediction by the iteration budget —
+does the job of the `P` formula below per box, so the pilot is only needed for the time estimate);
+`report.json` carries no `lectures`, which these arms skip anyway; and the boxes must all be on
+the hub's commit, or on one named in its `hub-allowed-commits.toml`. Everything about the arms,
+seeds, labels and output files is identical, so the `## Results` tables are filled the same way.
+Do **not** mix: run a given arm entirely on the fleet or entirely locally.
+
 ### 0. Preflight (≈15 min)
 
 ```sh

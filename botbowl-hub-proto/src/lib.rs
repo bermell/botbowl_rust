@@ -6,12 +6,14 @@
 //! worker has not confirmed having) while the worker streams one
 //! result frame per finished game.
 //!
-//! Compatibility is three checks, in order: [`PROTOCOL_VERSION`] (bump on
-//! any frame-layout change), the git commit baked into both binaries
-//! (exact match unless the hub was started with `--allow-commit-mismatch`;
-//! a dirty tree is refused unless the hub is dirty too), and the compiled
-//! board capacity. The rationale is in `plans/041-plan--distributed-hub-and-workers.md`
-//! decision 5.
+//! Compatibility is four checks: [`PROTOCOL_VERSION`] (bump on any
+//! frame-layout change), the compiled board capacity, the *active* board the
+//! worker's environment selects within that capacity, and the commit baked
+//! into both binaries — exact match unless the hub was started with
+//! `--allow-commit-mismatch` or the worker's commit is named in the hub's
+//! allowlist file (`botbowl_hub::allowlist`). A dirty tree is refused in
+//! every case unless the hub is dirty too. The rationale is in
+//! `plans/041-plan--distributed-hub-and-workers.md` decision 5.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +27,9 @@ pub use botbowl_play::generate::GenerateConfig;
 // v3 (plan 042): `Task::Eval.board` and `GenerateConfig.board_sizes`.
 // v4 (plan 043): `SearchConfig.config` (a named `MctsConfig` preset) and
 // `GenerateConfig.config_name`.
-pub const PROTOCOL_VERSION: u32 = 4;
+// v5: `BuildInfo.env_board` + `RejectReason::Board` — the *active* board is
+// part of compatibility, not just the compiled capacity.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Content hash of an ONNX file (BLAKE3). Model identity is bytes, never a
 /// path, so two workers with the same cache can never disagree about which
@@ -86,12 +90,19 @@ impl Capacity {
     }
 }
 
-/// What this binary was built from.
+/// What this binary was built from, and what board its environment selects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildInfo {
     pub commit: String,
     pub dirty: bool,
     pub capacity: Capacity,
+    /// The *active* board, `BoardDims::from_env()` — what a task that names no
+    /// board of its own actually plays on. Distinct from `capacity`, which is
+    /// only the compile-time ceiling: one binary built at 16x9/6 plays 12x5/3
+    /// or 16x9/6 depending on `BOARD_SIZE_*` at run time, so two workers that
+    /// agree on capacity can still disagree about the game. It is in the
+    /// handshake so an env-board job means one board across the whole fleet.
+    pub env_board: BoardDims,
 }
 
 impl BuildInfo {
@@ -100,6 +111,7 @@ impl BuildInfo {
             commit: botbowl_data::git_commit().to_string(),
             dirty: botbowl_data::git_dirty(),
             capacity: Capacity::compiled(),
+            env_board: BoardDims::from_env(),
         }
     }
 }
@@ -227,6 +239,8 @@ pub enum RejectReason {
     Commit { hub: String },
     Dirty,
     Capacity { hub: Capacity },
+    /// Same binary, different `BOARD_SIZE_*` in the worker's environment.
+    Board { hub: BoardDims },
 }
 
 impl std::fmt::Display for RejectReason {
@@ -237,6 +251,11 @@ impl std::fmt::Display for RejectReason {
             RejectReason::Commit { hub } => write!(f, "git commit mismatch (hub is {hub}); rebuild from that commit"),
             RejectReason::Dirty => f.write_str("worker built from a dirty tree; commit and rebuild"),
             RejectReason::Capacity { hub } => write!(f, "board capacity mismatch (hub is {hub:?})"),
+            RejectReason::Board { hub } => write!(
+                f,
+                "active board mismatch (the hub's env board is {}); export the same BOARD_SIZE_W/BOARD_SIZE_H/BOARD_PLAYERS, or submit jobs with explicit --board-sizes",
+                botbowl_play::board_sizes::board_label(*hub)
+            ),
         }
     }
 }

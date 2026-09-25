@@ -42,6 +42,12 @@ fn tmp(tag: &str) -> PathBuf {
     d
 }
 
+/// A path that does not exist, so these hubs run the default exact-commit rule. The allowlist's
+/// own behaviour is unit-tested in `botbowl_hub::allowlist`.
+fn allowlist_path() -> PathBuf {
+    std::env::temp_dir().join("botbowl-hub-test-no-such-allowlist.toml")
+}
+
 async fn start_hub() -> (Hub, String) {
     // Long enough that a real worker in these tests is never reaped for
     // being busy; the reaper's own test sets its own.
@@ -53,6 +59,7 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         bind: "127.0.0.1:0".parse().unwrap(),
         token: TOKEN.into(),
         allow_commit_mismatch: false,
+        allowed_commits: allowlist_path(),
         worker_timeout,
     })
     .await
@@ -69,6 +76,7 @@ fn worker_cfg(url: &str, name: &str, parallel: u16) -> WorkerConfig {
         nn_server: None,
         cache_dir: tmp(&format!("cache-{name}")),
         mem_floor_mb: 0,
+        reconnect_max: Duration::from_secs(1),
     }
 }
 

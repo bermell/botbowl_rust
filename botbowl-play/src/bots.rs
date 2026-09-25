@@ -57,6 +57,31 @@ pub struct SearchConfig {
 }
 
 impl SearchConfig {
+    /// Fill `config` from **this** process's environment when no preset named one, so the whole
+    /// configuration travels with the job instead of being re-derived wherever the game lands.
+    ///
+    /// Plan 041's rule is that a job describes its own games. `config: None` quietly broke it:
+    /// it means "whatever `MctsConfig::from_env()` says on the machine that plays this", and more
+    /// than half of `MctsConfig` — `tree_reuse`, `virtual_loss`, `tie_break`, `memory_mode`,
+    /// `horizon`, the PUCT range floor — has no per-knob field here at all. A stray
+    /// `BLOOD_MCTS_TREE_REUSE=off` on one helper box therefore changed that box's search, showed
+    /// up nowhere in `report.json`, and was indistinguishable from the arm under test.
+    ///
+    /// The hub calls this at submit time, on both seats. Single-process callers do not need it:
+    /// there, "the environment" and "the submitter" are the same machine.
+    pub fn pinned_to_env(mut self) -> Self {
+        if self.config.is_none() {
+            let mut cfg = MctsConfig::from_env();
+            // Diagnostics are a property of the terminal someone is watching, not of the bot —
+            // and `stats` walks the whole DAG after every search. Never push them onto a fleet.
+            cfg.stats = false;
+            cfg.leaf_stats = false;
+            cfg.debug_root = false;
+            self.config = Some(cfg);
+        }
+        self
+    }
+
     /// A plain iteration budget with every other knob at its default.
     pub fn iterations(iters: usize) -> Self {
         SearchConfig {
