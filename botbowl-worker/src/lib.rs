@@ -321,8 +321,11 @@ fn admit_game<'a>(governor: &'a MemGovernor, area: u32, ctx: &str) -> GameSlot<'
         }
         if !warned {
             eprintln!(
-                "[worker] {ctx}: holding back a game costing {area} cell-kiloiterations, {} MB available — waiting for headroom",
-                avail_kb / 1024
+                "[worker] {ctx}: holding back a game costing {area} cell-kiloiterations, {} MB \
+                 available, {} MB/cost-unit estimate against a {} MB baseline — waiting for headroom",
+                avail_kb / 1024,
+                governor.predicted_cost_kb(1) / 1024,
+                governor.baseline_available_kb() / 1024
             );
             warned = true;
         }

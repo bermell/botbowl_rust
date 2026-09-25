@@ -77,6 +77,13 @@ pub const REFERENCE_ITERS: u64 = 1_000;
 /// noisy — this is a slow-moving calibration, not a per-game measurement.
 const EWMA_ALPHA_PERMILLE: u64 = 200;
 
+/// Defense-in-depth ceiling on `kb_per_cell`, as a multiple of
+/// [`DEFAULT_KB_PER_CELL`]. The baseline refresh in [`MemGovernor::observe`]
+/// is the real fix for calibration drift; this just bounds how bad a wrong
+/// estimate can get in between refreshes, so noisy input can never leave
+/// admission permanently stuck no matter what caused it.
+const MAX_KB_PER_CELL_MULTIPLE: u64 = 6;
+
 /// Tracks a running per-cell memory cost estimate and the cells currently
 /// reserved (admitted, whether or not their memory use has manifested
 /// yet), and decides whether reserving one more game's worth of cells is
@@ -104,7 +111,7 @@ impl MemGovernor {
         }
     }
 
-    fn predicted_cost_kb(&self, area: u64) -> u64 {
+    pub fn predicted_cost_kb(&self, area: u64) -> u64 {
         self.kb_per_cell.load(Ordering::Relaxed) * area
     }
 
@@ -142,22 +149,45 @@ impl MemGovernor {
     }
 
     /// Refine `kb_per_cell` from a fresh headroom reading, given
-    /// `active_area` playable cells were reserved when it was taken.
-    /// No-op with nothing reserved (nothing to attribute the headroom
-    /// drop to) or before a baseline is known.
+    /// `active_area` cost units were reserved when it was taken.
+    ///
+    /// With nothing reserved there is nothing to attribute a headroom
+    /// change to — but that moment is also the only trustworthy "zero
+    /// load" reading this worker will see after startup, so it refreshes
+    /// the baseline instead of discarding the sample. Without this,
+    /// `baseline_available_kb` stays pinned to whatever ambient memory
+    /// looked like at connection time forever, and anything that changes
+    /// later for reasons unrelated to games (a desktop session, page-cache
+    /// churn) gets misattributed entirely to the next game and inflates
+    /// the estimate. That inflation used to be one-directional too — a low
+    /// `implied` reading was discarded rather than blended in — so once
+    /// it drifted there was no way back: on 2026-09-25 `kb_per_cell` crept
+    /// to ~7x its seed over a multi-hour eval and refused a game with 8 GB
+    /// genuinely free. `implied` is now blended in both directions and
+    /// clamped as a backstop against however bad a single noisy reading is.
     pub fn observe(&self, available_kb: u64, active_area: u64) {
+        if active_area == 0 {
+            if available_kb > 0 {
+                self.baseline_available_kb.store(available_kb, Ordering::Relaxed);
+            }
+            return;
+        }
         let baseline = self.baseline_available_kb.load(Ordering::Relaxed);
-        if baseline == 0 || active_area == 0 {
+        if baseline == 0 {
             return;
         }
         let used_kb = baseline.saturating_sub(available_kb);
         let implied = used_kb / active_area;
-        if implied == 0 {
-            return;
-        }
         let prev = self.kb_per_cell.load(Ordering::Relaxed);
         let next = (prev * (1000 - EWMA_ALPHA_PERMILLE) + implied * EWMA_ALPHA_PERMILLE) / 1000;
-        self.kb_per_cell.store(next.max(1), Ordering::Relaxed);
+        let clamped = next.clamp(1, DEFAULT_KB_PER_CELL * MAX_KB_PER_CELL_MULTIPLE);
+        self.kb_per_cell.store(clamped, Ordering::Relaxed);
+    }
+
+    /// The current "zero load" reference `observe` measures against.
+    /// Diagnostic / test use.
+    pub fn baseline_available_kb(&self) -> u64 {
+        self.baseline_available_kb.load(Ordering::Relaxed)
     }
 }
 
@@ -245,11 +275,63 @@ mod tests {
     }
 
     #[test]
-    fn observe_is_noop_with_nothing_in_flight() {
+    fn observe_with_nothing_in_flight_does_not_touch_the_estimate() {
         let g = MemGovernor::new(0, Some(8 * 1024));
         let before = g.predicted_cost_kb(1);
         g.observe(1024, 0);
         assert_eq!(g.predicted_cost_kb(1), before);
+    }
+
+    #[test]
+    fn idle_observations_refresh_the_baseline() {
+        let g = MemGovernor::new(0, Some(8 * 1024)); // 8 GB
+        assert_eq!(g.baseline_available_kb(), 8 * 1024 * 1024);
+        // Ambient conditions improved while nothing was in flight (or the
+        // stale connection-time reading was simply wrong) — the next idle
+        // observation must adopt it as the new reference, not keep the old
+        // one forever.
+        g.observe(12 * 1024 * 1024, 0);
+        assert_eq!(g.baseline_available_kb(), 12 * 1024 * 1024);
+        // A genuinely unreadable `0` must never zero the baseline out — that
+        // sentinel means "unknown, never block" elsewhere and would silently
+        // disable admission control rather than making it more cautious.
+        g.observe(0, 0);
+        assert_eq!(g.baseline_available_kb(), 12 * 1024 * 1024);
+    }
+
+    #[test]
+    fn estimate_can_fall_as_well_as_rise() {
+        let g = MemGovernor::new(0, Some(8 * 1024));
+        // Push it up first, as `observe_pulls_estimate_toward_implied_cost` does.
+        g.observe(8 * 1024 * 1024 - 1_000_000, 100);
+        let up = g.predicted_cost_kb(1);
+        assert!(up > DEFAULT_KB_PER_CELL, "sanity: estimate should have risen first");
+        // Repeated near-zero-implied observations (headroom back near
+        // baseline) must be able to pull it back down. The old code
+        // discarded every `implied == 0` sample outright, so a single noisy
+        // spike could never be corrected for the rest of a run — exactly
+        // what stalled a real eval on 2026-09-25.
+        for _ in 0..20 {
+            g.observe(8 * 1024 * 1024 - 1, 100);
+        }
+        let down = g.predicted_cost_kb(1);
+        assert!(down < up, "estimate should be able to fall back down, {down} vs {up}");
+    }
+
+    #[test]
+    fn calibration_drift_is_clamped() {
+        let g = MemGovernor::new(0, Some(8 * 1024));
+        // Feed it a wildly high implied cost repeatedly (used_kb ~= the
+        // whole baseline attributed to a single cost unit) — the shape of
+        // noise that drifted a real run's estimate to ~7x its seed.
+        for _ in 0..50 {
+            g.observe(1, 1);
+        }
+        assert!(
+            g.predicted_cost_kb(1) <= DEFAULT_KB_PER_CELL * MAX_KB_PER_CELL_MULTIPLE,
+            "estimate must not drift past its clamp no matter how bad the input, got {}",
+            g.predicted_cost_kb(1)
+        );
     }
 
     #[test]
