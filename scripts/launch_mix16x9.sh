@@ -53,8 +53,17 @@ export ANCHOR_GAMES=40
 # 12x9 is in as the held-out probe: outside the aspect band (1.33), so no arm
 # ever trains on it, and E0 measured it at 0.950 zero-shot.
 export EVAL_BOARD_SIZES=14x7,16x9,12x9
-export EVAL_RUNGS=scripted
+# No fixed rungs: scripted read 0.87-0.98 on every board by gen06 (30 games each), so it no
+# longer separates generations and cost ~90 games of eval per generation. The anchor is the curve.
+export EVAL_RUNGS=
 export EVAL_GAMES=30
+
+# Plan 045 (2026-09-26, net gen06): on 16x9, 500 vs 1000 iterations scored 0.500 +/- 0.041,
+# while 250 vs 1000 fell to ~0.40, and 2000/4000 vs 1000 gained nothing significant on
+# either board. 500 is the knee, at about half the cost of each game.
+export MCTS_ITERS=500
+# The anchor curve stays at 1000 on both seats, the budget gen01-06 were measured at.
+export EVAL_MCTS_ITERS=1000
 
 # The port forwarded through the home NAT, so a worker on another network can
 # dial in. The hub binds 0.0.0.0, so this is reachable from the internet with

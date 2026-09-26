@@ -117,6 +117,9 @@ EVAL_BOARD_SIZES="${EVAL_BOARD_SIZES:-12x5,14x7,16x9}"
 MAX_GENS="${MAX_GENS:-30}"
 GAMES_PER_SHARD="${GAMES_PER_SHARD:-600}"   # 8 shards -> 4800 games/generation
 MCTS_ITERS="${MCTS_ITERS:-1000}"
+# The benchmark's budget, both seats. Separate from generation's so a run can generate cheaper
+# without moving the anchor curve's scale mid-run.
+EVAL_MCTS_ITERS="${EVAL_MCTS_ITERS:-$MCTS_ITERS}"
 EVAL_GAMES="${EVAL_GAMES:-30}"              # per fixed ladder rung, paired Home/Away
 # Fixed rungs kept in the report card. `random` read 1.000 in every one of
 # nine generations and `scripted` sits at 0.87-0.95 where 30 games is noise.
@@ -948,7 +951,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # shellcheck disable=SC2086
         if ! "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
                 --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
-                --mcts-iters "$MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
+                --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
                 $RUNG_ARGS $(size_eval_args) \
                 --vs-games "$ANCHOR_GAMES" \
                 --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
