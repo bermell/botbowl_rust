@@ -23,8 +23,8 @@ use botbowl_play::board_sizes::board_label;
 use botbowl_play::eval::{LadderRow, Report};
 
 use crate::api::{
-    BotReq, EvalJobRequest, GenerateJobRequest, HubStatus, JobId, JobKind, JobRequest, JobState, JobStatus,
-    UnitProgress, WorkerStatus,
+    BotReq, EvalJobRequest, EvalStats, GenStats, GenerateJobRequest, HubStatus, JobId, JobKind, JobRequest, JobState,
+    JobStatus, UnitProgress, UnitStats, WorkerStatus,
 };
 
 pub type WorkerId = u64;
@@ -66,6 +66,7 @@ struct Shard {
     done: HashSet<u32>,
     written: u32,
     samples: u64,
+    stats: GenStats,
     writer: io::BufWriter<std::fs::File>,
 }
 
@@ -110,6 +111,14 @@ impl Job {
                     done: r.done.len() as u32,
                     total: r.total,
                     samples: 0,
+                    stats: Some(UnitStats::Eval(EvalStats {
+                        wins: r.row.wins,
+                        draws: r.row.draws,
+                        losses: r.row.losses,
+                        tds_for: r.row.tds_for,
+                        tds_against: r.row.tds_against,
+                        decisions: r.row.telemetry.as_ref().map_or(0, |t| t.searches),
+                    })),
                 })
                 .collect(),
             Kind::Generate { shards } => shards
@@ -119,6 +128,7 @@ impl Job {
                     done: s.done.len() as u32,
                     total: s.total,
                     samples: s.samples,
+                    stats: Some(UnitStats::Generate(s.stats.clone())),
                 })
                 .collect(),
         }
@@ -187,6 +197,38 @@ impl Job {
         self.state = JobState::Failed { error };
         self.pending.clear();
     }
+}
+
+/// The board and the drive's own touchdowns, read from a trajectory line without keeping its
+/// samples. `outcome` is the absolute scoreline; a random-start drive begins at
+/// `meta.extra.start_score`, so its touchdowns are the difference (`td_rate.py`'s rule).
+fn drive_summary(json: &[u8]) -> Option<(String, u32)> {
+    #[derive(serde::Deserialize)]
+    struct Meta {
+        board_dims: BoardDims,
+        #[serde(default)]
+        extra: BTreeMap<String, String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Outcome {
+        home_score: u8,
+        away_score: u8,
+    }
+    #[derive(serde::Deserialize)]
+    struct Peek {
+        meta: Meta,
+        outcome: Outcome,
+    }
+    let p: Peek = serde_json::from_slice(json).ok()?;
+    let start = p
+        .meta
+        .extra
+        .get("start_score")
+        .and_then(|s| s.split_once('-'))
+        .and_then(|(h, a)| Some(h.parse::<u32>().ok()? + a.parse::<u32>().ok()?))
+        .unwrap_or(0);
+    let end = p.outcome.home_score as u32 + p.outcome.away_score as u32;
+    Some((board_label(p.meta.board_dims), end.saturating_sub(start)))
 }
 
 fn open_out(path: &Path, truncate: bool) -> io::Result<io::BufWriter<std::fs::File>> {
@@ -331,6 +373,7 @@ impl Inner {
                 done: HashSet::new(),
                 written: 0,
                 samples: 0,
+                stats: GenStats::default(),
                 writer: open_out(&s.out, req.truncate)?,
             });
             pending.extend((0..s.games).map(|g| (i, g)));
@@ -606,12 +649,18 @@ impl Inner {
                     }
                     s.writer.write_all(&json)?;
                     s.writer.write_all(b"\n")?;
-                    s.writer.flush()
+                    s.writer.flush()?;
+                    Ok(json)
                 });
             match written {
-                Ok(()) => {
+                Ok(json) => {
                     s.written += 1;
                     s.samples += samples as u64;
+                    // Page statistics only: a line the peek cannot read is still a valid
+                    // corpus line, so it is written and just not counted here.
+                    if let Some((board, tds)) = drive_summary(&json) {
+                        s.stats.add(board, tds, samples as u64);
+                    }
                 }
                 Err(e) => {
                     let msg = format!("writing {}: {e}", s.out.display());
@@ -723,5 +772,29 @@ impl Inner {
     /// Any job still running?
     pub fn busy(&self) -> bool {
         self.jobs.values().any(|j| j.state == JobState::Running)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drive_summary;
+
+    fn line(start: &str, home: u8, away: u8) -> Vec<u8> {
+        format!(
+            r#"{{"meta":{{"board_dims":{{"width":18,"height":11,"team_size":6}},"extra":{{"start_score":"{start}"}}}},"samples":[{{"state":{{}}}}],"outcome":{{"home_score":{home},"away_score":{away},"winner":null,"game_over":false,"z_home":0.0,"lecture_status":null}}}}"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn a_drive_counts_only_its_own_touchdowns() {
+        assert_eq!(drive_summary(&line("1-1", 1, 2)), Some(("16x9/6".to_string(), 1)));
+        assert_eq!(drive_summary(&line("2-0", 2, 0)), Some(("16x9/6".to_string(), 0)));
+    }
+
+    #[test]
+    fn a_line_without_a_start_score_starts_from_nil_nil() {
+        let json = br#"{"meta":{"board_dims":{"width":16,"height":9,"team_size":4}},"outcome":{"home_score":2,"away_score":1}}"#;
+        assert_eq!(drive_summary(json), Some(("14x7/4".to_string(), 3)));
     }
 }

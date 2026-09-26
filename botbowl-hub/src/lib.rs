@@ -30,7 +30,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::sync::Notify;
 
-use api::{EvalJobRequest, GenerateJobRequest, JobId, JobRequest, JobState, JobStatus, Submitted};
+use api::{EvalJobRequest, GenStats, GenerateJobRequest, JobId, JobRequest, JobState, JobStatus, Submitted, UnitStats};
 use state::Inner;
 
 #[derive(Clone, Debug)]
@@ -232,18 +232,51 @@ async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
             "  job {}  {:?}  {:?}  {}s\n",
             j.id, j.kind, j.state, j.elapsed_secs
         ));
+        let mut corpus = GenStats::default();
         for u in &j.units {
-            out.push_str(&format!(
-                "      {:40} {:>5}/{:<5}{}\n",
-                u.name,
-                u.done,
-                u.total,
-                if u.samples > 0 {
-                    format!("  {} samples", u.samples)
-                } else {
-                    String::new()
+            let detail = match &u.stats {
+                Some(UnitStats::Eval(e)) if e.games() > 0 => {
+                    let n = e.games() as f64;
+                    let mut d = format!(
+                        "  pts {:.3}  W{} D{} L{}  TD/g {:.2}-{:.2}",
+                        e.points(),
+                        e.wins,
+                        e.draws,
+                        e.losses,
+                        e.tds_for as f64 / n,
+                        e.tds_against as f64 / n
+                    );
+                    if e.decisions > 0 {
+                        d.push_str(&format!("  {:.0} decisions/g", e.decisions as f64 / n));
+                    }
+                    d
                 }
+                Some(UnitStats::Generate(g)) => {
+                    corpus.merge(g);
+                    format!("  {} samples", u.samples)
+                }
+                _ => String::new(),
+            };
+            out.push_str(&format!("      {:40} {:>5}/{:<5}{detail}\n", u.name, u.done, u.total));
+        }
+        if corpus.drives > 0 {
+            out.push_str(&format!(
+                "      corpus: {} drives  TD rate {:.3}  {:.2} TD/drive  {:.1} steps/drive\n",
+                corpus.drives,
+                corpus.scored as f64 / corpus.drives as f64,
+                corpus.tds as f64 / corpus.drives as f64,
+                corpus.steps as f64 / corpus.drives as f64
             ));
+            for (board, b) in &corpus.by_board {
+                out.push_str(&format!(
+                    "        {:10} {:>6} drives ({:>4.1}%)  TD rate {:.3}  {:.1} steps/drive\n",
+                    board,
+                    b.drives,
+                    100.0 * b.drives as f64 / corpus.drives as f64,
+                    b.scored as f64 / b.drives as f64,
+                    b.steps as f64 / b.drives as f64
+                ));
+            }
         }
     }
     (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], out)

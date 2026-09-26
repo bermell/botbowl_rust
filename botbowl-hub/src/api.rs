@@ -2,6 +2,7 @@
 //! to `botbowl-hub serve` with these). Distinct from the worker wire
 //! protocol: here models are *paths* the hub resolves and hashes.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -113,6 +114,85 @@ pub struct UnitProgress {
     pub total: u32,
     /// Samples written so far (generate only; 0 for eval).
     pub samples: u64,
+    #[serde(default)]
+    pub stats: Option<UnitStats>,
+}
+
+/// What a unit's finished games say, beyond how many there are.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum UnitStats {
+    Eval(EvalStats),
+    Generate(GenStats),
+}
+
+/// A rung so far, from the candidate's side.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvalStats {
+    pub wins: u32,
+    pub draws: u32,
+    pub losses: u32,
+    pub tds_for: u32,
+    pub tds_against: u32,
+    /// The candidate's own decisions (MCTS searches), summed; 0 when it does not search.
+    pub decisions: u64,
+}
+
+impl EvalStats {
+    pub fn games(&self) -> u32 {
+        self.wins + self.draws + self.losses
+    }
+
+    /// `(W + D/2) / N`, the number every summary script reads.
+    pub fn points(&self) -> f64 {
+        (self.wins as f64 + self.draws as f64 / 2.0) / self.games().max(1) as f64
+    }
+}
+
+/// Drives written so far. A random-start trajectory is one drive, so `scored / drives` is the
+/// corpus TD rate `td_rate.py` reports and `size_curriculum.py` steers the board centre by.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GenStats {
+    pub drives: u32,
+    pub scored: u32,
+    pub tds: u32,
+    /// Recorded decisions (samples), both sides.
+    pub steps: u64,
+    /// The same counts per playable board (`14x7/4`).
+    pub by_board: BTreeMap<String, DriveStats>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DriveStats {
+    pub drives: u32,
+    pub scored: u32,
+    pub steps: u64,
+}
+
+impl GenStats {
+    pub fn add(&mut self, board: String, tds: u32, steps: u64) {
+        let scored = u32::from(tds > 0);
+        self.drives += 1;
+        self.scored += scored;
+        self.tds += tds;
+        self.steps += steps;
+        let b = self.by_board.entry(board).or_default();
+        b.drives += 1;
+        b.scored += scored;
+        b.steps += steps;
+    }
+
+    pub fn merge(&mut self, o: &GenStats) {
+        self.drives += o.drives;
+        self.scored += o.scored;
+        self.tds += o.tds;
+        self.steps += o.steps;
+        for (k, v) in &o.by_board {
+            let b = self.by_board.entry(k.clone()).or_default();
+            b.drives += v.drives;
+            b.scored += v.scored;
+            b.steps += v.steps;
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

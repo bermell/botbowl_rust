@@ -16,7 +16,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use botbowl_hub::api::{GenerateJobRequest, JobKind, JobState, ShardReq};
+use botbowl_hub::api::{GenerateJobRequest, JobKind, JobState, ShardReq, UnitStats};
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{decode, encode, BuildInfo, Evaluator, SearchConfig, ToHub, ToWorker, PROTOCOL_VERSION};
 use botbowl_play::generate::{budget_label, GenMode, GenerateConfig, RandomStartBias};
@@ -203,6 +203,27 @@ async fn two_workers_write_each_shard_exactly_once() {
         })
         .sum();
     assert_eq!(status.units.iter().map(|u| u.samples).sum::<u64>(), on_disk as u64);
+
+    // The status page's drive statistics agree with the lines on disk, by `td_rate.py`'s rule.
+    for (k, u) in status.units.iter().enumerate() {
+        let Some(UnitStats::Generate(g)) = &u.stats else {
+            panic!("no generate stats: {u:?}")
+        };
+        let trajs = botbowl_data::read_trajectories(dir.join(format!("shard{k}.jsonl"))).unwrap();
+        let tds: Vec<u32> = trajs
+            .iter()
+            .map(|t| {
+                let (h, a) = t.meta.extra["start_score"].split_once('-').unwrap();
+                let start = h.parse::<u32>().unwrap() + a.parse::<u32>().unwrap();
+                (t.outcome.home_score as u32 + t.outcome.away_score as u32) - start
+            })
+            .collect();
+        assert_eq!(g.drives, GAMES);
+        assert_eq!(g.tds, tds.iter().sum::<u32>());
+        assert_eq!(g.scored, tds.iter().filter(|&&n| n > 0).count() as u32);
+        assert_eq!(g.steps, u.samples);
+        assert_eq!(g.by_board.values().map(|b| b.drives).sum::<u32>(), GAMES);
+    }
 
     // Both workers got work.
     let st = hub.inner.lock().unwrap().status();
