@@ -272,6 +272,9 @@ already refuses a capacity mismatch, so that would be two hubs).
 - **Search budget per size.** Fixed `--mcts-iters` gives the search less relative coverage on a
   bigger board. Start fixed (it is what 26x15 will face); if B's 16x9 TD rate lags its 12x5 rate
   by more than the baseline ratio predicts, try iters ∝ legal-move count as a plan-032 item.
+  *2026-09-27, plan 045: closed.* The budget does not bind harder on 16x9 than on 14x7
+  (4000 v 1000 gains the same +0.05 on both), and 500 plays even with 1000 on 16x9, so no
+  size-scaled budget is needed.
 - **Value target scale across sizes.** The drive-outcome label is ±1 everywhere but the base
   rate differs by size; the `playable_w/h` globals exist so the value head can absorb it. The
   per-board `val_value` lines are the check — a size whose val_value sits far above the others'

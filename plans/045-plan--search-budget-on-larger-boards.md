@@ -1,6 +1,6 @@
 # Is 1000 iterations still the search budget on the larger boards?
 
-**Status:** Planned 2026-09-24, not run. Written as an overnight runbook for a delegated agent;
+**Status:** Done 2026-09-27 — R-keep; the budget has slack (500 = 1000, 250 loses), and the loop now generates at 500. Planned 2026-09-24. Written as an overnight runbook for a delegated agent;
 the agent appends results under `## Results` and applies the pre-committed rules in `## Decision
 rules` — nothing else in this file changes.
 
@@ -265,27 +265,63 @@ Re-run this file's Part B, not plan 027's, the next time any of those changes.
 
 ## Results
 
-_(the agent fills these in)_
+Run 2026-09-25 21:39 → 2026-09-27 00:25 on Trunker (8 cores, 15 GB, GPU sidecar) plus the laptop
+(10 streams) as hub workers; hub and eval jobs at `44068b5`, Trunker's worker at `77337f5`
+(worker-only mem_governor fix, admitted by allowlist, empty engine/mcts/nn/play diff). Net
+`models/az_v7/bbnet_mix16x9_gen06.onnx` in both seats, `--mcts-workers 1`, seed 45000.
+
+**Deviations from the runbook.** B4 and B5 were dropped by the operator once B1/B2 read null.
+**250 v 1000 on 16x9** was added (as B6) to find the knee after B3 held. Wall times are
+not comparable across arms: B1 lost ~4 h to the Trunker worker stalling (mem_governor stuck
+estimate, then an OOM kill at 8 parallel 4000-iteration games; it re-ran at `--parallel-games 3`),
+and worker availability varied. They are reported as wall per game but are not a cost model.
 
 ### Part A — convergence per board
 
+40 states × 3 repeats, budgets 250…16000, reference 16000. Neither board reaches the noise floor
+below 16000 on any state with more than 5 legal actions; p90 X\* = 16000 on both (0/40 roots
+solved).
+
 | board | mean fan | X\* | top1@1000 | top1@2000 | top1@4000 | top1@8000 | signal/floor @1000 |
 |---|---|---|---|---|---|---|---|
-| 14x7/4 | | | | | | | |
-| 16x9/6 | | | | | | | |
+| 14x7/4 | 46 | 16000 (p90; median 16000) | 0.63 | 0.68 | 0.68 | 0.71 | 2.86 |
+| 16x9/6 | 66.5 | 16000 (p90; median 16000) | 0.54 | 0.56 | 0.65 | 0.72 | 4.23 |
+
+Root value moves little with budget on either board (|Δv| vs 16k: 0.033 / 0.030 at 1000,
+0.007 / 0.004 at 16000): the extra iterations reshuffle near-equal moves rather than finding
+better ones.
 
 ### Part B — strength
 
-| arm | board | games | points | W/D/L | paired SE | z | TD/g for–against | s/game |
-|---|---|---|---|---|---|---|---|---|
-| B1 4000 v 1000 | 14x7/4 | | | | | | | |
-| B1 4000 v 1000 | 16x9/6 | | | | | | | |
-| B2 2000 v 1000 | 14x7/4 | | | | | | | |
-| B2 2000 v 1000 | 16x9/6 | | | | | | | |
-| B3 500 v 1000 | 16x9/6 | | | | | | | |
-| B4 16000 v 1000 | 14x7/4 | | | | | | | |
+`paired_summary.py` points and paired SE; z against 0.5. TD/g is candidate for–against.
 
-**Verdict:** _pending_
+| arm | board | games | points | W/D/L | paired SE | z | TD/g for–against | s/game (wall) |
+|---|---|---|---|---|---|---|---|---|
+| B1 4000 v 1000 | 14x7/4 | 160 | 0.547 | 70/35/55 | 0.034 | +1.4 | 1.47–1.21 | 164 (both boards, incl. ~4 h stall) |
+| B1 4000 v 1000 | 16x9/6 | 160 | 0.553 | 68/41/51 | 0.032 | +1.7 | 1.24–0.96 | ″ |
+| B2 2000 v 1000 | 14x7/4 | 120 | 0.487 | 46/25/49 | 0.043 | −0.3 | 1.27–1.36 | 77 (both boards) |
+| B2 2000 v 1000 | 16x9/6 | 120 | 0.517 | 42/40/38 | 0.035 | +0.5 | 1.12–1.05 | ″ |
+| B3 500 v 1000 | 16x9/6 | 120 | 0.500 | 47/26/47 | 0.041 | 0.0 | 0.95–1.05 | 45 |
+| B6 250 v 1000 | 16x9/6 | 120 | **0.408** | 34/30/56 | 0.038 | **−2.4** | 0.88–1.23 | 38 |
+| B4 16000 v 1000 | 14x7/4 | — | not run | | | | | |
+
+B1 pooled over both boards is 0.550 ± 0.024 (z ≈ 2.1), so 4× the budget probably buys ~+5
+points, but it buys the same on both boards (difference 0.006).
+
+**Verdict:** **R-keep (rule 4).** B1 < 0.55 significant on both boards and the board gap is
+0.006 against the 0.08 R-scale threshold, so there is no case for a size-scaled budget. Plan 042's open
+question closes: a fixed budget is fine up to 16x9. B3 ≥ 0.47, so the budget has slack even on
+the big board, and B6 puts the knee between 250 and 500. Rule 5 applies in its weak form. The
+trees are less settled on 16x9 at every budget (top1@1000 0.54 vs 0.63, signal/floor 4.23 vs
+2.86), yet strength does not follow: "converges slower, doesn't play better". The rule said
+not to act on B3's slack. The operator chose to anyway (2026-09-27): the loop now **generates at
+500** (`scripts/launch_mix16x9.sh`, `MCTS_ITERS=500`) and keeps the anchor benchmark at 1000 on both
+seats (`EVAL_MCTS_ITERS=1000`), so the curve stays on gen01–06's scale. Watch the corpus TD rate
+on the first 500-iteration generation: `size_curriculum.py` steers the board centre by it.
+
+Shelf life, per the caveat above: this is gen06, max backup, 14x7–16x9. The Part A shape (value
+moves little, move choice keeps changing) fits the value net being the ceiling rather than
+the search, so re-run B1 and B3 when the net is much stronger.
 
 ## Cross-references
 

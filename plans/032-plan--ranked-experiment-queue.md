@@ -1132,6 +1132,9 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
 - 8000 and 16000 iterations vs 1000, same net, 60 games (the predicted effect is large). Only
   informs evaluation/label quality, not the loop's budget. ~15 h. Run after #2 changes the
   backup, since the flat spot may be a minimax artefact.
+- 2026-09-27, plan 045 (gen06 v7 net, post-044): 4000 v 1000 = 0.547 (14x7) / 0.553 (16x9),
+  2000 v 1000 null, 500 v 1000 = 0.500, 250 v 1000 = 0.408 on 16x9. The budget has slack, and the
+  16k arm was not run. See `plans/045-plan--search-budget-on-larger-boards.md`.
 
 ### 11. Residual side bias in NN full games
 
