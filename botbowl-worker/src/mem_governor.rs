@@ -189,6 +189,28 @@ impl MemGovernor {
     pub fn baseline_available_kb(&self) -> u64 {
         self.baseline_available_kb.load(Ordering::Relaxed)
     }
+
+    /// Force the per-cell estimate back to its seed.
+    ///
+    /// `observe` only refines `kb_per_cell` from readings taken while
+    /// `active_area` is nonzero — reasonably, since a zero-load reading has
+    /// no game to attribute a headroom change to. But that leaves a gap: if
+    /// a bad reading (one noisy sample right as the last game drains, or a
+    /// baseline refresh landing on a transient dip) pushes the estimate high
+    /// enough that no game can ever be admitted again, `active_area` then
+    /// stays permanently at zero — nothing is ever admitted to *supply* the
+    /// observation that would correct it. Every game thread sits in
+    /// `admit_game`'s backoff loop forever, which is exactly what happened
+    /// on 2026-09-26: `kb_per_cell` drifted to ~23 MB/cell (predicting an
+    /// 11 GB game on a 15 GB box) and the worker sat idle for three hours
+    /// with nothing in its log to say why (`admit_game` only warns once per
+    /// stall, and there was never a second stall to warn about — just the
+    /// first one, forever). The caller resets after enough consecutive
+    /// refusals with nothing else in flight to blame, which is exactly the
+    /// signal that the estimate itself, not real memory pressure, is wrong.
+    pub fn reset_estimate(&self) {
+        self.kb_per_cell.store(DEFAULT_KB_PER_CELL, Ordering::Relaxed);
+    }
 }
 
 /// RAII admission for one game: holds `area` cells reserved against the
@@ -332,6 +354,22 @@ mod tests {
             "estimate must not drift past its clamp no matter how bad the input, got {}",
             g.predicted_cost_kb(1)
         );
+    }
+
+    #[test]
+    fn reset_estimate_recovers_from_a_stuck_high_reading() {
+        let g = MemGovernor::new(0, Some(8 * 1024));
+        // Drift it up to the clamp ceiling, the shape of the deadlock: a
+        // prediction so high that no game (and so no `observe` with
+        // `active_area != 0`) can ever get in to correct it on its own.
+        for _ in 0..50 {
+            g.observe(1, 1);
+        }
+        assert_eq!(g.predicted_cost_kb(1), DEFAULT_KB_PER_CELL * MAX_KB_PER_CELL_MULTIPLE);
+        g.reset_estimate();
+        assert_eq!(g.predicted_cost_kb(1), DEFAULT_KB_PER_CELL);
+        // And a normal-sized game is admissible again against ample headroom.
+        assert!(g.try_admit(98, 8 * 1024 * 1024).is_some());
     }
 
     #[test]

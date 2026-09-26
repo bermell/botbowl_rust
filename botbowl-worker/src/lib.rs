@@ -301,11 +301,20 @@ fn budget_iters(budget: &SearchBudget) -> Option<u64> {
     }
 }
 
+/// Consecutive refusals with nothing else in flight before `admit_game`
+/// concludes the estimate itself, not real memory pressure, is at fault and
+/// resets it (see `MemGovernor::reset_estimate`). 12 attempts at the 5 s
+/// backoff below is a full minute of a *zero-load* box refusing every game —
+/// long enough that a slow-but-real memory drain would have moved on its
+/// own, short enough not to leave a run stalled all night on a bad sample.
+const STUCK_ESTIMATE_RESET_ATTEMPTS: u32 = 12;
+
 /// Blocks (with backoff) until the governor judges a game of `area` cost units
 /// safe to start, then accounts for it; logs once per stall so a stuck
 /// worker is visible in its log rather than silently idle.
 fn admit_game<'a>(governor: &'a MemGovernor, area: u32, ctx: &str) -> GameSlot<'a> {
     let mut warned = false;
+    let mut refusals: u32 = 0;
     loop {
         let avail_kb = match available_memory_mb() {
             Some(mb) => mb as u64 * 1024,
@@ -318,6 +327,18 @@ fn admit_game<'a>(governor: &'a MemGovernor, area: u32, ctx: &str) -> GameSlot<'
         governor.observe(avail_kb, governor.active_area());
         if let Some(slot) = governor.try_admit(area, avail_kb) {
             return slot;
+        }
+        refusals += 1;
+        // Nothing else admitted (so nothing else can explain the refusal)
+        // and it's persisted a full minute: the estimate is untrustworthy,
+        // not the box actually out of headroom. Reset it rather than sleep
+        // forever with no game ever admitted to supply a correction.
+        if refusals % STUCK_ESTIMATE_RESET_ATTEMPTS == 0 && governor.active_area() == 0 {
+            eprintln!(
+                "[worker] {ctx}: {refusals} refusals with nothing else in flight — the per-cell \
+                 estimate looks stuck, not the box actually out of headroom; resetting it"
+            );
+            governor.reset_estimate();
         }
         if !warned {
             eprintln!(
