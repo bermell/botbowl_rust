@@ -188,6 +188,45 @@ impl BackupMode {
     }
 }
 
+/// What a [`SearchBudget::Iterations`] budget of `n` counts.
+///
+/// With tree reuse on, a decision can start from a re-rooted subtree that already holds thousands
+/// of visits. `Iterations` still runs `n` new descents on top, so the trees that inherited the most
+/// get searched the most. `Visits` stops as soon as the root has `n` visits (KataGo's `maxVisits`
+/// as against `maxPlayouts`), and never runs more than `n` descents in one decision. A fresh tree
+/// therefore costs exactly what it does under `Iterations`: not every descent raises the root's
+/// visit count (about 3 in 4 did in `tests/budget_mode.rs`), so the cap is what binds. Only a reused
+/// tree gets cheaper. `Time` budgets are unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetMode {
+    /// `n` new descents per decision, whatever the reused tree already holds.
+    #[default]
+    Iterations,
+    /// Descend until the root has `n` visits.
+    Visits,
+}
+
+impl BudgetMode {
+    /// `BLOOD_MCTS_BUDGET={iterations|visits}`; unset or unrecognised ⇒ `Iterations`.
+    pub fn from_env() -> Self {
+        std::env::var("BLOOD_MCTS_BUDGET")
+            .ok()
+            .as_deref()
+            .and_then(BudgetMode::parse)
+            .unwrap_or_default()
+    }
+
+    /// Parse the CLI / env spelling; `None` on an unknown word.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "iterations" | "iters" | "playouts" => Some(BudgetMode::Iterations),
+            "visits" | "tree" | "tree_size" => Some(BudgetMode::Visits),
+            _ => None,
+        }
+    }
+}
+
 /// MCTS workers spawned by `MctsBot::get_action` get an explicit
 /// 16 MB stack instead of the OS-default ~2 MB. Sized for headroom
 /// against the recursive `Node::get_state` and `Arc<Node>` drop
@@ -1701,6 +1740,9 @@ pub struct MctsConfig {
     /// Dump the top-10 root children by visits/Q after each search — the
     /// first thing to reach for when the bot plays nonsense.
     pub debug_root: bool,
+    /// What an `Iterations(n)` budget counts: new descents, or root visits including those a
+    /// reused tree brought with it.
+    pub budget_mode: BudgetMode,
 }
 
 impl MctsConfig {
@@ -1720,6 +1762,7 @@ impl MctsConfig {
             stats: false,
             leaf_stats: false,
             debug_root: false,
+            budget_mode: BudgetMode::Iterations,
         }
     }
 
@@ -1765,6 +1808,7 @@ impl MctsConfig {
         cfg.stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
         cfg.leaf_stats = std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
         cfg.debug_root = std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1");
+        cfg.budget_mode = BudgetMode::from_env();
         cfg
     }
 }
@@ -1901,6 +1945,11 @@ impl MctsBot {
         self
     }
 
+    pub fn with_budget_mode(mut self, mode: BudgetMode) -> Self {
+        self.config.budget_mode = mode;
+        self
+    }
+
     pub fn backup(&self) -> BackupMode {
         self.config.backup
     }
@@ -2010,6 +2059,11 @@ impl MctsBot {
         };
         let n_workers = self.config.workers.max(1);
         let budget = self.budget;
+        let budget_mode = self.config.budget_mode;
+        // Descents this decision actually ran: less than the budget when the tree solves early, and
+        // in `BudgetMode::Visits` whenever a reused tree covered part of it.
+        let steps_run = AtomicU64::new(0);
+        let steps_ref = &steps_run;
 
         // `config.stats` dumps registry hit/miss/len and DAG depth
         // distribution after the search finishes but before the tree drops.
@@ -2155,7 +2209,15 @@ impl MctsBot {
                                             if tree.is_solved() {
                                                 break;
                                             }
+                                            if budget_mode == BudgetMode::Visits
+                                                && tree.get_root_node().with_score(|sc| {
+                                                    sc.map_or(0, |sc| sc.visits.load(Ordering::Relaxed) as usize)
+                                                }) >= total
+                                            {
+                                                break;
+                                            }
                                             tree.step();
+                                            steps_ref.fetch_add(1, Ordering::Relaxed);
                                         }
                                     })
                                     .expect("failed to spawn MCTS worker thread");
@@ -2198,6 +2260,7 @@ impl MctsBot {
                                                 break;
                                             }
                                             tree.step();
+                                            steps_ref.fetch_add(1, Ordering::Relaxed);
                                         }
                                     })
                                     .expect("failed to spawn MCTS worker thread");
@@ -2309,7 +2372,8 @@ impl MctsBot {
             n_actions: reuse_n_actions,
             path_len: reuse_path_len,
         };
-        self.telemetry.record(&reuse, recomb_delta);
+        self.telemetry
+            .record(&reuse, recomb_delta, steps_run.load(Ordering::Relaxed));
         if dump_stats {
             eprintln!("MCTS_TELEMETRY {}", self.telemetry.summary());
         }

@@ -169,12 +169,21 @@ pub fn budget_label(cfg: &GenerateConfig) -> String {
         None => String::new(),
     };
     let workers = cfg.search.workers;
+    // Same resolution as `make_mcts`: a pinned config's mode, else this process's environment.
+    let visits = cfg
+        .search
+        .config
+        .map_or_else(botbowl_mcts::BudgetMode::from_env, |c| c.budget_mode)
+        == botbowl_mcts::BudgetMode::Visits;
     match cfg.search.budget {
         SearchBudget::Time(d) => format!(
             "mcts(time={}ms,workers={workers},eval={eval}{backup}{config})",
             d.as_millis()
         ),
-        SearchBudget::Iterations(n) => format!("mcts(iters={n},workers={workers},eval={eval}{backup}{config})"),
+        SearchBudget::Iterations(n) => {
+            let unit = if visits { "visits" } else { "iters" };
+            format!("mcts({unit}={n},workers={workers},eval={eval}{backup}{config})")
+        }
     }
 }
 
@@ -236,6 +245,7 @@ fn with_telemetry(mut meta: TrajectoryMeta, t: &SearchTelemetry) -> TrajectoryMe
     let r = &t.reuse.total;
     meta = meta
         .with_extra("searches", t.searches.to_string())
+        .with_extra("iterations", t.iterations.to_string())
         .with_extra("reuse_reused", r.reused.to_string())
         .with_extra("reuse_anchor_miss", r.anchor_miss.to_string())
         .with_extra("reuse_lookup_miss", r.lookup_miss.to_string())

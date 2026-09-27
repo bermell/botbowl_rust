@@ -504,6 +504,7 @@ mod tests {
                     lookup_probes: 1,
                     lookup_hits: 1,
                 },
+                250,
             );
         }
         t

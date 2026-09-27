@@ -263,6 +263,13 @@ pub fn candidate_label(
             if let Some(k) = search.fpu_reduction.filter(|k| *k > 0.0) {
                 knobs.push(format!("fpu_k={k}"));
             }
+            if search
+                .config
+                .map_or_else(botbowl_mcts::BudgetMode::from_env, |c| c.budget_mode)
+                == botbowl_mcts::BudgetMode::Visits
+            {
+                knobs.push("budget=visits".to_string());
+            }
             let base = match config_name {
                 Some(name) => format!("{base}@{name}"),
                 None => base,

@@ -25,3 +25,8 @@ applies either way, because it is a property of the machine rather than of the b
 
 `cfgs/baseline.toml` is the control: it sets nothing, so it *is* the shipped configuration, but it
 gives the control arm a name that shows up in the report next to the variant's.
+
+`budget_mode = "visits"` turns `--mcts-iters N` into "grow the root to N visits, at most N new
+descents": a decision that inherits a big reused subtree then searches only the shortfall, rather
+than N more on top of it (see `botbowl-mcts/CLAUDE.md`, "Budget mode"). `BLOOD_MCTS_BUDGET=visits`
+is the environment spelling, which the hub pins into every job it submits.
