@@ -493,3 +493,36 @@ async fn connects(url: &str, hello: ToHub) -> bool {
         other => panic!("expected a frame, got {other:?}"),
     }
 }
+
+/// Plan 046 item 0: a generation's eval runs alongside the next generation's games, so two running
+/// jobs must share the fleet. Before this, dispatch gave every free stream to the oldest job and the
+/// second waited for all of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn running_jobs_share_the_workers() {
+    let (hub, url) = start_hub().await;
+    let (da, db) = (tmp("share_a"), tmp("share_b"));
+    let (mut a, mut b) = (job(&da), job(&db));
+    a.batch = 1;
+    b.batch = 1;
+    let ia = hub.submit_eval(a).unwrap();
+    let ib = hub.submit_eval(b).unwrap();
+    // Both are queued before any worker exists, so the first dispatch sees both.
+    let _w = spawn_worker(worker_cfg(&url, "w", 1));
+    let sa = tokio::time::timeout(Duration::from_secs(120), hub.wait(ia))
+        .await
+        .expect("job a finished in time")
+        .expect("job a exists");
+    assert_eq!(sa.state, JobState::Done, "{sa:?}");
+    let sb = hub.job_status(ib).expect("job b exists");
+    let b_done: u32 = sb.units.iter().map(|u| u.done).sum();
+    assert!(
+        b_done >= GAMES,
+        "the second job must progress while the first runs: {b_done} of {} done when the first finished",
+        2 * GAMES
+    );
+    let sb = tokio::time::timeout(Duration::from_secs(120), hub.wait(ib))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sb.state, JobState::Done, "{sb:?}");
+}

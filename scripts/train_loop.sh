@@ -756,6 +756,106 @@ fi
 
 [ -f "$(champion)" ] || die "champion model not found: $(champion)"
 
+# ---- benchmark, overlapped with the next generation (plan 046 item 0) -------
+# The loop is gateless, so nothing downstream reads gen G's benchmark: gen G is
+# the generator the moment it is trained. Its eval is therefore submitted to
+# the hub in the background and runs alongside gen G+1's games on the same
+# workers and sidecar (the hub shares streams round-robin between running
+# jobs, and the eval's candidate *is* the generator, so their requests batch
+# together on the canvas). eval_finish waits for it at the end of the next
+# generate phase, before the sidecar makes way for the trainer. A STOP or a
+# crash loses the in-flight eval with the hub; the next launch resubmits it,
+# because only eval_finish writes .evaluated.
+EVAL_PENDING_G=""
+EVAL_CLIENT_PID=""
+EVAL_T0=0
+eval_submit() {
+    local G="$1" GG GEN_DIR MODEL RUNG_ARGS RUNG_DESC
+    GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"; MODEL="$MODEL_DIR/bbnet_${TIER}_$GG"
+    # No fixed rungs -> --skip-fixed-rungs, which keeps only the --vs rung
+    # (the anchor). Passing `--rungs ""` would also work, but the dedicated
+    # flag says the intent out loud.
+    if [ -n "$EVAL_RUNGS" ]; then
+        RUNG_ARGS="--rungs $EVAL_RUNGS"
+        RUNG_DESC="$EVAL_GAMES games/rung ($EVAL_RUNGS) + "
+    else
+        RUNG_ARGS="--skip-fixed-rungs"
+        RUNG_DESC="no fixed rungs, "
+    fi
+    status "$GG eval submitted: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR")$([ "$SIZE_MODE" = fixed ] || echo ", on each of $EVAL_BOARD_SIZES"), alongside the next generation on the hub"
+    # shellcheck disable=SC2086
+    "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+            --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
+            --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
+            $RUNG_ARGS $(size_eval_args) \
+            --vs-games "$ANCHOR_GAMES" \
+            --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
+            --per-game-out "$GEN_DIR/eval.games.jsonl" \
+            --out "$GEN_DIR/report.json" --wait > "$GEN_DIR/eval.log" 2>&1 &
+    EVAL_CLIENT_PID=$!
+    EVAL_PENDING_G="$G"
+    EVAL_T0=$(date +%s)
+}
+# Wait for the in-flight eval, if any, then report it. Needs games to run on:
+# if this box's worker is not up (a resume that skipped generation, or the
+# last generation), it starts the sidecar and worker for the wait and stops
+# them after.
+eval_finish() {
+    [ -n "$EVAL_PENDING_G" ] || return 0
+    local G="$EVAL_PENDING_G" GG GEN_DIR started=""
+    GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"
+    if kill -0 "$EVAL_CLIENT_PID" 2>/dev/null; then
+        if [ -z "$WORKER_PID" ]; then
+            nn_server_start "$(champion)"
+            worker_start "$EVAL_PARALLEL_GAMES" "$GEN_DIR/eval.worker.log"
+            started=1
+        fi
+        status "$GG eval still running $((($(date +%s) - EVAL_T0) / 60)) min in; waiting for it"
+    fi
+    if ! wait "$EVAL_CLIENT_PID"; then
+        [ -n "$started" ] && { worker_stop; nn_server_stop; }
+        die "$GG eval failed — see eval.log and hub.log"
+    fi
+    [ -n "$started" ] && { worker_stop; nn_server_stop; }
+    EVAL_PENDING_G=""
+    touch "$GEN_DIR/.evaluated"
+    eval_report "$G" "$((($(date +%s) - EVAL_T0) / 60))"
+}
+# The verdict and curve lines for an evaluated generation. A persisted verdict
+# is final (gated era: PROMOTED/REJECTED; gateless: BENCHMARKED). Re-deriving
+# it on resume would replay the whole promotion history over champion.txt —
+# and clobber a champion set by hand (plan 032 #7c installed Q7 that way; the
+# first relaunch silently reverted it to gen03 and generated gen08 from the
+# wrong net).
+eval_report() {
+    local G="$1" MINUTES="$2" GG GEN_DIR SUMMARY_LINE CURVE BL PB
+    GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"
+    [ -f "$GEN_DIR/verdict" ] && return 0
+    SUMMARY_LINE=$("$PY" "$SUMMARY" "$GEN_DIR/report.json")
+    echo "BENCHMARKED" > "$GEN_DIR/verdict"
+    status "$GG eval done (${MINUTES} min, overlapped): $SUMMARY_LINE"
+    # The curve is what the benchmark is for: this generation's point, the
+    # 3-gen rolling mean, and the advisory flags — all against the same
+    # frozen opponent, so successive lines are directly comparable.
+    # shellcheck disable=SC2046
+    CURVE=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" $(size_curve_args) 2>&1) \
+        || CURVE="anchor_curve.py failed: $CURVE"
+    status "$GG curve: $CURVE"
+    # Plan 042: the other boards' anchor points, one line each, so a size
+    # that lags is visible next to the pooled curve.
+    if [ "$SIZE_MODE" != fixed ]; then
+        for B in $(echo "$EVAL_BOARD_SIZES" | tr ',' ' '); do
+            BL=$(grep -o "\"board\": *\"$B/[0-9]*\"" "$GEN_DIR/report.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+            [ -n "$BL" ] && [ "$BL" != "$ANCHOR_BOARD" ] || continue
+            PB=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" --board "$BL" 2>&1) || continue
+            status "$GG curve: $PB"
+        done
+    fi
+    case "$CURVE" in
+        *REGRESSION*|*PLATEAU*) status "ALERT $GG: $(echo "$CURVE" | grep -o '\(REGRESSION\|PLATEAU\)[^|]*' | tr '\n' ' ')— advisory (plan 030): inspect, and roll back champion.txt by hand if warranted" ;;
+    esac
+}
+
 # ---- generation loop ----------------------------------------------------------
 G=1
 while [ "$G" -le "$MAX_GENS" ]; do
@@ -799,6 +899,10 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # correct, and it is just 4x slower. Surface it.
         grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/generate.worker.log" \
             && status "WARN: $GG had the local worker fall back to tract — see generate.worker.log and nn_server.log"
+        GEN_MIN=$((SECONDS / 60))
+        # The previous generation's eval shared these workers; it must be
+        # done before the sidecar makes way for the trainer.
+        eval_finish
         worker_stop
         # The trainer needs the whole card; never let the two contend.
         nn_server_stop
@@ -807,7 +911,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
             [ -s "$GEN_DIR/shard$K.jsonl" ] || die "$GG shard$K.jsonl empty/missing — see generate.log"
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
-        status "$GG generate done ($((SECONDS / 60)) min): $GAMES/$((GAMES_PER_SHARD * 8)) games"
+        status "$GG generate done ($GEN_MIN min): $GAMES/$((GAMES_PER_SHARD * 8)) games"
         # What the corpus actually contains, not just how much of it there is.
         # A drive that ends without a touchdown ran out of half, so this is
         # the share the bots converted — the generation-side twin of the TD/g
@@ -825,6 +929,8 @@ while [ "$G" -le "$MAX_GENS" ]; do
         fi
         touch "$GEN_DIR/.generated"
     fi
+    # A resume that skipped generation may still hold a pending eval.
+    eval_finish
 
     # -- 2. prepare -----------------------------------------------------------
     # Nothing downstream of training reads prepared_*, and prune_prepared
@@ -920,97 +1026,17 @@ while [ "$G" -le "$MAX_GENS" ]; do
     [ -f "$MODEL.onnx" ] || die "$GG onnx export missing: $MODEL.onnx"
 
     # -- 4. benchmark: fixed rung(s) + vs the frozen anchor ----------------------
+    # Submitted, not waited for: it runs alongside the next generation (see
+    # eval_submit). An already-evaluated generation just gets its report.
     check_stop "before $GG eval"
     if [ ! -e "$GEN_DIR/.evaluated" ]; then
-        SECONDS=0
-        CHAMP="$(champion)"
-        # Eval is a *single* process running full games, so before plan 024
-        # Stage 4b it used one core and took 117-690 min (plan 022's own
-        # numbers) — which, with generate now ~4x faster, made it the
-        # loop's dominant phase. Two changes fix that, and both are needed:
-        # --parallel-games gives the process more than one stream, and only
-        # then is --nn-server worth pointing at it (at one stream a
-        # batching server is slower than tract). The candidate and the
-        # champion share the one socket: each names its own model at
-        # handshake and gets its own canary, so they cannot be cross-wired.
-        #
-        # A rung holds two bots per worker (candidate + opponent) against
-        # dataset's one, so this is deliberately below the generate phase's
-        # concurrency even though eval has the box to itself.
-        nn_server_start "$CHAMP"
-        # Plan 041: the games run on whatever workers are connected to the
-        # hub — this box's local worker (started here, inside the sidecar's
-        # lifetime, with the eval-phase parallelism) plus any remote ones.
-        # `job eval` takes the same flags `botbowl-ui eval` did and blocks
-        # until the hub has written report.json and eval.games.jsonl.
-        worker_start "$EVAL_PARALLEL_GAMES" "$GEN_DIR/eval.worker.log"
-        # No fixed rungs -> --skip-fixed-rungs, which keeps only the --vs rung
-        # (the anchor). Passing `--rungs ""` would also work, but the dedicated
-        # flag says the intent out loud.
-        if [ -n "$EVAL_RUNGS" ]; then
-            RUNG_ARGS="--rungs $EVAL_RUNGS"
-            RUNG_DESC="$EVAL_GAMES games/rung ($EVAL_RUNGS) + "
-        else
-            RUNG_ARGS="--skip-fixed-rungs"
-            RUNG_DESC="no fixed rungs, "
-        fi
-        status "$GG eval: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR")$([ "$SIZE_MODE" = fixed ] || echo ", on each of $EVAL_BOARD_SIZES"), local x$EVAL_PARALLEL_GAMES + hub workers"
-        # shellcheck disable=SC2086
-        if ! "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
-                --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
-                --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
-                $RUNG_ARGS $(size_eval_args) \
-                --vs-games "$ANCHOR_GAMES" \
-                --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
-                --per-game-out "$GEN_DIR/eval.games.jsonl" \
-                --out "$GEN_DIR/report.json" --wait > "$GEN_DIR/eval.log" 2>&1; then
-            worker_stop
-            nn_server_stop
-            die "$GG eval failed — see eval.log, hub.log and worker.log"
-        fi
-        grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/eval.worker.log" \
-            && status "WARN: $GG eval had the local worker fall back to tract — see eval.worker.log and nn_server.log"
-        worker_stop
-        nn_server_stop
-        touch "$GEN_DIR/.evaluated"
+        eval_submit "$G"
     else
-        SECONDS=0
+        eval_report "$G" "?"
     fi
-
-    # A persisted verdict is final (gated era: PROMOTED/REJECTED; gateless:
-    # BENCHMARKED). Re-deriving it on resume would replay the whole promotion
-    # history over champion.txt — and clobber a champion set by hand (plan
-    # 032 #7c installed Q7 that way; the first relaunch silently reverted it
-    # to gen03 and generated gen08 from the wrong net).
-    if [ -f "$GEN_DIR/verdict" ]; then
-        G=$((G + 1))
-        continue
-    fi
-    SUMMARY_LINE=$("$PY" "$SUMMARY" "$GEN_DIR/report.json")
-    echo "BENCHMARKED" > "$GEN_DIR/verdict"
-    status "$GG eval done ($((SECONDS / 60)) min): $SUMMARY_LINE"
-    # The curve is what the benchmark is for: this generation's point, the
-    # 3-gen rolling mean, and the advisory flags — all against the same
-    # frozen opponent, so successive lines are directly comparable.
-    # shellcheck disable=SC2046
-    CURVE=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" $(size_curve_args) 2>&1) \
-        || CURVE="anchor_curve.py failed: $CURVE"
-    status "$GG curve: $CURVE"
-    # Plan 042: the other boards' anchor points, one line each, so a size
-    # that lags is visible next to the pooled curve.
-    if [ "$SIZE_MODE" != fixed ]; then
-        for B in $(echo "$EVAL_BOARD_SIZES" | tr ',' ' '); do
-            BL=$(grep -o "\"board\": *\"$B/[0-9]*\"" "$GEN_DIR/report.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
-            [ -n "$BL" ] && [ "$BL" != "$ANCHOR_BOARD" ] || continue
-            PB=$("$PY" "$REPO/scripts/anchor_curve.py" "$RUN_DIR" --anchor "$(basename "$ANCHOR")" --summary "$G" --board "$BL" 2>&1) || continue
-            status "$GG curve: $PB"
-        done
-    fi
-    case "$CURVE" in
-        *REGRESSION*|*PLATEAU*) status "ALERT $GG: $(echo "$CURVE" | grep -o '\(REGRESSION\|PLATEAU\)[^|]*' | tr '\n' ' ')— advisory (plan 030): inspect, and roll back champion.txt by hand if warranted" ;;
-    esac
 
     G=$((G + 1))
 done
 
+eval_finish
 status "loop finished: $MAX_GENS generations done, generator $(basename "$(champion)")"

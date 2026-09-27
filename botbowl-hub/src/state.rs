@@ -2,8 +2,9 @@
 //! model bytes, jobs and their queues. Every transition is a synchronous
 //! method here; the websocket and HTTP layers only translate.
 //!
-//! Scheduling is deliberately simple (plan 041 decision 7): jobs run in
-//! submission order, a task is a small batch of games from one *unit* (a
+//! Scheduling is deliberately simple (plan 041 decision 7): free streams go
+//! round-robin over the running jobs (plan 046: a generation's eval shares the
+//! fleet with the next generation), a task is a small batch of games from one *unit* (a
 //! ladder rung of an eval job, a corpus shard of a generate job), a
 //! worker holds at most `parallel_games` tasks, and anything a departed
 //! worker had in flight goes back on the queue. Results are deduplicated
@@ -252,6 +253,8 @@ pub struct Inner {
     next_worker: WorkerId,
     next_job: JobId,
     next_task: TaskId,
+    /// Where `dispatch` resumes its round-robin over running jobs.
+    next_share: usize,
 }
 
 impl Inner {
@@ -511,15 +514,21 @@ impl Inner {
     }
 
     /// Hand out work to every worker with a free stream.
+    ///
+    /// Free streams go round-robin over every running job with games left, one task at a time, so
+    /// concurrent jobs share the fleet: `train_loop.sh` runs a generation's eval alongside the next
+    /// generation's games (plan 046 item 0), and handing everything to the oldest job would
+    /// serialise them again.
     pub fn dispatch(&mut self) {
-        let Some(job_id) = self
+        let job_ids: Vec<JobId> = self
             .jobs
             .values()
-            .find(|j| j.state == JobState::Running && !j.pending.is_empty())
+            .filter(|j| j.state == JobState::Running && !j.pending.is_empty())
             .map(|j| j.id)
-        else {
+            .collect();
+        if job_ids.is_empty() {
             return;
-        };
+        }
         let worker_ids: Vec<WorkerId> = self.workers.keys().copied().collect();
         for wid in worker_ids {
             loop {
@@ -527,6 +536,13 @@ impl Inner {
                 if w.tasks.len() >= w.parallel_games as usize {
                     break;
                 }
+                let Some(job_id) = (0..job_ids.len())
+                    .map(|k| job_ids[(self.next_share + k) % job_ids.len()])
+                    .find(|id| self.jobs.get(id).is_some_and(|j| !j.pending.is_empty()))
+                else {
+                    return;
+                };
+                self.next_share = (job_ids.iter().position(|id| *id == job_id).unwrap() + 1) % job_ids.len();
                 let job = self.jobs.get_mut(&job_id).expect("job exists");
                 let Some(&(unit, _)) = job.pending.front() else { break };
                 // One unit per task: take up to `batch` consecutive games

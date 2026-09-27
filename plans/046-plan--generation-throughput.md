@@ -2,9 +2,11 @@
 
 **Status:** In progress 2026-09-27. Item 2 done (c355cfb: pooled client connections, cached
 content-addressed resolve). Item 1b done (`--canvas`, masked forward, on in `train_loop.sh` from
-the next relaunch). Item 0 deferred: the GPU was 90% busy in eval and 95% in generate, both
-launch-bound, so overlapping them shares the bottleneck rather than using idle capacity. Revisit
-once item 1's effect is measured. Planned 2026-09-27.
+the next relaunch). Item 0 done on the user's call, together with item 1: the hub
+now shares streams round-robin between running jobs, and `train_loop.sh` submits gen G's eval in the
+background, where it runs alongside gen G+1's generation and is collected before training. On its
+own it would mostly have shared a launch-bound GPU; with the canvas the two jobs' requests batch
+together (the eval candidate is the generator). Planned 2026-09-27.
 
 ## Why
 
