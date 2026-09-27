@@ -1,8 +1,8 @@
 //! Bijection between engine [`Action`]s and policy-head cells.
 //!
-//! The policy head has `A = 30` channels: the 14 [`PosAT`] variants map
-//! to channels `0..14`, the 16 [`SimpleAT`] variants to channels
-//! `14..30`. The forward and inverse maps are **exhaustive matches** on
+//! The policy head has `A = 30` channels: the 15 [`PosAT`] variants map
+//! to channels `0..15`, the 15 [`SimpleAT`] variants to channels
+//! `15..30`. The forward and inverse maps are **exhaustive matches** on
 //! the engine enums — adding a variant there is a compile error here, a
 //! deliberate trip-wire forcing a schema version bump (the manifest
 //! records `A` and the channel names).
@@ -20,9 +20,9 @@ use botbowl_engine::core::table::{PosAT, SimpleAT};
 use crate::perspective::canonical_x;
 
 /// Number of positional action types → policy channels `0..NUM_POS_AT`.
-pub const NUM_POS_AT: usize = 14;
+pub const NUM_POS_AT: usize = 15;
 /// Number of simple action types → policy channels `NUM_POS_AT..POLICY_CHANNELS`.
-pub const NUM_SIMPLE_AT: usize = 16;
+pub const NUM_SIMPLE_AT: usize = 15;
 /// Policy-head channel count `A`.
 pub const POLICY_CHANNELS: usize = NUM_POS_AT + NUM_SIMPLE_AT;
 
@@ -39,7 +39,7 @@ pub struct ActionCell {
     pub is_simple: bool,
 }
 
-/// Positional action type → channel `0..14`. Exhaustive by design.
+/// Positional action type → channel `0..15`. Exhaustive by design.
 pub fn pos_at_index(at: PosAT) -> usize {
     match at {
         PosAT::StartMove => 0,
@@ -56,10 +56,13 @@ pub fn pos_at_index(at: PosAT) -> usize {
         PosAT::Foul => 11,
         PosAT::StartBlock => 12,
         PosAT::Block => 13,
+        // Schema v8: per-player setup (the setup used to be a handful of
+        // whole-team formation actions the net could not tell apart).
+        PosAT::PlacePlayer => 14,
     }
 }
 
-/// Simple action type → index `0..16` (policy channel is `NUM_POS_AT + this`).
+/// Simple action type → index `0..15` (policy channel is `NUM_POS_AT + this`).
 pub fn simple_at_index(at: SimpleAT) -> usize {
     match at {
         SimpleAT::SelectBothDown => 0,
@@ -75,14 +78,12 @@ pub fn simple_at_index(at: SimpleAT) -> usize {
         SimpleAT::Tails => 10,
         SimpleAT::Kick => 11,
         SimpleAT::Receive => 12,
-        SimpleAT::SetupLine => 13,
-        SimpleAT::EndSetup => 14,
-        SimpleAT::KickoffAimMiddle => 15,
-        // The extra setup formations share the `SetupLine` channel: the
-        // policy head predates them and widening it would invalidate every
-        // trained net for a choice the search can make on its own. A net that
-        // should *prefer* a formation needs a wider head and a retrain.
-        SimpleAT::SetupSpread | SimpleAT::SetupWedge | SimpleAT::SetupZone => 13,
+        // Schema v8: the formation actions (`SetupLine`, `EndSetup`, ...) that
+        // used to sit at 13/14 are gone; `KickoffAimMiddle` moved up from 15
+        // and `BenchPlayer` took the freed slot. `train/src/bbnn/migrate.py`
+        // carries a v7 head across (the retained channels keep their weights).
+        SimpleAT::KickoffAimMiddle => 13,
+        SimpleAT::BenchPlayer => 14,
     }
 }
 
@@ -103,6 +104,7 @@ pub fn pos_at_from_index(i: usize) -> PosAT {
         11 => PosAT::Foul,
         12 => PosAT::StartBlock,
         13 => PosAT::Block,
+        14 => PosAT::PlacePlayer,
         _ => panic!("pos_at channel {i} out of range 0..{NUM_POS_AT}"),
     }
 }
@@ -123,9 +125,8 @@ pub fn simple_at_from_index(i: usize) -> SimpleAT {
         10 => SimpleAT::Tails,
         11 => SimpleAT::Kick,
         12 => SimpleAT::Receive,
-        13 => SimpleAT::SetupLine,
-        14 => SimpleAT::EndSetup,
-        15 => SimpleAT::KickoffAimMiddle,
+        13 => SimpleAT::KickoffAimMiddle,
+        14 => SimpleAT::BenchPlayer,
         _ => panic!("simple_at index {i} out of range 0..{NUM_SIMPLE_AT}"),
     }
 }
@@ -173,8 +174,8 @@ mod tests {
     #[test]
     fn policy_channel_count_is_thirty() {
         assert_eq!(POLICY_CHANNELS, 30);
-        assert_eq!(NUM_POS_AT, 14);
-        assert_eq!(NUM_SIMPLE_AT, 16);
+        assert_eq!(NUM_POS_AT, 15);
+        assert_eq!(NUM_SIMPLE_AT, 15);
     }
 
     #[test]
@@ -195,6 +196,7 @@ mod tests {
             Foul,
             StartBlock,
             Block,
+            PlacePlayer,
         ];
         assert_eq!(all.len(), NUM_POS_AT);
         for (i, at) in all.into_iter().enumerate() {
@@ -220,9 +222,8 @@ mod tests {
             Tails,
             Kick,
             Receive,
-            SetupLine,
-            EndSetup,
             KickoffAimMiddle,
+            BenchPlayer,
         ];
         assert_eq!(all.len(), NUM_SIMPLE_AT);
         for (i, at) in all.into_iter().enumerate() {
@@ -231,15 +232,19 @@ mod tests {
         }
     }
 
-    /// The setup formations added after the policy head was fixed share
-    /// `SetupLine`'s channel, so a net trained before them still evaluates
-    /// every setup action (identically — the search picks between them).
+    /// The v7 → v8 channel map `train/src/bbnn/migrate.py` applies. Pinned
+    /// here so the Rust side and the migration cannot drift apart: a
+    /// positional channel is unchanged, the simple block shifted by one for
+    /// the new `PlacePlayer` channel, and `KickoffAimMiddle` moved from the
+    /// old 14+15 into the slot the dropped formation actions freed.
     #[test]
-    fn extra_setup_formations_share_the_setup_line_channel() {
-        for at in [SimpleAT::SetupSpread, SimpleAT::SetupWedge, SimpleAT::SetupZone] {
-            assert_eq!(simple_at_index(at), simple_at_index(SimpleAT::SetupLine));
-        }
-        assert_eq!(simple_at_from_index(13), SimpleAT::SetupLine);
+    fn v8_channel_layout_matches_the_migration() {
+        assert_eq!(pos_at_index(PosAT::Block), 13);
+        assert_eq!(pos_at_index(PosAT::PlacePlayer), 14);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::SelectBothDown), 15);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::Receive), 27);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::KickoffAimMiddle), 28);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::BenchPlayer), 29);
     }
 
     #[test]

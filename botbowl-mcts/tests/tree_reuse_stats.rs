@@ -49,12 +49,10 @@ fn drive(bot: &mut MctsBot, moves: usize) -> Vec<ReuseOutcome> {
             break;
         }
         let action = bot.get_action(&state);
-        outcomes.push(
-            bot.last_search()
-                .expect("a completed search always leaves a summary")
-                .reuse
-                .outcome,
-        );
+        // A kickoff setup after a score is answered without a search (plan 047).
+        if let Some(s) = bot.last_search() {
+            outcomes.push(s.reuse.outcome);
+        }
         state.step(action).unwrap();
     }
     outcomes
@@ -155,7 +153,11 @@ fn recombination_counters_accumulate_per_decision() {
             break;
         }
         let action = bot.get_action(&state);
-        let s = bot.last_search().expect("summary");
+        // A kickoff setup after a score is answered without a search (plan 047).
+        let Some(s) = bot.last_search() else {
+            state.step(action).unwrap();
+            continue;
+        };
         summed.merge(&s.recombination);
         outcomes.push(s.reuse.outcome);
         state.step(action).unwrap();

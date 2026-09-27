@@ -353,6 +353,11 @@ pub struct DatasetArgs {
     /// (random-start mode) Placement bias variables.
     #[command(flatten)]
     pub bias: BiasArgs,
+    /// (random-start mode) When the drive scores, play the next drive too — both kickoff
+    /// setups, the kick and its turns — and write it as a second record (plan 047). This is
+    /// how per-player setup decisions reach the corpus.
+    #[arg(long, default_value_t = false)]
+    pub next_drive: bool,
     /// (self-play / random-start) Board-size distribution (plan 042).
     #[command(flatten)]
     pub sizes: SizeArgs,

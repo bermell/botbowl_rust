@@ -71,7 +71,14 @@ use botbowl_nn::targets::{policy_target_of, value_target_blended, PolicyTargetKi
 // C 59 → 61) and three size globals (`playable_w`, `playable_h`, `team_size`,
 // F 15 → 18), so a net trained on mixed board sizes can tell the boards apart
 // by something other than its distance to the zero padding.
-const NN_SCHEMA_VERSION: u32 = 7;
+// v8 (per-player setup): the policy channels are re-laid — `PosAT::PlacePlayer`
+// at 14, the simple block shifted to 15.., `KickoffAimMiddle` at 28 and
+// `SimpleAT::BenchPlayer` at 29; the five formation actions are gone. Same
+// shapes as v7 (C 61, F 18, A 30), so a v7 net *loads* but reads the wrong
+// channels — `train/src/bbnn/migrate.py` permutes the head and stamps a
+// `schema_version` marker into the checkpoint. Setup decisions appear in a
+// corpus for the first time.
+const NN_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {
@@ -262,7 +269,7 @@ fn main() {
             let before: BTreeMap<(usize, usize), usize> = groups.iter().map(|(k, g)| (*k, g.n)).collect();
             for sample in &traj.samples {
                 total_read += 1;
-                if sample.root_visits < args.min_root_visits {
+                if sample.root_visits < args.min_root_visits && !sample.scripted {
                     total_below_min += 1;
                     continue;
                 }

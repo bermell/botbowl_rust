@@ -1,5 +1,5 @@
 mover=Away dims=BoardDims { width: 16, height: 9, team_size: 4 }
-EndTurn -> c=22 y=0 x=0 simple=true
+EndTurn -> c=23 y=0 x=0 simple=true
 StartBlitz (5,2) -> c=1 y=2 x=10 simple=false
 StartBlitz (6,5) -> c=1 y=5 x=9 simple=false
 StartBlitz (7,3) -> c=1 y=3 x=8 simple=false

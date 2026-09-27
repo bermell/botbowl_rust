@@ -12,6 +12,7 @@ use crate::bots::Bot;
 use crate::core::gamestate::GameState;
 use crate::core::model::{other_team, Action, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType};
 use crate::core::pathing::{Node, PathFinder};
+use crate::core::procedures::Formation;
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
 /// Minimum success probability for the bot to attempt a path that ends in a
@@ -71,12 +72,7 @@ impl Bot for ScriptedBot {
 fn first_legal_simple_or_any(state: &GameState) -> Option<Action> {
     let all = state.get_all_actions();
     // Prefer the most "neutral" simple action.
-    for preferred in [
-        SimpleAT::EndTurn,
-        SimpleAT::EndPlayerTurn,
-        SimpleAT::EndSetup,
-        SimpleAT::DontUseReroll,
-    ] {
+    for preferred in [SimpleAT::EndTurn, SimpleAT::EndPlayerTurn, SimpleAT::DontUseReroll] {
         let candidate = Action::Simple(preferred);
         if all.contains(&candidate) {
             return Some(candidate);
@@ -100,15 +96,11 @@ fn decide(state: &GameState) -> (Action, Vec<Action>) {
         return (Action::Simple(SimpleAT::Receive), vec![]);
     }
 
-    // Setup — let the engine pick a default formation, then end setup on the next call.
-    if simple.contains(&SimpleAT::SetupLine) {
-        return (
-            Action::Simple(SimpleAT::SetupLine),
-            vec![Action::Simple(SimpleAT::EndSetup)],
-        );
-    }
-    if simple.contains(&SimpleAT::EndSetup) {
-        return (Action::Simple(SimpleAT::EndSetup), vec![]);
+    // Setup — place the queued player where the default line formation puts it.
+    if let Some(team) = state.setup_team() {
+        if let Some(action) = Formation::Line.next_action(state, team) {
+            return (action, vec![]);
+        }
     }
 
     // Kickoff aim
@@ -678,10 +670,7 @@ mod tests {
             .build();
 
         let pick = |state: &mut GameState, team: TeamType| -> Position {
-            let positions: Vec<Position> = state
-                .get_players_on_pitch_in_team(team)
-                .map(|p| p.position)
-                .collect();
+            let positions: Vec<Position> = state.get_players_on_pitch_in_team(team).map(|p| p.position).collect();
             let mut aa = AvailableActions::new(team);
             aa.insert_positional(PosAT::SelectPosition, positions);
             state.available_actions = aa;

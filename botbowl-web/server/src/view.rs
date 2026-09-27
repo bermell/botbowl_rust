@@ -10,6 +10,7 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model as em;
 use botbowl_engine::core::model::{BallState, Position};
 use botbowl_engine::core::pathing::{CustomIntoIter, PathingEvent, PositionOrEvent};
+use botbowl_engine::core::procedures::Formation;
 use botbowl_engine::core::table as et;
 use botbowl_web_proto::view as pv;
 
@@ -292,8 +293,8 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
 
     tackle_zones(state, &mut squares);
 
-    // The game-over procedure still offers actions (`EndSetup`/`DontUseReroll`
-    // to Home) — check `game_over` first or the UI invites a click that ends
+    // The game-over procedure still offers an action (`DontUseReroll` to
+    // Home) — check `game_over` first or the UI invites a click that ends
     // the session.
     let game_over = state.info.game_over;
     let mut simple_actions: Vec<pv::SimpleActionView> = Vec::new();
@@ -332,18 +333,27 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         state.get_active_teamtype().map(mirror::team_to_proto)
     };
 
-    // Only meaningful while a setup is open. Gated on *either* setup action
-    // being offered, not just `EndSetup`: the engine withholds `EndSetup`
-    // until the placement is already legal, so gating on it alone would only
-    // ever report `true` and the UI could never say "not legal yet".
-    let in_setup = {
-        let simple = state.get_available_actions().get_simple();
-        simple.contains(&et::SimpleAT::EndSetup) || simple.contains(&et::SimpleAT::SetupLine)
-    };
-    let setup_legal = state
-        .get_active_teamtype()
-        .filter(|_| !game_over && in_setup)
-        .map(|team| state.is_setup_legal(team));
+    // Setup is one placement per player: everyone available for the drive is
+    // staged on the pitch with `used == true` until placed, so the counts
+    // fall out of the fielded players rather than the dugout.
+    let setup = state.setup_team().filter(|_| !game_over).map(|team| {
+        let (placed, waiting) = state
+            .get_players_on_pitch_in_team(team)
+            .fold((0, 0), |(placed, waiting), p| {
+                if p.used {
+                    (placed, waiting + 1)
+                } else {
+                    (placed + 1, waiting)
+                }
+            });
+        pv::SetupView {
+            team: mirror::team_to_proto(team),
+            placed,
+            waiting,
+            team_size: dims.team_size,
+            formations: Formation::available(&dims).map(|f| format!("{f:?}")).collect(),
+        }
+    });
 
     pv::ViewState {
         seq: ctx.seq,
@@ -363,7 +373,7 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         pending_roll: state.pending_roll.map(mirror::requested_roll_to_proto),
         log_tail: ctx.log_tail.clone(),
         can_undo: ctx.can_undo,
-        setup_legal,
+        setup,
         bot_thinking: ctx.bot_thinking,
         step_mode: ctx.step_mode,
         paused: ctx.paused,
@@ -374,6 +384,7 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
 mod tests {
     use super::*;
     use botbowl_engine::core::gamestate::{BuilderState, GameStateBuilder};
+    use botbowl_engine::core::procedures::auto_setup;
     use botbowl_engine::core::table::SimpleAT;
     use botbowl_web_proto::action as pa;
     use botbowl_web_proto::action::{PosAT, SimpleAT as PSimpleAT, TeamType as PTeam};
@@ -664,40 +675,76 @@ mod tests {
     }
 
     #[test]
-    fn a_setup_offers_the_engines_formation_actions_and_nothing_else() {
+    fn a_setup_offers_per_player_placements_and_a_summary() {
         let mut state = at_setup(dims());
         let v = view_of(&state);
-        // The engine's `Setup` procedure (`kickoff_procs.rs`) offers one action
-        // per pre-configured formation that fits the board, then `EndSetup` —
-        // there is no per-square placement action, so manual setup is not
-        // something a UI can expose today.
+        // The engine's `Setup` procedure (`kickoff_procs.rs`) asks about one
+        // player at a time: `PlacePlayer` squares on the own half, plus
+        // `BenchPlayer` while the roster has a spare. The formation shortcuts
+        // are no longer engine actions — they are `SetupView::formations`,
+        // played out by the session on request.
+        let team = state.setup_team().expect("a setup is open");
         let offered = v.simple_actions.iter().map(|a| a.at).collect::<Vec<_>>();
-        assert!(
-            offered.contains(&PSimpleAT::SetupLine) && offered.len() > 1,
-            "an empty setup should offer the formation shortcuts, got {offered:?}"
-        );
-        assert!(
-            offered
-                .iter()
-                .all(|at| matches!(at, PSimpleAT::SetupLine | PSimpleAT::SetupSpread)
-                    || matches!(at, PSimpleAT::SetupWedge | PSimpleAT::SetupZone)),
-            "setup should offer nothing but formations, got {offered:?}"
-        );
+        let placements = v
+            .squares
+            .iter()
+            .filter(|s| s.actions.contains(&PosAT::PlacePlayer))
+            .count();
+        assert!(placements > 0, "a setup offers PlacePlayer squares");
         assert!(
             v.squares.iter().all(|s| !s.actions.contains(&PosAT::SelectPosition)),
-            "the engine does not offer per-square placement during setup"
-        );
-        assert_eq!(v.setup_legal, Some(false), "an empty pitch is not a legal setup");
-
-        state.step(em::Action::Simple(SimpleAT::SetupLine)).unwrap();
-        let v = view_of(&state);
-        assert_eq!(
-            v.simple_actions.iter().map(|a| a.at).collect::<Vec<_>>(),
-            vec![PSimpleAT::EndSetup]
+            "placement is PlacePlayer, not SelectPosition"
         );
         assert!(
-            v.squares.iter().filter(|s| s.player.is_some()).count() > 0,
-            "SetupLine fields players"
+            offered.iter().all(|at| *at == PSimpleAT::BenchPlayer),
+            "setup offers nothing but BenchPlayer, got {offered:?}"
+        );
+        if dims().roster_per_team() > dims().team_size {
+            assert!(offered.contains(&PSimpleAT::BenchPlayer), "a spare player may sit out");
+        }
+        assert!(
+            v.active_player.is_some(),
+            "the player being placed is the active player"
+        );
+        assert_eq!(v.active_player, state.info.active_player);
+
+        let setup = v.setup.clone().expect("a setup summary while placing");
+        assert_eq!(setup.team, mirror::team_to_proto(team));
+        assert_eq!(setup.placed, 0, "nobody placed yet");
+        assert!(setup.waiting > 0, "the staged players are waiting");
+        assert_eq!(setup.team_size, dims().team_size);
+        assert!(setup.formations.contains(&"Line".to_string()), "{:?}", setup.formations);
+        assert_eq!(
+            setup.formations,
+            Formation::available(&dims())
+                .map(|f| format!("{f:?}"))
+                .collect::<Vec<_>>()
+        );
+
+        // Place one where the engine offers it: the summary moves along.
+        let pos = v
+            .squares
+            .iter()
+            .find(|s| s.actions.contains(&PosAT::PlacePlayer))
+            .map(|s| s.pos)
+            .unwrap();
+        state
+            .step(em::Action::Positional(
+                et::PosAT::PlacePlayer,
+                em::Position::new((pos.x, pos.y)),
+            ))
+            .unwrap();
+        let v = view_of(&state);
+        let after = v.setup.clone().expect("still setting up");
+        assert_eq!(after.placed, 1);
+        assert_eq!(after.waiting, setup.waiting - 1);
+        assert!(
+            v.squares
+                .iter()
+                .filter(|s| s.player.as_ref().is_some_and(|p| !p.used))
+                .count()
+                >= 1,
+            "a placed player is no longer staged"
         );
     }
 
@@ -708,31 +755,34 @@ mod tests {
     /// required 3, so the engine's own formation failed the engine's own
     /// `is_setup_legal` at 16x9/4, 18x11/6 and 22x11/8.
     ///
-    /// The formations are now built from board-relative anchors (`Formation`
-    /// in `kickoff_procs.rs`) and open with three LOS slots, so every offered
-    /// formation is legal on every board.
+    /// The formations are built from board-relative anchors (`Formation` in
+    /// `kickoff_procs.rs`) and open with three LOS slots, so every formation
+    /// the view offers plays out to a legal setup on every board.
     #[test]
     fn every_auto_setup_formation_is_legal_on_clamped_boards() {
-        for at in [
-            SimpleAT::SetupLine,
-            SimpleAT::SetupSpread,
-            SimpleAT::SetupWedge,
-            SimpleAT::SetupZone,
-        ] {
+        let formations: Vec<Formation> = Formation::available(&dims()).collect();
+        assert!(!formations.is_empty());
+        for formation in formations {
             let mut small = at_setup(dims());
-            if !small.is_legal_action(&em::Action::Simple(at)) {
-                continue; // not offered on this board
-            }
-            let team = small.get_active_teamtype().unwrap();
-            small.step(em::Action::Simple(at)).unwrap();
+            let team = small.setup_team().unwrap();
+            auto_setup(&mut small, formation);
+            assert_ne!(small.setup_team(), Some(team), "{formation:?} finishes the setup");
             let los_x = small.get_line_of_scrimage_x(team);
             let los_y = small.board_dims.los_y_range();
             let on_scrimmage = small
                 .get_players_on_pitch_in_team(team)
                 .filter(|p| p.position.x == los_x && los_y.contains(&p.position.y))
                 .count();
-            assert!(on_scrimmage >= 3, "{at:?} puts {on_scrimmage} players on the LOS rows");
-            assert_eq!(view_of(&small).setup_legal, Some(true), "{at:?} is an illegal setup");
+            assert!(
+                on_scrimmage >= 3,
+                "{formation:?} puts {on_scrimmage} players on the LOS rows"
+            );
+            assert!(small.is_setup_legal(team), "{formation:?} is an illegal setup");
+            assert_eq!(
+                small.get_players_on_pitch_in_team(team).count(),
+                dims().team_size,
+                "{formation:?} fields a full team"
+            );
         }
     }
 
@@ -797,7 +847,7 @@ mod tests {
         assert!(v.to_act.is_none(), "nobody acts after the whistle");
         assert!(v.simple_actions.is_empty());
         assert!(v.squares.iter().all(|s| s.actions.is_empty()));
-        assert!(v.setup_legal.is_none());
+        assert!(v.setup.is_none());
     }
 
     #[test]

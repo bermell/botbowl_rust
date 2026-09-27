@@ -35,6 +35,7 @@ fn make_sample(children: Vec<ChildStat>, root_solved: bool) -> Sample {
         root_visits: 50,
         root_solved,
         outcome_value: None,
+        scripted: false,
     }
 }
 

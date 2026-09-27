@@ -30,3 +30,16 @@ gives the control arm a name that shows up in the report next to the variant's.
 descents": a decision that inherits a big reused subtree then searches only the shortfall, rather
 than N more on top of it (see `botbowl-mcts/CLAUDE.md`, "Budget mode"). `BLOOD_MCTS_BUDGET=visits`
 is the environment spelling, which the hub pins into every job it submits.
+
+Kickoff setup knobs (plan 047; see `botbowl-mcts/CLAUDE.md`, "Kickoff setup"):
+
+```toml
+setup = "auto"               # auto (search with a net, formation otherwise) | search | formation
+opponent_setup = "auto"      # auto (= formation) | formation | search — the opponent model inside the tree
+setup_formation = "line"     # line | spread | wedge | zone | random (drawn per drive)
+setup_budget_scale = 1.0     # a setup decision's budget, as a multiple of the turn budget
+setup_horizon_turns = 0      # own-turns of lookahead at a setup root; 0 = horizon_turns
+```
+
+`cfgs/setup-teacher.toml` is the gen-0 setup teacher: formation-driven placements recorded as
+one-hot scripted samples.

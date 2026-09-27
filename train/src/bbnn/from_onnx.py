@@ -41,7 +41,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from .model import BBNet
+from .model import BBNet, SCHEMA_VERSION, SPATIAL_CHANNELS
 
 # Which BatchNorm consumed each conv's output. `policy_head` has none — its
 # bias survives the export as a real conv bias.
@@ -63,7 +63,7 @@ def _bn_of(module: str) -> str | None:
     raise ValueError(f"unknown conv module {module!r} — model.py grew a layer this loader does not know")
 
 
-def state_dict_from_onnx(path: str | Path) -> dict[str, torch.Tensor]:
+def state_dict_from_onnx(path: str | Path, schema_version: int | None = None) -> dict[str, torch.Tensor]:
     """The `state_dict` of a net that, in eval mode, computes what ``path`` does."""
     import onnx
     from onnx import numpy_helper
@@ -97,9 +97,22 @@ def state_dict_from_onnx(path: str | Path) -> dict[str, torch.Tensor]:
             sd[f"{bn}.running_var"] = torch.full((ch,), 1.0 - EPS)
             sd[f"{bn}.num_batches_tracked"] = torch.tensor(0)
 
+    # The export carries no schema marker (the buffer is unused by `forward`).
+    # An older-shaped net (v6: C=59) is left unmarked, which is how those
+    # checkpoints always looked; a current-shaped one is stamped with the
+    # current schema unless the caller says otherwise — v7 and v8 exports
+    # have identical shapes, so a v7 ONNX needs ``schema_version=7``.
+    c = int(sd["stem.weight"].shape[1] - sd["global_fc.weight"].shape[0])
+    if schema_version is not None:
+        sd["schema_version"] = torch.tensor(schema_version, dtype=torch.int32)
+    elif c == SPATIAL_CHANNELS:
+        sd["schema_version"] = torch.tensor(SCHEMA_VERSION, dtype=torch.int32)
     # Building the net the state_dict implies and loading it strictly is the
-    # check that nothing is missing or spurious.
-    BBNet(**shape_of_onnx(sd)).load_state_dict(sd)
+    # check that nothing is missing or spurious (the marker is the one key an
+    # old-shaped net legitimately lacks).
+    probe = dict(sd)
+    probe.setdefault("schema_version", torch.tensor(0, dtype=torch.int32))
+    BBNet(**shape_of_onnx(sd)).load_state_dict(probe)
     return sd
 
 
@@ -151,9 +164,15 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, help="write the recovered bare state_dict here")
     ap.add_argument("--no-verify", action="store_true", help="skip the forward-equivalence check against the ONNX")
     ap.add_argument("--atol", type=float, default=1e-4)
+    ap.add_argument(
+        "--schema",
+        type=int,
+        default=None,
+        help="schema the ONNX was exported at; needed for a v7 export, whose shapes match v8's",
+    )
     a = ap.parse_args(argv)
 
-    sd = state_dict_from_onnx(a.onnx)
+    sd = state_dict_from_onnx(a.onnx, schema_version=a.schema)
     shape = shape_of_onnx(sd)
     print(f"{a.onnx}: {shape}")
     if not a.no_verify:

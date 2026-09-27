@@ -31,7 +31,7 @@ pub use botbowl_play::generate::GenerateConfig;
 // part of compatibility, not just the compiled capacity.
 // v6: `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, both riding inside re-exported
 // types (`SearchConfig.config`, `EvalGameLine.telemetry`), which postcard encodes positionally.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.
@@ -225,11 +225,14 @@ pub enum ToHub {
         task: TaskId,
         line: EvalGameLine,
     },
-    /// One finished trajectory: its JSON line (without the newline), zstd
-    /// compressed. The hub appends the decompressed bytes verbatim, so the
-    /// shard file is byte-for-byte what `DatasetWriter` writes. Empty
-    /// `zstd_json` means the game legitimately produced nothing (a
-    /// curriculum trial the mode skipped); the game still counts as done.
+    /// One finished game: its trajectory records as JSON lines, newline-
+    /// separated with no trailing newline, zstd compressed. Usually one line;
+    /// two when a random-start drive scored and `--next-drive` played the
+    /// drive it set up (plan 047). The hub appends each line as
+    /// `DatasetWriter` would, so the shard file is byte-for-byte what a local
+    /// run writes. Empty `zstd_json` means the game legitimately produced
+    /// nothing (a curriculum trial the mode skipped); the game still counts
+    /// as done.
     TrajectoryDone {
         task: TaskId,
         game: u32,
@@ -249,13 +252,21 @@ pub enum ToHub {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectReason {
-    Protocol { hub: u32 },
+    Protocol {
+        hub: u32,
+    },
     BadToken,
-    Commit { hub: String },
+    Commit {
+        hub: String,
+    },
     Dirty,
-    Capacity { hub: Capacity },
+    Capacity {
+        hub: Capacity,
+    },
     /// Same binary, different `BOARD_SIZE_*` in the worker's environment.
-    Board { hub: BoardDims },
+    Board {
+        hub: BoardDims,
+    },
 }
 
 impl std::fmt::Display for RejectReason {

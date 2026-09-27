@@ -297,6 +297,9 @@ impl StepMode {
 pub enum ClientMsg {
     NewGame(GameSpec),
     Act(Action),
+    /// Play out the rest of the human's setup with the named formation (one
+    /// of `SetupView::formations`). Ignored outside the human's setup.
+    AutoSetup(String),
     Undo,
     /// Change how the session paces itself. Takes effect immediately, even
     /// while it is already holding.

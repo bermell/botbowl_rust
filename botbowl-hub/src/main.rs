@@ -196,6 +196,9 @@ struct GenerateJobArgs {
     /// ONNX path; stamped into the corpus provenance exactly as written.
     #[arg(long)]
     model: Option<String>,
+    /// (random-start) Play the drive after a score too, as a second record (plan 047).
+    #[arg(long, default_value_t = false)]
+    next_drive: bool,
     // Plan 042 board-size distribution, flag-for-flag `botbowl-ui dataset`.
     /// `12x5,14x7:3,16x9/6` — playable boards (optional `/T`, `:weight`).
     #[arg(long)]
@@ -322,6 +325,7 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         difficulty: a.difficulty.into(),
         bias,
         board_sizes: size_dist_of(a)?,
+        next_drive: a.next_drive,
     };
     if let Some(d) = &base.board_sizes {
         eprintln!(

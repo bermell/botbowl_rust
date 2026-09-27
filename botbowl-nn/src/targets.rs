@@ -84,6 +84,14 @@ pub fn policy_target_of(
     if n == 0 {
         return None;
     }
+    // Plan 047: an unsearched decision (formation-driven setup, forced choice)
+    // is a teacher sample — one-hot on what was played, whatever `kind` says.
+    if sample.scripted {
+        let chosen = sample.children.iter().position(|c| c.action == sample.chosen_action)?;
+        let mut probs = vec![0.0f32; n];
+        probs[chosen] = 1.0;
+        return Some(PolicyTarget { probs });
+    }
     let mover = sample.to_move;
 
     // Index of the child with the best mover-Q among a filtered set.
@@ -291,6 +299,7 @@ mod tests {
             root_visits: 100,
             root_solved,
             outcome_value: outcome,
+            scripted: false,
         }
     }
 
@@ -586,8 +595,14 @@ mod tests {
     fn root_value_target_clamps_a_multi_td_root() {
         // Two touchdowns of lead is still 1.0 — the outcome label it blends
         // with is clamped the same way (botbowl-data: score delta in [-1,1]).
-        assert_eq!(root_value_target(&sample_rv(Team::Home, Some(1.0), Some(2500))), Some(1.0));
-        assert_eq!(root_value_target(&sample_rv(Team::Home, Some(1.0), Some(-2500))), Some(-1.0));
+        assert_eq!(
+            root_value_target(&sample_rv(Team::Home, Some(1.0), Some(2500))),
+            Some(1.0)
+        );
+        assert_eq!(
+            root_value_target(&sample_rv(Team::Home, Some(1.0), Some(-2500))),
+            Some(-1.0)
+        );
     }
 
     #[test]

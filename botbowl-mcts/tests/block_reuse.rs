@@ -105,7 +105,11 @@ fn a_block_miss_is_either_walked_past_or_a_representative_roll() {
                 break;
             }
             let action = bot.get_action(&state);
-            let s = bot.last_search().expect("summary");
+            // A kickoff setup after a score is answered without a search (plan 047).
+            let Some(s) = bot.last_search() else {
+                state.step(action).unwrap();
+                continue;
+            };
 
             if s.reuse.proc.as_deref() == Some("Block") && s.reuse.outcome == ReuseOutcome::LookupMiss {
                 misses += 1;
@@ -182,7 +186,11 @@ fn the_bot_searches_a_choice_it_models_as_scripted() {
             // Ask the script *before* the bot, on the same state.
             let scripted = block_dice::scripted_pick(&state);
             let action = bot.get_action(&state);
-            let s = bot.last_search().expect("summary");
+            // A kickoff setup after a score is answered without a search (plan 047).
+            let Some(s) = bot.last_search() else {
+                state.step(action).unwrap();
+                continue;
+            };
 
             if let Some(scripted) = scripted {
                 decisions += 1;

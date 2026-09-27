@@ -11,10 +11,32 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Must match botbowl-nn/src/encode.rs and actions.rs (nn_schema_version 7).
+# Must match botbowl-nn/src/encode.rs and actions.rs (nn_schema_version 8).
 SPATIAL_CHANNELS = 61
 GLOBAL_FEATURES = 18
 POLICY_CHANNELS = 30
+# The schema the action/encoder layout above is at. Stored in every checkpoint
+# as the ``schema_version`` buffer: v8 (per-player setup) re-laid the policy
+# channels without changing a single tensor shape, so shapes alone can no
+# longer say which schema a state_dict is at. `bbnn.migrate` reads it.
+SCHEMA_VERSION = 8
+
+
+class SchemaError(ValueError):
+    """A checkpoint is not at the schema this code is at — run `bbnn.migrate`."""
+
+
+def check_schema(state_dict) -> None:
+    """Raise `SchemaError` unless ``state_dict`` carries the current schema
+    marker. A checkpoint without one predates v8."""
+    v = state_dict.get("schema_version")
+    if v is None:
+        raise SchemaError(
+            f"checkpoint has no schema_version (predates v8) — migrate it first: "
+            f"python -m bbnn.migrate old.pt --out new.pt --onnx new.onnx"
+        )
+    if int(v) != SCHEMA_VERSION:
+        raise SchemaError(f"checkpoint is at schema v{int(v)}, this code is at v{SCHEMA_VERSION} — run bbnn.migrate")
 
 
 class ResidualBlock(nn.Module):
@@ -50,6 +72,7 @@ class BBNet(nn.Module):
         blocks: int = 6,
         global_embed: int = 16,
         value_hidden: int = 64,
+        schema_version: int = SCHEMA_VERSION,
     ):
         super().__init__()
         self.global_fc = nn.Linear(global_f, global_embed)
@@ -61,6 +84,10 @@ class BBNet(nn.Module):
         self.value_bn = nn.BatchNorm2d(32)
         self.value_fc1 = nn.Linear(32, value_hidden)
         self.value_fc2 = nn.Linear(value_hidden, 1)
+        # Not a parameter and unused by `forward` (so absent from the ONNX
+        # export); it rides in the state_dict so a loader can tell a v8
+        # checkpoint from a v7 one of identical shape.
+        self.register_buffer("schema_version", torch.tensor(schema_version, dtype=torch.int32))
 
     @staticmethod
     def shape_of(state_dict) -> dict:
@@ -74,7 +101,10 @@ class BBNet(nn.Module):
 
     @classmethod
     def from_state_dict(cls, state_dict, **kwargs) -> "BBNet":
-        """Build the net a state_dict was saved from and load it (strict)."""
+        """Build the net a state_dict was saved from and load it (strict).
+        Refuses a checkpoint at another schema with a message naming the fix,
+        instead of torch's "missing key: schema_version"."""
+        check_schema(state_dict)
         model = cls(**cls.shape_of(state_dict), **kwargs)
         model.load_state_dict(state_dict)
         return model

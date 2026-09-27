@@ -59,11 +59,14 @@ pub enum PosAT {
     Foul,
     StartBlock,
     Block,
+    /// Setup: put the player being placed (`ViewState::active_player`) on
+    /// this square of the own half.
+    PlacePlayer,
 }
 
 impl PosAT {
     /// All variants, in policy-channel order.
-    pub const ALL: [PosAT; 14] = [
+    pub const ALL: [PosAT; 15] = [
         PosAT::StartMove,
         PosAT::StartBlitz,
         PosAT::StartPass,
@@ -78,6 +81,7 @@ impl PosAT {
         PosAT::Foul,
         PosAT::StartBlock,
         PosAT::Block,
+        PosAT::PlacePlayer,
     ];
 
     /// Label for the action menu / tooltip.
@@ -97,6 +101,7 @@ impl PosAT {
             PosAT::Foul => "Foul",
             PosAT::StartBlock => "Block",
             PosAT::Block => "Block",
+            PosAT::PlacePlayer => "Place here",
         }
     }
 
@@ -109,7 +114,7 @@ impl PosAT {
             PosAT::StartPass | PosAT::Pass => Some("icons/actions/pass.gif"),
             PosAT::StartHandoff | PosAT::Handoff => Some("icons/actions/handoff.gif"),
             PosAT::StartFoul | PosAT::Foul => Some("icons/actions/foul.gif"),
-            PosAT::Push | PosAT::FollowUp | PosAT::SelectPosition => None,
+            PosAT::Push | PosAT::FollowUp | PosAT::SelectPosition | PosAT::PlacePlayer => None,
         }
     }
 
@@ -145,16 +150,14 @@ pub enum SimpleAT {
     Tails,
     Kick,
     Receive,
-    SetupLine,
-    EndSetup,
     KickoffAimMiddle,
-    SetupSpread,
-    SetupWedge,
-    SetupZone,
+    /// Setup: send the player being placed to the reserves instead. Only
+    /// offered while the team can spare them.
+    BenchPlayer,
 }
 
 impl SimpleAT {
-    pub const ALL: [SimpleAT; 19] = [
+    pub const ALL: [SimpleAT; 15] = [
         SimpleAT::SelectBothDown,
         SimpleAT::SelectPow,
         SimpleAT::SelectPush,
@@ -168,12 +171,8 @@ impl SimpleAT {
         SimpleAT::Tails,
         SimpleAT::Kick,
         SimpleAT::Receive,
-        SimpleAT::SetupLine,
-        SimpleAT::EndSetup,
         SimpleAT::KickoffAimMiddle,
-        SimpleAT::SetupSpread,
-        SimpleAT::SetupWedge,
-        SimpleAT::SetupZone,
+        SimpleAT::BenchPlayer,
     ];
 
     pub fn label(self) -> &'static str {
@@ -191,12 +190,8 @@ impl SimpleAT {
             SimpleAT::Tails => "Tails",
             SimpleAT::Kick => "Kick",
             SimpleAT::Receive => "Receive",
-            SimpleAT::SetupLine => "Line setup",
-            SimpleAT::SetupSpread => "Spread setup",
-            SimpleAT::SetupWedge => "Wedge setup",
-            SimpleAT::SetupZone => "Zone setup",
-            SimpleAT::EndSetup => "End setup",
             SimpleAT::KickoffAimMiddle => "Aim at middle",
+            SimpleAT::BenchPlayer => "Sit out",
         }
     }
 

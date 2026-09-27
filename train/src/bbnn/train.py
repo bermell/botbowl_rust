@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 
 from .data import MultiDimsDataset, PreparedDataset, collate, make_loader, open_prepared
 from .export import export_onnx
-from .model import BBNet, masked_policy_logits
+from .model import BBNet, masked_policy_logits, check_schema
 
 
 def seed_everything(seed):
@@ -233,6 +233,7 @@ def train(
     # first steps and undo the warm start, so callers should pass a lower
     # --lr when using --init (train_loop.sh does).
     if init is not None:
+        check_schema(state)
         model.load_state_dict(state)
         print(f"warm start: loaded weights ← {init}")
 

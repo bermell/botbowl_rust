@@ -20,7 +20,7 @@ use super::{
         resolve_from_fixes, resolve_with_rng, BlockDice, Coin, D6Target, DicePolicy, FixedDice, RequestedRoll,
         RollResult, RollTarget,
     },
-    procedures::{AnyProc, GameOver, Half},
+    procedures::{auto_setup, AnyProc, Formation, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT},
 };
 
@@ -67,11 +67,8 @@ impl GameStateBuilder {
 
         state.step_simple(SimpleAT::Kick); //Away
 
-        state.step_simple(SimpleAT::SetupLine); //Away
-        state.step_simple(SimpleAT::EndSetup); //Away
-
-        state.step_simple(SimpleAT::SetupLine); //Home
-        state.step_simple(SimpleAT::EndSetup); //Home
+        auto_setup(&mut state, Formation::Line); //Away
+        auto_setup(&mut state, Formation::Line); //Home
         state
     }
     ///creates a gamestate with two human teams at very beginning of a gamestate
@@ -263,11 +260,8 @@ impl GameStateBuilder {
         state.info.home_turn += user_turn - 1;
         state.info.away_turn += user_turn - 1;
 
-        state.step_simple(SimpleAT::SetupLine); //Away
-        state.step_simple(SimpleAT::EndSetup); //Away
-
-        state.step_simple(SimpleAT::SetupLine); //Home
-        state.step_simple(SimpleAT::EndSetup); //Home
+        auto_setup(&mut state, Formation::Line); //Away
+        auto_setup(&mut state, Formation::Line); //Home
 
         if let BuilderState::Kickoff { .. } = self.state {
             return state;
@@ -1091,6 +1085,28 @@ impl GameState {
         self.get_mut_player(id)?.position = new_pos;
         self.board[new_pos] = Some(id);
         Ok(())
+    }
+    /// Exchange two fielded players' squares. Used by `Setup` when a player is
+    /// placed onto a square a still-waiting teammate is staged on.
+    pub fn swap_players(&mut self, a: PlayerID, b: PlayerID) -> Result<()> {
+        if a == b {
+            return Ok(());
+        }
+        let pos_a = self.get_player(a)?.position;
+        let pos_b = self.get_player(b)?.position;
+        self.board[pos_a] = Some(b);
+        self.board[pos_b] = Some(a);
+        self.get_mut_player(a)?.position = pos_b;
+        self.get_mut_player(b)?.position = pos_a;
+        Ok(())
+    }
+    /// The team currently setting up for a kickoff, if the game is waiting on
+    /// a placement (`PosAT::PlacePlayer` / `SimpleAT::BenchPlayer`).
+    pub fn setup_team(&self) -> Option<TeamType> {
+        match self.proc_stack_peek() {
+            Some(AnyProc::Setup(setup)) if self.available_actions.team.is_some() => Some(setup.team()),
+            _ => None,
+        }
     }
     pub fn get_players_on_pitch(&self) -> impl Iterator<Item = &FieldedPlayer> {
         self.fielded_players.iter().filter_map(|x| x.as_ref())
@@ -2297,7 +2313,7 @@ mod runtime_board_dims_tests {
     /// Regression (plan 032 #11): the roles a team fields must not depend on
     /// which team set up first in the previous drive.
     ///
-    /// `SetupLine` fields players in dugout-slot order and stops at `team_size`,
+    /// The setup used to field players in dugout-slot order and stop at `team_size`,
     /// and `unfield_player` used to drop players into the first free slot of
     /// the *shared* dugout array. When Away set up first its players came off
     /// the pitch into Home's low slots, pushing Home's benched Thrower ahead of

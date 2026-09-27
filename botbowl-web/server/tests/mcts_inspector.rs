@@ -129,7 +129,10 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                 assert!(budget.contains("mcts"), "{budget}");
             }
             ServerMsg::BotMoved { action, report } => {
-                let report = *report.expect("the MCTS bot must report its search");
+                // A heuristic bot answers its kickoff setup from a formation, without a
+                // search (plan 047); those moves carry no report.
+                let Some(report) = report else { continue };
+                let report = *report;
                 assert_eq!(report.chosen, action, "the report must be about the move played");
                 assert_eq!(report.agent, TeamType::Away);
                 assert_eq!(report.evaluator, "heuristic");

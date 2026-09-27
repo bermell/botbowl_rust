@@ -178,12 +178,16 @@ backgrounds — those exist for six fixed sizes, none of which are the tiers we 
   fails `BoardDims::is_out`. `tackle_zones` must skip such a player rather than call
   `get_adj_positions` on them, which asserts in-bounds. Pinned by
   `a_player_mid_crowd_push_does_not_panic_the_view` (`view.rs`).
-- **Manual setup is not possible.** The engine's `Setup` procedure offers one action per
-  pre-configured formation that fits the board — `SetupLine | SetupSpread | SetupWedge | SetupZone`
-  (`Formation` in `kickoff_procs.rs`) — and then `EndSetup`. There is no per-square placement
-  action, so the UI cannot expose one; it just renders whichever formation shortcuts the engine
-  offered. `is_setup_legal` still isn't enforced by the engine, but every offered formation now
-  satisfies it on every board (it used to fail below the default board; `plans/032`).
+- **Setup is one decision per player, and the formations are a session shortcut.** The engine's
+  `Setup` procedure asks about `info.active_player` and offers `PosAT::PlacePlayer` squares on the
+  own half plus `SimpleAT::BenchPlayer` while the roster has a spare; it closes the setup itself
+  once `team_size` are placed. Everyone available for the drive is *staged* on the pitch in the
+  own end-zone column with `used == true` until placed, so mid-setup there are more players on
+  the pitch than `team_size` — `ViewState::setup` (`SetupView`) carries the placed/waiting counts
+  and the names of the `Formation`s that fit the board. `ClientMsg::AutoSetup(name)` plays the
+  rest of the human's setup out with that formation, through `self.step` so the recording keeps
+  every placement, as **one** undo point. `is_setup_legal` still isn't enforced by the engine,
+  but every offered formation satisfies it on every board (pinned in `view.rs`).
 - **A long search blocks its own session.** `spawn_blocking` keeps the socket alive, but there is
   no cancel, so the human cannot undo mid-think. Accepted for a POC.
 

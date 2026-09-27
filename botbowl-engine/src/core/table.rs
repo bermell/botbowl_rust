@@ -17,6 +17,9 @@ pub enum PosAT {
     Foul,
     StartBlock,
     Block,
+    /// Setup: put the player being placed (`info.active_player`) on this
+    /// square of our own half. See `Setup` in `procedures/kickoff_procs.rs`.
+    PlacePlayer,
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
@@ -34,15 +37,11 @@ pub enum SimpleAT {
     Tails,
     Kick,
     Receive,
-    SetupLine,
-    EndSetup,
     KickoffAimMiddle,
-    // Setup formations beyond the default line — see `Formation` in
-    // `procedures/kickoff_procs.rs`. Appended at the end so the existing
-    // action indices (and any model trained against them) keep their meaning.
-    SetupSpread,
-    SetupWedge,
-    SetupZone,
+    /// Setup: send the player being placed to the reserves instead of
+    /// fielding it. Only offered while the team can still field its minimum
+    /// without that player.
+    BenchPlayer,
 }
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]

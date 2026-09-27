@@ -22,6 +22,7 @@ use botbowl_engine::core::game_runner::Recording;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model as em;
 use botbowl_engine::core::model::{Action as EngineAction, BoardDims, SomeProcInput};
+use botbowl_engine::core::procedures::Formation;
 use botbowl_web_proto::msg::{ClientMsg, GameSpec, LobbyInfo, ServerMsg, StartFrom, StepMode};
 use botbowl_web_proto::search as ps;
 use rand::SeedableRng;
@@ -390,6 +391,37 @@ impl GameSession {
         self.advance(out);
     }
 
+    /// Play out the rest of the human's setup with a formation. One undo
+    /// point for the whole thing, exactly like a single human decision.
+    ///
+    /// This is the engine's `auto_setup` unrolled through `self.step`, so the
+    /// recording keeps every placement rather than jumping from an empty half
+    /// to a finished one.
+    fn auto_setup(&mut self, name: &str, out: &Out) {
+        if self.state.info.game_over || self.state.pending_roll.is_some() {
+            return;
+        }
+        if self.state.setup_team() != Some(self.human) {
+            eprintln!("AutoSetup({name}) ignored: the human is not setting up");
+            return;
+        }
+        let Some(formation) = Formation::ALL.into_iter().find(|f| format!("{f:?}") == name) else {
+            eprintln!("AutoSetup({name}) ignored: unknown formation");
+            return;
+        };
+        self.history.push(Snapshot {
+            state: self.state.clone(),
+            rng: self.rng.clone(),
+            steps: self.steps.len(),
+            log: self.log.len(),
+        });
+        self.note(format!("you: {formation:?} setup"));
+        while let Some(action) = formation.next_action(&self.state, self.human) {
+            self.step(SomeProcInput::Action(action));
+        }
+        self.advance(out);
+    }
+
     fn undo(&mut self, out: &Out) {
         match self.history.pop() {
             None => out.send(ServerMsg::Error("nothing to undo".into())),
@@ -576,6 +608,7 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
                 Some(s) => match other {
                     ClientMsg::NewGame(_) | ClientMsg::SetStepMode(_) => unreachable!("handled above"),
                     ClientMsg::Act(action) => s.act(mirror::action_from_proto(action), &out),
+                    ClientMsg::AutoSetup(name) => s.auto_setup(&name, &out),
                     ClientMsg::Undo => s.undo(&out),
                     ClientMsg::StepOnce => s.step_once(&out),
                     ClientMsg::ExpandNode {

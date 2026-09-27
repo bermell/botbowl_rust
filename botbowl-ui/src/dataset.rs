@@ -65,6 +65,7 @@ fn config_of(args: &DatasetArgs) -> io::Result<GenerateConfig> {
         difficulty: args.difficulty.into(),
         bias: args.bias.to_bias(),
         board_sizes,
+        next_drive: args.next_drive,
     })
 }
 
@@ -112,7 +113,7 @@ fn run_games(
             return Ok(());
         }
         let seed = args.seed.wrapping_add(g as u64);
-        let traj = match play_trajectory(cfg, nn, seed) {
+        let trajs = match play_trajectory(cfg, nn, seed) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("{e}");
@@ -120,21 +121,28 @@ fn run_games(
                 return Ok(());
             }
         };
-        let Some(traj) = traj else { continue };
-        state.total_samples.fetch_add(traj.samples.len(), Ordering::Relaxed);
+        if trajs.is_empty() {
+            continue;
+        }
         let done = state.written.fetch_add(1, Ordering::Relaxed) + 1;
-        println!(
-            "[{}/{}] seed={seed} samples={} z_home={:+} score={}-{}",
-            done,
-            args.games,
-            traj.samples.len(),
-            traj.outcome.z_home,
-            traj.outcome.home_score,
-            traj.outcome.away_score,
-        );
+        for traj in &trajs {
+            state.total_samples.fetch_add(traj.samples.len(), Ordering::Relaxed);
+            println!(
+                "[{}/{}] seed={seed} drive={} samples={} z_home={:+} score={}-{}",
+                done,
+                args.games,
+                traj.meta.extra.get("drive").map_or("1", String::as_str),
+                traj.samples.len(),
+                traj.outcome.z_home,
+                traj.outcome.home_score,
+                traj.outcome.away_score,
+            );
+        }
         {
             let mut w = state.writer.lock().expect("writer mutex");
-            w.write(&traj)?;
+            for traj in &trajs {
+                w.write(traj)?;
+            }
             w.flush()?;
         }
         if state.per_game_profile {
