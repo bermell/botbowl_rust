@@ -316,6 +316,11 @@ impl RecombinationCounts {
 pub struct SearchTelemetry {
     /// Decisions made.
     pub searches: u64,
+    /// Descents run, summed over decisions. `iterations / searches` is the budget each decision
+    /// really spent: less than asked for when trees solve early or `BudgetMode::Visits` credits a
+    /// reused tree.
+    #[serde(default)]
+    pub iterations: u64,
     pub reuse: TreeReuseStats,
     pub recombination: RecombinationCounts,
     pub fan: ActionFanHistogram,
@@ -323,8 +328,9 @@ pub struct SearchTelemetry {
 
 impl SearchTelemetry {
     /// Fold one decision in. Called once per `get_action`.
-    pub fn record(&mut self, decision: &ReuseDecision, recombination: RecombinationCounts) {
+    pub fn record(&mut self, decision: &ReuseDecision, recombination: RecombinationCounts, iterations: u64) {
         self.searches += 1;
+        self.iterations += iterations;
         self.reuse.record(decision);
         self.fan.record(decision.n_actions);
         self.recombination.merge(&recombination);
@@ -333,6 +339,7 @@ impl SearchTelemetry {
     /// Fold another bot's (or game's, or worker's) totals in. Commutative.
     pub fn merge(&mut self, rhs: &SearchTelemetry) {
         self.searches += rhs.searches;
+        self.iterations += rhs.iterations;
         self.reuse.merge(&rhs.reuse);
         self.recombination.merge(&rhs.recombination);
         self.fan.merge(&rhs.fan);
@@ -343,10 +350,11 @@ impl SearchTelemetry {
         let pct = |v: Option<f64>| v.map_or_else(|| "n/a".to_string(), |r| format!("{:.4}", r));
         let r = &self.reuse.total;
         format!(
-            "searches={} reuse={} reuse_rate={} anchor_miss={} lookup_miss={} no_path={} \
+            "searches={} iterations={} reuse={} reuse_rate={} anchor_miss={} lookup_miss={} no_path={} \
              fan_p50={} fan_p90={} recomb_hits={} recomb_misses={} recomb_hit_rate={} \
              eq_checks={} eq_rejects={} eq_reject_rate={}",
             self.searches,
+            self.iterations,
             r.reused,
             pct(r.rate()),
             r.anchor_miss,
@@ -385,16 +393,19 @@ mod test {
         a.record(
             &decision(ReuseOutcome::Reused, "MoveAction", 6),
             RecombinationCounts::default(),
+            0,
         );
         a.record(
             &decision(ReuseOutcome::AnchorMiss, "Block", 12),
             RecombinationCounts::default(),
+            0,
         );
 
         let mut b = SearchTelemetry::default();
         b.record(
             &decision(ReuseOutcome::Reused, "Block", 4),
             RecombinationCounts::default(),
+            0,
         );
 
         let mut ab = a.clone();

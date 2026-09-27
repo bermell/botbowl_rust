@@ -1299,6 +1299,13 @@ where
         }
     }
 
+    /// Read this node's score in place. Unlike [`Self::get_node_info`] it clones nothing (in
+    /// particular not the state), so it is cheap enough to poll between descents, e.g. to stop a
+    /// search once the root has enough visits.
+    pub fn with_score<R>(&self, f: impl FnOnce(Option<&Q>) -> R) -> R {
+        f(self.score.read().unwrap().as_ref())
+    }
+
     /// One level of read-only navigation: the `(action, [`NodeInfo`])` pairs
     /// for this node's materialised children, or `None` when the node has not
     /// been expanded.

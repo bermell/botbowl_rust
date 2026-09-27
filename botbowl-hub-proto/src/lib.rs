@@ -29,7 +29,9 @@ pub use botbowl_play::generate::GenerateConfig;
 // `GenerateConfig.config_name`.
 // v5: `BuildInfo.env_board` + `RejectReason::Board` — the *active* board is
 // part of compatibility, not just the compiled capacity.
-pub const PROTOCOL_VERSION: u32 = 5;
+// v6: `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, both riding inside re-exported
+// types (`SearchConfig.config`, `EvalGameLine.telemetry`), which postcard encodes positionally.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.

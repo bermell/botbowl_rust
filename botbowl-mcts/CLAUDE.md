@@ -20,6 +20,18 @@ Adapter between `botbowl-engine` and the `recon_mcts` search library (path dep o
 
 Clones the root state, sets `DiceMode::RegisterRolls`, force-disables logging and clears the log Vec (otherwise each `apply_action` clone re-copies the whole log), splits `iterations_per_move` across `std::thread::scope` workers (plan 008), and picks the root child with the **best aggregated Q from the agent's perspective** (visits as tie-break; unscored children rank last). Most-visited is *not* used: descents ending on already-terminal nodes bump visit counters without adding information, so raw visit counts over-weight whichever path saturated first. The tree is **cached and reused** across consecutive `get_action` calls when the horizon anchor matches (plan 015 Step 1). Workers apply a transient virtual-loss penalty on descent (plan 015 Step 5) to diverge under concurrency.
 
+## Budget mode: iterations or visits
+
+`MctsConfig.budget_mode` (`BLOOD_MCTS_BUDGET=visits`, preset key `budget_mode = "visits"`,
+`MctsBot::with_budget_mode`) says what `SearchBudget::Iterations(n)` counts. `Iterations` (the
+default and every corpus so far) runs `n` new descents per decision *on top of* a reused tree, so
+the decisions that inherit the most get searched the most. `Visits` stops once the root has `n`
+visits and never runs more than `n` descents, so only a reused tree gets cheaper. **A fresh tree
+costs the same under both:** only ~3 in 4 descents raised the root's visit count in the test
+position (300 descents → 234 root visits; recombination is the likely cause, not yet traced), so a
+fresh tree hits the `n`-descent cap before it reaches `n` visits. `SearchTelemetry.iterations` counts the descents actually run,
+so `iterations / searches` in a report is the real per-decision budget. `tests/budget_mode.rs`.
+
 ## Evaluator: Heuristic vs NN (plan 017)
 
 `BloodBowlDynamics.evaluator: Evaluator` selects the value/prior source. `Evaluator::Heuristic` (the `#[default]`) is the scripted baseline and reproduces prior behaviour **byte-identically** — `available_actions` calls `prior_for_engine_action` per action and `score_leaf` calls `leaf_score`. `Evaluator::Nn(Arc<NnEvaluator>)` (in `botbowl-nn`) swaps in a frozen ONNX net (tract, pure-Rust CPU): `available_actions` does **one** `nn.priors(state, &filtered)` forward and zips the results into `BbAction::player` (NN priors **replace** scripted priors — there is no principled common scale to blend them), and `score_leaf` calls `nn.value_home_i64(state)` — **except for known-outcome leaves**: when the score changed since the `HorizonAnchor` or the game is over, `score_leaf` returns the exact `anchor.score_delta(state).clamp(-1,1) * 1000` instead of asking the net. The outcome is proven there (and gets frozen into solved subtrees as exact minimax), and post-TD kickoff states are out-of-distribution for a net trained only on decision states — an NN guess would re-open the "TDs invisible to the search" failure. Δ-since-anchor (not absolute `leaf_score`) keeps these leaves on the NN's drive-relative scale. Wire it via `MctsBot::new(..).with_evaluator(Arc<NnEvaluator>)`. Two forwards per expanded node (priors at expansion + value at scoring) is accepted — perf is deprioritized.
@@ -34,13 +46,13 @@ Clones the root state, sets `DiceMode::RegisterRolls`, force-disables logging an
 
 ## MctsConfig — one struct, resolved once at construction
 
-Every knob that shapes a search lives in `MctsConfig` (`dynamics.rs`): `workers`, `memory_mode`, `tree_reuse`, `virtual_loss`, `puct`, `tie_break`, `backup`, `fpu_reduction`, `horizon_turns`, `horizon`, `stats`, `leaf_stats`, `debug_root`. `MctsBot::new` uses `MctsConfig::from_env()`, so every CLI path keeps its `BLOOD_MCTS_*` A/B knobs; `MctsBot::with_budget_and_config(budget, MctsConfig::new())` builds a bot that ignores the environment entirely, which is what lets one process (the web server, plan 034) run several differently-tuned bots.
+Every knob that shapes a search lives in `MctsConfig` (`dynamics.rs`): `workers`, `memory_mode`, `tree_reuse`, `virtual_loss`, `puct`, `tie_break`, `backup`, `fpu_reduction`, `horizon_turns`, `horizon`, `stats`, `leaf_stats`, `debug_root`, `budget_mode`. `MctsBot::new` uses `MctsConfig::from_env()`, so every CLI path keeps its `BLOOD_MCTS_*` A/B knobs; `MctsBot::with_budget_and_config(budget, MctsConfig::new())` builds a bot that ignores the environment entirely, which is what lets one process (the web server, plan 034) run several differently-tuned bots.
 
 **Plan 043 makes it a committable preset.** `MctsConfig` is `Copy` + serde, and its serde default is `MctsConfig::new` — **not** `Default`, which is `from_env()`: a named configuration that absorbed a stray `BLOOD_MCTS_*` would not be reproducible, which is the entire point of naming one. `deny_unknown_fields` turns a typo into an error rather than a knob that silently stays put. Enum variants are `snake_case` on the wire so a preset reads in the same vocabulary as the CLI flags; renaming them is safe because they cross the hub under postcard (variant-by-index) and no persisted JSON names them. `cfgs/` holds the presets, `botbowl_play::bots::load_mcts_config` loads one, and `SearchConfig.config` carries it — see `cfgs/README.md`.
 
 **Env vars are read once, at `::new`** — setting one between building a bot and calling it no longer does anything. Before plan 034, `BLOOD_MCTS_HORIZON`, `_WORKERS` and `_MEMORY` were re-read inside *every* `get_action` and therefore **overrode** an explicit `with_workers(...)`; the builders now actually win.
 
-`BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_HORIZON_TURNS=N`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_PUCT_MODE`/`_C`/`_RANGE_FLOOR`, `BLOOD_MCTS_TIE_BREAK`, `BLOOD_MCTS_BACKUP=mean`, `BLOOD_MCTS_FPU_REDUCTION=k`, `BLOOD_MCTS_STATS=1`, `BLOOD_MCTS_LEAF_STATS=1`, `BLOOD_MCTS_DEBUG_ROOT=1` (dump top-10 root children by visits/Q after each search — first thing to reach for when the bot plays nonsense; all-zero Q means backprop is broken).
+`BLOOD_MCTS_MEMORY={get|store}` (`hash` panics — see above), `BLOOD_MCTS_WORKERS=N`, `BLOOD_MCTS_HORIZON=off`, `BLOOD_MCTS_HORIZON_TURNS=N`, `BLOOD_MCTS_TREE_REUSE=off`, `BLOOD_MCTS_VIRTUAL_LOSS=N`, `BLOOD_MCTS_PUCT_MODE`/`_C`/`_RANGE_FLOOR`, `BLOOD_MCTS_TIE_BREAK`, `BLOOD_MCTS_BACKUP=mean`, `BLOOD_MCTS_FPU_REDUCTION=k`, `BLOOD_MCTS_BUDGET=visits`, `BLOOD_MCTS_STATS=1`, `BLOOD_MCTS_LEAF_STATS=1`, `BLOOD_MCTS_DEBUG_ROOT=1` (dump top-10 root children by visits/Q after each search — first thing to reach for when the bot plays nonsense; all-zero Q means backprop is broken).
 
 ## Search telemetry (`telemetry.rs`, plan 043)
 

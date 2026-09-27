@@ -11,8 +11,8 @@ pub mod telemetry;
 
 pub use action::{BbAction, BbPlayer};
 pub use dynamics::{
-    BackupMode, BloodBowlDynamics, Evaluator, LeafStats, MctsBot, MctsConfig, MemoryMode, PuctMode, SearchBudget,
-    TieBreak, LEAF_STATS,
+    BackupMode, BloodBowlDynamics, BudgetMode, Evaluator, LeafStats, MctsBot, MctsConfig, MemoryMode, PuctMode,
+    SearchBudget, TieBreak, LEAF_STATS,
 };
 pub use report::{Edge, NodeStats, NodeView, SearchSummary};
 pub use telemetry::{

@@ -35,6 +35,9 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   field order matters. **v4** (plan 043) added `SearchConfig.config` — a named `MctsConfig`
   preset — and `GenerateConfig.config_name`; both ride inside the re-exported `botbowl-play`
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
+  **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
+  re-exported types. Postcard is positional, so a new field anywhere in a type that crosses the
+  wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
   built from one commit with different `BOARD_SIZE_*` would otherwise contribute different games
