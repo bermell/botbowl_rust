@@ -42,7 +42,10 @@ export INIT_CHAMPION="$PWD/models/az_v7/bbnet_14x7_gen23_v7.onnx"
 # re-anchor threshold in train_loop.sh — it would saturate within a few
 # generations. Never retrain or overwrite this file.
 export ANCHOR="$PWD/models/az_v7/bbnet_14x7_gen23_v7.onnx"
-export ANCHOR_GAMES=40
+# 100 per board from gen08 (2026-09-27): the curve had sat at 0.51-0.60 pooled since gen03, and
+# at 40 per board (pooled SE ~0.039) a 0.03-0.05 step is noise. 100 gives SE ~0.025 pooled.
+# Seeds are --seed 0 + game index, so the first 40 are the games gen01-07 played.
+export ANCHOR_GAMES=100
 
 # Fixed eval set, independent of the training centre — that independence is
 # what keeps the per-size ladder honest (plan 042). E0 answered the question
