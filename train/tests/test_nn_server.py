@@ -248,3 +248,83 @@ def test_content_addressed_resolution_is_cached_per_path(tmp_path, monkeypatch):
         assert reads == [], f"the second resolve re-read {reads}"
     finally:
         ns.WEIGHTS_DIRS.remove(real)
+
+
+CANVAS = (11, 18)
+# Tensor shapes (border included) the 16x9/6 curriculum plays, all inside CANVAS.
+BOARDS = [(8, 14), (9, 16), (10, 16), (11, 16), (7, 18), (9, 18), (11, 18), (11, 14)]
+
+
+@pytest.fixture(scope="module")
+def served_canvas(tmp_path_factory):
+    """`served`, but with `--canvas`: every board shares one batch queue."""
+    torch.manual_seed(1)
+    module = BBNet(width=8, blocks=2)
+    for m in module.modules():
+        if isinstance(m, torch.nn.BatchNorm2d):
+            m.running_mean.uniform_(-0.5, 0.5)
+            m.running_var.uniform_(0.5, 2.0)
+            m.bias.data.uniform_(-0.5, 0.5)
+    module.eval()
+    d = tmp_path_factory.mktemp("srv_canvas")
+    torch.save(module.state_dict(), d / "tiny.pt")
+    sock = str(d / "s.sock")
+    registry = ns.Registry("cpu", capacity=1, jit="off", canvas=CANVAS)
+    pool = ns.RunnerPool("cpu", max_batch=8, enabled=False)
+    server = ns.Server(registry, pool, ns.Stats(), max_batch=8, max_wait_us=0)
+    t = threading.Thread(target=server.serve, args=(sock,), daemon=True)
+    t.start()
+    for _ in range(200):
+        if Path(sock).exists():
+            break
+        time.sleep(0.01)
+    yield sock, str(d / "tiny.onnx"), module, server
+    server.stopping.set()
+    t.join(timeout=5)
+
+
+def request_at(s, model_id, spatial, global_, want_policy):
+    _, h, w = spatial.shape
+    flags = ns.FLAG_WANT_POLICY if want_policy else 0
+    body = struct.pack("<HHHH", model_id, flags, h, w) + spatial.astype("<f4").tobytes() + global_.astype("<f4").tobytes()
+    s.sendall(struct.pack("<I", len(body)) + body)
+    (n,) = struct.unpack("<I", recv_all(s, 4))
+    payload = recv_all(s, n)
+    value = struct.unpack("<f", payload[:4])[0]
+    policy = np.frombuffer(payload[4:], dtype="<f4") if want_policy else None
+    return value, policy
+
+
+def test_canvas_serves_every_board_its_own_answer_from_shared_batches(served_canvas):
+    sock, model, module, server = served_canvas
+    per_client = 20
+    errors: list[str] = []
+    batches0, samples0 = server.stats.batches, server.stats.samples
+
+    def client(i: int):
+        h, w = BOARDS[i]
+        rng = np.random.default_rng(1000 + i)
+        try:
+            s, model_id, _ = connect(sock, model)
+            for k in range(per_client):
+                spatial = rng.standard_normal((SPATIAL_CHANNELS, h, w), dtype=np.float32)
+                global_ = rng.standard_normal(GLOBAL_FEATURES, dtype=np.float32)
+                got_v, got_p = request_at(s, model_id, spatial, global_, want_policy=(k % 3 == 0))
+                v, p = reference(module, spatial, global_)
+                if abs(got_v - v) > 1e-5:
+                    errors.append(f"{h}x{w} req {k}: value {got_v} vs {v}")
+                if got_p is not None and (got_p.shape != p.shape or np.abs(got_p - p).max() > 1e-5):
+                    errors.append(f"{h}x{w} req {k}: policy differs")
+            s.close()
+        except Exception as e:  # pragma: no cover
+            errors.append(f"{h}x{w}: {e!r}")
+
+    threads = [threading.Thread(target=client, args=(i,)) for i in range(len(BOARDS))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not errors, errors[:5]
+    # Different boards shared batches: without the canvas each size is its own queue.
+    assert server.stats.samples - samples0 >= len(BOARDS) * per_client
+    assert server.stats.batches - batches0 < len(BOARDS) * per_client

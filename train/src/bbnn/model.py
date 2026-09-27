@@ -96,6 +96,34 @@ class BBNet(nn.Module):
         v = torch.tanh(self.value_fc2(v))                # (N, 1)
         return policy, v
 
+    def forward_masked(self, spatial, global_feat, mask):
+        """`forward` for boards embedded top-left in a larger zero canvas.
+
+        ``mask`` is ``(N, 1, H, W)``: 1 on each sample's own ``h × w``, 0 on the padding. Zeroing
+        the padding after every layer is exactly what the unpadded net's zero padding does at the
+        real edge, and the value head's mean runs over the real cells only. So every sample gets
+        its own board's `forward` result (up to float reassociation) on the shared canvas, and one
+        canvas lets the sidecar batch every board size together. Crop the policy to ``h × w``.
+        Keep this in step with `forward`: `test_model.py` pins that they agree.
+        """
+        n = spatial.shape[0]
+        h = spatial.shape[2]
+        w = spatial.shape[3]
+        g = F.relu(self.global_fc(global_feat))
+        g = g.view(n, -1, 1, 1).expand(-1, -1, h, w)
+        x = torch.cat([spatial, g], dim=1) * mask
+        x = F.relu(self.stem_bn(self.stem(x))) * mask
+        for b in self.blocks:
+            y = F.relu(b.b1(b.c1(x))) * mask
+            y = b.b2(b.c2(y)) * mask
+            x = F.relu(x + y)
+        policy = self.policy_head(x)
+        v = F.relu(self.value_bn(self.value_conv(x))) * mask
+        v = v.sum(dim=(2, 3)) / mask.sum(dim=(2, 3)).clamp_min(1.0)
+        v = F.relu(self.value_fc1(v))
+        v = torch.tanh(self.value_fc2(v))
+        return policy, v
+
 
 def masked_policy_logits(policy, actions, pad_mask):
     """Gather per-legal-action logits from a spatial policy map.

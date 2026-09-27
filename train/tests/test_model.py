@@ -112,3 +112,79 @@ def test_from_state_dict_recovers_width_and_blocks():
     # Loading a 96x8 dict into the default shape is what every loader used to do.
     with pytest.raises(RuntimeError):
         BBNet().load_state_dict(BBNet(width=96, blocks=8).state_dict())
+
+
+# Tensor shapes (playable + the 2-cell border) of every board the 16x9/6 curriculum and its eval
+# ladder play, and the canvas that holds them all.
+CURRICULUM_TENSORS = [(ph + 2, pw + 2) for (pw, ph) in [
+    (12, 6), (12, 7), (12, 8), (12, 9), (14, 5), (14, 6), (14, 7), (14, 8), (14, 9),
+    (16, 6), (16, 7), (16, 8), (16, 9),
+]]
+CANVAS = (11, 18)
+
+
+def _net_with_live_batchnorm(seed=0):
+    """A random net whose BatchNorms have non-trivial running statistics, so their bias really
+    does leak into the padding unless the mask removes it."""
+    torch.manual_seed(seed)
+    net = BBNet()
+    for m in net.modules():
+        if isinstance(m, torch.nn.BatchNorm2d):
+            m.running_mean.uniform_(-0.5, 0.5)
+            m.running_var.uniform_(0.5, 2.0)
+            m.weight.data.uniform_(0.5, 1.5)
+            m.bias.data.uniform_(-0.5, 0.5)
+    return net.eval()
+
+
+def _embed(spatial, canvas):
+    n, c, h, w = spatial.shape
+    out = torch.zeros(n, c, *canvas)
+    out[:, :, :h, :w] = spatial
+    mask = torch.zeros(n, 1, *canvas)
+    mask[:, :, :h, :w] = 1.0
+    return out, mask
+
+
+def test_masked_canvas_forward_matches_every_board_unpadded():
+    net = _net_with_live_batchnorm()
+    for (h, w) in CURRICULUM_TENSORS:
+        s = torch.randn(3, SPATIAL_CHANNELS, h, w)
+        g = torch.randn(3, GLOBAL_FEATURES)
+        with torch.no_grad():
+            ref_p, ref_v = net(s, g)
+            cs, m = _embed(s, CANVAS)
+            p, v = net.forward_masked(cs, g, m)
+        dp = (p[:, :, :h, :w] - ref_p).abs().max().item()
+        dv = (v - ref_v).abs().max().item()
+        assert dp < 1e-5 and dv < 1e-5, f"{h}x{w}: dp={dp:.2e} dv={dv:.2e}"
+
+
+def test_masked_forward_batches_different_boards_together():
+    """The point of the canvas: one batch, many board sizes, each row its own board's answer."""
+    net = _net_with_live_batchnorm(1)
+    rows = []
+    for (h, w) in CURRICULUM_TENSORS:
+        rows.append((h, w, torch.randn(1, SPATIAL_CHANNELS, h, w), torch.randn(1, GLOBAL_FEATURES)))
+    cs = torch.cat([_embed(s, CANVAS)[0] for (_, _, s, _) in rows])
+    m = torch.cat([_embed(s, CANVAS)[1] for (_, _, s, _) in rows])
+    g = torch.cat([gg for (_, _, _, gg) in rows])
+    with torch.no_grad():
+        p, v = net.forward_masked(cs, g, m)
+        for i, (h, w, s, gg) in enumerate(rows):
+            ref_p, ref_v = net(s, gg)
+            assert (p[i : i + 1, :, :h, :w] - ref_p).abs().max().item() < 1e-5, f"{h}x{w} policy"
+            assert (v[i] - ref_v[0]).abs().item() < 1e-5, f"{h}x{w} value"
+
+
+def test_without_the_mask_padding_would_change_the_answer():
+    """Guards the test above against being vacuous: plain `forward` on the padded canvas is wrong."""
+    net = _net_with_live_batchnorm(2)
+    h, w = CURRICULUM_TENSORS[0]
+    s = torch.randn(1, SPATIAL_CHANNELS, h, w)
+    g = torch.randn(1, GLOBAL_FEATURES)
+    with torch.no_grad():
+        ref_p, _ = net(s, g)
+        bad_p, _ = net(_embed(s, CANVAS)[0], g)
+    # The value can saturate tanh on a random net; the policy next to the padded edge cannot.
+    assert (bad_p[:, :, :h, :w] - ref_p).abs().max().item() > 1e-2

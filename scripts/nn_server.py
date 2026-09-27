@@ -137,6 +137,8 @@ class Model:
     path: str
     module: torch.nn.Module
     canary: bytes  # f32 value + f32[A*h*w] policy, little-endian
+    # `BBNet.forward_masked` behind the same trace, for `--canvas`; `None` without one.
+    masked: torch.nn.Module | None = None
 
 
 class Registry:
@@ -163,10 +165,11 @@ class Registry:
     the fix is to raise the flag.
     """
 
-    def __init__(self, device: str, capacity: int, jit: str):
+    def __init__(self, device: str, capacity: int, jit: str, canvas: tuple[int, int] | None = None):
         self.device = device
         self.capacity = capacity
         self.jit = jit
+        self.canvas = canvas
         self.by_weights: dict[str, Model] = {}
 
     def get(self, path: str) -> Model:
@@ -192,10 +195,11 @@ class Registry:
         # sample's result independent of the rest of its batch. Batching
         # and graph padding are both unsound without it.
         module.eval().to(self.device)
+        masked = maybe_trace_masked(module, self.device, self.jit, self.canvas) if self.canvas else None
         module = maybe_trace(module, self.device, self.jit)
         canary = compute_canary(module, self.device)
         log(f"loaded model_id={model_id} {path} → {pt} in {time.perf_counter() - t0:.1f}s")
-        return Model(model_id=model_id, path=pt.name, module=module, canary=canary)
+        return Model(model_id=model_id, path=pt.name, module=module, canary=canary, masked=masked)
 
 
 def resolve_weights(path: str) -> Path:
@@ -331,6 +335,54 @@ def maybe_trace(module: torch.nn.Module, device: str, jit: str) -> torch.nn.Modu
     return traced
 
 
+class MaskedNet(torch.nn.Module):
+    """`BBNet.forward_masked` as a module's `forward`, so it can be traced and captured."""
+
+    def __init__(self, net: BBNet):
+        super().__init__()
+        self.net = net
+
+    def forward(self, spatial, global_feat, mask):
+        return self.net.forward_masked(spatial, global_feat, mask)
+
+
+def canvas_inputs(b: int, h: int, w: int, canvas: tuple[int, int], device: str):
+    """`b` random `h × w` boards embedded in `canvas`, with their mask."""
+    s = torch.zeros(b, SPATIAL_CHANNELS, *canvas, device=device)
+    s[:, :, :h, :w] = torch.randn(b, SPATIAL_CHANNELS, h, w, device=device)
+    m = torch.zeros(b, 1, *canvas, device=device)
+    m[:, :, :h, :w] = 1.0
+    return s, torch.randn(b, GLOBAL_FEATURES, device=device), m
+
+
+def maybe_trace_masked(net: BBNet, device: str, jit: str, canvas: tuple[int, int]) -> torch.nn.Module:
+    """`maybe_trace` for the masked canvas forward. The canvas is one fixed shape, so a baked
+    spatial size is harmless; a baked batch size is not, so the trace is checked at two."""
+    module = MaskedNet(net).eval()
+    if jit == "off":
+        return module
+    with torch.no_grad():
+        try:
+            traced = torch.jit.trace(module, canvas_inputs(2, *canvas, canvas, device), check_trace=False)
+            traced = torch.jit.optimize_for_inference(traced)
+        except Exception as e:  # pragma: no cover - depends on torch version
+            log(f"jit trace of the masked forward failed ({e}) — using eager")
+            return module
+        for (b, h, w) in ((1, CANARY_H, CANARY_W), (5, canvas[0], canvas[1])):
+            s, g, m = canvas_inputs(b, h, w, canvas, device)
+            try:
+                tp, tv = traced(s, g, m)
+                ep, ev = module(s, g, m)
+            except Exception as e:
+                log(f"masked jit trace not batch-general at b={b} ({e}) — using eager")
+                return module
+            if (tp - ep).abs().max().item() > 1e-3 or (tv - ev).abs().max().item() > 1e-3:
+                log(f"masked jit trace disagrees with eager at b={b} {h}x{w} — using eager")
+                return module
+    log(f"masked jit trace validated on the {canvas[0]}x{canvas[1]} canvas")
+    return traced
+
+
 def canary_input() -> tuple[np.ndarray, np.ndarray]:
     spatial = np.load(FIXTURES / f"parity_{CANARY_H}x{CANARY_W}_spatial.npy").astype(np.float32)
     global_ = np.load(FIXTURES / f"parity_{CANARY_H}x{CANARY_W}_global.npy").astype(np.float32)
@@ -364,10 +416,18 @@ class Request:
     spatial: np.ndarray  # (C, h, w)
     global_: np.ndarray  # (F,)
     t_enqueued: float = field(default_factory=time.perf_counter)
+    # `--canvas` this request is padded onto, or `None` to run at its own size.
+    canvas: tuple[int, int] | None = None
 
     @property
     def key(self):
+        if self.canvas is not None:
+            return (self.model.model_id, *self.canvas, "canvas")
         return (self.model.model_id, self.h, self.w)
+
+    @property
+    def run_shape(self) -> tuple[int, int]:
+        return self.canvas if self.canvas is not None else (self.h, self.w)
 
 
 @dataclass
@@ -405,9 +465,10 @@ class EagerRunner:
     pipeline degrades to the old serial loop rather than to a special case.
     """
 
-    def __init__(self, module, device: str):
+    def __init__(self, module, device: str, canvas: tuple[int, int] | None = None):
         self.module = module
         self.device = device
+        self.canvas = canvas
         self.bucket = 0  # "no padding" — reported in the stats histogram
         self.eta_s = 0.0  # results are in hand when `launch` returns
 
@@ -416,13 +477,23 @@ class EagerRunner:
 
     def launch(self, batch: list[Request], want_policy: bool, queue_ns: int) -> Launched:
         t0 = time.perf_counter()
-        spatial = np.stack([r.spatial for r in batch])
+        if self.canvas is not None:
+            spatial = np.zeros((len(batch), SPATIAL_CHANNELS, *self.canvas), dtype=np.float32)
+            mask = np.zeros((len(batch), 1, *self.canvas), dtype=np.float32)
+            for i, r in enumerate(batch):
+                spatial[i, :, : r.h, : r.w] = r.spatial
+                mask[i, :, : r.h, : r.w] = 1.0
+        else:
+            spatial = np.stack([r.spatial for r in batch])
         global_ = np.stack([r.global_ for r in batch])
         with torch.inference_mode():
             s = torch.from_numpy(spatial).to(self.device, non_blocking=True)
             g = torch.from_numpy(global_).to(self.device, non_blocking=True)
             t1 = time.perf_counter()
-            policy, value = self.module(s, g)
+            if self.canvas is not None:
+                policy, value = self.module(s, g, torch.from_numpy(mask).to(self.device, non_blocking=True))
+            else:
+                policy, value = self.module(s, g)
             # `.cpu()` is the sync point, so `fwd` below is real end-to-end
             # GPU time and not just the launch. Only pay the 17 KB/sample
             # readback when somebody asked for the policy — `nn-value` (the
@@ -458,6 +529,7 @@ class Slot:
     host_p: torch.Tensor
     np_s: np.ndarray
     np_g: np.ndarray
+    np_m: np.ndarray | None
     np_v: np.ndarray
     np_p: np.ndarray
     start: torch.cuda.Event
@@ -490,14 +562,20 @@ class GraphRunner:
     out. Deepen the pipeline and the slots come with it.
     """
 
-    def __init__(self, module, bucket: int, h: int, w: int, device: str):
+    def __init__(self, module, bucket: int, h: int, w: int, device: str, masked: bool = False):
         self.bucket, self.h, self.w = bucket, h, w
+        self.masked = masked
         self.n_s = bucket * SPATIAL_CHANNELS * h * w
         self.n_g = bucket * GLOBAL_FEATURES
-        # One device buffer, two views — so the batch is one H2D copy.
-        self.dev = torch.zeros(self.n_s + self.n_g, device=device)
+        # With `--canvas`, a per-sample mask of the real board rides in the same buffer.
+        self.n_m = bucket * h * w if masked else 0
+        # One device buffer, two (three) views — so the batch is one H2D copy.
+        self.dev = torch.zeros(self.n_s + self.n_g + self.n_m, device=device)
         dev_s = self.dev[: self.n_s].view(bucket, SPATIAL_CHANNELS, h, w)
-        dev_g = self.dev[self.n_s :].view(bucket, GLOBAL_FEATURES)
+        dev_g = self.dev[self.n_s : self.n_s + self.n_g].view(bucket, GLOBAL_FEATURES)
+        dev_in = (dev_s, dev_g)
+        if masked:
+            dev_in = (dev_s, dev_g, self.dev[self.n_s + self.n_g :].view(bucket, 1, h, w))
         self.slots = [self._slot() for _ in range(DEPTH)]
         self.next_slot = 0
         # Running estimate of device time per batch (H2D → D2H), which the
@@ -513,23 +591,24 @@ class GraphRunner:
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream), torch.no_grad():
             for _ in range(3):
-                module(dev_s, dev_g)
+                module(*dev_in)
         torch.cuda.current_stream().wait_stream(stream)
         self.graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self.graph), torch.no_grad():
-            self.policy, self.value = module(dev_s, dev_g)
+            self.policy, self.value = module(*dev_in)
         self.value_flat = self.value.reshape(-1)
         self.policy_flat = self.policy.reshape(bucket, -1)
 
     def _slot(self) -> Slot:
         b, h, w = self.bucket, self.h, self.w
-        host = torch.zeros(self.n_s + self.n_g).pin_memory()
+        host = torch.zeros(self.n_s + self.n_g + self.n_m).pin_memory()
         host_v = torch.zeros(b).pin_memory()
         host_p = torch.zeros(b, POLICY_CHANNELS * h * w).pin_memory()
         return Slot(
             host, host_v, host_p,
             host[: self.n_s].view(b, SPATIAL_CHANNELS, h, w).numpy(),
-            host[self.n_s :].view(b, GLOBAL_FEATURES).numpy(),
+            host[self.n_s : self.n_s + self.n_g].view(b, GLOBAL_FEATURES).numpy(),
+            host[self.n_s + self.n_g :].view(b, 1, h, w).numpy() if self.masked else None,
             host_v.numpy(), host_p.numpy(),
             torch.cuda.Event(enable_timing=True),
             # `blocking=True`: if the server does have to sleep on this event
@@ -543,7 +622,15 @@ class GraphRunner:
         self.next_slot = (self.next_slot + 1) % DEPTH
         n = len(batch)
         for i, r in enumerate(batch):
-            slot.np_s[i] = r.spatial
+            if self.masked:
+                # Rows past `n` keep a previous batch's contents; they are computed and discarded,
+                # and rows are independent (eval-mode BatchNorm), so that is harmless.
+                slot.np_s[i].fill(0.0)
+                slot.np_s[i, :, : r.h, : r.w] = r.spatial
+                slot.np_m[i].fill(0.0)
+                slot.np_m[i, :, : r.h, : r.w] = 1.0
+            else:
+                slot.np_s[i] = r.spatial
             slot.np_g[i] = r.global_
         slot.start.record()
         self.dev.copy_(slot.host, non_blocking=True)
@@ -602,32 +689,37 @@ class RunnerPool:
                 return b
         return self.buckets[-1]
 
-    def get(self, model: Model, h: int, w: int, n: int):
+    def _eager(self, model: Model, h: int, w: int, masked: bool):
+        if masked:
+            return self.eager.setdefault((model.model_id, "canvas"), EagerRunner(model.masked, self.device, (h, w)))
+        return self.eager.setdefault(model.model_id, EagerRunner(model.module, self.device))
+
+    def get(self, model: Model, h: int, w: int, n: int, masked: bool = False):
         if not self.enabled:
-            return self.eager.setdefault(model.model_id, EagerRunner(model.module, self.device))
+            return self._eager(model, h, w, masked)
         bucket = self._bucket_for(n)
-        key = (model.model_id, h, w, bucket)
+        key = (model.model_id, h, w, bucket, masked)
         runner = self.graphs.get(key)
         if runner is not None:
             return runner
         if key in self.failed:
-            return self.eager.setdefault(model.model_id, EagerRunner(model.module, self.device))
+            return self._eager(model, h, w, masked)
         try:
             t0 = time.perf_counter()
-            runner = GraphRunner(model.module, bucket, h, w, self.device)
+            runner = GraphRunner(model.masked if masked else model.module, bucket, h, w, self.device, masked)
             log(
-                f"captured graph model_id={model.model_id} {h}x{w} bucket={bucket} "
+                f"captured graph model_id={model.model_id} {h}x{w}{' canvas' if masked else ''} bucket={bucket} "
                 f"in {time.perf_counter() - t0:.2f}s "
                 f"(vram reserved {torch.cuda.memory_reserved() / 1e6:.0f} MB)"
             )
         except Exception as e:  # pragma: no cover - driver/torch dependent
             log(f"graph capture failed for {h}x{w} bucket={bucket} ({e!r}) — eager for this bucket")
             self.failed.add(key)
-            return self.eager.setdefault(model.model_id, EagerRunner(model.module, self.device))
+            return self._eager(model, h, w, masked)
         self.graphs[key] = runner
         return runner
 
-    def prewarm(self, model: Model, sizes: list[tuple[int, int]]) -> None:
+    def prewarm(self, model: Model, sizes: list[tuple[int, int]], canvas: tuple[int, int] | None = None) -> None:
         """Capture every `(h, w) × bucket` up front, so no client ever pays
         a capture and the first measured batches are not outliers."""
         if not self.enabled:
@@ -635,6 +727,9 @@ class RunnerPool:
         for (h, w) in sizes:
             for b in self.buckets:
                 self.get(model, h, w, b)
+        if canvas is not None and model.masked is not None:
+            for b in self.buckets:
+                self.get(model, *canvas, b, masked=True)
 
 
 @dataclass
@@ -821,6 +916,7 @@ class Connection:
                 want_policy=bool(flags & FLAG_WANT_POLICY),
                 spatial=flat[:n_spatial].reshape(SPATIAL_CHANNELS, h, w),
                 global_=flat[n_spatial:],
+                canvas=self.server.canvas_for(self.model, h, w),
             )
         )
         return 4 + length
@@ -853,11 +949,9 @@ class Connection:
         self.send(
             struct.pack("<HHHHI", STATUS_OK, model.model_id, CANARY_H, CANARY_W, len(model.canary)) + model.canary
         )
-        # `MctsBot` spawns its worker threads per decision (`thread::scope`
-        # in `dynamics.rs`), and connections are thread-local, so a shard
-        # opens roughly one connection per decision — a few per second, not
-        # one per process. Log the first few and then only every 1000th, or
-        # the log is nothing but handshakes.
+        # Clients pool their connections (`remote.rs`), so a worker opens about one per concurrent
+        # stream. Before that it was one per decision, because `MctsBot` runs each search on a
+        # fresh scoped thread. Log the first few and then only every 1000th anyway.
         n = next(HANDSHAKES)
         if n < 4 or n % 1000 == 0:
             log(f"connection #{n} bound to model_id={model.model_id} ({path})")
@@ -893,6 +987,7 @@ class Server:
 
     def __init__(self, registry: Registry, pool: RunnerPool, stats: Stats, max_batch: int, max_wait_us: int):
         self.registry = registry
+        self.canvas = registry.canvas
         self.pool = pool
         self.stats = stats
         self.max_batch = max_batch
@@ -913,6 +1008,14 @@ class Server:
         self.stopping = threading.Event()
 
     # -- connection bookkeeping -------------------------------------------
+    def canvas_for(self, model: Model, h: int, w: int) -> tuple[int, int] | None:
+        """The canvas a request is padded onto, or `None` (no `--canvas`, or a board that does not
+        fit — that one runs at its own size, as before)."""
+        c = self.canvas
+        if c is None or model.masked is None or h > c[0] or w > c[1]:
+            return None
+        return c
+
     def enqueue(self, r: Request) -> None:
         self.pending.append(r)
 
@@ -972,7 +1075,7 @@ class Server:
         queue_ns = sum(int((t0 - r.t_enqueued) * 1e9) for r in batch)
         first = batch[0]
         want_policy = any(r.want_policy for r in batch)
-        runner = self.pool.get(first.model, first.h, first.w, len(batch))
+        runner = self.pool.get(first.model, *first.run_shape, len(batch), masked=first.canvas is not None)
         launched = runner.launch(batch, want_policy, queue_ns)
         # The device runs batches in order, so this one starts when the
         # previous one is expected to finish, or now if the GPU is idle.
@@ -987,7 +1090,11 @@ class Server:
         for i, r in enumerate(launched.batch):
             body = values[i:i + 1].tobytes()
             if r.want_policy:
-                body += policies[i].tobytes()
+                if r.canvas is not None:
+                    # Canvas-sized row; the client wants its own board, C-order.
+                    body += policies[i].reshape(POLICY_CHANNELS, *r.canvas)[:, : r.h, : r.w].tobytes()
+                else:
+                    body += policies[i].tobytes()
             r.conn.send(struct.pack("<I", len(body)) + body)
         self.stats.record(
             len(launched.batch),
@@ -1266,6 +1373,13 @@ def main() -> int:
         "latency and cuts F from ~560us to ~210us. `off` reverts to the Stage-2 eager path.",
     )
     ap.add_argument("--warm-sizes", default=f"{CANARY_H}x{CANARY_W}", help="comma-separated HxW to warm")
+    ap.add_argument(
+        "--canvas",
+        default="",
+        help="HxW (tensor size, border included): pad every request that fits onto this canvas and run "
+        "the masked forward, so all board sizes share one batch queue. Exact up to float reassociation "
+        "(train/tests/test_model.py). Unset = one queue per board size, as before.",
+    )
     ap.add_argument("--torch-threads", type=int, default=None)
     ap.add_argument(
         "--switch-interval",
@@ -1302,7 +1416,8 @@ def main() -> int:
         torch.set_num_threads(args.torch_threads)
     torch.backends.cudnn.benchmark = True
 
-    registry = Registry(args.device, args.max_models, args.jit)
+    canvas = parse_sizes(args.canvas)[0] if args.canvas else None
+    registry = Registry(args.device, args.max_models, args.jit, canvas)
     if args.model:
         WEIGHTS_DIRS.append(Path(args.model).resolve().parent)
     if args.bench:
@@ -1323,7 +1438,7 @@ def main() -> int:
         # capture storm — and the socket appearing is the readiness signal
         # `train_loop.sh` waits for.
         t0 = time.perf_counter()
-        pool.prewarm(model, sizes)
+        pool.prewarm(model, sizes, canvas)
         log(f"prewarmed {len(pool.graphs)} graphs in {time.perf_counter() - t0:.1f}s")
     gc.collect()
     gc.freeze()
@@ -1350,7 +1465,7 @@ def main() -> int:
         log(f"cuda device: {torch.cuda.get_device_name(0)} (torch {torch.__version__})")
     log(
         f"listening on {args.socket} device={dev} max_batch={args.max_batch} "
-        f"max_wait_us={args.max_wait_us} graphs={len(pool.graphs)}"
+        f"max_wait_us={args.max_wait_us} graphs={len(pool.graphs)} canvas={args.canvas or 'off'}"
     )
     server.serve(args.socket)
     log(f"stopped. {stats.line()}")

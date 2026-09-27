@@ -310,6 +310,11 @@ INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
 # i.e. 3.8x, using 4.3 cores against 5.3.
 NN_SERVER="${NN_SERVER:-on}"                # on|off
 NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
+# Plan 046 item 1: pad every board onto one tensor canvas (the build capacity, border included) and
+# run the masked forward, so all board sizes share one GPU batch queue. The size curriculum spread
+# 10 streams over 12 board shapes, and the sidecar batches per shape, so mean_batch was 1.55 with
+# the GPU 95% busy on launches. Exact (train/tests/test_model.py). `off` = one queue per shape.
+NN_CANVAS="${NN_CANVAS:-$((BUILD_H + 2))x$((BUILD_W + 2))}"
 # Concurrent games per *nn* shard. RAM-bound, not speed-bound: each
 # in-flight game holds its own MCTS tree, and a tree high-waters around
 # 400-500 MB at 1000 iters on this tier. Measured over 10 min in the exact
@@ -500,7 +505,8 @@ nn_server_start() {
     }
     rm -f "$NN_SOCKET"
     "$PY" "$REPO/scripts/nn_server.py" --socket "$NN_SOCKET" --device cuda \
-        --model "$model" --stats-every 300 >> "$RUN_DIR/nn_server.log" 2>&1 &
+        --model "$model" --stats-every 300 \
+        $([ "$NN_CANVAS" = off ] || echo "--canvas $NN_CANVAS") >> "$RUN_DIR/nn_server.log" 2>&1 &
     NN_SERVER_PID=$!
     # Warm-up loads the net, traces it and captures 12 CUDA graphs; the
     # socket only appears once the batcher is ready, so waiting for the

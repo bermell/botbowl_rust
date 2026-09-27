@@ -1,8 +1,10 @@
 # Plan 046 — Generation throughput: more self-play data per day on Trunker
 
-**Status:** Planned 2026-09-27. Research only: nothing here is implemented, and nothing touched the
-live `runs/loopmix16x9` loop. Performance work is normally deprioritised (root `CLAUDE.md`); the user
-asked for this one explicitly, because more data is the main lever right now.
+**Status:** In progress 2026-09-27. Item 2 done (c355cfb: pooled client connections, cached
+content-addressed resolve). Item 1b done (`--canvas`, masked forward, on in `train_loop.sh` from
+the next relaunch). Item 0 deferred: the GPU was 90% busy in eval and 95% in generate, both
+launch-bound, so overlapping them shares the bottleneck rather than using idle capacity. Revisit
+once item 1's effect is measured. Planned 2026-09-27.
 
 ## Why
 
