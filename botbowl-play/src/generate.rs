@@ -223,6 +223,10 @@ fn mcts_vs_mcts_samples(
             None => break,
         };
         state.step(action).expect("engine step failed during self-play");
+        // The idle side's tree from its last turn cannot be reused once the turn moves on; free
+        // it now rather than at that side's next search.
+        home.release_stale_tree(state);
+        away.release_stale_tree(state);
         steps += 1;
     }
     // Plan 043: both bots' search health, pooled. A self-play trajectory has no "candidate" side

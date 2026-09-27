@@ -172,6 +172,9 @@ pub fn play_ladder_game(
             None => break,
         };
         state.step(action).expect("engine step failed during eval game");
+        // See `generate::mcts_vs_mcts_samples`: a tree whose turn is over only holds memory.
+        botbowl_mcts::MctsBot::release_stale_tree_of(&mut *candidate, &state);
+        botbowl_mcts::MctsBot::release_stale_tree_of(&mut *opponent, &state);
         steps += 1;
     }
 

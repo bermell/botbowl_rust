@@ -1839,6 +1839,9 @@ pub struct MctsBot {
     last_anchor: Option<HorizonAnchor>,
     /// Summary of the most recent search, for [`MctsBot::last_search`].
     last_search: Option<report::SearchSummary>,
+    /// [`MctsBot::release_stale_tree`] dropped the cache. The next search then reports the
+    /// `AnchorMiss` it would have seen, not `NoCache`.
+    released_stale: bool,
     /// Plan 043: lifetime counters for this bot's searches. Plain `u64`s, not atomics —
     /// `get_action` takes `&mut self` and every write happens on the owning thread, before
     /// the search workers spawn.
@@ -1861,8 +1864,34 @@ impl MctsBot {
             cached_tree: None,
             last_anchor: None,
             last_search: None,
+            released_stale: false,
             telemetry: SearchTelemetry::default(),
         }
+    }
+
+    /// Drop the cached tree once the game has left the turn it was searched for.
+    ///
+    /// A cached tree is only reused while the horizon anchor (team, both turn counters, both
+    /// scores) is unchanged, and turns and scores only move forward within a half. So once the
+    /// anchor differs, the bot's next search is certain to throw the tree away, and until then it
+    /// only holds memory. In a two-bot game loop that is the idle side's whole previous turn,
+    /// alongside the mover's live tree. Call this on both bots after every move: search output
+    /// is unchanged, and mid-turn reuse (the mover's tree across an opponent's defender choice in
+    /// the same turn) is kept, since the anchor has not moved.
+    pub fn release_stale_tree(&mut self, state: &GameState) {
+        let Some(anchor) = self.last_anchor else { return };
+        if self.cached_tree.is_none() {
+            return;
+        }
+        if HorizonAnchor::capture_with_depth(state, anchor.agent_team, anchor.turn_depth) != anchor {
+            self.cached_tree = None;
+            self.released_stale = true;
+        }
+    }
+
+    /// Whether a searched tree is being held for reuse.
+    pub fn has_cached_tree(&self) -> bool {
+        self.cached_tree.is_some()
     }
 
     /// Replace the whole configuration.
@@ -2105,6 +2134,9 @@ impl MctsBot {
             .count();
         let mut reuse_outcome = if !self.config.tree_reuse {
             ReuseOutcome::Disabled
+        } else if self.cached_tree.is_none() && self.released_stale {
+            // `release_stale_tree` dropped it early; this is the anchor miss it anticipated.
+            ReuseOutcome::AnchorMiss
         } else if self.cached_tree.is_none() {
             ReuseOutcome::NoCache
         } else if !anchor_matches {
@@ -2358,6 +2390,7 @@ impl MctsBot {
         // the cache field stays populated. That's fine — the alternative
         // (clear cache when reuse_enabled is false) buys nothing and
         // adds branches.
+        self.released_stale = false;
         if self.config.tree_reuse {
             self.cached_tree = Some(cache_after);
             self.last_anchor = new_anchor;
@@ -2437,6 +2470,13 @@ impl MctsBot {
     /// `Box<dyn Bot>` and want the decision they just asked for.
     pub fn last_search_of(bot: &dyn botbowl_engine::bots::Bot) -> Option<&SearchSummary> {
         bot.as_any()?.downcast_ref::<MctsBot>()?.last_search()
+    }
+
+    /// [`MctsBot::release_stale_tree`] through a `dyn Bot`; a no-op for a bot that does not search.
+    pub fn release_stale_tree_of(bot: &mut dyn botbowl_engine::bots::Bot, state: &GameState) {
+        if let Some(b) = bot.as_any_mut().and_then(|a| a.downcast_mut::<MctsBot>()) {
+            b.release_stale_tree(state);
+        }
     }
 
     /// [`MctsBot::take_telemetry`] through a `dyn Bot`. `None` for a bot that does not search.
