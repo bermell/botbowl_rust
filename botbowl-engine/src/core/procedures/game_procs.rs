@@ -74,6 +74,10 @@ impl Procedure for Half {
                 }
             };
             self.kickoff = Some(self.kicking_this_half);
+            if self.half == 2 {
+                game_state.home.restore_rerolls();
+                game_state.away.restore_rerolls();
+            }
         } else {
             self.kickoff = info.kickoff_by_team.take();
         }
@@ -421,7 +425,7 @@ mod tests {
     use crate::core::model::*;
     use crate::core::table::*;
     use crate::core::{
-        gamestate::{GameState, GameStateBuilder},
+        gamestate::{BuilderState, GameState, GameStateBuilder},
         model::{Position, TeamType},
         table::PosAT,
     };
@@ -543,6 +547,29 @@ mod tests {
 
         assert!(state.home_to_act());
         assert!(state.get_team(TeamType::Home).can_use_reroll());
+    }
+
+    #[test]
+    fn rerolls_restored_at_second_half() {
+        let mut state = GameStateBuilder::new()
+            .set_state(BuilderState::Turn { turn: 1 })
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(Position::new((10, 5)))
+            .build();
+        let home_start = state.home.rerolls;
+        let away_start = state.away.rerolls;
+        state.home.rerolls = 0;
+        state.away.rerolls = 1;
+
+        let mut guard = 0;
+        while state.info.half == 1 {
+            state.step_simple(SimpleAT::EndTurn);
+            guard += 1;
+            assert!(guard <= 16, "second half never started");
+        }
+
+        assert_eq!(state.home.rerolls, home_start);
+        assert_eq!(state.away.rerolls, away_start);
     }
 
     /// Regression: a player who got stunned during their own action stays Stunned
