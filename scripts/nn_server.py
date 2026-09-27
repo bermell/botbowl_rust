@@ -231,6 +231,12 @@ def resolve_weights(path: str) -> Path:
 # for. Empty unless `--model` was given, so the plain path rule is unchanged.
 WEIGHTS_DIRS: list[Path] = []
 
+# `resolve_content_addressed` results by client path. Sound because the path names its content: a
+# worker-cache file is `<blake3>.onnx`, verified by rehash when the worker starts. Without it every
+# handshake re-read the client's ONNX and globbed and read the weights dirs (~3.85 ms each, inside
+# the single-threaded loop). Misses are not cached, so a net exported later still resolves.
+_CONTENT_ADDRESSED: dict[str, Path] = {}
+
 
 def resolve_content_addressed(path: str) -> Path | None:
     """`<worker-cache>/<blake3>.onnx` → the `.pt` of the net it is a copy of.
@@ -250,6 +256,8 @@ def resolve_content_addressed(path: str) -> Path | None:
     absolute `.pt` — so the cache copy and the original collapse to one entry
     and one batch queue, and a net that genuinely is not here still raises.
     """
+    if path in _CONTENT_ADDRESSED:
+        return _CONTENT_ADDRESSED[path]
     src = Path(path)
     if src.suffix != ".onnx":
         return None
@@ -269,6 +277,7 @@ def resolve_content_addressed(path: str) -> Path | None:
                 continue
             pt = pt.resolve()
             log(f"resolved content-addressed {src.name} -> {cand.name} ({pt})")
+            _CONTENT_ADDRESSED[path] = pt
             return pt
     return None
 

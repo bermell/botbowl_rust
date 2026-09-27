@@ -48,13 +48,17 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
 
 /// Serves the protocol from a tract model. `canary_bias` is added to the
 /// canary value only, to simulate a server holding different weights.
-fn spawn_fake_server(socket: &Path, canary_bias: f32) -> thread::JoinHandle<()> {
+/// Returns the accept loop and a count of the connections it accepted.
+fn spawn_fake_server(socket: &Path, canary_bias: f32) -> (thread::JoinHandle<()>, Arc<AtomicUsize>) {
     let listener = UnixListener::bind(socket).expect("bind fake server");
     let onnx = fixtures().join("tiny.onnx");
-    thread::spawn(move || {
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&accepted);
+    let handle = thread::spawn(move || {
         let eval = Arc::new(NnEvaluator::from_path(&onnx).expect("fake server model"));
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { break };
+            counter.fetch_add(1, Ordering::Relaxed);
             let eval = Arc::clone(&eval);
             thread::spawn(move || {
                 // handshake
@@ -121,7 +125,8 @@ fn spawn_fake_server(socket: &Path, canary_bias: f32) -> thread::JoinHandle<()> 
                 }
             });
         }
-    })
+    });
+    (handle, accepted)
 }
 
 #[test]
@@ -143,6 +148,67 @@ fn remote_matches_tract_on_fixture() {
     let (served, fell_back) = remote.remote_stats().expect("remote backend");
     assert_eq!(fell_back, 0, "no fallbacks expected against a live server");
     assert!(served >= 1, "the forward should have been served remotely");
+    std::fs::remove_file(&socket).ok();
+}
+
+/// The search spawns a fresh scoped thread for every decision, so a connection per thread was a
+/// connection (and a server-side handshake) per decision: 69.5k of them in one generation.
+/// Connections are pooled on the client now, so short-lived threads reuse one.
+#[test]
+fn short_lived_threads_reuse_a_pooled_connection() {
+    let socket = tmp_socket("pool");
+    let (_server, accepted) = spawn_fake_server(&socket, 0.0);
+    let onnx = fixtures().join("tiny.onnx");
+    let remote = Arc::new(NnEvaluator::from_path_with_server(&onnx, Some(&socket)).expect("handshake"));
+    let (cs, cg) = canary_input();
+    for _ in 0..20 {
+        let (r, cs, cg) = (Arc::clone(&remote), cs.clone(), cg.clone());
+        thread::spawn(move || {
+            r.forward_raw(&cs, &cg, CANARY_H, CANARY_W);
+        })
+        .join()
+        .unwrap();
+    }
+    assert_eq!(
+        accepted.load(Ordering::Relaxed),
+        1,
+        "one connection, reused by every thread"
+    );
+    let (served, fell_back) = remote.remote_stats().expect("remote backend");
+    assert_eq!((served, fell_back), (20, 0));
+    std::fs::remove_file(&socket).ok();
+}
+
+/// Concurrent forwards still get a connection each, so the server can batch them.
+#[test]
+fn concurrent_forwards_each_get_a_connection() {
+    let socket = tmp_socket("pool_conc");
+    let (_server, accepted) = spawn_fake_server(&socket, 0.0);
+    let onnx = fixtures().join("tiny.onnx");
+    let remote = Arc::new(NnEvaluator::from_path_with_server(&onnx, Some(&socket)).expect("handshake"));
+    let (cs, cg) = canary_input();
+    let barrier = Arc::new(std::sync::Barrier::new(4));
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let (r, cs, cg, b) = (Arc::clone(&remote), cs.clone(), cg.clone(), Arc::clone(&barrier));
+            thread::spawn(move || {
+                b.wait();
+                for _ in 0..25 {
+                    r.forward_raw(&cs, &cg, CANARY_H, CANARY_W);
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let n = accepted.load(Ordering::Relaxed);
+    assert!(
+        (1..=4).contains(&n),
+        "at most one connection per concurrent forward, got {n}"
+    );
+    let (served, fell_back) = remote.remote_stats().expect("remote backend");
+    assert_eq!((served, fell_back), (100, 0));
     std::fs::remove_file(&socket).ok();
 }
 

@@ -225,3 +225,26 @@ def test_content_addressed_cache_path_resolves_to_the_real_weights(tmp_path):
             ns.resolve_weights(str(cache / "unknown.onnx"))
     finally:
         ns.WEIGHTS_DIRS.remove(real)
+
+
+def test_content_addressed_resolution_is_cached_per_path(tmp_path, monkeypatch):
+    """Every handshake used to redo the byte match (~3.85 ms in the single-threaded loop, 69.5k
+    handshakes in one generation). The path names its content, so the answer is reused."""
+    real = tmp_path / "models"
+    real.mkdir()
+    (real / "bbnet.onnx").write_bytes(b"onnx-bytes")
+    (real / "bbnet.pt").write_bytes(b"weights")
+    cache = tmp_path / "worker-cache"
+    cache.mkdir()
+    (cache / "cafef00d.onnx").write_bytes(b"onnx-bytes")
+
+    ns.WEIGHTS_DIRS.append(real)
+    try:
+        first = ns.resolve_weights(str(cache / "cafef00d.onnx"))
+        reads = []
+        real_read = Path.read_bytes
+        monkeypatch.setattr(Path, "read_bytes", lambda self: reads.append(self) or real_read(self))
+        assert ns.resolve_weights(str(cache / "cafef00d.onnx")) == first
+        assert reads == [], f"the second resolve re-read {reads}"
+    finally:
+        ns.WEIGHTS_DIRS.remove(real)

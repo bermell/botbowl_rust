@@ -41,12 +41,11 @@
 //! at exit. A *canary* mismatch is the one thing that is fatal, because
 //! its failure mode is silent corruption rather than slowness.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::actions::POLICY_CHANNELS;
@@ -119,31 +118,21 @@ struct Conn {
     model_id: u16,
 }
 
-enum Slot {
-    Live(Conn),
-    /// Failed at this instant; retry after [`RECONNECT_BACKOFF`].
-    Dead(Instant),
-}
-
-thread_local! {
-    /// One connection per (thread, client). Keyed by the client's id so
-    /// two `NnEvaluator`s in one process (the eval phase's candidate and
-    /// champion) get independent streams over the same socket.
-    static CONNS: RefCell<HashMap<usize, Slot>> = RefCell::new(HashMap::new());
-}
-
-static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(0);
-
 /// Thin, blocking client for one `(socket, model)` pair.
 ///
-/// `Sync` without a lock: state that cannot be shared lives in a
-/// `thread_local!`, so parallel MCTS workers (and, later, parallel games)
-/// each hold their own stream and the server sees them as independent
-/// batchable requests.
+/// Connections are pooled: a forward takes an idle one (or opens one), does its exchange and puts
+/// it back. The pool grows to the peak number of concurrent forwards, so parallel games still reach
+/// the server as independent, batchable streams, but a thread that lives for one search reuses a
+/// connection rather than handshaking. The per-thread map this replaced cost one connection per
+/// decision, because `MctsBot` runs every search on a fresh scoped thread (69.5k handshakes in one
+/// generation, plan 046).
 pub struct RemoteClient {
     socket: PathBuf,
     model_path: String,
-    id: usize,
+    idle: Mutex<Vec<Conn>>,
+    /// When the last connection attempt or exchange failed; no new attempt before
+    /// [`RECONNECT_BACKOFF`] has passed.
+    dead_since: Mutex<Option<Instant>>,
     /// tract's own answer on the canary input, computed once at
     /// construction and compared against every connection's handshake.
     expected_canary: (f32, Vec<f32>),
@@ -176,7 +165,8 @@ impl RemoteClient {
         let client = RemoteClient {
             socket: socket.as_ref().to_path_buf(),
             model_path: model_path.to_string(),
-            id: NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed),
+            idle: Mutex::new(Vec::new()),
+            dead_since: Mutex::new(None),
             expected_canary,
             warned: AtomicBool::new(false),
             fallbacks: AtomicU64::new(0),
@@ -186,7 +176,7 @@ impl RemoteClient {
         // single sample is generated, not on some worker thread later.
         match client.open() {
             Ok(conn) => {
-                CONNS.with(|c| c.borrow_mut().insert(client.id, Slot::Live(conn)));
+                client.idle.lock().unwrap().push(conn);
                 eprintln!(
                     "NN_SERVER connected: {} model={} (canary ok)",
                     client.socket.display(),
@@ -212,6 +202,34 @@ impl RemoteClient {
     fn warn_fallback(&self, e: &RemoteError) {
         if !self.warned.swap(true, Ordering::Relaxed) {
             eprintln!("NN_SERVER_FALLBACK {e} — using tract for this process; further warnings suppressed");
+        }
+    }
+
+    /// An idle pooled connection, else a new one. A canary mismatch on a new connection exits the
+    /// process (see [`Self::forward`]).
+    fn checkout(&self) -> Result<Conn, RemoteError> {
+        if let Some(conn) = self.idle.lock().unwrap().pop() {
+            return Ok(conn);
+        }
+        if let Some(t) = *self.dead_since.lock().unwrap() {
+            if t.elapsed() < RECONNECT_BACKOFF {
+                return Err(RemoteError::Unavailable("in reconnect cool-down".into()));
+            }
+        }
+        match self.open() {
+            Ok(conn) => {
+                *self.dead_since.lock().unwrap() = None;
+                Ok(conn)
+            }
+            Err(e @ RemoteError::Canary(_)) => {
+                eprintln!("FATAL {e}");
+                eprintln!("      refusing to generate data labelled with a network the server is not serving.");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                *self.dead_since.lock().unwrap() = Some(Instant::now());
+                Err(e)
+            }
         }
     }
 
@@ -302,41 +320,20 @@ impl RemoteClient {
         w: usize,
         want_policy: bool,
     ) -> Result<(Vec<f32>, f32), RemoteError> {
-        let r = CONNS.with(|cell| {
-            let mut map = cell.borrow_mut();
-            match map.get(&self.id) {
-                Some(Slot::Dead(t)) if t.elapsed() < RECONNECT_BACKOFF => {
-                    return Err(RemoteError::Unavailable("in reconnect cool-down".into()))
+        let r = self.checkout().and_then(
+            |mut conn| match exchange(&mut conn, spatial, global, h, w, want_policy) {
+                Ok(out) => {
+                    self.idle.lock().unwrap().push(conn);
+                    Ok(out)
                 }
-                Some(Slot::Live(_)) => {}
-                _ => match self.open() {
-                    Ok(conn) => {
-                        map.insert(self.id, Slot::Live(conn));
-                    }
-                    Err(e @ RemoteError::Canary(_)) => {
-                        eprintln!("FATAL {e}");
-                        eprintln!("      refusing to generate data labelled with a network the server is not serving.");
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        map.insert(self.id, Slot::Dead(Instant::now()));
-                        return Err(e);
-                    }
-                },
-            }
-            let Some(Slot::Live(conn)) = map.get_mut(&self.id) else {
-                unreachable!("live connection inserted above");
-            };
-            match exchange(conn, spatial, global, h, w, want_policy) {
-                Ok(out) => Ok(out),
                 Err(e) => {
-                    // A broken stream is unrecoverable mid-frame; drop it
-                    // and let the backoff decide when to try again.
-                    map.insert(self.id, Slot::Dead(Instant::now()));
+                    // A broken stream is unrecoverable mid-frame: drop it, and let the backoff decide
+                    // when to try again.
+                    *self.dead_since.lock().unwrap() = Some(Instant::now());
                     Err(e)
                 }
-            }
-        });
+            },
+        );
         match &r {
             Ok(_) => {
                 self.requests.fetch_add(1, Ordering::Relaxed);
