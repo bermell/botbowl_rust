@@ -10,9 +10,9 @@ itself is `botbowl-play`; nothing here plays a game any other way.
 
 ```sh
 # training box (train_loop.sh does this itself; by hand for remote workers to join early):
-botbowl-hub serve --bind 0.0.0.0:7777 --token-file runs/<run>/hub.token
+botbowl-hub serve --bind 0.0.0.0:7777                                     # token: ~/.config/botbowl/hub.token
 # any machine, same commit, same BOARD_SIZE_* build *and* the same BOARD_SIZE_* environment:
-botbowl-worker --hub ws://<office-ip>:7777/ws --token-file hub.token        # sizes itself from cores/RAM
+botbowl-worker --hub ws://<office-ip>:7777/ws        # sizes itself from cores/RAM; reads the same token path
 botbowl-worker ... --parallel-games 4 --nn-server /tmp/nn.sock              # the local worker, with the GPU sidecar
 botbowl-worker ... --mem-floor-mb 2048                                      # raise the headroom reserve (default 1024 MB)
 botbowl-worker ... --reconnect-max-secs 30                                  # longest gap between dial attempts (the default)
@@ -141,7 +141,14 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   takes `--board-sizes`. The capacity check still applies — a worker must be *built* large enough
   for every board a job may draw — and since v5 the *active* board is checked too, so a job that
   names no board means one board fleet-wide rather than whatever each box's `BOARD_SIZE_*` says.
-- **Control API and workers share one bearer token** (`hub.token`, random on first start).
+- **Control API and workers share one bearer token, one per machine:**
+  `botbowl_hub_proto::default_token_path()` = `$XDG_CONFIG_HOME/botbowl/hub.token` (else
+  `~/.config/botbowl/hub.token`). It is the default for `serve`, `job`, `status`, the worker and
+  `train_loop.sh`, and `serve` creates it (mode 600) only when it is missing. Do not point a hub
+  at a per-run token file: on 2026-09-27 a side experiment's hub had minted its own token, the
+  laptop was given it, and when the training hub came back on the same port it rejected the laptop.
+  `BadToken` is the worker's one fatal rejection, so the laptop sat idle overnight. Change the token
+  by replacing the file deliberately, then hand the new one to every worker.
   No TLS, and none is planned as plan 041 phase 5 designed it (a pinned self-signed cert existed
   mostly to protect the served worker binary of phase 4, which does not exist). Put the hub behind
   WireGuard/Tailscale or an SSH reverse tunnel and let workers dial `ws://127.0.0.1:…`; that is

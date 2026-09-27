@@ -406,12 +406,13 @@ PREPARE="$CARGO_TARGET_DIR/release/prepare"
 # loop (remote workers stay connected across generations); the *local*
 # worker is started per phase, inside the sidecar's lifetime, because its
 # loaded nets hold the sidecar socket. Remote machines join with
-#   botbowl-worker --hub ws://<this box>:$HUB_PORT/ws --token-file <copy of $HUB_TOKEN_FILE>
+#   botbowl-worker --hub ws://<this box>:$HUB_PORT/ws        # token from ~/.config/botbowl/hub.token
 HUB="$CARGO_TARGET_DIR/release/botbowl-hub"
 WORKER="$CARGO_TARGET_DIR/release/botbowl-worker"
 HUB_PORT="${HUB_PORT:-7777}"
 HUB_URL="http://127.0.0.1:$HUB_PORT"
-HUB_TOKEN_FILE="${HUB_TOKEN_FILE:-$RUN_DIR/hub.token}"
+# One token per machine, shared by every run and side hub, so remote workers never need a new one.
+HUB_TOKEN_FILE="${HUB_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/botbowl/hub.token}"
 WORKER_CACHE="$RUN_DIR/worker-cache"
 PY="$REPO/train/.venv/bin/python"
 SUMMARY="$REPO/scripts/eval_summary.py"

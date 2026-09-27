@@ -11,7 +11,8 @@ struct Cli {
     /// Hub websocket URL, e.g. ws://hub.example:7777/ws
     #[arg(long)]
     hub: String,
-    /// Shared token (the hub prints it at startup; also `--token-file`).
+    /// Shared token. Falls back to `--token-file`, then `BOTBOWL_HUB_TOKEN`, then
+    /// `~/.config/botbowl/hub.token` (the hub's default).
     #[arg(long, conflicts_with = "token_file")]
     token: Option<String>,
     #[arg(long)]
@@ -89,8 +90,14 @@ async fn main() {
             .trim()
             .to_string(),
         (None, None) => std::env::var("BOTBOWL_HUB_TOKEN").unwrap_or_else(|_| {
-            eprintln!("need --token, --token-file or BOTBOWL_HUB_TOKEN");
-            std::process::exit(2)
+            let p = botbowl_hub_proto::default_token_path();
+            match std::fs::read_to_string(&p) {
+                Ok(s) => s.trim().to_string(),
+                Err(e) => {
+                    eprintln!("need --token, --token-file, BOTBOWL_HUB_TOKEN or {}: {e}", p.display());
+                    std::process::exit(2)
+                }
+            }
         }),
     };
     warn_about_stale_env();

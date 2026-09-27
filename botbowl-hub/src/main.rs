@@ -41,9 +41,10 @@ enum Command {
 struct ServeArgs {
     #[arg(long, default_value = "0.0.0.0:7777")]
     bind: SocketAddr,
-    /// Shared secret. Created (random) and printed if the file does not exist.
-    #[arg(long, default_value = "hub.token")]
-    token_file: PathBuf,
+    /// Shared secret; default `~/.config/botbowl/hub.token`. Created (random) only if the file
+    /// does not exist, so every hub on this machine serves the same token until someone replaces it.
+    #[arg(long)]
+    token_file: Option<PathBuf>,
     /// Accept workers built from *any* commit (plan 041 decision 5). The blunt instrument, for
     /// hacking on the worker itself; use `--allowed-commits` to run a programme.
     #[arg(long, default_value_t = false)]
@@ -66,8 +67,9 @@ struct ClientArgs {
     /// Daemon control URL.
     #[arg(long, default_value = "http://127.0.0.1:7777")]
     hub: String,
-    #[arg(long, default_value = "hub.token")]
-    token_file: PathBuf,
+    /// Default `~/.config/botbowl/hub.token`, the file `serve` uses.
+    #[arg(long)]
+    token_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -737,6 +739,10 @@ fn botbowl_mcts_budget(iters: usize) -> botbowl_mcts::SearchBudget {
     botbowl_mcts::SearchBudget::Iterations(iters)
 }
 
+fn token_path(p: &Option<PathBuf>) -> PathBuf {
+    p.clone().unwrap_or_else(botbowl_hub_proto::default_token_path)
+}
+
 fn read_token(path: &PathBuf) -> String {
     match std::fs::read_to_string(path) {
         Ok(s) => s.trim().to_string(),
@@ -758,12 +764,26 @@ fn or_create_token(path: &PathBuf) -> String {
         .take(32)
         .map(char::from)
         .collect();
-    std::fs::write(path, format!("{token}\n")).unwrap_or_else(|e| {
+    let written = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| write_private(path, &format!("{token}\n")));
+    if let Err(e) = written {
         eprintln!("cannot write token file {}: {e}", path.display());
         std::process::exit(2)
-    });
+    }
     eprintln!("[hub] new token written to {}", path.display());
     token
+}
+
+fn write_private(path: &PathBuf, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(path)?.write_all(contents.as_bytes())
 }
 
 fn print_report_lines(s: &JobStatus) {
@@ -795,7 +815,7 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve(a) => {
-            let token = or_create_token(&a.token_file);
+            let token = or_create_token(&token_path(&a.token_file));
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             rt.block_on(async move {
                 // Say at startup what the allowlist does, if there is one: a file that has gone
@@ -831,7 +851,7 @@ fn main() {
             });
         }
         Command::Status(c) => {
-            let token = read_token(&c.token_file);
+            let token = read_token(&token_path(&c.token_file));
             match request("GET", &format!("{}/api/status", c.hub), &token, None) {
                 Ok((200, body)) => {
                     let s: HubStatus = serde_json::from_str(&body).expect("status json");
@@ -874,7 +894,7 @@ fn main() {
                     (a.client.clone(), a.wait, JobRequest::Generate(req), what)
                 }
             };
-            let token = read_token(&client.token_file);
+            let token = read_token(&token_path(&client.token_file));
             let body = serde_json::to_string(&req).unwrap();
             let id = match request("POST", &format!("{}/api/jobs", client.hub), &token, Some(&body)) {
                 Ok((200, body)) => serde_json::from_str::<Submitted>(&body).expect("submit json").id,

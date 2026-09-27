@@ -202,11 +202,10 @@ async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
     );
     if !s.dirty {
         out.push_str(&format!(
-            "\njoin as a worker (needs ~/hub.token already on that machine):\n\
+            "\njoin as a worker (needs this hub's token in ~/.config/botbowl/hub.token on that machine):\n\
              \x20 git fetch origin && git checkout {commit}\n\
              \x20 BOARD_SIZE_W={pw} BOARD_SIZE_H={ph} BOARD_PLAYERS={team} cargo build --release -p botbowl-worker\n\
-             \x20 ./target/release/botbowl-worker --hub ws://<this-host-or-forwarded-address>:{port}/ws \\\n\
-             \x20     --token-file ~/hub.token --name <yours>\n",
+             \x20 ./target/release/botbowl-worker --hub ws://<this-host-or-forwarded-address>:{port}/ws --name <yours>\n",
             commit = s.commit,
             pw = s.capacity.width.saturating_sub(2),
             ph = s.capacity.height.saturating_sub(2),

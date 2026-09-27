@@ -31,6 +31,19 @@ pub use botbowl_play::generate::GenerateConfig;
 // part of compatibility, not just the compiled capacity.
 pub const PROTOCOL_VERSION: u32 = 5;
 
+/// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
+/// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.
+/// It lives outside every run directory so a new run or a side experiment's hub cannot mint a
+/// different token and strand the remote workers, whose `BadToken` rejection is fatal.
+pub fn default_token_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("botbowl").join("hub.token")
+}
+
 /// Content hash of an ONNX file (BLAKE3). Model identity is bytes, never a
 /// path, so two workers with the same cache can never disagree about which
 /// net a task means.

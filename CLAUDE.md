@@ -74,8 +74,8 @@ SIZE_MODE=centred scripts/train_loop.sh    # builds at 16x9/6 capacity, schedule
 Distributed generate/eval (plan 041; `train_loop.sh` starts the hub and the local worker itself):
 
 ```sh
-cargo run --release -p botbowl-hub -- serve --bind 0.0.0.0:7777 --token-file runs/<run>/hub.token
-cargo run --release -p botbowl-worker -- --hub ws://<hub-ip>:7777/ws --token-file hub.token   # on each helper box, same commit + BOARD_SIZE_* build
+cargo run --release -p botbowl-hub -- serve --bind 0.0.0.0:7777        # token: ~/.config/botbowl/hub.token, one per machine
+cargo run --release -p botbowl-worker -- --hub ws://<hub-ip>:7777/ws   # on each helper box: same commit + BOARD_SIZE_* build, hub's token in ~/.config/botbowl/hub.token
 cargo run --release -p botbowl-hub -- job eval ... --wait      # same flags as `botbowl-ui eval`'s ladder
 cargo run --release -p botbowl-hub -- job generate --out-dir runs/<run>/gen12 --shards "0 1 2 3 4 5 6 7" ... --wait   # `botbowl-ui dataset` flags
 ```
