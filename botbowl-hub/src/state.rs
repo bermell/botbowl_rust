@@ -33,6 +33,10 @@ pub type WorkerId = u64;
 /// How many times one game may fail (on any worker) before the job does.
 const MAX_GAME_FAILURES: u32 = 3;
 
+/// While generate games are waiting, eval tasks may hold at most `1 / EVAL_SHARE_DIVISOR` of a
+/// worker's streams (at least one). See [`Inner::dispatch`].
+const EVAL_SHARE_DIVISOR: usize = 3;
+
 pub struct WorkerConn {
     pub name: String,
     pub build: BuildInfo,
@@ -519,6 +523,13 @@ impl Inner {
     /// concurrent jobs share the fleet: `train_loop.sh` runs a generation's eval alongside the next
     /// generation's games (plan 046 item 0), and handing everything to the oldest job would
     /// serialise them again.
+    ///
+    /// **Round-robin counts tasks, not stream time**, and an eval task (a full game, often at a
+    /// higher budget) holds its stream for minutes where a generate task (one drive) frees it in
+    /// seconds. So left alone the eval ends up on nearly every stream: on 2026-09-27 it finished
+    /// 213 of its 300 games while the generation beside it managed 132 of 4800. While any generate
+    /// game is waiting, eval tasks are therefore capped at [`EVAL_SHARE_DIVISOR`]⁻¹ of a
+    /// worker's streams; generation is the critical path, the benchmark is not.
     pub fn dispatch(&mut self) {
         let job_ids: Vec<JobId> = self
             .jobs
@@ -536,11 +547,30 @@ impl Inner {
                 if w.tasks.len() >= w.parallel_games as usize {
                     break;
                 }
+                let generate_waiting = self.jobs.values().any(|j| {
+                    j.state == JobState::Running && matches!(j.kind, Kind::Generate { .. }) && !j.pending.is_empty()
+                });
+                let evals_here = w
+                    .tasks
+                    .iter()
+                    .filter(|t| {
+                        self.in_flight
+                            .get(t)
+                            .and_then(|f| self.jobs.get(&f.job))
+                            .is_some_and(|j| matches!(j.kind, Kind::Eval { .. }))
+                    })
+                    .count();
+                let eval_capped =
+                    generate_waiting && evals_here >= (w.parallel_games as usize / EVAL_SHARE_DIVISOR).max(1);
                 let Some(job_id) = (0..job_ids.len())
                     .map(|k| job_ids[(self.next_share + k) % job_ids.len()])
-                    .find(|id| self.jobs.get(id).is_some_and(|j| !j.pending.is_empty()))
+                    .find(|id| {
+                        self.jobs.get(id).is_some_and(|j| {
+                            !j.pending.is_empty() && !(eval_capped && matches!(j.kind, Kind::Eval { .. }))
+                        })
+                    })
                 else {
-                    return;
+                    break;
                 };
                 self.next_share = (job_ids.iter().position(|id| *id == job_id).unwrap() + 1) % job_ids.len();
                 let job = self.jobs.get_mut(&job_id).expect("job exists");

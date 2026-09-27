@@ -65,8 +65,23 @@ export EVAL_GAMES=30
 # while 250 vs 1000 fell to ~0.40, and 2000/4000 vs 1000 gained nothing significant on
 # either board. 500 is the knee, at about half the cost of each game.
 export MCTS_ITERS=500
-# The anchor curve stays at 1000 on both seats, the budget gen01-06 were measured at.
-export EVAL_MCTS_ITERS=1000
+# The anchor benchmark ran at 1000 on both seats through gen09 (and the partial gen10 runs). From
+# gen10 it runs at 500 (2026-09-27), because the eval now shares the generation worker (plan 046
+# item 0) and at 1000 an eval game's two full-game trees were predicted at 2-4.7 GB each, so the
+# memory governor held games back at 10 streams. Plan 045 found 500 even with 1000, but read gen10+
+# as a new scale, not a continuation.
+export EVAL_MCTS_ITERS=500
+
+# Grow each decision's root to MCTS_ITERS visits instead of adding MCTS_ITERS new descents on top
+# of a reused tree (BudgetMode::Visits): -21% descents, -22% forwards and ~-22% peak memory in plan
+# 046's measurement. The hub pins it into every job, both eval seats included. Turned on from gen11
+# without the strength A/B plan 046 recommended (user's call, 2026-09-27); corpus labels read
+# `visits=500`, so these gens can be told apart.
+export BLOOD_MCTS_BUDGET=visits
+
+# 16 local streams (up from the SIZE_MAX_AREA-scaled 10): the GPU batches grow with the number of
+# waiting requests. mem_governor is the backstop; watch `holding back` in generate.worker.log.
+export GEN_PARALLEL_GAMES=16
 
 # The port forwarded through the home NAT, so a worker on another network can
 # dial in. The hub binds 0.0.0.0, so this is reachable from the internet with
