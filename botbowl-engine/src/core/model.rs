@@ -848,7 +848,9 @@ pub struct TeamState {
     //masterchef: bool,
     pub score: u8,
     //turn: u8,
-    //rerolls_start: u8,
+    /// Rerolls the team starts each half with; `rerolls` is reset to this at half-time.
+    #[serde(default = "default_rerolls_start")]
+    pub rerolls_start: u8,
     pub rerolls: u8,
     //ass_coaches: u8,
     //cheerleaders: u8,
@@ -856,11 +858,15 @@ pub struct TeamState {
     reroll_used: bool,
     //time_violation: u8,
 }
+fn default_rerolls_start() -> u8 {
+    3
+}
 impl TeamState {
     #[allow(clippy::new_without_default)]
     pub fn new() -> TeamState {
         TeamState {
-            rerolls: 3,
+            rerolls_start: default_rerolls_start(),
+            rerolls: default_rerolls_start(),
             reroll_used: false,
             score: 0,
             bribes: 0,
@@ -877,6 +883,10 @@ impl TeamState {
     }
     pub fn reset_reroll_used(&mut self) {
         self.reroll_used = false;
+    }
+    /// Half-time: the team gets its full reroll allowance back.
+    pub fn restore_rerolls(&mut self) {
+        self.rerolls = self.rerolls_start;
     }
 }
 
@@ -1259,10 +1269,16 @@ mod board_dims_tests {
     /// short of `los_to_endzone_distance()`.
     #[test]
     fn ma_cap_always_falls_short_of_the_endzone() {
-        assert_eq!(BoardDims::default().ma_cap(), 10, "full pitch must be a no-op (exceeds every stock MA)");
+        assert_eq!(
+            BoardDims::default().ma_cap(),
+            10,
+            "full pitch must be a no-op (exceeds every stock MA)"
+        );
 
         for (w, h, players) in [(16, 9, 3), (14, 7, 3), (12, 5, 1), (10, 5, 1), (8, 5, 1)] {
-            let Ok(dims) = BoardDims::try_new(w, h, players) else { continue };
+            let Ok(dims) = BoardDims::try_new(w, h, players) else {
+                continue;
+            };
             assert!(
                 dims.ma_cap() + 2 < dims.los_to_endzone_distance(),
                 "{w}x{h}: ma_cap {} + 2 GFI must fall short of the {}-square LOS-to-endzone distance",

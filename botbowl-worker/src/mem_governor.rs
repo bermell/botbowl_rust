@@ -131,9 +131,20 @@ impl MemGovernor {
     /// game indefinitely.
     pub fn try_admit(&self, area: u32, available_kb: u64) -> Option<GameSlot<'_>> {
         let reserved = self.active_area.fetch_add(area as u64, Ordering::SeqCst) + area as u64;
-        if self.baseline_available_kb.load(Ordering::Relaxed) != 0 {
+        let baseline = self.baseline_available_kb.load(Ordering::Relaxed);
+        if baseline != 0 {
             let committed_kb = self.predicted_cost_kb(reserved);
-            if available_kb < self.floor_kb + committed_kb {
+            // What the running games already hold is out of `available_kb`; charging their full
+            // reservation on top counted it twice, and with a few big games in flight that refused
+            // everything while gigabytes sat free (2026-09-27). Only the part of the reservations
+            // not yet materialised has to fit, and never less than this game's own cost. Games
+            // admitted together before any of them allocates are still charged in full, since
+            // nothing has shown in the reading yet.
+            let used_kb = baseline.saturating_sub(available_kb);
+            let still_needed_kb = committed_kb
+                .saturating_sub(used_kb)
+                .max(self.predicted_cost_kb(area as u64));
+            if available_kb < self.floor_kb + still_needed_kb {
                 self.active_area.fetch_sub(area as u64, Ordering::SeqCst);
                 return None;
             }
@@ -408,5 +419,44 @@ mod tests {
         );
         // What actually got in still fits the budget it was checked against.
         assert!(g.predicted_cost_kb(g.active_area()) <= available_kb);
+    }
+
+    /// A running game's memory is already out of `available`; its reservation must not charge it
+    /// again. 2026-09-27: 12 of 16 game threads slept in admission with 7 GB free, because four
+    /// running games were counted once in the shrunken reading and again at full predicted cost.
+    #[test]
+    fn memory_a_running_game_already_holds_is_not_charged_twice() {
+        const GB: u64 = 1024 * 1024;
+        // ~4.5 GB per 1000-cell game at the seed estimate; 12 GB box, 1 GB floor.
+        let g = MemGovernor::new(1024, Some(12 * 1024));
+        let cost = g.predicted_cost_kb(1000);
+        let first = g.try_admit(1000, 12 * GB).expect("an empty box admits the first game");
+        // It has grown to its predicted size: that much is gone from the reading.
+        let available = 12 * GB - cost;
+        let second = g.try_admit(1000, available);
+        assert!(
+            second.is_some(),
+            "{} GB free fits a second {:.1} GB game",
+            available / GB,
+            cost as f64 / GB as f64
+        );
+        // Both have materialised: now there really is no room for a third.
+        let third = g.try_admit(1000, 12 * GB - 2 * cost);
+        assert!(third.is_none(), "a third game does not fit in what is left");
+        drop((first, second));
+    }
+
+    /// The reservation race is still covered: games admitted together, before any of their memory
+    /// shows in the reading, are each charged in full.
+    #[test]
+    fn simultaneous_admissions_are_still_charged_in_full() {
+        const GB: u64 = 1024 * 1024;
+        let g = MemGovernor::new(1024, Some(12 * 1024));
+        let slots: Vec<_> = (0..3).filter_map(|_| g.try_admit(1000, 12 * GB)).collect();
+        assert_eq!(
+            slots.len(),
+            2,
+            "two 4.4 GB games fit in 12 GB less a 1 GB floor, three do not"
+        );
     }
 }
