@@ -432,6 +432,7 @@ dependencies = [
  "botbowl-nn",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
+ "rand_distr",
  "recon_mcts",
  "serde",
 ]

@@ -28,6 +28,7 @@ use botbowl_nn::eval::NnEvaluator;
 use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, Status, StoreState, Tree, TreeAlias};
 
 use crate::action::{BbAction, BbPlayer};
+use crate::exploration::{sample_index, ExploreStep, RootNoise, RootNoiseSpec};
 use crate::priors::prior_for_engine_action;
 use crate::pruning::{self, should_prune};
 use crate::report::{self, Edge, NodeStats, NodeView, SearchSummary};
@@ -603,6 +604,10 @@ pub struct BloodBowlDynamics {
     /// the first visit at a node is unaffected. Raw PUCT only — the
     /// normalised frame has its own FPU handling.
     pub fpu_reduction: f32,
+    /// Plan 048: self-play root noise for this search, keyed to its root
+    /// state (see `exploration.rs` for why that keeps recombination pure).
+    /// `None` (default, and always in eval) is the shipped search.
+    pub root_noise: Option<Arc<RootNoise>>,
 }
 
 impl Default for BloodBowlDynamics {
@@ -615,6 +620,7 @@ impl Default for BloodBowlDynamics {
             tie_break: TieBreak::default(),
             backup: BackupMode::default(),
             fpu_reduction: 0.0,
+            root_noise: None,
         }
     }
 }
@@ -876,12 +882,15 @@ impl GameDynamics for BloodBowlDynamics {
         // Priors: the heuristic computes one per action; the NN does a
         // single forward over the whole (already-pruned) legal set and
         // gathers per-action logits. NN priors *replace* scripted priors.
-        let priors: Vec<f32> = match &self.evaluator {
+        let mut priors: Vec<f32> = match &self.evaluator {
             Evaluator::Heuristic | Evaluator::PureTd | Evaluator::NnValue(_) => {
                 filtered.iter().map(|a| prior_for_engine_action(state, *a)).collect()
             }
             Evaluator::Nn(nn) => nn.priors(state, &filtered),
         };
+        if let Some(noise) = &self.root_noise {
+            noise.apply(state, &filtered, &mut priors);
+        }
         let actions: Vec<BbAction> = filtered
             .into_iter()
             .zip(priors)
@@ -2022,6 +2031,9 @@ struct SearchResult {
     reuse: ReuseDecision,
     /// What this search alone cost the registry.
     recombination: RecombinationCounts,
+    /// Plan 048: the noise this search was offered. Whether it took effect — only a fresh tree
+    /// expands its root under it — is `RootNoise::applied`.
+    root_noise: Option<Arc<RootNoise>>,
 }
 
 impl MctsBot {
@@ -2029,7 +2041,7 @@ impl MctsBot {
     /// children + root aggregate). Handles tree reuse/caching internally;
     /// callers turn the result into an action ([`MctsBot::get_action`]) or
     /// a training sample ([`MctsBot::get_action_with_record`]).
-    fn run_search(&mut self, state: &GameState) -> SearchResult {
+    fn run_search(&mut self, state: &GameState, noise: Option<RootNoiseSpec>) -> SearchResult {
         let search_started = std::time::Instant::now();
         // Clone the state and turn on roll-by-roll stepping for the
         // search. `DiceMode::RegisterRolls` keeps `pending_roll` visible
@@ -2069,6 +2081,7 @@ impl MctsBot {
         // `config.horizon == false` disables the horizon for A/B comparison
         // (e.g. against the historical unbounded baseline).
         let horizon_disabled = !self.config.horizon;
+        let root_noise = noise.map(|spec| Arc::new(RootNoise::new(root_state.clone(), spec)));
         let gd = BloodBowlDynamics {
             horizon: if horizon_disabled {
                 None
@@ -2085,6 +2098,7 @@ impl MctsBot {
             tie_break: self.config.tie_break,
             backup: self.config.backup,
             fpu_reduction: self.config.fpu_reduction,
+            root_noise: root_noise.clone(),
         };
         let n_workers = self.config.workers.max(1);
         let budget = self.budget;
@@ -2418,6 +2432,7 @@ impl MctsBot {
             elapsed: search_started.elapsed(),
             reuse,
             recombination: recomb_delta,
+            root_noise,
         }
     }
 
@@ -2767,14 +2782,51 @@ impl MctsBot {
     /// `outcome_value` on the sample is left `None`; backfill it at the end
     /// of the trajectory (see [`botbowl_data::Trajectory::backfill_outcome_value`]).
     pub fn get_action_with_record(&mut self, state: &GameState) -> (EngineAction, Sample) {
-        let result = self.run_search(state);
-        let action = Self::pick_best_action(
+        let (action, sample, _) = self.get_action_explore(state, ExploreStep::default());
+        (action, sample)
+    }
+
+    /// [`MctsBot::get_action_with_record`] with plan 048's self-play exploration: optional root
+    /// noise for this search and optional visit-proportional sampling of the played move. With
+    /// `ExploreStep::default()` it is exactly `get_action_with_record`.
+    ///
+    /// The sample's `chosen_action` is the move actually played, and its root priors are the
+    /// clean, pre-noise ones — the policy target must not learn the noise (`exploration.rs`).
+    pub fn get_action_explore(
+        &mut self,
+        state: &GameState,
+        step: ExploreStep,
+    ) -> (EngineAction, Sample, ExploreOutcome) {
+        let result = self.run_search(state, step.noise);
+        let best = Self::pick_best_action(
             &result.move_info,
             result.agent_team,
             self.config.tie_break,
             MoverFrame::for_team(state, result.agent_team),
             self.config.debug_root,
         );
+        let sampled = step.sample.and_then(|sp| {
+            let player: Vec<(EngineAction, u32)> = result
+                .move_info
+                .iter()
+                .filter_map(|(a, info)| match a {
+                    BbAction::Player { action, .. } => Some((
+                        *action,
+                        info.score.as_ref().map_or(0, |s| s.visits.load(Ordering::Relaxed)),
+                    )),
+                    BbAction::Chance { .. } => None,
+                })
+                .collect();
+            let visits: Vec<u32> = player.iter().map(|(_, v)| *v).collect();
+            sample_index(&visits, sp.temperature, sp.u).map(|i| player[i].0)
+        });
+        let action = sampled.unwrap_or(best);
+        let noise = result.root_noise.as_ref().filter(|n| n.applied());
+        let outcome = ExploreOutcome {
+            noised: noise.is_some(),
+            sampled: sampled.is_some(),
+            deviated: action != best,
+        };
         self.last_search = Some(self.summarise(state, &result, action));
 
         let children = result
@@ -2796,7 +2848,9 @@ impl MctsBot {
                     action: engine_action,
                     visits,
                     q,
-                    prior: a.prior_f32(),
+                    prior: noise
+                        .and_then(|n| n.clean_prior(&engine_action))
+                        .or_else(|| a.prior_f32()),
                     solved: info.solved,
                     terminal: matches!(info.n_children, Status::Terminal),
                 })
@@ -2820,13 +2874,24 @@ impl MctsBot {
             root_solved: result.root_info.solved,
             outcome_value: None,
         };
-        (action, sample)
+        (action, sample, outcome)
     }
+}
+
+/// What plan 048's exploration did to one decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExploreOutcome {
+    /// Root noise took effect (a fresh tree expanded the root under it).
+    pub noised: bool,
+    /// The move was drawn ∝ visits.
+    pub sampled: bool,
+    /// The move played is not the best-Q child greedy play would have chosen.
+    pub deviated: bool,
 }
 
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
-        let result = self.run_search(state);
+        let result = self.run_search(state, None);
         let action = Self::pick_best_action(
             &result.move_info,
             result.agent_team,

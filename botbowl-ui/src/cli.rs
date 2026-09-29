@@ -331,6 +331,19 @@ pub struct DatasetArgs {
     /// provenance. See `cfgs/README.md`.
     #[arg(long)]
     pub bot_config: Option<PathBuf>,
+    /// Plan 048: root Dirichlet noise weight ε in self-play (0.25 is the AlphaZero value). Unset
+    /// keeps the greedy generator. Generation only; eval has no such flag.
+    #[arg(long)]
+    pub explore_noise: Option<f32>,
+    /// Plan 048: total Dirichlet concentration α; each root action gets α / n_legal.
+    #[arg(long, default_value_t = 10.0)]
+    pub explore_alpha: f32,
+    /// Plan 048: each side plays its first K moves of a trajectory ∝ visits^(1/T), not best-Q.
+    #[arg(long, default_value_t = 0)]
+    pub explore_sample_moves: u32,
+    /// Plan 048: the sampling temperature T for `--explore-sample-moves`.
+    #[arg(long, default_value_t = 1.0)]
+    pub explore_temperature: f32,
     /// Games to play concurrently in this process (plan 024 Stage 4).
     ///
     /// Games are independent — own state, own bots, own seed — so this

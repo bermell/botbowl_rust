@@ -23,7 +23,7 @@ use botbowl_data::DatasetWriter;
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::{load_nn, SearchConfig};
-use botbowl_play::generate::{play_trajectory, GenerateConfig};
+use botbowl_play::generate::{play_trajectory, Exploration, GenerateConfig};
 use botbowl_play::GAME_STACK_SIZE;
 
 use crate::cli::DatasetArgs;
@@ -58,6 +58,12 @@ fn config_of(args: &DatasetArgs) -> io::Result<GenerateConfig> {
             config: preset.as_ref().map(|p| p.config),
         },
         config_name: preset.map(|p| p.name),
+        exploration: Exploration::from_flags(
+            args.explore_noise,
+            args.explore_alpha,
+            args.explore_sample_moves,
+            args.explore_temperature,
+        ),
         evaluator: args.evaluator.into(),
         model: args.model.clone(),
         max_steps: args.max_steps,

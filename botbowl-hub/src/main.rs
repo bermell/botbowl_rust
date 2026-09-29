@@ -15,7 +15,7 @@ use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, Size
 use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
 use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_backup, parse_puct, CandidateBot};
 use botbowl_play::eval::rung_name;
-use botbowl_play::generate::{GenMode, RandomStartBias};
+use botbowl_play::generate::{Exploration, GenMode, RandomStartBias};
 
 #[derive(Parser, Debug)]
 #[command(name = "botbowl-hub", about = "Job queue for distributed generation/eval (plan 041)")]
@@ -162,6 +162,20 @@ struct GenerateJobArgs {
     /// the name is stamped into the corpus provenance.
     #[arg(long)]
     bot_config: Option<PathBuf>,
+    /// Plan 048: root Dirichlet noise weight ε in self-play, flag-for-flag with
+    /// `botbowl-ui dataset` (0.25 is the AlphaZero value). Unset
+    /// keeps the greedy generator. Generation only; eval has no such flag.
+    #[arg(long)]
+    explore_noise: Option<f32>,
+    /// Plan 048: total Dirichlet concentration α; each root action gets α / n_legal.
+    #[arg(long, default_value_t = 10.0)]
+    explore_alpha: f32,
+    /// Plan 048: each side plays its first K moves of a trajectory ∝ visits^(1/T), not best-Q.
+    #[arg(long, default_value_t = 0)]
+    explore_sample_moves: u32,
+    /// Plan 048: the sampling temperature T for `--explore-sample-moves`.
+    #[arg(long, default_value_t = 1.0)]
+    explore_temperature: f32,
     #[arg(long, default_value_t = 100_000)]
     max_steps: u32,
     /// (curriculum mode) Lecture name.
@@ -315,6 +329,12 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         }
         .pinned_to_env(),
         config_name: preset.as_ref().map(|p| p.name.clone()),
+        exploration: Exploration::from_flags(
+            a.explore_noise,
+            a.explore_alpha,
+            a.explore_sample_moves,
+            a.explore_temperature,
+        ),
         evaluator,
         model: a.model.clone(),
         max_steps: a.max_steps,

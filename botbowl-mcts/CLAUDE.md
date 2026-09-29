@@ -32,6 +32,26 @@ position (300 descents → 234 root visits; recombination is the likely cause, n
 fresh tree hits the `n`-descent cap before it reaches `n` visits. `SearchTelemetry.iterations` counts the descents actually run,
 so `iterations / searches` in a report is the real per-decision budget. `tests/budget_mode.rs`.
 
+## Self-play exploration (`exploration.rs`, plan 048)
+
+`MctsBot::get_action_explore(state, ExploreStep)` is `get_action_with_record` plus two optional
+generation-only knobs; `ExploreStep::default()` is exactly the plain record (`tests/root_noise.rs`).
+
+- **Root Dirichlet noise** (`RootNoiseSpec { epsilon, alpha, seed }`): `run_search` puts an
+  `Arc<RootNoise>` holding the root state on `BloodBowlDynamics.root_noise`, and
+  `available_actions` mixes `ε·S·Dir(α/n)` into the priors **only when the state equals that
+  root** — a per-search constant like the horizon anchor, so recombination stays pure. It takes
+  effect only on a **fresh** tree: a reused tree keeps the dynamics it was built with and expanded
+  this root long ago as a non-root. `RootNoise::applied` / `ExploreOutcome.noised` say which. On
+  gen21 at 500 visits that is ~39% of decisions (the rest reuse).
+- **The sample keeps the clean priors.** The cq target reads `ln prior`, so the noisy prior must not
+  reach the corpus; the root expansion stores the pre-noise priors and the record uses those.
+- **Move sampling** (`SampleSpec { temperature, u }`): play a root child ∝ `visits^(1/T)` instead of
+  best-Q; `Sample.chosen_action` is the move actually played.
+- The heuristic search is Q-dominated at `PUCT_C = 10`: a clear best move keeps its visits under
+  any prior, so noise often leaves a heuristic root's visits unchanged. NN priors (softmax × n)
+  have far more spread.
+
 ## Evaluator: Heuristic vs NN (plan 017)
 
 `BloodBowlDynamics.evaluator: Evaluator` selects the value/prior source. `Evaluator::Heuristic` (the `#[default]`) is the scripted baseline and reproduces prior behaviour **byte-identically** — `available_actions` calls `prior_for_engine_action` per action and `score_leaf` calls `leaf_score`. `Evaluator::Nn(Arc<NnEvaluator>)` (in `botbowl-nn`) swaps in a frozen ONNX net (tract, pure-Rust CPU): `available_actions` does **one** `nn.priors(state, &filtered)` forward and zips the results into `BbAction::player` (NN priors **replace** scripted priors — there is no principled common scale to blend them), and `score_leaf` calls `nn.value_home_i64(state)` — **except for known-outcome leaves**: when the score changed since the `HorizonAnchor` or the game is over, `score_leaf` returns the exact `anchor.score_delta(state).clamp(-1,1) * 1000` instead of asking the net. The outcome is proven there (and gets frozen into solved subtrees as exact minimax), and post-TD kickoff states are out-of-distribution for a net trained only on decision states — an NN guess would re-open the "TDs invisible to the search" failure. Δ-since-anchor (not absolute `leaf_score`) keeps these leaves on the NN's drive-relative scale. Wire it via `MctsBot::new(..).with_evaluator(Arc<NnEvaluator>)`. It is **one** forward per expanded node, not two: since e9ccabd `score_leaf` calls `value_home_i64_prefetch_policy` and the priors call is served from that same pass (`LAST_FORWARD`). Live gen10 measured 319 forwards per 500-iteration decision (plan 046).

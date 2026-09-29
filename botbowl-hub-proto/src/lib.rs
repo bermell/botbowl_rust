@@ -31,7 +31,8 @@ pub use botbowl_play::generate::GenerateConfig;
 // part of compatibility, not just the compiled capacity.
 // v6: `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, both riding inside re-exported
 // types (`SearchConfig.config`, `EvalGameLine.telemetry`), which postcard encodes positionally.
-pub const PROTOCOL_VERSION: u32 = 6;
+// v7 (plan 048): `GenerateConfig.exploration`.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.
