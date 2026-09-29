@@ -30,3 +30,8 @@ gives the control arm a name that shows up in the report next to the variant's.
 descents": a decision that inherits a big reused subtree then searches only the shortfall, rather
 than N more on top of it (see `botbowl-mcts/CLAUDE.md`, "Budget mode"). `BLOOD_MCTS_BUDGET=visits`
 is the environment spelling, which the hub pins into every job it submits.
+
+`chance_model = "legacy"` restores the pre-2026-09-29 roll model: a broken armour always a
+casualty, every pass a fumble, fouls harmless, and a horizon that runs through half time. It
+exists for one head-to-head, `exact_visits.toml` against `legacy_chance_visits.toml` on the same
+net; `BLOOD_MCTS_CHANCE=legacy` is the environment spelling.

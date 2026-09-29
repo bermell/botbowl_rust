@@ -228,6 +228,32 @@ impl BudgetMode {
     }
 }
 
+/// How the search models the rolls it cannot branch on for free.
+///
+/// `Exact` (default) enumerates the injury roll (stunned / KO / casualty), the pass roll (every
+/// face, merged where faces coincide) and both foul rolls (armour, injury, ejection on doubles)
+/// at their real odds, and ends the search at half time. `Legacy` is the model every corpus up
+/// to 2026-09-29 was searched under: a broken armour was always a casualty, every pass fumbled,
+/// a foul never broke armour or got the fouler sent off, and the horizon ran through half time.
+/// It exists only so the fixed search can play the old one head to head in one process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChanceModel {
+    #[default]
+    Exact,
+    Legacy,
+}
+
+impl ChanceModel {
+    /// `BLOOD_MCTS_CHANCE={exact|legacy}`; unset or unrecognised ⇒ `Exact`.
+    pub fn from_env() -> Self {
+        match std::env::var("BLOOD_MCTS_CHANCE").ok().as_deref().map(str::trim) {
+            Some("legacy") => ChanceModel::Legacy,
+            _ => ChanceModel::Exact,
+        }
+    }
+}
+
 /// MCTS workers spawned by `MctsBot::get_action` get an explicit
 /// 16 MB stack instead of the OS-default ~2 MB. Sized for headroom
 /// against the recursive `Node::get_state` and `Arc<Node>` drop
@@ -287,6 +313,11 @@ impl Clone for BbScore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HorizonAnchor {
     pub agent_team: TeamType,
+    /// The half the root is in. Both turn counters reset at half time, so the turn test alone
+    /// cannot see the half end; this can.
+    pub half: u8,
+    /// End the search (and the drive) at half time. `false` only under `ChanceModel::Legacy`.
+    pub stop_at_half: bool,
     pub home_turn: u8,
     pub away_turn: u8,
     pub home_score: u8,
@@ -315,6 +346,8 @@ impl HorizonAnchor {
     pub fn capture_with_depth(state: &GameState, agent_team: TeamType, turn_depth: u8) -> Self {
         Self {
             agent_team,
+            half: state.info.half,
+            stop_at_half: true,
             home_turn: state.info.home_turn,
             away_turn: state.info.away_turn,
             home_score: state.home.score,
@@ -335,12 +368,17 @@ impl HorizonAnchor {
         (state.home.score as i64 - self.home_score as i64) - (state.away.score as i64 - self.away_score as i64)
     }
 
+    /// Has the drive the root is in ended — the game over, a score, or the half over? Its value
+    /// is then known exactly: [`score_delta`](Self::score_delta), which is 0 when the half
+    /// simply ran out. Matches how the corpus labels a drive (`generate.rs` ends a random-start
+    /// trajectory at a score or the end of the half).
+    pub fn drive_over(&self, state: &GameState) -> bool {
+        state.info.game_over || self.score_changed(state) || (self.stop_at_half && state.info.half != self.half)
+    }
+
     /// Has the state moved past the horizon? True ⇒ treat as terminal.
     pub fn diverged(&self, state: &GameState) -> bool {
-        if state.info.game_over {
-            return true;
-        }
-        if state.home.score != self.home_score || state.away.score != self.away_score {
+        if self.drive_over(state) {
             return true;
         }
         // The agent's turn counter only advances when it's their turn
@@ -608,6 +646,37 @@ pub struct BloodBowlDynamics {
     /// state (see `exploration.rs` for why that keeps recombination pure).
     /// `None` (default, and always in eval) is the shipped search.
     pub root_noise: Option<Arc<RootNoise>>,
+    /// Which roll model the chance nodes use; see [`ChanceModel`].
+    pub chance_model: ChanceModel,
+}
+
+impl BloodBowlDynamics {
+    /// Merge chance outcomes that reach the same state into one child with their summed
+    /// probability. A raw D6 is enumerated face by face, but its proc reads classes of faces
+    /// (the pass: every accurate face resolves identically), and `recon_mcts` cannot hold two
+    /// chance edges from one parent into one recombined child: dropping such a tree panics
+    /// ("could not remove dropped node as child's parents") or deadlocks. Pure — it compares
+    /// the states `apply_action` reaches — so recombination is unaffected.
+    fn merge_coinciding_outcomes(&self, state: &GameState, outcomes: Vec<BbAction>) -> Vec<BbAction> {
+        let mut kept: Vec<(Option<GameState>, BbAction, f32)> = Vec::with_capacity(outcomes.len());
+        for a in outcomes {
+            let p = a.prob_f32().unwrap_or(0.0);
+            let next = self.apply_action(state.clone(), &a);
+            let same = next
+                .as_ref()
+                .and_then(|n| kept.iter_mut().find(|(s, _, _)| s.as_ref() == Some(n)));
+            match same {
+                Some((_, _, q)) => *q += p,
+                None => kept.push((next, a, p)),
+            }
+        }
+        kept.into_iter()
+            .map(|(_, a, p)| match a {
+                BbAction::Chance { result, .. } => BbAction::chance(result, p),
+                other => other,
+            })
+            .collect()
+    }
 }
 
 impl Default for BloodBowlDynamics {
@@ -621,6 +690,7 @@ impl Default for BloodBowlDynamics {
             backup: BackupMode::default(),
             fpu_reduction: 0.0,
             root_noise: None,
+            chance_model: ChanceModel::Exact,
         }
     }
 }
@@ -839,8 +909,11 @@ impl GameDynamics for BloodBowlDynamics {
         // child state exists — most rolls (scripted/collapsed) resolve into
         // the same team's next decision or a pending follow-up roll, but the
         // true pass/fail branches and turnover-causing failures change it.
-        if state.pending_roll.is_some() {
-            let outcomes = roll_outcomes::enumerate(state, state.pending_roll.as_ref().unwrap());
+        if let Some(req) = state.pending_roll.as_ref() {
+            let outcomes = roll_outcomes::enumerate_with(state, req, self.chance_model);
+            if self.chance_model == ChanceModel::Exact && roll_outcomes::outcomes_may_coincide(req) {
+                return Some(self.merge_coinciding_outcomes(state, outcomes));
+            }
             return Some(outcomes);
         }
 
@@ -1456,7 +1529,7 @@ impl GameDynamics for BloodBowlDynamics {
                 None => (state.home.score as i64 - state.away.score as i64).clamp(-1, 1) * 1000,
             },
             // Exact-outcome carve-out: once someone has scored since the
-            // anchor (or the game has ended), the drive outcome is *known*
+            // anchor (or the game or the half has ended), the drive outcome is *known*
             // — exactly the value the net is trained to predict. Asking
             // the NN here would (a) replace a gold-standard target with an
             // estimate that recon_mcts then freezes into solved subtrees
@@ -1474,7 +1547,7 @@ impl GameDynamics for BloodBowlDynamics {
             // `NnValue` takes priors from the scripted heuristic and must not
             // pay for a policy tensor it will never read.
             Evaluator::Nn(nn) => match &self.horizon {
-                Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                Some(anchor) if anchor.drive_over(state) => {
                     LEAF_STATS.exact_outcome.fetch_add(1, Ordering::Relaxed);
                     anchor.score_delta(state).clamp(-1, 1) * 1000
                 }
@@ -1484,7 +1557,7 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             },
             Evaluator::NnValue(nn) => match &self.horizon {
-                Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                Some(anchor) if anchor.drive_over(state) => {
                     LEAF_STATS.exact_outcome.fetch_add(1, Ordering::Relaxed);
                     anchor.score_delta(state).clamp(-1, 1) * 1000
                 }
@@ -1752,6 +1825,8 @@ pub struct MctsConfig {
     /// What an `Iterations(n)` budget counts: new descents, or root visits including those a
     /// reused tree brought with it.
     pub budget_mode: BudgetMode,
+    /// The roll model; `Legacy` only for the head-to-head against the pre-fix search.
+    pub chance_model: ChanceModel,
 }
 
 impl MctsConfig {
@@ -1772,6 +1847,7 @@ impl MctsConfig {
             leaf_stats: false,
             debug_root: false,
             budget_mode: BudgetMode::Iterations,
+            chance_model: ChanceModel::Exact,
         }
     }
 
@@ -1817,6 +1893,7 @@ impl MctsConfig {
         cfg.stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
         cfg.leaf_stats = std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
         cfg.debug_root = std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1");
+        cfg.chance_model = ChanceModel::from_env();
         cfg.budget_mode = BudgetMode::from_env();
         cfg
     }
@@ -1892,7 +1969,9 @@ impl MctsBot {
         if self.cached_tree.is_none() {
             return;
         }
-        if HorizonAnchor::capture_with_depth(state, anchor.agent_team, anchor.turn_depth) != anchor {
+        let mut now = HorizonAnchor::capture_with_depth(state, anchor.agent_team, anchor.turn_depth);
+        now.stop_at_half = anchor.stop_at_half;
+        if now != anchor {
             self.cached_tree = None;
             self.released_stale = true;
         }
@@ -2041,6 +2120,13 @@ impl MctsBot {
     /// children + root aggregate). Handles tree reuse/caching internally;
     /// callers turn the result into an action ([`MctsBot::get_action`]) or
     /// a training sample ([`MctsBot::get_action_with_record`]).
+    /// This search's horizon anchor, under this bot's roll model.
+    fn capture_anchor(&self, root_state: &GameState, agent_team: TeamType) -> HorizonAnchor {
+        let mut anchor = HorizonAnchor::capture_with_depth(root_state, agent_team, self.config.horizon_turns);
+        anchor.stop_at_half = self.config.chance_model == ChanceModel::Exact;
+        anchor
+    }
+
     fn run_search(&mut self, state: &GameState, noise: Option<RootNoiseSpec>) -> SearchResult {
         let search_started = std::time::Instant::now();
         // Clone the state and turn on roll-by-roll stepping for the
@@ -2086,11 +2172,7 @@ impl MctsBot {
             horizon: if horizon_disabled {
                 None
             } else {
-                Some(HorizonAnchor::capture_with_depth(
-                    &root_state,
-                    agent_team,
-                    self.config.horizon_turns,
-                ))
+                Some(self.capture_anchor(&root_state, agent_team))
             },
             virtual_loss: self.config.virtual_loss,
             evaluator: self.evaluator.clone(),
@@ -2099,6 +2181,7 @@ impl MctsBot {
             backup: self.config.backup,
             fpu_reduction: self.config.fpu_reduction,
             root_noise: root_noise.clone(),
+            chance_model: self.config.chance_model,
         };
         let n_workers = self.config.workers.max(1);
         let budget = self.budget;
@@ -2128,11 +2211,7 @@ impl MctsBot {
         let new_anchor = if horizon_disabled {
             None
         } else {
-            Some(HorizonAnchor::capture_with_depth(
-                &root_state,
-                agent_team,
-                self.config.horizon_turns,
-            ))
+            Some(self.capture_anchor(&root_state, agent_team))
         };
         let anchor_matches = self.config.tree_reuse && self.cached_tree.is_some() && new_anchor == self.last_anchor;
 
@@ -3247,6 +3326,45 @@ mod tests {
             "the touchdown must dominate the leaf score, got {}",
             score.score
         );
+    }
+
+    /// Both teams' turn counters reset to 0 when the second half starts, so a turn-only horizon
+    /// captured at a first-half turn-8 root can never fire: the search used to run on through
+    /// half time into the second half. The end of the half ends the drive, so it is past the
+    /// horizon and a known outcome, the same as a score.
+    #[test]
+    fn the_end_of_the_half_is_past_the_horizon_and_ends_the_drive() {
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::{Position, TeamType};
+
+        let mut root = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        root.info.half = 1;
+        root.info.home_turn = 8;
+        root.info.away_turn = 8;
+        for team in [TeamType::Home, TeamType::Away] {
+            let anchor = HorizonAnchor::capture(&root, team);
+            assert!(!anchor.diverged(&root));
+            assert!(!anchor.drive_over(&root));
+
+            let mut second_half = root.clone();
+            second_half.info.half = 2;
+            second_half.info.home_turn = 0;
+            second_half.info.away_turn = 0;
+            assert!(anchor.diverged(&second_half), "{team:?}: half time must end the search");
+            assert!(anchor.drive_over(&second_half), "{team:?}: half time ends the drive");
+            assert_eq!(
+                anchor.score_delta(&second_half),
+                0,
+                "a drive ended by half time is worth 0"
+            );
+
+            // The legacy model's horizon runs straight through half time, as it used to.
+            let legacy = HorizonAnchor {
+                stop_at_half: false,
+                ..anchor
+            };
+            assert!(!legacy.diverged(&second_half), "{team:?}: legacy ignores the half");
+        }
     }
 
     /// `leaf_case` exists only to describe what `score_leaf` did, so the one

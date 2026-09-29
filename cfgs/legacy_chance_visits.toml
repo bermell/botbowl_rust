@@ -1,0 +1,5 @@
+# The pre-2026-09-29 search, for head-to-heads only: a broken armour is always a casualty, every
+# pass fumbles, fouls are harmless, and the horizon runs through half time (plan 049's search
+# fixes, reverted). Otherwise identical to `exact_visits.toml`.
+budget_mode = "visits"
+chance_model = "legacy"
