@@ -198,7 +198,14 @@ exactly where the search leans on it (these are common single-visit leaves).
 `encode_raw`. If they differ only in the path plane, split `val_value` by top-of-stack procedure to
 see whether these samples carry outsized error.
 
-**Result.** (pending)
+**Result (2026-09-29, `botbowl-nn/tests/reroll_prompt_encoding.rs`): partly refuted.** A failed
+dodge's reroll prompt against the state a successful dodge leaves: the two differ in exactly one
+plane, `path_prob` (118 cells populated after a success, none at the prompt). Every other plane and
+all 18 globals are identical. So the value head *can* separate them, but only through an absent
+path plane, a cue shared with every other no-path state, and nothing encodes which roll is being
+rerolled (dodge vs GFI vs pickup vs catch). Not worth more investigation. The cheap fix, for the next
+schema bump, is a small one-hot global for the decision kind (top-of-stack procedure). The test now
+pins that the prompt and the success state stay distinguishable.
 
 ## 8. Training covers single drives; eval plays full games
 
