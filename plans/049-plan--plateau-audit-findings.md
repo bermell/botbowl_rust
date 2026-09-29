@@ -261,7 +261,11 @@ the tree never modelled: it measures how far the search's model is from the game
 **Test.** Re-measure after the current search changes land, then log the reuse outcome next to
 "which roll resolved since the last decision" to attribute what is left.
 
-**Result.** (pending)
+**Result (2026-09-30): the misses are structural.** Re-measured on exp049's games (gen21, the
+current search) against gen21's loop benchmark: lookup misses were 30.7% vs 31.9% overall, with
+MoveAction at 32% vs 33%, BlockAction at 48% vs 52% and Block at 96% vs 93%. What is left comes
+from states the search never reached, such as roll outcomes it never visited and the opponent's
+turn, plus the known Block case (plan 032 #13), not from a wrong model of the game. Closed.
 
 ## Order of work
 
