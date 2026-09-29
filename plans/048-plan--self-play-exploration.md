@@ -3,6 +3,13 @@
 **Status:** Code landed 2026-09-29 (`1a1b7d3`); A/B running (`scripts/exp048_explore_ab.sh`, out
 `runs/exp048/`).
 
+**Provenance note.** The exp048 binaries in `target/16x9` were built at 16:57:54 from the
+uncommitted plan-048 tree for the smoke test and not rebuilt before launch. So the hub, `gen22x`'s
+corpus and both arms' eval reports are stamped `634c605-dirty`, not `ab2b5b0`. The code is exactly
+`1a1b7d3`'s: the last source edit was at 16:57:13, and `1a1b7d3..ab2b5b0` touches only this plan
+and the script. `hub-allowed-commits.toml` was pointed at that hub commit to admit `ab2b5b0`
+workers.
+
 ## Why now
 
 `runs/loopmix16x9` plateaued at gen13 strength for gen14-21, and plan 047 ruled out the two
