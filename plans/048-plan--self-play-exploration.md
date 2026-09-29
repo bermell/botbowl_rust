@@ -1,7 +1,8 @@
 # Plan 048 — self-play exploration: root Dirichlet noise and move sampling (plan 032 #4)
 
-**Status:** Code landed 2026-09-29 (`1a1b7d3`); A/B running (`scripts/exp048_explore_ab.sh`, out
-`runs/exp048/`).
+**Status:** A/B done 2026-09-29 22:28 — exploration helps relative to greedy (+0.068 ± 0.031), but
+**both arms regressed against their parent gen21**, so it is not adopted yet (see Results). Code
+landed at `1a1b7d3`; run `scripts/exp048_explore_ab.sh`, out `runs/exp048/`.
 
 **Provenance note.** The exp048 binaries in `target/16x9` were built at 16:57:54 from the
 uncommitted plan-048 tree for the smoke test and not rebuilt before launch. So the hub, `gen22x`'s
@@ -69,4 +70,40 @@ per board) — it is the loop's gen22, so it says whether the plateau continued.
 
 ## Results
 
-(pending)
+The corpus (4800 games each, same seeds and boards):
+
+| | gen22 (greedy) | gen22x (explore) |
+|---|---|---|
+| decisions | 170,679 | 177,186 |
+| median drive length | 25 | 26 |
+| TD/drive | 0.833 | 0.816 |
+| descents per decision | 360 | 360 |
+| root noise took effect | — | 69,513 (39%) |
+| sampled moves / not best-Q | — | 16,431 / 10,008 (61%) |
+
+Training: greedy restored step 5000 (val 0.7189, val_policy 0.5956), noisy step 2500 (0.7181,
+0.5944), on the common val set.
+
+Games vs `anchor_mix16x9_gen13.onnx`, 200 per board, 500 visits, this box only:
+
+| arm | 14x7 | 16x9 | pooled (400) |
+|---|---|---|---|
+| greedy | 0.407 (W66 D31 L103) | 0.388 (W53 D49 L98) | **0.398 ± 0.024** |
+| noisy | 0.505 (W79 D44 L77) | 0.425 (W60 D50 L90) | **0.465 ± 0.025** |
+
+- **noisy − greedy, paired on the same 400 games: +0.068 ± 0.031.** Just under the +0.07 adopt
+  line, so this is the pre-registered "in between" branch.
+- Against gen21 itself on the 200 seeds all three played (gen21 0.512): **greedy −0.133 ± 0.044,
+  noisy −0.052 ± 0.046.** The greedy arm, which is the loop's own gen22 step, fell three SE below
+  its parent. No loop generation since the re-anchor dropped like that (gen14-21 were
+  0.445-0.545 per board), so the spread of a single fine-tune is larger than the curve suggested.
+
+**Decision: deviate from the pre-registered branch.** The "in between" branch said to relaunch
+the loop with exploration for three generations. That assumed the greedy arm would stand in for
+a normal generation, and it did not: neither arm improved on gen21. Exploration made the
+fine-tune hurt less, which is a real signal about the corpus, but it is not a better net.
+Meanwhile the plan 049 audit found the training step itself is the likelier problem, and that
+every corpus so far was searched under a wrong chance model (armour breaks as casualties, every
+pass a fumble, the search running through half time; fixed in the commit after this one).
+Exploration stays in the code and goes into the next loop, relaunched after those fixes and
+plan 049's training-side tests, where it will be measured again.
