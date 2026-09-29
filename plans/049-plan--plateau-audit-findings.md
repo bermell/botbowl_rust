@@ -103,7 +103,36 @@ net against its own init on the next generation's held-out data, gen14-21, and c
 shipped a regression. If most did, make "keep the init" a restore candidate. A gateless loop that
 can only ship noise-steps random-walks around its init.
 
-**Result.** (pending)
+**Result, offline part (2026-09-29): value side confirmed flat; policy side not testable offline.**
+Each shipped net gen14-21 against the net it was warm-started from, both scored on the *next*
+generation's held-out shards (4, 7). Those shards were generated after both nets existed and are in
+no training window. Paired per sample, about 15.5k samples each:
+
+| shipped vs init | Δ policy CE | Δ value MSE, blended label | Δ value MSE, **outcome-only label** |
+|---|---|---|---|
+| gen14 vs gen13 | −0.0167 ± 0.0007 | −0.0009 ± 0.0005 | +0.0006 ± 0.0009 |
+| gen15 vs gen14 | −0.0139 ± 0.0007 | +0.0002 ± 0.0005 | +0.0018 ± 0.0008 |
+| gen16 vs gen15 | −0.0111 ± 0.0006 | +0.0006 ± 0.0006 | +0.0014 ± 0.0010 |
+| gen17 vs gen16 | −0.0113 ± 0.0006 | −0.0030 ± 0.0007 | −0.0043 ± 0.0011 |
+| gen18 vs gen17 | −0.0178 ± 0.0007 | +0.0001 ± 0.0005 | −0.0004 ± 0.0009 |
+| gen19 vs gen18 | −0.0124 ± 0.0006 | +0.0002 ± 0.0006 | +0.0005 ± 0.0009 |
+| gen20 vs gen19 | −0.0125 ± 0.0006 | −0.0008 ± 0.0005 | +0.0013 ± 0.0009 |
+| gen21 vs gen20 | −0.0148 ± 0.0006 | +0.0006 ± 0.0004 | +0.0008 ± 0.0007 |
+
+- **The policy column is confounded and says nothing.** Generation g+1's data was generated *by*
+  the shipped net g, so its cq targets are built on net g's own prior, and finding 1 already
+  showed the generator always fits its own slice best. Every offline policy comparison has this
+  problem: each slice's target carries its generator's prior. The audit's "gen21 is worse than
+  gen20" came from slices of gen18-20 data and is confounded the same way.
+- **The value column against pure outcomes is neutral, and flat.** The shipped net was worse than
+  its init in 6 of 8 generations and better in 2, clearly only at gen17. The mean is about +0.0002,
+  so the value head does not improve generation to generation, and which checkpoint the restore
+  rule keeps is noise on the value side. That is consistent with finding 4's flat val MSE since
+  gen13.
+- **Remaining test (needs games):** shipped net vs its init head to head, e.g. gen21 vs gen20 and
+  gen18 vs gen17, 200 games per board. If the shipped net does not win either, adopt "keep the init
+  unless beaten by more than the noise" in the restore rule.
+
 
 ## 3. The optimiser sits at its noise floor
 
