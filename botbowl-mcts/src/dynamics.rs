@@ -242,6 +242,13 @@ pub enum ChanceModel {
     #[default]
     Exact,
     Legacy,
+    /// Diagnostic: exact, except the pass roll stays scripted to a fumble.
+    ExactScriptedPass,
+    /// Diagnostic: exact rolls, but the horizon runs through half time.
+    ExactThroughHalf,
+    /// Diagnostic: only the injury roll is exact; passes fumble, fouls are harmless, and the
+    /// horizon runs through half time.
+    InjuryOnly,
 }
 
 impl ChanceModel {
@@ -249,8 +256,16 @@ impl ChanceModel {
     pub fn from_env() -> Self {
         match std::env::var("BLOOD_MCTS_CHANCE").ok().as_deref().map(str::trim) {
             Some("legacy") => ChanceModel::Legacy,
+            Some("exact_scripted_pass") => ChanceModel::ExactScriptedPass,
+            Some("exact_through_half") => ChanceModel::ExactThroughHalf,
+            Some("injury_only") => ChanceModel::InjuryOnly,
             _ => ChanceModel::Exact,
         }
+    }
+
+    /// Does the horizon end the search at half time under this model?
+    pub fn stops_at_half(self) -> bool {
+        matches!(self, ChanceModel::Exact | ChanceModel::ExactScriptedPass)
     }
 }
 
@@ -911,7 +926,7 @@ impl GameDynamics for BloodBowlDynamics {
         // true pass/fail branches and turnover-causing failures change it.
         if let Some(req) = state.pending_roll.as_ref() {
             let outcomes = roll_outcomes::enumerate_with(state, req, self.chance_model);
-            if self.chance_model == ChanceModel::Exact && roll_outcomes::outcomes_may_coincide(req) {
+            if outcomes.len() > 1 && roll_outcomes::outcomes_may_coincide(req) {
                 return Some(self.merge_coinciding_outcomes(state, outcomes));
             }
             return Some(outcomes);
@@ -2123,7 +2138,7 @@ impl MctsBot {
     /// This search's horizon anchor, under this bot's roll model.
     fn capture_anchor(&self, root_state: &GameState, agent_team: TeamType) -> HorizonAnchor {
         let mut anchor = HorizonAnchor::capture_with_depth(root_state, agent_team, self.config.horizon_turns);
-        anchor.stop_at_half = self.config.chance_model == ChanceModel::Exact;
+        anchor.stop_at_half = self.config.chance_model.stops_at_half();
         anchor
     }
 

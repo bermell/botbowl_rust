@@ -52,7 +52,16 @@ pub fn enumerate(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
 /// [`enumerate`] under an explicit roll model. `ChanceModel::Legacy` reproduces the pre-fix
 /// search for the rolls the exact model enumerates: see [`legacy_result`].
 pub fn enumerate_with(state: &GameState, req: &RequestedRoll, model: ChanceModel) -> Vec<BbAction> {
-    if model == ChanceModel::Legacy {
+    let scripted = match model {
+        ChanceModel::Exact | ChanceModel::ExactThroughHalf => false,
+        ChanceModel::Legacy => true,
+        ChanceModel::ExactScriptedPass => matches!(req, RequestedRoll::D6),
+        ChanceModel::InjuryOnly => !matches!(
+            req,
+            RequestedRoll::D6ThreeOutcomes(..) | RequestedRoll::Sum2D6ThreeOutcomes(..)
+        ),
+    };
+    if scripted {
         if let Some(r) = legacy_result(req) {
             return vec![BbAction::chance(r, 1.0)];
         }
@@ -1352,6 +1361,23 @@ mod tests {
             enumerate_with(&dummy_state(), &req, ChanceModel::Legacy),
             enumerate_with(&dummy_state(), &req, ChanceModel::Exact)
         );
+    }
+
+    /// The diagnostic variants each script exactly the rolls they name.
+    #[test]
+    fn diagnostic_models_script_only_what_they_name() {
+        let n = |req: RequestedRoll, m: ChanceModel| enumerate_with(&dummy_state(), &req, m).len();
+        let injury = || RequestedRoll::Sum2D6ThreeOutcomes(Sum2D6Target::EightPlus, Sum2D6Target::TenPlus);
+        let foul = || RequestedRoll::FoulArmor(Sum2D6Target::SevenPlus);
+        assert_eq!(n(RequestedRoll::D6, ChanceModel::ExactScriptedPass), 1);
+        assert_eq!(n(injury(), ChanceModel::ExactScriptedPass), 3);
+        assert_eq!(n(RequestedRoll::D6, ChanceModel::ExactThroughHalf), 6);
+        assert_eq!(n(injury(), ChanceModel::InjuryOnly), 3);
+        assert_eq!(n(RequestedRoll::D6, ChanceModel::InjuryOnly), 1);
+        assert_eq!(n(foul(), ChanceModel::InjuryOnly), 1);
+        assert!(ChanceModel::ExactScriptedPass.stops_at_half());
+        assert!(!ChanceModel::ExactThroughHalf.stops_at_half());
+        assert!(!ChanceModel::InjuryOnly.stops_at_half());
     }
 
     #[test]
