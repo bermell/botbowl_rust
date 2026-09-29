@@ -1,6 +1,7 @@
 # Plan 047 — is data volume the bottleneck? Train on the whole plateau corpus
 
-**Status:** Running (launched 2026-09-29, `scripts/exp047_wide_window.sh`, out `runs/exp047/`).
+**Status:** Done 2026-09-29 — **both arms ≤ 0.53: data volume is not the lever.** Run 12:24 → 16:32 at `bc5de61`
+(`scripts/exp047_wide_window.sh`, out `runs/exp047/`). Results at the bottom.
 
 ## Why
 
@@ -51,4 +52,42 @@ per drive, 3 epochs, select on combined).
 
 ## Results
 
-(pending)
+Same seeds as gen21's loop benchmark (all 100 per board shared), same settings (500 iterations,
+`budget=visits`, both seats), this box only (10 streams, laptop absent).
+
+| net | train | restore | val_policy (gen22 val) | 14x7 | 16x9 | pooled (200) |
+|---|---|---|---|---|---|---|
+| gen21 (control, loop) | gen19-21, warm | — | — | 0.545 (W43 D23 L34) | 0.480 (W36 D24 L40) | 0.513 |
+| `wide_warm` | gen12-22, warm from gen21 | step 2500 of 127.5k | 0.5995 | 0.465 (W36 D21 L43) | 0.345 (W20 D29 L51) | **0.405** |
+| `wide_scratch` | gen12-22, random init | step 127500 (last) | 0.6590 | 0.270 (W19 D16 L65) | 0.305 (W21 D19 L60) | **0.288** |
+
+SE ≈ 0.032 per 200-game pool.
+
+**Decision (pre-registered branch "both ≤ 0.53"):** data volume is not the lever on this corpus.
+The 1000-games-per-generation relaunch is dropped.
+
+### What the two arms say
+
+- **The warm fine-tune learns nothing from 3.7× the data.** Best-val was the first checkpoint
+  (step 2500); val_policy then sat at 0.600-0.608 for 125k steps with no trend. This is plan 040's
+  flat fine-tune again, on eleven generations from equal-strength nets instead of seven of rising
+  strength. That was the only difference that made this a new test, and it changed nothing.
+- **The 2500 steps it did take cost strength.** 0.405 against gen21's 0.513 on the same seeds is
+  −0.108 (unpaired SE of the difference ≈ 0.045, z ≈ −2.4); on 16x9, 0.345 is below every loop
+  generation since the re-anchor (0.445-0.535). Older generations are equal in *strength* by the
+  anchor but not interchangeable with fresh data: a short fine-tune on the pooled window pulls the
+  net somewhere worse than a fine-tune on the last three. Consistent with plan 032's self-referential
+  chain, not with "more data would help".
+- **The scratch arm is undertrained, not a verdict on from-scratch.** Its best checkpoint was its
+  last, val still falling (0.6617 → 0.6590 over the last 12.5k steps), and it ended 0.059 worse than
+  gen21 on val. Plan 040's scratch arm had converged by 40k steps; this one had not at 127.5k.
+  0.288 says a 3-epoch from-scratch net is far from the champion, nothing more. A 10-epoch run
+  would settle it, but plan 040 and D7 (0.396) point the same way, so it is not queued.
+
+### Eval cost, measured (this box alone, 10 streams, 500 iterations, both jobs sharing the streams)
+
+- 14x7: 200 games in 57 min → **~29 min per 100 games**.
+- 16x9: 200 games in 81 min → **~40 min per 100 games**.
+
+The loop's 112-188 min per benchmark (300 games on three boards) is what those cost while sharing
+the hub with the next generation.
