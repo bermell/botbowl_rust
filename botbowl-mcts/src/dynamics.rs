@@ -994,6 +994,21 @@ impl GameDynamics for BloodBowlDynamics {
         }
     }
 
+    /// Take back the virtual loss `select_node` added to this edge's child. Every descent calls
+    /// this for every edge it took, after its backprop, however it ended (see
+    /// `recon_mcts::GameDynamics::release_descent`), so at one worker virtual loss is exactly
+    /// inert (`tests/virtual_loss_inert.rs`). Chance edges never carry any. Saturating at 0: a
+    /// child that was still unscored when selected got none, and may have been scored since.
+    fn release_descent(&self, parent_player: &Self::Player, child_score: &Self::Score) {
+        if self.virtual_loss == 0 || *parent_player == BbPlayer::Chance {
+            return;
+        }
+        let vl = self.virtual_loss;
+        let _ = child_score
+            .virtual_loss
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some((v - vl).max(0)));
+    }
+
     /// The mover at the child reached by `action`.
     ///
     /// recon_mcts's contract is that a node's tag names the mover of the
@@ -1147,8 +1162,10 @@ impl GameDynamics for BloodBowlDynamics {
         // increment applied to the chosen child. Set to 0 on the chance
         // branch (probability-driven; divergence isn't the goal) and to
         // `self.virtual_loss` on the player branch. Subtracting it from
-        // Q in `puct_value` pushes other workers off this path until the
-        // next backprop replaces the BbScore (which resets vl to 0).
+        // Q in `puct_value` pushes other workers off this path until this
+        // descent ends and `release_descent` takes it back. (It used to wait
+        // for a backprop to replace the score, which a descent cut off below
+        // this node never did: the penalty leaked and piled up.)
         let bump_chosen = |chosen: &BbAction, vl: i32| {
             for (q, a) in scores_and_actions.clone().into_iter() {
                 if *a.deref() == *chosen {
@@ -1339,7 +1356,7 @@ impl GameDynamics for BloodBowlDynamics {
     fn backprop_scores<II, Q, A>(
         &self,
         player: &Self::Player,
-        _score_current: Option<&Self::Score>,
+        score_current: Option<&Self::Score>,
         child_scores_and_actions: II,
     ) -> Option<Self::Score>
     where
@@ -1348,6 +1365,11 @@ impl GameDynamics for BloodBowlDynamics {
         A: Deref<Target = Self::Action>,
         Q: Deref<Target = Self::Score>,
     {
+        // Virtual loss belongs to the descents still in flight through this node, not to its
+        // score: carry it over to the replacement so `release_descent` takes back exactly what
+        // `select_node` added. Resetting it here was half of the leak (the other half: a descent
+        // whose backprop never reached the node kept its penalty forever).
+        let in_flight = score_current.map_or(0, |s| s.virtual_loss.load(Ordering::Relaxed));
         // Chance node: probability-weighted average over visited children.
         //
         // Detect a chance node by its children's action variant rather
@@ -1439,7 +1461,7 @@ impl GameDynamics for BloodBowlDynamics {
                 visits: AtomicU32::new(total_visits),
                 score: avg as i64,
                 node_kind: BbPlayer::Chance,
-                virtual_loss: AtomicI32::new(0),
+                virtual_loss: AtomicI32::new(in_flight),
             });
         }
 
@@ -1485,7 +1507,7 @@ impl GameDynamics for BloodBowlDynamics {
             visits: AtomicU32::new(total_visits),
             score,
             node_kind: *player,
-            virtual_loss: AtomicI32::new(0),
+            virtual_loss: AtomicI32::new(in_flight),
         })
     }
 

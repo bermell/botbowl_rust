@@ -222,3 +222,16 @@ fn virtual_loss_off() {
         search_vl(state, &nn, 1, ChanceModel::Exact, Some(0));
     }
 }
+
+/// Position 0 at 8 workers after the release fix: is what is left virtual loss, or concurrency?
+#[test]
+#[ignore]
+fn eight_workers_position0() {
+    let nn = Arc::new(NnEvaluator::from_path(MODEL).expect("gen21 net"));
+    let state = turn_starts(3).remove(0);
+    for vl in [30, 0] {
+        for _ in 0..2 {
+            search_vl(&state, &nn, 8, ChanceModel::Exact, Some(vl));
+        }
+    }
+}
