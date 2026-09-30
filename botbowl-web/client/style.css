@@ -392,17 +392,28 @@ th.sortable.on { color: var(--accent); }
 .inspector th {
   text-align: left; font-weight: 500; color: var(--ink-dim);
   font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
-  padding-bottom: 4px;
+  padding: 0 10px 4px; white-space: nowrap; border-bottom: 1px solid var(--line);
 }
-.inspector td { padding: 2px 6px 2px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+.inspector td { padding: 3px 10px; border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle; }
+.inspector th:first-child, .inspector td:first-child { padding-left: 0; }
+/* Numbers and their headers share one right edge; number columns shrink to
+   fit, and the action column takes whatever is left. */
+.inspector th.num, .inspector td.num { text-align: right; width: 1%; white-space: nowrap; }
+.inspector th.flags, .inspector td.flags { width: 1%; white-space: nowrap; }
 .inspector tr.chosen { color: var(--accent); font-weight: 600; }
 .inspector tbody tr:hover { background: rgba(255,255,255,.05); cursor: pointer; }
 .inspector td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .inspector td.action { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector td.flags { color: var(--ink-dim); font-size: 10px; }
-td.bar { position: relative; width: 74px; }
-td.bar .fill { display: block; height: 9px; background: var(--accent); opacity: .55; border-radius: 2px; }
-td.bar .bar-text { position: absolute; right: 4px; top: 0; font-size: 10px; color: var(--ink-dim); }
+/* A number over a faint bar of its share, both inside the cell: the value
+   right-aligned like every other number, the bar behind it. */
+td.bar { position: relative; width: 96px; min-width: 96px; text-align: right; }
+td.bar .fill {
+  position: absolute; left: 10px; top: 5px; bottom: 5px; max-width: calc(100% - 20px);
+  background: var(--accent); opacity: .3; border-radius: 2px;
+}
+.inspector td.bar:first-child .fill { left: 0; }
+td.bar .bar-text { position: relative; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 .pv ol { list-style: none; margin: 0; padding: 0; }
 .pv li {

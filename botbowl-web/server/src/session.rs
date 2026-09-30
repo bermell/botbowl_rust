@@ -435,7 +435,7 @@ impl GameSession {
         } else {
             None
         };
-        self.note(format!("{team:?} bot: {action:?}"));
+        self.note(format!("{team:?} bot: {}", mirror::action_to_proto(action).describe()));
         self.record(team, action, net, search, out);
 
         if !self.state.is_legal_action(&action) {
@@ -544,7 +544,10 @@ impl GameSession {
             log: self.log.len(),
             decisions: self.decisions,
         });
-        self.note(format!("{team:?} (you): {action:?}"));
+        self.note(format!(
+            "{team:?} (you): {}",
+            mirror::action_to_proto(action).describe()
+        ));
         let net = self.readout(team);
         self.record(team, action, net, None, out);
         self.step(SomeProcInput::Action(action));

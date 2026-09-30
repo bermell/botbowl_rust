@@ -357,9 +357,9 @@ fn NetDetail(net: NetReadout, played: Action) -> impl IntoView {
             <table>
                 <thead>
                     <tr>
-                        <th>"#"</th>
+                        <th class="num">"#"</th>
                         <th>"action"</th>
-                        <th>"net p"</th>
+                        <th class="num">"net p"</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -487,7 +487,7 @@ fn SearchDetail(report: SearchReport, net: Option<NetReadout>, played: Action, w
 
     let header = move |by: SortBy, label: &'static str, title: &'static str| {
         view! {
-            <th class="sortable" class:on=move || sort.get() == by title=title on:click=move |_| sort.set(by)>
+            <th class="num sortable" class:on=move || sort.get() == by title=title on:click=move |_| sort.set(by)>
                 {label}
             </th>
         }
@@ -538,10 +538,10 @@ fn SearchDetail(report: SearchReport, net: Option<NetReadout>, played: Action, w
                                 {header(SortBy::NetP, "net p", "the net's softmax over all legal actions")}
                                 {header(SortBy::Prior, "prior", "the PUCT prior the search used, as a share of the searched actions")}
                                 {header(SortBy::Visits, "visits", "descents through this child")}
-                                <th title="share of the root's child visits — a visit-count policy target">"π"</th>
+                                <th class="num" title="share of the root's child visits — a visit-count policy target">"π"</th>
                                 {header(SortBy::Q, "Q", "search value, the bot's frame, ±1 = a touchdown")}
                                 {header(SortBy::NetV, "net V", "the net's value of the child position before search, same frame")}
-                                <th></th>
+                                <th class="flags"></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -566,7 +566,7 @@ fn SearchDetail(report: SearchReport, net: Option<NetReadout>, played: Action, w
                                                 </td>
                                                 <td class="bar">
                                                     <span class="fill" style=format!("width: {:.1}%", r.visit_share * 100.0)></span>
-                                                    <span class="bar-text">{r.visits.map(|v| v.to_string()).unwrap_or_else(|| "pruned".into())}</span>
+                                                    <span class="bar-text">{r.visits.map(|v| v.to_string()).unwrap_or_else(|| "—".into())}</span>
                                                 </td>
                                                 <td class="num">{r.visits.map(|_| pct(r.visit_prob)).unwrap_or_default()}</td>
                                                 <td class="num">{r.visits.map(|_| signed(r.q)).unwrap_or_default()}</td>
@@ -576,7 +576,8 @@ fn SearchDetail(report: SearchReport, net: Option<NetReadout>, played: Action, w
                                                 <td class="flags">
                                                     {(Some(r.action) == top_visited).then_some("most visited ")}
                                                     {r.solved.then_some("solved ")}
-                                                    {r.terminal.then_some("terminal")}
+                                                    {r.terminal.then_some("terminal ")}
+                                                    {r.visits.is_none().then_some("pruned")}
                                                 </td>
                                             </tr>
                                         }
@@ -783,10 +784,10 @@ fn Explorer(search_id: u64) -> impl IntoView {
                                 <thead>
                                     <tr>
                                         <th>"edge"</th>
-                                        <th>"visits"</th>
-                                        <th>"π"</th>
-                                        <th>"Q"</th>
-                                        <th>"prior"</th>
+                                        <th class="num">"visits"</th>
+                                        <th class="num">"π"</th>
+                                        <th class="num">"Q"</th>
+                                        <th class="num">"prior"</th>
                                     </tr>
                                 </thead>
                                 <tbody>
