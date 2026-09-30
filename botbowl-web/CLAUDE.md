@@ -1,6 +1,7 @@
 # CLAUDE.md — botbowl-web
 
-Human-vs-bot Blood Bowl in a browser, with the bot's search opened up next to the board
+Blood Bowl in a browser — you against a bot, or two bots against each other — with every decision
+logged and the net-guided search behind each bot move opened up next to the board
 (`plans/034-plan--web-play-ui.md`). Three crates:
 
 | crate | target | depends on |
@@ -63,10 +64,14 @@ inside the call, so it must not run on the async runtime. Channels in, channels 
   only reason the UI can show dice at all — `RollDice` resolves them inside the engine where
   nothing can see them. "Pin the next roll" falls out for free. Pinned to a full game on two board
   sizes by `botbowl-engine/tests/register_rolls_full_game.rs`.
+- **Either seat is a human or a bot** (`GameSpec { home: Seat, away: Seat }`); the session holds
+  `bots: [Option<SessionBot>; 2]` and "whose decision" is `bots[actor].is_none()`. Bot-vs-bot has no
+  human decision point, so it has no undo, and hot-seat (two humans) falls out for free.
 - **Undo is a stack of `GameState` clones plus the session RNG**, pushed at each *human* decision
   point, so one undo rewinds across the bot's whole reply. No engine involvement. `MctsBot`'s
   cached tree stops matching its anchor after an undo and discards itself, which costs a wasted
-  reuse and nothing else.
+  reuse and nothing else. The snapshot also carries the decision-log length, and an undo sends
+  `DecisionsTruncated { keep }` so the client's log rewinds with the board.
 - **The hold sits in front of a step, never behind it** (`StepMode`). `advance` used to loop until
   the human had something to decide, which made the bot's whole reply arrive as one jump. It now
   asks `hold()` before each step it takes on the human's behalf — a die or a bot move — and under
@@ -81,6 +86,11 @@ inside the call, so it must not run on the async runtime. Channels in, channels 
     survive "New game", and a `SetStepMode` can arrive before the first `NewGame`.
   - `Auto` polls with `try_recv` on a 5 ms tick rather than `tokio::time::timeout`, because this
     thread is a `spawn_blocking` worker that must not touch the async runtime.
+  - **`Run` yields between bot moves** (`yielded`, `wake_at() == now`). Without it a bot-vs-bot game
+    played to the end inside one `advance` call, deaf to the socket — no pause, no new game. The
+    yield sits in front of the *next* bot move, never behind the last one, so it can never land on
+    a human's decision point (a view sent there raced the human's click against the resume). A
+    yield re-sends the board at most every 100 ms: two random bots make thousands of moves a second.
 - **A panicking session is reported, not silent.** The engine and the bots are full of `assert!`s;
   before `ws.rs` learned to select on the session handle, a panic left the socket open and the
   browser clicking into a dead thread.
@@ -102,11 +112,19 @@ the lobby offers the presets that fit. Build at the default 26x15/11 and one ser
 re-checks before loading. That convention is load-bearing here for the first time — nothing in
 Rust parsed those filenames before.
 
-## Bots are a closed enum, and take no env vars
+## Bots are a closed enum, always on a net, and take no env vars
 
-`bots::SessionBot` is `Random | Scripted | Mcts`, not `Box<dyn Bot>`, because the inspector needs
+`bots::SessionBot` is `Random | Mcts`, not `Box<dyn Bot>`, because the inspector needs
 `last_search()` / `explore()` off the MCTS bot and downcasting a trait object to get them is
-worse than three variants.
+worse than two variants.
+
+**The MCTS bot always searches with the net's value *and* priors** (`Evaluator::Nn`); `MctsSpec`
+carries a `model`, not an evaluator choice, and an empty one is an error, not a fallback. The
+heuristic, pure-TD and value-only evaluators and the scripted bot were removed from the web app —
+they remain CLI diagnostics. `SessionBot::Mcts` keeps its own `Net` handle beside the bot so the
+session can read the net out on positions the search never scored (a human's decision; a root
+child before the search moved its value). Tests run on the committed
+`botbowl-nn/tests/fixtures/tiny.onnx` (untagged, so it fits every board).
 
 `mcts_config` starts from `MctsConfig::new()` — **not** `from_env()`. Before plan 034, half the
 knobs were resolved from `BLOOD_MCTS_*` at `::new` and the other half re-read from the environment
@@ -114,15 +132,35 @@ on *every* `get_action`, so an explicit builder call could be silently overridde
 could not run two differently-tuned bots at all. `MctsConfig` (in `botbowl-mcts`) fixed that;
 `from_env()` remains the default for every CLI path, so nothing else changed behaviour.
 
+## Every decision is logged
+
+`ServerMsg::Decision(DecisionRecord)` goes out for **every** action either side takes, human or bot:
+team, decider, action, proc, half/turn, legal-action count, the net's `NetReadout` of the position
+(value + softmax over *all* legal actions — not the search's PUCT prior, which is over the pruned
+set and rescaled to mean 1), and for an MCTS move the whole `SearchReport`. A human's decision is
+read out by the first net seated in the game. Records are snapshots, so any past decision's root
+stays readable; `ShowDecision { index }` re-renders the board it was taken on (the session keeps
+`decision_steps`, an index into `steps`), so a logged search's heatmap can be read over the
+position it was about.
+
+Root children carry `prior_share` (prior over the searched siblings, sums to 1), `visit_prob`
+(visits over sibling visits — a visit-count policy target), and `net_value` (the value head on the
+child position, in the report's agent frame — `Q − net V` is what the search changed its mind
+about; `None` for chance and never-visited children). The client merges the root children with the
+readout's priors, so actions pruned before search show up as rows with a net probability and no
+visits.
+
 ## The inspector reads one search, in one frame
 
 - **Q is reported in the searching agent's frame everywhere** — root, candidates, PV, explorer.
   `recon_mcts` stores Home-centric Q; signing each node by its *own* player instead reads as a
   sign flip at every ply, and a root at `+0.27` whose best child says `-0.27` looks like the bot
   picked the worst move. Pinned by the frame assertions in `tests/mcts_inspector.rs`.
-- **The bot keeps exactly one tree** — the most recent search's. Every search re-roots or rebuilds
-  it, so a report from an earlier move can be read but not walked. `search_id` says which, and the
-  server refuses a stale one rather than answering about the wrong position.
+- **Each bot keeps exactly one tree** — its most recent search's. Every search re-roots or rebuilds
+  it, so a report from an earlier move can be read but not walked. `search_id` is one counter across
+  both bots; the session remembers each seat's latest (`latest_search`), `ExpandNode` routes to the
+  bot whose latest it is, and refuses any other id rather than answering about the wrong position.
+  With two MCTS bots, both latest searches are walkable.
 - Walking uses `recon_mcts`'s `Node::get_children_info` / `Node::get_child` / `Tree::get_root_node`
   (added by this plan; `get_next_move_info` only ever reached the root's children). Inspection is
   inert — no descent, no visit bump — pinned by `recon_mcts/tests/navigate.rs`.
@@ -137,8 +175,10 @@ could not run two differently-tuned bots at all. `MctsConfig` (in `botbowl-mcts`
   tree-reuse outcome plus the rate so far, and recombination's hit rate against its wasted-compare
   rate. Rendered as the inspector's "Search health" block. `anchor_miss` at a turn boundary is
   expected; the same outcome mid-turn, or a `lookup_miss`, is not.
-- **`ServerMsg::Valuation`** is the net's read of the **current** position, Home-centric in
-  `[-1, 1]`, emitted from `GameSession::view` on *every* board change. It is a message of its own,
+- **`ServerMsg::Net(NetReadout)`** is the net's read of the **current** position — value
+  (Home-centric in `[-1, 1]`) and policy over the side-to-act's legal actions — emitted from
+  `GameSession::view` on *every* board change. The "Net priors" overlay paints it while the log is
+  following the game. It is a message of its own,
   not a `ViewState` field, for two reasons: the view is re-sent in full on every step and should
   not carry a value most sessions do not have, and the point is that it updates during the
   **human's** turn — `SearchReport.evaluator_value` only ever appears after a bot move. One forward
@@ -185,7 +225,8 @@ backgrounds — those exist for six fixed sizes, none of which are the tiers we 
   offered. `is_setup_legal` still isn't enforced by the engine, but every offered formation now
   satisfies it on every board (it used to fail below the default board; `plans/032`).
 - **A long search blocks its own session.** `spawn_blocking` keeps the socket alive, but there is
-  no cancel, so the human cannot undo mid-think. Accepted for a POC.
+  no cancel, so the human cannot undo mid-think. Accepted for a POC. (Between searches the session
+  does listen — see the `Run` yield.)
 
 ```sh
 cargo test -p botbowl-web-server        # mirrors, view derivation, whole games over the socket

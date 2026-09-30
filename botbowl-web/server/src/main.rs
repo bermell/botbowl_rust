@@ -39,7 +39,7 @@ fn from_repo_root(relative: &str) -> PathBuf {
 #[derive(Parser, Debug)]
 #[command(
     name = "botbowl-web-server",
-    about = "Human-vs-bot Blood Bowl in the browser, with search-tree overlays."
+    about = "Blood Bowl in the browser — human or bot on either side — with a decision log and search-tree overlays."
 )]
 struct Args {
     /// Port on 127.0.0.1.

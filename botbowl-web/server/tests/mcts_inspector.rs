@@ -1,10 +1,11 @@
 //! Phase 2 of plan 034: the MCTS opponent reports its search, and the client
 //! can walk into the tree that produced it.
 //!
-//! Kept to a handful of moves at a tiny budget — this is a wiring test, not a
-//! search-quality one. What it pins:
-//!   * `BotMoved` carries a `SearchReport` whose chosen action is the action
-//!     actually played;
+//! Kept to a handful of moves at a tiny budget on the committed `tiny.onnx`
+//! fixture — this is a wiring test, not a search-quality one. What it pins:
+//!   * a bot's `Decision` carries a `SearchReport` whose chosen action is the
+//!     action actually played, and the net's read-out of the same position;
+//!   * a human's `Decision` carries the net's policy over their legal actions;
 //!   * root children carry visits / Q / priors and a usable heat share;
 //!   * the principal variation's `path` values are accepted by `ExpandNode`,
 //!     which is the whole contract behind the tree explorer;
@@ -16,8 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use botbowl_web_proto::action::TeamType;
+use botbowl_web_proto::decision::{Decider, NetReadout};
 use botbowl_web_proto::msg::{
-    BoardSpec, BotSpec, Budget, ClientMsg, EvaluatorSpec, GameSpec, MctsSpec, ServerMsg, StartFrom,
+    BoardSpec, BotSpec, Budget, ClientMsg, GameSpec, MctsSpec, Seat, ServerMsg, StartFrom, StepMode,
 };
 use botbowl_web_proto::search::{SearchEdge, SearchReport};
 use botbowl_web_proto::view::ViewState;
@@ -30,7 +32,8 @@ type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStre
 async fn serve() -> SocketAddr {
     let app = Arc::new(AppState {
         capacity: compiled_capacity(),
-        models_dir: "models".into(),
+        // The committed test net: untagged, so it is offered for every board.
+        models_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../botbowl-nn/tests/fixtures").into(),
         recordings_dir: std::env::temp_dir().join("botbowl-web-test"),
         model_cache: Default::default(),
         server: "test".into(),
@@ -62,6 +65,33 @@ async fn recv(socket: &mut Socket) -> ServerMsg {
         Message::Text(text) => serde_json::from_str(&text).unwrap(),
         other => panic!("unexpected frame {other:?}"),
     }
+}
+
+/// Deliberately tiny: this is a wiring test and it runs in a debug build,
+/// where the search is orders of magnitude slower.
+fn tiny_mcts() -> BotSpec {
+    BotSpec::Mcts(MctsSpec {
+        budget: Budget::Iterations(60),
+        workers: Some(1),
+        model: "tiny.onnx".into(),
+        ..Default::default()
+    })
+}
+
+/// A read-out is a distribution over the legal actions, and a value in range.
+fn assert_readout(net: &NetReadout, played: botbowl_web_proto::action::Action) {
+    assert!((-1.0..=1.0).contains(&net.value_home), "value {}", net.value_home);
+    assert_eq!(net.model, "tiny.onnx");
+    let total: f32 = net.priors.iter().map(|p| p.prob).sum();
+    assert!((total - 1.0).abs() < 1e-3, "net priors sum to {total}");
+    assert!(
+        net.priors.windows(2).all(|w| w[0].prob >= w[1].prob),
+        "net priors not sorted"
+    );
+    assert!(
+        net.rank_of(played).is_some(),
+        "the played action {played:?} is not among the legal ones"
+    );
 }
 
 fn first_legal(view: &ViewState) -> botbowl_web_proto::action::Action {
@@ -99,15 +129,8 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
         &mut socket,
         ClientMsg::NewGame(GameSpec {
             board,
-            human: TeamType::Home,
-            bot: BotSpec::Mcts(MctsSpec {
-                // Deliberately tiny: this is a wiring test and it runs in a
-                // debug build, where the search is orders of magnitude slower.
-                budget: Budget::Iterations(60),
-                workers: Some(1),
-                evaluator: EvaluatorSpec::Heuristic,
-                ..Default::default()
-            }),
+            home: Seat::Human,
+            away: Seat::Bot(tiny_mcts()),
             seed: Some(5),
             start: StartFrom::CoinToss,
         }),
@@ -116,6 +139,8 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
 
     let mut reports: Vec<SearchReport> = Vec::new();
     let mut saw_thinking = false;
+    let mut saw_net = false;
+    let mut decisions = 0usize;
     // Collect a few bot decisions, then keep reading until the server goes
     // quiet (the human is on the clock). Only *then* is the cached tree the
     // one the last report describes: every search re-roots the single tree
@@ -128,13 +153,32 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                 assert_eq!(team, TeamType::Away);
                 assert!(budget.contains("mcts"), "{budget}");
             }
-            ServerMsg::BotMoved { action, report } => {
-                let report = *report.expect("the MCTS bot must report its search");
+            ServerMsg::Decision(record) => {
+                let action = record.action;
+                assert_eq!(record.index as usize, decisions, "decision indices are consecutive");
+                decisions += 1;
+                assert!(record.n_legal > 0);
+                let net = record
+                    .net
+                    .as_ref()
+                    .expect("a net is seated, so every decision is read out");
+                assert_readout(net, action);
+                if record.by == Decider::Human {
+                    assert_eq!(record.team, TeamType::Home);
+                    assert!(record.search.is_none(), "a human decision has no search");
+                    continue;
+                }
+                assert_eq!(record.team, TeamType::Away);
+                let report = *record.search.expect("the MCTS bot must report its search");
                 assert_eq!(report.chosen, action, "the report must be about the move played");
                 assert_eq!(report.agent, TeamType::Away);
-                assert_eq!(report.evaluator, "heuristic");
+                assert_eq!(report.evaluator, "nn", "the web bot always searches on the net");
                 assert_eq!(report.budget, "60 iterations");
-                assert!(report.evaluator_value.is_none(), "only the NN evaluators have one");
+                assert!(
+                    report.evaluator_value.is_some(),
+                    "the NN evaluator reports its root value"
+                );
+                assert!(report.config.contains("1 worker(s)"), "{}", report.config);
                 // Plan 043: search health rides along with every report.
                 let h = &report.health;
                 assert!(
@@ -175,9 +219,27 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                 );
                 for child in &report.children {
                     assert!((0.0..=1.0).contains(&child.visit_share), "{:?}", child.visit_share);
+                    assert!((0.0..=1.0).contains(&child.visit_prob), "{:?}", child.visit_prob);
                     if let SearchEdge::Player(_) = child.edge {
                         assert!(child.prior.is_some(), "a player edge carries its PUCT prior");
+                        assert!(child.prior_share.is_some(), "and its share of the policy");
                     }
+                    // The value head's own read of every visited decision child.
+                    if child.stats.visits > 0
+                        && matches!(
+                            child.stats.player,
+                            botbowl_web_proto::search::NodePlayer::Home | botbowl_web_proto::search::NodePlayer::Away
+                        )
+                    {
+                        let v = child.net_value.expect("a visited decision child has a net value");
+                        assert!((-1.0..=1.0).contains(&v), "{v}");
+                    }
+                }
+                let prior_total: f32 = report.children.iter().filter_map(|c| c.prior_share).sum();
+                assert!((prior_total - 1.0).abs() < 1e-3, "prior shares sum to {prior_total}");
+                if report.children.iter().any(|c| c.stats.visits > 0) {
+                    let visit_total: f32 = report.children.iter().map(|c| c.visit_prob).sum();
+                    assert!((visit_total - 1.0).abs() < 1e-3, "visit probs sum to {visit_total}");
                 }
 
                 // Every Q in one report must be in **one** frame — the
@@ -217,19 +279,54 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                     }
                 }
             }
-            // Plan 043: the live valuation is an NN read-out. This session's bot is the
-            // heuristic one, so it must stay silent rather than publish a meaningless number.
-            ServerMsg::Valuation { value_home } => {
-                panic!("a heuristic bot has no network to value with, got {value_home}")
+            // Plan 043: the live read-out of the current position.
+            ServerMsg::Net(net) => {
+                saw_net = true;
+                assert!((-1.0..=1.0).contains(&net.value_home), "{}", net.value_home);
             }
             ServerMsg::Error(e) => panic!("server error: {e}"),
             _ => {}
         }
     }
     assert!(saw_thinking, "the UI needs a spinner signal before a search");
+    assert!(saw_net, "a seated net reads out every board");
 
     // The principal variation is walkable: each step's `path` is exactly what
     // `ExpandNode` takes.
+    // Every logged decision can put its own board back on the pitch.
+    send(&mut socket, ClientMsg::ShowDecision { index: 0 }).await;
+    loop {
+        match recv(&mut socket).await {
+            ServerMsg::DecisionBoard { index, view } => {
+                assert_eq!(index, 0);
+                assert_eq!(
+                    view.scoreboard.half, 0,
+                    "the first decision is the coin toss, before any half"
+                );
+                break;
+            }
+            ServerMsg::Error(e) => panic!("ShowDecision failed: {e}"),
+            _ => {}
+        }
+    }
+    send(
+        &mut socket,
+        ClientMsg::ShowDecision {
+            index: decisions as u64,
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut socket).await {
+            ServerMsg::Error(e) => {
+                assert!(e.contains("no decision"), "{e}");
+                break;
+            }
+            ServerMsg::DecisionBoard { index, .. } => panic!("decision {index} does not exist yet"),
+            _ => {}
+        }
+    }
+
     let last = reports.last().unwrap();
     assert!(!last.pv.is_empty(), "a searched tree has a principal variation");
     assert_eq!(last.pv[0].path.len(), 1, "the first PV step is one edge from the root");
@@ -339,6 +436,109 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                 break;
             }
             ServerMsg::Node(n) => panic!("a stale search must not be answered: {n:?}"),
+            _ => {}
+        }
+    }
+}
+
+/// Two bots, one game: each keeps its own tree, so the latest search of
+/// *either* side can be walked — and a bot's older search cannot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_mcts_bots_each_keep_a_walkable_tree() {
+    let capacity = compiled_capacity();
+    let board = BoardSpec::new(14, 7, 4);
+    if board.validate(capacity).is_err() {
+        eprintln!("skipped: capacity too small for 14x7");
+        return;
+    }
+    let addr = serve().await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
+        .await
+        .unwrap();
+    let _lobby = recv(&mut socket).await;
+
+    // Manual pacing, so the session stops where we tell it to and both trees
+    // are still the ones the reports describe when we walk them.
+    send(&mut socket, ClientMsg::SetStepMode(StepMode::Manual)).await;
+    send(
+        &mut socket,
+        ClientMsg::NewGame(GameSpec {
+            board,
+            home: Seat::Bot(tiny_mcts()),
+            away: Seat::Bot(tiny_mcts()),
+            seed: Some(11),
+            start: StartFrom::CoinToss,
+        }),
+    )
+    .await;
+
+    let mut latest: [Option<u64>; 2] = [None, None];
+    let mut older: Option<u64> = None;
+    loop {
+        match recv(&mut socket).await {
+            ServerMsg::View(view) => {
+                assert!(view.humans.is_empty(), "nobody is seated from the browser");
+                if view.scoreboard.game_over {
+                    panic!("the game ended before both bots had searched");
+                }
+                if latest.iter().all(Option::is_some) && older.is_some() {
+                    break;
+                }
+                if view.paused {
+                    send(&mut socket, ClientMsg::StepOnce).await;
+                }
+            }
+            ServerMsg::Decision(record) => {
+                assert!(matches!(record.by, Decider::Bot { .. }));
+                let report = record.search.expect("both bots search");
+                let i = usize::from(record.team == TeamType::Away);
+                if let Some(previous) = latest[i].replace(report.search_id) {
+                    older = Some(previous);
+                }
+            }
+            ServerMsg::Error(e) => panic!("server error: {e}"),
+            _ => {}
+        }
+    }
+
+    for search_id in latest.into_iter().flatten() {
+        send(
+            &mut socket,
+            ClientMsg::ExpandNode {
+                search_id,
+                path: Vec::new(),
+                with_view: false,
+            },
+        )
+        .await;
+        loop {
+            match recv(&mut socket).await {
+                ServerMsg::Node(node) => {
+                    assert_eq!(node.search_id, search_id);
+                    break;
+                }
+                ServerMsg::Error(e) => panic!("search {search_id} should be walkable: {e}"),
+                _ => {}
+            }
+        }
+    }
+
+    send(
+        &mut socket,
+        ClientMsg::ExpandNode {
+            search_id: older.unwrap(),
+            path: Vec::new(),
+            with_view: false,
+        },
+    )
+    .await;
+    loop {
+        match recv(&mut socket).await {
+            ServerMsg::Error(e) => {
+                assert!(e.contains("superseded"), "{e}");
+                break;
+            }
+            ServerMsg::Node(n) => panic!("a bot's older search must not be answered: {n:?}"),
             _ => {}
         }
     }

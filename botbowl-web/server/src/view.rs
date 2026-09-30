@@ -23,7 +23,8 @@ use crate::mirror;
 /// server's stdout and is a rules-engine trace rather than anything a player
 /// wants to read. The session keeps a short human-facing log instead.
 pub struct DeriveCtx {
-    pub human: em::TeamType,
+    /// The sides played from the browser.
+    pub humans: Vec<botbowl_web_proto::TeamType>,
     pub seq: u64,
     pub can_undo: bool,
     pub bot_thinking: bool,
@@ -35,7 +36,7 @@ pub struct DeriveCtx {
 impl Default for DeriveCtx {
     fn default() -> Self {
         DeriveCtx {
-            human: em::TeamType::Home,
+            humans: vec![botbowl_web_proto::TeamType::Home],
             seq: 0,
             can_undo: false,
             bot_thinking: false,
@@ -357,7 +358,7 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         dugouts: vec![dugout(state, em::TeamType::Home), dugout(state, em::TeamType::Away)],
         simple_actions,
         to_act,
-        human: mirror::team_to_proto(ctx.human),
+        humans: ctx.humans.clone(),
         proc: state.proc_stack_top().unwrap_or("-").to_string(),
         active_player: state.info.active_player,
         pending_roll: state.pending_roll.map(mirror::requested_roll_to_proto),

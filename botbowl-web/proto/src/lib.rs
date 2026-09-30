@@ -14,21 +14,25 @@
 //! - [`view`] — [`view::ViewState`], the fully derived board.
 //! - [`search`] — [`search::SearchReport`] and the tree explorer's
 //!   [`search::NodeExpansion`].
+//! - [`decision`] — the decision log's [`decision::DecisionRecord`] and the
+//!   net's [`decision::NetReadout`].
 //! - [`msg`] — [`msg::ClientMsg`]/[`msg::ServerMsg`] and the lobby's
 //!   [`msg::GameSpec`].
 
 pub mod action;
+pub mod decision;
 pub mod dice;
 pub mod msg;
 pub mod search;
 pub mod view;
 
 pub use action::{Action, PosAT, Position, SimpleAT, TeamType};
+pub use decision::{ActionPrior, Decider, DecisionRecord, NetReadout};
 pub use dice::{DiceEvent, DieFace, RequestedRoll, RollResult};
-pub use msg::{BoardSpec, BotSpec, Budget, ClientMsg, GameSpec, LobbyInfo, MctsSpec, ServerMsg};
+pub use msg::{BoardSpec, BotSpec, Budget, ClientMsg, GameSpec, LobbyInfo, MctsSpec, Seat, ServerMsg};
 pub use search::{ChildReport, NodeExpansion, SearchEdge, SearchReport};
 pub use view::{Dims, PlayerView, SquareView, ViewState};
 
 /// Bumped whenever a wire type changes shape. The client refuses to render a
 /// view from a server it does not match.
-pub const WIRE_VERSION: u32 = 2;
+pub const WIRE_VERSION: u32 = 3;

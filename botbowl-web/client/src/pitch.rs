@@ -46,12 +46,14 @@ fn Scoreboard() -> impl IntoView {
     move || {
         app.view.get().map(|v| {
             let s = v.scoreboard;
-            let you = v.human;
             let turn = |t: TeamType| if t == TeamType::Home { s.home_turn } else { s.away_turn };
+            let seat = |t: TeamType| app.spec.get().map(|g| g.seat(t).label()).unwrap_or_default();
+            let (home_human, away_human) = (v.is_human(TeamType::Home), v.is_human(TeamType::Away));
             view! {
                 <div class="scoreboard">
-                    <div class="team home" class:you=move || you == TeamType::Home>
+                    <div class="team home" class:you=home_human>
                         <span class="name">"Home"</span>
+                        <span class="seat">{seat(TeamType::Home)}</span>
                         <span class="score">{s.home_score}</span>
                         <span class="meta">
                             {format!("turn {} · {} reroll(s){}", s.home_turn, s.home_rerolls,
@@ -65,15 +67,17 @@ fn Scoreboard() -> impl IntoView {
                         <span class="whose">
                             {match (s.game_over, v.to_act) {
                                 (true, _) => "game over".to_string(),
-                                (_, Some(t)) if t == you => "your move".to_string(),
+                                (_, Some(t)) if v.is_human(t) && v.humans.len() == 1 => "your move".to_string(),
+                                (_, Some(t)) if v.is_human(t) => format!("{t:?} (you) to act"),
                                 (_, Some(t)) => format!("{t:?} to act"),
                                 _ => format!("{:?}'s turn", s.team_turn),
                             }}
                         </span>
                         <span class="turnmark">{format!("turn {} of the drive", turn(s.team_turn))}</span>
                     </div>
-                    <div class="team away" class:you=move || you == TeamType::Away>
+                    <div class="team away" class:you=away_human>
                         <span class="name">"Away"</span>
+                        <span class="seat">{seat(TeamType::Away)}</span>
                         <span class="score">{s.away_score}</span>
                         <span class="meta">
                             {format!("turn {} · {} reroll(s){}", s.away_turn, s.away_rerolls,
@@ -97,25 +101,35 @@ fn hovered_route(app: &App) -> Vec<Position> {
         .unwrap_or_default()
 }
 
-/// Per-square heat for the bot overlays, normalised against the busiest
-/// sibling so the strongest candidate is always fully lit.
+/// Per-square heat for the search and net overlays, normalised against the
+/// strongest square so it is always fully lit.
 fn bot_heat(app: &App, overlay: Overlay) -> HashMap<Position, f32> {
     let mut heat = HashMap::new();
-    let Some(report) = app.report.get() else { return heat };
-    let mut peak = 0.0f32;
-    let mut raw: Vec<(Position, f32)> = Vec::new();
-    for child in &report.children {
-        let SearchEdge::Player(Action::Positional(_, pos)) = child.edge else {
-            continue;
-        };
-        let value = match overlay {
-            Overlay::BotVisits => child.stats.visits as f32,
-            Overlay::BotPriors => child.prior.unwrap_or(0.0),
-            _ => continue,
-        };
-        peak = peak.max(value);
-        raw.push((pos, value));
-    }
+    let raw: Vec<(Position, f32)> = match overlay {
+        Overlay::BotVisits => app
+            .report()
+            .map(|r| {
+                r.children
+                    .iter()
+                    .filter_map(|c| match c.edge {
+                        SearchEdge::Player(Action::Positional(_, pos)) => Some((pos, c.stats.visits as f32)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Overlay::NetPriors => app
+            .priors_shown()
+            .map(|n| {
+                n.priors
+                    .iter()
+                    .filter_map(|p| p.action.position().map(|pos| (pos, p.prob)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => return heat,
+    };
+    let peak = raw.iter().map(|(_, v)| *v).fold(0.0f32, f32::max);
     if peak <= 0.0 {
         return heat;
     }
@@ -137,6 +151,20 @@ fn Board() -> impl IntoView {
     view! {
         <div class="board-wrap">
             {move || {
+                app.hypothetical.get().map(|_| {
+                    let what = match app.board_of.get() {
+                        Some(i) => format!("board at decision #{i}"),
+                        None => "board at a search-tree node".to_string(),
+                    };
+                    view! {
+                        <div class="hypothetical-banner">
+                            <span>{format!("showing the {what} — not the live game")}</span>
+                            <button on:click=move |_| app.back_to_live()>"back to live"</button>
+                        </div>
+                    }
+                })
+            }}
+            {move || {
                 let Some(view) = app.hypothetical.get().or_else(|| app.view.get()) else {
                     return None;
                 };
@@ -149,7 +177,8 @@ fn Board() -> impl IntoView {
                 let route = route.get();
                 let heat = heat.get();
                 let overlay = app.overlay.get();
-                let my_turn = app.my_turn();
+                // A board that is not the live one takes no clicks.
+                let my_turn = app.my_turn() && app.hypothetical.get().is_none();
                 // Whose tackle zones to paint, resolved once for the whole
                 // board: `threat_team` scans every square, so asking it per
                 // square would make drawing quadratic.
@@ -213,11 +242,11 @@ fn square(
         ),
         // Not a tint: it only forces the banded tackle-zone layer on.
         Overlay::TackleZones => ("none", 0.0),
-        Overlay::BotVisits | Overlay::BotPriors => ("bot", heat.get(&pos).copied().unwrap_or(0.0)),
+        Overlay::BotVisits | Overlay::NetPriors => ("bot", heat.get(&pos).copied().unwrap_or(0.0)),
         Overlay::None => ("none", 0.0),
     };
 
-    let title = tooltip(sq, threat.unwrap_or_else(|| view.human.other()));
+    let title = tooltip(sq, threat.unwrap_or_else(|| view.mover().other()));
 
     view! {
         <div
@@ -747,8 +776,8 @@ fn Debug() -> impl IntoView {
                     <div class="valuation">
                         <span class="label">"Net valuation"</span>
                         <span class="value">
-                            {move || match app.valuation.get() {
-                                Some(v) => format!("favours {}", crate::inspector::favours(v)),
+                            {move || match app.net_now.get() {
+                                Some(n) => format!("favours {} ({})", crate::inspector::favours(n.value_home), n.model),
                                 None => "— (no network in play)".to_string(),
                             }}
                         </span>

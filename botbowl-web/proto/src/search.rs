@@ -73,11 +73,27 @@ pub struct NodeStats {
 pub struct ChildReport {
     pub edge: SearchEdge,
     pub stats: NodeStats,
-    /// PUCT prior for the edge. Un-normalised: the scripted priors have mean
-    /// ≈ 1.0 and the NN priors are `softmax × len`, same mean, wider spread.
+    /// PUCT prior for the edge, as the search used it: the NN's softmax over
+    /// the node's (pruned) player edges, rescaled by their count so the mean
+    /// is ≈ 1.0.
     pub prior: Option<f32>,
-    /// `visits / root_visits`, precomputed for the heatmap.
+    /// `prior` renormalised to sum to 1 over the node's player edges — the
+    /// probability the search's policy put on this edge.
+    #[serde(default)]
+    pub prior_share: Option<f32>,
+    /// `visits / busiest sibling's visits`, precomputed for the heatmap (so
+    /// the busiest square is fully lit).
     pub visit_share: f32,
+    /// `visits / Σ sibling visits` — the visit distribution, the thing a
+    /// visit-count policy target is built from.
+    #[serde(default)]
+    pub visit_prob: f32,
+    /// The net's value of the child position, in the same frame as
+    /// `stats.q_display` (the searching agent's, `[-1, 1]`). What the value
+    /// head said before any search below it; the gap to Q is what the search
+    /// changed its mind about. `None` for chance and never-visited children.
+    #[serde(default)]
+    pub net_value: Option<f32>,
 }
 
 /// Everything the inspector shows for one bot decision.
@@ -103,6 +119,9 @@ pub struct SearchReport {
     /// How the budget was expressed, e.g. `"2000 iterations"` or `"500 ms"`.
     pub budget: String,
     pub evaluator: String,
+    /// The search knobs this bot ran with, e.g. `"puct raw c=10 · minimax · horizon 1 turn · 8 workers"`.
+    #[serde(default)]
+    pub config: String,
     /// The evaluator's own value at the root, mover-centric in `[-1, 1]`.
     /// Only present for the NN evaluators.
     pub evaluator_value: Option<f32>,

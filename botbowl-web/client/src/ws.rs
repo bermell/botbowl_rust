@@ -115,19 +115,39 @@ fn handle(app: App, msg: ServerMsg) {
         ServerMsg::BotThinking { team, budget } => {
             app.thinking.set(Some(format!("{team:?} thinking — {budget}")));
         }
-        ServerMsg::BotMoved { report, .. } => {
-            if let Some(report) = report {
-                app.node.set(None);
-                app.node_path.set(Vec::new());
-                app.hypothetical.set(None);
-                app.report.set(Some(*report));
+        ServerMsg::Decision(record) => {
+            // Following the game: a new search replaces the tree the explorer
+            // was walking, so drop back to the live board with it.
+            if app.selected.get_untracked().is_none() && record.search.is_some() {
+                app.back_to_live();
             }
+            app.decisions.update(|d| {
+                // After an undo the server reuses indices; the truncation
+                // message has already cut the log back, this is belt and braces.
+                d.truncate(record.index as usize);
+                d.push(*record);
+            });
+        }
+        ServerMsg::DecisionsTruncated { keep } => {
+            app.decisions.update(|d| d.truncate(keep as usize));
+            if app.selected.get_untracked().is_some_and(|i| i >= keep) {
+                app.selected.set(None);
+            }
+            if app.board_of.get_untracked().is_some_and(|i| i >= keep) {
+                app.back_to_live();
+            }
+        }
+        ServerMsg::DecisionBoard { index, view } => {
+            app.node.set(None);
+            app.node_path.set(Vec::new());
+            app.board_of.set(Some(index));
+            app.hypothetical.set(Some(*view));
         }
         ServerMsg::Node(node) => {
             app.node_path.set(node.path.clone());
             app.node.set(Some(*node));
         }
-        ServerMsg::Valuation { value_home } => app.valuation.set(Some(value_home)),
+        ServerMsg::Net(readout) => app.net_now.set(Some(*readout)),
         ServerMsg::RollPinned(roll) => app.pinned.set(roll),
         ServerMsg::Saved { path } => app.saved.set(Some(path)),
         ServerMsg::GameOver {

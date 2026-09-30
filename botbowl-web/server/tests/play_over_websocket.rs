@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use botbowl_web_proto::action::{Action, TeamType};
-use botbowl_web_proto::msg::{BoardSpec, BotSpec, ClientMsg, GameSpec, ServerMsg, StartFrom, StepMode};
+use botbowl_web_proto::decision::Decider;
+use botbowl_web_proto::msg::{BoardSpec, BotSpec, ClientMsg, GameSpec, Seat, ServerMsg, StartFrom, StepMode};
 use botbowl_web_proto::view::ViewState;
 use botbowl_web_server::{compiled_capacity, router, AppState};
 use futures_util::{SinkExt, StreamExt};
@@ -110,8 +111,8 @@ async fn play_a_whole_game(addr: SocketAddr, board: BoardSpec, seed: u64) -> Out
         &mut socket,
         ClientMsg::NewGame(GameSpec {
             board,
-            human: TeamType::Home,
-            bot: BotSpec::Scripted,
+            home: Seat::Human,
+            away: Seat::Bot(BotSpec::Random),
             seed: Some(seed),
             start: StartFrom::CoinToss,
         }),
@@ -156,9 +157,16 @@ async fn play_a_whole_game(addr: SocketAddr, board: BoardSpec, seed: u64) -> Out
                 send(&mut socket, ClientMsg::Act(action)).await;
             }
             ServerMsg::Dice(_) => outcome.dice += 1,
-            ServerMsg::BotMoved { report, .. } => {
-                outcome.bot_moves += 1;
-                assert!(report.is_none(), "only the MCTS bot reports a search");
+            ServerMsg::Decision(record) => {
+                assert!(record.search.is_none(), "only the MCTS bot reports a search");
+                assert!(record.net.is_none(), "no seat has a net to read out");
+                match record.by {
+                    Decider::Human => assert_eq!(record.team, TeamType::Home),
+                    Decider::Bot { .. } => {
+                        assert_eq!(record.team, TeamType::Away);
+                        outcome.bot_moves += 1;
+                    }
+                }
             }
             ServerMsg::BotThinking { team, .. } => assert_eq!(team, TeamType::Away),
             ServerMsg::GameOver {
@@ -228,21 +236,27 @@ async fn undo_rewinds_across_the_bots_reply() {
         &mut socket,
         ClientMsg::NewGame(GameSpec {
             board,
-            human: TeamType::Home,
-            bot: BotSpec::Random,
+            home: Seat::Human,
+            away: Seat::Bot(BotSpec::Random),
             seed: Some(3),
             start: StartFrom::CoinToss,
         }),
     )
     .await;
 
-    // Play until the human is asked something, remembering that board.
+    // Play until the human is asked something, remembering that board and
+    // how long the decision log was.
     let mut before: Option<ViewState> = None;
+    let mut logged = 0u64;
     while before.is_none() {
-        if let ServerMsg::View(view) = recv(&mut socket).await {
-            if view.to_act == Some(TeamType::Home) && !view.scoreboard.game_over && !view.bot_thinking {
-                before = Some(*view);
+        match recv(&mut socket).await {
+            ServerMsg::View(view) => {
+                if view.to_act == Some(TeamType::Home) && !view.scoreboard.game_over && !view.bot_thinking {
+                    before = Some(*view);
+                }
             }
+            ServerMsg::Decision(_) => logged += 1,
+            _ => {}
         }
     }
     let before = before.unwrap();
@@ -265,13 +279,23 @@ async fn undo_rewinds_across_the_bots_reply() {
 
     send(&mut socket, ClientMsg::Undo).await;
     let mut rewound: Option<ViewState> = None;
+    let mut truncated = None;
     while rewound.is_none() {
-        if let ServerMsg::View(view) = recv(&mut socket).await {
-            if view.to_act == Some(TeamType::Home) && !view.bot_thinking {
-                rewound = Some(*view);
+        match recv(&mut socket).await {
+            ServerMsg::View(view) => {
+                if view.to_act == Some(TeamType::Home) && !view.bot_thinking {
+                    rewound = Some(*view);
+                }
             }
+            ServerMsg::DecisionsTruncated { keep } => truncated = Some(keep),
+            _ => {}
         }
     }
+    assert_eq!(
+        truncated,
+        Some(logged),
+        "undo cuts the decision log back to where it was"
+    );
     let rewound = rewound.unwrap();
     assert_eq!(rewound.squares, before.squares, "undo must restore the board exactly");
     assert_eq!(rewound.scoreboard, before.scoreboard);
@@ -293,8 +317,8 @@ async fn bad_input_is_reported_not_fatal() {
         &mut socket,
         ClientMsg::NewGame(GameSpec {
             board: BoardSpec::new(120, 101, 40),
-            human: TeamType::Home,
-            bot: BotSpec::Random,
+            home: Seat::Human,
+            away: Seat::Bot(BotSpec::Random),
             seed: Some(1),
             start: StartFrom::CoinToss,
         }),
@@ -311,8 +335,8 @@ async fn bad_input_is_reported_not_fatal() {
         &mut socket,
         ClientMsg::NewGame(GameSpec {
             board: BoardSpec::new(9, 7, 3),
-            human: TeamType::Home,
-            bot: BotSpec::Random,
+            home: Seat::Human,
+            away: Seat::Bot(BotSpec::Random),
             seed: Some(1),
             start: StartFrom::CoinToss,
         }),
@@ -332,8 +356,8 @@ async fn bad_input_is_reported_not_fatal() {
             } else {
                 compiled_capacity()
             },
-            human: TeamType::Home,
-            bot: BotSpec::Random,
+            home: Seat::Human,
+            away: Seat::Bot(BotSpec::Random),
             seed: Some(1),
             start: StartFrom::CoinToss,
         }),
@@ -363,8 +387,8 @@ fn test_board() -> BoardSpec {
 fn new_game(board: BoardSpec, seed: u64) -> ClientMsg {
     ClientMsg::NewGame(GameSpec {
         board,
-        human: TeamType::Home,
-        bot: BotSpec::Scripted,
+        home: Seat::Human,
+        away: Seat::Bot(BotSpec::Random),
         seed: Some(seed),
         start: StartFrom::CoinToss,
     })
@@ -428,12 +452,18 @@ async fn manual_pacing_holds_before_every_step() {
                 // Our own decision points are never held: a hold sits in front
                 // of the steps we do *not* answer.
                 let actions = legal_actions(&view);
-                assert!(!actions.is_empty(), "asked to act at {:?} with nothing on offer", view.proc);
+                assert!(
+                    !actions.is_empty(),
+                    "asked to act at {:?} with nothing on offer",
+                    view.proc
+                );
                 work_since_step = 0;
                 expect_work = false;
                 send(&mut socket, ClientMsg::Act(actions[rng.gen_range(0..actions.len())])).await;
             }
-            ServerMsg::Dice(_) | ServerMsg::BotMoved { .. } => work_since_step += 1,
+            ServerMsg::Dice(_) => work_since_step += 1,
+            ServerMsg::Decision(d) if matches!(d.by, Decider::Bot { .. }) => work_since_step += 1,
+            ServerMsg::Decision(_) => {}
             ServerMsg::BotThinking { .. } => {}
             ServerMsg::GameOver { .. } => break,
             ServerMsg::Error(e) => panic!("server error while stepping: {e}"),
@@ -511,7 +541,8 @@ async fn auto_pacing_steps_itself() {
                 human_decisions += 1;
                 send(&mut socket, ClientMsg::Act(actions[rng.gen_range(0..actions.len())])).await;
             }
-            ServerMsg::Dice(_) | ServerMsg::BotMoved { .. } => work += 1,
+            ServerMsg::Dice(_) => work += 1,
+            ServerMsg::Decision(d) if matches!(d.by, Decider::Bot { .. }) => work += 1,
             ServerMsg::Error(e) => panic!("server error under auto pacing: {e}"),
             _ => {}
         }
@@ -519,4 +550,64 @@ async fn auto_pacing_steps_itself() {
 
     assert!(work >= 30, "auto pacing stalled after {work} steps");
     assert!(human_decisions > 0, "auto pacing never handed control back");
+}
+
+/// Two bots, nobody at the keyboard: under `Run` the game plays itself to the
+/// end, every decision from both sides lands in the log in order — and the
+/// socket stays responsive throughout, so switching to `Manual` mid-game
+/// actually stops it (the session yields between bot moves).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_bots_play_a_whole_game_and_can_be_paused() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    let _lobby = recv(&mut socket).await;
+    send(
+        &mut socket,
+        ClientMsg::NewGame(GameSpec {
+            board: test_board(),
+            home: Seat::Bot(BotSpec::Random),
+            away: Seat::Bot(BotSpec::Random),
+            seed: Some(21),
+            start: StartFrom::CoinToss,
+        }),
+    )
+    .await;
+
+    let mut decisions = 0u64;
+    let mut by_team = [0usize; 2];
+    let mut paused_at: Option<u64> = None;
+    loop {
+        match recv(&mut socket).await {
+            ServerMsg::Decision(record) => {
+                assert_eq!(record.index, decisions, "decisions arrive in order");
+                assert!(matches!(record.by, Decider::Bot { .. }), "nobody human is seated");
+                decisions += 1;
+                by_team[usize::from(record.team == TeamType::Away)] += 1;
+                if decisions == 50 {
+                    send(&mut socket, ClientMsg::SetStepMode(StepMode::Manual)).await;
+                }
+            }
+            ServerMsg::View(view) => {
+                assert!(view.humans.is_empty());
+                assert!(!view.human_to_act(), "no view may offer a bot's move to the browser");
+                if view.paused && paused_at.is_none() {
+                    paused_at = Some(decisions);
+                    // Held means held: nothing moves until we say so ...
+                    let quiet = tokio::time::timeout(Duration::from_millis(300), socket.next()).await;
+                    assert!(quiet.is_err(), "a held bot-vs-bot game must not step itself: {quiet:?}");
+                    // ... and Run lets it finish.
+                    send(&mut socket, ClientMsg::SetStepMode(StepMode::Run)).await;
+                }
+            }
+            ServerMsg::GameOver { .. } => break,
+            ServerMsg::Error(e) => panic!("server error: {e}"),
+            _ => {}
+        }
+    }
+    let paused_at = paused_at.expect("Manual never took hold of a running bot-vs-bot game");
+    assert!(
+        paused_at >= 50,
+        "paused at decision {paused_at}, before the mode was even sent"
+    );
+    assert!(by_team.iter().all(|&n| n > 20), "both bots played: {by_team:?}");
 }
