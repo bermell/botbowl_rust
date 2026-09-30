@@ -193,6 +193,9 @@ SELECT_ON="${SELECT_ON:-combined}"
 # across it, val_value is. Set POLICY_TARGET=visits to revert.
 POLICY_TARGET="${POLICY_TARGET:-cq}"        # visits|cq
 CQ_TAU="${CQ_TAU:-100}"                     # in Q points (1000 = one TD); only for cq
+# Plan 048: self-play exploration flags for `job generate`, e.g.
+# "--explore-noise 0.25 --explore-alpha 10 --explore-sample-moves 2". Empty = the greedy generator.
+EXPLORE_ARGS="${EXPLORE_ARGS:-}"
 PREPARE_TARGET_ARGS="--policy-target $POLICY_TARGET"
 [ "$POLICY_TARGET" = cq ] && PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --tau $CQ_TAU"
 # Plan 036, adopted 2026-09-17 from gen04 on. The value head was fitting the
@@ -881,13 +884,13 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # tract and warns once, in generate.worker.log).
         worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
         SIZE_ARGS=$(size_gen_args)
-        status "$GG generate: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
+        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
         # shellcheck disable=SC2086
         if ! "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
                 --mode random-start --games "$GAMES_PER_SHARD" \
                 --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
                 --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$CHAMP" \
-                $SIZE_ARGS \
+                $SIZE_ARGS $EXPLORE_ARGS \
                 --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" \
                 --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
             worker_stop
