@@ -100,10 +100,13 @@ and model match; 200 games per board.
 - τ = 20 beats the control by about 2 SE, the same size as exploration in exp048 (τ20 minus the
   exploring arm: +0.001 ± 0.032). But like every fine-tune of gen21 on this window, it lands
   below gen21 itself.
-- **Before reading arm differences further, measure the spread of one fine-tune.** The control
-  sits 0.13 below its parent, while normal loop generations read about 0.50 vs gen13, so a single
-  fine-tune's seed variance may be as large as the arm effects. Plan 032 #5 never ran on this
-  loop. Retrain the τ = 100 control with two more seeds and play each.
+- **Seed variance measured (exp052, 2026-09-30): small.** The τ = 100 control retrained with
+  `--seed 1` and `--seed 2` read 0.381 and 0.422 against the unseeded run's 0.398 on the same 400
+  games, an SD of 0.021 across seeds, below the ±0.025 game noise. Against the 3-seed control
+  average, **τ = 20 is +0.063 ± 0.025** and **exploration (exp048) +0.065 ± 0.025**. Both effects are
+  real, and they act on different things (the target vs the corpus), so they may stack; that is
+  untested. The control's drop below gen21 (0.512) is reproducible across seeds; exp053 checks
+  whether gen21's own 0.512 holds at 200 per board.
 - **TODO, next target A/B: Gumbel σ(q) against τ = 20.** Implemented 2026-09-30 as
   `prepare --policy-target gumbel` (`--gumbel-c-visit 50 --gumbel-c-scale 0.1
   --gumbel-min-range 0` by default). It is `softmax(ln prior + (c_visit + maxN)·c_scale·q̂)`, with
