@@ -8,6 +8,39 @@ Scratch scripts behind the numbers are in the audit session's scratchpad
 (`cqkl.py`, `byslice.py`, `trainslice.py`, `an1.py`…`an8.py`, `analyze*.py`); re-derive before
 relying on them.
 
+## Headline, 2026-09-30: virtual loss leaks and buries the best root children
+
+Found from a web-app screenshot, after the audit: a root whose most-visited child had a 0.1% prior
+and a negative Q. `bump_chosen` adds `virtual_loss` (30) to every child it selects, and the penalty
+is cleared only when a backprop *replaces* that child's score. A descent cut off below the root
+child, for example at a chance node that withholds its value until every outcome is scored, never
+clears it, so the penalty accumulates and buries whichever children keep hitting that case. This
+happens at **one worker too**, and every loop generation and benchmark ran single-worker with
+virtual loss 30. An opt-in trace of real descents per root child
+(`MctsConfig::trace_root_descents`, `tests/root_visit_anomaly.rs`) showed the best-Q child of one
+position getting 12 of 1999 descents; at virtual loss 0 the search concentrates on it, and in
+another position finds a +0.213 line the default search held at +0.078.
+
+**exp054: gen21 with virtual loss 0 vs gen21 with virtual loss 30,** exact roll model, 500 visits,
+200 per board: **0.686 ± 0.021** (W239 D71 L90, TD 751:371; 14x7 0.695, 16x9 0.677). That is the
+largest effect this programme has measured, from a search change alone.
+
+Consequences for the findings below. Every corpus behind them was searched with the leak, so its
+Q values and cq targets came from searches that buried their best lines. Findings 1 (the target
+copies the prior), 5 (winner's curse) and 6 (fan-width exploration) should be re-measured on a
+corpus generated at virtual loss 0 before any fix is built on them. The A/B results (τ = 20,
+exploration) are valid as comparisons, since both arms shared the leak, but their absolute
+levels are understated.
+
+Also found: a node's reported **visits are not descents**. Backprop sets visits to the sum of the
+children's visits, so a subtree recombined under several root children is credited to each of
+them, and a cut-off descent is not credited until the next full backprop. The web drawer's visit
+column, the `visits` policy target and `BudgetMode::Visits` all read this count.
+
+**Next:** 1-worker runs use `virtual_loss = 0` now (`cfgs/exact_visits_vl0.toml`). The
+multi-worker fix is to revert each descent's virtual loss when the descent ends, which needs a
+`recon_mcts` hook; the web app runs 8 workers. Then relaunch the loop at virtual loss 0.
+
 ## The plateau being explained
 
 `runs/loopmix16x9` gen14-21 read 0.50 ± 0.03 against the frozen gen13 anchor on 14x7 and 16x9,
