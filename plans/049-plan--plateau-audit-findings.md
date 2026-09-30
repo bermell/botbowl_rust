@@ -85,7 +85,27 @@ visits. 200 games per board vs gen13 for each arm. Adopt the best arm if it beat
 if the fixed point is broken, a later net should beat the generator on its own slice.
 **Log per generation from now on:** KL(target ‖ prior) and the argmax-change rate, from `prepare`.
 
-**Result.** (pending)
+**Result, first A/B (exp050, 2026-09-30):** exp048's greedy arm with only the target changed
+(warm from gen21, window gen20-22, 3 epochs, val = shards 4,7 of gen22 and gen22x under the arm's
+own target). Scored against gen13 under the legacy roll model on both seats, so the control's seeds
+and model match; 200 games per board.
+
+| target | vs gen13 (400) | minus τ=100 control (paired) | minus gen21 (200) | restore |
+|---|---|---|---|---|
+| cq τ = 100 (control, exp048 greedy) | 0.398 | — | −0.133 ± 0.044 | step 5000 |
+| **cq τ = 20** | **0.464 ± 0.025** | **+0.066 ± 0.032** | −0.072 ± 0.047 | step 7500 |
+| visit counts | 0.246 ± 0.022 | −0.151 ± 0.029 | −0.282 ± 0.039 | step 35000 |
+
+- Visit-count targets are clearly harmful: drop them.
+- τ = 20 beats the control by about 2 SE, the same size as exploration in exp048 (τ20 minus the
+  exploring arm: +0.001 ± 0.032). But like every fine-tune of gen21 on this window, it lands
+  below gen21 itself.
+- **Before reading arm differences further, measure the spread of one fine-tune.** The control
+  sits 0.13 below its parent, while normal loop generations read about 0.50 vs gen13, so a single
+  fine-tune's seed variance may be as large as the arm effects. Plan 032 #5 never ran on this
+  loop. Retrain the τ = 100 control with two more seeds and play each.
+- Not yet tried: Gumbel σ(q) (needs a `targets.rs` variant) and τ between 20 and 100.
+
 
 ## 2. Checkpoint selection ships nets worse than their init
 
