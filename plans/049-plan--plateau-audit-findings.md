@@ -105,8 +105,21 @@ and model match; 200 games per board.
   games, an SD of 0.021 across seeds, below the ±0.025 game noise. Against the 3-seed control
   average, **τ = 20 is +0.063 ± 0.025** and **exploration (exp048) +0.065 ± 0.025**. Both effects are
   real, and they act on different things (the target vs the corpus), so they may stack; that is
-  untested. The control's drop below gen21 (0.512) is reproducible across seeds; exp053 checks
-  whether gen21's own 0.512 holds at 200 per board.
+  untested.
+- **gen21's own level, re-measured (exp053, 2026-09-30): 0.472 ± 0.025** over the same 400 games
+  (14x7 0.515, 16x9 0.430). Its loop benchmark's 0.512 was a lucky draw: replaying the same first
+  100 per board gave 0.470, with the same result in only 74 of 200 games, since search is not
+  reproducible run to run. Against gen21 on the same 400 games:
+
+  | fine-tune of gen21 | minus gen21 |
+  |---|---|
+  | τ = 100 control, 3 seeds | −0.075, −0.091, −0.050 (each ± 0.031) |
+  | **τ = 20** | **−0.009 ± 0.030** |
+  | **exploration corpus (exp048)** | **−0.007 ± 0.032** |
+
+  So the "0.11 drop" was mostly gen21's lucky benchmark. The rest is real: **a τ = 100 fine-tune
+  costs about 0.07 per step**, which a flat loop curve could hide at 100 games per board. **τ = 20 and
+  exploration each make the step neutral**: no loss, but no gain from a single step yet either.
 - **TODO, next target A/B: Gumbel σ(q) against τ = 20.** Implemented 2026-09-30 as
   `prepare --policy-target gumbel` (`--gumbel-c-visit 50 --gumbel-c-scale 0.1
   --gumbel-min-range 0` by default). It is `softmax(ln prior + (c_visit + maxN)·c_scale·q̂)`, with
