@@ -35,7 +35,7 @@ use crate::report::{self, Edge, NodeStats, NodeView, SearchSummary};
 use crate::roll_outcomes;
 use crate::score::leaf_score;
 use crate::scripted;
-use crate::telemetry::{RecombinationCounts, ReuseDecision, ReuseOutcome, SearchTelemetry};
+use crate::telemetry::{RecombinationCounts, ReuseDecision, ReuseOutcome, RootDescents, SearchTelemetry};
 
 /// PUCT exploration constant. Sized so that the `c · P · √N(parent) /
 /// (1 + N(a))` term is comparable to leaf-score magnitudes (game score
@@ -661,6 +661,8 @@ pub struct BloodBowlDynamics {
     /// state (see `exploration.rs` for why that keeps recombination pure).
     /// `None` (default, and always in eval) is the shipped search.
     pub root_noise: Option<Arc<RootNoise>>,
+    /// Opt-in: count the descents each root child is selected for (`RootDescents`).
+    pub root_trace: Option<Arc<RootDescents>>,
     /// Which roll model the chance nodes use; see [`ChanceModel`].
     pub chance_model: ChanceModel,
 }
@@ -705,6 +707,7 @@ impl Default for BloodBowlDynamics {
             backup: BackupMode::default(),
             fpu_reduction: 0.0,
             root_noise: None,
+            root_trace: None,
             chance_model: ChanceModel::Exact,
         }
     }
@@ -1327,6 +1330,9 @@ impl GameDynamics for BloodBowlDynamics {
             }
         };
         bump_chosen(&pick.1, self.virtual_loss);
+        if let (Some(trace), BbAction::Player { action, .. }) = (&self.root_trace, &pick.1) {
+            trace.record(parent_node_state, *action);
+        }
         pick.1
     }
 
@@ -1842,6 +1848,9 @@ pub struct MctsConfig {
     pub budget_mode: BudgetMode,
     /// The roll model; `Legacy` only for the head-to-head against the pre-fix search.
     pub chance_model: ChanceModel,
+    /// Diagnostic: count the descents each root child is selected for (`RootDescents`), reported
+    /// in `SearchSummary::root_descents`. Costs a state comparison per player-node selection.
+    pub trace_root_descents: bool,
 }
 
 impl MctsConfig {
@@ -1863,6 +1872,7 @@ impl MctsConfig {
             debug_root: false,
             budget_mode: BudgetMode::Iterations,
             chance_model: ChanceModel::Exact,
+            trace_root_descents: false,
         }
     }
 
@@ -1909,6 +1919,7 @@ impl MctsConfig {
         cfg.leaf_stats = std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
         cfg.debug_root = std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1");
         cfg.chance_model = ChanceModel::from_env();
+        cfg.trace_root_descents = std::env::var("BLOOD_MCTS_TRACE_ROOT").ok().as_deref() == Some("1");
         cfg.budget_mode = BudgetMode::from_env();
         cfg
     }
@@ -1940,6 +1951,8 @@ pub struct MctsBot {
     last_anchor: Option<HorizonAnchor>,
     /// Summary of the most recent search, for [`MctsBot::last_search`].
     last_search: Option<report::SearchSummary>,
+    /// Shared with every tree this bot builds when `config.trace_root_descents` is on.
+    root_trace: Option<Arc<RootDescents>>,
     /// [`MctsBot::release_stale_tree`] dropped the cache. The next search then reports the
     /// `AnchorMiss` it would have seen, not `NoCache`.
     released_stale: bool,
@@ -1967,6 +1980,7 @@ impl MctsBot {
             last_search: None,
             released_stale: false,
             telemetry: SearchTelemetry::default(),
+            root_trace: None,
         }
     }
 
@@ -2183,6 +2197,13 @@ impl MctsBot {
         // (e.g. against the historical unbounded baseline).
         let horizon_disabled = !self.config.horizon;
         let root_noise = noise.map(|spec| Arc::new(RootNoise::new(root_state.clone(), spec)));
+        if self.config.trace_root_descents {
+            self.root_trace
+                .get_or_insert_with(Default::default)
+                .reset(root_state.clone());
+        } else {
+            self.root_trace = None;
+        }
         let gd = BloodBowlDynamics {
             horizon: if horizon_disabled {
                 None
@@ -2196,6 +2217,7 @@ impl MctsBot {
             backup: self.config.backup,
             fpu_reduction: self.config.fpu_reduction,
             root_noise: root_noise.clone(),
+            root_trace: self.root_trace.clone(),
             chance_model: self.config.chance_model,
         };
         let n_workers = self.config.workers.max(1);
@@ -2798,6 +2820,7 @@ impl MctsBot {
             },
             evaluator_value,
             reuse: result.reuse.clone(),
+            root_descents: self.root_trace.as_ref().map(|t| t.counts()),
             recombination: result.recombination,
             telemetry: self.telemetry.clone(),
         }

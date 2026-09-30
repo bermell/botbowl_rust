@@ -107,6 +107,9 @@ pub struct SearchSummary {
     /// What this search alone cost the transposition table. Cumulative totals for the whole bot
     /// are on [`crate::MctsBot::telemetry`].
     pub recombination: RecombinationCounts,
+    /// Descents each root child was selected for, when `MctsConfig::trace_root_descents` is on.
+    /// Unlike `children[..].stats.visits`, these count the search's actual work per child.
+    pub root_descents: Option<Vec<(botbowl_engine::core::model::Action, u32)>>,
     /// The bot's totals so far, of which this search is the latest contribution. Carried here so a
     /// per-decision read-out can show a rate as well as the current answer.
     pub telemetry: SearchTelemetry,
