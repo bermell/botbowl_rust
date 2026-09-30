@@ -48,6 +48,13 @@ pub enum PolicyTargetKind {
     /// with the visit-weighted mean `Q` of the scored ones. `tau` is in `Q`
     /// points (one touchdown = 1000).
     CompletedQ { tau: f32 },
+    /// Gumbel MuZero's completed-Q target (plan 049 finding 1):
+    /// `softmax(ln prior + (c_visit + max_visits) · c_scale · q̂)`, where `q̂` is the completed
+    /// mover-`Q` min-max normalised over this root's children, so the target's sharpness adapts
+    /// to each root's own spread instead of a fixed `tau`. `min_range` (`Q` points) floors the
+    /// normalising range: without it a near-tie reads as a full-scale gap and the target
+    /// sharpens on noise. Completion of unscored children is the same as `CompletedQ`'s.
+    GumbelQ { c_visit: f32, c_scale: f32, min_range: f32 },
 }
 
 /// Per-child policy target, aligned index-for-index to `sample.children`.
@@ -119,8 +126,14 @@ pub fn policy_target_of(
         }
     }
 
-    if let PolicyTargetKind::CompletedQ { tau } = kind {
-        return completed_q_target(sample, tau);
+    match kind {
+        PolicyTargetKind::CompletedQ { tau } => return completed_q_target(sample, tau),
+        PolicyTargetKind::GumbelQ {
+            c_visit,
+            c_scale,
+            min_range,
+        } => return gumbel_q_target(sample, c_visit, c_scale, min_range),
+        PolicyTargetKind::Visits => {}
     }
 
     // Partially / not solved: start from raw visit counts.
@@ -151,15 +164,35 @@ pub fn policy_target_of(
     Some(PolicyTarget { probs: counts })
 }
 
-/// `softmax(ln prior + q_mover / tau)` over the children. A child counts as
-/// scored when it has a `Q` *and* at least one visit; the rest are completed
-/// with the visit-weighted mean `Q` of the scored children (plain mean of
-/// the `Q`-bearing children if nothing was visited — the 0-visit `Q` a
-/// solved/terminal child can carry). `None` when no child has a `Q`. A
-/// missing prior is treated as `ln 1 = 0`; the prior's global scale
-/// (softmax×len for the NN, unnormalised multipliers for the heuristic)
-/// cancels in the softmax, so both evaluators' corpora are usable as-is.
+/// `softmax(ln prior + q_mover / tau)` over the children, with unscored children completed by
+/// [`completed_mover_q`]. `None` when no child has a `Q`.
 fn completed_q_target(sample: &Sample, tau: f32) -> Option<PolicyTarget> {
+    let q = completed_mover_q(sample)?;
+    let tau = f64::from(tau);
+    Some(softmax_over_prior(sample, q.iter().map(|q| q / tau)))
+}
+
+/// Gumbel MuZero's `σ(q̂)` on top of the prior; see [`PolicyTargetKind::GumbelQ`]. A root whose
+/// completed `Q` is flat (range 0, no floor) gets `q̂ = 0` everywhere, i.e. the prior.
+fn gumbel_q_target(sample: &Sample, c_visit: f32, c_scale: f32, min_range: f32) -> Option<PolicyTarget> {
+    let q = completed_mover_q(sample)?;
+    let lo = q.iter().cloned().fold(f64::INFINITY, f64::min);
+    let hi = q.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let range = (hi - lo).max(f64::from(min_range));
+    let max_visits = sample.children.iter().map(|c| c.visits).max().unwrap_or(0);
+    let scale = (f64::from(c_visit) + f64::from(max_visits)) * f64::from(c_scale);
+    Some(softmax_over_prior(
+        sample,
+        q.iter()
+            .map(|q| if range > 0.0 { scale * (q - lo) / range } else { 0.0 }),
+    ))
+}
+
+/// Each child's mover-frame `Q`, completed: a child counts as scored when it has a `Q` *and*
+/// at least one visit; the rest take the visit-weighted mean `Q` of the scored children (plain
+/// mean of the `Q`-bearing children if nothing was visited — the 0-visit `Q` a solved/terminal
+/// child can carry). `None` when no child has a `Q`.
+fn completed_mover_q(sample: &Sample) -> Option<Vec<f64>> {
     let mover = sample.to_move;
     let qs: Vec<Option<f64>> = sample
         .children
@@ -186,26 +219,36 @@ fn completed_q_target(sample: &Sample, tau: f32) -> Option<PolicyTarget> {
     } else {
         q_sum / n_scored as f64
     };
-    let tau = f64::from(tau);
+    Some(
+        sample
+            .children
+            .iter()
+            .zip(&qs)
+            .map(|(c, q)| match q {
+                Some(q) if c.visits > 0 => *q,
+                _ => fill,
+            })
+            .collect(),
+    )
+}
+
+/// `softmax(ln prior + bonus)` over the children, `bonus` aligned to `sample.children`. A
+/// missing prior is treated as `ln 1 = 0`; the prior's global scale (softmax×len for the NN,
+/// unnormalised multipliers for the heuristic) cancels in the softmax, so both evaluators'
+/// corpora are usable as-is.
+fn softmax_over_prior(sample: &Sample, bonus: impl Iterator<Item = f64>) -> PolicyTarget {
     let logits: Vec<f64> = sample
         .children
         .iter()
-        .zip(&qs)
-        .map(|(c, q)| {
-            let q = match q {
-                Some(q) if c.visits > 0 => *q,
-                _ => fill,
-            };
-            let prior = c.prior.map_or(0.0, |p| f64::from(p.max(1e-6)).ln());
-            prior + q / tau
-        })
+        .zip(bonus)
+        .map(|(c, b)| c.prior.map_or(0.0, |p| f64::from(p.max(1e-6)).ln()) + b)
         .collect();
     let max = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let weights: Vec<f64> = logits.iter().map(|l| (l - max).exp()).collect();
     let z: f64 = weights.iter().sum();
-    Some(PolicyTarget {
+    PolicyTarget {
         probs: weights.iter().map(|w| (w / z) as f32).collect(),
-    })
+    }
 }
 
 /// Value target `v1`: the sample's backfilled drive outcome (Home-centric,
@@ -399,6 +442,95 @@ mod tests {
         }
     }
 
+    fn gumbel(sample: &Sample, min_range: f32) -> Vec<f32> {
+        let kind = PolicyTargetKind::GumbelQ {
+            c_visit: 50.0,
+            c_scale: 0.1,
+            min_range,
+        };
+        policy_target_of(sample, SolvedRootPolicy::OneHot, kind).unwrap().probs
+    }
+
+    #[test]
+    fn gumbel_q_is_softmax_of_log_prior_plus_visit_scaled_normalised_q() {
+        // Equal priors, Q 0 and 100: q̂ = 0 and 1, maxN = 10, so σ = (50 + 10)·0.1·1 = 6.
+        let s = sample(
+            vec![child_p(10, Some(0), 1.0), child_p(10, Some(100), 1.0)],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let p = gumbel(&s, 0.0);
+        let e6 = 6.0f32.exp();
+        assert!((p[0] - 1.0 / (1.0 + e6)).abs() < 1e-6, "{p:?}");
+        assert!((p[1] - e6 / (1.0 + e6)).abs() < 1e-6, "{p:?}");
+    }
+
+    #[test]
+    fn gumbel_q_ignores_the_absolute_q_scale() {
+        // The same root with every Q ten times larger: min-max normalisation makes it identical,
+        // which is the whole difference from a fixed tau.
+        let kids = |k: i64| {
+            vec![
+                child_p(40, Some(10 * k), 2.0),
+                child_p(30, Some(25 * k), 1.0),
+                child_p(5, Some(-5 * k), 0.5),
+            ]
+        };
+        let a = gumbel(&sample(kids(1), false, Team::Home, Some(0.0)), 0.0);
+        let b = gumbel(&sample(kids(10), false, Team::Home, Some(0.0)), 0.0);
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).abs() < 1e-6, "{a:?} vs {b:?}");
+        }
+    }
+
+    #[test]
+    fn gumbel_q_on_a_flat_root_is_the_prior() {
+        let s = sample(
+            vec![child_p(10, Some(50), 1.0), child_p(10, Some(50), 3.0)],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let p = gumbel(&s, 0.0);
+        assert!((p[0] - 0.25).abs() < 1e-6 && (p[1] - 0.75).abs() < 1e-6, "{p:?}");
+    }
+
+    #[test]
+    fn gumbel_q_min_range_stops_a_near_tie_reading_as_decisive() {
+        // Q 0 vs 10: unfloored that is the full [0, 1] range; floored at 100 it is 0.1 of it.
+        let s = sample(
+            vec![child_p(10, Some(0), 1.0), child_p(10, Some(10), 1.0)],
+            false,
+            Team::Home,
+            Some(0.0),
+        );
+        let loose = gumbel(&s, 0.0);
+        let floored = gumbel(&s, 100.0);
+        let sig = |qhat: f32| (60.0f32 * 0.1 * qhat).exp();
+        assert!((loose[1] - sig(1.0) / (1.0 + sig(1.0))).abs() < 1e-6, "{loose:?}");
+        assert!((floored[1] - sig(0.1) / (1.0 + sig(0.1))).abs() < 1e-6, "{floored:?}");
+    }
+
+    #[test]
+    fn gumbel_q_reads_q_in_the_movers_frame_and_completes_unvisited_children() {
+        // Away mover: the Home-centric Q is negated, so the Home-worse child is Away's best.
+        // The third child was never visited: completed with the visit-weighted mean of the
+        // mover-frame Q, (30·0 + 10·160)/40 = 40, i.e. between the two, not at either end.
+        let s = sample(
+            vec![
+                child_p(30, Some(0), 1.0),
+                child_p(10, Some(-160), 1.0),
+                child_p(0, None, 1.0),
+            ],
+            false,
+            Team::Away,
+            Some(0.0),
+        );
+        let p = gumbel(&s, 0.0);
+        assert!(p[1] > p[2] && p[2] > p[0], "{p:?}");
+    }
+
     #[test]
     fn completed_q_is_softmax_of_log_prior_plus_scaled_q() {
         // Equal priors: pure softmax(q / tau). q = 0, 100 at tau 100 →
@@ -586,8 +718,14 @@ mod tests {
     fn root_value_target_clamps_a_multi_td_root() {
         // Two touchdowns of lead is still 1.0 — the outcome label it blends
         // with is clamped the same way (botbowl-data: score delta in [-1,1]).
-        assert_eq!(root_value_target(&sample_rv(Team::Home, Some(1.0), Some(2500))), Some(1.0));
-        assert_eq!(root_value_target(&sample_rv(Team::Home, Some(1.0), Some(-2500))), Some(-1.0));
+        assert_eq!(
+            root_value_target(&sample_rv(Team::Home, Some(1.0), Some(2500))),
+            Some(1.0)
+        );
+        assert_eq!(
+            root_value_target(&sample_rv(Team::Home, Some(1.0), Some(-2500))),
+            Some(-1.0)
+        );
     }
 
     #[test]

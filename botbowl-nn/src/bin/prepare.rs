@@ -96,6 +96,9 @@ enum PolicyTargetArg {
     Visits,
     /// Completed-Q: softmax(ln prior + q_mover / --tau) (plan 032 #7).
     Cq,
+    /// Gumbel MuZero completed-Q: softmax(ln prior + (c_visit + maxN)·c_scale·q̂), q̂ the
+    /// root's min-max-normalised completed Q (plan 049 finding 1).
+    Gumbel,
 }
 
 #[derive(Parser, Debug)]
@@ -119,6 +122,17 @@ struct Args {
     /// Temperature for `--policy-target cq`, in Q points (1000 = one TD).
     #[arg(long, default_value_t = 100.0)]
     tau: f32,
+    /// `--policy-target gumbel`: the visit offset c_visit in `(c_visit + maxN)·c_scale`.
+    #[arg(long = "gumbel-c-visit", default_value_t = 50.0)]
+    gumbel_c_visit: f32,
+    /// `--policy-target gumbel`: c_scale. 0.1 is what plan 049's audit measured (24% of argmaxes
+    /// moved off the prior on gen21, vs 19% at cq tau=20 and 8% at tau=100).
+    #[arg(long = "gumbel-c-scale", default_value_t = 0.1)]
+    gumbel_c_scale: f32,
+    /// `--policy-target gumbel`: floor on a root's normalising Q range, in Q points, so a near-tie
+    /// cannot read as a full-scale gap. 0 = no floor.
+    #[arg(long = "gumbel-min-range", default_value_t = 0.0)]
+    gumbel_min_range: f32,
     /// Plan 036 W3. Value label = `L * drive_outcome + (1 - L) * root_search_value`,
     /// both mover-signed. `1.0` (the default) is the pure outcome, bit for bit.
     #[arg(long = "value-blend", default_value_t = 1.0)]
@@ -230,6 +244,11 @@ fn main() {
     let kind = match args.policy_target {
         PolicyTargetArg::Visits => PolicyTargetKind::Visits,
         PolicyTargetArg::Cq => PolicyTargetKind::CompletedQ { tau: args.tau },
+        PolicyTargetArg::Gumbel => PolicyTargetKind::GumbelQ {
+            c_visit: args.gumbel_c_visit,
+            c_scale: args.gumbel_c_scale,
+            min_range: args.gumbel_min_range,
+        },
     };
 
     // Keyed by (w, h) engine dims.

@@ -104,7 +104,16 @@ and model match; 200 games per board.
   sits 0.13 below its parent, while normal loop generations read about 0.50 vs gen13, so a single
   fine-tune's seed variance may be as large as the arm effects. Plan 032 #5 never ran on this
   loop. Retrain the τ = 100 control with two more seeds and play each.
-- Not yet tried: Gumbel σ(q) (needs a `targets.rs` variant) and τ between 20 and 100.
+- **TODO, next target A/B: Gumbel σ(q) against τ = 20.** Implemented 2026-09-30 as
+  `prepare --policy-target gumbel` (`--gumbel-c-visit 50 --gumbel-c-scale 0.1
+  --gumbel-min-range 0` by default). It is `softmax(ln prior + (c_visit + maxN)·c_scale·q̂)`, with
+  q̂ the root's min-max-normalised completed Q, so the sharpness adapts to each root's own Q
+  spread instead of a fixed τ. On gen22 shard 4 its argmax differs from cq τ=100's on 17.6% of
+  multi-child roots, and it is sharper (mean entropy 0.42 vs 0.67). Run it as an exp050-style arm:
+  the same window and init, prepare-only, no new games needed, and scored with the same
+  legacy-model eval so exp048/exp050 stay the controls. Worth also trying `--gumbel-min-range 50`,
+  so near-tied roots do not sharpen on max-over-noise (finding 5). Not tried yet either: τ between
+  20 and 100.
 
 
 ## 2. Checkpoint selection ships nets worse than their init
