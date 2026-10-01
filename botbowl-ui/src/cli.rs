@@ -433,6 +433,12 @@ pub struct EvalArgs {
     /// cheapest information in the report card.
     #[arg(long)]
     pub vs_games: Option<u32>,
+    /// Plan 051: stop a rung once a sequential test on its mirrored pairs decides,
+    /// `S0:S1[:ALPHA:BETA]` (alpha and beta default to 0.05), e.g. `0.5:0.55`. Every ladder rung,
+    /// each board's included, runs its own test, and `--games` / `--vs-games` become caps. Unset:
+    /// a fixed game count, exactly as before.
+    #[arg(long, value_parser = parse_sprt)]
+    pub sprt: Option<botbowl_play::stats::Sprt>,
     /// Base seed: lecture trials and game pairs are derived from it, so two
     /// candidates run with the same seed face identical situations.
     #[arg(long, default_value_t = 0)]
@@ -639,6 +645,10 @@ pub struct SnapshotArgs {
     /// Search iterations per move for any MCTS bot in play.
     #[arg(long, default_value_t = 1000)]
     pub mcts_iters: usize,
+}
+
+fn parse_sprt(s: &str) -> Result<botbowl_play::stats::Sprt, String> {
+    botbowl_play::stats::Sprt::parse(s)
 }
 
 fn parse_size(s: &str) -> Result<(u16, u16), String> {

@@ -28,6 +28,13 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
 - **Fold logic lives next to the record.** `LadderRow::record` is how a rung's per-game lines
   become the report row, in any order from any number of producers. The hub rebuilds
   `report.json` from workers' lines with exactly this.
+- **Pairs fold inside `LadderRow::record` (plan 051).** Games `2k`/`2k+1` share a seed with the
+  sides swapped, so `record` scores them as one `stats::Pentanomial` sample, using a half-pair
+  stash keyed by `game / 2`. The stash is `#[serde(skip)]`, and `finish` drops leftovers. Both fold
+  owners (the ui rung runner and the hub `Rung`) therefore pair identically. Build the row with
+  `.with_sprt(rule)` to have `record` refresh the test, and poll `decided()` to stop handing out
+  games. **A private field means no struct-update syntax from other crates**: build with
+  `LadderRow::new` and set `board` afterwards.
 - **Clap-free.** CLI enums live in `botbowl-ui/src/cli.rs` with `From` impls onto the types here.
 - **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
   weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform

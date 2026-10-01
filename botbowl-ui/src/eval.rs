@@ -21,7 +21,7 @@
 //! across generations.
 
 use std::io;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use botbowl_curriculum::{available_lectures, make_lecture, run_trials, TrialStats};
@@ -36,6 +36,7 @@ use botbowl_play::bots::{
     parse_puct, CandidateBot, Evaluator, NamedConfig, SearchConfig,
 };
 use botbowl_play::eval::{ladder_assignment, play_ladder_game, rung_name, LadderRow, LectureRow, Report};
+use botbowl_play::stats::Sprt;
 use botbowl_play::trace::ReuseTraceWriter;
 use botbowl_play::GAME_STACK_SIZE;
 
@@ -132,6 +133,9 @@ struct RungState {
     /// Handed out one game at a time. Full games vary several-fold in
     /// length, so a static split would idle workers at the tail.
     next_game: AtomicU32,
+    /// Plan 051: the rung's SPRT has a verdict, so no more games are handed out. Games already
+    /// in flight finish and are recorded; overshoot does not bias a sequential test.
+    decided: AtomicBool,
     /// `writeln!` of a whole JSONL line must be atomic against its peers.
     per_game: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
     /// Plan 043 `--trace-reuse`: `None` unless the flag was given. Shared across the rung's
@@ -147,6 +151,7 @@ fn run_ladder_rung(
     opponent: &str,
     board: Option<BoardDims>,
     games: u32,
+    sprt: Option<Sprt>,
     make_opponent: impl Fn() -> Box<dyn Bot> + Sync,
 ) -> LadderRow {
     // Plan 042: on a multi-size ladder the rung is `opponent@board`, so the
@@ -166,7 +171,8 @@ fn run_ladder_rung(
         )
     });
     let state = RungState {
-        row: Mutex::new(LadderRow::on_board(opponent, board)),
+        row: Mutex::new(LadderRow::on_board(opponent, board).with_sprt(sprt)),
+        decided: AtomicBool::new(false),
         next_game: AtomicU32::new(0),
         per_game: Mutex::new(per_game),
         reuse_trace: args
@@ -227,6 +233,9 @@ fn run_rung_games(
     let mut candidate = candidate_bot(args, preset, nn);
     let mut opponent = make_opponent();
     loop {
+        if state.decided.load(Ordering::Relaxed) {
+            return;
+        }
         let g = state.next_game.fetch_add(1, Ordering::Relaxed);
         if g >= games {
             return;
@@ -252,9 +261,19 @@ fn run_rung_games(
 
         let mut row = state.row.lock().expect("row mutex");
         row.record(&line);
+        if row.decided() {
+            state.decided.store(true, Ordering::Relaxed);
+        }
         eprint!(
-            "\r  vs {name}: {}/{} (W{} D{} L{})",
-            row.games, games, row.wins, row.draws, row.losses
+            "\r  vs {name}: {}/{} (W{} D{} L{}){}",
+            row.games,
+            games,
+            row.wins,
+            row.draws,
+            row.losses,
+            row.sprt
+                .map(|s| format!(" LLR {:.2} [{:.2}, {:.2}] {:?}", s.llr, s.lower, s.upper, s.verdict))
+                .unwrap_or_default()
         );
     }
 }
@@ -381,6 +400,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                         "random",
                         board,
                         args.games,
+                        args.sprt,
                         || Box::new(RandomBot::new()),
                     ));
                 }
@@ -392,6 +412,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                         "scripted",
                         board,
                         args.games,
+                        args.sprt,
                         || Box::new(ScriptedBot::new()),
                     ));
                 }
@@ -403,6 +424,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                         "mcts-heuristic",
                         board,
                         args.games,
+                        args.sprt,
                         || Box::new(make_mcts(&opp, Evaluator::Heuristic, None)),
                     ));
                 }
@@ -462,6 +484,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     &label,
                     board,
                     vs_games,
+                    args.sprt,
                     || Box::new(make_mcts(&opp, vs, vs_nn.as_ref())),
                 ));
             }
@@ -510,7 +533,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
     }
     for r in &report.ladder {
         println!(
-            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}",
+            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}  pts {:.3} ± {:.3} ({} pairs)  margin {:+.2} ± {:.2}{}",
             r.opponent,
             r.win_rate,
             r.wins,
@@ -529,6 +552,14 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             } else {
                 String::new()
             },
+            r.points,
+            r.points_se,
+            r.pairs.pairs(),
+            r.margin_mean,
+            r.margin_se,
+            r.sprt
+                .map(|s| format!("  SPRT({}:{}) {:?} LLR {:.2}", s.rule.s0, s.rule.s1, s.verdict, s.llr))
+                .unwrap_or_default(),
         );
     }
 

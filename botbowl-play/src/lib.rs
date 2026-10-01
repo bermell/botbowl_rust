@@ -15,12 +15,14 @@
 //! - [`generate`] — self-play, random-start and curriculum trajectories.
 //! - [`eval`] — one ladder game, its per-game record, and the report rows
 //!   the per-game records fold into.
+//! - [`stats`] — paired-game scoring and the SPRT that stops a decided rung (plan 051).
 //! - [`trace`] — the opt-in per-decision tree-reuse trace (plan 043).
 
 pub mod board_sizes;
 pub mod bots;
 pub mod eval;
 pub mod generate;
+pub mod stats;
 pub mod trace;
 
 /// Game workers only orchestrate — the search runs on `MctsBot`'s own

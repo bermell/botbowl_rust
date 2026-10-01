@@ -180,6 +180,18 @@ Tests: known pentanomial → known LLR (hand-computed), symmetric verdicts under
 candidate/opponent, guard behaviour, and a `LadderRow` fold that gets the same `pairs` for
 any arrival order.
 
+**Done 2026-10-01 (local half; the hub half is order-of-work item 2).** `botbowl-play/src/stats.rs`
+holds `Pentanomial` and `Sprt` (`parse`, `bounds`, `llr`, `verdict`, `status`). `LadderRow` gains
+`points`, `margin_{sum,sq_sum,mean,se}`, `pairs`, `points_se` and `sprt: Option<SprtStatus>`, all
+serde-defaulted so old reports parse. The pair fold lives *in* `LadderRow::record`, with the
+half-pair stash a `#[serde(skip)]` field of the row rather than of each owner, so the hub pairs
+identically for free. `botbowl-ui eval --sprt S0:S1[:A:B]` applies to **every** ladder rung, not
+only the vs rung: each rung (and each board) is its own test, and a deterministic
+scripted-vs-random rung is what lets `botbowl-ui/tests/sprt_stop.rs` pin the stop (H1 at about
+31 pairs against a 400 cap). The zero-variance guard falls back to `s(1−s)` at the midpoint of
+`s0`/`s1`. The printed ladder line gains `pts ± SE (pairs)`, the margin, and the SPRT verdict and
+LLR, appended at the end so existing greps keep matching.
+
 ## Step 2 — the validation harness (script + a frozen pair list)
 
 `scripts/validate_proxy.py` takes a gold file and one or more proxy result dirs and prints

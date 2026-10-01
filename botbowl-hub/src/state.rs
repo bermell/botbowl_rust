@@ -316,15 +316,14 @@ impl Inner {
         let mut pending = VecDeque::new();
         for (i, r) in req.rungs.iter().enumerate() {
             let opponent = self.resolve_bot(&r.opponent)?;
+            let mut row = LadderRow::new(&r.name);
+            row.board = r.board.map(board_label);
             rungs.push(Rung {
                 name: r.name.clone(),
                 total: r.games,
                 opponent,
                 board: r.board,
-                row: LadderRow {
-                    board: r.board.map(board_label),
-                    ..LadderRow::new(&r.name)
-                },
+                row,
                 done: HashSet::new(),
             });
             pending.extend((0..r.games).map(|g| (i, g)));
