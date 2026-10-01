@@ -1,6 +1,10 @@
 # Plan 051 — Fast bot ranking: SPRT on paired games, contested paired drives, and a validation harness
 
-**Status:** Written 2026-10-01 after discussion. Not started. Steps 1–2 are pure Rust plus a
+**Status:** Steps 1, 2, 4 built and tested 2026-10-01 (the disagreement filter is not built). Step
+3's gold block (`scripts/plan051_gold.sh`, `runs/validation/`, commit `004af79`) launched 11:14,
+about 2.7 games/min, ETA about 23:30. `scripts/plan051_proxies.sh` (`0dfa338`) waits for it, then
+screens the position sets, runs P2 three times per pair and writes
+`runs/plan051_proxy/validation.txt`. Step 5's table and decision go under step 5 when it lands.
 hub change and need no box time; step 3 needs one block of ground-truth games; step 4 builds
 the drive rung; step 5 validates both proxies against step 3 and decides. Results go under
 each step.
