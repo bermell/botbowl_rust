@@ -192,6 +192,18 @@ scripted-vs-random rung is what lets `botbowl-ui/tests/sprt_stop.rs` pin the sto
 `s0`/`s1`. The printed ladder line gains `pts ± SE (pairs)`, the margin, and the SPRT verdict and
 LLR, appended at the end so existing greps keep matching.
 
+**Hub half, done 2026-10-01.** `botbowl-hub job eval --sprt` with the same syntax. The rule
+travels in `EvalJobRequest` (the hub's local JSON API, serde-defaulted). Workers never see it and
+`EvalGameLine` is unchanged, so **`PROTOCOL_VERSION` was not bumped**, contrary to the plan:
+nothing on the worker wire changed, and a bump would have locked out remote workers for nothing.
+A decided rung drops its queued games, `requeue` skips it, and `all_done` counts it as done.
+In-flight games of a finished job retire without being recorded (no cancel frame exists).
+`botbowl-hub/tests/eval_job.rs::a_decided_rung_stops_and_the_job_finishes_early` pins this.
+`eval_summary.py` appends `[paired SE …, N pairs]` and `[SPRT … LLR …]` when present.
+`anchor_curve.py` uses the pentanomial SE per generation, and pools it over the window when every
+generation in it has pairs. Older reports read exactly as before. Both printers share
+`LadderRow::report_line()`.
+
 ## Step 2 — the validation harness (script + a frozen pair list)
 
 `scripts/validate_proxy.py` takes a gold file and one or more proxy result dirs and prints

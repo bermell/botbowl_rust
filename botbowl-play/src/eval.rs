@@ -387,6 +387,40 @@ impl LadderRow {
         }
     }
 
+    /// The report card's line for this rung, printed by both `botbowl-ui eval` and
+    /// `botbowl-hub job eval --wait`. Plan 051's fields are appended so existing greps still match.
+    pub fn report_line(&self) -> String {
+        format!(
+            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}  pts {:.3} ± {:.3} ({} pairs)  margin {:+.2} ± {:.2}{}",
+            self.opponent,
+            self.win_rate,
+            self.wins,
+            self.draws,
+            self.losses,
+            self.wins_as_home,
+            self.losses_as_home,
+            self.wins_as_away,
+            self.losses_as_away,
+            self.tds_for,
+            self.tds_against,
+            self.tds_by_home,
+            self.tds_by_away,
+            if self.unfinished > 0 {
+                format!("  [{} unfinished]", self.unfinished)
+            } else {
+                String::new()
+            },
+            self.points,
+            self.points_se,
+            self.pairs.pairs(),
+            self.margin_mean,
+            self.margin_se,
+            self.sprt
+                .map(|s| format!("  SPRT({}:{}) {:?} LLR {:.2}", s.rule.s0, s.rule.s1, s.verdict, s.llr))
+                .unwrap_or_default(),
+        )
+    }
+
     /// Derive the rates once all games are in.
     pub fn finish(mut self) -> Self {
         if self.games > 0 {

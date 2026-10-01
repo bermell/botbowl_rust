@@ -467,6 +467,10 @@ struct EvalJobArgs {
     max_steps: u32,
     #[arg(long)]
     opponent_iters: Option<usize>,
+    /// Plan 051: stop a rung once a sequential test on its mirrored pairs decides,
+    /// `S0:S1[:ALPHA:BETA]`. Flag-for-flag with `botbowl-ui eval --sprt`.
+    #[arg(long, value_parser = botbowl_play::stats::Sprt::parse)]
+    sprt: Option<botbowl_play::stats::Sprt>,
     /// Accepted for CLI compatibility; the hub never runs lectures.
     #[arg(long, default_value_t = true, hide = true)]
     skip_lectures: bool,
@@ -734,6 +738,7 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         per_game_out: abs(&a.per_game_out),
         report_out: abs(&a.out),
         batch: a.batch,
+        sprt: a.sprt,
     })
 }
 
@@ -810,23 +815,7 @@ fn print_report_lines(s: &JobStatus) {
     if let Some(r) = &s.report {
         println!("== report card: {} ==", r.candidate);
         for row in &r.ladder {
-            println!(
-                "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}",
-                row.opponent,
-                row.win_rate,
-                row.wins,
-                row.draws,
-                row.losses,
-                row.wins_as_home,
-                row.losses_as_home,
-                row.wins_as_away,
-                row.losses_as_away,
-                row.tds_for,
-                row.tds_against,
-                row.tds_by_home,
-                row.tds_by_away,
-                if row.unfinished > 0 { format!("  [{} unfinished]", row.unfinished) } else { String::new() },
-            );
+            println!("{}", row.report_line());
         }
     }
 }

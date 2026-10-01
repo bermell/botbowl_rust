@@ -99,6 +99,14 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   an **iteration** asymmetry (the label only carries puct/horizon/backup/fpu differences, and
   `report.mcts_iters` is the candidate's alone — put the budget in the output file name), and a
   second custom opponent (`--vs-evaluator` gives exactly one per job, so one job per arm).
+- **`job eval --sprt S0:S1[:A:B]` stops a decided rung (plan 051), on the hub alone.** The rule
+  rides in `EvalJobRequest.sprt`, the local JSON API, so no worker frame changed and there was no
+  protocol bump. Each `Rung`'s row is built `.with_sprt(rule)`. The pair fold and the test live in
+  `LadderRow::record`. When a rung decides, its queued games are dropped, `requeue` skips it, and
+  `all_done` counts it as done. In-flight games are not cancelled, since the protocol has no cancel:
+  they finish on the workers, and when the whole job is already `Done` they retire (freeing the
+  stream) without touching the report or the per-game file, so `report.json` is written once.
+  While the job still runs, they are recorded, like the ui's overshoot.
 - **Search telemetry rides on `EvalGameLine`** and folds through `LadderRow::record`, so the hub's
   `report.json` carries the identical `telemetry` block the single-process driver writes. There is
   no distributed `--trace-reuse`: a per-decision trace is a local diagnostic.

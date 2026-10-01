@@ -57,6 +57,23 @@ def td_rate(row: dict) -> str:
     return f"TD/g {(f + a) / n:.2f} ({f / n:.2f}-{a / n:.2f})"
 
 
+def paired(row: dict) -> str:
+    """Plan 051: the SE from the mirrored pairs and the SPRT state, when the report has them.
+
+    The pairs share a seed with the sides swapped, so they are not two independent games. The
+    pair-based SE is the honest one. Appended after the existing fields so a status line read by
+    eye or by a grep keeps its shape.
+    """
+    out = ""
+    counts = (row.get("pairs") or {}).get("counts")
+    if counts and sum(counts) >= 2:
+        out += f" [paired SE {row.get('points_se', float('nan')):.3f}, {sum(counts)} pairs]"
+    s = row.get("sprt")
+    if s:
+        out += f" [SPRT {s['s0']}:{s['s1']} {s['verdict']} LLR {s['llr']:.2f} after {s['pairs']} pairs]"
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("report")
@@ -92,6 +109,7 @@ def main() -> int:
             f"TD {row['tds_for']}:{row['tds_against']}, "
             f"home {row['wins_as_home']}-{row['losses_as_home']} "
             f"away {row['wins_as_away']}-{row['losses_as_away']}{side})"
+            f"{paired(row)}"
         )
         if row["opponent"].startswith("vs:") and vs_row is None:
             vs_row = row

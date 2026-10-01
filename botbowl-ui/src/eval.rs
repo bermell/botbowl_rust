@@ -532,35 +532,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         }
     }
     for r in &report.ladder {
-        println!(
-            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}  pts {:.3} ± {:.3} ({} pairs)  margin {:+.2} ± {:.2}{}",
-            r.opponent,
-            r.win_rate,
-            r.wins,
-            r.draws,
-            r.losses,
-            r.wins_as_home,
-            r.losses_as_home,
-            r.wins_as_away,
-            r.losses_as_away,
-            r.tds_for,
-            r.tds_against,
-            r.tds_by_home,
-            r.tds_by_away,
-            if r.unfinished > 0 {
-                format!("  [{} unfinished]", r.unfinished)
-            } else {
-                String::new()
-            },
-            r.points,
-            r.points_se,
-            r.pairs.pairs(),
-            r.margin_mean,
-            r.margin_se,
-            r.sprt
-                .map(|s| format!("  SPRT({}:{}) {:?} LLR {:.2}", s.rule.s0, s.rule.s1, s.verdict, s.llr))
-                .unwrap_or_default(),
-        );
+        println!("{}", r.report_line());
     }
 
     if let Some(out) = &args.out {

@@ -146,8 +146,21 @@ impl Job {
         }
     }
 
+    /// Every unit has all its games in, or (plan 051) its SPRT is decided. A decided rung's games
+    /// still in flight are not waited for.
     fn all_done(&self) -> bool {
-        self.units().iter().all(|u| u.done >= u.total)
+        self.units()
+            .iter()
+            .enumerate()
+            .all(|(i, u)| u.done >= u.total || self.unit_decided(i))
+    }
+
+    /// Plan 051: an eval rung whose SPRT has a verdict takes no more games.
+    fn unit_decided(&self, unit: usize) -> bool {
+        match &self.kind {
+            Kind::Eval { rungs, .. } => rungs[unit].row.decided(),
+            Kind::Generate { .. } => false,
+        }
     }
 
     fn status(&self, workers_connected: usize) -> JobStatus {
@@ -316,7 +329,7 @@ impl Inner {
         let mut pending = VecDeque::new();
         for (i, r) in req.rungs.iter().enumerate() {
             let opponent = self.resolve_bot(&r.opponent)?;
-            let mut row = LadderRow::new(&r.name);
+            let mut row = LadderRow::new(&r.name).with_sprt(req.sprt);
             row.board = r.board.map(board_label);
             rungs.push(Rung {
                 name: r.name.clone(),
@@ -510,6 +523,10 @@ impl Inner {
             w.tasks.remove(&task);
         }
         if let Some(job) = self.jobs.get_mut(&f.job) {
+            // Plan 051: a decided rung's games are not wanted any more.
+            if job.state != JobState::Running || job.unit_decided(f.unit) {
+                return;
+            }
             for g in f.remaining {
                 job.pending.push_front((f.unit, g));
             }
@@ -648,6 +665,12 @@ impl Inner {
             return;
         };
         let Some(job) = self.jobs.get_mut(&job_id) else { return };
+        // Plan 051: a job that finished on its SPRT verdicts still has games in flight. They retire
+        // above (freeing the worker's stream) but change nothing, so the report is written once.
+        if job.state != JobState::Running {
+            self.dispatch();
+            return;
+        }
         let Kind::Eval {
             rungs, per_game, req, ..
         } = &mut job.kind
@@ -656,7 +679,16 @@ impl Inner {
         };
         let r = &mut rungs[unit];
         if r.name == line.rung && r.done.insert(line.game) {
+            let was_decided = r.row.decided();
             r.row.record(&line);
+            if !was_decided && r.row.decided() {
+                let s = r.row.sprt.expect("decided implies a test");
+                eprintln!(
+                    "[hub] job {job_id} rung {}: SPRT {:?} after {} pairs (LLR {:.2}), dropping its queued games",
+                    r.name, s.verdict, s.pairs, s.llr
+                );
+                job.pending.retain(|&(u, _)| u != unit);
+            }
             if let Err(e) = serde_json::to_writer(&mut *per_game, &line)
                 .map_err(io::Error::other)
                 .and_then(|_| per_game.write_all(b"\n"))

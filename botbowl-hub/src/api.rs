@@ -63,6 +63,10 @@ pub struct EvalJobRequest {
     pub report_out: PathBuf,
     /// Games per task handed to a worker.
     pub batch: u16,
+    /// Plan 051: every rung runs this sequential test and stops once it is decided. The hub
+    /// alone uses it, so the worker protocol does not change.
+    #[serde(default)]
+    pub sprt: Option<botbowl_play::stats::Sprt>,
 }
 
 /// One corpus shard of a generate job: `games` trajectories with seeds

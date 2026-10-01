@@ -114,6 +114,7 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
         per_game_out: dir.join("eval.games.jsonl"),
         report_out: dir.join("report.json"),
         batch: 2,
+        sprt: None,
     }
 }
 
@@ -206,6 +207,67 @@ async fn two_workers_reproduce_the_single_process_eval() {
     assert!(done.iter().all(|(_, n)| *n > 0), "a worker sat idle: {done:?}");
 }
 
+/// Plan 051: a rung with a decided SPRT stops taking games, the job finishes without waiting
+/// for the rest, and nothing that lands afterwards changes the report or the per-game file. The
+/// scripted-vs-scripted rung beside it cannot decide in six games, so the job also shows that an
+/// undecided rung still plays its full count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_decided_rung_stops_and_the_job_finishes_early() {
+    let (hub, url) = start_hub().await;
+    let _w1 = spawn_worker(worker_cfg(&url, "w1", 2));
+    let _w2 = spawn_worker(worker_cfg(&url, "w2", 2));
+
+    let dir = tmp("sprt");
+    let cap = 400u32;
+    let mut req = job(&dir);
+    req.rungs[0].games = cap;
+    req.sprt = Some(botbowl_play::stats::Sprt::parse("0.5:0.55").unwrap());
+    let id = hub.submit_eval(req).unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
+        .await
+        .expect("job finished in time")
+        .expect("job exists");
+    assert_eq!(status.state, JobState::Done, "{status:?}");
+
+    let report = status.report.expect("report attached");
+    let random = &report.ladder[0];
+    let sprt = random.sprt.expect("the rung ran a test");
+    assert_eq!(sprt.verdict, botbowl_play::stats::Verdict::H1, "scripted beats random");
+    assert!(random.games < cap / 4, "stopped at {} of {cap}", random.games);
+    let scripted = &report.ladder[1];
+    assert_eq!(scripted.games, GAMES, "an undecided rung plays every game");
+    assert_eq!(scripted.sprt.unwrap().verdict, botbowl_play::stats::Verdict::Undecided);
+
+    // Let any in-flight games of the decided rung land, then check they changed nothing.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let lines = read_lines(&dir.join("eval.games.jsonl"));
+    assert_eq!(
+        lines.len() as u32,
+        random.games + scripted.games,
+        "one line per recorded game"
+    );
+    let on_disk: botbowl_play::eval::Report =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).unwrap()).unwrap();
+    // Counters, not the derived floats: a JSON round trip may move a float's last bit.
+    let counters = |rows: &[LadderRow]| -> Vec<_> {
+        rows.iter()
+            .map(|r| {
+                (
+                    r.games,
+                    r.wins,
+                    r.draws,
+                    r.losses,
+                    r.pairs,
+                    r.sprt.map(|s| (s.pairs, s.verdict)),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(counters(&on_disk.ladder), counters(&report.ladder));
+    let later = hub.job_status(id).unwrap().report.unwrap();
+    assert_eq!(counters(&later.ladder), counters(&report.ladder));
+}
+
 /// Plan 042: a rung that names a board plays on it, on every worker, and
 /// the lines and rows say which board — reproduced line for line by the
 /// direct computation with the same `board`.
@@ -243,6 +305,7 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
         per_game_out: dir.join("eval.games.jsonl"),
         report_out: dir.join("report.json"),
         batch: 2,
+        sprt: None,
     };
     let id = hub.submit_eval(req).unwrap();
     let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
