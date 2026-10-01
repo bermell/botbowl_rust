@@ -1,0 +1,5 @@
+# The shipped search with `--mcts-iters N` counting new descents, whatever a reused tree brought
+# with it. The visits budget stops when the root reaches N visits, and those are DAG sums plus the
+# reused subtree's, so "500 visits" ran ~255 real descents under the fixed search (exp055). Use this
+# preset when the budget itself is the variable.
+budget_mode = "iterations"
