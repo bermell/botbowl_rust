@@ -35,6 +35,9 @@ use botbowl_play::bots::{
     candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_backup,
     parse_puct, CandidateBot, Evaluator, NamedConfig, SearchConfig,
 };
+use botbowl_play::drives::{
+    drive_assignment, drive_rung_name, play_drive_game, position_state, DriveRung, PositionSet,
+};
 use botbowl_play::eval::{ladder_assignment, play_ladder_game, rung_name, LadderRow, LectureRow, Report};
 use botbowl_play::stats::Sprt;
 use botbowl_play::trace::ReuseTraceWriter;
@@ -143,13 +146,38 @@ struct RungState {
     reuse_trace: Option<ReuseTraceWriter>,
 }
 
+/// Where a rung's games are played (plan 051): full games from kickoff on a board (`None` = the
+/// env board), or paired drives from a frozen position set on the set's board.
+#[derive(Clone, Copy)]
+enum Venue<'a> {
+    Games(Option<BoardDims>),
+    Drives(BoardDims, &'a DriveRung),
+}
+
+impl Venue<'_> {
+    fn board(&self) -> Option<BoardDims> {
+        match self {
+            Venue::Games(b) => *b,
+            Venue::Drives(b, _) => Some(*b),
+        }
+    }
+
+    /// `opponent@board` for games (plan 042), `opponent drives(set)@board` for drives.
+    fn rung_name(&self, opponent: &str) -> String {
+        match self {
+            Venue::Games(b) => rung_name(opponent, *b),
+            Venue::Drives(b, d) => drive_rung_name(opponent, &d.set, *b),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_ladder_rung(
     args: &EvalArgs,
     preset: Option<&NamedConfig>,
     nn: Option<&Arc<NnEvaluator>>,
     opponent: &str,
-    board: Option<BoardDims>,
+    venue: Venue<'_>,
     games: u32,
     sprt: Option<Sprt>,
     make_opponent: impl Fn() -> Box<dyn Bot> + Sync,
@@ -157,7 +185,7 @@ fn run_ladder_rung(
     // Plan 042: on a multi-size ladder the rung is `opponent@board`, so the
     // per-game lines and the report rows group by board without a new
     // file format; on an env-board ladder it is the bare opponent name.
-    let name = &rung_name(opponent, board);
+    let name = &venue.rung_name(opponent);
     // Per-game side-relative record (plan 023 deferred item 5): the pooled
     // report line cannot distinguish a scoring-rate bias from a
     // win-conversion one, nor see who received the opening kickoff.
@@ -170,8 +198,10 @@ fn run_ladder_rung(
                 .expect("--per-game-out: cannot open"),
         )
     });
+    let mut row = LadderRow::on_board(opponent, venue.board()).with_sprt(sprt);
+    row.opponent = name.clone();
     let state = RungState {
-        row: Mutex::new(LadderRow::on_board(opponent, board).with_sprt(sprt)),
+        row: Mutex::new(row),
         decided: AtomicBool::new(false),
         next_game: AtomicU32::new(0),
         per_game: Mutex::new(per_game),
@@ -191,7 +221,7 @@ fn run_ladder_rung(
     // than tract.
     let parallel = args.parallel_games.clamp(1, games.max(1)) as usize;
     if parallel == 1 {
-        run_rung_games(args, preset, nn, name, board, games, &make_opponent, &state);
+        run_rung_games(args, preset, nn, name, venue, games, &make_opponent, &state);
     } else {
         eprintln!("  vs {name}: {parallel} games in parallel");
         std::thread::scope(|s| {
@@ -201,7 +231,7 @@ fn run_ladder_rung(
                 std::thread::Builder::new()
                     .name(format!("rung-{i}"))
                     .stack_size(GAME_STACK_SIZE)
-                    .spawn_scoped(s, move || run_rung_games(args, preset, nn, name, board, games, mk, st))
+                    .spawn_scoped(s, move || run_rung_games(args, preset, nn, name, venue, games, mk, st))
                     .expect("spawn rung worker");
             }
         });
@@ -225,7 +255,7 @@ fn run_rung_games(
     preset: Option<&NamedConfig>,
     nn: Option<&Arc<NnEvaluator>>,
     name: &str,
-    board: Option<BoardDims>,
+    venue: Venue<'_>,
     games: u32,
     make_opponent: &(impl Fn() -> Box<dyn Bot> + Sync),
     state: &RungState,
@@ -240,18 +270,37 @@ fn run_rung_games(
         if g >= games {
             return;
         }
-        let (candidate_team, seed) = ladder_assignment(args.seed, g);
-        let line = play_ladder_game(
-            &mut *candidate,
-            &mut *opponent,
-            name,
-            g,
-            candidate_team,
-            seed,
-            args.max_steps,
-            board,
-            state.reuse_trace.as_ref(),
-        );
+        let line = match venue {
+            Venue::Games(board) => {
+                let (candidate_team, seed) = ladder_assignment(args.seed, g);
+                play_ladder_game(
+                    &mut *candidate,
+                    &mut *opponent,
+                    name,
+                    g,
+                    candidate_team,
+                    seed,
+                    args.max_steps,
+                    board,
+                    state.reuse_trace.as_ref(),
+                )
+            }
+            Venue::Drives(board, set) => {
+                let (i, attacks, dice) = drive_assignment(set.positions.len(), args.seed, g);
+                let seed = set.positions[i];
+                play_drive_game(
+                    &mut *candidate,
+                    &mut *opponent,
+                    name,
+                    g,
+                    seed,
+                    position_state(&set.bias, board, seed),
+                    attacks,
+                    dice,
+                    args.max_steps,
+                )
+            }
+        };
 
         if let Some(w) = state.per_game.lock().expect("per-game mutex").as_mut() {
             use std::io::Write;
@@ -362,19 +411,40 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         .sizes
         .boards()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // Plan 051: `--positions` replaces the boards with drive rungs, one per position set.
+    let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
+    let drive_sets: Vec<(BoardDims, DriveRung)> = match args.positions.as_deref() {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|path| {
+                let set = PositionSet::load(path)?;
+                Ok((set.board_dims()?, set.rung()?))
+            })
+            .collect::<Result<_, String>>()
+            .map_err(invalid)?,
+        None => Vec::new(),
+    };
+    let venues: Vec<Venue> = if drive_sets.is_empty() {
+        boards.iter().map(|&b| Venue::Games(b)).collect()
+    } else {
+        drive_sets.iter().map(|(b, d)| Venue::Drives(*b, d)).collect()
+    };
     let mut ladder: Vec<LadderRow> = Vec::new();
     if !args.skip_ladder {
         eprintln!(
-            "== opponent ladder ({} games per rung, {} on the vs rung{}) ==",
+            "== opponent ladder ({} {} per rung, {} on the vs rung{}) ==",
             args.games,
+            if drive_sets.is_empty() { "games" } else { "drives" },
             args.vs_games.unwrap_or(args.games),
-            if boards[0].is_some() {
+            if venues[0].board().is_some() {
                 format!(
                     ", boards {}",
-                    boards
+                    venues
                         .iter()
-                        .flatten()
-                        .map(|d| board_label(*d))
+                        .filter_map(|v| v.board())
+                        .map(board_label)
                         .collect::<Vec<_>>()
                         .join(" ")
                 )
@@ -391,14 +461,14 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     panic!("--rungs: expected `random`, `scripted` or `mcts-heuristic`, got `{name}`");
                 }
             }
-            for &board in &boards {
+            for &venue in &venues {
                 if wanted.contains(&"random") {
                     ladder.push(run_ladder_rung(
                         &args,
                         cand_preset.as_ref(),
                         nn.as_ref(),
                         "random",
-                        board,
+                        venue,
                         args.games,
                         args.sprt,
                         || Box::new(RandomBot::new()),
@@ -410,7 +480,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                         cand_preset.as_ref(),
                         nn.as_ref(),
                         "scripted",
-                        board,
+                        venue,
                         args.games,
                         args.sprt,
                         || Box::new(ScriptedBot::new()),
@@ -422,7 +492,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                         cand_preset.as_ref(),
                         nn.as_ref(),
                         "mcts-heuristic",
-                        board,
+                        venue,
                         args.games,
                         args.sprt,
                         || Box::new(make_mcts(&opp, Evaluator::Heuristic, None)),
@@ -476,13 +546,13 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             };
             // The gating rung: `--vs-games` if given, else `--games`.
             let vs_games = args.vs_games.unwrap_or(args.games);
-            for &board in &boards {
+            for &venue in &venues {
                 ladder.push(run_ladder_rung(
                     &args,
                     cand_preset.as_ref(),
                     nn.as_ref(),
                     &label,
-                    board,
+                    venue,
                     vs_games,
                     args.sprt,
                     || Box::new(make_mcts(&opp, vs, vs_nn.as_ref())),
@@ -504,11 +574,11 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         telemetry: Report::telemetry_of(&ladder),
         mcts_iters: args.mcts_iters,
         seed: args.seed,
-        board_env: if boards[0].is_some() {
-            boards
+        board_env: if venues[0].board().is_some() {
+            venues
                 .iter()
-                .flatten()
-                .map(|d| board_label(*d))
+                .filter_map(|v| v.board())
+                .map(board_label)
                 .collect::<Vec<_>>()
                 .join(",")
         } else {

@@ -298,6 +298,33 @@ Cost sketch per paired sample: 2 drives ≈ 1 min vs 2 games ≈ 5 min. Whether 
 paired drive carries as much information as a paired game is exactly what step 5 measures;
 the hope is more, the floor is a fifth of the price for less.
 
+**Done 2026-10-01, except the disagreement filter.** As built, with the deviations from the
+design above:
+- `botbowl-play/src/drives.rs`: `PositionSet` / `Screen` / `DriveRung`, `position_state`,
+  `drive_assignment`, `play_drive_game`, `drive_rung_name`.
+- `EvalGameLine` gains one trailing field, `attacker: Option<TeamType>`, rather than `kind` plus
+  `attacker`: `Some` means a drive. A drive line's `seed` is the *position* seed (the dice seed is
+  `base + g/2`). Hub protocol is **v10** (`Task::Eval.drives` + the new field).
+- **The screen is an ordinary eval job**, not a new command. `botbowl-ui positions --board 14x7
+  --count 500 --out cand.json` writes the unscreened recipe, skipping positions where the side to
+  move has fewer than 4 turns left. A drive rung of the reference against itself over it, for
+  example `job eval --positions cand.json --vs-games 2000` (4 playouts × 500 positions), runs on
+  the hub's workers. `scripts/positions_screen.py` then keeps the positions whose attacker scored
+  within the band. The same file, now carrying `screen`, is what `--positions` plays.
+- `--positions A.json,B.json` on both `botbowl-ui eval` and `botbowl-hub job eval` turns every
+  rung (fixed and vs) into drives, one rung per set on its own board. `--board-sizes` is ignored,
+  and `--games` / `--vs-games` count drives. SPRT applies unchanged.
+- Random-start positions keep their sampled MA, unlike `play_ladder_game`, which caps MA on narrow
+  boards. That is the training distribution, which is the point of drives.
+- Tests: `drives::tests` (assignment, regeneration, pair fold, screened subset), `eval::tests`
+  (the attacker field over JSON and postcard), and
+  `botbowl-hub/tests/eval_job.rs::drive_rungs_reproduce_the_single_process_drives` (workers' lines
+  equal `play_drive_game` in-process, line for line).
+- **Not built yet:** the disagreement filter. It is optional, and the plan says it comes last.
+- Smoke result (12x5, scripted reference): 40 candidates, 42% of positions at attacker rate 0 and
+  42% at rate 1, 6 kept at 0.25-0.75. A deterministic reference is bimodal, as expected. The real
+  screen uses a net.
+
 ## Step 5 — validate and decide
 
 Run on the validation pairs, R = 3 each:

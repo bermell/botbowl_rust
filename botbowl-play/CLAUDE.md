@@ -35,6 +35,15 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   `.with_sprt(rule)` to have `record` refresh the test, and poll `decided()` to stop handing out
   games. **A private field means no struct-update syntax from other crates**: build with
   `LadderRow::new` and set `board` afterwards.
+- **Drive rungs (plan 051, `drives.rs`).** A position set is a recipe (`PositionSet`: board, bias,
+  seeds, optional screen), and `position_state(bias, board, seed)` regenerates each position the
+  way `random_start_trajectory` draws a corpus game. `drive_assignment` pairs game `2k`/`2k+1` on
+  one position with the sides swapped and one dice seed, so the pentanomial fold applies
+  unchanged. A drive line's `home_score` / `away_score` are the drive's own touchdowns, its `seed`
+  is the position's seed, and `attacker` (the team to move) is set. That trailing field is what
+  marks a line as a drive, and it follows the `board` / `telemetry` serialisation rules. Rung
+  names are `opponent drives(set)@board`, keeping the opponent as a prefix so `vs:` detection
+  still works.
 - **Clap-free.** CLI enums live in `botbowl-ui/src/cli.rs` with `From` impls onto the types here.
 - **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
   weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform

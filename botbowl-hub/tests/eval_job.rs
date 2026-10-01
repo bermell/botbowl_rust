@@ -101,12 +101,14 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
                 games: GAMES,
                 opponent: BotReq::Random,
                 board: None,
+                drives: None,
             },
             RungReq {
                 name: "scripted".into(),
                 games: GAMES,
                 opponent: BotReq::Scripted,
                 board: None,
+                drives: None,
             },
         ],
         seed: SEED,
@@ -268,6 +270,66 @@ async fn a_decided_rung_stops_and_the_job_finishes_early() {
     assert_eq!(counters(&later.ladder), counters(&report.ladder));
 }
 
+/// Plan 051: a drive rung over real workers gives exactly the lines `play_drive_game` gives for
+/// the same positions in-process, each marked with its attacker and paired across the sides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn drive_rungs_reproduce_the_single_process_drives() {
+    use botbowl_play::drives::{drive_assignment, play_drive_game, position_state, DriveRung};
+    let Ok(b) = BoardDims::try_new(14, 7, 3) else {
+        eprintln!("skipped: capacity {WIDTH}x{HEIGHT}/{TEAM_SIZE} too small for 12x5/3");
+        return;
+    };
+    let set = DriveRung {
+        set: "t".into(),
+        bias: Default::default(),
+        positions: vec![11, 12, 13],
+    };
+    let (hub, url) = start_hub().await;
+    let _w1 = spawn_worker(worker_cfg(&url, "w1", 2));
+    let _w2 = spawn_worker(worker_cfg(&url, "w2", 1));
+    let dir = tmp("drives");
+    let games = 8u32;
+    let name = botbowl_play::drives::drive_rung_name("random", "t", b);
+    let mut req = job(&dir);
+    req.rungs = vec![RungReq {
+        name: name.clone(),
+        games,
+        opponent: BotReq::Random,
+        board: Some(b),
+        drives: Some(set.clone()),
+    }];
+    let id = hub.submit_eval(req).unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
+        .await
+        .expect("job finished in time")
+        .expect("job exists");
+    assert_eq!(status.state, JobState::Done, "{status:?}");
+
+    let mut want = Vec::new();
+    let mut cand = ScriptedBot::new();
+    for g in 0..games {
+        let (i, attacks, dice) = drive_assignment(set.positions.len(), SEED, g);
+        let p = set.positions[i];
+        want.push(play_drive_game(
+            &mut cand,
+            &mut RandomBot::new(),
+            &name,
+            g,
+            p,
+            position_state(&set.bias, b, p),
+            attacks,
+            dice,
+            100_000,
+        ));
+    }
+    let mut got = read_lines(&dir.join("eval.games.jsonl"));
+    got.sort_by_key(key);
+    assert_eq!(got, want, "drive lines differ from the direct computation");
+    assert!(got.iter().all(|l| l.attacker.is_some()));
+    let row = &status.report.expect("report attached").ladder[0];
+    assert_eq!((row.games, row.pairs.pairs()), (games, games / 2));
+}
+
 /// Plan 042: a rung that names a board plays on it, on every worker, and
 /// the lines and rows say which board — reproduced line for line by the
 /// direct computation with the same `board`.
@@ -298,6 +360,7 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
                 games,
                 opponent: BotReq::Scripted,
                 board: Some(b),
+                drives: None,
             })
             .collect(),
         seed: SEED,

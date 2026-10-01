@@ -32,6 +32,34 @@ pub enum Command {
     /// Measure how the search output converges with iteration budget, to
     /// justify `--mcts-iters` (plan 025). Headless, read-only.
     Convergence(ConvergenceArgs),
+    /// Write a frozen position set for drive rungs (plan 051): `seeds` only, before screening.
+    /// Screen it with a reference self-play drive rung and `scripts/positions_screen.py`.
+    Positions(PositionsArgs),
+}
+
+/// `positions`: the candidate positions of a drive-rung set on one board.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PositionsArgs {
+    /// Playable board, `14x7` or `14x7/4`.
+    #[arg(long)]
+    pub board: String,
+    #[arg(long, default_value_t = botbowl_play::board_sizes::DEFAULT_CELLS_PER_PLAYER)]
+    pub cells_per_player: f64,
+    /// Positions to keep.
+    #[arg(long, default_value_t = 500)]
+    pub count: u32,
+    /// First seed tried. Keep far from corpus seeds (the loop uses 10_000_000 + ...).
+    #[arg(long, default_value_t = 70_000_000)]
+    pub seed_base: u64,
+    /// Skip positions where the side to move has fewer turns than this left in the half: the
+    /// clock, not the bots, would end the drive.
+    #[arg(long, default_value_t = botbowl_play::drives::MIN_TURNS_LEFT)]
+    pub min_turns_left: u8,
+    /// Set name for rung labels; defaults to the output file's stem.
+    #[arg(long)]
+    pub name: Option<String>,
+    #[arg(long)]
+    pub out: String,
 }
 
 /// Re-search the same random-start states at a ladder of iteration budgets and
@@ -547,6 +575,11 @@ pub struct EvalArgs {
     /// Boards to run the ladder on (plan 042).
     #[command(flatten)]
     pub sizes: EvalSizeArgs,
+    /// Plan 051: play every rung as paired drives from these position sets (comma-separated
+    /// files from `positions` + `scripts/positions_screen.py`), one rung per set on the set's own
+    /// board, instead of full games. `--board-sizes` is ignored. `--games` counts drives.
+    #[arg(long)]
+    pub positions: Option<String>,
 }
 
 /// Resolve the inference-sidecar socket: the `--nn-server` flag, else the

@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub use botbowl_engine::core::model::BoardDims;
 pub use botbowl_play::board_sizes::SizeDist;
 pub use botbowl_play::bots::{Evaluator, SearchConfig};
+pub use botbowl_play::drives::DriveRung;
 pub use botbowl_play::eval::EvalGameLine;
 pub use botbowl_play::generate::GenerateConfig;
 
@@ -34,7 +35,8 @@ pub use botbowl_play::generate::GenerateConfig;
 // v7 (plan 048): `GenerateConfig.exploration`.
 // v8: `MctsConfig.chance_model`, riding inside `SearchConfig.config`.
 // v9: `MctsConfig.trace_root_descents`.
-pub const PROTOCOL_VERSION: u32 = 9;
+// v10 (plan 051): `Task::Eval.drives` (a drive rung's position set) and `EvalGameLine.attacker`.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.
@@ -173,6 +175,9 @@ pub enum Task {
         /// Plan 042: the board this rung plays on; `None` = the worker's
         /// env board (which the capacity check makes the same as the hub's).
         board: Option<BoardDims>,
+        /// Plan 051: play single drives from these positions instead of full games. `board` is
+        /// then always `Some`, the set's board.
+        drives: Option<DriveRung>,
     },
     /// Play these games of one corpus shard. Game `g`'s seed is
     /// `seed_base + g`, exactly as `botbowl-ui dataset --seed seed_base`
@@ -333,6 +338,11 @@ mod tests {
             },
             opponent: BotSpec::Scripted,
             board: Some(BoardDims::default()),
+            drives: Some(DriveRung {
+                set: "t".into(),
+                bias: Default::default(),
+                positions: vec![3, 5],
+            }),
         };
         let bytes = encode(&ToWorker::Task(task.clone()));
         let back: ToWorker = decode(&bytes).unwrap();

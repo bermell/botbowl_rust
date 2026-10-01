@@ -14,6 +14,7 @@ use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, SizeDist};
 use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
 use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_backup, parse_puct, CandidateBot};
+use botbowl_play::drives::{drive_rung_name, DriveRung, PositionSet};
 use botbowl_play::eval::rung_name;
 use botbowl_play::generate::{Exploration, GenMode, RandomStartBias};
 
@@ -471,6 +472,11 @@ struct EvalJobArgs {
     /// `S0:S1[:ALPHA:BETA]`. Flag-for-flag with `botbowl-ui eval --sprt`.
     #[arg(long, value_parser = botbowl_play::stats::Sprt::parse)]
     sprt: Option<botbowl_play::stats::Sprt>,
+    /// Plan 051: play every rung as paired drives from these position sets (comma-separated),
+    /// one rung per set on its own board. `--board-sizes` is ignored. Flag-for-flag with
+    /// `botbowl-ui eval --positions`.
+    #[arg(long)]
+    positions: Option<String>,
     /// Accepted for CLI compatibility; the hub never runs lectures.
     #[arg(long, default_value_t = true, hide = true)]
     skip_lectures: bool,
@@ -629,6 +635,20 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             .map(Some)
             .collect(),
     };
+    // Plan 051: `--positions` replaces the boards with one drive rung per position set.
+    let venues: Vec<(Option<BoardDims>, Option<DriveRung>)> = match a.positions.as_deref() {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|path| {
+                let set = PositionSet::load(path)?;
+                Ok((Some(set.board_dims()?), Some(set.rung()?)))
+            })
+            .collect::<Result<_, String>>()
+            .map_err(|e| format!("--positions: {e}"))?,
+        None => boards.into_iter().map(|b| (b, None)).collect(),
+    };
     let mut rungs = Vec::new();
     if !a.skip_fixed_rungs {
         for name in a.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -646,12 +666,13 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
                     ))
                 }
             };
-            for &board in &boards {
+            for (board, drives) in &venues {
                 rungs.push(RungReq {
-                    name: rung_name(name, board),
+                    name: venue_name(name, *board, drives.as_ref()),
                     games: a.games,
                     opponent: opponent.clone(),
-                    board,
+                    board: *board,
+                    drives: drives.clone(),
                 });
             }
         }
@@ -704,16 +725,17 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
                 )
             }
         };
-        for &board in &boards {
+        for (board, drives) in &venues {
             rungs.push(RungReq {
-                name: rung_name(&label, board),
+                name: venue_name(&label, *board, drives.as_ref()),
                 games: a.vs_games.unwrap_or(a.games),
                 opponent: BotReq::Mcts {
                     search: opp,
                     evaluator: vs,
                     model: a.vs_model.as_ref().map(abs),
                 },
-                board,
+                board: *board,
+                drives: drives.clone(),
             });
         }
     }
@@ -740,6 +762,15 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         batch: a.batch,
         sprt: a.sprt,
     })
+}
+
+/// The rung label, as `botbowl-ui eval` spells it: `opponent@board` for games, `opponent
+/// drives(set)@board` for drives.
+fn venue_name(opponent: &str, board: Option<BoardDims>, drives: Option<&DriveRung>) -> String {
+    match (drives, board) {
+        (Some(d), Some(b)) => drive_rung_name(opponent, &d.set, b),
+        _ => rung_name(opponent, board),
+    }
 }
 
 fn print_generate_lines(s: &JobStatus) {

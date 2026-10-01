@@ -21,8 +21,8 @@ use crate::board_sizes::board_label;
 use crate::stats::{Pentanomial, Sprt, SprtStatus, Verdict};
 use crate::trace::{ReuseTraceRow, ReuseTraceWriter};
 
-const OPPONENT_SEED_MIX: u64 = 0xC3C3_C3C3_C3C3_C3C3;
-const CANDIDATE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
+pub(crate) const OPPONENT_SEED_MIX: u64 = 0xC3C3_C3C3_C3C3_C3C3;
+pub(crate) const CANDIDATE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
 
 /// Per-game side-relative record (plan 023 deferred item 5): the pooled
 /// rung row cannot distinguish a scoring-rate bias from a win-conversion
@@ -60,6 +60,12 @@ pub struct EvalGameLine {
     /// `botbowl-ui eval` and by the hub rebuilding a report from workers' lines.
     #[serde(default)]
     pub telemetry: Option<SearchTelemetry>,
+    /// Plan 051: set iff this line is a single drive from a frozen position (`drives.rs`), to the
+    /// team that was to move there. The score fields are then the drive's own touchdowns, and
+    /// `seed` is the position's seed. Absent for a full game. Same trailing-field rules as
+    /// `board`.
+    #[serde(default)]
+    pub attacker: Option<TeamType>,
 }
 
 impl Serialize for EvalGameLine {
@@ -69,7 +75,8 @@ impl Serialize for EvalGameLine {
         let binary = !serializer.is_human_readable();
         let with_board = self.board.is_some() || binary;
         let with_telemetry = self.telemetry.is_some() || binary;
-        let n = 8 + usize::from(with_board) + usize::from(with_telemetry);
+        let with_attacker = self.attacker.is_some() || binary;
+        let n = 8 + usize::from(with_board) + usize::from(with_telemetry) + usize::from(with_attacker);
         let mut s = serializer.serialize_struct("EvalGameLine", n)?;
         s.serialize_field("rung", &self.rung)?;
         s.serialize_field("game", &self.game)?;
@@ -84,6 +91,9 @@ impl Serialize for EvalGameLine {
         }
         if with_telemetry {
             s.serialize_field("telemetry", &self.telemetry)?;
+        }
+        if with_attacker {
+            s.serialize_field("attacker", &self.attacker)?;
         }
         s.end()
     }
@@ -207,6 +217,7 @@ fn line_of(
         finished: state.info.game_over,
         board: board.map(board_label),
         telemetry,
+        attacker: None,
     }
 }
 
@@ -489,6 +500,7 @@ mod tests {
             finished,
             board: None,
             telemetry: None,
+            attacker: None,
         }
     }
 
@@ -674,6 +686,23 @@ mod tests {
         let mut plain = LadderRow::new("random");
         plain.record(&line(0, TeamType::Home, 1, 0, true));
         assert_eq!(plain.telemetry, None);
+    }
+
+    /// Plan 051's trailing field, by the same rules: absent from JSON on a game line, always on
+    /// the postcard wire.
+    #[test]
+    fn attacker_is_a_trailing_optional_key_that_survives_postcard() {
+        let mut l = line(3, TeamType::Away, 1, 0, true);
+        assert!(!serde_json::to_string(&l).unwrap().contains("attacker"));
+        l.attacker = Some(TeamType::Home);
+        let json = serde_json::to_string(&l).unwrap();
+        assert!(json.ends_with(r#""attacker":"Home"}"#), "{json}");
+        assert_eq!(serde_json::from_str::<EvalGameLine>(&json).unwrap(), l);
+        for attacker in [None, Some(TeamType::Away)] {
+            l.attacker = attacker;
+            let back: EvalGameLine = postcard::from_bytes(&postcard::to_allocvec(&l).unwrap()).unwrap();
+            assert_eq!(back, l);
+        }
     }
 
     /// Plan 051: the mirrored games pair into one pentanomial sample, whatever order the lines

@@ -36,6 +36,7 @@ use botbowl_hub_proto::{
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::make_mcts;
+use botbowl_play::drives::{drive_assignment, play_drive_game, position_state};
 use botbowl_play::eval::{ladder_assignment, play_ladder_game};
 use botbowl_play::generate::play_trajectory;
 use botbowl_play::GAME_STACK_SIZE;
@@ -365,6 +366,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
             candidate,
             opponent,
             board,
+            drives,
         } => {
             let (mut cand, mut opp) = match (make_bot(candidate, store), make_bot(opponent, store)) {
                 (Ok(c), Ok(o)) => (c, o),
@@ -383,13 +385,34 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
             let area = mem_governor::cost_units(cells, iters_of(candidate))
                 + mem_governor::cost_units(cells, iters_of(opponent));
             for &g in games {
-                let (team, game_seed) = ladder_assignment(*seed, g);
                 let _slot = admit_game(governor, area, rung);
-                // No `--trace-reuse` on the distributed path: a per-decision trace is a local
-                // diagnostic, and the telemetry the hub's report needs already rides in the line.
-                let line = play_ladder_game(
-                    &mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps, *board, None,
-                );
+                let line = match (drives, *board) {
+                    // Plan 051: a drive from a frozen position, regenerated from its seed.
+                    (Some(set), Some(b)) => {
+                        let (i, attacks, dice) = drive_assignment(set.positions.len(), *seed, g);
+                        let p = set.positions[i];
+                        play_drive_game(
+                            &mut *cand,
+                            &mut *opp,
+                            rung,
+                            g,
+                            p,
+                            position_state(&set.bias, b, p),
+                            attacks,
+                            dice,
+                            *max_steps,
+                        )
+                    }
+                    _ => {
+                        let (team, game_seed) = ladder_assignment(*seed, g);
+                        // No `--trace-reuse` on the distributed path: a per-decision trace is a
+                        // local diagnostic, and the telemetry the hub's report needs already
+                        // rides in the line.
+                        play_ladder_game(
+                            &mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps, *board, None,
+                        )
+                    }
+                };
                 // Send failures mean the hub is gone; the channel is
                 // unbounded and outlives the socket, so this only fails
                 // when the whole worker is shutting down.

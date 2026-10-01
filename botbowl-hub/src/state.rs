@@ -57,6 +57,7 @@ struct Rung {
     total: u32,
     opponent: BotSpec,
     board: Option<BoardDims>,
+    drives: Option<botbowl_play::drives::DriveRung>,
     row: LadderRow,
     done: HashSet<u32>,
 }
@@ -195,6 +196,7 @@ impl Job {
                 candidate: candidate.clone(),
                 opponent: rungs[unit].opponent.clone(),
                 board: rungs[unit].board,
+                drives: rungs[unit].drives.clone(),
             },
             Kind::Generate { shards } => {
                 let s = &shards[unit];
@@ -336,6 +338,7 @@ impl Inner {
                 total: r.games,
                 opponent,
                 board: r.board,
+                drives: r.drives.clone(),
                 row,
                 done: HashSet::new(),
             });

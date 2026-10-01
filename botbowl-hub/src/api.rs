@@ -39,6 +39,9 @@ pub struct RungReq {
     /// Plan 042: the board this rung plays on; `None` = the env board.
     #[serde(default)]
     pub board: Option<BoardDims>,
+    /// Plan 051: a drive rung's position set; `None` plays full games.
+    #[serde(default)]
+    pub drives: Option<botbowl_play::drives::DriveRung>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

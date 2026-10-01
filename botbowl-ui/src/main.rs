@@ -4,6 +4,7 @@ mod dataset;
 mod eval;
 mod live;
 mod placement;
+mod positions;
 mod replay;
 
 use clap::Parser;
@@ -22,5 +23,6 @@ fn main() -> io::Result<()> {
         cli::Command::Eval(args) => eval::run(args),
         cli::Command::Placement(args) => placement::run(args),
         cli::Command::Convergence(args) => convergence::run(args),
+        cli::Command::Positions(args) => positions::run(args),
     }
 }
