@@ -41,6 +41,58 @@ column, the `visits` policy target and `BudgetMode::Visits` all read this count.
 multi-worker fix is to revert each descent's virtual loss when the descent ends, which needs a
 `recon_mcts` hook; the web app runs 8 workers. Then relaunch the loop at virtual loss 0.
 
+## Headline, 2026-10-01: the post-fix loop regressed, and on 14x7 tau 20 explains it
+
+`runs/loopmix16x9vl0` (launched at `a645386` from gen21 with every fix above: virtual-loss fix,
+exact roll model, cq tau 20, exploration, 500 visits) read **below gen21 at every generation**.
+Points vs gen13, 200 per board:
+
+| | 14x7 | 16x9 |
+|---|---|---|
+| gen21, same commit, seed and search (`baseline_gen21`) | 0.535 | 0.435 |
+| gen01 / gen02 / gen03 / gen04 | 0.438 / 0.468 / 0.458 / 0.445 | 0.307 / 0.333 / 0.310 / 0.385 |
+| gen01-04 pooled, 800 per board | 0.452 | 0.334 |
+
+The pooled gap is 0.485 vs 0.393, about 3.7 sigma. The drop came at gen01, and gens 2-4 are
+flat. Stopped 2026-10-01 at gen06.
+
+**Hypothesis (the user's):** the fixes made the search branch more (passes, fouls and armour
+now have real outcome distributions). The budget was cut to 500 *visits* (plan 045, measured
+under the leak), and tau 20 trusts that shallow search's Q more than tau 100 did. Together that
+gives noisy targets, worst on the wider 16x9 fan. Measured support:
+- **Real descents per decision fell from ~330-345 to ~255** at "500 visits" (exp049/053 vs
+  `baseline_gen21` telemetry). Visits are DAG sums and include the reused subtree (about 60% of
+  searches reuse one). The virtual-loss fix concentrates descents on shared lines, so the visit
+  count reaches 500 sooner.
+- The 16x9 root fan reaches 130 legal actions, and 29% of 16x9 roots have 20 or more. With ~255
+  descents, most children get one or two.
+- Each fine-tune barely moves validation loss (gen01: value 0.1151 → 0.1142, policy ≈ flat), so
+  only games can separate the arms.
+
+**exp055** (`scripts/exp055_tau_and_budget.sh`, `a8c7f9a`). Aborted at 10:45 for plan 051, so
+the numbers are partial:
+
+| 14x7 vs gen13 | points | n |
+|---|---|---|
+| gen01's corpus re-prepared at **tau 100**, fine-tuned from gen21 exactly as gen01 was | **0.565 ± 0.032** | 200 |
+| gen21 control, same batch | 0.543 ± 0.034 | 174 |
+| gen01 (tau 20, the same corpus) | 0.438 ± 0.031 | 200 |
+
+On 14x7, tau 100 recovers all of gen01's loss (+0.13 over tau 20 on identical data). This
+**reverses** the leaky-search result (exp052: tau 20 +0.064 over tau 100). That fits the
+hypothesis: once the search concentrates honestly but shallowly, sharpening onto its Q hurts.
+16x9 had only 27 games (0.407), so it is unresolved.
+
+**Still open (cheaper once plan 051 lands):**
+1. tau 100's 16x9 rung (the remaining 173 games).
+2. gen21 at 500 / 1000 / 2000 *real descents* (`cfgs/exact_iters.toml`) against gen13 at 500
+   visits, on both boards: does strength still climb past ~255 descents, and more steeply on 16x9?
+3. If it climbs, fine-tune gen21 on ~1600 games generated at the bigger budget (equal compute to
+   gen01's 4800 at 500 visits) and judge it against gen21 in the same batch. If it beats its
+   parent, relaunch the loop at that budget, on a descent budget rather than visits.
+
+Whatever (2)-(3) say, the next loop should not run cq tau 20 at the current budget.
+
 ## The plateau being explained
 
 `runs/loopmix16x9` gen14-21 read 0.50 ± 0.03 against the frozen gen13 anchor on 14x7 and 16x9,
