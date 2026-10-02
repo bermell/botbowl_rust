@@ -26,7 +26,8 @@ cleanup() { [ -n "$NN_PID" ] && kill "$NN_PID" 2>/dev/null; rm -f "$SOCK"; }
 trap cleanup EXIT INT TERM
 git -C "$REPO" diff --quiet || die "dirty tree"
 status "start: commit $(git -C "$REPO" rev-parse --short HEAD); waiting for exp056"
-until grep -qE "\] (done$|FATAL)" "$REPO/runs/exp056/status.md" 2>/dev/null; do sleep 120; done
+# Only the *last* line counts: exp056's status keeps a FATAL from its OOM-killed first launch.
+until tail -1 "$REPO/runs/exp056/status.md" 2>/dev/null | grep -qE "\] (done$|FATAL)"; do sleep 120; done
 status "exp056 finished; building"
 cargo build --release -p botbowl-ui >> "$OUT/build.log" 2>&1 || die "build"
 "$PY" "$REPO/scripts/nn_server.py" --socket "$SOCK" --device cuda --model "$MODEL" --stats-every 300 --canvas 11x18 >> "$OUT/nn_server.log" 2>&1 & NN_PID=$!
