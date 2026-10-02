@@ -351,6 +351,39 @@ Only after this: tune the ranking search budget (does 250 iters keep the P-order
 pairs?) with the same harness, and consider the margin as the SPRT statistic if its SE/effect
 ratio beat points in the gold data.
 
+### Interim result and how we use it (2026-10-02, reps 1-2 of 3)
+
+P1 (SPRT on paired full games): 0 wrong signs, 0/4 false H1, rank correlation 0.98 with gold, at
+0.52 of a fixed match's cost. **Adopted for A/B decisions.**
+
+P2 (SPRT on paired contested drives): 0/8 false H1, cost 0.27 of P1's (about 7x cheaper than a
+fixed match). But one wrong sign: on **14x7, gen13 vs gen03** (gold 0.608) the drives said H0 in 2
+of 3 runs, counting the run that hung. On 16x9 the same pair is H1 every time, and on 14x7 the
+*medium* pair (gen13 vs gen08) is H1 every time. By the pre-committed rule, that fails (a).
+
+**Decision (the user's, 2026-10-02):** use P2 anyway as the **quick screen** for wide parameter
+sweeps, and full games (P1) for confirmation and for marginal gains later:
+- A drive **H1** is a candidate, not a result. Confirm it with P1 before acting. False H1 is
+  controlled at alpha = 5% per rung, so a 20-arm sweep still expects about one.
+- A drive **H0** is not proof of no effect. The 14x7 miss shows a real gap can sit outside what
+  drives measure. That matters most for changes that act across drives: kickoff and setup,
+  clock, attrition.
+- Once the net is strong and the gains are marginal, rank on full games. Drive-scale effects are
+  compressed (large pair, 14x7: 0.52 on drives vs 0.61 on games).
+
+**Open: investigate the 14x7 blind spot.** The user's intuition is that mid-drive play is what makes
+a bot strong. There is no setup logic beyond defaults, so kickoff formations should not separate
+gen13 from gen03. Candidates for what full games see and drives do not:
+- **Attrition.** Injuries and KOs carry over between drives in a game; every drive starts fresh.
+- **Clock and half management** across drives.
+- **Kickoff returns** (the first turns after a kickoff are not in the random-start distribution).
+- **The screen.** It used gen21 as reference and kept positions contested *for gen21*, which may be
+  exactly the positions where gen03 is not worse.
+
+Cheapest first checks: split the gold games' points by drive (the per-game lines do not hold
+drives, so this needs a replay or a log), compare casualty counts between the sides in the gold
+games, and re-screen with gen03 or a mixed reference.
+
 ## Not now
 
 - **Luck covariate (CUPED-style adjustment).** Sum over rolls of actual − expected success
