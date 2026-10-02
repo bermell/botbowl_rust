@@ -114,6 +114,16 @@ pub struct ConvergenceArgs {
     /// their seed slot; raise --states to compensate.
     #[arg(long, default_value_t = 0)]
     pub min_legal: usize,
+    /// Playable board for the random starts (`14x7/4`); defaults to the env board.
+    #[arg(long)]
+    pub board: Option<String>,
+    /// States probed at once, each on its own thread. With `--nn-server` they share the GPU's
+    /// batches; one stream on a batching server is slower than tract.
+    #[arg(long, default_value_t = 1)]
+    pub parallel: usize,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
     /// Random-start placement biases (defaults match generation).
     #[command(flatten)]
     pub bias: BiasArgs,
