@@ -93,6 +93,32 @@ hypothesis: once the search concentrates honestly but shallowly, sharpening onto
 
 Whatever (2)-(3) say, the next loop should not run cq tau 20 at the current budget.
 
+## 2026-10-02/03: the search budget, re-measured with plan 051's tools (exp056-058)
+
+- **exp056** (drives, gen21 at N real descents vs gen21 at 500 visits, about 255 descents):
+  - **14x7:** 500 descents gives 0.586 (H1), 2000 gives 0.572 (H1), 1000 gives 0.549.
+  - **16x9:** 500 descents gives 0.505 ± 0.029, flat.
+  - **Tau arms vs gen21:** tau100 0.516 and tau20 0.479. Not trusted yet: both nets were trained on
+    corpora from the old budget.
+- **exp057** (`runs/exp057/summary.txt`, convergence vs a 16000-descent reference, regret in Q
+  points):
+  - **14x7:** regret falls 27 -> 20 -> 14 -> 11 -> 10 over 250 / 500 / 1000 / 2000 / 4000, so it
+    flattens after about 1000.
+  - **16x9 mid-turn roots (about 98 legal moves):** flat from 125 to 2000 (top-1 about 0.45,
+    regret about 27), improving only at 4000 (0.59, 17).
+- **exp058** (16x9 drives, gen21 at 4000 descents vs 500 visits): **0.576 ± 0.028, H1 after 54
+  pairs.** Strength follows the convergence curve: the big boards do gain from search, but only
+  past about 2000 descents.
+
+**Decision for the loop** (`runs/loopmix16x9d1k`, launched 2026-10-02 23:25 by
+`scripts/launch_d1k.sh`): 1000 real descents on every board. 4000 on the big boards would cost
+about 15 h per generation on the training box: both sides search at the generation budget, and
+the trees cap the worker at about 4 streams. The candidate fix for wide fans is Gumbel root
+selection with sequential halving. It spends a small budget on the best few root candidates
+instead of thinly over about 100, it is used both when playing and when generating, and our cq
+target is already its policy-target half. It is not written up yet. `GEN_SPLIT` in train_loop.sh
+allows per-board-group budgets.
+
 ## The plateau being explained
 
 `runs/loopmix16x9` gen14-21 read 0.50 ± 0.03 against the frozen gen13 anchor on 14x7 and 16x9,
