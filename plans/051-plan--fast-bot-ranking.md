@@ -1,13 +1,8 @@
 # Plan 051 — Fast bot ranking: SPRT on paired games, contested paired drives, and a validation harness
 
-**Status:** Steps 1, 2, 4 built and tested 2026-10-01 (the disagreement filter is not built). Step
-3's gold block (`scripts/plan051_gold.sh`, `runs/validation/`, commit `004af79`) launched 11:14,
-about 2.7 games/min, ETA about 23:30. `scripts/plan051_proxies.sh` (`0dfa338`) waits for it, then
-screens the position sets, runs P2 three times per pair and writes
-`runs/plan051_proxy/validation.txt`. Step 5's table and decision go under step 5 when it lands.
-hub change and need no box time; step 3 needs one block of ground-truth games; step 4 builds
-the drive rung; step 5 validates both proxies against step 3 and decides. Results go under
-each step.
+**Status:** Steps 1-5 done 2026-10-02 (the disagreement filter is not built). P1 (SPRT on full games) is
+adopted for A/B decisions. P2 (contested drives) fails acceptance (a) on one pair but is, by the
+user's decision, the main metric for this phase, with guards. See step 5.
 
 ## Problem
 
@@ -350,6 +345,33 @@ Table from `validate_proxy.py`, judged by the acceptance rule in step 2. Outcome
 Only after this: tune the ranking search budget (does 250 iters keep the P-ordering on the
 pairs?) with the same harness, and consider the margin as the SPRT statistic if its SE/effect
 ratio beat points in the gold data.
+
+### Final table (2026-10-02, 3 reps; `runs/plan051_proxy/validation.txt`)
+
+Gold is 400 full games per pair (200 per board). P1 is replayed offline from the gold lines. Cost
+columns: P1 as a fraction of the full match, and P2 as a fraction of P1 (candidate MCTS
+iterations).
+
+| pair | board | gold | P1 | P1 cost | P2 verdicts | P2 mean n | P2 cost |
+|---|---|---|---|---|---|---|---|
+| large | 14x7 | 0.608 ± 0.029 | H1 @130 | 0.65 | **H0, H1, H0** | 263 | 0.23 |
+| large | 16x9 | 0.690 ± 0.029 | H1 @42 | 0.21 | H1, H1, H1 | 117 | 0.35 |
+| medium | 14x7 | 0.590 ± 0.030 | H1 @62 | 0.32 | H1, H1, H1 | 463 | 0.82 |
+| medium | 16x9 | 0.618 ± 0.032 | H1 @78 | 0.39 | H1, H1, H1 | 225 | 0.39 |
+| small | 14x7 | 0.515 ± 0.033 | undecided @200 | 1.00 | H0, H0, H0 | 460 | 0.27 |
+| small | 16x9 | 0.438 ± 0.034 | H0 @86 | 0.42 | H0, H0, H0 | 179 | 0.32 |
+| zero | 14x7 | 0.512 ± 0.029 | undecided @200 | 1.00 | H0, H0, H0 | 177 | 0.11 |
+| zero | 16x9 | 0.465 ± 0.030 | H0 @90 | 0.45 | H0, H0, H0 | 76 | 0.12 |
+| zero-ish | 14x7 | 0.537 ± 0.034 | undecided @200 | 1.00 | H0, H0, H0 | 181 | 0.10 |
+| zero-ish | 16x9 | 0.455 ± 0.032 | H0 @32 | 0.16 | H0, H0, H0 | 310 | 1.46 |
+
+- **P1:** 0 wrong signs, 0/4 false H1, rank correlation 0.98, at 0.52 of a fixed match.
+- **P2:** 2 wrong signs (both on large/14x7), 0/12 false H1, rank correlation 0.71, at 0.29 of P1.
+  That is about 7x cheaper than a fixed match.
+
+Rep 1's large and medium runs were replayed after the SPRT-reversion hang (fixed at `b802cc4`);
+the hung partials are in `hung_r1/`. The 16x9 near-even pairs read 0.44-0.47 at full gold N; the
+earlier seat-bias worry faded to about 1.2 SE on the identical pair.
 
 ### Interim result and how we use it (2026-10-02, reps 1-2 of 3)
 
