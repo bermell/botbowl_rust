@@ -298,7 +298,8 @@ pub struct LadderRow {
     #[serde(default)]
     pub points_se: f64,
     /// Plan 051: the rung's SPRT, when it runs one ([`LadderRow::with_sprt`]). Refreshed on every
-    /// completed pair, so the fold owner can stop handing out games once it is decided.
+    /// completed pair until it decides, then frozen at that first crossing: `pairs` keeps counting
+    /// the overshoot, but the verdict, LLR and pair count here are the decision's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprt: Option<SprtStatus>,
     /// Pairs with one game in, keyed by `game / 2`: the game index and its half points. Held
@@ -387,7 +388,9 @@ impl LadderRow {
         match self.half_pairs.remove(&(line.game / 2)) {
             Some((other, h)) if other != line.game => {
                 self.pairs.record(h, half_points);
-                if let Some(s) = &mut self.sprt {
+                // A verdict is final at its first crossing: games still in flight keep landing
+                // after a rung decides, and they must not withdraw it.
+                if let Some(s) = self.sprt.as_mut().filter(|s| s.verdict == Verdict::Undecided) {
                     *s = s.rule.status(&self.pairs);
                 }
             }
@@ -768,6 +771,50 @@ mod tests {
         assert!(s.llr >= s.upper);
         assert_eq!(s.pairs, row.pairs.pairs());
         assert!(LadderRow::new("mcts").sprt.is_none() && !LadderRow::new("mcts").decided());
+    }
+
+    /// A verdict is final at its first crossing. Games already in flight when a rung decides
+    /// still land and are folded, and they can pull the LLR back between the bounds. If that
+    /// reverted the verdict, a hub rung with its queue already dropped would never finish
+    /// (it hung exp plan051 P2 rep 1).
+    #[test]
+    fn a_decided_sprt_stays_decided_through_overshoot() {
+        let rule = crate::stats::Sprt::parse("0.5:0.55").unwrap();
+        let mut row = LadderRow::new("mcts").with_sprt(Some(rule));
+        let mut g = 0;
+        let mut push = |row: &mut LadderRow, win_both: bool| {
+            // A double win, or a double loss, as one mirrored pair.
+            let (h, a) = if win_both { (1, 0) } else { (0, 1) };
+            row.record(&line(g, TeamType::Home, h, a, true));
+            row.record(&line(g + 1, TeamType::Away, a, h, true));
+            g += 2;
+        };
+        // Mostly double wins, with a few losses so the variance is not zero, until it decides.
+        let mut k = 0;
+        while !row.decided() {
+            push(&mut row, k % 5 != 0);
+            k += 1;
+        }
+        let at_decision = row.sprt.unwrap();
+        assert_eq!(at_decision.verdict, crate::stats::Verdict::H1);
+        // Overshoot: a run of double losses that would drag the LLR well below the upper bound.
+        for _ in 0..k {
+            push(&mut row, false);
+        }
+        assert!(
+            rule.llr(&row.pairs) < at_decision.upper,
+            "the overshoot must actually undo the crossing for this test to mean anything"
+        );
+        assert!(row.decided(), "a verdict reached is never withdrawn");
+        assert_eq!(
+            row.sprt.unwrap(),
+            at_decision,
+            "the status is the one at the first crossing"
+        );
+        assert!(
+            row.pairs.pairs() > at_decision.pairs,
+            "the overshoot is still counted in pairs"
+        );
     }
 
     /// `report.json` files written before plan 051 still parse.
