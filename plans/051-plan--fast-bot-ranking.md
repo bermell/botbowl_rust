@@ -361,15 +361,24 @@ fixed match). But one wrong sign: on **14x7, gen13 vs gen03** (gold 0.608) the d
 of 3 runs, counting the run that hung. On 16x9 the same pair is H1 every time, and on 14x7 the
 *medium* pair (gen13 vs gen08) is H1 every time. By the pre-committed rule, that fails (a).
 
-**Decision (the user's, 2026-10-02):** use P2 anyway as the **quick screen** for wide parameter
-sweeps, and full games (P1) for confirmation and for marginal gains later:
-- A drive **H1** is a candidate, not a result. Confirm it with P1 before acting. False H1 is
-  controlled at alpha = 5% per rung, so a 20-arm sweep still expects about one.
-- A drive **H0** is not proof of no effect. The 14x7 miss shows a real gap can sit outside what
-  drives measure. That matters most for changes that act across drives: kickoff and setup,
-  clock, attrition.
-- Once the net is strong and the gains are marginal, rank on full games. Drive-scale effects are
-  compressed (large pair, 14x7: 0.52 on drives vs 0.61 on games).
+**Decision (the user's, 2026-10-02): drives are the main metric for this phase.** The net is
+trained on single drives, so a drive measurement measures what training optimises. Full games add
+phases (kickoff returns, attrition, clock) that drive training cannot reach, and those mostly add
+noise to the comparisons that matter now. Multi-drive tactics (the 2-1 grind, injuring strong
+players early) are a later phase that needs game-level value targets, a training change. Three
+guards go with it:
+1. **Screen with the current reference, and refresh it.** A set's positions are contested *for the
+   bot that screened it*, which is the point: it measures improvement exactly where the reference
+   is unsure. For loop work, re-screen with the parent (each generation, or every few), or the
+   positions drift easy as the net improves and the set stops discriminating. The 14x7 miss may
+   partly be this: gen13 vs gen03 was judged on positions contested for gen21.
+2. **An occasional P1 full-game check** (every few generations, and before adopting a new
+   configuration), so drive strength that stops turning into game strength shows up. If training
+   and evaluation both see only random-start drives, a flaw in that distribution is invisible to
+   both.
+3. **Confirm sweep winners.** False H1 is controlled at alpha = 5% per rung, so a 20-arm sweep
+   still expects about one. Confirm a drive H1 with P1 before acting on it. A drive H0 does not rule
+   out an effect that acts across drives.
 
 **Open: investigate the 14x7 blind spot.** The user's intuition is that mid-drive play is what makes
 a bot strong. There is no setup logic beyond defaults, so kickoff formations should not separate
@@ -379,6 +388,14 @@ gen13 from gen03. Candidates for what full games see and drives do not:
 - **Kickoff returns** (the first turns after a kickoff are not in the random-start distribution).
 - **The screen.** It used gen21 as reference and kept positions contested *for gen21*, which may be
   exactly the positions where gen03 is not worse.
+
+The user's context, 2026-10-02: attrition and clock management cannot be *learned* from
+drive-level training. A full-game win through them is a side effect of style, not something the
+training can target. Setups are defaults, so formations should not separate the nets. **Kickoff
+returns are the candidate that matters**, because random-start positions never include receiving
+a kick, so training and drive evaluation are both blind to it. If that is where gen03 loses, the
+fix is kickoff-start positions in the corpus (and an eval set), not a different eval. The user has
+a setup-training phase prepared, to follow the tau and search-budget work.
 
 Cheapest first checks: split the gold games' points by drive (the per-game lines do not hold
 drives, so this needs a replay or a log), compare casualty counts between the sides in the gold
