@@ -120,6 +120,21 @@ MCTS_ITERS="${MCTS_ITERS:-1000}"
 # The benchmark's budget, both seats. Separate from generation's so a run can generate cheaper
 # without moving the anchor curve's scale mid-run.
 EVAL_MCTS_ITERS="${EVAL_MCTS_ITERS:-$MCTS_ITERS}"
+# What `--mcts-iters` counts, per phase: `iterations` (real descents) or `visits` (root visits,
+# which include the reused subtree and the DAG's double counting; about 255 descents at 500 under
+# the fixed search, plan 049). The hub client pins BLOOD_MCTS_BUDGET into every job, so these
+# set it per call. Empty = inherit the environment, as before.
+GEN_BUDGET_MODE="${GEN_BUDGET_MODE:-}"
+EVAL_BUDGET_MODE="${EVAL_BUDGET_MODE:-}"
+# Per-board-group generation budgets (exp057: wide 16x9 roots need several times the descents
+# 14x7 does). `SIZES@ITERS@SHARDS@GAMES` groups separated by `;`, e.g.
+#   "12x5:2,14x7:8@1000@0 2 4 6@300;16x9:15@4000@1 3 5 7@225"
+# Each group is its own `job generate` with an explicit weighted `--board-sizes` list, its own
+# `--mcts-iters` and shard set, all run side by side. Interleave the shards so the train/val split
+# (TRAIN_SHARDS/VAL_SHARDS) holds both groups. Shards must cover NN_SHARDS exactly once. Empty =
+# one job over SIZE_MODE's distribution at MCTS_ITERS, as before. Set SIZE_MODE=list so the
+# centred curriculum stays off: its centre would not reach the groups' lists.
+GEN_SPLIT="${GEN_SPLIT:-}"
 EVAL_GAMES="${EVAL_GAMES:-30}"              # per fixed ladder rung, paired Home/Away
 # Fixed rungs kept in the report card. `random` read 1.000 in every one of
 # nine generations and `scripted` sits at 0.87-0.95 where 30 games is noise.
@@ -565,6 +580,47 @@ hub_stop() {
 }
 # $1 = parallel games, $2 = log file (per phase, so a fallback warning is
 # attributable); the sidecar socket is passed when the server is up.
+# Run a command with BLOOD_MCTS_BUDGET set to $1, or as-is when $1 is empty.
+with_budget() {
+    local mode="$1"; shift
+    if [ -n "$mode" ]; then BLOOD_MCTS_BUDGET="$mode" "$@"; else "$@"; fi
+}
+# One generation's games: a single job, or one job per GEN_SPLIT group side by side. Same seed
+# layout either way (shard K of gen G starts at SEED_BASE + G*1e6 + K*1e5), so a split corpus has
+# the seeds a single job would have had.
+generate_jobs() {
+    local gen_dir="$1" champ="$2" size_args="$3" group sizes iters shards games i=0 rc=0
+    local -a pids=()
+    if [ -z "$GEN_SPLIT" ]; then
+        # shellcheck disable=SC2086
+        with_budget "$GEN_BUDGET_MODE" "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+            --mode random-start --games "$GAMES_PER_SHARD" \
+            --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
+            --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$champ" \
+            $size_args $EXPLORE_ARGS \
+            --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" \
+            --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.log" 2>&1
+        return $?
+    fi
+    IFS=';' read -ra groups <<< "$GEN_SPLIT"
+    for group in "${groups[@]}"; do
+        IFS='@' read -r sizes iters shards games <<< "$group"
+        log "$GG generate group $i: $games/shard at $iters, shards $shards, boards $sizes"
+        # shellcheck disable=SC2086
+        with_budget "$GEN_BUDGET_MODE" "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+            --mode random-start --games "$games" \
+            --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
+            --mcts-iters "$iters" --evaluator "$EVALUATOR" --model "$champ" \
+            --board-sizes "$sizes" --cells-per-player "$SIZE_CELLS_PER_PLAYER" $EXPLORE_ARGS \
+            --shards "$shards" --heuristic-shards "" \
+            --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.$i.log" 2>&1 &
+        pids+=($!)
+        i=$((i + 1))
+    done
+    for p in "${pids[@]}"; do wait "$p" || rc=1; done
+    cat "$gen_dir"/generate.[0-9]*.log > "$gen_dir/generate.log" 2>/dev/null
+    return $rc
+}
 worker_start() {
     local extra=""
     [ -n "$NN_SERVER_PID" ] && extra="--nn-server $NN_SOCKET"
@@ -787,7 +843,7 @@ eval_submit() {
     fi
     status "$GG eval submitted: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR")$([ "$SIZE_MODE" = fixed ] || echo ", on each of $EVAL_BOARD_SIZES"), alongside the next generation on the hub"
     # shellcheck disable=SC2086
-    "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+    with_budget "$EVAL_BUDGET_MODE" "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
             --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
             --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
             $RUNG_ARGS $(size_eval_args) \
@@ -885,14 +941,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
         SIZE_ARGS=$(size_gen_args)
         status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
-        # shellcheck disable=SC2086
-        if ! "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
-                --mode random-start --games "$GAMES_PER_SHARD" \
-                --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
-                --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$CHAMP" \
-                $SIZE_ARGS $EXPLORE_ARGS \
-                --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" \
-                --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
+        if ! generate_jobs "$GEN_DIR" "$CHAMP" "$SIZE_ARGS"; then
             worker_stop
             nn_server_stop
             die "$GG generate failed — see generate.log, hub.log and generate.worker.log"
