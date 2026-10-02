@@ -19,6 +19,9 @@ M="$REPO/models/az_v7"; GEN21="$M/bbnet_mix16x9_gen21.onnx"
 SETS="$REPO/cfgs/positions/contested_14x7.json,$REPO/cfgs/positions/contested_16x9.json"
 VISITS="$REPO/cfgs/exact_visits.toml"; ITERS="$REPO/cfgs/exact_iters.toml"
 SPRT="0.5:0.55"; DRIVE_CAP=2000; GAME_CAP=400
+# The 2000-descent arm's trees are large: 14 parallel games OOM-killed the worker (13.7 GB, 15 GB
+# box) on 2026-10-02. Fewer streams and a bigger reserve for the worker's memory governor.
+PARALLEL="${PARALLEL:-6}"; MEM_FLOOR_MB="${MEM_FLOOR_MB:-4096}"
 export BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR="$REPO/target/16x9"
 HUB="$CARGO_TARGET_DIR/release/botbowl-hub"; WORKER="$CARGO_TARGET_DIR/release/botbowl-worker"
 HUB_URL="http://127.0.0.1:13337"; TOK="$HOME/.config/botbowl/hub.token"; SOCK=/tmp/bbnn-exp056.sock
@@ -35,7 +38,7 @@ cargo build --release -p botbowl-hub -p botbowl-worker >> "$OUT/build.log" 2>&1 
 for _ in $(seq 30); do "$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 && break; sleep 1; done
 "$PY" "$REPO/scripts/nn_server.py" --socket "$SOCK" --device cuda --model "$GEN21" --stats-every 300 --canvas 11x18 >> "$OUT/nn_server.log" 2>&1 & NN_PID=$!
 for _ in $(seq 120); do [ -S "$SOCK" ] && break; sleep 1; done; [ -S "$SOCK" ] || die "nn_server"
-"$WORKER" --hub ws://127.0.0.1:13337/ws --token-file "$TOK" --name local --parallel-games 14 --cache-dir "$OUT/worker-cache" --nn-server "$SOCK" >> "$OUT/worker.log" 2>&1 & WORKER_PID=$!
+"$WORKER" --hub ws://127.0.0.1:13337/ws --token-file "$TOK" --name local --parallel-games "$PARALLEL" --mem-floor-mb "$MEM_FLOOR_MB" --cache-dir "$OUT/worker-cache" --nn-server "$SOCK" >> "$OUT/worker.log" 2>&1 & WORKER_PID=$!
 
 # arm NAME MODEL SEED [job eval args...] — one eval job, backgrounded, pid in J[NAME].
 declare -A J
