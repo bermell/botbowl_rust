@@ -264,12 +264,18 @@ fn probe_state(
 
     // Plan 032 #7: step into the turn with a production-budget bot so
     // the probed root is a mid-turn (wide-fan) decision. Each decision
-    // gets a fresh bot: no tree reuse leaks into the probe.
+    // gets a fresh bot: no tree reuse leaks into the probe. Always the plain
+    // PUCT bot, never `--bot-config`'s: a preset must be probed on the states
+    // a plain run probes. Even so, a search is not reproducible across
+    // processes, so an advanced state only matches *within* one run — never
+    // score one run's `--advance > 0` rows against another run's reference
+    // (exp060 did, and its mid-turn numbers compared different positions).
     for _ in 0..args.advance {
         if state.info.game_over || state.available_actions.team.is_none() {
             break;
         }
-        let mut bot = make_bot(args, nn, 1000);
+        let plain = ConvergenceArgs { bot_config: None, ..args.clone() };
+        let mut bot = make_bot(&plain, nn, 1000);
         let action = bot.get_action(&state);
         state
             .step(action)
