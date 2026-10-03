@@ -262,6 +262,9 @@ VALUE_WEIGHT="${VALUE_WEIGHT:-0.25}"        # W1; 1.0 = the old unweighted sum
 PER_DRIVE_VALUE_WEIGHT="${PER_DRIVE_VALUE_WEIGHT:-on}"   # W4; on|off
 PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --value-blend $VALUE_BLEND"
 TRAIN_TARGET_ARGS="--value-weight $VALUE_WEIGHT"
+# Extra `bbnn.train` flags, e.g. `--freeze-bn` (exp061) — appended to every generation's training.
+TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
+TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS $TRAIN_EXTRA_ARGS"
 [ "$PER_DRIVE_VALUE_WEIGHT" = on ] && TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS --per-drive-value-weight"
 # Validate every N optimizer steps instead of once per epoch (plan 031 D4/D5,
 # adopted 2026-09-07). The warm-started fine-tunes gen04-07 all restored at
@@ -426,6 +429,13 @@ ANCHOR_GAMES="${ANCHOR_GAMES:-40}"          # paired Home/Away on --seed 0, ever
 #          ANCHOR_EVERY > 0 plays the full-game anchor match every that many generations.
 EVAL_VENUE="${EVAL_VENUE:-games}"
 DRIVE_REF="${DRIVE_REF:-}"
+# DRIVE_REF=parent: each generation plays the net that generated its data (gen G vs gen G-1; gen01 vs
+# INIT_CHAMPION), so every verdict answers "did this step help". Steps of +0.02 all read H0 against
+# their parents, so ORIGIN_EVERY > 0 adds a fixed-size match (no SPRT, ORIGIN_DRIVES per set) against
+# ORIGIN_REF (default INIT_CHAMPION) every that many generations: the cumulative trend.
+ORIGIN_EVERY="${ORIGIN_EVERY:-0}"
+ORIGIN_REF="${ORIGIN_REF:-${INIT_CHAMPION:-}}"
+ORIGIN_DRIVES="${ORIGIN_DRIVES:-400}"
 DRIVE_POSITIONS="${DRIVE_POSITIONS:-}"
 DRIVE_SPRT="${DRIVE_SPRT:-0.5:0.55}"
 DRIVE_CAP="${DRIVE_CAP:-800}"
@@ -709,10 +719,12 @@ preset_name() { if [ -n "$1" ]; then basename "$1" .toml; else echo "env default
 case "$EVAL_VENUE" in
     games) ;;
     drives)
-        [ -f "$DRIVE_REF" ] || die "EVAL_VENUE=drives needs DRIVE_REF, a model file (got '$DRIVE_REF')"
+        [ "$DRIVE_REF" = parent ] || [ -f "$DRIVE_REF" ] || die "EVAL_VENUE=drives needs DRIVE_REF, a model file or 'parent' (got '$DRIVE_REF')"
+        [ "$DRIVE_REF" != parent ] || [ -f "${INIT_CHAMPION:-}" ] || die "DRIVE_REF=parent needs INIT_CHAMPION (gen01's generator)"
+        [ "$ORIGIN_EVERY" -eq 0 ] || [ -f "$ORIGIN_REF" ] || die "ORIGIN_EVERY needs ORIGIN_REF, a model file (got '$ORIGIN_REF')"
         for f in ${DRIVE_POSITIONS//,/ }; do [ -f "$f" ] || die "position set not found: $f"; done
         [ -n "$DRIVE_POSITIONS" ] || die "EVAL_VENUE=drives needs DRIVE_POSITIONS"
-        status "benchmark: drives vs $(basename "$DRIVE_REF") from $(for f in ${DRIVE_POSITIONS//,/ }; do basename "$f" .json; done | paste -sd,), SPRT $DRIVE_SPRT, cap $DRIVE_CAP drives per set$([ "$P1_GAMES" -gt 0 ] && echo "; H1 confirmed on full games (P1, cap $P1_GAMES per board)")$([ "$ANCHOR_EVERY" -gt 0 ] && echo "; anchor $(basename "$ANCHOR") every $ANCHOR_EVERY gens")" ;;
+        status "benchmark: drives vs $([ "$DRIVE_REF" = parent ] && echo "each generation's generator" || basename "$DRIVE_REF")$([ "$ORIGIN_EVERY" -gt 0 ] && echo ", and vs $(basename "$ORIGIN_REF") every $ORIGIN_EVERY gens ($ORIGIN_DRIVES per set, no SPRT)") from $(for f in ${DRIVE_POSITIONS//,/ }; do basename "$f" .json; done | paste -sd,), SPRT $DRIVE_SPRT, cap $DRIVE_CAP drives per set$([ "$P1_GAMES" -gt 0 ] && echo "; H1 confirmed on full games (P1, cap $P1_GAMES per board)")$([ "$ANCHOR_EVERY" -gt 0 ] && echo "; anchor $(basename "$ANCHOR") every $ANCHOR_EVERY gens")" ;;
     *) die "EVAL_VENUE must be games or drives, got $EVAL_VENUE" ;;
 esac
 
@@ -879,23 +891,37 @@ eval_job() {
 }
 # genNN for the loop's own and the anchor's nets, else the file stem: what we call a net.
 net_name() { basename "$1" .onnx | sed -E 's/^(bbnet|anchor)_.*_(gen[0-9]+)$/\2/'; }
+# The net gen $1 is benchmarked against: DRIVE_REF, or with DRIVE_REF=parent the net that generated
+# it (the previous generation's, gen01's being INIT_CHAMPION).
+drive_ref_of() {
+    if [ "$DRIVE_REF" != parent ]; then echo "$DRIVE_REF"
+    elif [ "$1" -le 1 ]; then echo "$INIT_CHAMPION"
+    else echo "$MODEL_DIR/bbnet_${TIER}_$(printf 'gen%02d' $(($1 - 1))).onnx"; fi
+}
 eval_submit() {
     local G="$1" GG GEN_DIR MODEL RUNG_ARGS RUNG_DESC PG
     GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"; MODEL="$MODEL_DIR/bbnet_${TIER}_$GG"
     PG=$(printf 'gen%02d' $((G - 1)))
     EVAL_JOBS=()
     if [ "$EVAL_VENUE" = drives ]; then
-        eval_job drives "$GEN_DIR/drives" "$GG drives vs $(net_name "$DRIVE_REF")" \
+        REF=$(drive_ref_of "$G")
+        eval_job drives "$GEN_DIR/drives" "$GG drives vs $(net_name "$REF")" \
             --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
             --positions "$DRIVE_POSITIONS" --sprt "$DRIVE_SPRT" --vs-games "$DRIVE_CAP" \
-            --vs-evaluator "$EVALUATOR" --vs-model "$DRIVE_REF"
+            --vs-evaluator "$EVALUATOR" --vs-model "$REF"
+        if [ "$ORIGIN_EVERY" -gt 0 ] && [ $((G % ORIGIN_EVERY)) -eq 0 ]; then
+            eval_job origin "$GEN_DIR/drives_origin" "$GG drives vs $(net_name "$ORIGIN_REF") (origin)" \
+                --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
+                --positions "$DRIVE_POSITIONS" --vs-games "$ORIGIN_DRIVES" \
+                --vs-evaluator "$EVALUATOR" --vs-model "$ORIGIN_REF"
+        fi
         # P1: the previous generation's drive H1, on full games against the same reference.
         if [ "$P1_GAMES" -gt 0 ] && [ -e "$RUN_DIR/$PG/.confirm" ]; then
             # shellcheck disable=SC2046
-            eval_job p1 "$RUN_DIR/$PG/p1" "$PG full games vs $(net_name "$DRIVE_REF") (P1)" \
+            eval_job p1 "$RUN_DIR/$PG/p1" "$PG full games vs $(net_name "$(drive_ref_of $((G - 1)))") (P1)" \
                 --model "$MODEL_DIR/bbnet_${TIER}_$PG.onnx" --seed 0 --skip-fixed-rungs $(size_eval_args) \
                 --sprt "$DRIVE_SPRT" --vs-games "$P1_GAMES" \
-                --vs-evaluator "$EVALUATOR" --vs-model "$DRIVE_REF"
+                --vs-evaluator "$EVALUATOR" --vs-model "$(drive_ref_of $((G - 1)))"
         fi
     fi
     if [ "$EVAL_VENUE" = games ] || { [ "$ANCHOR_EVERY" -gt 0 ] && [ $((G % ANCHOR_EVERY)) -eq 0 ]; }; then
@@ -963,11 +989,14 @@ eval_report() {
     # Plan 051: the drive match against the reference, and the previous generation's P1.
     if [ -s "$GEN_DIR/drives/report.json" ]; then
         status "$GG drives done (${MINUTES} min, overlapped): $("$PY" "$SUMMARY" "$GEN_DIR/drives/report.json")"
-        status "$GG drives vs $(net_name "$DRIVE_REF"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" | paste -sd'|')"
+        status "$GG drives vs $(net_name "$(drive_ref_of "$G")"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" | paste -sd'|')"
         if [ "$P1_GAMES" -gt 0 ] && grep -q '"verdict": *"H1"' "$GEN_DIR/drives/report.json"; then
             touch "$GEN_DIR/.confirm"
             status "$GG drive H1 against $(net_name "$DRIVE_REF"): P1 confirmation on full games follows with the next generation"
         fi
+    fi
+    if [ -s "$GEN_DIR/drives_origin/report.json" ]; then
+        status "$GG vs origin $(net_name "$ORIGIN_REF"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" --sub drives_origin | paste -sd'|')"
     fi
     if [ -s "$RUN_DIR/$PG/p1/report.json" ] && [ ! -e "$RUN_DIR/$PG/.p1_reported" ]; then
         status "$PG P1 vs $(net_name "$DRIVE_REF"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" --sub p1 | paste -sd'|')"
