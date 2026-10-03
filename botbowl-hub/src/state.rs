@@ -127,7 +127,7 @@ impl Job {
                         tds_for: r.row.tds_for,
                         tds_against: r.row.tds_against,
                         decisions: r.row.telemetry.as_ref().map_or(0, |t| t.searches),
-                        points_se: r.row.points_se,
+                        points_se: r.row.pairs.se(),
                         pairs: r.row.pairs.pairs(),
                         sprt: r.row.sprt,
                     })),
