@@ -119,6 +119,43 @@ instead of thinly over about 100, it is used both when playing and when generati
 target is already its policy-target half. It is not written up yet. `GEN_SPLIT` in train_loop.sh
 allows per-board-group budgets.
 
+## 2026-10-03: the policy target at 1000 descents (exp059), and the d1k loop on drives
+
+**Loop on drives vs gen21** (contested sets screened with gen21, SPRT 0.5:0.55):
+- gen03: 14x7 0.464 ± 0.029 (H0), 16x9 0.396 ± 0.047 (H0).
+- gen04: 14x7 0.507 ± 0.015 (H0, 308 pairs), 16x9 0.493 ± 0.024 (H0, 145 pairs).
+
+Four generations at 1000 descents and the loop is level with gen21 at best. The loop is paused
+after gen04.
+
+**Target arms** (`scripts/exp059_targets_and_wdl.sh`):
+- **Recipe:** gen04's exactly, with one change each: the gen02-04 window, warm from gen03. gen04
+  (cq tau 100) is the control.
+- **Scoring:** drives vs gen04 on positions re-screened with gen04 (156 kept on 14x7, 209 on
+  16x9, from the same 500 candidates).
+
+| arm | 14x7 | 16x9 |
+|-----|------|------|
+| cq tau 50 | **0.500 ± 0.017 (fixed 300 pairs)**; the SPRT run's H0 latched at 16 pairs, see below | 0.492 ± 0.024 H0 (124) |
+| cq tau 20 | 0.497 ± 0.021 H0 (150) | 0.462 ± 0.030 H0 (80) |
+| Gumbel σ(q) | 0.433 ± 0.040 H0 (47) | 0.455 ± 0.033 H0 (63) |
+| Gumbel σ(q), min range 50 | 0.476 ± 0.025 H0 (109) | 0.450 ± 0.034 H0 (78) |
+
+- **Sharper is not better.** At the new budget, tau 20 and both Gumbel σ(q) arms are at or
+  below tau 100. The Gumbel arms are the worst on both boards, and both trained to the end of
+  the schedule (best at step 12500-15000, against 2500-5000 for the cq arms), so they move
+  further from the prior.
+- **tau 50 is level with tau 100.** Its 14x7 SPRT reached H0 after only 16 pairs, while the 46
+  pairs it finished on scored 0.549. A fixed 300-pair re-check
+  (`runs/exp059/drives/tau50_14x7_fixed/`, a fresh seed) gave exactly 0.500 ± 0.017.
+- **Decision: keep cq tau 100.** Neither a sharper fixed tau nor the adaptive Gumbel σ(q) target
+  helps at 1000 descents. With WDL also flat (plan 050 step 1), neither the targets nor the value
+  head is what holds the loop at gen21's level. The next candidate is the search itself: Gumbel
+  root selection with sequential halving (plan 053, to write).
+- **Method note:** an SPRT may decide from `SPRT_MIN_PAIRS = 8` pairs, where the pentanomial
+  variance is still guesswork. The early tau 50 stop shows the risk. Raise the floor to about 30
+  before trusting early stops.
+
 ## The plateau being explained
 
 `runs/loopmix16x9` gen14-21 read 0.50 ± 0.03 against the frozen gen13 anchor on 14x7 and 16x9,

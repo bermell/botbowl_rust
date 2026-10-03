@@ -1,7 +1,8 @@
 # Plan 050 — WDL value head: three-way drive outcome instead of a tanh scalar
 
-**Status:** Written 2026-09-30. Not started. Step 1 is trainer-only and needs no Rust, no schema
-bump and no generation; steps 2 and 3 are gated on its result. Results go under each step.
+**Status:** Step 1 run 2026-10-03 (exp059): **C does not beat B**, so by the rule below there is no
+value-quality win. Steps 2-3 are parked; WDL stays available as `--value-head wdl` for the
+P(nobody) diagnostic and the step-3 utility. Results go under each step.
 
 ## Idea
 
@@ -107,7 +108,30 @@ per-drive weight, and one extra metric in `evaluate()` computing the implied-sca
 head against `value.npy`; a seed flag if there isn't one. Nine training runs. No Rust, no schema
 bump, no generation.
 
-**Results:** _(pending)_
+**Results (exp059, 2026-10-03, `runs/exp059/wdl/summary.txt`):**
+- **Setup:** the gen02-04 window of `runs/loopmix16x9d1k` (1000 descents), warm from gen03,
+  gen04's recipe (3 epochs, lr 2e-4, value weight 0.25, per-drive weighting), 3 seeds per arm.
+- **Scoring:** val is gen02-04 shards 4,7 prepared at blend 1.0. The score is the
+  per-drive-weighted MSE of the exported scalar against the raw drive outcome. C's last layer
+  started fresh; the rest warm-started.
+
+| arm | head | train label | val MSE vs outcome (mean ± sd, 3 seeds) |
+|-----|------|-------------|------------------------------------------|
+| A | tanh, MSE | blend 0.5 | **0.3124 ± 0.0009** |
+| B | tanh, MSE | blend 1.0 | 0.3143 ± 0.0019 |
+| C | WDL, CE | blend 1.0 | 0.3159 ± 0.0013 |
+
+- **C vs B: no gain.** C is 0.0016 worse, about one seed sd, on almost every board. Fail
+  (tie-to-lose).
+- **A vs B: the blend helps** (plan 049 §4 doubted it). Training on half the search's own Q
+  predicts the raw outcome better than training on the outcome itself, on every board but two.
+- **No arm moves far from the warm start.** In the trainer's own val (seed 1), all three stay
+  within ±0.01 of gen03's value, which repeats plan 049's flat value loss.
+- **Sanity checks:**
+  - The P(nobody) reliability is good above 0.25: bins 0.29→0.34, 0.49→0.50, 0.69→0.65 and
+    0.92→0.89. The low bin under-predicts: 0.05 predicted, 0.09 observed.
+  - The argmax does pick "nobody" where it should (5117 of 12098 scoreless drives in seed 1), so
+    there is no draw collapse.
 
 ## Step 2 — wire inference (only if step 1 passes)
 
