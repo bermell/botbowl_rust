@@ -98,6 +98,23 @@ def wdl_target(value):
     return torch.cat([v.clamp_min(0.0), 1.0 - v.abs(), (-v).clamp_min(0.0)], dim=1)
 
 
+def set_train_mode(model, freeze_bn=False):
+    """``model.train()``, except that with ``freeze_bn`` every BatchNorm layer stays in eval mode.
+
+    Review finding 2 (2026-10-03): batches are single-board (``PerDimsBatchSampler``), so in train
+    mode BatchNorm normalises each board by that board's own statistics, while eval, export and
+    the sidecar use one global running average dominated by the big boards. Re-estimating the
+    statistics per board cut gen04's val value MSE by 12-13% on small canvases. Frozen, training
+    normalises exactly as inference does (the warm start's running statistics, never updated);
+    the affine weights still train.
+    """
+    model.train()
+    if freeze_bn:
+        for m in model.modules():
+            if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
+                m.eval()
+
+
 def compute_losses(model, batch, device, per_drive_value_weight=False):
     """Policy CE + value loss: MSE for the scalar head, cross-entropy for the WDL one (plan 050).
 
@@ -193,7 +210,10 @@ def train(
     per_drive_value_weight=False,
     progress=None,
     value_head="scalar",
+    freeze_bn=False,
 ):
+    if freeze_bn and init is None:
+        raise ValueError("--freeze-bn needs --init: a fresh net's running statistics are just 0 and 1")
     # Before anything that draws: the shuffle order, the augmentation flips,
     # and the weight init all come off global generators.
     if seed is not None:
@@ -392,7 +412,7 @@ def train(
         for name, gl in val_group_loaders.items():
             gp, gv, ga = evaluate(model, gl, device, per_drive_value_weight)
             print(f"    val@{name}: val_policy {gp:.4f}  val_value {gv:.4f}  val_top1 {ga:.3f}", flush=True)
-        model.train()
+        set_train_mode(model, freeze_bn)
         if best_vp is None or vp < best_vp:
             best_vp, best_vp_step = vp, step
         suffix = f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
@@ -418,7 +438,7 @@ def train(
     while not stop:
         if max_steps is None and epoch >= epochs:
             break
-        model.train()
+        set_train_mode(model, freeze_bn)
         tot_p = tot_v = tot_a = 0.0
         nb = 0
         for batch in loader:
@@ -590,6 +610,12 @@ def main():
         help="plan 050: tanh scalar (MSE) or a softmax over [self scores, nobody, opp scores] (CE); "
              "the exported value is P(self) - P(opp) either way",
     )
+    ap.add_argument(
+        "--freeze-bn",
+        action="store_true",
+        help="keep BatchNorm in eval mode while training (the warm start's running statistics), so "
+             "single-board batches are normalised the way inference normalises them",
+    )
     args = ap.parse_args()
     train(
         args.data,
@@ -614,6 +640,7 @@ def main():
         per_drive_value_weight=args.per_drive_value_weight,
         progress=args.progress,
         value_head=args.value_head,
+        freeze_bn=args.freeze_bn,
     )
 
 
