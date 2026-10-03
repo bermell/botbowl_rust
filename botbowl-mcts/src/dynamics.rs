@@ -2019,6 +2019,11 @@ pub struct MctsBot {
     last_search: Option<report::SearchSummary>,
     /// Shared with every tree this bot builds when `config.trace_root_descents` is on.
     root_trace: Option<Arc<RootDescents>>,
+    /// Plan 053: the Gumbel search loop's root slot, shared with every tree this bot builds. It
+    /// must outlive a search: a reused tree keeps the dynamics it was built with, so a slot made
+    /// per search was never read on reused trees (about 60% of decisions ran plain PUCT descents
+    /// under a Gumbel pick until the review of 2026-10-03).
+    forced_root: Option<Arc<ForcedRoot>>,
     /// [`MctsBot::release_stale_tree`] dropped the cache. The next search then reports the
     /// `AnchorMiss` it would have seen, not `NoCache`.
     released_stale: bool,
@@ -2047,6 +2052,7 @@ impl MctsBot {
             released_stale: false,
             telemetry: SearchTelemetry::default(),
             root_trace: None,
+            forced_root: None,
         }
     }
 
@@ -2304,7 +2310,7 @@ impl MctsBot {
         } else {
             0
         };
-        let forced_root = (gumbel_m > 0).then(|| Arc::new(ForcedRoot::default()));
+        let forced_root = (gumbel_m > 0).then(|| Arc::clone(self.forced_root.get_or_insert_with(Default::default)));
         let mut gd = gd;
         gd.forced_root = forced_root.clone();
         let mut gumbel_pick: Option<EngineAction> = None;

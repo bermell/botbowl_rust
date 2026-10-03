@@ -171,3 +171,34 @@ fn plan_048_exploration_is_ignored_under_gumbel() {
     assert_eq!(sample.chosen_action, expected);
     assert!(!outcome.noised && !outcome.sampled && !outcome.deviated, "{outcome:?}");
 }
+
+/// A reused tree keeps the dynamics it was built with, so the root forcing must reach it too: the
+/// review of 2026-10-03 found the slot rebuilt per search, which left every reused search (about
+/// 60% of decisions) running plain PUCT descents under a Gumbel pick.
+#[test]
+fn halving_also_drives_a_reused_tree() {
+    let Some(mut state) = wide_state() else { return };
+    let mut b = bot(M, 0.0);
+    for _ in 0..16 {
+        let a = b.get_action(&state);
+        let s = b.last_search().unwrap();
+        if s.reuse.outcome == botbowl_mcts::ReuseOutcome::Reused && s.children.len() > M as usize {
+            let descents = s.root_descents.clone().unwrap();
+            // Every descent of a reused search is named (no expansion step), apart from fallbacks
+            // of moves solved mid-phase; plain PUCT spreads over far more than M moves.
+            let solved = s.children.iter().filter(|e| e.stats.solved).count();
+            assert!(
+                descents.len() <= M as usize + solved,
+                "{} root moves descended on a reused tree: {descents:?}",
+                descents.len()
+            );
+            return;
+        }
+        state.step(a);
+        if state.info.game_over || state.available_actions.team.is_none() {
+            break;
+        }
+        b.release_stale_tree(&state);
+    }
+    panic!("no reused root wider than {M} moves found to test");
+}

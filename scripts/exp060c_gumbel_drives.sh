@@ -8,10 +8,14 @@
 #   3. Drives with that floor: gen04 Gumbel@1000 vs gen04 PUCT@1000 on both gen04-screened sets,
 #      then 16x9 only vs PUCT@4000. SPRT 0.5:0.55, at most 800 drives per board.
 #
+# The probe phase is unaffected by the 2026-10-03 reuse bug (every probe search starts a fresh
+# tree); the drives are, so the fixed rerun writes elsewhere:
+#
 #   scripts/exp060c_gumbel_drives.sh
+#   OUT=runs/exp060/drives_d B1_STREAMS=8 B2_STREAMS=6 scripts/exp060c_gumbel_drives.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$REPO/runs/exp060/drives_c"; QF="$REPO/runs/exp060/qfloor"; mkdir -p "$OUT" "$QF/presets"
+OUT="${OUT:-$REPO/runs/exp060/drives_c}"; case "$OUT" in /*) ;; *) OUT="$REPO/$OUT" ;; esac; QF="$REPO/runs/exp060/qfloor"; mkdir -p "$OUT" "$QF/presets"
 M="$REPO/models/az_v7"; GEN21="$M/bbnet_mix16x9_gen21.onnx"; GEN04="$M/bbnet_mix16x9d1k_gen04.onnx"
 ITERS="$REPO/cfgs/exact_iters.toml"; POS="$REPO/runs/exp059/positions"
 SPRT=0.5:0.55; CAP=800
@@ -101,10 +105,10 @@ PY
 )"
 }
 SECONDS=0
-worker_up 12
+worker_up "${B1_STREAMS:-12}"
 drives "f${FLOOR}_vs_puct1000" "gen04 Gumbel(f$FLOOR)@1000 vs PUCT@1000 (drives)" \
     "$POS/contested_14x7_gen04.json,$POS/contested_16x9_gen04.json" 1000
 worker_down
-worker_up 4
+worker_up "${B2_STREAMS:-4}"
 drives "f${FLOOR}_vs_puct4000_16x9" "gen04 Gumbel(f$FLOOR)@1000 vs PUCT@4000, 16x9 (drives)" "$POS/contested_16x9_gen04.json" 4000
 status "done ($((SECONDS / 60)) min of drives)"
