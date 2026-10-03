@@ -4,6 +4,13 @@ use clap::Parser;
 
 use botbowl_worker::{run, WorkerConfig, DEFAULT_MEM_FLOOR_MB, DEFAULT_RECONNECT_MAX_SECS};
 
+/// glibc malloc keeps the memory of freed search trees in per-thread arenas, so a worker that
+/// had played a few 16x9 games idled at ~12 GB RSS and `mem_governor` refused every new game.
+/// mimalloc hands freed pages back to the OS. Binary-only: library crates leave the choice to
+/// whoever links them.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Dial a botbowl-hub and play the games it hands out.
 #[derive(Parser, Debug)]
 #[command(name = "botbowl-worker")]

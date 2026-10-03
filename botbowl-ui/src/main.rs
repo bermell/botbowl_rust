@@ -12,6 +12,11 @@ use std::io;
 
 use botbowl_ui::cli;
 
+/// As in `botbowl-worker`: `dataset` and `eval` play many MCTS games per process, and glibc
+/// malloc keeps the freed search trees in per-thread arenas instead of returning them.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> io::Result<()> {
     let cli = cli::Cli::parse();
     match cli.command {

@@ -19,6 +19,9 @@ crossterm = "0.27.0"
 rand = "0.8.5"
 rand_chacha = "0.3"
 ratatui = "0.25.0"
+# Global allocator, as in botbowl-worker: `dataset`/`eval` play many MCTS games per process and
+# glibc malloc keeps the freed trees in per-thread arenas.
+mimalloc = "0.1"
 
 [dev-dependencies]
 insta = "1"
