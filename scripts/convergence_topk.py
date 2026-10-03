@@ -20,6 +20,10 @@ against reference) carries exactly the same run-to-run variance:
 
 Ranking is the bot's own rule (`pick_best_action`): scored children first, then mover-frame Q,
 then visits. Roots with a single legal action are dropped.
+
+Rows from different selection rules (the `puct` field, e.g. plan 053's `…@gumbel16_iters`) are
+separate arms at the same budget, all scored against the one reference: the largest budget of the
+plain rule. So a Gumbel run can be scored against exp057's PUCT references by passing both files.
 """
 
 import argparse
@@ -77,6 +81,13 @@ def tv(p, q):
     return 0.5 * sum(abs(p.get(k, 0.0) - q.get(k, 0.0)) for k in set(p) | set(q))
 
 
+def arm_label(puct):
+    """`` for the plain rule, else the preset or rule that tells this arm apart."""
+    if "@" in puct:
+        return puct.split("@", 1)[1]
+    return "" if puct in ("", "puct=raw(c=10)") else puct
+
+
 def mean(xs):
     return sum(xs) / len(xs) if xs else float("nan")
 
@@ -111,7 +122,8 @@ def main():
             if line.strip():
                 r = json.loads(line)
                 if r["n_legal_actions"] >= 2:
-                    cells[(r.get("board", "env"), r.get("advance", 0), r["state_seed"])][r["budget"]][r["repeat"]] = r
+                    arm = (r["budget"], arm_label(r.get("puct", "")))
+                    cells[(r.get("board", "env"), r.get("advance", 0), r["state_seed"])][arm][r["repeat"]] = r
 
     groups = defaultdict(list)
     for (board, adv, seed), by_budget in cells.items():
@@ -120,12 +132,12 @@ def main():
 
     metrics = ["top1", "in3", "top3", "regret", "cq100", "cq20"]
     for (board, adv), states in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
-        budgets = sorted({b for s in states for b in s})
-        ref = budgets[-1]
+        budgets = sorted({b for s in states for b in s}, key=lambda a: (a[1], a[0]))
+        ref = max((a for a in budgets if a[1] == ""), default=budgets[-1])
         fans = [len(next(iter(s[ref].values()))["children"]) for s in states if s.get(ref)]
         print(f"\n== {board}, advance {adv}: {len(states)} states (fan median {sorted(fans)[len(fans)//2] if fans else '?'}, "
-              f"wide >{a.wide}: {sum(f > a.wide for f in fans)}), reference {ref} descents ==")
-        print(f"{'budget':>7} " + " ".join(f"{m:>7}" for m in metrics) + f" {'wide top1':>9} {'ms':>7}")
+              f"wide >{a.wide}: {sum(f > a.wide for f in fans)}), reference {ref[0]} descents ==")
+        print(f"{'arm':>22} " + " ".join(f"{m:>7}" for m in metrics) + f" {'wide top1':>9} {'ms':>7}")
         for t in budgets:
             acc = defaultdict(list)
             wide = []
@@ -142,8 +154,8 @@ def main():
                     if len(rr["children"]) > a.wide:
                         wide.append(c["top1"])
                 ms.extend(r["elapsed_ms"] for r in s[t].values())
-            label = f"{t}" + (" (floor)" if t == ref else "")
-            print(f"{label:>7} " + " ".join(f"{mean(acc[m]):7.3f}" if m != "regret" else f"{mean(acc[m]):7.1f}" for m in metrics)
+            label = f"{t[1] + ' ' if t[1] else ''}{t[0]}" + (" (floor)" if t == ref else "")
+            print(f"{label:>22} " + " ".join(f"{mean(acc[m]):7.3f}" if m != "regret" else f"{mean(acc[m]):7.1f}" for m in metrics)
                   + f" {mean(wide):9.3f} {mean(ms):7.0f}")
     print("\nThe reference row is the noise floor: two independent reference searches against each other.")
     return 0
