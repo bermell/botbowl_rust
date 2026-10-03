@@ -394,13 +394,15 @@ guards go with it:
    is unsure. For loop work, re-screen with the parent (each generation, or every few), or the
    positions drift easy as the net improves and the set stops discriminating. The 14x7 miss may
    partly be this: gen13 vs gen03 was judged on positions contested for gen21.
-2. **An occasional P1 full-game check** (every few generations, and before adopting a new
-   configuration), so drive strength that stops turning into game strength shows up. If training
-   and evaluation both see only random-start drives, a flaw in that distribution is invisible to
-   both.
-3. **Confirm sweep winners.** False H1 is controlled at alpha = 5% per rung, so a 20-arm sweep
-   still expects about one. Confirm a drive H1 with P1 before acting on it. A drive H0 does not rule
-   out an effect that acts across drives.
+2. ~~An occasional P1 full-game check.~~ **Withdrawn by the user, 2026-10-03.**
+3. ~~Confirm drive H1s and sweep winners with P1.~~ **Withdrawn by the user, 2026-10-03.**
+
+**Drives only, until the user says otherwise (2026-10-03).** Guards 2 and 3 were never the user's;
+they kept dragging the work back to full games. In this phase, experiments and the loop's
+benchmark are judged on drives alone: no P1, no anchor match, no "confirm on full games" step,
+and none proposed. The user decides when full games are needed. `train_loop.sh` keeps both as
+opt-in knobs (`P1_GAMES`, `ANCHOR_EVERY`), off by default. A drive false H1 at alpha 5% is an
+accepted cost for now.
 
 **Open: investigate the 14x7 blind spot.** The user's intuition is that mid-drive play is what makes
 a bot strong. There is no setup logic beyond defaults, so kickoff formations should not separate
