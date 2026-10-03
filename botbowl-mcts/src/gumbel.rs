@@ -71,12 +71,21 @@ pub struct Halving {
     survivors: Vec<EngineAction>,
     phases: usize,
     budget: usize,
+    /// Smallest Q range (in Q points) the normalisation divides by; see [`Halving::new`].
+    q_floor: f32,
 }
 
 impl Halving {
     /// The top `m` of `children` by `g + logit`, with `g` drawn from `seed` at `gumbel_scale`
     /// (0 = no noise: the top `m` by prior). `budget` is the descents the schedule may spend.
-    pub fn new(children: &[RootChild], m: usize, gumbel_scale: f32, seed: u64, budget: usize) -> Self {
+    ///
+    /// `q_floor` is the smallest Q range the min-max normalisation of q̂ divides by. The paper's
+    /// rule (0) maps any Q gap among the survivors, however small, onto the whole [0, 1], worth
+    /// σ ≈ 10-40 against a prior gap of a few logits: halving then follows noise in Q. exp060
+    /// measured exactly that (the reference's move, almost always the prior's favourite, was
+    /// searched and then dropped in 40-46% of roots). A floor lets near-equal moves fall back on
+    /// the prior.
+    pub fn new(children: &[RootChild], m: usize, gumbel_scale: f32, seed: u64, budget: usize, q_floor: f32) -> Self {
         let mut rng = SplitMix64(seed);
         let mut scored: Vec<(EngineAction, f32)> = children
             .iter()
@@ -99,6 +108,7 @@ impl Halving {
             survivors,
             phases,
             budget,
+            q_floor: q_floor.max(0.0),
         }
     }
 
@@ -160,7 +170,8 @@ impl Halving {
                     .find(|(c, _)| c == a)
                     .map(|(_, s)| *s)
                     .unwrap_or(0.0);
-                let q_hat = if hi - lo > 1e-6 { (q - lo) / (hi - lo) } else { 0.5 };
+                let range = (hi - lo).max(self.q_floor);
+                let q_hat = if range > 1e-6 { (q - lo) / range } else { 0.5 };
                 base + sigma * q_hat
             })
             .collect()
@@ -209,7 +220,7 @@ mod tests {
     #[test]
     fn without_noise_the_top_m_by_prior_are_considered() {
         let kids: Vec<_> = (0..10).map(|i| child(i, 1.0 + i as f32, None, 0)).collect();
-        let h = Halving::new(&kids, 4, 0.0, 7, 400);
+        let h = Halving::new(&kids, 4, 0.0, 7, 400, 0.0);
         assert_eq!(h.survivors(), &[act(9), act(8), act(7), act(6)]);
         // Two phases for four moves: 400 / (2 · 4).
         assert_eq!(h.per_action(), 50);
@@ -218,7 +229,7 @@ mod tests {
     #[test]
     fn halving_keeps_the_better_half_by_q_once_the_search_has_spoken() {
         let mut kids: Vec<_> = (0..4).map(|i| child(i, 1.0, None, 0)).collect();
-        let mut h = Halving::new(&kids, 4, 0.0, 7, 400);
+        let mut h = Halving::new(&kids, 4, 0.0, 7, 400, 0.0);
         for (i, k) in kids.iter_mut().enumerate() {
             k.q = Some([100.0, -200.0, 600.0, 50.0][i]);
             k.visits = 50;
@@ -242,7 +253,7 @@ mod tests {
             child(1, 1.0, Some(100.0), 50),
             child(2, 1.0, Some(400.0), 50),
         ];
-        let h = Halving::new(&kids, 3, 0.0, 7, 300);
+        let h = Halving::new(&kids, 3, 0.0, 7, 300, 0.0);
         let narrow: Vec<_> = vec![
             child(0, 20.0, Some(300.0), 50),
             child(1, 1.0, Some(0.0), 50),
@@ -253,11 +264,21 @@ mod tests {
     }
 
     #[test]
+    fn a_q_floor_keeps_a_near_tie_on_the_prior() {
+        // Q 524 vs 526: pure min-max calls that the whole range and the weaker prior wins it.
+        let kids = vec![child(0, 20.0, Some(524.0), 50), child(1, 1.0, Some(526.0), 50)];
+        let plain = Halving::new(&kids, 2, 0.0, 7, 100, 0.0);
+        assert_eq!(plain.pick(&kids, 0.0), act(1));
+        let floored = Halving::new(&kids, 2, 0.0, 7, 100, 100.0);
+        assert_eq!(floored.pick(&kids, 0.0), act(0));
+    }
+
+    #[test]
     fn noise_is_seeded_and_changes_the_considered_set() {
         let kids: Vec<_> = (0..40).map(|i| child(i, 1.0, None, 0)).collect();
-        let a = Halving::new(&kids, 8, 1.0, 1, 400);
-        let b = Halving::new(&kids, 8, 1.0, 1, 400);
-        let c = Halving::new(&kids, 8, 1.0, 2, 400);
+        let a = Halving::new(&kids, 8, 1.0, 1, 400, 0.0);
+        let b = Halving::new(&kids, 8, 1.0, 1, 400, 0.0);
+        let c = Halving::new(&kids, 8, 1.0, 2, 400, 0.0);
         assert_eq!(a.survivors(), b.survivors());
         assert_ne!(a.survivors(), c.survivors());
     }

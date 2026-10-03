@@ -37,7 +37,8 @@ pub use botbowl_play::generate::GenerateConfig;
 // v9: `MctsConfig.trace_root_descents`.
 // v10 (plan 051): `Task::Eval.drives` (a drive rung's position set) and `EvalGameLine.attacker`.
 // v11 (plan 053): `MctsConfig.gumbel_m` and `MctsConfig.gumbel_scale`, inside `SearchConfig.config`.
-pub const PROTOCOL_VERSION: u32 = 11;
+// v12 (plan 053): `MctsConfig.gumbel_q_floor`.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.

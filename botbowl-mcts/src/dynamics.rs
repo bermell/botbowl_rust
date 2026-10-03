@@ -1905,6 +1905,9 @@ pub struct MctsConfig {
     /// Plan 053: scale of the Gumbel noise on the root logits. `0` plays deterministically (the
     /// top `gumbel_m` by prior); `1` is the paper's sampling, for self-play.
     pub gumbel_scale: f32,
+    /// Plan 053: the smallest Q range (Q points, ±1000 = a touchdown) the halving's min-max
+    /// normalisation divides by. `0` is the paper's rule; see `gumbel::Halving::new`.
+    pub gumbel_q_floor: f32,
 }
 
 impl MctsConfig {
@@ -1929,6 +1932,7 @@ impl MctsConfig {
             trace_root_descents: false,
             gumbel_m: 0,
             gumbel_scale: 0.0,
+            gumbel_q_floor: 0.0,
         }
     }
 
@@ -1982,6 +1986,7 @@ impl MctsConfig {
             .and_then(|v| v.trim().parse::<u16>().ok())
             .unwrap_or(0);
         cfg.gumbel_scale = env_f32("BLOOD_MCTS_GUMBEL_SCALE").unwrap_or(0.0).max(0.0);
+        cfg.gumbel_q_floor = env_f32("BLOOD_MCTS_GUMBEL_Q_FLOOR").unwrap_or(0.0).max(0.0);
         cfg
     }
 }
@@ -2290,6 +2295,7 @@ impl MctsBot {
         // reproducible (only when it draws noise at all).
         let gumbel_m = self.config.gumbel_m as usize;
         let gumbel_scale = self.config.gumbel_scale;
+        let gumbel_q_floor = self.config.gumbel_q_floor;
         let gumbel_seed = if gumbel_m > 0 && gumbel_scale > 0.0 {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -2440,6 +2446,7 @@ impl MctsBot {
                             gumbel_m,
                             gumbel_scale,
                             gumbel_seed,
+                            gumbel_q_floor,
                             agent_team,
                             steps_ref,
                         );
@@ -2932,6 +2939,7 @@ impl MctsBot {
         m: usize,
         gumbel_scale: f32,
         seed: u64,
+        q_floor: f32,
         agent_team: TeamType,
         steps: &AtomicU64,
     ) -> Option<EngineAction> {
@@ -2979,7 +2987,7 @@ impl MctsBot {
             }
             return None;
         }
-        let mut halving = Halving::new(&kids, m, gumbel_scale, seed, total);
+        let mut halving = Halving::new(&kids, m, gumbel_scale, seed, total, q_floor);
         'search: while used < total && !root().1 {
             let kids = children();
             // Solved moves need no descents (their value is exact) and are hidden from selection. When
