@@ -29,6 +29,7 @@ use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, 
 
 use crate::action::{BbAction, BbPlayer};
 use crate::exploration::{sample_index, ExploreStep, RootNoise, RootNoiseSpec};
+use crate::gumbel::{ForcedRoot, Halving, RootChild};
 use crate::priors::prior_for_engine_action;
 use crate::pruning::{self, should_prune};
 use crate::report::{self, Edge, NodeStats, NodeView, SearchSummary};
@@ -665,6 +666,9 @@ pub struct BloodBowlDynamics {
     pub root_trace: Option<Arc<RootDescents>>,
     /// Which roll model the chance nodes use; see [`ChanceModel`].
     pub chance_model: ChanceModel,
+    /// Plan 053: the root move the next descent must take, set by the Gumbel search loop.
+    /// `None` (default) is the shipped PUCT root.
+    pub forced_root: Option<Arc<ForcedRoot>>,
 }
 
 impl BloodBowlDynamics {
@@ -709,6 +713,7 @@ impl Default for BloodBowlDynamics {
             root_noise: None,
             root_trace: None,
             chance_model: ChanceModel::Exact,
+            forced_root: None,
         }
     }
 }
@@ -1236,7 +1241,27 @@ impl GameDynamics for BloodBowlDynamics {
         //
         // Scores are Home-centric. Home maximises PUCT; Away mirrors
         // by negating Q before adding the exploration bonus.
-        let _ = parent_node_state; // no longer needed for priors; kept in case future rules want it.
+        // Plan 053: the Gumbel search loop names the root move of this descent. The first
+        // player-node selection of a descent is the root's (a descent starts there, and the
+        // root is a player turn), so taking the slot here can only ever apply it at the root.
+        // A move that is not on offer (solved, so hidden from selection) falls through to PUCT.
+        if let Some(want) = self.forced_root.as_ref().and_then(|f| f.take()) {
+            let forced = scores_and_actions
+                .clone()
+                .into_iter()
+                .find_map(|(_, a)| match a.deref() {
+                    BbAction::Player { action, .. } if *action == want => Some(a.deref().clone()),
+                    _ => None,
+                });
+            if let Some(pick) = forced {
+                bump_chosen(&pick, self.virtual_loss);
+                if let Some(trace) = &self.root_trace {
+                    trace.record(parent_node_state, want);
+                }
+                return pick;
+            }
+            self.forced_root.as_ref().unwrap().note_missed();
+        }
         let home_perspective = *parent_player == BbPlayer::Home;
         // For `TieBreak::Mover`: the endzone the side to move is attacking.
         let tie_frame = MoverFrame::for_team(
@@ -1873,6 +1898,13 @@ pub struct MctsConfig {
     /// Diagnostic: count the descents each root child is selected for (`RootDescents`), reported
     /// in `SearchSummary::root_descents`. Costs a state comparison per player-node selection.
     pub trace_root_descents: bool,
+    /// Plan 053: Gumbel root search over this many root moves (sequential halving). `0` is the
+    /// shipped PUCT root. The budget then counts descents whatever `budget_mode` says, and the
+    /// search runs on one thread whatever `workers` says.
+    pub gumbel_m: u16,
+    /// Plan 053: scale of the Gumbel noise on the root logits. `0` plays deterministically (the
+    /// top `gumbel_m` by prior); `1` is the paper's sampling, for self-play.
+    pub gumbel_scale: f32,
 }
 
 impl MctsConfig {
@@ -1895,6 +1927,8 @@ impl MctsConfig {
             budget_mode: BudgetMode::Iterations,
             chance_model: ChanceModel::Exact,
             trace_root_descents: false,
+            gumbel_m: 0,
+            gumbel_scale: 0.0,
         }
     }
 
@@ -1943,6 +1977,11 @@ impl MctsConfig {
         cfg.chance_model = ChanceModel::from_env();
         cfg.trace_root_descents = std::env::var("BLOOD_MCTS_TRACE_ROOT").ok().as_deref() == Some("1");
         cfg.budget_mode = BudgetMode::from_env();
+        cfg.gumbel_m = std::env::var("BLOOD_MCTS_GUMBEL_M")
+            .ok()
+            .and_then(|v| v.trim().parse::<u16>().ok())
+            .unwrap_or(0);
+        cfg.gumbel_scale = env_f32("BLOOD_MCTS_GUMBEL_SCALE").unwrap_or(0.0).max(0.0);
         cfg
     }
 }
@@ -2164,6 +2203,9 @@ struct SearchResult {
     /// Plan 048: the noise this search was offered. Whether it took effect — only a fresh tree
     /// expands its root under it — is `RootNoise::applied`.
     root_noise: Option<Arc<RootNoise>>,
+    /// Plan 053: the move a Gumbel search chose (its best survivor), which replaces the best-Q
+    /// child. `None` for a PUCT search.
+    gumbel_pick: Option<EngineAction>,
 }
 
 impl MctsBot {
@@ -2241,8 +2283,25 @@ impl MctsBot {
             root_noise: root_noise.clone(),
             root_trace: self.root_trace.clone(),
             chance_model: self.config.chance_model,
+            forced_root: None,
         };
         let n_workers = self.config.workers.max(1);
+        // Plan 053: Gumbel root search, with its schedule seeded by the root state so a search is
+        // reproducible (only when it draws noise at all).
+        let gumbel_m = self.config.gumbel_m as usize;
+        let gumbel_scale = self.config.gumbel_scale;
+        let gumbel_seed = if gumbel_m > 0 && gumbel_scale > 0.0 {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            root_state.hash(&mut h);
+            h.finish()
+        } else {
+            0
+        };
+        let forced_root = (gumbel_m > 0).then(|| Arc::new(ForcedRoot::default()));
+        let mut gd = gd;
+        gd.forced_root = forced_root.clone();
+        let mut gumbel_pick: Option<EngineAction> = None;
         let budget = self.budget;
         let budget_mode = self.config.budget_mode;
         // Descents this decision actually ran: less than the budget when the tree solves early, and
@@ -2373,6 +2432,18 @@ impl MctsBot {
                 // headroom is cheap insurance against future regressions
                 // where it might creep back up.
                 match budget {
+                    SearchBudget::Iterations(total) if forced_root.is_some() => {
+                        gumbel_pick = Self::run_gumbel(
+                            &*tree,
+                            forced_root.as_ref().unwrap(),
+                            total,
+                            gumbel_m,
+                            gumbel_scale,
+                            gumbel_seed,
+                            agent_team,
+                            steps_ref,
+                        );
+                    }
                     SearchBudget::Iterations(total) => {
                         let base = total / n_workers;
                         let rem = total % n_workers;
@@ -2571,6 +2642,7 @@ impl MctsBot {
             reuse,
             recombination: recomb_delta,
             root_noise,
+            gumbel_pick,
         }
     }
 
@@ -2848,6 +2920,104 @@ impl MctsBot {
         }
     }
 
+    /// Plan 053: spend `total` descents on sequential halving at the root and return the move to
+    /// play. One thread: each step's root move is named in `forced` before the step and taken by
+    /// `select_node` at the root. Returns `None` when the root offers fewer than two moves (the
+    /// budget is then spent as plain PUCT steps, and the best-Q rule picks as usual).
+    #[allow(clippy::too_many_arguments)]
+    fn run_gumbel<T: SearchTree<GD = BloodBowlDynamics>>(
+        tree: &T,
+        forced: &ForcedRoot,
+        total: usize,
+        m: usize,
+        gumbel_scale: f32,
+        seed: u64,
+        agent_team: TeamType,
+        steps: &AtomicU64,
+    ) -> Option<EngineAction> {
+        let sign = if agent_team == TeamType::Home { 1.0 } else { -1.0 };
+        let children = || -> Vec<RootChild> {
+            tree.get_next_move_info()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(a, info)| match &a {
+                    BbAction::Player { action, .. } => Some(RootChild {
+                        action: *action,
+                        logit: a.prior_f32().unwrap_or(1.0).max(1e-6).ln(),
+                        q: info.score.as_ref().map(|s| sign * s.score as f32),
+                        visits: info.score.as_ref().map_or(0, |s| s.visits.load(Ordering::Relaxed)),
+                        solved: info.solved,
+                    }),
+                    BbAction::Chance { .. } => None,
+                })
+                .collect()
+        };
+        let root = || {
+            let info = tree.get_root_info();
+            (info.score.as_ref().map_or(0.0, |s| sign * s.score as f32), info.solved)
+        };
+        // Returns false when the named move was not on offer (it got solved since the phase began):
+        // that descent ran as plain PUCT below the root instead.
+        let step = |a: Option<EngineAction>| {
+            forced.set(a);
+            tree.step();
+            forced.set(None);
+            steps.fetch_add(1, Ordering::Relaxed);
+            !forced.take_missed()
+        };
+        let mut used = 0usize;
+        // A fresh root is expanded by its first descent, which selects nothing below it.
+        if total > 0 && tree.get_next_move_info().is_none_or(|c| c.is_empty()) {
+            step(None);
+            used += 1;
+        }
+        let kids = children();
+        if kids.len() < 2 {
+            while used < total && !root().1 {
+                step(None);
+                used += 1;
+            }
+            return None;
+        }
+        let mut halving = Halving::new(&kids, m, gumbel_scale, seed, total);
+        'search: while used < total && !root().1 {
+            let kids = children();
+            // Solved moves need no descents (their value is exact) and are hidden from selection. When
+            // every survivor is solved the decision among them is exact, and the search stops early,
+            // as a solved PUCT root does.
+            let live: Vec<EngineAction> = halving
+                .survivors()
+                .iter()
+                .filter(|a| kids.iter().any(|c| c.action == **a && !c.solved))
+                .copied()
+                .collect();
+            if live.is_empty() {
+                break;
+            }
+            let mut live = live;
+            for _ in 0..halving.per_action() {
+                if live.is_empty() {
+                    break;
+                }
+                let mut i = 0;
+                while i < live.len() {
+                    if used >= total {
+                        break 'search;
+                    }
+                    let took = step(Some(live[i]));
+                    used += 1;
+                    if took {
+                        i += 1;
+                    } else {
+                        live.remove(i);
+                    }
+                }
+            }
+            halving.halve(&children(), root().0);
+        }
+        Some(halving.pick(&children(), root().0))
+    }
+
     /// Pick the root child to play from a completed search. See the
     /// comment inside for why this is aggregated-Q, not most-visited.
     fn pick_best_action(
@@ -2937,13 +3107,15 @@ impl MctsBot {
         step: ExploreStep,
     ) -> (EngineAction, Sample, ExploreOutcome) {
         let result = self.run_search(state, step.noise);
-        let best = Self::pick_best_action(
-            &result.move_info,
-            result.agent_team,
-            self.config.tie_break,
-            MoverFrame::for_team(state, result.agent_team),
-            self.config.debug_root,
-        );
+        let best = result.gumbel_pick.unwrap_or_else(|| {
+            Self::pick_best_action(
+                &result.move_info,
+                result.agent_team,
+                self.config.tie_break,
+                MoverFrame::for_team(state, result.agent_team),
+                self.config.debug_root,
+            )
+        });
         let sampled = step.sample.and_then(|sp| {
             let player: Vec<(EngineAction, u32)> = result
                 .move_info
@@ -3031,13 +3203,15 @@ pub struct ExploreOutcome {
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
         let result = self.run_search(state, None);
-        let action = Self::pick_best_action(
-            &result.move_info,
-            result.agent_team,
-            self.config.tie_break,
-            MoverFrame::for_team(state, result.agent_team),
-            self.config.debug_root,
-        );
+        let action = result.gumbel_pick.unwrap_or_else(|| {
+            Self::pick_best_action(
+                &result.move_info,
+                result.agent_team,
+                self.config.tie_break,
+                MoverFrame::for_team(state, result.agent_team),
+                self.config.debug_root,
+            )
+        });
         self.last_search = Some(self.summarise(state, &result, action));
         action
     }

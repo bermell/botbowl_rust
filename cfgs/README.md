@@ -35,3 +35,8 @@ is the environment spelling, which the hub pins into every job it submits.
 casualty, every pass a fumble, fouls harmless, and a horizon that runs through half time. It
 exists for one head-to-head, `exact_visits.toml` against `legacy_chance_visits.toml` on the same
 net; `BLOOD_MCTS_CHANCE=legacy` is the environment spelling.
+
+`gumbel16_iters.toml` (plan 053) replaces the PUCT root with sequential halving over the top 16
+moves by prior (`gumbel_m`; `gumbel_scale` adds the Gumbel noise self-play would use). The
+budget counts descents, and the search runs on one thread. Its rival at equal cost is
+`exact_iters.toml`.

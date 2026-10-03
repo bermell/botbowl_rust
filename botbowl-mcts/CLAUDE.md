@@ -32,6 +32,26 @@ position (300 descents → 234 root visits; recombination is the likely cause, n
 fresh tree hits the `n`-descent cap before it reaches `n` visits. `SearchTelemetry.iterations` counts the descents actually run,
 so `iterations / searches` in a report is the real per-decision budget. `tests/budget_mode.rs`.
 
+## Gumbel root search (`gumbel.rs`, plan 053)
+
+`MctsConfig.gumbel_m > 0` (`BLOOD_MCTS_GUMBEL_M`, preset `gumbel_m`, e.g. `cfgs/gumbel16_iters.toml`)
+replaces the PUCT root with sequential halving:
+- **Considered set:** the top `m` root moves by `g + ln prior`. `g` is Gumbel noise at
+  `gumbel_scale`; 0 is deterministic play.
+- **Schedule:** the budget is split evenly over `ceil(log2 m)` phases. The better half survives
+  each phase by `g + logit + σ(q̂)`, until two remain. The best survivor is played.
+- **Below the root:** plain PUCT.
+- **Mechanics:** `run_gumbel` drives `tree.step()` on one thread and names each descent's root
+  move in a `ForcedRoot` that `select_node` takes at the root. A descent's first player-node
+  selection is always the root's.
+- **Solved moves:** they need no descents and are dropped from the phase. When every survivor is
+  solved, the search stops early.
+- **Budget:** a Gumbel search always counts descents (`budget_mode` is ignored) and ignores
+  `workers`.
+- **The training record is unchanged:** every root child's visits, Q and prior.
+- **Default:** `gumbel_m = 0` is byte-identical to the shipped search. `tests/gumbel_root.rs` pins
+  that, the schedule and reproducibility.
+
 ## Self-play exploration (`exploration.rs`, plan 048)
 
 `MctsBot::get_action_explore(state, ExploreStep)` is `get_action_with_record` plus two optional

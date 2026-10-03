@@ -2,6 +2,7 @@ pub mod action;
 pub mod block_dice;
 pub mod dynamics;
 pub mod exploration;
+pub mod gumbel;
 pub mod priors;
 pub mod pruning;
 pub mod report;

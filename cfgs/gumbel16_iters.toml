@@ -1,0 +1,5 @@
+# Plan 053: Gumbel root search. Sequential halving over the top 16 root moves by prior; the budget
+# (`--mcts-iters N`) counts new descents. No Gumbel noise: this is the deterministic player. Below the
+# root the search is the shipped PUCT. Compare against `exact_iters.toml` at the same N.
+budget_mode = "iterations"
+gumbel_m = 16

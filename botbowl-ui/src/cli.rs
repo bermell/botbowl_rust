@@ -124,6 +124,10 @@ pub struct ConvergenceArgs {
     /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
     #[arg(long)]
     pub nn_server: Option<String>,
+    /// A bot preset (`cfgs/*.toml`) instead of the `--puct-*` flags, e.g. plan 053's
+    /// `cfgs/gumbel16_iters.toml`. Its name joins the selection rule in each row's `puct` field.
+    #[arg(long, conflicts_with_all = ["puct_c", "puct_range_floor"])]
+    pub bot_config: Option<std::path::PathBuf>,
     /// Random-start placement biases (defaults match generation).
     #[command(flatten)]
     pub bias: BiasArgs,

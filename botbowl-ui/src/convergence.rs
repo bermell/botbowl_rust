@@ -47,7 +47,7 @@ use botbowl_nn::eval::NnEvaluator;
 
 use botbowl_engine::core::model::BoardDims;
 use botbowl_play::board_sizes::{board_label, parse_board, DEFAULT_CELLS_PER_PLAYER};
-use botbowl_play::bots::{load_nn, Evaluator};
+use botbowl_play::bots::{load_mcts_config, load_nn, Evaluator};
 use botbowl_play::GAME_STACK_SIZE;
 
 use crate::cli::{CliEvaluator, ConvergenceArgs};
@@ -105,9 +105,16 @@ fn puct_from_args(args: &ConvergenceArgs) -> PuctMode {
 }
 
 fn make_bot(args: &ConvergenceArgs, nn: Option<&Arc<NnEvaluator>>, budget: usize) -> MctsBot {
-    let bot = MctsBot::new(SearchBudget::Iterations(budget))
-        .with_workers(args.mcts_workers)
-        .with_puct(puct_from_args(args));
+    let bot = match &args.bot_config {
+        Some(path) => {
+            let preset = load_mcts_config(path).unwrap_or_else(|e| panic!("{e}"));
+            MctsBot::with_budget_and_config(SearchBudget::Iterations(budget), preset.config)
+                .with_workers(args.mcts_workers)
+        }
+        None => MctsBot::new(SearchBudget::Iterations(budget))
+            .with_workers(args.mcts_workers)
+            .with_puct(puct_from_args(args)),
+    };
     match args.evaluator {
         CliEvaluator::Heuristic => bot,
         CliEvaluator::PureTd => bot.with_pure_td(),
@@ -157,7 +164,13 @@ pub fn run(args: ConvergenceArgs) -> io::Result<()> {
         .map(board_label)
         .unwrap_or_else(|| board_label(BoardDims::from_env()));
 
-    let puct_label = puct_from_args(&args).label();
+    let puct_label = match &args.bot_config {
+        Some(path) => {
+            let preset = load_mcts_config(path)?;
+            format!("{}@{}", preset.config.puct.label(), preset.name)
+        }
+        None => puct_from_args(&args).label(),
+    };
     eprintln!(
         "selection rule: {puct_label}, board {board_name}, {} probe thread(s)",
         args.parallel.max(1)

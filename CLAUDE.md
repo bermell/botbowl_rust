@@ -26,6 +26,7 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 - **Board-size curriculum:** `plans/042-plan--board-size-curriculum.md` — mixed-size generation (`--board-sizes` / `--size-centre …` on `dataset` and `job generate`, per-board eval rungs via `eval --board-sizes`), schema v7, the trainer's multi-dims loader and `train_loop.sh`'s `SIZE_MODE`. Experiments E0–E5 there are the next thing to run.
 - **Fast bot ranking:** `plans/051-plan--fast-bot-ranking.md` — SPRT with pentanomial pair scoring and a score margin on the eval ladder, a validation harness of net pairs with gold results, and a paired contested-drive rung kind; proxies are adopted only after the harness passes them against full-game ground truth.
   **Current phase: drives are the metric, alone.** Judge experiments and the loop on paired contested drives (SPRT). Do not add, run or propose full-game confirmation, P1 checks or anchor matches; the user says when full games are needed.
+- **Gumbel root search:** `plans/053-plan--gumbel-root-search.md` — sequential halving over the top-m root moves (`MctsConfig.gumbel_m`, `cfgs/gumbel16_iters.toml`), PUCT below the root; the fix candidate for 16x9's wide fans, measured on drives.
 - **Current focus: bot capability** (priors, leaf-score, pruning, scripted heuristics, new lectures). Performance work is deprioritized — don't propose perf tuning, profiling reruns, or speed micro-benchmarks unless explicitly asked.
 
 ## Commands

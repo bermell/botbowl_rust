@@ -36,7 +36,8 @@ pub use botbowl_play::generate::GenerateConfig;
 // v8: `MctsConfig.chance_model`, riding inside `SearchConfig.config`.
 // v9: `MctsConfig.trace_root_descents`.
 // v10 (plan 051): `Task::Eval.drives` (a drive rung's position set) and `EvalGameLine.attacker`.
-pub const PROTOCOL_VERSION: u32 = 10;
+// v11 (plan 053): `MctsConfig.gumbel_m` and `MctsConfig.gumbel_scale`, inside `SearchConfig.config`.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.
@@ -257,13 +258,21 @@ pub enum ToHub {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectReason {
-    Protocol { hub: u32 },
+    Protocol {
+        hub: u32,
+    },
     BadToken,
-    Commit { hub: String },
+    Commit {
+        hub: String,
+    },
     Dirty,
-    Capacity { hub: Capacity },
+    Capacity {
+        hub: Capacity,
+    },
     /// Same binary, different `BOARD_SIZE_*` in the worker's environment.
-    Board { hub: BoardDims },
+    Board {
+        hub: BoardDims,
+    },
 }
 
 impl std::fmt::Display for RejectReason {
