@@ -61,7 +61,7 @@ for f in sys.argv[1:]:
         m = re.match(r"\s+gumbel16_f(\d+) 1000\s+\S+\s+\S+\s+\S+\s+(\S+)", line)
         if m:
             reg[int(m.group(1))].append(float(m.group(2)))
-best = min((sum(v) / len(v), k) for k, v in reg.items() if len(v) == 2)
+best = min((sum(v) / len(v), k) for k, v in reg.items() if len(v) >= 2)  # rows repeat under "advance all"
 print(best[1])
 PY
 ) || die "floor choice"
