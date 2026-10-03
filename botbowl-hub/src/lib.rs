@@ -6,7 +6,7 @@
 //! - `POST /api/jobs` (an [`api::JobRequest`]: eval or generate),
 //!   `GET /api/jobs/{id}`, `GET /api/status` — the control API the
 //!   `botbowl-hub job` CLI uses (bearer token);
-//! - `GET /` — a plain-text status page for watching a run from a phone.
+//! - `GET /` — a status page for watching a run from a phone ([`page`]).
 //!
 //! All state is [`state::Inner`] behind one mutex; `changed` wakes anyone
 //! waiting on a job.
@@ -14,6 +14,7 @@
 pub mod allowlist;
 pub mod api;
 pub mod http;
+pub mod page;
 pub mod state;
 pub mod ws;
 
@@ -30,7 +31,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::sync::Notify;
 
-use api::{EvalJobRequest, GenStats, GenerateJobRequest, JobId, JobRequest, JobState, JobStatus, Submitted, UnitStats};
+use api::{EvalJobRequest, GenerateJobRequest, JobId, JobRequest, JobState, JobStatus, Submitted};
 use state::Inner;
 
 #[derive(Clone, Debug)]
@@ -47,6 +48,8 @@ pub struct HubConfig {
     /// the games it was holding. Workers heartbeat every 30 s whether or not
     /// they are mid-game, so this is about a lost *machine*, not a slow one.
     pub worker_timeout: Duration,
+    /// The training loop's run directory, for the status page's loop and training lines.
+    pub run_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -193,90 +196,14 @@ async fn api_job(State(hub): State<Hub>, headers: HeaderMap, Path(id): Path<JobI
 }
 
 async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
-    let s = hub.inner.lock().unwrap().status();
-    let mut out = format!(
-        "botbowl-hub  commit {}{}\n\nworkers ({}):\n",
-        &s.commit[..s.commit.len().min(12)],
-        if s.dirty { "-dirty" } else { "" },
-        s.workers.len()
-    );
-    if !s.dirty {
-        out.push_str(&format!(
-            "\njoin as a worker (needs this hub's token in ~/.config/botbowl/hub.token on that machine):\n\
-             \x20 git fetch origin && git checkout {commit}\n\
-             \x20 BOARD_SIZE_W={pw} BOARD_SIZE_H={ph} BOARD_PLAYERS={team} cargo build --release -p botbowl-worker\n\
-             \x20 ./target/release/botbowl-worker --hub ws://<this-host-or-forwarded-address>:{port}/ws --name <yours>\n",
-            commit = s.commit,
-            pw = s.capacity.width.saturating_sub(2),
-            ph = s.capacity.height.saturating_sub(2),
-            team = s.capacity.team_size,
-            port = hub.cfg.bind.port(),
-        ));
-    } else {
-        out.push_str(
-            "\njoin as a worker: this hub is running a dirty tree, so there's no commit a \
-             worker can check out to match it exactly — start it with --allow-commit-mismatch \
-             or commit and restart the hub first.\n",
-        );
-    }
-    for w in &s.workers {
-        out.push_str(&format!(
-            "  {:20} {:>3} streams  {:>3} tasks in flight  {:>6} games  {}  seen {}s ago\n",
-            w.name, w.parallel_games, w.tasks_in_flight, w.games_done, w.triple, w.last_seen_secs
-        ));
-    }
-    out.push_str(&format!("\njobs ({}):\n", s.jobs.len()));
-    for j in &s.jobs {
-        out.push_str(&format!(
-            "  job {}  {:?}  {:?}  {}s\n",
-            j.id, j.kind, j.state, j.elapsed_secs
-        ));
-        let mut corpus = GenStats::default();
-        for u in &j.units {
-            let detail = match &u.stats {
-                Some(UnitStats::Eval(e)) if e.games() > 0 => {
-                    let n = e.games() as f64;
-                    let mut d = format!(
-                        "  pts {:.3}  W{} D{} L{}  TD/g {:.2}-{:.2}",
-                        e.points(),
-                        e.wins,
-                        e.draws,
-                        e.losses,
-                        e.tds_for as f64 / n,
-                        e.tds_against as f64 / n
-                    );
-                    if e.decisions > 0 {
-                        d.push_str(&format!("  {:.0} decisions/g", e.decisions as f64 / n));
-                    }
-                    d
-                }
-                Some(UnitStats::Generate(g)) => {
-                    corpus.merge(g);
-                    format!("  {} samples", u.samples)
-                }
-                _ => String::new(),
-            };
-            out.push_str(&format!("      {:40} {:>5}/{:<5}{detail}\n", u.name, u.done, u.total));
-        }
-        if corpus.drives > 0 {
-            out.push_str(&format!(
-                "      corpus: {} drives  TD rate {:.3}  {:.2} TD/drive  {:.1} steps/drive\n",
-                corpus.drives,
-                corpus.scored as f64 / corpus.drives as f64,
-                corpus.tds as f64 / corpus.drives as f64,
-                corpus.steps as f64 / corpus.drives as f64
-            ));
-            for (board, b) in &corpus.by_board {
-                out.push_str(&format!(
-                    "        {:10} {:>6} drives ({:>4.1}%)  TD rate {:.3}  {:.1} steps/drive\n",
-                    board,
-                    b.drives,
-                    100.0 * b.drives as f64 / corpus.drives as f64,
-                    b.scored as f64 / b.drives as f64,
-                    b.steps as f64 / b.drives as f64
-                ));
-            }
-        }
-    }
-    (StatusCode::OK, [("content-type", "text/plain; charset=utf-8")], out)
+    let status = hub.inner.lock().unwrap().status();
+    let port = hub.cfg.bind.port();
+    let run_dir = hub.cfg.run_dir.clone();
+    // File reads and an `nvidia-smi` call: off the async workers.
+    let html = tokio::task::spawn_blocking(move || {
+        page::render_html(&page::gather(status, port, run_dir.as_deref()), std::time::SystemTime::now())
+    })
+    .await
+    .unwrap_or_else(|e| format!("status page failed: {e}"));
+    (StatusCode::OK, [("content-type", "text/html; charset=utf-8")], html)
 }

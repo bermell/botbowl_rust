@@ -70,6 +70,10 @@ pub struct EvalJobRequest {
     /// alone uses it, so the worker protocol does not change.
     #[serde(default)]
     pub sprt: Option<botbowl_play::stats::Sprt>,
+    /// What the job is called when we talk about it (`gen03 drives vs gen21`), for the status
+    /// page. `None` falls back to the job kind.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// One corpus shard of a generate job: `games` trajectories with seeds
@@ -96,6 +100,9 @@ pub struct GenerateJobRequest {
     pub truncate: bool,
     /// Games per task handed to a worker.
     pub batch: u16,
+    /// As [`EvalJobRequest::label`] (`gen03 generate`).
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 pub type JobId = u64;
@@ -142,6 +149,14 @@ pub struct EvalStats {
     pub tds_against: u32,
     /// The candidate's own decisions (MCTS searches), summed; 0 when it does not search.
     pub decisions: u64,
+    /// Plan 051: the paired score's standard error, the pairs it rests on, and the rung's
+    /// sequential test, if it runs one.
+    #[serde(default)]
+    pub points_se: f64,
+    #[serde(default)]
+    pub pairs: u32,
+    #[serde(default)]
+    pub sprt: Option<botbowl_play::stats::SprtStatus>,
 }
 
 impl EvalStats {
@@ -206,6 +221,8 @@ impl GenStats {
 pub struct JobStatus {
     pub id: JobId,
     pub kind: JobKind,
+    #[serde(default)]
+    pub label: Option<String>,
     pub state: JobState,
     pub units: Vec<UnitProgress>,
     pub elapsed_secs: u64,

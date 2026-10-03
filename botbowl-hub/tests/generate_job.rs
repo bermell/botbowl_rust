@@ -61,6 +61,7 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         allow_commit_mismatch: false,
         allowed_commits: allowlist_path(),
         worker_timeout,
+        run_dir: None,
     })
     .await
     .unwrap();
@@ -119,6 +120,7 @@ fn job(dir: &PathBuf, truncate: bool) -> GenerateJobRequest {
             .collect(),
         truncate,
         batch: 2,
+        label: None,
     }
 }
 

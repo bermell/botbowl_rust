@@ -8,7 +8,10 @@ check, not a quality metric.
 """
 
 import argparse
+import json
+import os
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -165,6 +168,7 @@ def train(
     value_weight=1.0,
     weight_decay=0.0,
     per_drive_value_weight=False,
+    progress=None,
 ):
     # Before anything that draws: the shuffle order, the augmentation flips,
     # and the weight init all come off global generators.
@@ -287,6 +291,35 @@ def train(
     if val_loader is not None and init is not None:
         _, vv0, _ = evaluate(model, val_loader, device, per_drive_value_weight)
         print(f"epoch  -1  (warm-start baseline)  |  val_value {vv0:.4f}")
+    else:
+        vv0 = None
+
+    # How far along this run is, for the hub's status page (`--progress`): rewritten atomically
+    # every few seconds, so a reader never sees half a file.
+    try:
+        total_steps = max_steps if max_steps else epochs * len(loader)
+    except TypeError:
+        total_steps = None
+    prog = {"started": time.time(), "total_steps": total_steps, "baseline_val_value": vv0,
+            "step": 0, "train_value": None, "train_policy": None, "val_value": None,
+            "val_policy": None, "best_step": None, "best_val_value": None, "done": False}
+    prog_written = 0.0
+
+    def write_progress(force=False):
+        nonlocal prog_written
+        now = time.time()
+        if not progress or (not force and now - prog_written < 10):
+            return
+        prog["updated"] = now
+        tmp = f"{progress}.tmp"
+        with open(tmp, "w") as f:
+            json.dump(prog, f)
+        os.replace(tmp, progress)
+        prog_written = now
+
+    if total_steps:
+        print(f"schedule: {total_steps} steps", flush=True)
+    write_progress(force=True)
 
     # Step-driven when --max-steps is given, epoch-driven otherwise (production).
     #
@@ -330,6 +363,7 @@ def train(
         if best_vp is None or vp < best_vp:
             best_vp, best_vp_step = vp, step
         suffix = f"  |  val_policy {vp:.4f}  val_value {vv:.4f}  val_top1 {va:.3f}"
+        prog.update(val_value=vv, val_policy=vp)
         # Which head decides the restore. `value` is the historical rule and was
         # correct while the bot played `--evaluator nn-value`: priors came from
         # the scripted heuristic, so nothing consumed the policy head and
@@ -342,6 +376,7 @@ def train(
         if best_val is None or criterion < best_val:
             best_val, best_epoch, best_step = criterion, epoch, step
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            prog.update(best_step=step, best_val_value=vv)
             if out:  # persist immediately — a killed run keeps its best net
                 torch.save(best_state, out)
             suffix += "  *"
@@ -363,7 +398,12 @@ def train(
             tot_v += vl.item()
             tot_a += acc.item()
             nb += 1
+            prog["step"] = step
+            if nb >= 200:  # a window mean, not one noisy batch right after a reset
+                prog.update(train_value=tot_v / nb, train_policy=tot_p / nb)
+            write_progress()
             if interval and step % interval == 0:
+                prog.update(train_value=tot_v / nb, train_policy=tot_p / nb)
                 print(f"step {step:7d}  policy_loss {tot_p / nb:.4f}  "
                       f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}" + validate("step"),
                       flush=True)
@@ -406,6 +446,8 @@ def train(
     if onnx:
         export_onnx(model, onnx)
         print(f"exported ONNX → {onnx}")
+    prog["done"] = True
+    write_progress(force=True)
     return model
 
 
@@ -502,6 +544,12 @@ def main():
         default="auto",
         help="auto (default; cuda if it can actually run kernels, else cpu), cpu, cuda, cuda:N",
     )
+    ap.add_argument(
+        "--progress",
+        type=Path,
+        default=None,
+        help="keep a small JSON of the run's progress here (step, losses), for the hub's status page",
+    )
     args = ap.parse_args()
     train(
         args.data,
@@ -524,6 +572,7 @@ def main():
         value_weight=args.value_weight,
         weight_decay=args.weight_decay,
         per_drive_value_weight=args.per_drive_value_weight,
+        progress=args.progress,
     )
 
 

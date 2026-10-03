@@ -60,6 +60,7 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         allow_commit_mismatch: false,
         allowed_commits: allowlist_path(),
         worker_timeout,
+        run_dir: None,
     })
     .await
     .unwrap();
@@ -117,6 +118,7 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
         report_out: dir.join("report.json"),
         batch: 2,
         sprt: None,
+        label: None,
     }
 }
 
@@ -369,6 +371,7 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
         report_out: dir.join("report.json"),
         batch: 2,
         sprt: None,
+        label: None,
     };
     let id = hub.submit_eval(req).unwrap();
     let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
@@ -602,6 +605,7 @@ async fn start_hub_with_allowlist(path: &std::path::Path) -> (Hub, String) {
         token: TOKEN.into(),
         allow_commit_mismatch: false,
         allowed_commits: path.to_path_buf(),
+        run_dir: None,
         worker_timeout: Duration::from_secs(300),
     })
     .await

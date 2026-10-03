@@ -11,9 +11,12 @@
 #   - target: cq tau 100 (the loop default). exp055 (full games) and exp056 (drives) both favoured
 #     it over tau 20 at the old budget; per the user, tau gets revisited on corpora at the new budget.
 #   - exploration as in the vl0 loop (plan 048).
-#   - eval: unchanged scale. The anchor eval stays at 500 *visits*, both seats, 200 per board on
-#     14x7 and 16x9, so runs/loopmix16x9vl0/baseline_gen21 (copied in as the curve origin) is
-#     comparable. The search code is unchanged since it was measured.
+#   - eval (from gen03, 2026-10-03): plan 051 drives. Each generation plays paired contested
+#     drives against gen21 (the sets in cfgs/positions were screened with gen21), SPRT 0.5:0.55,
+#     at most 800 drives per set; a drive H1 is confirmed on full games against gen21 (P1). The
+#     full-game anchor match (gen13, 200 per board on 14x7 and 16x9) runs every 3rd generation,
+#     so the curve from runs/loopmix16x9vl0/baseline_gen21 (copied in as its origin) continues.
+#     Both at 500 *visits*, both seats, the scale everything so far was measured at.
 #   - smaller generations: 2400 games (300 per shard) at four times the old per-game cost.
 #
 # Waits for exp058 to finish, or stops it at EXP058_DEADLINE (a directional read is enough), then
@@ -44,8 +47,9 @@ done
 sleep 10
 say "exp058 over: $(tail -3 runs/exp058/status.md | tr '\n' ' ' | cut -c1-400)"
 
-# The laptop may be built at d37a1dc. Everything since is scripts and docs, so admit it.
-git diff --quiet d37a1dc HEAD -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-hub botbowl-worker botbowl-hub-proto recon_mcts \
+# The laptop may be built at d37a1dc. Since then: scripts, docs, the trainer and the hub's own
+# status page and job labels, none of which a worker's games touch, so admit it.
+git diff --quiet d37a1dc HEAD -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-worker botbowl-hub-proto recon_mcts \
     && printf 'hub_commit = "%s"\nallow = ["d37a1dc"]\n' "$(git rev-parse --short HEAD)" > hub-allowed-commits.toml \
     && say "allowlist: d37a1dc admitted for hub $(git rev-parse --short HEAD)"
 
@@ -63,6 +67,8 @@ export ANCHOR_GAMES=200 EVAL_BOARD_SIZES=14x7,16x9 EVAL_RUNGS= EVAL_GAMES=30
 export MCTS_ITERS=1000 GEN_BUDGET_MODE=iterations
 export EVAL_MCTS_ITERS=500 EVAL_BUDGET_MODE=visits
 export CQ_TAU=100
+export EVAL_VENUE=drives DRIVE_REF="$INIT_CHAMPION" DRIVE_SPRT=0.5:0.55 DRIVE_CAP=800 P1_GAMES=200 ANCHOR_EVERY=3
+export DRIVE_POSITIONS="$REPO/cfgs/positions/contested_14x7.json,$REPO/cfgs/positions/contested_16x9.json"
 export EXPLORE_ARGS="--explore-noise 0.25 --explore-alpha 10 --explore-sample-moves 2 --explore-temperature 1"
 export GAMES_PER_SHARD=300
 export GEN_PARALLEL_GAMES=12 WORKER_MEM_FLOOR_MB=1536

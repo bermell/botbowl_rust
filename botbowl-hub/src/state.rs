@@ -98,6 +98,7 @@ struct InFlight {
 
 pub struct Job {
     id: JobId,
+    label: Option<String>,
     kind: Kind,
     batch: u16,
     /// `(unit index, game)` not yet handed out.
@@ -105,6 +106,8 @@ pub struct Job {
     failures: HashMap<(usize, u32), u32>,
     state: JobState,
     started: Instant,
+    /// When it left `Running`, so a finished job's elapsed time stops.
+    ended: Option<Instant>,
 }
 
 impl Job {
@@ -124,6 +127,9 @@ impl Job {
                         tds_for: r.row.tds_for,
                         tds_against: r.row.tds_against,
                         decisions: r.row.telemetry.as_ref().map_or(0, |t| t.searches),
+                        points_se: r.row.points_se,
+                        pairs: r.row.pairs.pairs(),
+                        sprt: r.row.sprt,
                     })),
                 })
                 .collect(),
@@ -171,10 +177,11 @@ impl Job {
                 Kind::Eval { .. } => JobKind::Eval,
                 Kind::Generate { .. } => JobKind::Generate,
             },
+            label: self.label.clone(),
             workers_connected,
             state: self.state.clone(),
             units: self.units(),
-            elapsed_secs: self.started.elapsed().as_secs(),
+            elapsed_secs: self.ended.unwrap_or_else(Instant::now).duration_since(self.started).as_secs(),
             report: match &self.kind {
                 Kind::Eval { report, .. } => report.clone(),
                 Kind::Generate { .. } => None,
@@ -215,6 +222,7 @@ impl Job {
     fn fail(&mut self, error: String) {
         eprintln!("[hub] job {} failed: {error}", self.id);
         self.state = JobState::Failed { error };
+        self.ended.get_or_insert_with(Instant::now);
         self.pending.clear();
     }
 }
@@ -349,6 +357,7 @@ impl Inner {
         }
         let per_game = open_out(&req.per_game_out, false)?;
         let batch = req.batch;
+        let label = req.label.clone();
         let kind = Kind::Eval {
             req,
             candidate,
@@ -356,7 +365,7 @@ impl Inner {
             per_game,
             report: None,
         };
-        Ok(self.insert_job(kind, batch, pending))
+        Ok(self.insert_job(kind, label, batch, pending))
     }
 
     pub fn submit_generate(&mut self, req: GenerateJobRequest) -> io::Result<JobId> {
@@ -400,20 +409,22 @@ impl Inner {
             });
             pending.extend((0..s.games).map(|g| (i, g)));
         }
-        Ok(self.insert_job(Kind::Generate { shards }, req.batch, pending))
+        Ok(self.insert_job(Kind::Generate { shards }, req.label, req.batch, pending))
     }
 
-    fn insert_job(&mut self, kind: Kind, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
+    fn insert_job(&mut self, kind: Kind, label: Option<String>, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
         let id = self.next_job;
         self.next_job += 1;
         let job = Job {
             id,
+            label,
             kind,
             batch,
             pending,
             failures: HashMap::new(),
             state: JobState::Running,
             started: Instant::now(),
+            ended: None,
         };
         eprintln!(
             "[hub] job {id} submitted: {}",
@@ -778,6 +789,7 @@ impl Inner {
     }
 
     fn finish(job: &mut Job) {
+        job.ended = Some(Instant::now());
         let elapsed = job.started.elapsed().as_secs();
         match &mut job.kind {
             Kind::Eval { req, rungs, report, .. } => {

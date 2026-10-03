@@ -23,7 +23,10 @@ botbowl-hub job eval --evaluator nn --model X.onnx --vs-evaluator nn --vs-model 
 botbowl-hub job generate --mode random-start --games 600 --mcts-iters 1000 --evaluator nn --model X.onnx \
     --seed-base 22000000 --shard-seed-stride 100000 --shards "0 1 2 3 4 5 6 7" --heuristic-shards "" \
     --truncate --out-dir runs/<run>/gen12 --wait       # writes gen12/shard$K.jsonl, shard K seeded at base + K*stride
-botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text page
+botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is the status page in a terminal
+# http://hub:7777/ is the status page in a browser: jobs by --label (`job ... --label "gen03 generate"`),
+# rungs and status lines shortened to how we name things (page.rs), and with `serve --run-dir`
+# the loop's latest status lines plus the trainer's progress (`bbnn.train --progress`).
 ```
 
 ## Invariants

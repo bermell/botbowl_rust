@@ -35,7 +35,7 @@ enum Command {
         job: JobCommand,
     },
     /// Print the daemon's status.
-    Status(ClientArgs),
+    Status(StatusArgs),
 }
 
 #[derive(Args, Debug)]
@@ -61,6 +61,10 @@ struct ServeArgs {
     /// indistinguishable from a healthy one and strands its games.
     #[arg(long, default_value_t = 120)]
     worker_timeout: u64,
+    /// The training loop's run directory (`runs/<run>`). The status page then also shows the
+    /// loop's latest status lines and, while the box trains a net, the trainer's progress.
+    #[arg(long)]
+    run_dir: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -71,6 +75,21 @@ struct ClientArgs {
     /// Default `~/.config/botbowl/hub.token`, the file `serve` uses.
     #[arg(long)]
     token_file: Option<PathBuf>,
+    /// What the job is called on the status page (`gen03 drives vs gen21`). Ignored by `status`.
+    #[arg(long)]
+    label: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct StatusArgs {
+    #[command(flatten)]
+    client: ClientArgs,
+    /// The status page as text, instead of the JSON.
+    #[arg(long, default_value_t = false)]
+    text: bool,
+    /// With `--text`: the loop's run directory, as `serve --run-dir`.
+    #[arg(long)]
+    run_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -402,6 +421,7 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         shards,
         truncate: a.truncate,
         batch: a.batch,
+        label: a.client.label.clone(),
     })
 }
 
@@ -761,6 +781,7 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         report_out: abs(&a.out),
         batch: a.batch,
         sprt: a.sprt,
+        label: a.client.label.clone(),
     })
 }
 
@@ -872,6 +893,7 @@ fn main() {
                     allow_commit_mismatch: a.allow_commit_mismatch,
                     allowed_commits: a.allowed_commits.clone(),
                     worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
+                    run_dir: a.run_dir.clone(),
                 })
                 .await
                 .unwrap_or_else(|e| {
@@ -890,12 +912,19 @@ fn main() {
                 }
             });
         }
-        Command::Status(c) => {
+        Command::Status(a) => {
+            let c = &a.client;
             let token = read_token(&token_path(&c.token_file));
             match request("GET", &format!("{}/api/status", c.hub), &token, None) {
                 Ok((200, body)) => {
                     let s: HubStatus = serde_json::from_str(&body).expect("status json");
-                    println!("{}", serde_json::to_string_pretty(&s).unwrap());
+                    if a.text {
+                        let port = c.hub.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(0);
+                        let page = botbowl_hub::page::gather(s, port, a.run_dir.as_deref());
+                        print!("{}", botbowl_hub::page::render(&page, std::time::SystemTime::now()));
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&s).unwrap());
+                    }
                 }
                 Ok((code, body)) => {
                     eprintln!("hub returned {code}: {body}");
