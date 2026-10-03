@@ -88,8 +88,22 @@ def resolve_device(spec="auto"):
     return dev
 
 
+def wdl_target(value):
+    """Plan 050: a mover-frame value in ``[-1, 1]`` as a distribution over ``[self, none, opp]``.
+
+    A drive outcome (+1 / 0 / -1) is one-hot; a blended target spreads its mass so that
+    ``P(self) - P(opp)`` equals it, the same quantity the scalar head is trained toward.
+    """
+    v = value.clamp(-1.0, 1.0)
+    return torch.cat([v.clamp_min(0.0), 1.0 - v.abs(), (-v).clamp_min(0.0)], dim=1)
+
+
 def compute_losses(model, batch, device, per_drive_value_weight=False):
-    """Policy CE + value MSE.
+    """Policy CE + value loss: MSE for the scalar head, cross-entropy for the WDL one (plan 050).
+
+    Returns ``(policy_loss, value_loss, top1, value_mse)``. ``value_mse`` is the squared error of
+    the scalar the search reads (``P(self) - P(opp)`` for WDL) against the target, with the same
+    weighting as the loss: the one number both heads are compared on.
 
     Plan 036 W4: with ``per_drive_value_weight`` the value MSE becomes
     ``(w * se).sum() / w.sum()`` with ``w = 1/len(drive)``, so a 60-position
@@ -102,24 +116,33 @@ def compute_losses(model, batch, device, per_drive_value_weight=False):
     """
     spatial = batch["spatial"].to(device)
     global_ = batch["global"].to(device)
-    policy_out, value_out = model(spatial, global_)
+    wdl = getattr(model, "value_head", "scalar") == "wdl"
+    policy_out, value_out = model(spatial, global_, wdl=True) if wdl else model(spatial, global_)
     logits = masked_policy_logits(policy_out, batch["actions"].to(device), batch["pad_mask"].to(device))
     logsm = F.log_softmax(logits, dim=1)
     target = batch["policy"].to(device)                       # (N, K), sums to 1 per row
     policy_loss = -(target * logsm).sum(dim=1).mean()
     value_target = batch["value"].to(device)
-    if per_drive_value_weight:
-        w = batch["weight"].to(device)                        # (N, 1)
-        value_loss = (w * (value_out - value_target) ** 2).sum() / w.sum()
+    w = batch["weight"].to(device) if per_drive_value_weight else torch.ones_like(value_target)  # (N, 1)
+    if wdl:
+        p = torch.softmax(value_out, dim=1)
+        scalar = p[:, 0:1] - p[:, 2:3]
+        ce = -(wdl_target(value_target) * F.log_softmax(value_out, dim=1)).sum(dim=1, keepdim=True)
+        value_loss = (w * ce).sum() / w.sum()
     else:
-        value_loss = F.mse_loss(value_out, value_target)
+        scalar = value_out
+        value_loss = (w * (value_out - value_target) ** 2).sum() / w.sum()
+    value_mse = (w * (scalar - value_target) ** 2).sum() / w.sum()
     pred = logits.argmax(dim=1)
     acc = (pred == batch["chosen"].to(device)).float().mean()
-    return policy_loss, value_loss, acc
+    return policy_loss, value_loss, acc, value_mse
 
 
 def evaluate(model, loader, device, per_drive_value_weight=False):
     """Mean policy loss / value MSE / top-1 over a held-out loader.
+
+    The value number is the MSE of the scalar the search reads, whichever head produced it, so a
+    WDL arm and a scalar arm are scored (and checkpoint-selected) on the same quantity.
 
     Sample-weighted, not batch-weighted: a mixed corpus's per-group loader
     ends each group on a short batch, and weighting those equally with full
@@ -130,7 +153,7 @@ def evaluate(model, loader, device, per_drive_value_weight=False):
     n = 0
     with torch.no_grad():
         for batch in loader:
-            pl, vl, acc = compute_losses(model, batch, device, per_drive_value_weight)
+            pl, _, acc, vl = compute_losses(model, batch, device, per_drive_value_weight)
             b = batch["value"].shape[0]
             tot_p += pl.item() * b
             tot_v += vl.item() * b
@@ -169,6 +192,7 @@ def train(
     weight_decay=0.0,
     per_drive_value_weight=False,
     progress=None,
+    value_head="scalar",
 ):
     # Before anything that draws: the shuffle order, the augmentation flips,
     # and the weight init all come off global generators.
@@ -220,9 +244,10 @@ def train(
         shape = BBNet.shape_of(state)
         if (shape["width"], shape["blocks"]) != (width, blocks):
             print(f"note: --init is {shape['width']}x{shape['blocks']}; building that, not {width}x{blocks}")
-        model = BBNet(**shape).to(device)
+        init_head = shape.pop("value_head", "scalar")
+        model = BBNet(**shape, value_head=value_head).to(device)
     else:
-        model = BBNet(width=width, blocks=blocks).to(device)
+        model = BBNet(width=width, blocks=blocks, value_head=value_head).to(device)
     print(f"model: width {model.stem.weight.shape[0]}, blocks {len(model.blocks)}, "
           f"params {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M")
 
@@ -237,8 +262,16 @@ def train(
     # first steps and undo the warm start, so callers should pass a lower
     # --lr when using --init (train_loop.sh does).
     if init is not None:
-        model.load_state_dict(state)
-        print(f"warm start: loaded weights ← {init}")
+        if init_head != value_head:
+            # Plan 050: the value head's last layer changes shape (64->1 vs 64->3). Everything
+            # else warm-starts; that one layer starts fresh, and nothing else may be missing.
+            state = {k: v for k, v in state.items() if not k.startswith("value_fc2.")}
+            missing, unexpected = model.load_state_dict(state, strict=False)
+            assert not unexpected and set(missing) == {"value_fc2.weight", "value_fc2.bias"}, (missing, unexpected)
+            print(f"warm start: loaded weights ← {init} (value head {init_head} -> {value_head}: last layer fresh)")
+        else:
+            model.load_state_dict(state)
+            print(f"warm start: loaded weights ← {init}")
 
     # Plan 036 W2. AdamW's decay is decoupled, so at weight_decay=0 it is Adam
     # step for step — but stay on Adam anyway when the knob is off, so the
@@ -390,7 +423,7 @@ def train(
         nb = 0
         for batch in loader:
             opt.zero_grad()
-            pl, vl, acc = compute_losses(model, batch, device, per_drive_value_weight)
+            pl, vl, acc, _ = compute_losses(model, batch, device, per_drive_value_weight)
             (pl + value_weight * vl).backward()
             opt.step()
             step += 1
@@ -550,6 +583,13 @@ def main():
         default=None,
         help="keep a small JSON of the run's progress here (step, losses), for the hub's status page",
     )
+    ap.add_argument(
+        "--value-head",
+        choices=("scalar", "wdl"),
+        default="scalar",
+        help="plan 050: tanh scalar (MSE) or a softmax over [self scores, nobody, opp scores] (CE); "
+             "the exported value is P(self) - P(opp) either way",
+    )
     args = ap.parse_args()
     train(
         args.data,
@@ -573,6 +613,7 @@ def main():
         weight_decay=args.weight_decay,
         per_drive_value_weight=args.per_drive_value_weight,
         progress=args.progress,
+        value_head=args.value_head,
     )
 
 
