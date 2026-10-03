@@ -45,11 +45,13 @@ done
 sleep 10
 say "exp058 over: $(tail -3 runs/exp058/status.md | tr '\n' ' ' | cut -c1-400)"
 
-# The laptop may be built at d37a1dc. Since then: scripts, docs, the trainer and the hub's own
-# status page and job labels, none of which a worker's games touch, so admit it.
+# The laptop may be built at d37a1dc or any commit since (it gets rebuilt when master moves). None
+# of them touches a worker's games (checked below), so admit them all: on 2026-10-03 a laptop
+# rebuilt at 03d237c sat rejected for two hours because only d37a1dc was listed.
 git diff --quiet d37a1dc HEAD -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-worker botbowl-hub-proto recon_mcts \
-    && printf 'hub_commit = "%s"\nallow = ["d37a1dc"]\n' "$(git rev-parse --short HEAD)" > hub-allowed-commits.toml \
-    && say "allowlist: d37a1dc admitted for hub $(git rev-parse --short HEAD)"
+    && printf 'hub_commit = "%s"\nallow = [%s]\n' "$(git rev-parse --short HEAD)" \
+        "$(git rev-list --abbrev-commit d37a1dc^..HEAD | sed 's/.*/"&"/' | paste -sd,)" > hub-allowed-commits.toml \
+    && say "allowlist: every commit since d37a1dc admitted for hub $(git rev-parse --short HEAD)"
 
 mkdir -p runs/loopmix16x9d1k
 [ -d runs/loopmix16x9d1k/baseline_gen21 ] || cp -r runs/loopmix16x9vl0/baseline_gen21 runs/loopmix16x9d1k/
