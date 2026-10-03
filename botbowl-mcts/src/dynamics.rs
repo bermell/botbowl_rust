@@ -3109,11 +3109,21 @@ impl MctsBot {
     ///
     /// The sample's `chosen_action` is the move actually played, and its root priors are the
     /// clean, pre-noise ones — the policy target must not learn the noise (`exploration.rs`).
+    ///
+    /// Plan 053: a Gumbel search (`gumbel_m > 0`) brings its own exploration — the Gumbel noise
+    /// on the root logits (`gumbel_scale`) — and plays its best survivor. Both plan-048 knobs are
+    /// ignored under it: Dirichlet noise would distort the logits the halving ranks by, and a
+    /// visit-sampled move would overrule the halving with visits it concentrated on purpose.
     pub fn get_action_explore(
         &mut self,
         state: &GameState,
         step: ExploreStep,
     ) -> (EngineAction, Sample, ExploreOutcome) {
+        let step = if self.config.gumbel_m > 0 {
+            ExploreStep::default()
+        } else {
+            step
+        };
         let result = self.run_search(state, step.noise);
         let best = result.gumbel_pick.unwrap_or_else(|| {
             Self::pick_best_action(

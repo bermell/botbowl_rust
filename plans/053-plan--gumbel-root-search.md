@@ -1,7 +1,8 @@
 # Plan 053 — Gumbel root search: sequential halving over the best few root moves
 
-**Status:** Started 2026-10-03. Step 1 (implementation) and step 2 (measurements) below; results
-go under each step. Drives only (plan 051): no full-game checks unless the user asks.
+**Status:** 2026-10-03: built (step 1). Step 2: **Gumbel (q floor 1000) beats PUCT at the same 1000
+descents on both boards' drives (H1)**. The match against PUCT at 4000 on 16x9 is running. Step 3
+(generation) is wired, not launched. Drives only (plan 051): no full-game checks unless the user asks.
 
 ## Why
 
@@ -78,4 +79,56 @@ the training side needs nothing new.
 Generate with Gumbel (`gumbel_scale = 1`, no Dirichlet noise, no sampled moves) and relaunch the
 loop. Judge it by the loop's own drive benchmark against gen21.
 
-**Results:** _(pending)_
+**Results (exp060, exp060b, exp060c; 2026-10-03):**
+
+*The convergence probe* (agreement with a 16000-descent PUCT search; gen21; exp057's states):
+- **The paper's rule (pure min-max q̂) follows noise.** The reference almost always plays the
+  prior's favourite (median prior rank 0). Gumbel searched that move and then dropped it in 40-46%
+  of roots, because a 2-point Q gap normalised to the whole [0, 1] is worth σ ≈ 10-40 against a
+  prior gap of a few logits.
+- **`gumbel_q_floor`** floors the normalising range. Regret at 1000 descents on turn-start roots:
+  - floor 0: 53-63;
+  - floor 50: 45-63;
+  - floor 200: 36-54;
+  - floor 1000: 20 / 20 (14x7 / 16x9);
+  - floors 2000 and 4000: no better;
+  - PUCT: 8.6 / 7.8.
+- **Gumbel's regret rises with budget** (2000 is worse than 1000): σ grows with visits faster
+  than the Q noise shrinks.
+- **The probe is biased toward PUCT-like choices.** At 14x7 and 2000 descents, half of Gumbel's
+  disagreeing picks had fewer than 100 reference visits, so their reference Q is unreliable.
+- **exp060's "advance 1" (mid-turn) rows are invalid.** `convergence` advanced the state with the
+  probed bot, and a search is not reproducible across processes, so they compared different
+  positions. Fixed (advance with plain PUCT, plus a warning); only advance-0 rows count.
+
+*Drives* (gen04, gen04-screened contested sets, SPRT 0.5:0.55):
+
+| match | 14x7 | 16x9 |
+|-------|------|------|
+| Gumbel (floor 0) @1000 vs PUCT @1000 (exp060 B1, stopped early) | 0.406 (106 drives) | 4 drives |
+| **Gumbel (floor 1000) @1000 vs PUCT @1000** (exp060c) | **0.557 ± 0.029 H1** (67 pairs) | **0.602 ± 0.033 H1** (80 pairs) |
+| Gumbel (floor 1000) @1000 vs PUCT @4000 | — | running |
+
+**Decision: Gumbel with q floor 1000 is the search to use** (`cfgs/gumbel16_f1000.toml`). The probe
+said otherwise, and play decides. The 4000 match only says whether 16x9 still gains from more
+budget.
+
+*Along the way:* the glibc worker's RSS retention stalled the 16x9 drives twice, so mimalloc is
+now the allocator in the worker and the ui (616bdb6).
+
+## Step 3 status (2026-10-03)
+
+- **Exploration:** under Gumbel, plan 048's exploration (Dirichlet root noise, visit-sampled
+  moves) is ignored (`get_action_explore`). The Gumbel noise is the exploration.
+- **Presets:** `cfgs/gumbel16_f1000_gen.toml` for generation (`gumbel_scale = 1`) and
+  `cfgs/gumbel16_f1000.toml` for eval.
+- **Loop knobs:** `GEN_BOT_CONFIG` and `EVAL_BOT_CONFIG` in `train_loop.sh` (the eval preset is
+  played by both sides).
+- **Provenance:** the corpus stamps `mcts_config`.
+- **Smoke test:** random-start drives generated with the preset record their full root fans.
+- **Not launched yet.** Open questions for the launch: start from gen04 in a fresh run dir (no
+  PUCT corpora in its window), and how the drive benchmark should treat gen21 (Gumbel on both
+  sides compares nets).
+- **Watch the policy target.** Gumbel searches only about 16 root moves, so the cq target fills
+  the rest with the root value. That is the paper's design, but it moves the target far from
+  PUCT's (cq TV 0.18-0.31 on the probe).

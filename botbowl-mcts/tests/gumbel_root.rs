@@ -7,7 +7,7 @@
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::{BoardDims, Position, TEAM_SIZE};
-use botbowl_mcts::{MctsBot, MctsConfig, SearchBudget};
+use botbowl_mcts::{ExploreStep, MctsBot, MctsConfig, RootNoiseSpec, SampleSpec, SearchBudget};
 
 const W: i8 = 16;
 const H: i8 = 9;
@@ -144,4 +144,30 @@ fn gumbel_off_is_the_shipped_search() {
     let da = a.last_search().unwrap().root_descents.clone();
     let db = b.last_search().unwrap().root_descents.clone();
     assert_eq!(da, db);
+}
+
+#[test]
+fn plan_048_exploration_is_ignored_under_gumbel() {
+    let Some(state) = wide_state() else { return };
+    let mut plain = bot(M, 1.0);
+    let expected = plain.get_action(&state);
+    let mut explored = bot(M, 1.0);
+    let step = ExploreStep {
+        noise: Some(RootNoiseSpec {
+            epsilon: 0.5,
+            alpha: 1.0,
+            seed: 3,
+        }),
+        sample: Some(SampleSpec {
+            temperature: 1.0,
+            u: 0.999,
+        }),
+    };
+    let (action, sample, outcome) = explored.get_action_explore(&state, step);
+    assert_eq!(
+        action, expected,
+        "the Gumbel pick is the move, whatever the plan-048 knobs say"
+    );
+    assert_eq!(sample.chosen_action, expected);
+    assert!(!outcome.noised && !outcome.sampled && !outcome.deviated, "{outcome:?}");
 }

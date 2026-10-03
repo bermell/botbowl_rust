@@ -211,6 +211,13 @@ CQ_TAU="${CQ_TAU:-100}"                     # in Q points (1000 = one TD); only 
 # Plan 048: self-play exploration flags for `job generate`, e.g.
 # "--explore-noise 0.25 --explore-alpha 10 --explore-sample-moves 2". Empty = the greedy generator.
 EXPLORE_ARGS="${EXPLORE_ARGS:-}"
+# Plan 053: bot presets (cfgs/*.toml) for the two phases. GEN_BOT_CONFIG shapes every generated game
+# (e.g. cfgs/gumbel16_f1000_gen.toml, Gumbel root search with its own exploration noise, under which
+# EXPLORE_ARGS is ignored). EVAL_BOT_CONFIG is played by *both* sides of the benchmark, so it
+# compares nets, not searches (e.g. cfgs/gumbel16_f1000.toml). Unset = the env-driven search as
+# before. A preset names its own budget mode, so GEN/EVAL_BUDGET_MODE do not apply under one.
+GEN_BOT_CONFIG="${GEN_BOT_CONFIG:-}"
+EVAL_BOT_CONFIG="${EVAL_BOT_CONFIG:-}"
 PREPARE_TARGET_ARGS="--policy-target $POLICY_TARGET"
 [ "$POLICY_TARGET" = cq ] && PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --tau $CQ_TAU"
 # Plan 036, adopted 2026-09-17 from gen04 on. The value head was fitting the
@@ -613,7 +620,7 @@ generate_jobs() {
             --mode random-start --games "$GAMES_PER_SHARD" \
             --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
             --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$champ" \
-            $size_args $EXPLORE_ARGS \
+            $size_args $EXPLORE_ARGS ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
             --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" --label "$GG generate" \
             --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.log" 2>&1
         return $?
@@ -627,7 +634,7 @@ generate_jobs() {
             --mode random-start --games "$games" \
             --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
             --mcts-iters "$iters" --evaluator "$EVALUATOR" --model "$champ" \
-            --board-sizes "$sizes" --cells-per-player "$SIZE_CELLS_PER_PLAYER" $EXPLORE_ARGS \
+            --board-sizes "$sizes" --cells-per-player "$SIZE_CELLS_PER_PLAYER" $EXPLORE_ARGS ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
             --shards "$shards" --heuristic-shards "" --label "$GG generate ($sizes at $iters)" \
             --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.$i.log" 2>&1 &
         pids+=($!)
@@ -696,6 +703,9 @@ else
 fi
 status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gateless, anchor $(basename "$ANCHOR") x$ANCHOR_GAMES, max $MAX_GENS gens, board capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, sizes $SIZE_MODE$([ "$SIZE_MODE" = fixed ] || echo " ($(size_gen_args | tr -s ' \\\n' ' ')); eval on $EVAL_BOARD_SIZES")"
 [ -f "$ANCHOR" ] || die "anchor model not found: $ANCHOR"
+for f in $GEN_BOT_CONFIG $EVAL_BOT_CONFIG; do [ -f "$f" ] || die "bot preset not found: $f"; done
+preset_name() { if [ -n "$1" ]; then basename "$1" .toml; else echo "env default"; fi; }
+[ -n "$GEN_BOT_CONFIG$EVAL_BOT_CONFIG" ] && status "search presets: generate $(preset_name "$GEN_BOT_CONFIG"), benchmark $(preset_name "$EVAL_BOT_CONFIG") on both sides$(grep -qs '^gumbel_m *= *[1-9]' "$GEN_BOT_CONFIG" && [ -n "$EXPLORE_ARGS" ] && echo "; EXPLORE_ARGS is ignored under a Gumbel generation preset")"
 case "$EVAL_VENUE" in
     games) ;;
     drives)
@@ -863,6 +873,7 @@ eval_job() {
     # shellcheck disable=SC2086
     with_budget "$EVAL_BUDGET_MODE" "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
             --label "$label" --evaluator "$EVALUATOR" --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" \
+            ${EVAL_BOT_CONFIG:+--bot-config "$EVAL_BOT_CONFIG" --vs-config "$EVAL_BOT_CONFIG"} \
             "$@" --per-game-out "$dir/eval.games.jsonl" --out "$dir/report.json" --wait > "$dir/eval.log" 2>&1 &
     EVAL_JOBS+=("$! $name $dir")
 }

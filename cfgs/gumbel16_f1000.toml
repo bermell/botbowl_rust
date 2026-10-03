@@ -1,0 +1,7 @@
+# Plan 053: Gumbel root search as measured in exp060c (H1 over PUCT at the same 1000 descents on
+# both boards' drives). Sequential halving over the top 16 root moves by prior, with the Q
+# normalisation range floored at 1000 points (one touchdown) so near-equal moves fall back on the
+# prior. No Gumbel noise: the deterministic player, for eval. PUCT below the root.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000

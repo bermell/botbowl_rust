@@ -49,6 +49,11 @@ replaces the PUCT root with sequential halving:
 - **Budget:** a Gumbel search always counts descents (`budget_mode` is ignored) and ignores
   `workers`.
 - **The training record is unchanged:** every root child's visits, Q and prior.
+- **Exploration under Gumbel:** `get_action_explore` ignores plan 048's Dirichlet noise and
+  visit-sampled moves. The Gumbel noise (`gumbel_scale`) is the exploration, and the move is the
+  best survivor.
+- **`gumbel_q_floor`** floors q̂'s normalising range (Q points). 0 is the paper's rule, which
+  follows noise on our flat Q (exp060). 1000 is the measured setting (`cfgs/gumbel16_f1000*.toml`).
 - **Default:** `gumbel_m = 0` is byte-identical to the shipped search. `tests/gumbel_root.rs` pins
   that, the schedule and reproducibility.
 
