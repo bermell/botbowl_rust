@@ -309,7 +309,8 @@ fn job_lines(out: &mut String, j: &JobStatus) {
             if done > 0 && done < total {
                 let left = elapsed.mul_f64((total - done) as f64 / done as f64);
                 let sprt = j.kind == JobKind::Eval && j.units.iter().any(|u| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some()));
-                h.push_str(&format!(" · {}~{} left", if sprt { "≤" } else { "" }, dur(left)));
+                // An SPRT may stop early, so its estimate is an upper bound.
+                h.push_str(&format!(" · {}{} left", if sprt { "at most " } else { "~" }, dur(left)));
             }
             h
         }
@@ -328,8 +329,11 @@ fn job_lines(out: &mut String, j: &JobStatus) {
                     if e.games() > 0 {
                         let n = e.games() as f64;
                         l.push_str(&format!("  {:.3}", e.points()));
-                        if e.pairs > 0 {
+                        // Below the SPRT's own minimum the variance estimate is noise, often 0.
+                        if e.pairs >= botbowl_play::stats::SPRT_MIN_PAIRS {
                             l.push_str(&format!(" ± {:.3} ({} pairs)", e.points_se, e.pairs));
+                        } else if e.pairs > 0 {
+                            l.push_str(&format!(" ({} pairs)", e.pairs));
                         }
                         l.push_str(&format!(
                             "  W{} D{} L{}  TD {:.2}-{:.2}",
