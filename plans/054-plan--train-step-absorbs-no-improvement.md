@@ -1,12 +1,17 @@
 # Plan 054 — the train step absorbs none of the search's improvement
 
-**Status:** Written 2026-10-04 from the Gumbel loop's first six generations. Diagnosis measured on
-the corpus (§2-3) and confirmed by a code audit (§7). Nine one-generation fine-tunes were probed
-the same evening (§3.1): the loop's recipe absorbs nothing; **cq τ=50 at lr 5e-5** is the first
-recipe that passes the absorption gate on every column, and its weights are exported. **Nothing
-has been run on drives yet** — E2's drive matches are the next step; the loop keeps generating
-meanwhile (gen07). **Drives only (plan 051).** Training uses Gumbel-generated data only
-(`runs/loopmix16x9g`); PUCT corpora are for diagnostics, not for training arms.
+**Status:** Written 2026-10-04 from the Gumbel loop's first six generations; diagnosis measured on
+the corpus (§2-3) and confirmed by a code audit (§7); nine one-generation fine-tunes probed (§3.1).
+**2026-10-04 evening, at the user's request:** the Gumbel loop was aborted during gen08's
+generation (gen07 trained), and the plan was implemented and launched as
+`scripts/exp063_plan054.sh` (out `runs/exp063/`): E2 drives D1/D2 plus the D4 reference and E5,
+E4's probes alongside, then the gate below into E8 (`scripts/launch_plan054.sh`, run dir
+`runs/loopmix16x9g054`) or E2b. Implemented: the trainer's restore fix (`--init-candidate`,
+`--eval-at`, `--select-on policy`), the per-generation absorption probe in `train_loop.sh`
+(`ABSORB_PROBE`, on by default), `cfgs/policy_only.toml`. Deferred, needing `prepare` (game-code)
+changes that would lock the laptop out until it rebuilds: the `played`/`debiased` targets (E2) and
+the value-label switches (E6). **Drives only (plan 051).** Training uses Gumbel-generated data
+only; PUCT corpora are for diagnostics, not for training arms.
 
 ## 1. The observation
 
@@ -225,27 +230,32 @@ Q-vs-visits slope on Gumbel data before building the debiased arm (`target_stats
 minutes): if the finalists' Q premium over the dropped candidates is mostly effort, it matters;
 if not, drop it.
 
-**Drives, in this order** (all paired, both seats `gumbel16_f1000` at 1000 descents,
-`contested_14x7_gen04g` / `contested_16x9_gen04g`, SPRT 0.5:0.55, cap 800; the candidates are
-fine-tunes of g_gen05, so the opponent is **g_gen05**, the parent):
+**Drives** (`exp063`; all paired, both seats `gumbel16_f1000` at 1000 descents, the
+`contested_14x7_gen04g` / `contested_16x9_gen04g` sets, `--seed 63000`; the candidates are
+fine-tunes of g_gen05, so the opponent is **g_gen05**, the parent). Run concurrently on one hub:
 
-1. `plan054_w1_cq50_lr5e5` vs g_gen05 — the candidate recipe.
-2. `plan054_w1_cq100_lr5e5` vs g_gen05 — the lr change alone.
-3. `plan054_w1_cq30_lr5e5` or `plan054_w1_gum1000_lr5e5` vs g_gen05 — only if (1) reads H1 or a
-   positive trend, to see whether sharper buys more.
-4. The loop's own gen06 vs g_gen05 is the reference for what the current recipe does in one step
-   (its anchor result vs d1k gen04 is pending in the loop).
+- **D1** `plan054_w1_cq50_lr5e5` vs g_gen05 — the candidate recipe.
+- **D2** `plan054_w1_cq100_lr5e5` vs g_gen05 — the lr change alone.
+- **D4** the loop's own gen06 vs g_gen05 — what the old recipe did in the same step.
+- **E5** (below) on the same hub.
+- **D3** `plan054_w1_cq30_lr5e5` vs g_gen05 — only if D1 reads above 0.5, on the relaunched
+  loop's hub.
 
-A one-step gain is small by construction; the cap (400 pairs, paired SE ≈ 0.013) resolves ±0.03.
+**Fixed 300 pairs per board, not SPRT** (changed at launch). A one-step gain is small by
+construction (+0.02-0.03), SPRT 0.5:0.55 is built to find 0.55, and its H0 latches early
+(exp059's τ=50 arm latched at 16 pairs; the minimum is a game-code constant). 300 pairs gives a
+per-board SE of about 0.015 and a two-board SE of about 0.011.
 
-**Decide.** An arm that passes E1 and reads H1 on either board, H0-or-better on the other, becomes
-the loop's recipe (E8). If (1) and (2) both pass E1 but neither reaches H1 on drives, run the
-amplified test E2b before concluding.
+**Decide (pre-registered, implemented in exp063's gate).** An arm qualifies when its two-board
+mean is at least 0.5 + 2 SE and neither board is below 0.5 − 2 SE (its own SE). Of the
+qualifiers, the higher mean becomes the loop's recipe and E8 launches from that net. No
+qualifier: E2b runs, and the loop waits for the user.
 
-**E2b — amplified one-step test.** Train the same arms from d1k gen04 on **all six Gumbel
-generations at once** (window 6, 14 400 drives, 3 epochs), and play each against d1k gen04. The
-control (cq100 on the same six generations) says what the data alone is worth; the gap to the
-matched arm is six generations of target signal in one fine-tune.
+**E2b — amplified one-step test.** Train from d1k gen04 on **all seven Gumbel generations at
+once** (gen01-06 whole plus gen07's training shards; gen07's 4+7 are the val), 3 epochs, two
+arms: the old recipe (cq100 at 2e-4, select on combined) and the new one (cq50 at 5e-5 with the
+restore fix). Each plays d1k gen04 on the same drives. The old-recipe arm says what the data alone
+is worth; the gap to the new arm is seven generations of target signal in one fine-tune.
 
 ### E3 — anchoring: window and reanalysis-lite (demoted by §3.1)
 
@@ -322,7 +332,11 @@ stands until the target carries signal.
 
 ### E8 — the loop relaunch
 
-Not before E2 has a drive result. Then: `WINDOW_GENS` per E3, `POLICY_TARGET=gumbel` with
+`scripts/launch_plan054.sh <net.onnx> <tau>`, started by exp063's gate: a fresh
+`runs/loopmix16x9g054` from the winning E2 net, `CQ_TAU` from E2, `WARM_LR=5e-5`,
+`SELECT_ON=policy`, `EVAL_EVERY=1000`, `--freeze-bn --init-candidate --eval-at 250,500`, the
+absorption probe on, `WINDOW_GENS=3`, generation and the d1k gen04 drive anchor exactly as
+runs/loopmix16x9g. The original sketch: `WINDOW_GENS` per E3, `POLICY_TARGET=gumbel` with
 `--gumbel-min-range 1000` (needs the `PREPARE_TARGET_ARGS` wiring in `train_loop.sh`, which only
 knows `cq`), E4's lr/warmup if it won, the E1 probe line per generation, drives vs the fixed d1k
 gen04 anchor as now. Expect the anchor curve to show a trend only over 3+ generations; the per-gen
@@ -333,14 +347,14 @@ probe is the early signal.
 | step | box time | needs code | state |
 |---|---|---|---|
 | E2 fine-tunes + probes (9 arms) | — | — | **done 2026-10-04 (§3.1)** |
-| E2 drives 1-2 (cq50@5e-5, cq100@5e-5 vs g_gen05) | ~8 h hub | — | next |
-| E5 ceiling match | ~4 h hub | `cfgs/policy_only.toml` | can share the hub with E2 |
-| E1 probe in the loop + restore fix | 1 h | `train_loop.sh` hook; `train.py` init-as-candidate, early val, select-on policy | before E8 |
-| E2 drive 3 (sharper arm) | ~4 h hub | — | if drive 1 is positive |
-| E4 remaining probes (lr 2e-5, warmup, `--init-opt`) | 1 h GPU | `--init-opt` / warmup flags | after drives |
+| E2 drives D1, D2, D4 + E5 (fixed 300 pairs) | ~5 h hub | `scripts/exp063_plan054.sh` | **running (exp063)** |
+| E5 ceiling match | in the line above | `cfgs/policy_only.toml` | **running (exp063)** |
+| E1 probe in the loop + restore fix | — | `ABSORB_PROBE`; `--init-candidate --eval-at --select-on policy` | **done** |
+| E2 D3 (cq30) | ~2 h hub | exp063 | automatic if D1 > 0.5 and the gate passed |
+| E4 probes: the relaunch recipe at 5e-5 and 2e-5 | 20 min GPU | exp063 | **running**; warmup / `--init-opt` not built |
 | E6 value arms | 1 h GPU + 4 h hub | `--value-root played`, `--value-td-lambda` in `prepare` | after E2 |
 | E3 window / reanalysis-lite | 1 h GPU + 4 h hub | only if triggered | after E2 |
-| E8 relaunch | — | `POLICY_TARGET`/`CQ_TAU`/`WARM_LR` knobs (`CQ_TAU=50`, lr 5e-5 need no new code) | after drives |
+| E8 relaunch | — | `scripts/launch_plan054.sh` | automatic if the gate passes; else E2b, then the user |
 
 The E2 drives fit in one night alongside generation; the loop keeps running meanwhile (its data
 is what the arms train on), and its gen07+ nets are also candidates to re-probe.

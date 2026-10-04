@@ -25,11 +25,14 @@ def main():
     ap.add_argument("--val", required=True)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--summary", action="store_true",
+                    help="also print one line: every later arm minus the first (the reference)")
     ap.add_argument("arms", nargs="+")
     a = ap.parse_args()
     ds = open_prepared(a.val, augment=False)
     loader = make_loader(ds, a.batch, shuffle=False)
     print(f"val: {len(ds)} samples")
+    rows = []
     print(f"{'net':28s} {'CE':>7s} {'H(tgt)':>7s} {'KL':>7s} {'logP(played)':>13s} {'P(played)':>10s} {'top1=played':>12s} {'valMSE':>7s} {'top1=tgt':>9s}")
     for arm in a.arms:
         name, path = arm.split("=", 1)
@@ -56,7 +59,14 @@ def main():
                 tot["acc_t"] += (logits.argmax(1) == tgt.argmax(1)).float().sum().item()
                 tot["vse"] += (w * (val - vt) ** 2).sum().item(); tot["w"] += w.sum().item()
                 n += k
+        rows.append((name, (tot["ce"] - tot["h"]) / n, tot["lp"] / n, tot["p"] / n, tot["acc"] / n,
+                     tot["vse"] / tot["w"]))
         print(f"{name:28s} {tot['ce']/n:7.4f} {tot['h']/n:7.4f} {(tot['ce']-tot['h'])/n:7.4f} {tot['lp']/n:13.4f} {tot['p']/n:10.4f} {tot['acc']/n:12.4f} {tot['vse']/tot['w']:7.4f} {tot['acc_t']/n:9.4f}")
+    if a.summary and len(rows) > 1:
+        r0 = rows[0]
+        for r in rows[1:]:
+            print(f"ABSORB {r[0]} vs {r0[0]}: dlogP(played) {r[2] - r0[2]:+.4f}  dP(played) {r[3] - r0[3]:+.4f}  "
+                  f"dtop1 {r[4] - r0[4]:+.4f}  dKL(target||net) {r[1] - r0[1]:+.4f}  dvalMSE {r[5] - r0[5]:+.4f}")
 
 
 if __name__ == "__main__":

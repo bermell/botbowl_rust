@@ -211,6 +211,8 @@ def train(
     progress=None,
     value_head="scalar",
     freeze_bn=False,
+    init_candidate=False,
+    eval_at=(),
 ):
     if freeze_bn and init is None:
         raise ValueError("--freeze-bn needs --init: a fresh net's running statistics are just 0 and 1")
@@ -341,6 +343,11 @@ def train(
     # deliberately *not* eligible for best-val restore: "restore the champion
     # unchanged" is a no-op candidate that would burn a full eval phase to
     # score 0.5 against itself.
+    #
+    # Plan 054 §7.1 overrides that with `init_candidate`: every fine-tune of the Gumbel loop shipped
+    # a policy worse than its warm start (+0.011 nats per generation) because the first candidate
+    # came 2500 steps after a fresh Adam restart. With the flag the warm start competes like any
+    # checkpoint (below, as step 0), so a generation can never ship a net its own val calls worse.
     if val_loader is not None and init is not None:
         _, vv0, _ = evaluate(model, val_loader, device, per_drive_value_weight)
         print(f"epoch  -1  (warm-start baseline)  |  val_value {vv0:.4f}")
@@ -425,7 +432,9 @@ def train(
         # val_value alone actively discards it — plan 027 measured the two heads
         # saturating in completely different places (value by epoch 0-2, policy
         # still improving at epoch 9 in every generation).
-        criterion = vv if select_on == "value" else vp + vv
+        # `policy` (plan 054 §7.7): val_policy alone. Across a fine-tune's checkpoints val_policy
+        # spans ~0.002 and val_value ~0.004, so the combined sum is decided by value-head noise.
+        criterion = {"value": vv, "policy": vp}.get(select_on, vp + vv)
         if best_val is None or criterion < best_val:
             best_val, best_epoch, best_step = criterion, epoch, step
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -434,6 +443,13 @@ def train(
                 torch.save(best_state, out)
             suffix += "  *"
         return suffix
+
+    if init_candidate and init is not None and val_loader is not None:
+        print("step       0  (warm start, a restore candidate)" + validate("init"), flush=True)
+    # Plan 054: extra early checkpoints (the optimum of a low-lr fine-tune can sit well inside the
+    # first `--eval-every` interval), and the final step, which a fixed interval otherwise skips.
+    early = set(eval_at)
+    validated_at = None
 
     while not stop:
         if max_steps is None and epoch >= epochs:
@@ -455,7 +471,8 @@ def train(
             if nb >= 200:  # a window mean, not one noisy batch right after a reset
                 prog.update(train_value=tot_v / nb, train_policy=tot_p / nb)
             write_progress()
-            if interval and step % interval == 0:
+            if (interval and step % interval == 0) or step in early:
+                validated_at = step
                 prog.update(train_value=tot_v / nb, train_policy=tot_p / nb)
                 print(f"step {step:7d}  policy_loss {tot_p / nb:.4f}  "
                       f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}" + validate("step"),
@@ -473,9 +490,12 @@ def train(
         if max_steps is None and epoch >= epochs:
             break
 
+    if (interval or early) and validated_at != step and step > 0 and val_loader is not None:
+        print(f"step {step:7d}  (final)" + validate("final"), flush=True)
+
     if best_state is not None:
         model.load_state_dict(best_state)
-        label = "val_value" if select_on == "value" else "val_policy+val_value"
+        label = {"value": "val_value", "policy": "val_policy"}.get(select_on, "val_policy+val_value")
         # Keep the literal prefix — train_loop.sh greps it. Report the step as
         # well as the epoch: with a fixed step budget the restored step is what
         # says whether a data-rich arm simply trained longer before overfitting,
@@ -542,11 +562,24 @@ def main():
     )
     ap.add_argument(
         "--select-on",
-        choices=["value", "combined"],
+        choices=["value", "combined", "policy"],
         default="value",
         help="best-val restore criterion: `value` (val_value alone, the historical rule, "
              "correct only while the bot plays --evaluator nn-value and nothing consumes "
-             "the policy head) or `combined` (val_policy + val_value, the training objective)",
+             "the policy head), `combined` (val_policy + val_value, the training objective) or "
+             "`policy` (val_policy alone; plan 054: the combined sum is decided by value noise)",
+    )
+    ap.add_argument(
+        "--init-candidate",
+        action="store_true",
+        help="plan 054: the --init weights are a restore candidate (validated as step 0), so a "
+             "fine-tune never ships a net worse on val than the one it started from",
+    )
+    ap.add_argument(
+        "--eval-at",
+        default="",
+        help="plan 054: comma-separated extra validation steps on top of --eval-every, e.g. "
+             "250,500,1000. With either set, the final step is validated too",
     )
     ap.add_argument(
         "--init",
@@ -641,6 +674,8 @@ def main():
         progress=args.progress,
         value_head=args.value_head,
         freeze_bn=args.freeze_bn,
+        init_candidate=args.init_candidate,
+        eval_at=tuple(int(x) for x in args.eval_at.split(",") if x.strip()),
     )
 
 

@@ -319,6 +319,9 @@ WARM_FROM="${WARM_FROM:-latest}"
 # 1e-3 those steps are large enough to undo the warm start; 2e-4 is the
 # fine-tuning default that keeps it.
 WARM_LR="${WARM_LR:-2e-4}"
+# Plan 054 E1: after each fine-tune, score it against its generator on the generation's own
+# held-out shards (scripts/absorb_probe.py) and put the deltas on status.md. on|off.
+ABSORB_PROBE="${ABSORB_PROBE:-on}"
 SCRATCH_LR="${SCRATCH_LR:-1e-3}"            # used when there is nothing to warm-start from
 # A .pt that must never be warm-started from, however the WARM_FROM rules
 # would otherwise reach it. Exists for the from-scratch AlphaZero run: its
@@ -1177,6 +1180,23 @@ while [ "$G" -le "$MAX_GENS" ]; do
         BEST=$(grep 'restored best-val weights' "$GEN_DIR/train.log" | tail -1)
         BASE=$(grep 'warm-start baseline' "$GEN_DIR/train.log" | tail -1)
         status "$GG train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}${BASE:+ (warm-start baseline was${BASE##*val_value})}"
+        # Plan 054 E1: did this fine-tune absorb the search's improvement? Score the new net and the
+        # net that generated this generation on this generation's own held-out shards: a positive
+        # dlogP(played) with dtop1 >= 0 and dvalMSE <= 0 is a generation that learned something.
+        # Minutes, on the GPU the sidecar has just released; diagnostic only, never fatal.
+        if [ "$ABSORB_PROBE" = on ] && [ -f "$CHAMP_PT" ]; then
+            PROBE_IN=""; for K in $VAL_SHARDS; do [ -s "$GEN_DIR/shard$K.jsonl" ] && PROBE_IN="$PROBE_IN $GEN_DIR/shard$K.jsonl"; done
+            rm -rf "$GEN_DIR/probe_val"
+            # shellcheck disable=SC2086
+            if [ -n "$PROBE_IN" ] && "$PREPARE" --in $PROBE_IN --out "$GEN_DIR/probe_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+                && "$PY" "$REPO/scripts/absorb_probe.py" --summary --val "$GEN_DIR/probe_val" \
+                    "generator=$CHAMP_PT" "$GG=$MODEL.pt" > "$GEN_DIR/absorb.txt" 2>&1; then
+                status "$GG absorption: $(grep '^ABSORB' "$GEN_DIR/absorb.txt" | sed 's/^ABSORB [^:]*: //')"
+            else
+                status "WARN: $GG absorption probe failed — see $GEN_DIR/absorb.txt"
+            fi
+            rm -rf "$GEN_DIR/probe_val"
+        fi
         echo "$MODEL.pt" > "$LATEST_FILE"
         # Gateless: the net just trained generates the next generation,
         # unconditionally. The benchmark below measures it; it does not

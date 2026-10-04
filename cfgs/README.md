@@ -40,3 +40,6 @@ net; `BLOOD_MCTS_CHANCE=legacy` is the environment spelling.
 moves by prior (`gumbel_m`; `gumbel_scale` adds the Gumbel noise self-play would use). The
 budget counts descents, and the search runs on one thread. Its rival at equal cost is
 `exact_iters.toml`.
+
+`policy_only.toml` (plan 054 E5) is `gumbel_m = 1` with no noise: it plays the prior's argmax.
+Against `gumbel16_f1000` on the same net it measures how much the search adds to the policy.

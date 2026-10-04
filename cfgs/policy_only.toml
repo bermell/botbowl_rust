@@ -1,0 +1,9 @@
+# Plan 054 E5: the bare policy. Gumbel halving with one candidate and no noise plays the prior's
+# argmax over the legal moves, whatever the budget (`Halving::new` keeps `m.max(1)` moves; one
+# survivor is one phase and the pick). Play it at a token budget (`--mcts-iters 8`) against
+# `gumbel16_f1000` at 1000 descents on the same net: the score is the search's edge over its own
+# policy, i.e. how much improvement a generation's data holds for training to absorb.
+budget_mode = "iterations"
+gumbel_m = 1
+gumbel_scale = 0.0
+gumbel_q_floor = 1000
