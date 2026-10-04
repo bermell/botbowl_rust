@@ -4,9 +4,11 @@
 #     ever enters a training window: gen01 trains on gen01's Gumbel games alone;
 #   - generation with cfgs/gumbel16_f1000_gen.toml at 1000 descents (Gumbel noise is the
 #     exploration; EXPLORE_ARGS off);
-#   - each generation benchmarked on contested drives against the net that generated its data,
-#     both sides on cfgs/gumbel16_f1000.toml at 1000 descents (DRIVE_REF=parent), plus a fixed
-#     400-per-set match against gen04 every 3 generations for the cumulative trend. Drives only.
+#   - each generation benchmarked on contested drives against gen04, the net that generated the
+#     first Gumbel data, kept fixed as the anchor (the user, 2026-10-04: a step-by-step 0.55
+#     against the previous net is unlikely; against a fixed anchor it should eventually show).
+#     Both sides on cfgs/gumbel16_f1000.toml at 1000 descents, positions screened with gen04
+#     under Gumbel, SPRT 0.5:0.55. Drives only.
 #   - FREEZE_BN=1 adds `--freeze-bn` to every training (exp061 decides).
 #
 # First screens contested positions for gen04 under the Gumbel search (the same 500 candidates
@@ -77,9 +79,9 @@ export TIER_OVERRIDE=mix16x9g
 export MODEL_DIR="$M" INIT_CHAMPION="$M/bbnet_mix16x9d1k_gen04.onnx"
 export ANCHOR="$M/anchor_mix16x9_gen13.onnx" ANCHOR_EVERY=0 P1_GAMES=0 EVAL_BOARD_SIZES=14x7,16x9 EVAL_RUNGS= EVAL_GAMES=30
 export MCTS_ITERS=1000 EVAL_MCTS_ITERS=1000 GEN_BOT_CONFIG="$GUMBEL_GEN" EVAL_BOT_CONFIG="$GUMBEL_EVAL" EXPLORE_ARGS=""
-export EVAL_VENUE=drives DRIVE_REF=parent DRIVE_SPRT=0.5:0.55 DRIVE_CAP=800
+export EVAL_VENUE=drives DRIVE_REF="$M/bbnet_mix16x9d1k_gen04.onnx" DRIVE_SPRT=0.5:0.55 DRIVE_CAP=800
 export DRIVE_POSITIONS="$POS/contested_14x7_gen04g.json,$POS/contested_16x9_gen04g.json"
-export ORIGIN_EVERY=3 ORIGIN_REF="$M/bbnet_mix16x9d1k_gen04.onnx" ORIGIN_DRIVES=400
+export ORIGIN_EVERY=0
 export CQ_TAU=100 GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=12 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
 export TRAIN_EXTRA_ARGS="$([ "${FREEZE_BN:-0}" = 1 ] && echo --freeze-bn)"
 # Again, right before the loop: its hub runs whatever HEAD is now, and a commit made during the
