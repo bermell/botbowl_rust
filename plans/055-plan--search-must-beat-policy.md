@@ -18,7 +18,7 @@ contested drives (paired, the gen04g sets):
 
 | | 14x7 | 16x9 |
 |---|---|---|
-| policy-only's points vs the search | 0.512 ± 0.015 (300 pairs) | 0.522 ± 0.029 (92 pairs, partial) |
+| policy-only's points vs the search | 0.512 ± 0.015 (300 pairs) | 0.522 ± 0.016 (300 pairs) |
 
 The search does not beat its own policy, on either board. On 14x7 it adds at most about +0.02.
 
@@ -35,8 +35,8 @@ results: Gumbel beat PUCT, and more descents beat fewer, but every one of those 
 with search. **Search vs no search was never measured.** PUCT at 1000 may have been worse than the
 bare policy all along, with Gumbel only climbing back to its level.
 
-Caveats: one net, contested drives only, 16x9 unfinished; "level" bounds the edge at about +0.02
-on 14x7, not exactly zero.
+Caveats: one net, contested drives only; "level" bounds the search's edge at about +0.02 per
+board (it is, if anything, slightly negative), not exactly zero.
 
 ## 2. Hypotheses (most supported first)
 

@@ -256,6 +256,22 @@ mean is at least 0.5 + 2 SE and neither board is below 0.5 − 2 SE (its own SE)
 qualifiers, the higher mean becomes the loop's recipe and E8 launches from that net. No
 qualifier: E2b runs, and the loop waits for the user.
 
+**Results (exp063, 2026-10-05 00:24; fixed 300 pairs per board, vs the parent g_gen05):**
+
+| arm | 14x7 | 16x9 | two-board mean | gate |
+|---|---|---|---|---|
+| D1 cq τ=50 @ 5e-5 | 0.517 ± 0.015 | 0.502 ± 0.014 | 0.510 ± 0.010 | no |
+| D2 cq τ=100 @ 5e-5 | 0.533 ± 0.014 | 0.529 ± 0.016 | 0.531 ± 0.010 | **passes** |
+| D4 loop gen06 (old recipe, window 3) | 0.512 ± 0.014 | 0.538 ± 0.017 | 0.525 ± 0.011 | (reference) |
+| E5 policy-only vs Gumbel@1000 (g_gen05) | 0.512 ± 0.015 | 0.522 ± 0.016 | 0.517 ± 0.011 | — |
+
+- D2 passed the gate, but **D4, the old recipe, is within noise of it** (0.525 vs 0.531): the lower
+  lr is not shown to help in play. All three fine-tunes sit slightly above their parent.
+- τ=50 is the worst of the three on 16x9 although it led the probe: the probe over-rewards
+  sharpness. Keep τ=100.
+- E5 is the result that matters: the search does not beat its own policy (plan 055). The gate's
+  E8 call was a no-op (`runs/loopmix16x9g054/HOLD`), and exp064 stopped exp063 before E2b.
+
 **E2b — amplified one-step test.** Train from d1k gen04 on **all seven Gumbel generations at
 once** (gen01-06 whole plus gen07's training shards; gen07's 4+7 are the val), 3 epochs, two
 arms: the old recipe (cq100 at 2e-4, select on combined) and the new one (cq50 at 5e-5 with the
