@@ -1,8 +1,8 @@
 # Plan 053 — Gumbel root search: sequential halving over the best few root moves
 
-**Status:** 2026-10-03: built (step 1). Step 2: **Gumbel (q floor 1000) beats PUCT at the same 1000
-descents on both boards' drives (H1)**. The match against PUCT at 4000 on 16x9 is running. Step 3
-(generation) is wired, not launched. Drives only (plan 051): no full-game checks unless the user asks.
+**Status:** 2026-10-04: built (step 1). Step 2 is done: fixed Gumbel (q floor 1000) at 1000 descents
+beats PUCT at 1000 on both boards and PUCT at 4000 on 16x9 (all H1, drives). Step 3 launched
+2026-10-04 02:08 as `runs/loopmix16x9g` (`scripts/launch_gumbel.sh`, FREEZE_BN=1). Drives only (plan 051): no full-game checks unless the user asks.
 
 ## Why
 
@@ -107,7 +107,19 @@ loop. Judge it by the loop's own drive benchmark against gen21.
 |-------|------|------|
 | Gumbel (floor 0) @1000 vs PUCT @1000 (exp060 B1, stopped early) | 0.406 (106 drives) | 4 drives |
 | **Gumbel (floor 1000) @1000 vs PUCT @1000** (exp060c) | **0.557 ± 0.029 H1** (67 pairs) | **0.602 ± 0.033 H1** (80 pairs) |
-| Gumbel (floor 1000) @1000 vs PUCT @4000 | — | running |
+| Gumbel (floor 1000) @1000 vs PUCT @4000 | — | 0.510 ± 0.026 (111 pairs, stopped) |
+
+*The table above measured a hybrid.* The 2026-10-03 code review found the root forcing silently
+off on reused trees (about 60% of searches ran plain PUCT descents under the Gumbel pick). Fixed in
+7a86e4d. The fixed rerun (exp060d, runs/exp060/drives_d):
+
+| match (fixed Gumbel, floor 1000, @1000 descents) | 14x7 | 16x9 |
+|-------|------|------|
+| vs PUCT @1000 | **0.555 ± 0.022 H1** (116 pairs) | **0.614 ± 0.030 H1** (64 pairs) |
+| vs PUCT @4000 | — | **0.589 ± 0.031 H1** (66 pairs) |
+
+**Gumbel at 1000 descents beats PUCT at 4000 on 16x9**, at a quarter of the cost. That answers
+step 2's budget question.
 
 **Decision: Gumbel with q floor 1000 is the search to use** (`cfgs/gumbel16_f1000.toml`). The probe
 said otherwise, and play decides. The 4000 match only says whether 16x9 still gains from more
