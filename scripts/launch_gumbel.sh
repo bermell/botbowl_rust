@@ -78,5 +78,10 @@ export DRIVE_POSITIONS="$POS/contested_14x7_gen04g.json,$POS/contested_16x9_gen0
 export ORIGIN_EVERY=3 ORIGIN_REF="$M/bbnet_mix16x9d1k_gen04.onnx" ORIGIN_DRIVES=400
 export CQ_TAU=100 GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=12 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
 export TRAIN_EXTRA_ARGS="$([ "${FREEZE_BN:-0}" = 1 ] && echo --freeze-bn)"
+# Again, right before the loop: its hub runs whatever HEAD is now, and a commit made during the
+# screen (2026-10-04: a docs commit) left the earlier file keyed to a stale hub commit, so the
+# laptop sat rejected for an hour.
+printf 'hub_commit = "%s"\nallow = [%s]\n' "$(git rev-parse --short HEAD)" \
+    "$(git rev-list --abbrev-commit "$LAST_GAME"^..HEAD | sed 's/.*/"&"/' | paste -sd,)" > hub-allowed-commits.toml
 say "launching train_loop.sh into $RUN"
 exec systemd-inhibit --what=sleep:idle --who=train_loop.sh --why="botbowl Gumbel loop" --mode=block scripts/train_loop.sh
