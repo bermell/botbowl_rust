@@ -1,5 +1,10 @@
 # Plan 054 — the train step absorbs none of the search's improvement
 
+**Superseded for now by plan 055 (2026-10-04 night):** E5 showed the search does not beat its own
+policy, so there is no improvement for any train step to absorb. The loop relaunch (E8) is on
+HOLD (`runs/loopmix16x9g054/HOLD`) and E2b is not run; exp063 is stopped at its gate. The train
+step fixes here stand and apply once the loop resumes.
+
 **Status:** Written 2026-10-04 from the Gumbel loop's first six generations; diagnosis measured on
 the corpus (§2-3) and confirmed by a code audit (§7); nine one-generation fine-tunes probed (§3.1).
 **2026-10-04 evening, at the user's request:** the Gumbel loop was aborted during gen08's

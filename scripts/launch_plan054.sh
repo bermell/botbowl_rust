@@ -25,6 +25,9 @@ M="$REPO/models/az_v7"; POS="$REPO/runs/loopmix16x9g/positions"
 GUMBEL_EVAL="$REPO/cfgs/gumbel16_f1000.toml"; GUMBEL_GEN="$REPO/cfgs/gumbel16_f1000_gen.toml"
 export BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR="$REPO/target/16x9"
 unset BLOOD_MCTS_BUDGET
+# The user, 2026-10-04: no training loop until search beats policy (plan 055). exp063's gate calls
+# this script; a HOLD file turns that call into a no-op. Delete it to allow a launch.
+[ -e "$RUN/HOLD" ] && { say "HOLD present — not launching (plan 055: search must beat policy first)"; exit 0; }
 git diff --quiet || { say "FATAL: dirty tree"; exit 1; }
 say "start: commit $(git rev-parse --short HEAD), init $(basename "$INIT"), cq tau $TAU"
 [ -e "$RUN"/.mirror.done ] || echo "skipped: drives only" > "$RUN"/.mirror.done

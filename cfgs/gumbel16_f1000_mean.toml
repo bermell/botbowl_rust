@@ -1,0 +1,7 @@
+# Plan 055: gumbel16_f1000 with a mean backup at player nodes instead of minimax (H2, the search
+# exploiting the value head's errors: max over noisy children). Mean lost 0.454 under 2026-09's
+# leaky PUCT search (plan 032 #2); untested under Gumbel.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+backup = "mean"

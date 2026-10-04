@@ -1,0 +1,5 @@
+# Plan 055: gumbel16_f1000 with the q floor at 4000 (more deference to the prior at 4000, less at
+# 300): does overriding the policy less (or more) often help against the bare policy?
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 4000
