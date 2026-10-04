@@ -66,6 +66,10 @@ if [ ! -s "$POS/contested_16x9_gen04g.json" ]; then
     say "screen done"
 fi
 
+# No heuristic mirror match: train_loop.sh's pre-flight plays 100 *full games*, and this phase is
+# drives only (the user's rule). Paired matches cancel any seat bias anyway (plan 032). Until
+# train_loop.sh defaults it off, mark it done.
+mkdir -p "$RUN"; [ -e "$RUN"/.mirror.done ] || echo "skipped: drives only" > "$RUN"/.mirror.done
 # ---- the loop ----------------------------------------------------------------------------------------
 export SIZE_MODE=centred BUILD_W=16 BUILD_H=9 BUILD_PLAYERS=6
 export SIZE_CENTRE=144 SIZE_TEMPERATURE=0.3 SIZE_FLOOR=0.2 SIZE_MAX_AREA=144 SIZE_MIN_AREA=70

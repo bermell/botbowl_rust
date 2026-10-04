@@ -53,6 +53,10 @@ git diff --quiet d37a1dc HEAD -- botbowl-engine botbowl-mcts botbowl-nn botbowl-
         "$(git rev-list --abbrev-commit d37a1dc^..HEAD | sed 's/.*/"&"/' | paste -sd,)" > hub-allowed-commits.toml \
     && say "allowlist: every commit since d37a1dc admitted for hub $(git rev-parse --short HEAD)"
 
+# No heuristic mirror match: train_loop.sh's pre-flight plays 100 *full games*, and this phase is
+# drives only (the user's rule). Paired matches cancel any seat bias anyway (plan 032). Until
+# train_loop.sh defaults it off, mark it done.
+mkdir -p runs/loopmix16x9d1k; [ -e runs/loopmix16x9d1k/.mirror.done ] || echo "skipped: drives only" > runs/loopmix16x9d1k/.mirror.done
 mkdir -p runs/loopmix16x9d1k
 [ -d runs/loopmix16x9d1k/baseline_gen21 ] || cp -r runs/loopmix16x9vl0/baseline_gen21 runs/loopmix16x9d1k/
 
