@@ -153,6 +153,9 @@ On data generated under the mean backup they are honest, which favours TD(λ) fr
   leans more on the minimax-era root values and lands between A and D.
 - **E (value weight 1.0) is worse than D** on RMS and bias, and the policy absorbs a little less.
   Keep the weight at 0.25. **D is the winner** on the benchmark.
+- Running: arm F (MC-averaged labels, `botbowl-ui mc-label`, 8 policy-only playouts per gen07
+  train sample under g_gen05; validation keeps the raw outcome), the user's call, since it is the
+  one label that attacks the scatter rather than the bias.
 - Running: `net_check.sh` on A and then D (gen06, the same seed, so the same decision sample).
   Results go in `runs/exp067/status.md`.
 
@@ -198,6 +201,10 @@ Everything up to the net_check fits in a day alongside plan 055's exp066. The wi
 into the loop when it restarts (plan 055's budget gate, plan 054's train step).
 
 ## 6. Open questions
+
+- **Value-head capacity** (bigger head, deeper trunk features for the value) is a plan of its own,
+  deferred (the user, 2026-10-05: bigger network changes can wait). The case for it: every net in
+  both lineages has the same 0.26-0.27 scatter, and B-E did not move it.
 
 - **Is the error mostly at mid-activation states?** g05's bias is +0.12 there and +0.05 at turn
   starts. If the benchmark confirms the split, consider a sample weighting or more mid-activation
