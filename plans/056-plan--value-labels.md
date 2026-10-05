@@ -166,6 +166,22 @@ On data generated under the mean backup they are honest, which favours TD(λ) fr
   reduction, but only play can say whether it makes the search stronger. That is exp068: net check
   F, then drives F's search vs A's search (same policy, different value head), then F's search vs
   F's policy.
+
+**Net checks, A vs D** (gen06, seed 55100, the same decision sample, 250 overrides × 32 playouts
+per rung):
+
+| descents | gain/decision A | gain/decision D | realised/predicted slope A | slope D | corr A | corr D |
+|---|---|---|---|---|---|---|
+| 64 | +0.001 ± 0.001 | +0.002 ± 0.001 | 0.32 | 0.47 | 0.17 | 0.25 |
+| 250 | +0.002 ± 0.001 | +0.002 ± 0.001 | 0.34 | 0.47 | 0.19 | 0.27 |
+| 1000 | +0.005 ± 0.002 | +0.004 ± 0.002 | 0.28 | 0.49 | 0.16 | 0.27 |
+| 4000 | +0.006 ± 0.003 | +0.008 ± 0.003 | 0.29 | 0.51 | 0.12 | 0.19 |
+
+- **Both curves are MONOTONE.**
+- **D's predictions come true more often:** the slope is 0.47-0.51 at every rung against A's
+  0.28-0.34, and the correlation is higher too. That is the effect §4 asked for.
+- **The gain per decision has not risen yet** (within 1 SE everywhere). Overrides are rarer than
+  the slope change, and 250 overrides per rung resolve ±0.001-0.003.
 - Running: `net_check.sh` on A and then D (gen06, the same seed, so the same decision sample).
   Results go in `runs/exp067/status.md`.
 
