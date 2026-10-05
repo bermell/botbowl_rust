@@ -227,9 +227,9 @@ Realised gain by the Q gap the search acted on (g05 f1000; the other runs have t
   +0.003, ~1 SE). The drive matches (exp064, partial) put 4000 ahead (≈0.552 vs 0.526 against the
   policy, ~1.6 SE). This is the disagreement exp066 exists to check: the audit's policy
   continuation may miss deeper value, or the difference is noise.
-- **Next (proposed):** a value-head fix judged on a frozen MC benchmark (value-blend 1.0, TD(λ)),
-  and an override margin of ~0.1 TD (play the prior unless Q(a_s) − Q(a_p) clears it), each
-  judged by the budget criterion below.
+- **Next (proposed):** the value labels, now their own plan (`plans/056-plan--value-labels.md`,
+  judged on a frozen MC benchmark built from these rows), and an override margin of ~0.1 TD (play
+  the prior unless Q(a_s) − Q(a_p) clears it). Both are judged by the budget criterion below.
 
 ### Phase 3 — instrumentation
 
