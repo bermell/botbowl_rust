@@ -417,9 +417,8 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
     let (start_half, start_home_turn, start_away_turn) = (state.info.half, state.info.home_turn, state.info.away_turn);
     let (start_home_score, start_away_score) = (state.home.score, state.away.score);
     let start_score = format!("{start_home_score}-{start_away_score}");
-    let (samples, telemetry, explorer) = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |s| {
-        s.home.score != start_home_score || s.away.score != start_away_score || s.info.half != start_half
-    });
+    let drive = crate::drives::DriveStart::of(&state);
+    let (samples, telemetry, explorer) = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |s| drive.over(s));
 
     let label = budget_label(cfg);
     let bias = &cfg.bias;

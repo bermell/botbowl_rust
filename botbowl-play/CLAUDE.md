@@ -43,7 +43,9 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   is the position's seed, and `attacker` (the team to move) is set. That trailing field is what
   marks a line as a drive, and it follows the `board` / `telemetry` serialisation rules. Rung
   names are `opponent drives(set)@board`, keeping the opponent as a prefix so `vs:` detection
-  still works.
+  still works. **`DriveStart` is the one drive-end rule** (a score on either side, a half change,
+  game over): `random_start_trajectory`, `play_drive_game` and `botbowl-ui override-audit`'s
+  playouts all stop on it, and `outcome_for` scores it in the value target's units.
 - **Clap-free.** CLI enums live in `botbowl-ui/src/cli.rs` with `From` impls onto the types here.
 - **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
   weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform
