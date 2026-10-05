@@ -125,6 +125,19 @@ The policy-only side costs almost nothing, so a match costs about half a normal 
   boards". Not met yet. exp064b tests the two together (`gumbel16_f4000_mean`) on both nets;
   G4000 is the budget arm.
 
+### Running: exp064 phase 2 and exp064b (interim, 2026-10-05 06:06 — replaced as each finishes)
+
+| configuration | net | 14x7 so far | 16x9 |
+|---|---|---|---|
+| G4000 Gumbel @4000 | g_gen05 | 0.525 ± 0.020 (166 pairs) | not started |
+| MEANF4000 mean backup + q floor 4000 @1000 | g_gen05 | 0.529 ± 0.015 (254 pairs) | not started |
+| MEANF4000_d1k mean backup + q floor 4000 @1000 | d1k gen04 | 0.571 ± 0.015 (255 pairs) | not started |
+
+So far: the two fixes do not stack (0.529 vs 0.526 / 0.531 alone), and on d1k gen04 they add
+nothing to plain Gumbel (0.571 vs 0.580). G4000 at 0.525 against G1000's 0.463 breaks the
+"more search is worse" trend from 250 → 1000: the search may be noisy at moderate budgets and
+recover with much more. Unresolved until 16x9 is in.
+
 ### Phase 2 — the override audit (needs a tool; tomorrow)
 
 The direct measurement. From the Gumbel corpus take about 1000 decisions where the eval-mode
