@@ -1,6 +1,6 @@
 # Plan 056 — value labels: train the value head on something closer to the truth
 
-**Status:** Written 2026-10-05 from plan 055's override audit. In progress: the benchmark is built (§2 results); exp067 arms A-F done (F, MC-averaged, wins by 15%); exp068 tests F in play. Drives only (plan 051);
+**Status:** Written 2026-10-05 from plan 055's override audit. Arms done 2026-10-06: **MC-averaged labels (arm F) win**: benchmark RMS −15%, its search beats the control's 0.533 head to head and its policy 0.582 at 1000 descents. Next: adopt it in the loop (the user's call). Drives only (plan 051);
 training uses Gumbel-generated data only. Judged first on a Monte Carlo value benchmark (minutes,
 no games), then by plan 055's budget criterion ("more search never hurts").
 
@@ -212,8 +212,32 @@ pairs per board, seed 68000:
 **With F's value head, 1000 descents get about what g_gen05 needed 4000 for.** The search's edge
 over its policy rises from 0.542 to 0.582 (+0.040, ~2.4 SE). The comparison is unpaired: other
 dice, and the policies are near-identical rather than identical. The rise shows on both boards,
-most on 14x7, where g_gen05's search at 1000 had no edge left at all. F vs A head to head is
-next.
+most on 14x7, where g_gen05's search at 1000 had no edge left at all.
+
+**Head to head, F's search vs A's search** (both Gumbel f1000 at 1000 descents; the nets share
+g_gen05's policy, so only the value head differs; paired, 300 pairs per board):
+**14x7 0.538 ± 0.013, 16x9 0.528 ± 0.013, mean 0.533 ± 0.009 (~3.7 SE).**
+
+**Verdict: MC-averaged labels (arm F) win.** They pass every check plan 056 set:
+- benchmark RMS −15.5% against the control;
+- policy unchanged;
+- the net check stays monotone, with the highest gain per decision;
+- head to head, F's search beats the control's search.
+
+The benchmark's caveat (F's labels share its definition) is answered by play.
+
+**Proposed next (for the user):**
+- **Make MC-averaged labels the loop's value label.** Each generation gets an `mc-label` pass
+  over its train shards under the generator's net: ~7 min per shard on a free GPU, so ~45 min
+  per generation for 6 shards at K = 8.
+- **Settings to test cheaply on the benchmark first:**
+  - K (4 vs 8 vs 16);
+  - mixing in the real outcome as one more sample;
+  - labelling only every second sample of a drive, to halve the cost.
+- **Plan 055's gate is met under the mean backup:** the search beats its policy at every budget,
+  and the curve is monotone up to 4000. With F's head, 1000 descents beat the policy by 0.58.
+  Whether to lift `runs/loopmix16x9g054/HOLD` and restart the loop (plan 054's train step plus
+  this label) is the user's call.
 
 ## 4. Metrics and decision
 
