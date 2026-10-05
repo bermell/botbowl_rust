@@ -1,6 +1,8 @@
 # Plan 055 — the search must beat the policy before the loop can learn anything
 
-**Status:** Written 2026-10-04 night. Phase 1 (config-only matches) launched as
+**Status:** Written 2026-10-04 night. Phase 1 done 2026-10-05 05:13 (results below §3 phase 1):
+the search loses to its policy unless it is made to override less (q floor 4000) or to back up
+the mean; PUCT loses by 0.13. Phase 1 was launched as
 `scripts/exp064_search_vs_policy.sh` (out `runs/exp064/`), taking over from exp063 at its gate.
 **The user's decision (2026-10-04): no training loop until the search beats the policy.**
 `runs/loopmix16x9g054/HOLD` blocks plan 054's automatic relaunch; delete it to allow one. Drives
@@ -90,6 +92,38 @@ The policy-only side costs almost nothing, so a match costs about half a normal 
   depth, are what cancels its gains.
 - P1000 below 0.5: the PUCT loops trained on targets worse than their own policy.
 - Everything about 0.5: the overrides are noise or near-ties; phase 2 decides which.
+
+### Phase 1 results (exp064, 2026-10-05 05:13; 300 pairs per board, points are the search's)
+
+| configuration (g_gen05 unless noted) | 14x7 | 16x9 | two-board mean |
+|---|---|---|---|
+| N0 policy-only vs policy-only | 0.500 | 0.500 | 0.500 (null holds) |
+| **P1000** PUCT @1000 | 0.390 ± 0.016 | 0.347 ± 0.017 | **0.368 ± 0.011** |
+| F300 Gumbel, q floor 300 | 0.456 ± 0.016 | 0.447 ± 0.017 | 0.451 ± 0.012 |
+| G1000 Gumbel @1000 (the loop's) | 0.463 ± 0.016 | 0.500 ± 0.016 | 0.482 ± 0.012 |
+| H2 two-turn horizon | 0.477 ± 0.015 | 0.497 ± 0.017 | 0.487 ± 0.011 |
+| G250 Gumbel @250 | 0.500 ± 0.014 | 0.524 ± 0.016 | 0.512 ± 0.011 |
+| MEAN Gumbel @1000, mean backup | 0.527 ± 0.015 | 0.525 ± 0.016 | **0.526 ± 0.011** |
+| F4000 Gumbel @1000, q floor 4000 | 0.523 ± 0.014 | 0.538 ± 0.015 | **0.531 ± 0.011** |
+| **G1000_d1k** Gumbel @1000 on d1k gen04 | 0.580 ± 0.015 | 0.550 ± 0.016 | **0.565 ± 0.011** |
+
+**Readings against §3:**
+- **PUCT at 1000 is far worse than no search** (−0.13). Every loop before the Gumbel run trained
+  its policy toward targets from a search that loses to that policy.
+- **On g_gen05, the more the search overrules the prior, the worse it plays:** q floor 300 <
+  1000 < 4000 (0.451 < 0.482 < 0.531), and 250 descents beats 1000 (0.512 vs 0.482). More search
+  is more opportunity to act on value error. The two-turn horizon does not help (H3/H4 as depth:
+  rejected).
+- **Mean backup turns a loss into a win** (0.482 → 0.526). Together with the q-floor trend this is
+  H2: the max over noisy children picks the moves the value head overrates. H1 (value noise) is
+  its precondition; phase 2 measures it.
+- **On d1k gen04 the same search beats its policy by +0.065.** d1k gen04's policy came from PUCT
+  data; g_gen05's from five Gumbel generations. Either those generations distilled the search into
+  the policy (so a better policy leaves the noisy search less room), or d1k gen04's policy is
+  simply weaker. The override audit on both nets separates the two.
+- **Gate (§4):** F4000 and MEAN pass the "mean ≥ 0.5 + 2 SE" half but not "+0.03 on both
+  boards". Not met yet. exp064b tests the two together (`gumbel16_f4000_mean`) on both nets;
+  G4000 is the budget arm.
 
 ### Phase 2 — the override audit (needs a tool; tomorrow)
 
