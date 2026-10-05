@@ -1,0 +1,6 @@
+# Plan 055: the two settings that beat the bare policy in exp064 (mean backup, q floor 4000),
+# together: override the prior less, and back up the mean instead of the max over noisy children.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 4000
+backup = "mean"
