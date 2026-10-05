@@ -140,6 +140,7 @@ On data generated under the mean backup they are honest, which favours TD(λ) fr
 | B | blend 1.0 | 0.278 | +0.060 | 0.271 | dRMS −0.6% (dMSE −0.0010 ± 0.0007), dbias −0.039 ± 0.001 | +0.0006, −0.009 | −0.0072 |
 | C | TD(λ) 0.8 | 0.274 | +0.074 | 0.264 | dRMS −1.9% (dMSE −0.0030 ± 0.0006), dbias −0.025 ± 0.001 | +0.0007, −0.009 | −0.0016 |
 | **D** | **TD(λ) 0.95** | **0.269** | **+0.051** | **0.264** | **dRMS −3.8% (dMSE −0.0059 ± 0.0006), dbias −0.047 ± 0.001** | +0.0006, −0.009 | −0.0050 |
+| E | TD(λ) 0.95, value weight 1.0 | 0.271 | +0.063 | 0.264 | dRMS −3.0% (dMSE −0.0046 ± 0.0007), dbias −0.036 ± 0.001 | +0.0003, −0.008 (dtop1 +0.0006 vs D's +0.0022) | −0.0054 |
 
 - **A alone takes 6.5% off g_gen05** (paired, ≥ 15 SE): a fine-tune on fresh data with plan
   054's train step, label unchanged. g05's extra bias was mostly that one fine-tune.
@@ -150,7 +151,10 @@ On data generated under the mean backup they are honest, which favours TD(λ) fr
   +0.04 to +0.08) but keeps A's scatter, so RMS falls 3.8% against the control (~10 SE). That is
   short of the 5% RMS bar, but it passes the bias rule, and the policy did not move. C (λ 0.8)
   leans more on the minimax-era root values and lands between A and D.
-- Next: E = D's label at value weight 1.0, then `net_check.sh` on the winner against A.
+- **E (value weight 1.0) is worse than D** on RMS and bias, and the policy absorbs a little less.
+  Keep the weight at 0.25. **D is the winner** on the benchmark.
+- Running: `net_check.sh` on A and then D (gen06, the same seed, so the same decision sample).
+  Results go in `runs/exp067/status.md`.
 
 ## 4. Metrics and decision
 
