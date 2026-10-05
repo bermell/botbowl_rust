@@ -138,12 +138,19 @@ On data generated under the mean backup they are honest, which favours TD(λ) fr
 | g_gen05 | — | 0.299 | +0.132 | 0.268 | — | — | — |
 | A | blend 0.5 | 0.280 | +0.099 | 0.262 | — | +0.0007, −0.009 | −0.0043 |
 | B | blend 1.0 | 0.278 | +0.060 | 0.271 | dRMS −0.6% (dMSE −0.0010 ± 0.0007), dbias −0.039 ± 0.001 | +0.0006, −0.009 | −0.0072 |
+| C | TD(λ) 0.8 | 0.274 | +0.074 | 0.264 | dRMS −1.9% (dMSE −0.0030 ± 0.0006), dbias −0.025 ± 0.001 | +0.0007, −0.009 | −0.0016 |
+| **D** | **TD(λ) 0.95** | **0.269** | **+0.051** | **0.264** | **dRMS −3.8% (dMSE −0.0059 ± 0.0006), dbias −0.047 ± 0.001** | +0.0006, −0.009 | −0.0050 |
 
 - **A alone takes 6.5% off g_gen05** (paired, ≥ 15 SE): a fine-tune on fresh data with plan
   054's train step, label unchanged. g05's extra bias was mostly that one fine-tune.
 - **B removes the excess bias, but not the error.** The bias above +0.05 goes from 0.049 to 0.010,
   which passes §4's bias rule. RMS barely moves because the scatter rises by about as much: the
   outcome label is the noisier label. Policy unchanged in both.
+- **D (TD(λ) 0.95) is the best label.** It removes the excess bias as B does (+0.051, by phase
+  +0.04 to +0.08) but keeps A's scatter, so RMS falls 3.8% against the control (~10 SE). That is
+  short of the 5% RMS bar, but it passes the bias rule, and the policy did not move. C (λ 0.8)
+  leans more on the minimax-era root values and lands between A and D.
+- Next: E = D's label at value weight 1.0, then `net_check.sh` on the winner against A.
 
 ## 4. Metrics and decision
 
