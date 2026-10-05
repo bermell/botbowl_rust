@@ -305,6 +305,46 @@ pub fn value_target_blended(sample: &Sample, lambda: f32) -> Option<f32> {
     }
 }
 
+/// Value targets by TD(lambda) along one drive (plan 056 §3), one per sample of `samples`:
+///
+/// `label(t) = (1 - lambda) * sum_{k=1..K} lambda^(k-1) * v(t+k) + lambda^K * z`
+///
+/// where `v(t+k)` are the root values of the drive's later decisions and `z` its outcome, all in the
+/// mover-at-`t`'s frame. Computed backwards in Home's frame, `G(last) = z`,
+/// `G(t) = (1 - lambda) * v(t+1) + lambda * G(t+1)`, then signed for the mover, so a change of mover
+/// between decisions needs no special case. A later decision without a root value is passed
+/// through (`G(t) = G(t+1)`), the way [`value_target_blended`] falls back to the outcome.
+///
+/// `lambda = 1` is [`value_target`] for every sample; `lambda = 0` is the next decision's root
+/// value. Unlike the blend, no sample's label uses its *own* search value, and every later root
+/// value already knows the dice that fell after `t`. Assumes one trajectory is one drive, as the
+/// random-start corpora are (and as `prepare`'s per-drive value weight already assumes). `None`
+/// where the outcome is not backfilled.
+pub fn value_targets_td_lambda(samples: &[Sample], lambda: f32) -> Vec<Option<f32>> {
+    let mut out = vec![None; samples.len()];
+    let mut g: Option<f32> = None; // G(t + 1) in Home's frame
+    let mut next_root: Option<f32> = None; // v(t + 1) in Home's frame
+    for (t, sample) in samples.iter().enumerate().rev() {
+        let Some(z) = sample.outcome_value else {
+            g = None;
+            next_root = None;
+            continue;
+        };
+        let here = match (g, next_root) {
+            (Some(g), Some(v)) => (1.0 - lambda) * v + lambda * g,
+            (Some(g), None) => g,
+            (None, _) => z,
+        };
+        out[t] = Some(match sample.to_move {
+            Team::Home => here,
+            Team::Away => -here,
+        });
+        g = Some(here);
+        next_root = sample.root_value.map(|q| (q as f32 / TD_POINTS).clamp(-1.0, 1.0));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,5 +806,61 @@ mod tests {
     fn blend_at_lambda_zero_is_the_root_value() {
         let s = sample_rv(Team::Home, Some(1.0), Some(-250));
         assert_eq!(value_target_blended(&s, 0.0), Some(-0.25));
+    }
+
+    /// A drive of samples `(mover, Home-centric root Q)`, all with the Home-centric outcome `z`.
+    fn drive(steps: &[(Team, Option<i64>)], z: f32) -> Vec<Sample> {
+        steps.iter().map(|&(m, rv)| sample_rv(m, Some(z), rv)).collect()
+    }
+
+    #[test]
+    fn td_lambda_one_is_the_outcome_and_zero_is_the_next_root_value() {
+        let d = drive(
+            &[
+                (Team::Home, Some(300)),
+                (Team::Away, Some(-200)),
+                (Team::Home, Some(600)),
+            ],
+            1.0,
+        );
+        let one: Vec<_> = d.iter().map(value_target).collect();
+        assert_eq!(value_targets_td_lambda(&d, 1.0), one);
+        // lambda 0: the next decision's root value in this mover's frame; the last one, the outcome.
+        assert_eq!(
+            value_targets_td_lambda(&d, 0.0),
+            vec![Some(-0.2), Some(-0.6), Some(1.0)]
+        );
+    }
+
+    #[test]
+    fn td_lambda_weights_later_roots_geometrically_and_ends_in_the_outcome() {
+        // Home-centric: v1 = -0.2, v2 = +0.6, z = -1 (Away scored). lambda 0.5:
+        //   G2 = z = -1
+        //   G1 = 0.5 * 0.6 + 0.5 * -1 = -0.2
+        //   G0 = 0.5 * -0.2 + 0.5 * -0.2 = -0.2
+        // and each signed for its own mover; the sample's own root value is never used.
+        let d = drive(
+            &[
+                (Team::Home, Some(900)),
+                (Team::Away, Some(-200)),
+                (Team::Away, Some(600)),
+            ],
+            -1.0,
+        );
+        let got = value_targets_td_lambda(&d, 0.5);
+        let want = [-0.2f32, 0.2, 1.0];
+        for (g, w) in got.iter().zip(want) {
+            assert!((g.unwrap() - w).abs() < 1e-6, "{got:?} vs {want:?}");
+        }
+    }
+
+    #[test]
+    fn td_lambda_passes_through_an_unscored_root_and_drops_a_missing_outcome() {
+        let d = drive(&[(Team::Home, Some(0)), (Team::Home, None), (Team::Home, Some(0))], 1.0);
+        // v1 is missing: G0 = G1 = 0.5 * v2 + 0.5 * z = 0.5.
+        assert_eq!(value_targets_td_lambda(&d, 0.5), vec![Some(0.5), Some(0.5), Some(1.0)]);
+        let mut d = d;
+        d[2].outcome_value = None;
+        assert_eq!(value_targets_td_lambda(&d, 0.5)[2], None);
     }
 }
