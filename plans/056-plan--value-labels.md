@@ -182,6 +182,21 @@ per rung):
   0.28-0.34, and the correlation is higher too. That is the effect §4 asked for.
 - **The gain per decision has not risen yet** (within 1 SE everywhere). Overrides are rarer than
   the slope change, and 250 overrides per rung resolve ±0.001-0.003.
+
+**Net check F** (exp068, same sample): gain per decision **+0.002 / +0.002 / +0.007 / +0.008** at
+64 / 250 / 1000 / 4000, MONOTONE; value RMS 0.219 and bias −0.008 on this sample; slope 0.60 /
+0.50 / 0.36 / 0.70 (noisy, but at or above D's at three rungs out of four).
+
+| at 1000 descents | A | D | F |
+|---|---|---|---|
+| gain per decision | +0.005 ± 0.002 | +0.004 ± 0.002 | **+0.007 ± 0.002** |
+| realised gain of overrides on Q gaps 0.03-0.1 | +0.039 ± 0.019 | −0.010 ± 0.015 | +0.048 ± 0.017 |
+| on 0.1-0.3 | +0.049 ± 0.025 | +0.114 ± 0.028 | +0.084 ± 0.029 |
+
+F has the highest gain per decision at 1000 descents, though only ~1 SE above A. Like D, its
+predictions come true more often than A's, and its overrides pay from gaps of 0.03 TD. The
+cheap check can't separate the three at 250 overrides per rung; the F-vs-A drive match decides
+it.
 - Running: `net_check.sh` on A and then D (gen06, the same seed, so the same decision sample).
   Results go in `runs/exp067/status.md`.
 
