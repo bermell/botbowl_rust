@@ -209,9 +209,46 @@ every loop generation once the loop runs again: it becomes the loop's health met
 | **H4** too shallow | spend the budget where it matters: no search on single-child roots (21% of searches), more on turn starts and high-stakes kinds; Gumbel at 4000 on 16x9 at equal cost |
 | **H5** near-ties | per-decision search is not where the strength is: macro actions (a whole activation as one move), and treat the loop as policy distillation with plan 054's train-step fixes |
 
-**Gate for the loop.** The loop restarts only when one search configuration beats policy-only on
-the same net by at least +0.03 on both boards (fixed 300 pairs, two-board mean ≥ 0.5 + 2 SE).
-That configuration generates. "Search vs policy" is then measured every generation.
+**Gate for the loop (revised 2026-10-05, the user): more search must never hurt.** A fixed
+target such as "+0.03 over policy" says nothing about whether the system is sound. The property
+self-play rests on is that **the search's improvement over the bare policy rises with budget**: if
+a bigger budget plays worse, targets get worse the more is spent and the loop cannot climb. The
+criterion, per net:
+
+- gain(b), the search's per-decision improvement over the bare policy at budget b, is ≥ 0 at
+  every rung of a ladder (64 → 250 → 1000 → 4000 descents);
+- gain(b) is non-decreasing up the ladder within its SE; diminishing returns and a plateau at the
+  top are expected and fine, a drop is not;
+- when a new net breaks it, retune the search (first the override margin, §4 H1) before training
+  further. Search configs are expected to need retuning as nets improve.
+
+exp064 under minimax broke it (250 descents beat 1000 against the policy). Under the mean backup
+the curve is unmeasured; §6 measures it.
+
+## 6. The standing net check (< 1 h per net)
+
+One script, run on every new net, one line per generation in the run's `status.md`:
+
+1. **Search-improvement curve.** `override-audit` on a fixed decision sample (~1500 decisions,
+   the net's own fresh corpus, eval boards) at each ladder budget; `override_audit_summary.py`'s
+   "search gain per decision" = override rate × mean realised paired gain (non-overrides count 0),
+   with its SE. ~200-250 overrides per rung, ~10-15 min per rung on the sidecar.
+2. **Override calibration.** Per rung, realised-on-predicted slope and realised gain by Q-gap
+   bucket: where the realised gain turns positive is the override margin to set.
+3. **Value quality.** V(s) vs MC(s) (RMS net error after removing MC sampling noise, and bias) on
+   ~500 fixed states, with MC replayed under the new net's own policy (~15 min).
+4. **Policy absorption.** plan 054's `absorb_probe.py` against the generator (minutes).
+
+**Validation before it is trusted.** The audit's MC is the value under the policy's own
+continuation, so gain(b) can miss value that only shows deeper in a drive. Once, under the mean
+backup: drive matches of g_gen05's search at 250 / 1000 / 4000 descents against policy-only
+(fixed 300 pairs per board), next to the cheap curve on the same net. If they rank the budgets
+alike, the cheap curve is the standing check.
+
+**First readings (exp065, interim, ~5400-6700 searched decisions each):** search gain per
+decision at 1000 descents is +0.004 ± 0.001 (g_gen05, q floor 1000), +0.003 ± 0.001 (g_gen05,
+q floor 4000), +0.005 ± 0.001 (d1k gen04, q floor 1000), +0.004 ± 0.001 (d1k gen04, q floor 4000).
+Resolution ±0.001 per point is enough to see a ladder's shape.
 
 ## 5. Order
 

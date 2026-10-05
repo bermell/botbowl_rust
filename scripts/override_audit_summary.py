@@ -153,7 +153,20 @@ def report(label, rows):
         est_non = sum(1 / r["keep_prob"] for r in ctrl)
         print(f"estimated override rate {len(over) / (len(over) + est_non):.3f} (controls reweighted by 1/keep_prob)")
     elif ctrl:
+        est_non = float(len(ctrl))
         print(f"override rate {len(over) / len(rows):.3f} (every decision kept)")
+    else:
+        est_non = 0.0
+    # The search's improvement over the bare policy per decision (plan 055's budget criterion):
+    # an override contributes its realised paired gain, every other decision 0. This is the number
+    # that must not fall as the budget rises.
+    if over:
+        n_dec = len(over) + est_non
+        ds = [r["diff_mean"] for r in over]
+        g = sum(ds) / n_dec
+        var = (sum((d - g) ** 2 for d in ds) + est_non * g * g) / max(1.0, n_dec - 1)
+        print(f"search gain per decision {fmt(g, math.sqrt(var / n_dec))}  "
+              f"(over ~{n_dec:.0f} searched decisions; MC under the policy's continuation)")
 
     if over:
         section("override ledger: MC(a_s) - MC(a_p), paired")
