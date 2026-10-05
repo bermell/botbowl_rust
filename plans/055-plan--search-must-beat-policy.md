@@ -308,8 +308,19 @@ boards, 250 overrides × 32 playouts per rung):**
 - **Override margin: not resolved at 250 overrides.** The only bucket clear of 2 SE is 0.1-0.3 TD
   at 1000 descents (+0.06 ± 0.03). The script's first reading ("from <0.01") used 1 SE and picked
   noise; it now needs 2 SE.
-- The drive matches at 250 / 1000 / 4000 against policy-only are running next. They decide
-  whether this curve is trusted as the standing check.
+- **Drive matches** (g_gen05's Gumbel search with the mean backup and q floor 1000 against its own
+  policy-only, gen04g contested sets, 300 pairs per board, seed 66000; points are the search's):
+
+  | descents | 14x7 | 16x9 | mean |
+  |---|---|---|---|
+  | 250 | 0.527 ± 0.015 | 0.523 ± 0.015 | 0.525 ± 0.011 |
+  | 1000 | 0.522 ± 0.016 | **0.563 ± 0.016** | **0.542 ± 0.012** |
+  | 4000 | running | | |
+
+  **Under the mean backup, 1000 beats 250** (+0.017, ~1 SE). Under minimax it was the other way
+  round (exp064). All of the rise is on 16x9 (+0.040, ~1.8 SE), where the wider fans have more for
+  the search to find; 14x7 is flat. Both budgets beat the policy (≥ 2 SE). The cheap curve agrees
+  in shape (flat to 250, rising at 1000).
 
 ## 5. Order
 
