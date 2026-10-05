@@ -778,7 +778,7 @@ impl Out {
 /// searches) is synchronous and some of it takes seconds.
 pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mpsc::Sender<ServerMsg>) {
     let out = Out(output);
-    let models = bots::list_models(&app.models_dir);
+    let models = app.list_models();
     let store = &app.opts.teams;
     out.send(ServerMsg::Lobby(Box::new(LobbyInfo {
         capacity: app.capacity,

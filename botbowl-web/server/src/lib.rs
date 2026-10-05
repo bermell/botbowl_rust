@@ -32,6 +32,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 pub mod bots;
+pub mod config;
 pub mod dice;
 pub mod mirror;
 pub mod report;
@@ -67,6 +68,10 @@ pub struct PlayOptions {
     /// Allow `StartFrom::Recording` (the server opens a path the browser names). Off on a hub,
     /// which listens on the network.
     pub allow_recording_paths: bool,
+    /// More directories of nets after `AppState::models_dir` (`web.toml`'s `models_dirs`).
+    pub extra_model_dirs: Vec<PathBuf>,
+    /// A worker's model cache to offer as well, by the hub's names. `None` = none.
+    pub worker_cache: Option<PathBuf>,
 }
 
 impl Default for PlayOptions {
@@ -77,6 +82,8 @@ impl Default for PlayOptions {
             teams: teams::TeamStore { dir: None },
             assets_dir: None,
             allow_recording_paths: true,
+            extra_model_dirs: Vec::new(),
+            worker_cache: None,
         }
     }
 }
@@ -89,6 +96,19 @@ pub fn compiled_capacity() -> BoardSpec {
 }
 
 impl AppState {
+    /// Every net the lobby offers: `models_dir`, the extra directories, then the worker cache.
+    pub fn list_models(&self) -> Vec<botbowl_web_proto::msg::ModelInfo> {
+        let mut dirs = vec![self.models_dir.clone()];
+        dirs.extend(
+            self.opts
+                .extra_model_dirs
+                .iter()
+                .filter(|d| **d != self.models_dir)
+                .cloned(),
+        );
+        bots::list_all_models(&dirs, self.opts.worker_cache.as_deref())
+    }
+
     /// Board sizes the lobby offers: the tiers the project actually trains on,
     /// filtered to what this binary can run, plus the capacity itself.
     pub fn board_presets(&self) -> Vec<BoardSpec> {

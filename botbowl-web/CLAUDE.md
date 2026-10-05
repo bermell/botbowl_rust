@@ -199,6 +199,24 @@ The pitch is drawn as a **CSS grid over the engine board** (playable squares plu
 out-of-bounds border, so a `Position` indexes the grid directly), not as one of the old repo's JPG
 backgrounds — those exist for six fixed sizes, none of which are the tiers we train on.
 
+## `~/.config/botbowl/web.toml`, and the worker's cached nets
+
+Paths resolve flag → `~/.config/botbowl/web.toml` → built-in default (`config::resolve`, shared by
+`botbowl-web-server` and the hub's `/play/`). Keys: `assets_dir`, `models_dirs` (a list),
+`worker_cache`, `teams_dir`, `dist_dir`; `~` expands. A missing file is **created** on first start
+with every key documented and the ones this machine can detect filled in; a file that does not
+parse (`deny_unknown_fields`) stops the server — a typo'd key must not look like an ignored one.
+
+The lobby offers the configured directories' nets, then a remote worker's model cache
+(`~/.cache/botbowl/models` by default, `worker_cache = ""` turns it off) — so a box that has been
+a hub worker can play the nets the hub shipped it without copying anything. Cache entries are
+named by the hub's `<hex>.json` sidecar (`botbowl_hub_proto::ModelMeta`, protocol v14 —
+`botbowl-hub/CLAUDE.md`) as `cache: <run>/models/<file>.onnx`, with the board tag from that file
+name; an entry not yet named is listed by its hash, untagged, after the named ones (the probe still
+refuses a net that does not fit the board). A cached net whose **bytes** match a local file is
+listed once, as the local file — compared by size, then BLAKE3, never by name, since every run has
+a `gen0`.
+
 ## Served standalone or under the hub's `/play/`
 
 The client is built with relative URLs (`Trunk.toml` `public_url = "./"`), and the socket

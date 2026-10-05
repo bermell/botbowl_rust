@@ -54,7 +54,7 @@ cargo run --release -p botbowl-web-server -- \
 Both commands work from any directory — the server's `--dist-dir`/`--models-dir` defaults are
 resolved from its own crate path, not the cwd. `botbowl-hub serve` also serves the same app at
 `http://<hub>:7777/play/` (with `/` an index and `/status` the status page) once the client is
-built; teams saved from the editor land in `~/.config/botbowl/teams/`.
+built; teams saved from the editor land in `~/.config/botbowl/teams/`. Both read `~/.config/botbowl/web.toml` (sprites, model dirs; created on first run) and also offer the nets in a worker's `~/.cache/botbowl/models`, by the names the hub sends (protocol v14).
 
 Bot presets and search telemetry (plan 043; every flag is optional — unset is exactly the old behaviour):
 

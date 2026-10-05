@@ -129,6 +129,24 @@ impl Hub {
         Ok((hub, addr, task))
     }
 
+    /// Hash every `.onnx` under `dirs` on a background thread, then name each connected worker's
+    /// cached copies of them (`ToWorker::ModelName`); later connections are named on arrival.
+    /// The training box's `runs/` holds every net the loop ever shipped, so this is what turns a
+    /// helper box's hash-named cache back into `bbnet_..._genNN.onnx`.
+    pub fn index_models(&self, dirs: Vec<PathBuf>) -> std::thread::JoinHandle<usize> {
+        let inner = Arc::clone(&self.inner);
+        std::thread::spawn(move || {
+            let index = state::index_models(&dirs);
+            let n = index.len();
+            let mut inner = inner.lock().unwrap();
+            for (id, path) in index {
+                inner.model_index.entry(id).or_insert(path);
+            }
+            inner.name_cached_models();
+            n
+        })
+    }
+
     pub fn submit(&self, req: JobRequest) -> std::io::Result<JobId> {
         let id = self.inner.lock().unwrap().submit(req)?;
         self.changed.notify_waiters();

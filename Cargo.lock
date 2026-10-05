@@ -519,6 +519,7 @@ dependencies = [
  "axum",
  "base64",
  "botbowl-engine",
+ "botbowl-hub-proto",
  "botbowl-mcts",
  "botbowl-nn",
  "botbowl-play",
@@ -531,6 +532,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "toml 0.8.23",
  "tower-http",
 ]
 

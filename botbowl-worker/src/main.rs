@@ -69,10 +69,7 @@ fn warn_about_stale_env() {
 }
 
 fn default_cache_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".cache/botbowl/models")
+    botbowl_hub_proto::default_model_cache_dir()
 }
 
 fn hostname() -> String {

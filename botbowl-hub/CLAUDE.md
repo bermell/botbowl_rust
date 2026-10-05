@@ -42,8 +42,9 @@ client build (`cd botbowl-web/client && trunk build --release`) or with `--no-pl
 Because the hub listens on the network, the play app here is fenced: `--play-max-workers`
 (default 4) caps each bot's search threads whatever the lobby asks, and `StartFrom::Recording`
 (the browser naming a server path) is refused. Paths (`--play-dist-dir`, `--play-models-dir`,
-`--play-assets-dir`, `--play-teams-dir`) default from the crate's source path; the sprites from the
-sibling checkout `<repo>/../botbowl/botbowl/web/static/img` when it exists. Browser games run in
+`--play-assets-dir`, `--play-teams-dir`) override `~/.config/botbowl/web.toml`, which overrides
+the defaults from the crate's source path — the same file and resolver (`config::resolve`) as
+`botbowl-web-server`. Browser games run in
 the hub process: they cost CPU on the training box, nothing else — they never touch the job queue.
 
 ## Invariants
@@ -57,7 +58,7 @@ the hub process: they cost CPU on the training box, nothing else — they never 
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
   **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
   re-exported types. **v10** (plan 051) added `Task::Eval.drives` (a drive rung's position set)
-  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. Postcard is positional, so a new field anywhere in a type that crosses the
+  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. Postcard is positional, so a new field anywhere in a type that crosses the
   wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
@@ -134,6 +135,14 @@ the hub process: they cost CPU on the training box, nothing else — they never 
 - **Models are bytes, identified by BLAKE3.** `ModelId::of(onnx)`. The hub reads a path once at
   submit and ships bytes only to workers whose `Hello.cached_models` lack the id. Worker cache:
   `~/.cache/botbowl/models/<hex>.onnx`, verified by rehash on startup.
+- **Names travel separately from bytes (protocol v14).** The file name stays the hash — it is what
+  the cache verifies — and `ToWorker::ModelName { id, name, source, hub_commit }` is written
+  beside it as `<hex>.json` (`ModelMeta`). The hub sends it once per connection for every model
+  a worker holds or is about to use, whenever it knows a path for it: a job's model path, or the
+  startup index (`Hub::index_models`, every `.onnx` under `<repo>/runs` and `<repo>/models`, or
+  `serve --model-index-dir ...`), so a cache filled before names existed is named on its next
+  connect, not only the nets a job happens to touch. The web play app reads those names to offer
+  a worker box's cached nets (`botbowl-web/CLAUDE.md`).
 - **A worker probes every net once before any game uses it** (`ModelStore::get`): a
   schema-mismatched ONNX panics inside tract, and inside `MctsBot` that poisons tree locks and
   aborts the process on unwind. The probe turns it into `TaskFailed`; three failures of one game
