@@ -1,7 +1,7 @@
 # CLAUDE.md — botbowl-ui
 
 The terminal frontend and the headless single-process shells: `dataset` / `eval` over
-`botbowl-play`, plus read-only probes (`convergence`, `positions`, `override-audit`). Subcommands
+`botbowl-play`, plus read-only probes (`convergence`, `positions`, `override-audit`, `value-bench`). Subcommands
 are declared in `src/cli.rs` and dispatched in `src/main.rs`; each lives in its own module.
 
 ## `override-audit` (plan 055 §3 phase 2, `src/override_audit.rs`)
@@ -43,3 +43,24 @@ Things that are easy to get wrong:
   calibration uses. A control row plays only `a_p`; its `search` arm is a copy.
 - **The search is fresh**, with no tree inherited from earlier decisions of the turn, unlike real
   play. Use a deterministic preset (`gumbel_scale = 0`); a noisy one is warned about.
+
+## `value-bench` (plan 056 §2, `src/value_bench.rs`)
+
+The value head against Monte Carlo truth on a frozen benchmark: `scripts/value_bench_freeze.py`
+turns `override-audit` rows into one line per distinct state (corpus path, 1-based line, sample,
+`mc` = `policy.mc_mean`, `mc_se`, board, phase, `v_ref` = the auditing net's V(s)); `value-bench`
+replays each state (same `replay_to`, same capacity check) and writes the line back with `v`, the
+net's value in the mover's frame. One forward per state, seconds per net on the sidecar.
+
+```sh
+scripts/value_bench.sh runs/value_bench/g05_gen06.jsonl runs/value_bench/OUT ref=REF.onnx arm=ARM.onnx
+```
+
+- **MC is under the freezing net's policy**, so the benchmark is exact only for that net
+  (`self-check` in the summary: |V - v_ref| = 0) and approximate for its fine-tunes and other nets.
+- **The rows are the audit's sample, unweighted**: overrides are over-represented (their
+  `keep_prob` is 1, controls' 0.2), so the bias and RMS differ a little from the audit summary's
+  population-weighted figures. Compare nets on the same benchmark, paired (`value_bench_summary.py`
+  pairs every net against the first).
+- **Don't score a net trained on the benchmark's corpus** (g05's is `loopmix16x9g/gen06`, d1k
+  gen04's is `gen01`): it has seen one outcome of every state.

@@ -146,7 +146,7 @@ pub struct Playout {
 }
 
 /// The net's value at `state` in `team`'s frame, in TD units.
-fn value_for(nn: &NnEvaluator, state: &GameState, team: TeamType) -> f32 {
+pub fn value_for(nn: &NnEvaluator, state: &GameState, team: TeamType) -> f32 {
     in_frame(team, nn.value_home_i64(state) as f32 / 1000.0)
 }
 
@@ -440,7 +440,7 @@ fn index_corpus(args: &OverrideAuditArgs) -> io::Result<Vec<Candidate>> {
     Ok(out)
 }
 
-fn load_trajectory(path: &str, offset: u64) -> io::Result<Trajectory> {
+pub fn load_trajectory(path: &str, offset: u64) -> io::Result<Trajectory> {
     let mut f = File::open(path)?;
     f.seek(SeekFrom::Start(offset))?;
     let mut line = String::new();

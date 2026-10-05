@@ -40,6 +40,10 @@ pub enum Command {
     /// value that does not depend on the value head. Headless; summarise with
     /// `scripts/override_audit_summary.py`.
     OverrideAudit(OverrideAuditArgs),
+    /// Plan 056: score a net's value head on a frozen Monte Carlo value benchmark
+    /// (`scripts/value_bench_freeze.py`): replay each state, one forward, no search. Summarise with
+    /// `scripts/value_bench_summary.py`.
+    ValueBench(ValueBenchArgs),
 }
 
 /// `override-audit` (plan 055 §3 phase 2). See `override_audit.rs` for what each row holds.
@@ -87,6 +91,26 @@ pub struct OverrideAuditArgs {
     #[arg(long, default_value_t = 100_000)]
     pub max_steps: u32,
     /// Output JSONL, one row per kept decision.
+    #[arg(long)]
+    pub out: String,
+}
+
+/// `value-bench` (plan 056 §2). See `value_bench.rs`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ValueBenchArgs {
+    /// The frozen benchmark: JSONL, one state per line (`corpus`, 1-based `line`, `sample`, `mc`, ...).
+    #[arg(long)]
+    pub bench: String,
+    /// The net whose value head is scored.
+    #[arg(long)]
+    pub model: String,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// States scored at once, one thread each.
+    #[arg(long, default_value_t = 4)]
+    pub parallel: usize,
+    /// Output JSONL: every benchmark line with `v` (the net's V(s), mover's frame) and `model` added.
     #[arg(long)]
     pub out: String,
 }

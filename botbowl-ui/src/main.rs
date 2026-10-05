@@ -7,6 +7,7 @@ mod override_audit;
 mod placement;
 mod positions;
 mod replay;
+mod value_bench;
 
 use clap::Parser;
 use std::io;
@@ -31,5 +32,6 @@ fn main() -> io::Result<()> {
         cli::Command::Convergence(args) => convergence::run(args),
         cli::Command::Positions(args) => positions::run(args),
         cli::Command::OverrideAudit(args) => override_audit::run(args),
+        cli::Command::ValueBench(args) => value_bench::run(args),
     }
 }
