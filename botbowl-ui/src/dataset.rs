@@ -53,7 +53,6 @@ fn config_of(args: &DatasetArgs) -> io::Result<GenerateConfig> {
             // (env-driven) apply, exactly as before the extraction.
             puct: None,
             horizon_turns: None,
-            backup: None,
             fpu_reduction: None,
             config: preset.as_ref().map(|p| p.config),
         },

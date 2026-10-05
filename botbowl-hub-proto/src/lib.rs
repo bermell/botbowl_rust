@@ -38,7 +38,9 @@ pub use botbowl_play::generate::GenerateConfig;
 // v10 (plan 051): `Task::Eval.drives` (a drive rung's position set) and `EvalGameLine.attacker`.
 // v11 (plan 053): `MctsConfig.gumbel_m` and `MctsConfig.gumbel_scale`, inside `SearchConfig.config`.
 // v12 (plan 053): `MctsConfig.gumbel_q_floor`.
-pub const PROTOCOL_VERSION: u32 = 12;
+// v13 (plan 055): the player-node backup is hardcoded to the mean; `MctsConfig.backup` and
+// `SearchConfig.backup` are gone. A v12 worker would silently play minimax, so it must not connect.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.

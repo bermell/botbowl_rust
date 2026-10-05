@@ -28,12 +28,12 @@ use botbowl_curriculum::{available_lectures, make_lecture, run_trials, TrialStat
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
-use botbowl_mcts::{BackupMode, PuctMode};
+use botbowl_mcts::PuctMode;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::board_sizes::board_label;
 use botbowl_play::bots::{
-    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_backup,
-    parse_puct, CandidateBot, Evaluator, NamedConfig, SearchConfig,
+    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_puct,
+    CandidateBot, Evaluator, NamedConfig, SearchConfig,
 };
 use botbowl_play::drives::{
     drive_assignment, drive_rung_name, play_drive_game, position_state, DriveRung, PositionSet,
@@ -53,10 +53,6 @@ fn puct_of(mode: &str, c: Option<f32>) -> PuctMode {
     parse_puct(mode, c).unwrap_or_else(|e| panic!("--puct-mode: {e}"))
 }
 
-fn backup_of(s: &str) -> BackupMode {
-    parse_backup(s).unwrap_or_else(|e| panic!("--backup: {e}"))
-}
-
 /// The candidate's search knobs. Every one is `Some`: `eval` has always
 /// set them explicitly (the CLI defaults stand in for the bot's), so the
 /// environment never reaches the candidate here.
@@ -70,7 +66,6 @@ fn candidate_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConf
         workers: args.mcts_workers,
         puct: preset.is_none().then(|| puct_of(&args.puct_mode, args.puct_c)),
         horizon_turns: preset.is_none().then_some(args.horizon_turns),
-        backup: preset.is_none().then(|| backup_of(&args.backup)),
         fpu_reduction: preset.is_none().then_some(args.fpu_reduction),
         config: preset.map(|p| p.config),
     }
@@ -96,9 +91,6 @@ fn opponent_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConfi
         horizon_turns: preset
             .is_none()
             .then(|| args.vs_horizon_turns.unwrap_or(args.horizon_turns)),
-        backup: preset
-            .is_none()
-            .then(|| backup_of(args.vs_backup.as_deref().unwrap_or(&args.backup))),
         fpu_reduction: preset
             .is_none()
             .then(|| args.vs_fpu_reduction.unwrap_or(args.fpu_reduction)),
@@ -512,28 +504,21 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     format!("vs:{base} [{} v {}]", o.name, c.name)
                 }
             } else {
-                let (opp_puct, opp_horizon, opp_backup, opp_fpu) = (
+                let (opp_puct, opp_horizon, opp_fpu) = (
                     opp.puct.expect("set when no preset is named"),
                     opp.horizon_turns.expect("set when no preset is named"),
-                    opp.backup.expect("set when no preset is named"),
                     opp.fpu_reduction.expect("set when no preset is named"),
                 );
-                let (cand_horizon, cand_backup, cand_fpu) = (
+                let (cand_horizon, cand_fpu) = (
                     cand.horizon_turns.expect("set when no preset is named"),
-                    cand.backup.expect("set when no preset is named"),
                     cand.fpu_reduction.expect("set when no preset is named"),
                 );
                 format!(
-                    "vs:{} [{}{}{}{}]",
+                    "vs:{} [{}{}{}]",
                     evaluator_label(vs, args.vs_model.as_deref()),
                     opp_puct.label(),
                     if opp_horizon != cand_horizon {
                         format!(" horizon={opp_horizon}v{cand_horizon}")
-                    } else {
-                        String::new()
-                    },
-                    if opp_backup != cand_backup {
-                        format!(" {}v{}", opp_backup.label(), cand_backup.label())
                     } else {
                         String::new()
                     },

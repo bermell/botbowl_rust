@@ -18,7 +18,7 @@ botbowl-ui eval --evaluator nn --model bbnet.onnx \
 botbowl-ui dataset --mode random-start --bot-config cfgs/baseline.toml --out shard0.jsonl
 ```
 
-`--bot-config` is exclusive with the per-knob flags (`--puct-mode`, `--backup`,
+`--bot-config` is exclusive with the per-knob flags (`--puct-mode`,
 `--fpu-reduction`, `--horizon-turns` and their `--vs-` twins): a run is either fully described by
 a preset or fully described by flags, never half of each. `--mcts-workers` is the exception — it
 applies either way, because it is a property of the machine rather than of the bot.

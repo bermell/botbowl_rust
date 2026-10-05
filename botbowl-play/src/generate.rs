@@ -252,14 +252,6 @@ pub fn budget_label(cfg: &GenerateConfig) -> String {
         Evaluator::Nn => format!("nn:{}", cfg.model.as_deref().unwrap_or("?")),
         Evaluator::NnValue => format!("nn-value:{}", cfg.model.as_deref().unwrap_or("?")),
     };
-    // `make_mcts` takes the backup rule from `BLOOD_MCTS_BACKUP` when the
-    // config leaves it unset (both sides share it); stamp it into the
-    // corpus provenance when non-default so a plan-032 mean-backup corpus
-    // can never be mistaken for a minimax one.
-    let backup = match cfg.search.backup.unwrap_or_else(botbowl_mcts::BackupMode::from_env) {
-        botbowl_mcts::BackupMode::Minimax => String::new(),
-        b => format!(",{}", b.label()),
-    };
     // A named preset (plan 043) replaces the whole configuration, so the individual knobs above
     // stop describing the bot — the name is what does. Stamp it so a corpus can be traced back to
     // the configuration that generated it.
@@ -280,13 +272,10 @@ pub fn budget_label(cfg: &GenerateConfig) -> String {
         .map_or_else(botbowl_mcts::BudgetMode::from_env, |c| c.budget_mode)
         == botbowl_mcts::BudgetMode::Visits;
     match cfg.search.budget {
-        SearchBudget::Time(d) => format!(
-            "mcts(time={}ms,workers={workers},eval={eval}{backup}{config})",
-            d.as_millis()
-        ),
+        SearchBudget::Time(d) => format!("mcts(time={}ms,workers={workers},eval={eval}{config})", d.as_millis()),
         SearchBudget::Iterations(n) => {
             let unit = if visits { "visits" } else { "iters" };
-            format!("mcts({unit}={n},workers={workers},eval={eval}{backup}{config})")
+            format!("mcts({unit}={n},workers={workers},eval={eval}{config})")
         }
     }
 }

@@ -135,61 +135,6 @@ impl PuctMode {
     }
 }
 
-/// How a **player** node aggregates its children's Q in `backprop_scores`
-/// (plan 032 #2). Chance nodes always take the probability-weighted
-/// expectation regardless of this setting.
-///
-/// `Minimax` is the historical rule and the default. It is exact for the
-/// heuristic leaf, which is a deterministic function of the state inside
-/// the horizon; with a learned leaf it is a max over noisy estimates and
-/// plan 031 D1 measured it adding **+0.09 to +0.10** of a drive outcome of
-/// optimism at the root on every generation, with the bare net at +0.03.
-/// `Mean` is the AlphaZero remedy: a child's Q is the visit-weighted mean
-/// of everything backed up through it, so one lucky leaf cannot carry a
-/// whole subtree. The mean also changes what FPU (= parent Q) and
-/// `PUCT_C` see — the parent is no longer its best child — so a `c`
-/// re-tune belongs with any switch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackupMode {
-    /// Home max / Away min over child Q; visits sum.
-    #[default]
-    Minimax,
-    /// `Σ visits·Q / Σ visits` over child Q; visits sum. Integer
-    /// arithmetic throughout so the result is independent of the order
-    /// `recon_mcts` hands children back in (the chance branch needs a
-    /// covariant sort for the same reason; here the sum is exact).
-    Mean,
-}
-
-impl BackupMode {
-    /// `BLOOD_MCTS_BACKUP={minimax|mean}`; unset or unrecognised ⇒ `Minimax`.
-    pub fn from_env() -> Self {
-        match std::env::var("BLOOD_MCTS_BACKUP").ok().as_deref().map(str::trim) {
-            Some("mean") | Some("avg") | Some("average") => BackupMode::Mean,
-            _ => BackupMode::Minimax,
-        }
-    }
-
-    /// Parse the CLI spelling; `None` on an unknown word so callers can
-    /// refuse to start a multi-hour match with a misspelt arm.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim() {
-            "minimax" | "max" => Some(BackupMode::Minimax),
-            "mean" | "avg" | "average" => Some(BackupMode::Mean),
-            _ => None,
-        }
-    }
-
-    /// Provenance tag for corpora and reports (same role as `PuctMode::label`).
-    pub fn label(&self) -> &'static str {
-        match self {
-            BackupMode::Minimax => "backup=minimax",
-            BackupMode::Mean => "backup=mean",
-        }
-    }
-}
-
 /// What a [`SearchBudget::Iterations`] budget of `n` counts.
 ///
 /// With tree reuse on, a decision can start from a re-rooted subtree that already holds thousands
@@ -300,6 +245,15 @@ pub struct BbScore {
     /// from `BLOOD_MCTS_VIRTUAL_LOSS` via `MctsBot::new` (default 30,
     /// `0` disables).
     pub virtual_loss: AtomicI32,
+    /// The drive outcome this node is *proven* to reach, Home-centric: `+1` Home scores, `-1`
+    /// Away scores, `0` the drive ends with no score. `None` = not proven (a value-head or
+    /// heuristic estimate is somewhere below). Set at leaves the drive is over at (the anchor's
+    /// exact-outcome check) and propagated by `backprop_scores`: a chance node is proven when
+    /// every outcome is proven to the same result; a player node when one child is a proven score
+    /// for the side to move (it can just take it), or every child is proven to the same result.
+    /// It exists because the player-node backup is a mean: averaging a proven touchdown with the
+    /// lines explored beside it would hide a certain score (see `backprop_scores`).
+    pub proven: Option<i8>,
 }
 
 impl Clone for BbScore {
@@ -309,6 +263,7 @@ impl Clone for BbScore {
             score: self.score,
             node_kind: self.node_kind,
             virtual_loss: AtomicI32::new(self.virtual_loss.load(Ordering::Relaxed)),
+            proven: self.proven,
         }
     }
 }
@@ -644,9 +599,6 @@ pub struct BloodBowlDynamics {
     /// Plan 023 instrument: how exact ties are broken in `select_node`
     /// and at the root. `Hash` (default) is the shipped behaviour.
     pub tie_break: TieBreak,
-    /// Plan 032 #2: player-node aggregation rule. `Minimax` (default) is
-    /// the shipped behaviour.
-    pub backup: BackupMode,
     /// Plan 032 #3: first-play-urgency reduction `k`, in Q points (the
     /// ±1000 = TD scale). `0.0` (default) is the shipped behaviour — an
     /// unexplored child is estimated at exactly the parent's Q. With
@@ -708,7 +660,6 @@ impl Default for BloodBowlDynamics {
             evaluator: Evaluator::default(),
             puct: PuctMode::default(),
             tie_break: TieBreak::default(),
-            backup: BackupMode::default(),
             fpu_reduction: 0.0,
             root_noise: None,
             root_trace: None,
@@ -1436,7 +1387,7 @@ impl GameDynamics for BloodBowlDynamics {
             // hold `Q`/`A` (`lockref::Ref`s) across the sort, which would
             // pull a second `Ref` while the first is alive and deadlock
             // under contention (plan 013, `lockref-guard`).
-            let mut terms: Vec<(String, u32, f64, i64)> = child_scores_and_actions
+            let mut terms: Vec<(String, u32, f64, i64, Option<i8>)> = child_scores_and_actions
                 .into_iter()
                 .map(|(q, a)| {
                     let key = match a.deref() {
@@ -1448,14 +1399,22 @@ impl GameDynamics for BloodBowlDynamics {
                         q.visits.load(Ordering::Relaxed),
                         a.prob_f32().unwrap_or(0.0) as f64,
                         q.score,
+                        q.proven,
                     )
                 })
                 .collect();
             terms.sort_by(|a, b| a.0.cmp(&b.0));
-            for (_, v, prob, score) in terms.into_iter() {
+            // Proven only if every outcome is proven to the same drive result.
+            let mut proven: Option<Option<i8>> = None;
+            for (_, v, prob, score, p) in terms.into_iter() {
                 if v == 0 {
                     continue;
                 }
+                proven = match proven {
+                    None => Some(p),
+                    Some(acc) if acc == p => Some(acc),
+                    Some(_) => Some(None),
+                };
                 weighted_sum += prob * score as f64;
                 total_prob += prob;
                 total_visits += v;
@@ -1487,52 +1446,68 @@ impl GameDynamics for BloodBowlDynamics {
                 score: avg as i64,
                 node_kind: BbPlayer::Chance,
                 virtual_loss: AtomicI32::new(in_flight),
+                proven: proven.flatten(),
             });
         }
 
-        // Player node. Scores are Home-centric, so Home maximises and
-        // Away minimises (plan 006 — adversarial backprop). Visits
-        // sum across children so PUCT's √N(parent) reflects total
-        // descents (plan 007 — matches the Chance branch above).
+        // Player node. Scores are Home-centric. Visits sum across children so PUCT's √N(parent)
+        // reflects total descents (plan 007 — matches the Chance branch above).
         //
-        // Plan 032 #2: under `BackupMode::Mean` the node's Q is instead the
-        // visit-weighted mean of its children — exact integer arithmetic,
-        // one truncating division at the end (symmetric under negation, so
-        // the Home/Away mirror tests keep holding). A child with zero
-        // recorded visits (fresh placeholder scored but not yet descended)
-        // contributes nothing to the mean; if *every* child is at zero the
-        // plain mean of their scores is used so the node is never left
+        //
+        // The node's Q is the visit-weighted mean of its children's Q (the AlphaZero backup), exact
+        // integer arithmetic with one truncating division at the end (symmetric under negation, so
+        // the Home/Away mirror tests keep holding). The mean has no side, so Home and Away share it.
+        // A child with zero recorded visits (scored, never descended) contributes nothing; if
+        // *every* child is at zero the plain mean of their scores is used, so the node is never left
         // unscored while it has scored children.
-        let want_max = *player == BbPlayer::Home;
-        let mut best_score: Option<i64> = None;
+        //
+        // We tried minimax (Home max / Away min over child Q, the rule from the heuristic-leaf era)
+        // and it didn't work with a learned leaf: a max over noisy value estimates picks the
+        // children the net overrates, and a Blood Bowl turn stacks many same-side max nodes, so the
+        // optimism compounds. Measured: +0.10 of a drive outcome of root optimism (plan 031 D1), and
+        // against the bare policy of the same net on contested drives the minimax Gumbel search lost
+        // (0.482) where the mean won (0.526; plan 055, exp064, 2026-10-05). Hardcoded since.
+        //
+        // The one place a max is right is an *exact* value, and the mean would get those wrong: a
+        // proven touchdown for the side to move, averaged with the lines explored beside it, can
+        // read below an unproven alternative, so the bot would decline a certain score. Proven
+        // outcomes (`BbScore::proven`) therefore short-circuit the mean: if any child is a proven
+        // score for the mover, the node is that score, proven (an MCTS-solver win). Only the win
+        // rule, not "every child proven to the same result": recon_mcts leaves unscored children
+        // out of this iterator, so "all proven" could ignore a better unscored move.
+        let mover_win: i8 = if *player == BbPlayer::Home { 1 } else { -1 };
         let mut total_visits: u32 = 0;
         let mut weighted_sum: i128 = 0;
         let mut plain_sum: i128 = 0;
         let mut n_children: i128 = 0;
+        let mut proven_win: Option<i64> = None;
         for (q, _) in child_scores_and_actions.into_iter() {
             let v = q.visits.load(Ordering::Relaxed);
             total_visits += v;
-            let s = q.score;
-            weighted_sum += i128::from(v) * i128::from(s);
-            plain_sum += i128::from(s);
+            weighted_sum += i128::from(v) * i128::from(q.score);
+            plain_sum += i128::from(q.score);
             n_children += 1;
-            best_score = match best_score {
-                None => Some(s),
-                Some(b) if (want_max && s > b) || (!want_max && s < b) => Some(s),
-                Some(b) => Some(b),
-            };
+            if q.proven == Some(mover_win) {
+                // Several proven scores: the best one for the mover (they differ only under the
+                // heuristic leaf, whose TD value carries positional terms).
+                let better = |a: i64, b: i64| if mover_win > 0 { a.max(b) } else { a.min(b) };
+                proven_win = Some(proven_win.map_or(q.score, |w| better(w, q.score)));
+            }
         }
-        let score = match (self.backup, best_score) {
-            (_, None) => return None,
-            (BackupMode::Minimax, Some(b)) => b,
-            (BackupMode::Mean, Some(_)) if total_visits > 0 => (weighted_sum / i128::from(total_visits)) as i64,
-            (BackupMode::Mean, Some(_)) => (plain_sum / n_children) as i64,
+        if n_children == 0 {
+            return None;
+        }
+        let (score, proven) = match proven_win {
+            Some(w) => (w, Some(mover_win)),
+            None if total_visits > 0 => ((weighted_sum / i128::from(total_visits)) as i64, None),
+            None => ((plain_sum / n_children) as i64, None),
         };
         Some(BbScore {
             visits: AtomicU32::new(total_visits),
             score,
             node_kind: *player,
             virtual_loss: AtomicI32::new(in_flight),
+            proven,
         })
     }
 
@@ -1635,11 +1610,19 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             },
         };
+        // The drive's result is known exactly here, under every evaluator (the heuristic and pure-TD
+        // leaves too): the player-node mean must not average it away (see `backprop_scores`).
+        let proven = self
+            .horizon
+            .as_ref()
+            .filter(|anchor| anchor.drive_over(state))
+            .map(|anchor| anchor.score_delta(state).clamp(-1, 1) as i8);
         Some(BbScore {
             visits: AtomicU32::new(1),
             score,
             node_kind: player_for_state(state),
             virtual_loss: AtomicI32::new(0),
+            proven,
         })
     }
 }
@@ -1871,8 +1854,6 @@ pub struct MctsConfig {
     pub puct: PuctMode,
     /// Plan 023 ordering instrument. Production leaves this at `Hash`.
     pub tie_break: TieBreak,
-    /// Plan 032 #2 player-node aggregation rule.
-    pub backup: BackupMode,
     /// Plan 032 #3 FPU reduction `k`, in Q points. `0.0` is plain FPU.
     pub fpu_reduction: f32,
     /// How many own-turns the search may look ahead before a state counts as
@@ -1920,7 +1901,6 @@ impl MctsConfig {
             virtual_loss: DEFAULT_VIRTUAL_LOSS,
             puct: PuctMode::Raw { c: PUCT_C },
             tie_break: TieBreak::Hash,
-            backup: BackupMode::Minimax,
             fpu_reduction: 0.0,
             horizon_turns: 1,
             horizon: true,
@@ -1967,7 +1947,6 @@ impl MctsConfig {
             },
         };
         cfg.tie_break = TieBreak::from_env();
-        cfg.backup = BackupMode::from_env();
         cfg.fpu_reduction = env_f32("BLOOD_MCTS_FPU_REDUCTION").unwrap_or(0.0).max(0.0);
         cfg.horizon_turns = std::env::var("BLOOD_MCTS_HORIZON_TURNS")
             .ok()
@@ -2156,20 +2135,9 @@ impl MctsBot {
         self
     }
 
-    /// Override the env-var default for the player-node backup rule
-    /// (plan 032 #2). Same A/B caveat as `with_puct`.
-    pub fn with_backup(mut self, backup: BackupMode) -> Self {
-        self.config.backup = backup;
-        self
-    }
-
     pub fn with_budget_mode(mut self, mode: BudgetMode) -> Self {
         self.config.budget_mode = mode;
         self
-    }
-
-    pub fn backup(&self) -> BackupMode {
-        self.config.backup
     }
 
     /// Override the env-var default for the FPU reduction (plan 032 #3),
@@ -2289,7 +2257,6 @@ impl MctsBot {
             evaluator: self.evaluator.clone(),
             puct: self.config.puct,
             tie_break: self.config.tie_break,
-            backup: self.config.backup,
             fpu_reduction: self.config.fpu_reduction,
             root_noise: root_noise.clone(),
             root_trace: self.root_trace.clone(),
@@ -3261,6 +3228,7 @@ mod tests {
             score,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         }
     }
 
@@ -3271,54 +3239,12 @@ mod tests {
         BbAction::player(EngineAction::Simple(SimpleAT::EndTurn), 1.0)
     }
 
-    #[test]
-    fn backprop_player_home_maximises_and_sums_visits() {
-        let dynamics = BloodBowlDynamics::default();
-        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
-        let children = [child(-5, 2), child(10, 5), child(3, 1)];
-        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
-        let result = dynamics
-            .backprop_scores(&BbPlayer::Home, None, pairs)
-            .expect("backprop should yield a score");
-        assert_eq!(result.score, 10, "Home should pick the max-Q child");
-        assert_eq!(
-            result.visits.load(Ordering::Relaxed),
-            8,
-            "visits should sum across children, not max"
-        );
-        assert_eq!(result.node_kind, BbPlayer::Home);
-    }
-
-    #[test]
-    fn backprop_player_away_minimises_and_sums_visits() {
-        let dynamics = BloodBowlDynamics::default();
-        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
-        let children = [child(-5, 2), child(10, 5), child(3, 1)];
-        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
-        let result = dynamics
-            .backprop_scores(&BbPlayer::Away, None, pairs)
-            .expect("backprop should yield a score");
-        assert_eq!(
-            result.score, -5,
-            "Away should pick the min-Q child (Home-centric scoring)"
-        );
-        assert_eq!(result.visits.load(Ordering::Relaxed), 8);
-        assert_eq!(
-            result.node_kind,
-            BbPlayer::Away,
-            "node_kind should mirror the player owning the node"
-        );
-    }
-
-    /// Plan 032 #2 — `BackupMode::Mean` is the visit-weighted mean for
-    /// *both* sides (the mean has no side), independent of child order,
-    /// and symmetric under negation (so the D9 mirror property survives).
+    /// The player-node backup is the visit-weighted mean for *both* sides (the mean has no side),
+    /// independent of child order, symmetric under negation (so the D9 mirror property survives),
+    /// and visits still sum.
     #[test]
     fn backprop_mean_is_visit_weighted_and_order_independent() {
-        let dynamics = BloodBowlDynamics {
-            backup: BackupMode::Mean,
-            ..BloodBowlDynamics::default()
-        };
+        let dynamics = BloodBowlDynamics::default();
         let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
         let children = [child(-5, 2), child(10, 5), child(3, 1)];
         // (-10 + 50 + 3) / 8 = 43 / 8 = 5 (truncated)
@@ -3342,14 +3268,11 @@ mod tests {
     }
 
     /// A player node whose children have all been scored but never
-    /// descended (visits 0) must still get a score under `Mean`, or the
-    /// node becomes a backprop dead end.
+    /// descended (visits 0) must still get a score, or the node becomes a
+    /// backprop dead end.
     #[test]
     fn backprop_mean_falls_back_to_plain_mean_at_zero_visits() {
-        let dynamics = BloodBowlDynamics {
-            backup: BackupMode::Mean,
-            ..BloodBowlDynamics::default()
-        };
+        let dynamics = BloodBowlDynamics::default();
         let actions = [placeholder_action(), placeholder_action()];
         let children = [child(4, 0), child(-10, 0)];
         let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
@@ -3416,15 +3339,6 @@ mod tests {
         assert_eq!(picked, explored);
     }
 
-    #[test]
-    fn backup_mode_defaults_to_minimax_and_parses() {
-        assert_eq!(BloodBowlDynamics::default().backup, BackupMode::Minimax);
-        assert_eq!(BackupMode::parse("mean"), Some(BackupMode::Mean));
-        assert_eq!(BackupMode::parse("minimax"), Some(BackupMode::Minimax));
-        assert_eq!(BackupMode::parse("median"), None);
-        assert_eq!(BackupMode::Mean.label(), "backup=mean");
-    }
-
     /// `apply_action` must collapse scripted player decisions
     /// (coin toss, kick/receive, block-die picks) into a single
     /// engine advance so the MCTS DAG doesn't carry nodes for
@@ -3467,6 +3381,67 @@ mod tests {
             !still_kick_receive,
             "post-apply: kick/receive should have been scripted-through too"
         );
+    }
+
+    fn proven_child(score: i64, visits: u32, proven: i8) -> BbScore {
+        BbScore {
+            proven: Some(proven),
+            ..child(score, visits)
+        }
+    }
+
+    /// The mean must not average away a certain score: a proven touchdown for the side to move
+    /// wins the node outright, however few visits it has next to well-visited estimates.
+    #[test]
+    fn a_proven_score_for_the_mover_short_circuits_the_mean() {
+        let dynamics = BloodBowlDynamics::default();
+        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
+        let home_td = proven_child(1000, 1, 1);
+        let children = [child(300, 50), home_td.clone(), child(200, 40)];
+        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+        let r = dynamics.backprop_scores(&BbPlayer::Home, None, pairs).expect("score");
+        assert_eq!((r.score, r.proven), (1000, Some(1)));
+        assert_eq!(r.visits.load(Ordering::Relaxed), 91, "visits still sum");
+
+        // At an Away node a proven *Home* score is not Away's to take: plain mean, unproven.
+        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+        let r = dynamics.backprop_scores(&BbPlayer::Away, None, pairs).expect("score");
+        assert_eq!(r.proven, None);
+        assert_eq!(r.score, (300 * 50 + 1000 + 200 * 40) / 91);
+
+        // Mirror: an Away touchdown wins an Away node.
+        let mirrored = [child(-300, 50), proven_child(-1000, 1, -1), child(-200, 40)];
+        let pairs: Vec<(&BbScore, &BbAction)> = mirrored.iter().zip(actions.iter()).collect();
+        let r = dynamics.backprop_scores(&BbPlayer::Away, None, pairs).expect("score");
+        assert_eq!((r.score, r.proven), (-1000, Some(-1)));
+    }
+
+    /// A chance node is proven only when every outcome is proven to the same drive result.
+    #[test]
+    fn a_chance_node_is_proven_only_when_every_outcome_agrees() {
+        use botbowl_engine::core::dices::RollResult;
+
+        let dynamics = BloodBowlDynamics::default();
+        let pass = BbAction::chance(RollResult::Pass, 0.5);
+        let fail = BbAction::chance(RollResult::Fail, 0.5);
+        let (a, b) = (proven_child(1000, 2, 1), proven_child(1000, 1, 1));
+        let r = dynamics
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&a, &pass), (&b, &fail)])
+            .expect("complete");
+        assert_eq!(r.proven, Some(1));
+        let c = proven_child(0, 1, 0);
+        let r = dynamics
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&a, &pass), (&c, &fail)])
+            .expect("complete");
+        assert_eq!(
+            r.proven, None,
+            "a touchdown on one roll and no score on the other is a gamble"
+        );
+        let d = child(1000, 1);
+        let r = dynamics
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&a, &pass), (&d, &fail)])
+            .expect("complete");
+        assert_eq!(r.proven, None, "an estimate on either branch keeps the node unproven");
     }
 
     /// The chance-node expectation must not be emitted while outcomes
@@ -3751,12 +3726,14 @@ mod tests {
             score: 50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let b = BbScore {
             visits: AtomicU32::new(10),
             score: -50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let parent_visits = 100.0;
         let prior = 0.5;
@@ -3789,6 +3766,7 @@ mod tests {
             score: 525,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let parent_visits = 100.0;
         let prior = 5.0;
@@ -3808,6 +3786,7 @@ mod tests {
             score: 1069,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let v_td = puct_value(Some(&td), parent_visits, prior, true, fpu, PUCT_C);
         assert!(
@@ -3845,6 +3824,7 @@ mod tests {
                     score: q,
                     node_kind: BbPlayer::Home,
                     virtual_loss: AtomicI32::new(0),
+                    proven: None,
                 };
                 let fpu = 525.0;
                 let ve = puct_value(Some(&explored), 100.0, 5.0, true, fpu, c);
@@ -3865,12 +3845,14 @@ mod tests {
             score: 50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let b = BbScore {
             visits: AtomicU32::new(10),
             score: -50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
 
         // Home frame: lo=-50, hi=+50 after the flip (identity).
@@ -3915,6 +3897,7 @@ mod tests {
                                 score: *q,
                                 node_kind: BbPlayer::Home,
                                 virtual_loss: AtomicI32::new(0),
+                                proven: None,
                             };
                             (i, puct_value_normalised(Some(&sc), 100.0, *p, home, lo, &frame))
                         })
@@ -3950,6 +3933,7 @@ mod tests {
                         score: alpha * q,
                         node_kind: BbPlayer::Home,
                         virtual_loss: AtomicI32::new(0),
+                        proven: None,
                     };
                     (i, puct_value(Some(&sc), 100.0, *p, true, 0.0, PUCT_C))
                 })
@@ -3987,6 +3971,7 @@ mod tests {
                         score: *q,
                         node_kind: BbPlayer::Home,
                         virtual_loss: AtomicI32::new(0),
+                        proven: None,
                     };
                     (i, puct_value_normalised(Some(&sc), 400.0, *p, true, lo, &frame))
                 })
@@ -4016,6 +4001,7 @@ mod tests {
                 score: hi as i64,
                 node_kind: BbPlayer::Home,
                 virtual_loss: AtomicI32::new(vl),
+                proven: None,
             };
             let v0 = puct_value_normalised(Some(&mk(0)), 100.0, 1.0, true, lo, &frame);
             let v1 = puct_value_normalised(Some(&mk(1)), 100.0, 1.0, true, lo, &frame);
@@ -4075,6 +4061,7 @@ mod tests {
                 score: lo as i64,
                 node_kind: BbPlayer::Home,
                 virtual_loss: AtomicI32::new(0),
+                proven: None,
             };
             let v = puct_value_normalised(Some(&sc), 100.0, 1.0, true, lo, &f);
             assert!(v.is_finite(), "range {lo}..{hi} produced {v}");
@@ -4141,6 +4128,7 @@ mod tests {
                         score: *q,
                         node_kind: BbPlayer::Home,
                         virtual_loss: AtomicI32::new(0),
+                        proven: None,
                     };
                     (i, puct_value_normalised(Some(&sc), 100.0, *p, true, 0.0, &frame))
                 })
@@ -4168,6 +4156,7 @@ mod tests {
                 score,
                 node_kind: BbPlayer::Home,
                 virtual_loss: AtomicI32::new(0),
+                proven: None,
             };
             let parent_term = parent_visits.max(1.0).sqrt();
             let expected_some = (score as f32 - 0.0) + PUCT_C * prior * parent_term / (1.0 + visits as f32);

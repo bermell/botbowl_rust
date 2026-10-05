@@ -100,7 +100,7 @@ botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is
   and opponent are independent `BotSpec`s on the wire, so `--mcts-iters X --opponent-iters 1000
   --board-sizes 14x7/4,16x9/6` is one job, and every arm is described by the submission rather
   than by the boxes that happened to be connected. Two things the rung label still will not show:
-  an **iteration** asymmetry (the label only carries puct/horizon/backup/fpu differences, and
+  an **iteration** asymmetry (the label only carries puct/horizon/fpu differences, and
   `report.mcts_iters` is the candidate's alone — put the budget in the output file name), and a
   second custom opponent (`--vs-evaluator` gives exactly one per job, so one job per arm).
 - **`job eval --sprt S0:S1[:A:B]` stops a decided rung (plan 051), on the hub alone.** The rule
@@ -145,8 +145,8 @@ botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is
   `serde_json::to_vec` line, zstd level 3 (~575 KB -> ~30 KB); the hub decompresses and appends
   the bytes verbatim plus `\n`, i.e. `DatasetWriter` format, so `prepare` is untouched.
   `cfg.model` is the *path string as typed* (it is the provenance label); the bytes travel by
-  `ModelId`. The label's backup rule is resolved from the hub's `BLOOD_MCTS_BACKUP` at submit,
-  never from a worker's environment — as is every other search knob, via `pinned_to_env` (see the
+  `ModelId`. Search knobs are resolved from the hub's environment at submit, never from a
+  worker's, via `pinned_to_env` (see the
   submitter-resolves-everything invariant above). A helper box's `BLOOD_MCTS_*` reaches nothing.
 - **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
   task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries

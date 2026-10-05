@@ -76,14 +76,6 @@ impl Budget {
     }
 }
 
-/// Mirror of `botbowl_mcts::BackupMode`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum BackupSpec {
-    #[default]
-    Minimax,
-    Mean,
-}
-
 /// Mirror of `botbowl_mcts::PuctMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PuctSpec {
@@ -113,7 +105,6 @@ pub struct MctsSpec {
     pub model: String,
     /// `None` = `available_parallelism()`.
     pub workers: Option<usize>,
-    pub backup: BackupSpec,
     pub puct: PuctSpec,
     pub fpu_reduction: f32,
     pub horizon_turns: u8,
@@ -130,7 +121,6 @@ impl Default for MctsSpec {
             budget: Budget::Iterations(2000),
             model: String::new(),
             workers: None,
-            backup: BackupSpec::Minimax,
             puct: PuctSpec::Raw { c: 10.0 },
             fpu_reduction: 0.0,
             horizon_turns: 1,

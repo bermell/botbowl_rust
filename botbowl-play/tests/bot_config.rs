@@ -7,7 +7,7 @@
 
 use std::io::Write;
 
-use botbowl_mcts::{BackupMode, MctsConfig, PuctMode, TieBreak};
+use botbowl_mcts::{MctsConfig, PuctMode, TieBreak};
 use botbowl_play::bots::{load_mcts_config, SearchConfig};
 
 fn write_preset(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
@@ -61,7 +61,6 @@ fn a_preset_sets_only_what_it_names() {
         &dir,
         "aggressive.toml",
         r#"
-backup = "mean"
 fpu_reduction = 0.25
 horizon_turns = 2
 tie_break = "asc"
@@ -75,7 +74,6 @@ range_floor = 0.1
     let loaded = load_mcts_config(&path).expect("load");
     assert_eq!(loaded.name, "aggressive");
     let c = loaded.config;
-    assert_eq!(c.backup, BackupMode::Mean);
     assert_eq!(c.fpu_reduction, 0.25);
     assert_eq!(c.horizon_turns, 2);
     assert_eq!(c.tie_break, TieBreak::Asc);
@@ -92,6 +90,15 @@ range_floor = 0.1
     assert_eq!(c.horizon, d.horizon);
 }
 
+/// The player-node backup is no longer a knob (hardcoded mean, plan 055): a preset that still
+/// names it is a typo-class error under `deny_unknown_fields`, not a silent no-op.
+#[test]
+fn a_preset_naming_the_removed_backup_knob_is_refused() {
+    let dir = tmpdir("backup");
+    let path = write_preset(&dir, "old.toml", "backup = \"minimax\"\n");
+    assert!(load_mcts_config(&path).is_err());
+}
+
 /// The reproducibility guarantee. `MctsConfig`'s `Default` is `from_env()`, so serde pointed at
 /// `Default` would have quietly absorbed the environment into every unnamed field — which would
 /// make a named configuration mean different things on different machines.
@@ -102,9 +109,9 @@ fn a_preset_ignores_the_environment() {
     let dir = tmpdir("env");
     let path = write_preset(&dir, "quiet.toml", "fpu_reduction = 0.5\n");
 
-    let key = "BLOOD_MCTS_BACKUP";
+    let key = "BLOOD_MCTS_HORIZON_TURNS";
     let restore = std::env::var(key).ok();
-    std::env::set_var(key, "mean");
+    std::env::set_var(key, "3");
     let loaded = load_mcts_config(&path).expect("load");
     match restore {
         Some(v) => std::env::set_var(key, v),
@@ -112,9 +119,9 @@ fn a_preset_ignores_the_environment() {
     }
 
     assert_eq!(
-        loaded.config.backup,
-        BackupMode::Minimax,
-        "a hostile BLOOD_MCTS_BACKUP must not reach a named preset"
+        loaded.config.horizon_turns,
+        MctsConfig::new().horizon_turns,
+        "a hostile BLOOD_MCTS_HORIZON_TURNS must not reach a named preset"
     );
     assert_eq!(loaded.config.fpu_reduction, 0.5, "the preset's own knob still applies");
 }

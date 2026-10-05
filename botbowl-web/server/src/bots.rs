@@ -28,10 +28,10 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, TeamType as EngineTeam};
 use botbowl_mcts::dynamics::MemoryMode;
 use botbowl_mcts::report::{NodeView, SearchSummary, Q_SCALE};
-use botbowl_mcts::{BackupMode, BbAction, BbPlayer, MctsBot, MctsConfig, PuctMode, SearchBudget, TieBreak};
+use botbowl_mcts::{BbAction, BbPlayer, MctsBot, MctsConfig, PuctMode, SearchBudget, TieBreak};
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_web_proto::decision::{ActionPrior, NetReadout};
-use botbowl_web_proto::msg::{BackupSpec, BoardSpec, BotSpec, Budget, MctsSpec, ModelInfo, PuctSpec, TieBreakSpec};
+use botbowl_web_proto::msg::{BoardSpec, BotSpec, Budget, MctsSpec, ModelInfo, PuctSpec, TieBreakSpec};
 use botbowl_web_proto::search as ps;
 
 use crate::{mirror, report};
@@ -298,13 +298,6 @@ fn tie_break_of(spec: TieBreakSpec) -> TieBreak {
     }
 }
 
-fn backup_of(spec: BackupSpec) -> BackupMode {
-    match spec {
-        BackupSpec::Minimax => BackupMode::Minimax,
-        BackupSpec::Mean => BackupMode::Mean,
-    }
-}
-
 /// Translate the lobby's knobs into an `MctsConfig`. Starts from
 /// `MctsConfig::new()` — the shipped defaults with **no** env lookups.
 pub fn mcts_config(spec: &MctsSpec) -> MctsConfig {
@@ -317,7 +310,6 @@ pub fn mcts_config(spec: &MctsSpec) -> MctsConfig {
     cfg.virtual_loss = spec.virtual_loss;
     cfg.puct = puct_of(spec.puct);
     cfg.tie_break = tie_break_of(spec.tie_break);
-    cfg.backup = backup_of(spec.backup);
     cfg.fpu_reduction = spec.fpu_reduction.max(0.0);
     cfg.horizon_turns = spec.horizon_turns.max(1);
     cfg.horizon = spec.horizon;
@@ -333,9 +325,8 @@ pub fn config_label(cfg: &MctsConfig) -> String {
         "no horizon".to_string()
     };
     format!(
-        "{} · {} · fpu {} · {horizon} · vl {} · reuse {} · {} worker(s)",
+        "{} · fpu {} · {horizon} · vl {} · reuse {} · {} worker(s)",
         cfg.puct.label(),
-        cfg.backup.label(),
         cfg.fpu_reduction,
         cfg.virtual_loss,
         if cfg.tree_reuse { "on" } else { "off" },
@@ -450,7 +441,6 @@ mod tests {
     fn the_lobby_knobs_survive_the_trip_into_mcts_config() {
         let spec = MctsSpec {
             workers: Some(3),
-            backup: BackupSpec::Mean,
             puct: PuctSpec::NormalisedQ {
                 c: 1.5,
                 range_floor: 20.0,
@@ -465,7 +455,6 @@ mod tests {
         };
         let cfg = mcts_config(&spec);
         assert_eq!(cfg.workers, 3);
-        assert_eq!(cfg.backup, BackupMode::Mean);
         assert!(matches!(cfg.puct, PuctMode::NormalisedQ { c, range_floor } if c == 1.5 && range_floor == 20.0));
         assert_eq!(cfg.fpu_reduction, 0.25);
         assert_eq!(cfg.horizon_turns, 2);

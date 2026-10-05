@@ -13,7 +13,7 @@ use botbowl_hub::http::request;
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, SizeDist};
 use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
-use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_backup, parse_puct, CandidateBot};
+use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_puct, CandidateBot};
 use botbowl_play::drives::{drive_rung_name, DriveRung, PositionSet};
 use botbowl_play::eval::rung_name;
 use botbowl_play::generate::{Exploration, GenMode, RandomStartBias};
@@ -320,8 +320,8 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
     if evaluator.needs_model() && a.model.is_none() {
         return Err("--evaluator nn/nn-value requires --model PATH".into());
     }
-    // Resolved on the submitter for the same reason the backup rule is: a preset must describe
-    // the games, not the machine that happened to play them.
+    // Resolved on the submitter: a preset must describe the games, not the machine that happened
+    // to play them.
     let preset = a
         .bot_config
         .as_deref()
@@ -335,15 +335,13 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
             workers: a.mcts_workers,
             // `dataset` leaves these `None`, meaning "the bot's env-driven default"; keep that,
             // because `candidate_label`/the provenance label read these fields and a `Some` here
-            // would change every corpus label. The backup rule is the exception — it is stamped
-            // into the label, so it is resolved here, from the submitting environment.
+            // would change every corpus label.
             //
             // `pinned_to_env` below then fills `config` with the *whole* resolved `MctsConfig`
             // from this same environment, so "env-driven default" means the hub's environment,
             // once, and not whichever worker happened to pick the shard up.
             puct: None,
             horizon_turns: None,
-            backup: Some(botbowl_mcts::BackupMode::from_env()),
             fpu_reduction: None,
             config: preset.as_ref().map(|p| p.config),
         }
@@ -509,13 +507,13 @@ struct EvalJobArgs {
     /// Candidate bot preset (plan 043). Flag-for-flag with `botbowl-ui eval`.
     #[arg(
         long,
-        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "backup", "fpu_reduction"]
+        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "fpu_reduction"]
     )]
     bot_config: Option<PathBuf>,
     /// Opponent bot preset; defaults to the candidate's.
     #[arg(
         long,
-        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_backup", "vs_fpu_reduction"]
+        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_fpu_reduction"]
     )]
     vs_config: Option<PathBuf>,
     #[arg(long, default_value = "raw")]
@@ -530,10 +528,6 @@ struct EvalJobArgs {
     horizon_turns: u8,
     #[arg(long)]
     vs_horizon_turns: Option<u8>,
-    #[arg(long, default_value = "minimax")]
-    backup: String,
-    #[arg(long)]
-    vs_backup: Option<String>,
     #[arg(long, default_value_t = 0.0)]
     fpu_reduction: f32,
     #[arg(long)]
@@ -600,10 +594,6 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             .then(|| parse_puct(&a.puct_mode, a.puct_c).map_err(|e| format!("--puct-mode: {e}")))
             .transpose()?,
         horizon_turns: cand_preset.is_none().then_some(a.horizon_turns),
-        backup: cand_preset
-            .is_none()
-            .then(|| parse_backup(&a.backup).map_err(|e| format!("--backup: {e}")))
-            .transpose()?,
         fpu_reduction: cand_preset.is_none().then_some(a.fpu_reduction),
         config: cand_preset.as_ref().map(|p| p.config),
     }
@@ -626,10 +616,6 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         horizon_turns: opp_preset
             .is_none()
             .then(|| a.vs_horizon_turns.unwrap_or(a.horizon_turns)),
-        backup: opp_preset
-            .is_none()
-            .then(|| parse_backup(a.vs_backup.as_deref().unwrap_or(&a.backup)).map_err(|e| format!("--vs-backup: {e}")))
-            .transpose()?,
         fpu_reduction: opp_preset
             .is_none()
             .then(|| a.vs_fpu_reduction.unwrap_or(a.fpu_reduction)),
@@ -713,27 +699,20 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             (Some(o), None) => format!("vs:{base} [{o_name} v flags]", o_name = o.name),
             (None, Some(c)) => format!("vs:{base} [flags v {c_name}]", c_name = c.name),
             (None, None) => {
-                let (opp_puct, opp_h, opp_b, opp_f) = (
+                let (opp_puct, opp_h, opp_f) = (
                     opp.puct.expect("set when no preset is named"),
                     opp.horizon_turns.expect("set when no preset is named"),
-                    opp.backup.expect("set when no preset is named"),
                     opp.fpu_reduction.expect("set when no preset is named"),
                 );
-                let (cand_h, cand_b, cand_f) = (
+                let (cand_h, cand_f) = (
                     cand.horizon_turns.expect("set when no preset is named"),
-                    cand.backup.expect("set when no preset is named"),
                     cand.fpu_reduction.expect("set when no preset is named"),
                 );
                 format!(
-                    "vs:{base} [{}{}{}{}]",
+                    "vs:{base} [{}{}{}]",
                     opp_puct.label(),
                     if opp_h != cand_h {
                         format!(" horizon={opp_h}v{cand_h}")
-                    } else {
-                        String::new()
-                    },
-                    if opp_b != cand_b {
-                        format!(" {}v{}", opp_b.label(), cand_b.label())
                     } else {
                         String::new()
                     },

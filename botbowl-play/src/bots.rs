@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::scripted_bot::ScriptedBot;
-use botbowl_mcts::{BackupMode, MctsBot, MctsConfig, PuctMode, SearchBudget};
+use botbowl_mcts::{MctsBot, MctsConfig, PuctMode, SearchBudget};
 use botbowl_nn::eval::NnEvaluator;
 
 /// Which leaf evaluator the MCTS bot uses.
@@ -48,7 +48,6 @@ pub struct SearchConfig {
     pub workers: usize,
     pub puct: Option<PuctMode>,
     pub horizon_turns: Option<u8>,
-    pub backup: Option<BackupMode>,
     pub fpu_reduction: Option<f32>,
     /// A named preset, wholesale. Serde-defaulted so a worker built before plan 043 is the only
     /// thing that changes shape on the wire, not every existing caller.
@@ -89,7 +88,6 @@ impl SearchConfig {
             workers: 1,
             puct: None,
             horizon_turns: None,
-            backup: None,
             fpu_reduction: None,
             config: None,
         }
@@ -114,7 +112,6 @@ pub struct NamedConfig {
 /// `cfgs/aggressive.toml` plays as `aggressive`.
 ///
 /// ```toml
-/// backup = "mean"
 /// fpu_reduction = 0.25
 /// puct = { mode = "normalised_q", c = 1.4, range_floor = 0.1 }
 /// ```
@@ -152,9 +149,6 @@ pub fn make_mcts(search: &SearchConfig, evaluator: Evaluator, nn: Option<&Arc<Nn
     }
     if let Some(h) = search.horizon_turns {
         bot = bot.with_horizon_turns(h);
-    }
-    if let Some(b) = search.backup {
-        bot = bot.with_backup(b);
     }
     if let Some(k) = search.fpu_reduction {
         bot = bot.with_fpu_reduction(k);
@@ -212,11 +206,6 @@ pub fn parse_puct(mode: &str, c: Option<f32>) -> Result<PuctMode, String> {
     }
 }
 
-/// Same contract as [`parse_puct`].
-pub fn parse_backup(s: &str) -> Result<BackupMode, String> {
-    BackupMode::parse(s).ok_or_else(|| format!("expected `minimax` or `mean`, got `{s}`"))
-}
-
 /// The bot in eval's candidate seat. `Mcts` is the normal candidate; the
 /// other two exist to take search out of the picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -257,9 +246,6 @@ pub fn candidate_label(
         CandidateBot::Mcts => {
             let base = evaluator_label(evaluator, model);
             let mut knobs: Vec<String> = Vec::new();
-            if let Some(b @ BackupMode::Mean) = search.backup {
-                knobs.push(b.label().to_string());
-            }
             if let Some(k) = search.fpu_reduction.filter(|k| *k > 0.0) {
                 knobs.push(format!("fpu_k={k}"));
             }

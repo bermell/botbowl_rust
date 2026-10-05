@@ -512,7 +512,7 @@ pub struct EvalArgs {
     /// flags below. See `cfgs/README.md`.
     #[arg(
         long,
-        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "backup", "fpu_reduction"]
+        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "fpu_reduction"]
     )]
     pub bot_config: Option<PathBuf>,
     /// Per-decision tree-reuse trace, as JSONL (plan 043). Off by default: `report.json` always
@@ -524,7 +524,7 @@ pub struct EvalArgs {
     /// configuration head-to-head: the same net under two configurations.
     #[arg(
         long,
-        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_backup", "vs_fpu_reduction"]
+        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_fpu_reduction"]
     )]
     pub vs_config: Option<PathBuf>,
     /// Candidate PUCT selection rule: `raw` or `normalised` (plan 026).
@@ -550,14 +550,6 @@ pub struct EvalArgs {
     /// run a horizon head-to-head in one process.
     #[arg(long)]
     pub vs_horizon_turns: Option<u8>,
-    /// Candidate player-node backup rule: `minimax` (default) or `mean`
-    /// (plan 032 #2).
-    #[arg(long, default_value = "minimax")]
-    pub backup: String,
-    /// Opponent backup rule; defaults to the candidate's. Set this to run
-    /// a backup-rule head-to-head in one process.
-    #[arg(long)]
-    pub vs_backup: Option<String>,
     /// Candidate FPU reduction `k` in Q points (plan 032 #3): unexplored
     /// children are estimated at `parent_Q − k·√(visited prior share)`.
     /// 0 (default) is the shipped plain-FPU behaviour.

@@ -125,20 +125,26 @@ The policy-only side costs almost nothing, so a match costs about half a normal 
   boards". Not met yet. exp064b tests the two together (`gumbel16_f4000_mean`) on both nets;
   G4000 is the budget arm.
 
-### Running: exp064 phase 2 and exp064b (interim, 2026-10-05 07:23 — 14x7 final, 16x9 partial)
+### exp064 phase 2 and exp064b (stopped 2026-10-05 09:21 at the user's call; 14x7 final, 16x9 partial)
 
-| configuration | net | 14x7 (300 pairs, final) | 16x9 so far |
-|---|---|---|---|
-| G4000 Gumbel @4000 | g_gen05 | 0.531 ± 0.015 | 0.390 ± 0.051 (38 pairs) |
-| MEANF4000 mean backup + q floor 4000 @1000 | g_gen05 | 0.535 ± 0.014 | 0.554 ± 0.028 (120 pairs) |
-| MEANF4000_d1k mean backup + q floor 4000 @1000 | d1k gen04 | 0.568 ± 0.014 | 0.543 ± 0.025 (121 pairs) |
+| configuration | net | 14x7 (300 pairs, final) | 16x9 (stopped at) | two-board mean |
+|---|---|---|---|---|
+| G4000 Gumbel @4000 (minimax) | g_gen05 | 0.531 ± 0.015 | 0.469 ± 0.027 (119 pairs) | ~0.500 |
+| MEANF4000 mean backup + q floor 4000 @1000 | g_gen05 | 0.535 ± 0.014 | **0.568 ± 0.020** (204 pairs) | **~0.552 ± 0.012** |
+| MEANF4000_d1k mean backup + q floor 4000 @1000 | d1k gen04 | 0.568 ± 0.014 | 0.572 ± 0.020 (203 pairs) | ~0.570 ± 0.012 |
 
-So far:
-- On 14x7 the two fixes do not stack (0.535 vs 0.527 / 0.523 alone). On d1k gen04 they add
-  nothing to plain Gumbel (0.568 vs 0.580). MEANF4000 on g_gen05 is the best g_gen05 search yet
-  on 16x9, but that is still at 120 pairs.
-- G4000 is 0.531 on 14x7, against G1000's 0.463 and G250's 0.500. So "more search is worse" is not
-  monotone. Its early 16x9 number (0.390, 38 pairs) is too thin to read.
+- **Mean backup + q floor 4000 is the best search on g_gen05**, and the two fixes stack on 16x9
+  (0.568 against 0.525 and 0.538 alone) though not on 14x7 (0.535 against 0.527 / 0.523). Wide
+  fans are where max-over-noise has most to exploit. On the partial 16x9 it meets §4's gate
+  (+0.035 and +0.068, mean ≥ 0.5 + 2 SE); 14x7's margin is thin, and it is the best of about ten
+  configurations tried on this net, so a fresh-seed confirmation is due before a loop runs on it.
+- **On d1k gen04** the combination adds a little on 16x9 (0.572 vs 0.550) and nothing on 14x7.
+- **G4000 (minimax)**: no better than the policy on 16x9 (0.469 at 119 pairs) and slightly better
+  on 14x7. Stopped early because minimax is being retired; the budget curve is to be re-measured
+  under the mean backup (the user's hypothesis: a bump down then a recovery, later and wider on
+  16x9's larger fans).
+- **Decision (the user, 2026-10-05): the mean backup becomes the only backup**, hardcoded (no
+  knob). Next: the phase 2 override audit.
 
 ### Phase 2 — the override audit (needs a tool; tomorrow)
 
