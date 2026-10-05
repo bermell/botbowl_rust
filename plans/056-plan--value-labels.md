@@ -131,6 +131,20 @@ its own search value) and less noisy than the outcome alone. On existing corpora
 `root_value`s are minimax-era and still optimistic, so TD(λ) dilutes that bias where B removes it.
 On data generated under the mean backup they are honest, which favours TD(λ) from then on.
 
+### Results (exp067, `runs/exp067/`; g05 benchmark, 4097 states)
+
+| arm | label | RMS | bias | scatter | paired vs A | absorb vs g05: dP(played), dKL | dvalMSE vs raw outcome (gen07 held-out) |
+|---|---|---|---|---|---|---|---|
+| g_gen05 | — | 0.299 | +0.132 | 0.268 | — | — | — |
+| A | blend 0.5 | 0.280 | +0.099 | 0.262 | — | +0.0007, −0.009 | −0.0043 |
+| B | blend 1.0 | 0.278 | +0.060 | 0.271 | dRMS −0.6% (dMSE −0.0010 ± 0.0007), dbias −0.039 ± 0.001 | +0.0006, −0.009 | −0.0072 |
+
+- **A alone takes 6.5% off g_gen05** (paired, ≥ 15 SE): a fine-tune on fresh data with plan
+  054's train step, label unchanged. g05's extra bias was mostly that one fine-tune.
+- **B removes the excess bias, but not the error.** The bias above +0.05 goes from 0.049 to 0.010,
+  which passes §4's bias rule. RMS barely moves because the scatter rises by about as much: the
+  outcome label is the noisier label. Policy unchanged in both.
+
 ## 4. Metrics and decision
 
 Per arm, in this order:
