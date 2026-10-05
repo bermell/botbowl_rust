@@ -315,12 +315,21 @@ boards, 250 overrides × 32 playouts per rung):**
   |---|---|---|---|
   | 250 | 0.527 ± 0.015 | 0.523 ± 0.015 | 0.525 ± 0.011 |
   | 1000 | 0.522 ± 0.016 | **0.563 ± 0.016** | **0.542 ± 0.012** |
-  | 4000 | running | | |
+  | 4000 | **0.577 ± 0.017** | **0.603 ± 0.016** | **0.590 ± 0.012** |
 
-  **Under the mean backup, 1000 beats 250** (+0.017, ~1 SE). Under minimax it was the other way
-  round (exp064). All of the rise is on 16x9 (+0.040, ~1.8 SE), where the wider fans have more for
-  the search to find; 14x7 is flat. Both budgets beat the policy (≥ 2 SE). The cheap curve agrees
-  in shape (flat to 250, rising at 1000).
+  **The criterion holds: more search never hurts, and it keeps paying up to 4000 descents.** Under
+  the mean backup the drive curve is 0.525 → 0.542 → 0.590 against the bare policy. Each step is
+  non-negative, and 4000 is +0.048 over 1000 (~2.8 SE). On 16x9 the curve rises at every step
+  (0.523 → 0.563 → 0.603). On 14x7 it is flat to 1000 and rises at 4000 (0.527 / 0.522 / 0.577),
+  close to the dip-then-recover shape the user expected, though here the dip is within noise.
+  Under minimax, exp064 had 250 beating 1000.
+
+  **Cheap curve vs drives: they rank the budgets alike.** Net check +0.001 / +0.004 / +0.006 per
+  decision; drives 0.525 / 0.542 / 0.590. Both are monotone, and both rank 4000 > 1000 > 250. The
+  net check is adopted as the standing check, with a drive match only when it is ambiguous. The
+  cheap curve compresses the top: per decision, 4000 is only +0.002 over 1000 while the drives
+  gain +0.048. It measures the gain under the policy's continuation, which misses value that
+  shows deeper in a drive. Read it for shape and sign, not size.
 
 ## 5. Order
 
