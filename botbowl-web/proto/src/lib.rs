@@ -18,12 +18,14 @@
 //!   net's [`decision::NetReadout`].
 //! - [`msg`] — [`msg::ClientMsg`]/[`msg::ServerMsg`] and the lobby's
 //!   [`msg::GameSpec`].
+//! - [`team`] — rosters: [`team::TeamDef`] and the built-in teams.
 
 pub mod action;
 pub mod decision;
 pub mod dice;
 pub mod msg;
 pub mod search;
+pub mod team;
 pub mod view;
 
 pub use action::{Action, PosAT, Position, SimpleAT, TeamType};
@@ -35,4 +37,4 @@ pub use view::{Dims, PlayerView, SquareView, ViewState};
 
 /// Bumped whenever a wire type changes shape. The client refuses to render a
 /// view from a server it does not match.
-pub const WIRE_VERSION: u32 = 3;
+pub const WIRE_VERSION: u32 = 4;

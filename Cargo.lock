@@ -398,6 +398,7 @@ dependencies = [
  "botbowl-hub-proto",
  "botbowl-mcts",
  "botbowl-play",
+ "botbowl-web-server",
  "botbowl-worker",
  "clap",
  "futures-util",
@@ -516,9 +517,11 @@ name = "botbowl-web-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "botbowl-engine",
  "botbowl-mcts",
  "botbowl-nn",
+ "botbowl-play",
  "botbowl-web-proto",
  "clap",
  "futures-util",

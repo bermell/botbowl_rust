@@ -22,7 +22,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use botbowl_web_server::{bots, compiled_capacity, router, AppState};
+use botbowl_web_server::{bots, compiled_capacity, router, teams, AppState, PlayOptions};
 use clap::Parser;
 
 /// This crate's directory, baked in at compile time: `<repo>/botbowl-web/server`.
@@ -65,6 +65,14 @@ struct Args {
     /// Defaults to `<repo>/data/web-games`.
     #[arg(long)]
     recordings_dir: Option<PathBuf>,
+
+    /// Saved teams and uploaded pictures. Defaults to `~/.config/botbowl/teams`.
+    #[arg(long)]
+    teams_dir: Option<PathBuf>,
+
+    /// Cap on one MCTS bot's search threads, whatever the lobby asks for.
+    #[arg(long)]
+    max_workers: Option<usize>,
 }
 
 #[tokio::main]
@@ -99,6 +107,14 @@ async fn main() {
             capacity.height,
             capacity.team_size
         ),
+        opts: PlayOptions {
+            max_workers: args.max_workers,
+            teams: teams::TeamStore {
+                dir: args.teams_dir.clone().or_else(teams::default_dir),
+            },
+            assets_dir: args.assets_dir.clone(),
+            ..PlayOptions::default()
+        },
     });
 
     let models = bots::list_models(&models_dir);

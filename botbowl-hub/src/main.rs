@@ -65,6 +65,103 @@ struct ServeArgs {
     /// loop's latest status lines and, while the box trains a net, the trainer's progress.
     #[arg(long)]
     run_dir: Option<PathBuf>,
+    #[command(flatten)]
+    play: PlayArgs,
+}
+
+/// The web play app at `/play/` (botbowl-web-server's router, nested). Every path defaults from
+/// this crate's source location, not the working directory.
+#[derive(Args, Debug)]
+struct PlayArgs {
+    /// Do not serve `/play/`.
+    #[arg(long, default_value_t = false)]
+    no_play: bool,
+    /// `trunk build --release` output of `botbowl-web/client`. Without one, `/play/` is off.
+    #[arg(long)]
+    play_dist_dir: Option<PathBuf>,
+    /// The sprite directory of the sibling `botbowl` checkout. Default
+    /// `<repo>/../botbowl/botbowl/web/static/img` when it exists.
+    #[arg(long)]
+    play_assets_dir: Option<PathBuf>,
+    /// Where the lobby finds `.onnx` nets. Default `<repo>/models`.
+    #[arg(long)]
+    play_models_dir: Option<PathBuf>,
+    /// Saved teams and uploaded pictures. Default `~/.config/botbowl/teams`.
+    #[arg(long)]
+    play_teams_dir: Option<PathBuf>,
+    /// The most search threads one bot may use in a browser game, whatever the lobby asks —
+    /// the hub listens on the network, and its box is also training.
+    #[arg(long, default_value_t = 4)]
+    play_max_workers: usize,
+}
+
+/// The repo root, from this crate's source path.
+fn repo_path(relative: &str) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(relative);
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// The play app's router, or `None` (with the reason on stderr) when it is off.
+fn play_router(a: &PlayArgs) -> Option<axum::Router> {
+    use botbowl_web_server::{bots, compiled_capacity, teams, AppState, PlayOptions};
+    if a.no_play {
+        return None;
+    }
+    let dist = a
+        .play_dist_dir
+        .clone()
+        .unwrap_or_else(|| repo_path("botbowl-web/client/dist"));
+    if !dist.join("index.html").is_file() {
+        eprintln!(
+            "[hub] /play off: no client build at {} (cd botbowl-web/client && trunk build --release)",
+            dist.display()
+        );
+        return None;
+    }
+    let assets = a
+        .play_assets_dir
+        .clone()
+        .or_else(|| Some(repo_path("../botbowl/botbowl/web/static/img")).filter(|p| p.is_dir()));
+    if assets.is_none() {
+        eprintln!("[hub] /play: no sprite directory (--play-assets-dir); the pitch draws without pictures");
+    }
+    let models_dir = a.play_models_dir.clone().unwrap_or_else(|| repo_path("models"));
+    let capacity = compiled_capacity();
+    let teams_dir = a.play_teams_dir.clone().or_else(teams::default_dir);
+    eprintln!(
+        "[hub] /play: capacity {}x{}/{}, {} model(s) in {}, teams in {}, at most {} search thread(s) per bot",
+        capacity.width,
+        capacity.height,
+        capacity.team_size,
+        bots::list_models(&models_dir).len(),
+        models_dir.display(),
+        teams_dir
+            .as_deref()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "-".into()),
+        a.play_max_workers.max(1),
+    );
+    let app = std::sync::Arc::new(AppState {
+        capacity,
+        models_dir,
+        recordings_dir: repo_path("data/web-games"),
+        model_cache: Default::default(),
+        server: format!(
+            "botbowl-hub {} (capacity {}x{}/{})",
+            &botbowl_data::git_commit()[..12],
+            capacity.width,
+            capacity.height,
+            capacity.team_size
+        ),
+        opts: PlayOptions {
+            max_workers: Some(a.play_max_workers.max(1)),
+            teams: teams::TeamStore { dir: teams_dir },
+            assets_dir: assets.clone(),
+            allow_recording_paths: false,
+            ..PlayOptions::default()
+        },
+    });
+    Some(botbowl_web_server::router(app, assets.as_deref(), Some(&dist)))
 }
 
 #[derive(Args, Debug, Clone)]
@@ -866,14 +963,18 @@ fn main() {
                 {
                     eprintln!("[hub] {}", list.describe());
                 }
-                let (_hub, addr, task) = Hub::start(HubConfig {
-                    bind: a.bind,
-                    token,
-                    allow_commit_mismatch: a.allow_commit_mismatch,
-                    allowed_commits: a.allowed_commits.clone(),
-                    worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
-                    run_dir: a.run_dir.clone(),
-                })
+                let play = play_router(&a.play);
+                let (_hub, addr, task) = Hub::start_with(
+                    HubConfig {
+                        bind: a.bind,
+                        token,
+                        allow_commit_mismatch: a.allow_commit_mismatch,
+                        allowed_commits: a.allowed_commits.clone(),
+                        worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
+                        run_dir: a.run_dir.clone(),
+                    },
+                    play,
+                )
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("[hub] cannot bind {}: {e}", a.bind);

@@ -1,4 +1,5 @@
-//! The lobby: pick a board, then who plays each side.
+//! The lobby: pick a board, a full game or a random-start drive, then who plays each side and
+//! with which team.
 //!
 //! Either side can be you, the random bot, or MCTS on a net (value and priors
 //! both from the net — the only search the web app offers). Two bots against
@@ -13,7 +14,7 @@
 use botbowl_web_proto::msg::{BotSpec, Budget, ClientMsg, GameSpec, MctsSpec, ModelInfo, Seat, StartFrom};
 use leptos::prelude::*;
 
-use crate::state::App;
+use crate::state::{App, Screen};
 use crate::ws;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,6 +35,8 @@ struct SeatForm {
     iterations: RwSignal<usize>,
     millis: RwSignal<u64>,
     workers: RwSignal<usize>,
+    /// A `TeamDef::name` from the server's list.
+    team: RwSignal<String>,
 }
 
 impl SeatForm {
@@ -44,18 +47,22 @@ impl SeatForm {
             use_millis: RwSignal::new(false),
             iterations: RwSignal::new(2000),
             millis: RwSignal::new(1000),
-            workers: RwSignal::new(0),
+            // One search thread unless asked for more.
+            workers: RwSignal::new(1),
+            team: RwSignal::new(botbowl_web_proto::team::DEFAULT_TEAM.to_string()),
         }
     }
 
     /// Take a seat the server proposed.
-    fn load(&self, seat: &Seat) {
+    fn load(&self, seat: &Seat, team: &str) {
+        self.team.set(team.to_string());
         match seat {
             Seat::Human => self.kind.set(Kind::Human),
             Seat::Bot(BotSpec::Random) => self.kind.set(Kind::Random),
             Seat::Bot(BotSpec::Mcts(m)) => {
                 self.kind.set(Kind::Mcts);
                 self.model.set(m.model.clone());
+                self.workers.set(m.workers.unwrap_or(0));
             }
         }
     }
@@ -94,8 +101,11 @@ pub fn Lobby() -> impl IntoView {
     let app = expect_context::<App>();
 
     let board_index = RwSignal::new(0usize);
-    let home = SeatForm::new(Kind::Human);
+    let home = SeatForm::new(Kind::Mcts);
     let away = SeatForm::new(Kind::Mcts);
+    // A random-start drive (the training data's positions) rather than a whole game.
+    let drive = RwSignal::new(false);
+    let drive_seed = RwSignal::new(String::new());
     let seed = RwSignal::new(String::new());
     let recording = RwSignal::new(String::new());
     let step = RwSignal::new(0usize);
@@ -121,8 +131,9 @@ pub fn Lobby() -> impl IntoView {
             if let Some(i) = lobby.boards.iter().position(|b| *b == lobby.defaults.board) {
                 board_index.set(i);
             }
-            home.load(&lobby.defaults.home);
-            away.load(&lobby.defaults.away);
+            home.load(&lobby.defaults.home, &lobby.defaults.home_team);
+            away.load(&lobby.defaults.away, &lobby.defaults.away_team);
+            drive.set(lobby.defaults.start.is_drive());
         }
     });
 
@@ -140,13 +151,21 @@ pub fn Lobby() -> impl IntoView {
             home: home.seat(&available),
             away: away.seat(&available),
             seed: seed.get().trim().parse::<u64>().ok(),
-            start: match recording.get().trim() {
-                "" => StartFrom::CoinToss,
-                path => StartFrom::Recording {
-                    path: path.to_string(),
-                    step: step.get(),
-                },
+            start: if drive.get() {
+                StartFrom::RandomDrive {
+                    seed: drive_seed.get().trim().parse::<u64>().ok(),
+                }
+            } else {
+                match recording.get().trim() {
+                    "" => StartFrom::CoinToss,
+                    path => StartFrom::Recording {
+                        path: path.to_string(),
+                        step: step.get(),
+                    },
+                }
             },
+            home_team: home.team.get(),
+            away_team: away.team.get(),
         };
         app.reset_game();
         app.spec.set(Some(spec.clone()));
@@ -159,6 +178,41 @@ pub fn Lobby() -> impl IntoView {
             <p class="subtitle">
                 "Play the net-guided search, or watch two bots play each other, and see why every move was made."
             </p>
+
+            <section>
+                <h2>
+                    "Play"
+                    <button class="link" on:click=move |_| app.screen.set(Screen::Teams)>
+                        "Edit teams…"
+                    </button>
+                </h2>
+                <div class="choices">
+                    <button class="choice" class:on=move || !drive.get() on:click=move |_| drive.set(false)>
+                        <span class="big">"Full game"</span>
+                        <span class="small">"coin toss, two halves"</span>
+                    </button>
+                    <button class="choice" class:on=move || drive.get() on:click=move |_| drive.set(true)>
+                        <span class="big">"Random drive"</span>
+                        <span class="small">"a training-data position, until someone scores"</span>
+                    </button>
+                </div>
+                <Show when=move || drive.get()>
+                    <div class="knobs" style="margin-top: 12px">
+                        <label>
+                            "Position"
+                            <input
+                                type="text"
+                                placeholder="fresh each drive"
+                                prop:value=move || drive_seed.get()
+                                on:input=move |ev| drive_seed.set(event_target_value(&ev))
+                            />
+                            <span class="hint">
+                                "a corpus seed pins one position; players keep their generated stats, teams lend their pictures"
+                            </span>
+                        </label>
+                    </div>
+                </Show>
+            </section>
 
             <section>
                 <h2>"Board"</h2>
@@ -190,7 +244,9 @@ pub fn Lobby() -> impl IntoView {
             </div>
 
             <section class="knobs">
-                <label>
+                <label class:hidden=move || {
+                    drive.get() || !app.lobby.get().is_some_and(|l| l.can_resume)
+                }>
                     "Resume"
                     <input
                         type="text"
@@ -246,9 +302,33 @@ fn SeatPicker(
         }
     };
 
+    let app = expect_context::<App>();
     view! {
         <section class="seat-picker">
             <h2>{title} <span class="hint">{note}</span></h2>
+            <div class="knobs team-pick">
+                <label>
+                    "Team"
+                    <select on:change=move |ev| form.team.set(event_target_value(&ev))>
+                        {move || {
+                            let current = form.team.get();
+                            app.teams
+                                .get()
+                                .into_iter()
+                                .map(|t| {
+                                    let selected = t.name == current;
+                                    let label = if t.builtin { t.name.clone() } else { format!("{} ★", t.name) };
+                                    view! {
+                                        <option value=t.name.clone() selected=selected>
+                                            {label}
+                                        </option>
+                                    }
+                                })
+                                .collect_view()
+                        }}
+                    </select>
+                </label>
+            </div>
             <div class="choices">
                 {choice(Kind::Human, "You", "play it from this browser")}
                 {choice(Kind::Random, "Random", "uniform over legal actions")}

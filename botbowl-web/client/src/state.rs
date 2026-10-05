@@ -9,6 +9,7 @@ use botbowl_web_proto::decision::{DecisionRecord, NetReadout};
 use botbowl_web_proto::dice::{DiceEvent, RollResult};
 use botbowl_web_proto::msg::{GameSpec, LobbyInfo, StepMode};
 use botbowl_web_proto::search::{NodeExpansion, SearchReport};
+use botbowl_web_proto::team::TeamDef;
 use botbowl_web_proto::view::ViewState;
 use botbowl_web_proto::{Action, Position, TeamType};
 use leptos::prelude::*;
@@ -22,6 +23,14 @@ pub enum Connection {
 
 /// Which per-square overlay is painted. One at a time: they all colour the
 /// same squares and stacking them is unreadable.
+/// What the page shows when no game is running.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Screen {
+    #[default]
+    Lobby,
+    Teams,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Overlay {
     /// Legal moves only.
@@ -84,6 +93,9 @@ pub struct Menu {
     pub actions: Vec<botbowl_web_proto::PosAT>,
 }
 
+/// How a random-start drive ended: attacker, who scored, home score, away score.
+pub type DriveOutcome = (TeamType, Option<TeamType>, u8, u8);
+
 #[derive(Clone, Copy)]
 pub struct App {
     pub connection: RwSignal<Connection>,
@@ -105,6 +117,17 @@ pub struct App {
     pub errors: RwSignal<Vec<String>>,
     pub thinking: RwSignal<Option<String>>,
     pub game_over: RwSignal<Option<(Option<TeamType>, u8, u8)>>,
+    /// A random-start drive ended: attacker, who scored, the score.
+    pub drive_over: RwSignal<Option<DriveOutcome>>,
+    /// Built-in and saved teams, as the server last listed them.
+    pub teams: RwSignal<Vec<TeamDef>>,
+    /// Pictures the team editor can offer.
+    pub pictures: RwSignal<Vec<String>>,
+    /// The path the last upload was stored under, for the editor to pick up.
+    pub uploaded: RwSignal<Option<String>>,
+    /// A short confirmation for the team editor ("saved").
+    pub notice: RwSignal<Option<String>>,
+    pub screen: RwSignal<Screen>,
     pub pinned: RwSignal<Option<RollResult>>,
     pub saved: RwSignal<Option<String>>,
     /// Plan 043: the net's read of the *current* position — value and policy. Updated on every
@@ -155,10 +178,17 @@ impl App {
             errors: RwSignal::new(Vec::new()),
             thinking: RwSignal::new(None),
             game_over: RwSignal::new(None),
+            drive_over: RwSignal::new(None),
+            teams: RwSignal::new(Vec::new()),
+            pictures: RwSignal::new(Vec::new()),
+            uploaded: RwSignal::new(None),
+            notice: RwSignal::new(None),
+            screen: RwSignal::new(Screen::Lobby),
             pinned: RwSignal::new(None),
             saved: RwSignal::new(None),
             net_now: RwSignal::new(None),
-            step_mode: RwSignal::new(StepMode::default()),
+            // The server's `LobbyInfo.step_mode` replaces this as soon as the socket opens.
+            step_mode: RwSignal::new(StepMode::Auto { ms: 600 }),
             step_ms: RwSignal::new(600),
             overlay: RwSignal::new(Overlay::default()),
             menu: RwSignal::new(None),
@@ -255,6 +285,7 @@ impl App {
         self.node.set(None);
         self.node_path.set(Vec::new());
         self.game_over.set(None);
+        self.drive_over.set(None);
         self.thinking.set(None);
         self.menu.set(None);
         self.hypothetical.set(None);

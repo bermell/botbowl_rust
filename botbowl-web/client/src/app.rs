@@ -5,7 +5,8 @@ use leptos::prelude::*;
 use crate::inspector::Inspector;
 use crate::lobby::Lobby;
 use crate::pitch::Game;
-use crate::state::{App, Connection};
+use crate::state::{App, Connection, Screen};
+use crate::teams::TeamEditor;
 use crate::ws;
 
 #[component]
@@ -21,6 +22,8 @@ pub fn Root() -> impl IntoView {
             {move || {
                 if app.view.get().is_some() {
                     view! { <div class="game-and-inspector"><Game /><Inspector /></div> }.into_any()
+                } else if app.screen.get() == Screen::Teams {
+                    view! { <TeamEditor /> }.into_any()
                 } else {
                     view! { <Lobby /> }.into_any()
                 }

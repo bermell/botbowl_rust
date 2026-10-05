@@ -26,9 +26,12 @@ use botbowl_engine::core::game_runner::Recording;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model as em;
 use botbowl_engine::core::model::{Action as EngineAction, BoardDims, SomeProcInput};
+use botbowl_play::drives::{self, DriveStart};
+use botbowl_play::generate::RandomStartBias;
 use botbowl_web_proto::decision::{Decider, DecisionRecord, NetReadout};
-use botbowl_web_proto::msg::{ClientMsg, GameSpec, LobbyInfo, Seat, ServerMsg, StartFrom, StepMode};
+use botbowl_web_proto::msg::{BotSpec, ClientMsg, GameSpec, LobbyInfo, Seat, ServerMsg, StartFrom, StepMode};
 use botbowl_web_proto::search as ps;
+use botbowl_web_proto::team::TeamDef;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tokio::sync::mpsc;
@@ -36,6 +39,7 @@ use tokio::sync::mpsc;
 use crate::bots::{self, Net, SessionBot};
 use crate::mirror;
 use crate::report;
+use crate::teams::{self, Looks};
 use crate::view::{self, DeriveCtx};
 use crate::{dice, AppState};
 
@@ -115,6 +119,11 @@ pub struct GameSession {
     yielded: bool,
     /// When a board was last sent, for [`RUN_VIEW_EVERY`].
     last_view: Option<Instant>,
+    /// A random-start drive: where it started and who attacks. The session stops when
+    /// [`DriveStart::over`] says so, exactly where the corpus's trajectories stop.
+    drive: Option<(DriveStart, em::TeamType)>,
+    /// Each side's team, for the players' pictures.
+    looks: Arc<Looks>,
 }
 
 /// Whether the session may take the step it is standing in front of.
@@ -136,16 +145,38 @@ enum Took {
 }
 
 impl GameSession {
-    fn new(spec: GameSpec, bots: [Option<SessionBot>; 2], step_mode: StepMode) -> Result<Self, String> {
+    fn new(
+        spec: GameSpec,
+        bots: [Option<SessionBot>; 2],
+        step_mode: StepMode,
+        sides: [TeamDef; 2],
+    ) -> Result<Self, String> {
         let (w, h, team_size) = spec.board.engine_dims();
         let dims = BoardDims::new(w, h, team_size);
+        let mut start_note = None;
         let mut state = match &spec.start {
-            StartFrom::CoinToss => GameStateBuilder::new()
-                .with_board_dims(dims)
-                .set_state(BuilderState::CoinToss)
-                .build(),
+            StartFrom::CoinToss => {
+                let mut state = GameStateBuilder::new()
+                    .with_board_dims(dims)
+                    .set_state(BuilderState::CoinToss)
+                    .build();
+                teams::apply(&mut state, em::TeamType::Home, &sides[0])?;
+                teams::apply(&mut state, em::TeamType::Away, &sides[1])?;
+                state
+            }
             StartFrom::Recording { path, step } => load_recording(path, *step)?,
+            // The generated players stay as drawn — that is the training distribution — and the
+            // teams only lend their pictures.
+            StartFrom::RandomDrive { seed } => {
+                let seed = seed.unwrap_or_else(rand::random);
+                start_note = Some(format!("random-start drive, position seed {seed}"));
+                drives::position_state(&RandomStartBias::default(), dims, seed)
+            }
         };
+        let drive = spec
+            .start
+            .is_drive()
+            .then(|| (DriveStart::of(&state), drives::attacker_of(&state)));
         // Off deliberately — see the `log` field.
         state.set_logging_state(false);
         state.set_dice_mode(DiceMode::RegisterRolls);
@@ -162,10 +193,24 @@ impl GameSession {
         }
 
         let steps = vec![state.clone()];
-        let log = vec![
+        let mut log = vec![
             format!("new game, seed {seed}"),
-            format!("home: {} · away: {}", spec.home.label(), spec.away.label()),
+            format!(
+                "home: {} ({}) · away: {} ({})",
+                spec.home.label(),
+                sides[0].name,
+                spec.away.label(),
+                sides[1].name
+            ),
         ];
+        log.extend(start_note);
+        if let Some((_, attacker)) = drive {
+            log.push(format!("{attacker:?} attacks"));
+        }
+        let [home_def, away_def] = sides;
+        let looks = Arc::new(Looks {
+            teams: [Some(home_def), Some(away_def)],
+        });
         Ok(GameSession {
             spec,
             state,
@@ -185,6 +230,8 @@ impl GameSession {
             resume_at: None,
             yielded: false,
             last_view: None,
+            drive,
+            looks,
         })
     }
 
@@ -236,6 +283,7 @@ impl GameSession {
             log_tail: self.log_tail(),
             step_mode: self.step_mode,
             paused: self.paused,
+            looks: self.looks.clone(),
         };
         out.send(ServerMsg::View(Box::new(view::derive(&self.state, &ctx))));
         // Plan 043: one forward pass per board change, so the debug drawer answers "who does the
@@ -294,6 +342,7 @@ impl GameSession {
         // A past board is hypothetical: none of the session flags apply.
         let ctx = DeriveCtx {
             humans: self.spec.humans(),
+            looks: self.looks.clone(),
             ..DeriveCtx::default()
         };
         out.send(ServerMsg::DecisionBoard {
@@ -346,6 +395,33 @@ impl GameSession {
         let mut moved = false;
         let mut before = (self.state.home.score, self.state.away.score);
         loop {
+            // Before the game-over check: a drive that runs out the second half is a drive that
+            // ended, and the corpus scores it as one.
+            if let Some((start, attacker)) = self.drive {
+                if start.over(&self.state) {
+                    self.paused = false;
+                    self.resume_at = None;
+                    let (home, away) = start.scored(&self.state);
+                    let scored = match (home > 0, away > 0) {
+                        (true, _) => Some(em::TeamType::Home),
+                        (_, true) => Some(em::TeamType::Away),
+                        _ => None,
+                    };
+                    self.note(match scored {
+                        Some(t) => format!("drive over: {t:?} scored"),
+                        None => "drive over: no score".into(),
+                    });
+                    self.view(out, false);
+                    out.send(ServerMsg::DriveOver {
+                        attacker: mirror::team_to_proto(attacker),
+                        scored: scored.map(mirror::team_to_proto),
+                        home_score: self.state.home.score,
+                        away_score: self.state.away.score,
+                    });
+                    return;
+                }
+            }
+
             if self.state.info.game_over {
                 self.paused = false;
                 self.resume_at = None;
@@ -520,6 +596,10 @@ impl GameSession {
             out.send(ServerMsg::Error("the game is over".into()));
             return;
         }
+        if self.drive.is_some_and(|(start, _)| start.over(&self.state)) {
+            out.send(ServerMsg::Error("the drive is over — start the next one".into()));
+            return;
+        }
         if self.state.pending_roll.is_some() {
             out.send(ServerMsg::Error(
                 "the engine is waiting on a roll, not an action".into(),
@@ -601,6 +681,7 @@ impl GameSession {
                     // session moment, so none of the session flags apply.
                     let ctx = DeriveCtx {
                         humans: self.spec.humans(),
+                        looks: self.looks.clone(),
                         ..DeriveCtx::default()
                     };
                     Box::new(view::derive(state, &ctx))
@@ -698,19 +779,26 @@ impl Out {
 pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mpsc::Sender<ServerMsg>) {
     let out = Out(output);
     let models = bots::list_models(&app.models_dir);
+    let store = &app.opts.teams;
     out.send(ServerMsg::Lobby(Box::new(LobbyInfo {
         capacity: app.capacity,
         boards: app.board_presets(),
         models: models.clone(),
         defaults: GameSpec::default_for(app.capacity, &models),
         server: app.server.clone(),
+        teams: store.list(),
+        skills: teams::skills(),
+        pictures: store.pictures(app.opts.assets_dir.as_deref()),
+        can_save_teams: store.dir.is_some(),
+        step_mode: app.opts.initial_step_mode,
+        can_resume: app.opts.allow_recording_paths,
     })));
 
     let mut session: Option<GameSession> = None;
     // The pacing outlives any one game: the client sets it on the game screen
     // and expects "New game" to keep it, and a `SetStepMode` that arrives
     // before the first `NewGame` must not be dropped on the floor.
-    let mut step_mode = StepMode::default();
+    let mut step_mode = app.opts.initial_step_mode;
 
     loop {
         let msg = match session.as_ref().and_then(GameSession::wake_at) {
@@ -737,14 +825,44 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
                     s.set_step_mode(mode, &out);
                 }
             }
-            ClientMsg::NewGame(spec) => {
+            ClientMsg::SaveTeam(def) => match store.save(def) {
+                Ok(()) => out.send(ServerMsg::Teams(store.list())),
+                Err(e) => out.send(ServerMsg::Error(e)),
+            },
+            ClientMsg::DeleteTeam { name } => match store.delete(&name) {
+                Ok(()) => out.send(ServerMsg::Teams(store.list())),
+                Err(e) => out.send(ServerMsg::Error(e)),
+            },
+            ClientMsg::UploadPicture { data_url } => match store.save_picture(&data_url) {
+                Ok(picture) => out.send(ServerMsg::PictureSaved {
+                    picture,
+                    pictures: store.pictures(app.opts.assets_dir.as_deref()),
+                }),
+                Err(e) => out.send(ServerMsg::Error(e)),
+            },
+            ClientMsg::NewGame(mut spec) => {
                 if let Err(e) = spec.board.validate(app.capacity) {
                     out.send(ServerMsg::Error(e));
                     continue;
                 }
+                if matches!(spec.start, StartFrom::Recording { .. }) && !app.opts.allow_recording_paths {
+                    out.send(ServerMsg::Error(
+                        "this server does not open recordings by path (it listens on the network)".into(),
+                    ));
+                    continue;
+                }
+                cap_workers(&mut spec, app.opts.max_workers);
+                let sides = match (store.find(&spec.home_team), store.find(&spec.away_team)) {
+                    (Some(h), Some(a)) => [h, a],
+                    (h, _) => {
+                        let missing = if h.is_none() { &spec.home_team } else { &spec.away_team };
+                        out.send(ServerMsg::Error(format!("no team called {missing:?}")));
+                        continue;
+                    }
+                };
                 match build_seats(&spec, &app, &models) {
                     Err(e) => out.send(ServerMsg::Error(e)),
-                    Ok(bots) => match GameSession::new(spec, bots, step_mode) {
+                    Ok(bots) => match GameSession::new(spec, bots, step_mode, sides) {
                         Err(e) => out.send(ServerMsg::Error(e)),
                         Ok(mut new_session) => {
                             new_session.advance(&out);
@@ -756,7 +874,11 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
             other => match session.as_mut() {
                 None => out.send(ServerMsg::Error("no game yet — send NewGame first".into())),
                 Some(s) => match other {
-                    ClientMsg::NewGame(_) | ClientMsg::SetStepMode(_) => unreachable!("handled above"),
+                    ClientMsg::NewGame(_)
+                    | ClientMsg::SetStepMode(_)
+                    | ClientMsg::SaveTeam(_)
+                    | ClientMsg::DeleteTeam { .. }
+                    | ClientMsg::UploadPicture { .. } => unreachable!("handled above"),
                     ClientMsg::Act(action) => s.act(mirror::action_from_proto(action), &out),
                     ClientMsg::Undo => s.undo(&out),
                     ClientMsg::StepOnce => s.step_once(&out),
@@ -774,6 +896,19 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
     }
 }
 
+/// Hold every MCTS seat to the server's thread cap. `workers: None` ("all cores") becomes the
+/// cap itself.
+fn cap_workers(spec: &mut GameSpec, cap: Option<usize>) {
+    let Some(cap) = cap else { return };
+    for seat in [&mut spec.home, &mut spec.away] {
+        if let Seat::Bot(BotSpec::Mcts(m)) = seat {
+            m.workers = Some(m.workers.unwrap_or(cap).clamp(1, cap.max(1)));
+        }
+    }
+}
+
+/// One per received message, like `ClientMsg` itself — not worth a box.
+#[allow(clippy::large_enum_variant)]
 enum Wait {
     Msg(ClientMsg),
     /// The deadline passed with nothing to read.

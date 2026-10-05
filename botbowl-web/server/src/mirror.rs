@@ -369,6 +369,15 @@ pub fn role_to_proto(r: et::PlayerRole) -> pv::PlayerRole {
     }
 }
 
+pub fn role_from_proto(r: pv::PlayerRole) -> et::PlayerRole {
+    match r {
+        pv::PlayerRole::Lineman => et::PlayerRole::Lineman,
+        pv::PlayerRole::Blitzer => et::PlayerRole::Blitzer,
+        pv::PlayerRole::Thrower => et::PlayerRole::Thrower,
+        pv::PlayerRole::Catcher => et::PlayerRole::Catcher,
+    }
+}
+
 pub fn status_to_proto(s: em::PlayerStatus) -> pv::PlayerStatus {
     match s {
         em::PlayerStatus::Up => pv::PlayerStatus::Up,

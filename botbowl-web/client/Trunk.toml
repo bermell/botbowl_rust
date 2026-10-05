@@ -1,6 +1,9 @@
 [build]
 target = "index.html"
 dist = "dist"
+# Relative asset URLs, so one build serves at `/` (botbowl-web-server) and at `/play/`
+# (nested in botbowl-hub). The websocket and sprite paths are page-relative for the same reason.
+public_url = "./"
 
 [serve]
 # `trunk serve` is only for iterating on the client alone; the real entry point

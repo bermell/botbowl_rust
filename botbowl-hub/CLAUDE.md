@@ -24,10 +24,27 @@ botbowl-hub job generate --mode random-start --games 600 --mcts-iters 1000 --eva
     --seed-base 22000000 --shard-seed-stride 100000 --shards "0 1 2 3 4 5 6 7" --heuristic-shards "" \
     --truncate --out-dir runs/<run>/gen12 --wait       # writes gen12/shard$K.jsonl, shard K seeded at base + K*stride
 botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is the status page in a terminal
-# http://hub:7777/ is the status page in a browser: jobs by --label (`job ... --label "gen03 generate"`),
-# rungs and status lines shortened to how we name things (page.rs), and with `serve --run-dir`
-# the loop's latest status lines plus the trainer's progress (`bbnn.train --progress`).
+# http://hub:7777/ is an index; http://hub:7777/status the status page: jobs by --label
+# (`job ... --label "gen03 generate"`), rungs and status lines shortened to how we name things
+# (page.rs), and with `serve --run-dir` the loop's latest status lines plus the trainer's progress
+# (`bbnn.train --progress`). http://hub:7777/play/ is the web play app (below).
 ```
+
+## `/play/`: the web play app, nested
+
+`serve` mounts `botbowl-web-server`'s whole router under `/play/` (`Hub::start_with`,
+`main.rs::play_router`), so its game socket is `/play/ws` and `/ws` stays the workers'. The
+client is built with relative URLs (`Trunk.toml` `public_url = "./"`, page-relative socket and
+sprite paths), so the same `dist/` serves standalone at `/` and here; `/play` redirects to
+`/play/` because relative URLs need the slash. It is off, with a line on stderr, when there is no
+client build (`cd botbowl-web/client && trunk build --release`) or with `--no-play`.
+
+Because the hub listens on the network, the play app here is fenced: `--play-max-workers`
+(default 4) caps each bot's search threads whatever the lobby asks, and `StartFrom::Recording`
+(the browser naming a server path) is refused. Paths (`--play-dist-dir`, `--play-models-dir`,
+`--play-assets-dir`, `--play-teams-dir`) default from the crate's source path; the sprites from the
+sibling checkout `<repo>/../botbowl/botbowl/web/static/img` when it exists. Browser games run in
+the hub process: they cost CPU on the training box, nothing else — they never touch the job queue.
 
 ## Invariants
 

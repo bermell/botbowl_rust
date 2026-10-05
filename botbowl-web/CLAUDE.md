@@ -199,6 +199,56 @@ The pitch is drawn as a **CSS grid over the engine board** (playable squares plu
 out-of-bounds border, so a `Position` indexes the grid directly), not as one of the old repo's JPG
 backgrounds — those exist for six fixed sizes, none of which are the tiers we train on.
 
+## Served standalone or under the hub's `/play/`
+
+The client is built with relative URLs (`Trunk.toml` `public_url = "./"`), and the socket
+(`ws.rs::endpoint`) and every sprite (`img/...`) are page-relative, so one `dist/` serves at `/`
+from `botbowl-web-server` and at `/play/` from `botbowl-hub serve` (which nests this crate's
+`router` whole — see `botbowl-hub/CLAUDE.md`). **Never write an absolute `/img` or `/ws` in the
+client**; it would break the hub mount only.
+
+`PlayOptions` on `AppState` holds what differs between the two: the initial pacing, a cap on
+search threads (`--max-workers` / the hub's `--play-max-workers`), the team directory, and whether
+`StartFrom::Recording` (the browser naming a server path) is allowed — off on the hub.
+`PlayOptions::default()` is the safe one; tests opt into `StepMode::Run` explicitly.
+
+**Defaults are cheap on purpose (the user, 2026-10-05):** a new connection starts in
+`Auto { ms: 600 }`, the lobby proposes bot-vs-bot (`GameSpec::default_for`), and `MctsSpec`
+defaults to `workers: Some(1)`. Opening the page shows a slow game on one thread per bot, not
+a machine-wide search. Keep it that way.
+
+## Random-start drives
+
+`StartFrom::RandomDrive { seed }` starts from `botbowl_play::drives::position_state` with the
+default `RandomStartBias` — the exact position the corpus draws for that seed — and the session
+stops on `DriveStart::over` (a score, the half changing, or game over) with
+`ServerMsg::DriveOver`, the same place a training trajectory stops. The drive check runs *before*
+the game-over check, because a drive that runs out the second half is a drive that ended.
+`seed: None` draws a fresh position each time (the "Next drive" button resends the spec).
+Generated players keep their generated stats; the seats' teams only lend their pictures.
+
+## Teams
+
+The engine has no team concept: every game is the same four-role roster. `proto/src/team.rs`
+defines `TeamDef` (positions with stats, skills, engine role, picture, max count) and twelve
+built-in LRB6 rosters, cut to the skills the engine has; `server/src/teams.rs` applies a roster
+to a fresh game's dugout before the coin toss (`teams::apply`) and lists, saves and deletes the
+saved ones as `~/.config/botbowl/teams/<slug>.json` (uploaded pictures in `teams/img/`, served
+at `img/custom/`).
+
+- **The built-in `Human` team is the engine roster exactly**, slot for slot — pinned by
+  `the_default_team_is_the_engine_roster_exactly`. It is the default for both seats, so a game
+  nobody customised is the game the nets were trained on.
+- **A player's picture is looked up from its stats**, not stored: `PlayerStats` has no room for it
+  and player ids are reassigned whenever a player moves between dugout and pitch. `Looks` matches
+  (team, role, stats, skills) against the team's positions and falls back to the first position
+  of the role. Two positions identical in all of those share a picture.
+- `ag` is the engine's LRB6 value (roll `7 - ag`), `pa` a pass target. The role is not cosmetic:
+  the scripted kickoff setup ranks players by role.
+- Skills are carried by label; a label the engine does not know is refused. The editor marks
+  skills outside `Skill::good_skills()` as "no rules yet" — they exist in the enum (and the net's
+  input) but do nothing in a game.
+
 ## Gotchas
 
 - **The dev server sends `cache-control: no-cache` on everything.** Without it a browser keeps

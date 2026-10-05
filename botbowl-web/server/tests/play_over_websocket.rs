@@ -29,6 +29,11 @@ async fn serve() -> SocketAddr {
         recordings_dir: std::env::temp_dir().join("botbowl-web-test"),
         model_cache: Default::default(),
         server: "test".into(),
+        // The tests drive the pacing themselves; they start from the original free-running mode.
+        opts: botbowl_web_server::PlayOptions {
+            initial_step_mode: botbowl_web_proto::msg::StepMode::Run,
+            ..Default::default()
+        },
     });
     let listener = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
@@ -115,6 +120,8 @@ async fn play_a_whole_game(addr: SocketAddr, board: BoardSpec, seed: u64) -> Out
             away: Seat::Bot(BotSpec::Random),
             seed: Some(seed),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;
@@ -240,6 +247,8 @@ async fn undo_rewinds_across_the_bots_reply() {
             away: Seat::Bot(BotSpec::Random),
             seed: Some(3),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;
@@ -321,6 +330,8 @@ async fn bad_input_is_reported_not_fatal() {
             away: Seat::Bot(BotSpec::Random),
             seed: Some(1),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;
@@ -339,6 +350,8 @@ async fn bad_input_is_reported_not_fatal() {
             away: Seat::Bot(BotSpec::Random),
             seed: Some(1),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;
@@ -360,6 +373,8 @@ async fn bad_input_is_reported_not_fatal() {
             away: Seat::Bot(BotSpec::Random),
             seed: Some(1),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;
@@ -391,6 +406,8 @@ fn new_game(board: BoardSpec, seed: u64) -> ClientMsg {
         away: Seat::Bot(BotSpec::Random),
         seed: Some(seed),
         start: StartFrom::CoinToss,
+        home_team: "Human".into(),
+        away_team: "Human".into(),
     })
 }
 
@@ -569,6 +586,8 @@ async fn two_bots_play_a_whole_game_and_can_be_paused() {
             away: Seat::Bot(BotSpec::Random),
             seed: Some(21),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;
@@ -610,4 +629,109 @@ async fn two_bots_play_a_whole_game_and_can_be_paused() {
         "paused at decision {paused_at}, before the mode was even sent"
     );
     assert!(by_team.iter().all(|&n| n > 20), "both bots played: {by_team:?}");
+}
+
+/// A random-start drive between two random bots ends with `DriveOver` — never a whole game's
+/// `GameOver` — and starts mid-turn, with each side's players wearing its team's pictures.
+/// Several position seeds, so a score and a half running out both get exercised.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_random_drive_ends_when_the_drive_does() {
+    let addr = serve().await;
+    for seed in 0..6u64 {
+        let mut socket = connect(addr).await;
+        let _lobby = recv(&mut socket).await;
+        send(
+            &mut socket,
+            ClientMsg::NewGame(GameSpec {
+                board: test_board(),
+                home: Seat::Bot(BotSpec::Random),
+                away: Seat::Bot(BotSpec::Random),
+                seed: Some(seed),
+                start: StartFrom::RandomDrive {
+                    seed: Some(1000 + seed),
+                },
+                home_team: "Orc".into(),
+                away_team: "Skaven".into(),
+            }),
+        )
+        .await;
+        let mut first_view: Option<Box<ViewState>> = None;
+        loop {
+            match recv(&mut socket).await {
+                ServerMsg::View(v) => {
+                    first_view.get_or_insert(v);
+                }
+                ServerMsg::DriveOver {
+                    scored,
+                    home_score,
+                    away_score,
+                    ..
+                } => {
+                    let first = &first_view.as_ref().unwrap().scoreboard;
+                    match scored {
+                        Some(TeamType::Home) => assert_eq!(home_score, first.home_score + 1),
+                        Some(TeamType::Away) => assert_eq!(away_score, first.away_score + 1),
+                        None => assert_eq!((home_score, away_score), (first.home_score, first.away_score)),
+                    }
+                    break;
+                }
+                ServerMsg::GameOver { .. } => panic!("a drive must end as a drive"),
+                ServerMsg::Error(e) => panic!("seed {seed}: {e}"),
+                _ => {}
+            }
+        }
+        let first = first_view.unwrap();
+        let pictures: Vec<&str> = first
+            .squares
+            .iter()
+            .filter_map(|s| s.player.as_ref())
+            .map(|p| p.sprite.as_str())
+            .collect();
+        assert!(!pictures.is_empty(), "the position has players on the pitch");
+        // Random-start players are drawn from the lineman template, so they wear each team's
+        // filler picture.
+        assert!(pictures.iter().any(|s| s.contains("olineman1")), "{pictures:?}");
+        assert!(pictures.iter().any(|s| s.contains("sklineman1")), "{pictures:?}");
+    }
+}
+
+/// An unknown team is an error message, not a panic, and a known one reaches the roster.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn teams_are_chosen_by_name() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    match recv(&mut socket).await {
+        ServerMsg::Lobby(lobby) => {
+            assert!(lobby.teams.iter().any(|t| t.name == "Dwarf"));
+            assert!(lobby.skills.iter().any(|s| s.label == "Block" && s.implemented));
+        }
+        other => panic!("expected the lobby, got {other:?}"),
+    }
+    let mut spec = GameSpec {
+        board: test_board(),
+        home: Seat::Human,
+        away: Seat::Bot(BotSpec::Random),
+        seed: Some(3),
+        start: StartFrom::CoinToss,
+        home_team: "Nobody".into(),
+        away_team: "Dwarf".into(),
+    };
+    send(&mut socket, ClientMsg::NewGame(spec.clone())).await;
+    match recv(&mut socket).await {
+        ServerMsg::Error(e) => assert!(e.contains("Nobody"), "{e}"),
+        other => panic!("expected an unknown-team error, got {other:?}"),
+    }
+    spec.home_team = "Human".into();
+    send(&mut socket, ClientMsg::NewGame(spec)).await;
+    loop {
+        if let ServerMsg::View(v) = recv(&mut socket).await {
+            let away = v.dugouts.iter().find(|d| d.team == TeamType::Away).unwrap();
+            assert!(
+                away.players.iter().all(|p| p.sprite.starts_with("iconssmall/d")),
+                "{:?}",
+                away.players
+            );
+            break;
+        }
+    }
 }

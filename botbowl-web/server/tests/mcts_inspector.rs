@@ -37,6 +37,11 @@ async fn serve() -> SocketAddr {
         recordings_dir: std::env::temp_dir().join("botbowl-web-test"),
         model_cache: Default::default(),
         server: "test".into(),
+        // The tests drive the pacing themselves; they start from the original free-running mode.
+        opts: botbowl_web_server::PlayOptions {
+            initial_step_mode: botbowl_web_proto::msg::StepMode::Run,
+            ..Default::default()
+        },
     });
     let listener = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
@@ -133,6 +138,8 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
             away: Seat::Bot(tiny_mcts()),
             seed: Some(5),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;
@@ -468,6 +475,8 @@ async fn two_mcts_bots_each_keep_a_walkable_tree() {
             away: Seat::Bot(tiny_mcts()),
             seed: Some(11),
             start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
         }),
     )
     .await;

@@ -6,7 +6,10 @@
 //! - `POST /api/jobs` (an [`api::JobRequest`]: eval or generate),
 //!   `GET /api/jobs/{id}`, `GET /api/status` — the control API the
 //!   `botbowl-hub job` CLI uses (bearer token);
-//! - `GET /` — a status page for watching a run from a phone ([`page`]).
+//! - `GET /` — an index linking the pages below ([`page::render_index`]);
+//! - `GET /status` — a status page for watching a run from a phone ([`page`]);
+//! - `/play/` — the web play app (`botbowl-web-server`'s router, nested), when
+//!   [`Hub::start_with`] is given one.
 //!
 //! All state is [`state::Inner`] behind one mutex; `changed` wakes anyone
 //! waiting on a job.
@@ -69,22 +72,47 @@ impl Hub {
     }
 
     pub fn router(&self) -> Router {
-        Router::new()
-            .route("/", get(status_page))
+        self.router_with(None)
+    }
+
+    /// The hub's routes, plus the web play app nested under `/play/` when one is given.
+    ///
+    /// The play app is a complete router of its own (its own state, its own `/ws` for game
+    /// sockets), so it is nested as a service: `/play/ws` is a game, `/ws` stays the workers'.
+    /// The client is built with relative URLs, which resolve against `/play/` only with the
+    /// trailing slash — hence the redirect.
+    pub fn router_with(&self, play: Option<Router>) -> Router {
+        let has_play = play.is_some();
+        let mut router = Router::new()
+            .route("/", get(move || index_page(has_play)))
+            .route("/status", get(status_page))
             .route("/ws", get(ws_upgrade))
             .route("/api/status", get(api_status))
             .route("/api/jobs", post(api_submit))
-            .route("/api/jobs/{id}", get(api_job))
-            .with_state(self.clone())
+            .route("/api/jobs/{id}", get(api_job));
+        if let Some(play) = play {
+            router = router
+                .route("/play", get(|| async { axum::response::Redirect::permanent("/play/") }))
+                .nest_service("/play/", play);
+        }
+        router.with_state(self.clone())
     }
 
     /// Bind and serve in the background. Returns the bound address (useful
     /// with port 0) and the server task.
     pub async fn start(cfg: HubConfig) -> std::io::Result<(Hub, SocketAddr, tokio::task::JoinHandle<()>)> {
+        Self::start_with(cfg, None).await
+    }
+
+    /// [`Hub::start`], also serving the web play app under `/play/`.
+    pub async fn start_with(
+        cfg: HubConfig,
+        play: Option<Router>,
+    ) -> std::io::Result<(Hub, SocketAddr, tokio::task::JoinHandle<()>)> {
         let hub = Hub::new(cfg);
         let listener = tokio::net::TcpListener::bind(hub.cfg.bind).await?;
         let addr = listener.local_addr()?;
-        let router = hub.router();
+        let router = hub.router_with(play);
         let reaper = hub.clone();
         let task = tokio::spawn(async move {
             // The reaper never returns, so the select ends with the server
@@ -193,6 +221,14 @@ async fn api_job(State(hub): State<Hub>, headers: HeaderMap, Path(id): Path<JobI
         Some(s) => Json(s).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+async fn index_page(has_play: bool) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "text/html; charset=utf-8")],
+        page::render_index(has_play),
+    )
 }
 
 async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
