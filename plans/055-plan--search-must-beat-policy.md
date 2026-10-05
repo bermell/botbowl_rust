@@ -192,6 +192,45 @@ cargo run --release -p botbowl-ui -- override-audit \
 scripts/override_audit_summary.py runs/exp065/audit_*.jsonl
 ```
 
+### Phase 2 results (exp065, 2026-10-05 14:10; merged code, mean backup; 1000 overrides × 64 paired policy-only playouts per run; eval boards 14x7 + 16x9; each net on a corpus it generated and was not trained on)
+
+| | g05 f1000 | g05 f4000 | d1k f1000 | d1k f4000 |
+|---|---|---|---|---|
+| override rate | 0.157 | 0.070 | 0.153 | 0.067 |
+| realised gain per override | +0.026 ± 0.006 | +0.047 ± 0.006 | +0.035 ± 0.006 | +0.052 ± 0.006 |
+| predicted gain (Q gap) | +0.082 | +0.115 | +0.094 | +0.117 |
+| realised-on-predicted slope | 0.34 | 0.48 | 0.41 | 0.38 |
+| **search gain per decision** | **+0.004 ± 0.001** | **+0.003 ± 0.000** | **+0.005 ± 0.001** | **+0.003 ± 0.000** |
+| real effect sd of an override | 0.174 | 0.172 | 0.160 | 0.159 |
+| value RMS error vs MC | 0.281 | 0.277 | 0.263 | 0.256 |
+| value bias V(s) − MC(s) | +0.110 | +0.106 | +0.052 | +0.055 |
+
+Realised gain by the Q gap the search acted on (g05 f1000; the other runs have the same shape):
+< 0.01: −0.017 ± 0.016 · 0.01-0.03: −0.000 ± 0.009 · 0.03-0.1: +0.009 ± 0.010 ·
+**0.1-0.3: +0.065 ± 0.014 · ≥ 0.3: +0.140 ± 0.044**.
+
+**Readings.**
+- **With the mean backup the search's overrides help on every run**, but by a third to a half of
+  what the search predicts. All MC is under the policy's own continuation.
+- **H1, value noise, is the dominant problem.** The net's per-state error is ~0.26-0.28 TD.
+  Overrides on Q gaps under ~0.03-0.1 TD realise nothing, and those are two-thirds of them.
+  Overrides on gaps of 0.1 TD and up realise +0.06 to +0.2.
+- **H5, near-ties, is rejected.** An override's real effect has sd ~0.16-0.17 TD.
+- **H2 cannot be separated from H1 with this design.** The search's Q overrates its pick by
+  +0.06-0.07 beyond MC, the size of winner's curse this noise predicts. The net's own V shows no
+  such excess.
+- **g_gen05's value head is twice as optimistic as d1k gen04's** (+0.11 vs +0.05), with the same
+  RMS. The suspected source is five generations of value labels half made of minimax root Q
+  (plan 031 D1: +0.10 optimism).
+- **q floor 4000 vs 1000.** Fewer, better overrides: 0.07 vs 0.15 of decisions, +0.05 vs +0.03
+  each, and a better slope on g05. Per decision the audit puts 1000 marginally ahead (+0.004 vs
+  +0.003, ~1 SE). The drive matches (exp064, partial) put 4000 ahead (≈0.552 vs 0.526 against the
+  policy, ~1.6 SE). This is the disagreement exp066 exists to check: the audit's policy
+  continuation may miss deeper value, or the difference is noise.
+- **Next (proposed):** a value-head fix judged on a frozen MC benchmark (value-blend 1.0, TD(λ)),
+  and an override margin of ~0.1 TD (play the prior unless Q(a_s) − Q(a_p) clears it), each
+  judged by the budget criterion below.
+
 ### Phase 3 — instrumentation
 
 Log every decision where the eval bot overrules its policy (prior rank of the pick, Q gap,
