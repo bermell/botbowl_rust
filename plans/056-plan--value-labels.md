@@ -1,6 +1,6 @@
 # Plan 056 — value labels: train the value head on something closer to the truth
 
-**Status:** Written 2026-10-05 from plan 055's override audit. In progress: the benchmark is built (§2 results); exp067 runs arms A and B, and TD(λ) is in `prepare` for C and D. Drives only (plan 051);
+**Status:** Written 2026-10-05 from plan 055's override audit. In progress: the benchmark is built (§2 results); exp067 arms A-F done (F, MC-averaged, wins by 15%); exp068 tests F in play. Drives only (plan 051);
 training uses Gumbel-generated data only. Judged first on a Monte Carlo value benchmark (minutes,
 no games), then by plan 055's budget criterion ("more search never hurts").
 
@@ -141,6 +141,7 @@ On data generated under the mean backup they are honest, which favours TD(λ) fr
 | C | TD(λ) 0.8 | 0.274 | +0.074 | 0.264 | dRMS −1.9% (dMSE −0.0030 ± 0.0006), dbias −0.025 ± 0.001 | +0.0007, −0.009 | −0.0016 |
 | **D** | **TD(λ) 0.95** | **0.269** | **+0.051** | **0.264** | **dRMS −3.8% (dMSE −0.0059 ± 0.0006), dbias −0.047 ± 0.001** | +0.0006, −0.009 | −0.0050 |
 | E | TD(λ) 0.95, value weight 1.0 | 0.271 | +0.063 | 0.264 | dRMS −3.0% (dMSE −0.0046 ± 0.0007), dbias −0.036 ± 0.001 | +0.0003, −0.008 (dtop1 +0.0006 vs D's +0.0022) | −0.0054 |
+| **F** | **MC-averaged (8 policy-only playouts per gen07 train sample under g_gen05), blend 1.0** | **0.236** | **−0.001** | **0.236** | **dRMS −15.5% (dMSE −0.0223 ± 0.0015), dbias −0.099 ± 0.002; vs D −12.1%** | +0.0010, −0.009 (dtop1 +0.0028) | +0.0138 |
 
 - **A alone takes 6.5% off g_gen05** (paired, ≥ 15 SE): a fine-tune on fresh data with plan
   054's train step, label unchanged. g05's extra bias was mostly that one fine-tune.
@@ -153,9 +154,18 @@ On data generated under the mean backup they are honest, which favours TD(λ) fr
   leans more on the minimax-era root values and lands between A and D.
 - **E (value weight 1.0) is worse than D** on RMS and bias, and the policy absorbs a little less.
   Keep the weight at 0.25. **D is the winner** on the benchmark.
-- Running: arm F (MC-averaged labels, `botbowl-ui mc-label`, 8 policy-only playouts per gen07
-  train sample under g_gen05; validation keeps the raw outcome), the user's call, since it is the
-  one label that attacks the scatter rather than the bias.
+- **F (MC-averaged labels) is the first label to move the scatter: 0.264 → 0.236**, and the first
+  net in either lineage below 0.26. RMS falls 15.5% against the control and 12% against D, bias is
+  ~0 in every phase and board, and the policy did not move (slightly better). The labelling cost
+  ~2 h for six shards (63k samples × 8 playouts), on a GPU shared with two other jobs (~22 min per
+  shard; ~7 min per shard alone).
+- **The caveat.** F's labels and the benchmark's truth have the same definition (policy-only
+  playouts under g_gen05; different states and dice). The zero bias is partly by construction: F
+  learns the policy's value, not the search's. That is also why its val MSE against the raw
+  (search-play) outcome got worse (+0.014): the target moved. The scatter drop is the real noise
+  reduction, but only play can say whether it makes the search stronger. That is exp068: net check
+  F, then drives F's search vs A's search (same policy, different value head), then F's search vs
+  F's policy.
 - Running: `net_check.sh` on A and then D (gen06, the same seed, so the same decision sample).
   Results go in `runs/exp067/status.md`.
 
