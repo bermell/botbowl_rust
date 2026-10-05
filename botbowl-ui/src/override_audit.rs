@@ -309,7 +309,7 @@ fn action_kind(a: &EngineAction) -> (String, bool) {
 
 /// The random-start placement a trajectory was drawn with, from its provenance. `extra.temperature`
 /// is the one this seed used (already alternated), so it stands in for both temperatures.
-fn bias_of(meta: &TrajectoryMeta) -> Result<RandomStartBias, String> {
+pub fn bias_of(meta: &TrajectoryMeta) -> Result<RandomStartBias, String> {
     if meta.extra.get("mode").map(String::as_str) != Some("random-start") {
         return Err("not a random-start trajectory".into());
     }

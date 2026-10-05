@@ -44,6 +44,9 @@ pub enum Command {
     /// (`scripts/value_bench_freeze.py`): replay each state, one forward, no search. Summarise with
     /// `scripts/value_bench_summary.py`.
     ValueBench(ValueBenchArgs),
+    /// Plan 056 arm F: rewrite a corpus with Monte Carlo value labels, each sample's
+    /// `outcome_value` the mean of `--playouts` policy-only drive playouts from its state.
+    McLabel(McLabelArgs),
 }
 
 /// `override-audit` (plan 055 §3 phase 2). See `override_audit.rs` for what each row holds.
@@ -113,6 +116,34 @@ pub struct ValueBenchArgs {
     /// Output JSONL: every benchmark line with `v` (the net's V(s), mover's frame) and `model` added.
     #[arg(long)]
     pub out: String,
+}
+
+/// `mc-label` (plan 056 arm F). See `mc_label.rs`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct McLabelArgs {
+    /// Random-start trajectory shards; each is written to `--out-dir` under its own name.
+    #[arg(long, required = true, num_args = 1..)]
+    pub corpus: Vec<String>,
+    /// The net whose policy plays both sides of every playout.
+    #[arg(long)]
+    pub model: String,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// Playouts averaged per sample.
+    #[arg(long, default_value_t = 8)]
+    pub playouts: u32,
+    /// Playout dice derive from it, the trajectory's seed and the sample index.
+    #[arg(long, default_value_t = 56_000)]
+    pub seed: u64,
+    /// Trajectories labelled at once, one thread each.
+    #[arg(long, default_value_t = 8)]
+    pub parallel: usize,
+    /// Safety cap on engine steps per playout.
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    #[arg(long)]
+    pub out_dir: String,
 }
 
 /// `positions`: the candidate positions of a drive-rung set on one board.

@@ -3,6 +3,7 @@ mod curriculum;
 mod dataset;
 mod eval;
 mod live;
+mod mc_label;
 mod override_audit;
 mod placement;
 mod positions;
@@ -33,5 +34,6 @@ fn main() -> io::Result<()> {
         cli::Command::Positions(args) => positions::run(args),
         cli::Command::OverrideAudit(args) => override_audit::run(args),
         cli::Command::ValueBench(args) => value_bench::run(args),
+        cli::Command::McLabel(args) => mc_label::run(args),
     }
 }
