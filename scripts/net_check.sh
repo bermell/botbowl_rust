@@ -64,12 +64,13 @@ for b in ladder:
                        ("slope", rf"realised on predicted: slope {num}")):
             mm = re.search(pat, t)
             g[k] = float(mm.group(1)) if mm else math.nan
-        # Smallest Q-gap bucket whose overrides realise > 0 beyond 1 SE: the margin to try.
+        # Smallest Q-gap bucket whose overrides realise > 0 beyond 2 SE: the margin to try (1 SE picked
+        # noise at ~250 overrides per rung: exp066's <0.01 bucket at +0.022 ± 0.018).
         margin = "none"
         sec = t.split("by Q gap", 1)[1].split("\n\n", 1)[0] if "by Q gap" in t else ""
         for line in sec.splitlines()[1:]:
             mm = re.match(rf"\s+(\S+)\s+\d+\s+\S+\s+\S+\s+\S+\s+{num}(?: ± (\d+\.\d+))?", line)
-            if mm and mm.group(1) != "unscored" and mm.group(3) and float(mm.group(2)) > float(mm.group(3)):
+            if mm and mm.group(1) != "unscored" and mm.group(3) and float(mm.group(2)) > 2 * float(mm.group(3)):
                 margin = mm.group(1); break
         g["margin"] = margin
         extra[b] = g

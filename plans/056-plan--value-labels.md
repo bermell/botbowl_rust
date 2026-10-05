@@ -1,6 +1,6 @@
 # Plan 056 — value labels: train the value head on something closer to the truth
 
-**Status:** Written 2026-10-05 from plan 055's override audit. Not started. Drives only (plan 051);
+**Status:** Written 2026-10-05 from plan 055's override audit. In progress: the benchmark is built (§2 results); exp067 runs arms A and B, and TD(λ) is in `prepare` for C and D. Drives only (plan 051);
 training uses Gumbel-generated data only. Judged first on a Monte Carlo value benchmark (minutes,
 no games), then by plan 055's budget criterion ("more search never hurts").
 
@@ -56,6 +56,50 @@ forward per state, no search, no playouts), plus a summariser line. Minutes per 
 
 **Leakage rule.** No arm trains on gen06 (g05's benchmark corpus) or gen01 (d1k's). The g05
 benchmark is the primary one.
+
+**Built (2026-10-05, `5a28052`):** `scripts/value_bench_freeze.py` (exp065 rows → one line per
+state), `botbowl-ui value-bench` (replay, one forward), `scripts/value_bench_summary.py` (RMS with
+MC noise removed, bias, scatter = RMS left after the bias, by board and phase, every net paired
+state by state against the first), and the `scripts/value_bench.sh` wrapper. It is a separate
+subcommand, not an `override-audit` mode. **Seconds per net.** The self-check reproduces each
+benchmark net's own V(s) on every state (|V − v_ref| = 0).
+
+The figures are on the audit's sample, unweighted (overrides over-represented), so they sit a
+little above the audit's population-weighted ones (g05: 0.30 / +0.13 here vs 0.27-0.28 / +0.11).
+
+**Baseline, every net of both lineages on the g05 benchmark (MC under g05's policy; 4097
+states):**
+
+| net | RMS | bias | scatter | paired vs g05 (dRMS) |
+|---|---|---|---|---|
+| g_gen05 | 0.299 | +0.132 | 0.268 | — |
+| g_gen01 | 0.291 | +0.108 | 0.270 | −2.7% |
+| g_gen02 | 0.283 | +0.095 | 0.267 | −5.2% |
+| g_gen03 | 0.272 | +0.064 | 0.264 | −9.1% |
+| g_gen04 | 0.273 | +0.074 | 0.262 | −8.8% |
+| g_gen06 † | 0.283 | +0.118 | 0.257 | −5.2% |
+| g_gen07 † | 0.278 | +0.098 | 0.261 | −6.9% |
+| d1k gen01 | 0.273 | +0.058 | 0.267 | −8.8% |
+| d1k gen02 | 0.276 | +0.059 | 0.269 | −7.8% |
+| d1k gen03 | 0.275 | +0.070 | 0.266 | −8.0% |
+| d1k gen04 | 0.285 | +0.082 | 0.273 | −4.6% |
+
+† trained on gen06, the benchmark's corpus (one outcome per state seen); shown for the trend only.
+Every paired difference is ≥ 4 SE. On d1k gen04's benchmark (4239 states, its own policy):
+d1k 0.272 / +0.074, g05 0.279 / +0.105 (paired +2.9% RMS for g05).
+
+What this says before any arm has trained:
+- **Scatter is the same everywhere (0.26-0.27).** The nets differ almost only in bias. A label
+  change that only removes bias can take RMS from 0.30 to ~0.27, but not below; reaching the
+  ~0.1 TD gaps the search acts on means cutting the scatter, which no net in either lineage has
+  done.
+- **g_gen05 is the worst value head of both lineages, on its own states.** The bias does not
+  climb generation by generation (g03 +0.06, g04 +0.07, g05 +0.13, g06 +0.12): it moves by
+  ±0.03-0.06 between neighbouring fine-tunes. That looks more like fine-tune noise (plan 054's lr
+  2e-4 restarts) than a steady drift from the labels, though both could be at work.
+- **The blend label is optimistic on the data itself:** on gen07 (one shard) the blend-0.5
+  label's mean is 0.293 and the outcome's 0.254, so the stored (minimax) root values overstate
+  the drive outcome by about +0.08 on average.
 
 ## 3. Arms
 

@@ -289,6 +289,28 @@ decision at 1000 descents is +0.004 ± 0.001 (g_gen05, q floor 1000), +0.003 ± 
 q floor 4000), +0.005 ± 0.001 (d1k gen04, q floor 1000), +0.004 ± 0.001 (d1k gen04, q floor 4000).
 Resolution ±0.001 per point is enough to see a ladder's shape.
 
+**exp066 net check, g_gen05, mean backup, q floor 1000 (2026-10-05 14:44, 33 min, gen06, eval
+boards, 250 overrides × 32 playouts per rung):**
+
+| descents | override rate | gain per decision | realised / predicted slope |
+|---|---|---|---|
+| 64 | 0.05 | +0.001 ± 0.001 | 0.42 |
+| 250 | 0.08 | +0.001 ± 0.001 | 0.30 |
+| 1000 | 0.16 | +0.004 ± 0.002 | 0.24 |
+| 4000 | 0.29 | +0.006 ± 0.003 | 0.16 |
+
+- **MONOTONE:** the gain never drops and is never below the policy. The curve is flat to 250 and
+  rises from 1000; the 4000 point is within 1 SE of 1000, so it could already be flattening.
+- **Every extra override is worth less.** The override rate doubles per rung while the slope
+  halves. The deeper search moves off the prior more often on Q gaps the value head cannot
+  resolve, which fits the value-noise reading (H1, plan 056).
+- **Value head:** RMS 0.27, bias +0.11 at every rung, as exp065 found.
+- **Override margin: not resolved at 250 overrides.** The only bucket clear of 2 SE is 0.1-0.3 TD
+  at 1000 descents (+0.06 ± 0.03). The script's first reading ("from <0.01") used 1 SE and picked
+  noise; it now needs 2 SE.
+- The drive matches at 250 / 1000 / 4000 against policy-only are running next. They decide
+  whether this curve is trusted as the standing check.
+
 ## 5. Order
 
 1. exp064 phase 1 (tonight, ~5-6 h with the laptop).
