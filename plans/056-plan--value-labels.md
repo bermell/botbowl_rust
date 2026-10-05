@@ -200,6 +200,21 @@ it.
 - Running: `net_check.sh` on A and then D (gen06, the same seed, so the same decision sample).
   Results go in `runs/exp067/status.md`.
 
+**Play (exp068).** F's search against F's own bare policy, Gumbel f1000 at 1000 descents, 300
+pairs per board, seed 68000:
+
+| | 14x7 | 16x9 | mean |
+|---|---|---|---|
+| F search@1000 vs F policy | 0.578 ± 0.014 | 0.586 ± 0.016 | **0.582 ± 0.011** |
+| g_gen05 search@1000 vs its policy (exp066) | 0.522 ± 0.016 | 0.563 ± 0.016 | 0.542 ± 0.012 |
+| g_gen05 search@4000 vs its policy (exp066) | 0.577 ± 0.017 | 0.603 ± 0.016 | 0.590 ± 0.012 |
+
+**With F's value head, 1000 descents get about what g_gen05 needed 4000 for.** The search's edge
+over its policy rises from 0.542 to 0.582 (+0.040, ~2.4 SE). The comparison is unpaired: other
+dice, and the policies are near-identical rather than identical. The rise shows on both boards,
+most on 14x7, where g_gen05's search at 1000 had no edge left at all. F vs A head to head is
+next.
+
 ## 4. Metrics and decision
 
 Per arm, in this order:
