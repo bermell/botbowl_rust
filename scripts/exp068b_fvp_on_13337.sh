@@ -40,7 +40,10 @@ git diff --quiet || die "dirty tree"
 status "exp068b start: commit $(git rev-parse --short HEAD); FvP waits for exp066 to free :13337"
 
 # FvA's collector, in the background: exp068's controller is gone, so nobody else reports it.
-(
+# One per programme: a rerun of this script leaves an earlier collector to it.
+COLLECT=""
+if ! { [ -e "$OUT/collector.pid" ] && kill -0 "$(cat "$OUT/collector.pid")" 2>/dev/null; }; then
+    (
     until [ -s "$OUT/FvA/report.json" ]; do sleep 30; done
     status "FvA (F gumbel@1000 vs A gumbel@1000): $(summary "$OUT/FvA/report.json")"
     sleep 10
@@ -48,13 +51,21 @@ status "exp068b start: commit $(git rev-parse --short HEAD); FvP waits for exp06
     kill $(cat "$OUT/orphans.pids") 2>/dev/null; rm -f /tmp/bbnn-exp068.sock
     status "stopped exp068's :13338 hub, sidecar and worker"
 ) & COLLECT=$!
+    echo "$COLLECT" > "$OUT/collector.pid"
+fi
 
 until grep -q '] done' "$REPO/runs/exp066/status.md" 2>/dev/null; do sleep 30; done
 for _ in $(seq 60); do "$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 || break; sleep 5; done
 "$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 && die "a hub still serves $HUB_URL"
-cargo build --release -p botbowl-hub -p botbowl-worker >> "$OUT/build.log" 2>&1 || die "build"
+# Build until HEAD stands still across it: the binary's stamped commit must be the one the
+# allowlist is keyed to, or the hub ignores the list (a commit landing mid-build did that once).
+while :; do
+    head0=$(git rev-parse --short HEAD)
+    cargo build --release -p botbowl-hub -p botbowl-worker >> "$OUT/build.log" 2>&1 || die "build"
+    [ "$(git rev-parse --short HEAD)" = "$head0" ] && break
+done
 LAST=$(git log -1 --format=%h -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-worker botbowl-hub-proto recon_mcts)
-printf 'hub_commit = "%s"\nallow = [%s]\n' "$(git rev-parse --short HEAD)" \
+printf 'hub_commit = "%s"\nallow = [%s]\n' "$head0" \
     "$( (git rev-list --abbrev-commit "$LAST"^..HEAD; echo 8cc6ce7 2a8fe4e 14d915a e7d5c1e 381c245 e8c0144 d45e391 | tr ' ' '\n') \
         | sort -u | sed 's/.*/"&"/' | paste -sd,)" > "$OUT/allowed_13337.toml"
 "$HUB" serve --bind "0.0.0.0:$PORT" --token-file "$TOK" --allowed-commits "$OUT/allowed_13337.toml" --run-dir "$OUT" \
@@ -78,5 +89,5 @@ if [ ! -s "$dir/report.json" ]; then
         || die "FvP failed — see $dir/eval.log"
 fi
 status "FvP (F gumbel@1000 vs F policy-only): $(summary "$dir/report.json")"
-wait $COLLECT
+[ -n "$COLLECT" ] && wait "$COLLECT"
 status "done"
