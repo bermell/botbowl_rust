@@ -159,6 +159,53 @@ pub fn drive_assignment(n_positions: usize, base_seed: u64, g: u32) -> (usize, b
     )
 }
 
+/// Where a drive stands when it starts, and so when it is over: either side scores, the half
+/// changes, or the game ends. `random_start_trajectory` (the corpus's drives) and
+/// [`play_drive_game`] (the drive benchmark) both stop on it, so anything else that plays "the
+/// rest of the drive" from an arbitrary state (the plan-055 override audit) ends it exactly where
+/// they do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DriveStart {
+    pub home_score: u8,
+    pub away_score: u8,
+    pub half: u8,
+}
+
+impl DriveStart {
+    pub fn of(state: &GameState) -> Self {
+        DriveStart {
+            home_score: state.home.score,
+            away_score: state.away.score,
+            half: state.info.half,
+        }
+    }
+
+    pub fn over(&self, state: &GameState) -> bool {
+        state.info.game_over
+            || state.home.score != self.home_score
+            || state.away.score != self.away_score
+            || state.info.half != self.half
+    }
+
+    /// The drive's own touchdowns so far, `(home, away)`.
+    pub fn scored(&self, state: &GameState) -> (u8, u8) {
+        (state.home.score - self.home_score, state.away.score - self.away_score)
+    }
+
+    /// The drive's outcome for `team`, in the value target's units: +1 if `team` scored, -1 if
+    /// the other side did, 0 if nobody has. This is `Trajectory::backfill_outcome_value`'s
+    /// Home-centric score delta, clamped to [-1, 1], re-signed by `botbowl_nn::targets::value_target`.
+    pub fn outcome_for(&self, state: &GameState, team: TeamType) -> f32 {
+        let (home, away) = self.scored(state);
+        let home_delta = (home as f32 - away as f32).clamp(-1.0, 1.0);
+        match team {
+            TeamType::Home => home_delta,
+            // `0.0 - x`, not `-x`: a scoreless drive is 0, never -0.
+            TeamType::Away => 0.0 - home_delta,
+        }
+    }
+}
+
 /// One drive from `position` between `candidate` and `opponent`. It ends when either side scores,
 /// the half changes, the game ends, or `max_steps` runs out, which is `random_start_trajectory`'s
 /// rule. The line's `home_score` / `away_score` are the drive's own touchdowns, so it folds
@@ -188,14 +235,9 @@ pub fn play_drive_game(
     candidate.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ CANDIDATE_SEED_MIX));
     opponent.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ OPPONENT_SEED_MIX));
 
-    let (start_home, start_away, start_half) = (state.home.score, state.away.score, state.info.half);
+    let start = DriveStart::of(&state);
     let mut steps = 0u32;
-    while !state.info.game_over
-        && steps < max_steps
-        && state.home.score == start_home
-        && state.away.score == start_away
-        && state.info.half == start_half
-    {
+    while !start.over(&state) && steps < max_steps {
         let action = match state.available_actions.team {
             Some(t) if t == candidate_team => candidate.get_action(&state),
             Some(_) => opponent.get_action(&state),
@@ -207,17 +249,15 @@ pub fn play_drive_game(
         steps += 1;
     }
     let telemetry = botbowl_mcts::MctsBot::take_telemetry_of(candidate);
-    let ended = state.info.game_over
-        || state.home.score != start_home
-        || state.away.score != start_away
-        || state.info.half != start_half;
+    let ended = start.over(&state);
+    let (home_score, away_score) = start.scored(&state);
     EvalGameLine {
         rung: rung.to_string(),
         game,
         seed: position_seed,
         candidate_team,
-        home_score: state.home.score - start_home,
-        away_score: state.away.score - start_away,
+        home_score,
+        away_score,
         kicking_first_half: state.info.kicking_first_half,
         finished: ended,
         board: Some(board_label(state.board_dims)),

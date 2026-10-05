@@ -35,6 +35,60 @@ pub enum Command {
     /// Write a frozen position set for drive rungs (plan 051): `seeds` only, before screening.
     /// Screen it with a reference self-play drive rung and `scripts/positions_screen.py`.
     Positions(PositionsArgs),
+    /// Plan 055 phase 2: replay corpus decisions where the search overrules its policy, and
+    /// play each move's drive out with policy-only on both sides (paired dice) for a Monte Carlo
+    /// value that does not depend on the value head. Headless; summarise with
+    /// `scripts/override_audit_summary.py`.
+    OverrideAudit(OverrideAuditArgs),
+}
+
+/// `override-audit` (plan 055 §3 phase 2). See `override_audit.rs` for what each row holds.
+#[derive(clap::Args, Debug, Clone)]
+pub struct OverrideAuditArgs {
+    /// Random-start trajectory shards to sample decisions from.
+    #[arg(long, required = true, num_args = 1..)]
+    pub corpus: Vec<String>,
+    /// The net: the search's evaluator and the policy both sides play the drives out with.
+    #[arg(long)]
+    pub model: String,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// The search whose picks are audited: a deterministic eval preset.
+    #[arg(long, default_value = "cfgs/gumbel16_f1000.toml")]
+    pub search_config: std::path::PathBuf,
+    #[arg(long, default_value_t = 1000)]
+    pub search_iters: usize,
+    /// Stop after this many override rows (every row under `--all`).
+    #[arg(long, default_value_t = 1000)]
+    pub decisions: u32,
+    /// Drive playouts per audited move.
+    #[arg(long, default_value_t = 64)]
+    pub playouts: u32,
+    /// Share of non-override decisions kept as the control.
+    #[arg(long, default_value_t = 0.2)]
+    pub control_frac: f64,
+    /// Keep every decision, override or not.
+    #[arg(long)]
+    pub all: bool,
+    /// Sampling order, control draws and playout dice all derive from it.
+    #[arg(long, default_value_t = 55_000)]
+    pub seed: u64,
+    /// Decisions audited at once, one thread each. With `--nn-server` they share the GPU's batches.
+    #[arg(long, default_value_t = 1)]
+    pub parallel: usize,
+    /// Only these playable boards, `14x7` (any team size) or `14x7/4`; comma-separated or repeated.
+    #[arg(long = "board", value_delimiter = ',')]
+    pub boards: Vec<String>,
+    /// Only decisions with at least this many legal moves (1 cannot be overruled).
+    #[arg(long, default_value_t = 2)]
+    pub min_fan: usize,
+    /// Safety cap on engine steps per playout.
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    /// Output JSONL, one row per kept decision.
+    #[arg(long)]
+    pub out: String,
 }
 
 /// `positions`: the candidate positions of a drive-rung set on one board.

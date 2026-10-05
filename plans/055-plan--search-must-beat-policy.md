@@ -163,6 +163,29 @@ arbitrary mid-turn corpus state, and the audit needs "apply move, then play out 
 locally through `botbowl-ui` (not on the hub), so it needs no worker change; if it needs
 `botbowl-play`, it waits for a commit the laptop can follow, or runs on this box alone.
 
+**Built (2026-10-05): `botbowl-ui override-audit` + `scripts/override_audit_summary.py`.** Local
+only, on this box. `botbowl-play` gained only `drives::DriveStart` (the drive-end rule, now shared
+by the corpus generator, the drive benchmark and the audit; behaviour-neutral), so no worker change.
+Corpus states are rebuilt by replaying each trajectory from its seed (a deserialised state has no
+path offerings), checked state by state. Policy move = the `policy_only` preset's (pinned by a
+test); search move = a fresh search of the state under the named preset; overrides plus a 20%
+control (`keep_prob` per row); 64 paired playouts per move, policy-only on both sides. Rows hold
+MC mean/SE per move, the paired difference, Q/visits/priors, V after each move, V(s) (against
+`policy.mc_mean` = MC(s) for H1), the root value, decision kind, fan, phase and board; see
+`botbowl-ui/CLAUDE.md`. Smoke cost at 64 playouts, mixed boards: about 3.5 s of thread time per
+kept row (1 s of it the search), and one override per ~5-6 searched decisions on g_gen05.
+
+```sh
+BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR=target/16x9 \
+cargo run --release -p botbowl-ui -- override-audit \
+    --corpus runs/loopmix16x9g/gen06/shard4.jsonl runs/loopmix16x9g/gen06/shard7.jsonl \
+    --model models/az_v7/bbnet_mix16x9g_gen05.onnx --nn-server /tmp/bbnn.sock \
+    --search-config cfgs/gumbel16_f1000.toml --search-iters 1000 \
+    --decisions 1000 --playouts 64 --parallel 8 --out runs/exp065/audit_g_gen05.jsonl
+# second net: --corpus runs/loopmix16x9g/gen01/shard{4,7}.jsonl --model models/az_v7/bbnet_mix16x9d1k_gen04.onnx
+scripts/override_audit_summary.py runs/exp065/audit_*.jsonl
+```
+
 ### Phase 3 — instrumentation
 
 Log every decision where the eval bot overrules its policy (prior rank of the pick, Q gap,
