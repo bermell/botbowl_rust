@@ -1,0 +1,4 @@
+# The shipped search at the loop's budget mode: the exact roll model (the default) plus
+# `budget_mode = "visits"`, which a preset has to set itself because it ignores BLOOD_MCTS_*.
+# The control for `legacy_chance_visits.toml`.
+budget_mode = "visits"

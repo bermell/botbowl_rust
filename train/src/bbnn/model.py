@@ -61,6 +61,12 @@ class BBNet(nn.Module):
     Outputs:
     - ``policy``: ``(N, POLICY_CHANNELS, H, W)`` raw logits.
     - ``value``:  ``(N, 1)`` in ``[-1, 1]`` (mover-centric).
+
+    Plan 050: ``value_head="wdl"`` replaces the tanh scalar with a softmax over the drive outcome
+    as the mover sees it, class order ``[self scores, nobody scores, opponent scores]``. The
+    ``value`` output stays the scalar the search reads, ``P(self) - P(opp)``, so every consumer
+    (ONNX export, the sidecar, the Rust evaluator) is unchanged. ``wdl=True`` on ``forward`` /
+    ``forward_masked`` returns the three logits instead, for the trainer's loss.
     """
 
     def __init__(
@@ -73,8 +79,12 @@ class BBNet(nn.Module):
         global_embed: int = 16,
         value_hidden: int = 64,
         schema_version: int = SCHEMA_VERSION,
+        value_head: str = "scalar",
     ):
         super().__init__()
+        if value_head not in ("scalar", "wdl"):
+            raise ValueError(f"value_head must be scalar or wdl, got {value_head!r}")
+        self.value_head = value_head
         self.global_fc = nn.Linear(global_f, global_embed)
         self.stem = nn.Conv2d(spatial_ch + global_embed, width, 3, padding=1)
         self.stem_bn = nn.BatchNorm2d(width)
@@ -83,7 +93,7 @@ class BBNet(nn.Module):
         self.value_conv = nn.Conv2d(width, 32, 1)
         self.value_bn = nn.BatchNorm2d(32)
         self.value_fc1 = nn.Linear(32, value_hidden)
-        self.value_fc2 = nn.Linear(value_hidden, 1)
+        self.value_fc2 = nn.Linear(value_hidden, 3 if value_head == "wdl" else 1)
         # Not a parameter and unused by `forward` (so absent from the ONNX
         # export); it rides in the state_dict so a loader can tell a v8
         # checkpoint from a v7 one of identical shape.
@@ -97,7 +107,10 @@ class BBNet(nn.Module):
         other constructor argument is pinned by the encoder/action schema."""
         width = int(state_dict["stem.weight"].shape[0])
         blocks = len({k.split(".")[1] for k in state_dict if k.startswith("blocks.")})
-        return {"width": width, "blocks": blocks}
+        shape = {"width": width, "blocks": blocks}
+        if int(state_dict["value_fc2.weight"].shape[0]) == 3:
+            shape["value_head"] = "wdl"
+        return shape
 
     @classmethod
     def from_state_dict(cls, state_dict, **kwargs) -> "BBNet":
@@ -109,7 +122,17 @@ class BBNet(nn.Module):
         model.load_state_dict(state_dict)
         return model
 
-    def forward(self, spatial, global_feat):
+    def _value_out(self, v, wdl):
+        """The value head's last layer: the scalar, or (``wdl``) the three logits."""
+        out = self.value_fc2(v)
+        if self.value_head == "scalar":
+            return torch.tanh(out)
+        if wdl:
+            return out
+        p = torch.softmax(out, dim=1)
+        return p[:, 0:1] - p[:, 2:3]                     # (N, 1): P(self) - P(opp)
+
+    def forward(self, spatial, global_feat, wdl=False):
         n = spatial.shape[0]
         h = spatial.shape[2]
         w = spatial.shape[3]
@@ -123,10 +146,9 @@ class BBNet(nn.Module):
         v = F.relu(self.value_bn(self.value_conv(x)))    # (N, 32, H, W)
         v = v.mean(dim=(2, 3))                           # ReduceMean → (N, 32)
         v = F.relu(self.value_fc1(v))
-        v = torch.tanh(self.value_fc2(v))                # (N, 1)
-        return policy, v
+        return policy, self._value_out(v, wdl)           # (N, 1), or (N, 3) logits
 
-    def forward_masked(self, spatial, global_feat, mask):
+    def forward_masked(self, spatial, global_feat, mask, wdl=False):
         """`forward` for boards embedded top-left in a larger zero canvas.
 
         ``mask`` is ``(N, 1, H, W)``: 1 on each sample's own ``h × w``, 0 on the padding. Zeroing
@@ -151,8 +173,7 @@ class BBNet(nn.Module):
         v = F.relu(self.value_bn(self.value_conv(x))) * mask
         v = v.sum(dim=(2, 3)) / mask.sum(dim=(2, 3)).clamp_min(1.0)
         v = F.relu(self.value_fc1(v))
-        v = torch.tanh(self.value_fc2(v))
-        return policy, v
+        return policy, self._value_out(v, wdl)
 
 
 def masked_policy_logits(policy, actions, pad_mask):

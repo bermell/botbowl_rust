@@ -18,10 +18,11 @@ use botbowl_engine::core::model::{BoardDims, TeamType};
 use botbowl_mcts::SearchTelemetry;
 
 use crate::board_sizes::board_label;
+use crate::stats::{Pentanomial, Sprt, SprtStatus, Verdict};
 use crate::trace::{ReuseTraceRow, ReuseTraceWriter};
 
-const OPPONENT_SEED_MIX: u64 = 0xC3C3_C3C3_C3C3_C3C3;
-const CANDIDATE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
+pub(crate) const OPPONENT_SEED_MIX: u64 = 0xC3C3_C3C3_C3C3_C3C3;
+pub(crate) const CANDIDATE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
 
 /// Per-game side-relative record (plan 023 deferred item 5): the pooled
 /// rung row cannot distinguish a scoring-rate bias from a win-conversion
@@ -59,6 +60,12 @@ pub struct EvalGameLine {
     /// `botbowl-ui eval` and by the hub rebuilding a report from workers' lines.
     #[serde(default)]
     pub telemetry: Option<SearchTelemetry>,
+    /// Plan 051: set iff this line is a single drive from a frozen position (`drives.rs`), to the
+    /// team that was to move there. The score fields are then the drive's own touchdowns, and
+    /// `seed` is the position's seed. Absent for a full game. Same trailing-field rules as
+    /// `board`.
+    #[serde(default)]
+    pub attacker: Option<TeamType>,
 }
 
 impl Serialize for EvalGameLine {
@@ -68,7 +75,8 @@ impl Serialize for EvalGameLine {
         let binary = !serializer.is_human_readable();
         let with_board = self.board.is_some() || binary;
         let with_telemetry = self.telemetry.is_some() || binary;
-        let n = 8 + usize::from(with_board) + usize::from(with_telemetry);
+        let with_attacker = self.attacker.is_some() || binary;
+        let n = 8 + usize::from(with_board) + usize::from(with_telemetry) + usize::from(with_attacker);
         let mut s = serializer.serialize_struct("EvalGameLine", n)?;
         s.serialize_field("rung", &self.rung)?;
         s.serialize_field("game", &self.game)?;
@@ -83,6 +91,9 @@ impl Serialize for EvalGameLine {
         }
         if with_telemetry {
             s.serialize_field("telemetry", &self.telemetry)?;
+        }
+        if with_attacker {
+            s.serialize_field("attacker", &self.attacker)?;
         }
         s.end()
     }
@@ -206,6 +217,7 @@ fn line_of(
         finished: state.info.game_over,
         board: board.map(board_label),
         telemetry,
+        attacker: None,
     }
 }
 
@@ -266,6 +278,35 @@ pub struct LadderRow {
     /// so the hub rebuilding a report from workers' lines gets the identical number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<SearchTelemetry>,
+    /// Plan 051: `(W + D/2) / games`. Unlike `win_rate`, a draw is worth half a win.
+    #[serde(default)]
+    pub points: f64,
+    /// Plan 051: the candidate's TDs minus the opponent's, summed over games, and the sum of its
+    /// squares, so the mean margin and its SE fold commutatively. Reported, not decided on.
+    #[serde(default)]
+    pub margin_sum: i64,
+    #[serde(default)]
+    pub margin_sq_sum: i64,
+    #[serde(default)]
+    pub margin_mean: f64,
+    #[serde(default)]
+    pub margin_se: f64,
+    /// Plan 051: the mirrored pairs (games `2k`, `2k+1`) scored as one sample each, and the SE of
+    /// `points` they give. A pair with only one half in is in W/D/L but not here.
+    #[serde(default)]
+    pub pairs: Pentanomial,
+    #[serde(default)]
+    pub points_se: f64,
+    /// Plan 051: the rung's SPRT, when it runs one ([`LadderRow::with_sprt`]). Refreshed on every
+    /// completed pair until it decides, then frozen at that first crossing: `pairs` keeps counting
+    /// the overshoot, but the verdict, LLR and pair count here are the decision's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprt: Option<SprtStatus>,
+    /// Pairs with one game in, keyed by `game / 2`: the game index and its half points. Held
+    /// here so both fold owners (the ui rung runner and the hub) pair identically. Never
+    /// serialised; [`LadderRow::finish`] drops whatever is left.
+    #[serde(skip)]
+    half_pairs: std::collections::BTreeMap<u32, (u32, u8)>,
 }
 
 impl LadderRow {
@@ -283,6 +324,17 @@ impl LadderRow {
             board: board.map(board_label),
             ..Default::default()
         }
+    }
+
+    /// Run an SPRT on this rung's pairs. `None` keeps the fixed-N behaviour.
+    pub fn with_sprt(mut self, rule: Option<Sprt>) -> Self {
+        self.sprt = rule.map(|r| r.status(&self.pairs));
+        self
+    }
+
+    /// The rung's SPRT has reached a verdict. Always false without one.
+    pub fn decided(&self) -> bool {
+        self.sprt.is_some_and(|s| s.verdict != Verdict::Undecided)
     }
 
     /// Fold one game into the counters. Every field is commutative, so
@@ -323,15 +375,80 @@ impl LadderRow {
         if let Some(t) = &line.telemetry {
             self.telemetry.get_or_insert_with(SearchTelemetry::default).merge(t);
         }
+        let margin = cand as i64 - opp as i64;
+        self.margin_sum += margin;
+        self.margin_sq_sum += margin * margin;
+        // Plan 051: pair the mirrored games. A pair's points are a sum, so which half arrives
+        // first cannot change the result.
+        let half_points = match cand.cmp(&opp) {
+            std::cmp::Ordering::Greater => 2,
+            std::cmp::Ordering::Equal => 1,
+            std::cmp::Ordering::Less => 0,
+        };
+        match self.half_pairs.remove(&(line.game / 2)) {
+            Some((other, h)) if other != line.game => {
+                self.pairs.record(h, half_points);
+                // A verdict is final at its first crossing: games still in flight keep landing
+                // after a rung decides, and they must not withdraw it.
+                if let Some(s) = self.sprt.as_mut().filter(|s| s.verdict == Verdict::Undecided) {
+                    *s = s.rule.status(&self.pairs);
+                }
+            }
+            // Nothing waiting, or the same game again: hold this one until its mirror arrives.
+            _ => {
+                self.half_pairs.insert(line.game / 2, (line.game, half_points));
+            }
+        }
     }
 
-    /// Derive `win_rate` once all games are in.
+    /// The report card's line for this rung, printed by both `botbowl-ui eval` and
+    /// `botbowl-hub job eval --wait`. Plan 051's fields are appended so existing greps still match.
+    pub fn report_line(&self) -> String {
+        format!(
+            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}  pts {:.3} ± {:.3} ({} pairs)  margin {:+.2} ± {:.2}{}",
+            self.opponent,
+            self.win_rate,
+            self.wins,
+            self.draws,
+            self.losses,
+            self.wins_as_home,
+            self.losses_as_home,
+            self.wins_as_away,
+            self.losses_as_away,
+            self.tds_for,
+            self.tds_against,
+            self.tds_by_home,
+            self.tds_by_away,
+            if self.unfinished > 0 {
+                format!("  [{} unfinished]", self.unfinished)
+            } else {
+                String::new()
+            },
+            self.points,
+            self.points_se,
+            self.pairs.pairs(),
+            self.margin_mean,
+            self.margin_se,
+            self.sprt
+                .map(|s| format!("  SPRT({}:{}) {:?} LLR {:.2}", s.rule.s0, s.rule.s1, s.verdict, s.llr))
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Derive the rates once all games are in.
     pub fn finish(mut self) -> Self {
-        self.win_rate = if self.games > 0 {
-            self.wins as f64 / self.games as f64
-        } else {
-            0.0
-        };
+        if self.games > 0 {
+            let n = self.games as f64;
+            self.win_rate = self.wins as f64 / n;
+            self.points = (self.wins as f64 + self.draws as f64 / 2.0) / n;
+            self.margin_mean = self.margin_sum as f64 / n;
+            if self.games > 1 {
+                let var = (self.margin_sq_sum as f64 - n * self.margin_mean.powi(2)) / (n - 1.0);
+                self.margin_se = (var.max(0.0) / n).sqrt();
+            }
+        }
+        self.points_se = self.pairs.se();
+        self.half_pairs.clear();
         self
     }
 }
@@ -386,6 +503,7 @@ mod tests {
             finished,
             board: None,
             telemetry: None,
+            attacker: None,
         }
     }
 
@@ -571,6 +689,142 @@ mod tests {
         let mut plain = LadderRow::new("random");
         plain.record(&line(0, TeamType::Home, 1, 0, true));
         assert_eq!(plain.telemetry, None);
+    }
+
+    /// Plan 051's trailing field, by the same rules: absent from JSON on a game line, always on
+    /// the postcard wire.
+    #[test]
+    fn attacker_is_a_trailing_optional_key_that_survives_postcard() {
+        let mut l = line(3, TeamType::Away, 1, 0, true);
+        assert!(!serde_json::to_string(&l).unwrap().contains("attacker"));
+        l.attacker = Some(TeamType::Home);
+        let json = serde_json::to_string(&l).unwrap();
+        assert!(json.ends_with(r#""attacker":"Home"}"#), "{json}");
+        assert_eq!(serde_json::from_str::<EvalGameLine>(&json).unwrap(), l);
+        for attacker in [None, Some(TeamType::Away)] {
+            l.attacker = attacker;
+            let back: EvalGameLine = postcard::from_bytes(&postcard::to_allocvec(&l).unwrap()).unwrap();
+            assert_eq!(back, l);
+        }
+    }
+
+    /// Plan 051: the mirrored games pair into one pentanomial sample, whatever order the lines
+    /// arrive in, and a pair with only one half in stays out of `pairs` but in W/D/L.
+    #[test]
+    fn ladder_row_pairs_mirrored_games_in_any_order() {
+        let lines = [
+            line(0, TeamType::Home, 2, 0, true), // win
+            line(1, TeamType::Away, 2, 0, true), // loss: pair 0 = 1 point
+            line(2, TeamType::Home, 1, 1, true), // draw
+            line(3, TeamType::Away, 0, 1, true), // win: pair 1 = 1.5 points
+            line(4, TeamType::Home, 3, 1, true), // win
+            line(5, TeamType::Away, 1, 2, true), // win: pair 2 = 2 points
+            line(6, TeamType::Home, 0, 1, true), // loss, its mirror never arrives
+        ];
+        let fold = |order: &[usize]| {
+            let mut row = LadderRow::new("mcts");
+            for &i in order {
+                row.record(&lines[i]);
+            }
+            row.finish()
+        };
+        let forward = fold(&[0, 1, 2, 3, 4, 5, 6]);
+        let shuffled = fold(&[5, 2, 6, 0, 3, 1, 4]);
+        assert_eq!(forward, shuffled);
+        assert_eq!(forward.pairs.counts, [0, 0, 1, 1, 1]);
+        assert_eq!(
+            (forward.games, forward.wins, forward.draws, forward.losses),
+            (7, 4, 1, 2)
+        );
+        assert!((forward.points - 4.5 / 7.0).abs() < 1e-12);
+        // Margins +2 −2 0 +1 +2 +1 −1.
+        assert_eq!((forward.margin_sum, forward.margin_sq_sum), (3, 15));
+        assert!((forward.pairs.mean() - 0.75).abs() < 1e-12);
+        assert!(forward.points_se > 0.0);
+    }
+
+    /// The rung's SPRT refreshes as pairs complete, and `decided` is what a fold owner polls.
+    #[test]
+    fn ladder_row_sprt_decides_on_a_clear_result() {
+        let rule = crate::stats::Sprt::parse("0.5:0.55").unwrap();
+        let mut row = LadderRow::new("mcts").with_sprt(Some(rule));
+        assert!(!row.decided());
+        let mut g = 0;
+        while !row.decided() {
+            assert!(
+                g < 400,
+                "a candidate that wins every game must be decided long before this"
+            );
+            // Two wins per pair, with every fourth pair split, so the variance is not zero.
+            let split = (g / 2) % 4 == 0 && g % 2 == 1;
+            let team = if g % 2 == 0 { TeamType::Home } else { TeamType::Away };
+            let (h, a) = match (team, split) {
+                (TeamType::Home, _) => (1, 0),
+                (TeamType::Away, false) => (0, 1),
+                (TeamType::Away, true) => (1, 0),
+            };
+            row.record(&line(g, team, h, a, true));
+            g += 1;
+        }
+        let s = row.sprt.expect("set by with_sprt");
+        assert_eq!(s.verdict, crate::stats::Verdict::H1);
+        assert!(s.llr >= s.upper);
+        assert_eq!(s.pairs, row.pairs.pairs());
+        assert!(LadderRow::new("mcts").sprt.is_none() && !LadderRow::new("mcts").decided());
+    }
+
+    /// A verdict is final at its first crossing. Games already in flight when a rung decides
+    /// still land and are folded, and they can pull the LLR back between the bounds. If that
+    /// reverted the verdict, a hub rung with its queue already dropped would never finish
+    /// (it hung exp plan051 P2 rep 1).
+    #[test]
+    fn a_decided_sprt_stays_decided_through_overshoot() {
+        let rule = crate::stats::Sprt::parse("0.5:0.55").unwrap();
+        let mut row = LadderRow::new("mcts").with_sprt(Some(rule));
+        let mut g = 0;
+        let mut push = |row: &mut LadderRow, win_both: bool| {
+            // A double win, or a double loss, as one mirrored pair.
+            let (h, a) = if win_both { (1, 0) } else { (0, 1) };
+            row.record(&line(g, TeamType::Home, h, a, true));
+            row.record(&line(g + 1, TeamType::Away, a, h, true));
+            g += 2;
+        };
+        // Mostly double wins, with a few losses so the variance is not zero, until it decides.
+        let mut k = 0;
+        while !row.decided() {
+            push(&mut row, k % 5 != 0);
+            k += 1;
+        }
+        let at_decision = row.sprt.unwrap();
+        assert_eq!(at_decision.verdict, crate::stats::Verdict::H1);
+        // Overshoot: a run of double losses that would drag the LLR well below the upper bound.
+        for _ in 0..k {
+            push(&mut row, false);
+        }
+        assert!(
+            rule.llr(&row.pairs) < at_decision.upper,
+            "the overshoot must actually undo the crossing for this test to mean anything"
+        );
+        assert!(row.decided(), "a verdict reached is never withdrawn");
+        assert_eq!(
+            row.sprt.unwrap(),
+            at_decision,
+            "the status is the one at the first crossing"
+        );
+        assert!(
+            row.pairs.pairs() > at_decision.pairs,
+            "the overshoot is still counted in pairs"
+        );
+    }
+
+    /// `report.json` files written before plan 051 still parse.
+    #[test]
+    fn ladder_row_reads_a_pre_051_report_row() {
+        let old = r#"{"opponent":"scripted","games":2,"wins":1,"draws":0,"losses":1,"tds_for":2,"tds_against":1,
+            "unfinished":0,"win_rate":0.5,"wins_as_home":1,"losses_as_home":0,"wins_as_away":0,"losses_as_away":1,
+            "tds_by_home":2,"tds_by_away":1}"#;
+        let row: LadderRow = serde_json::from_str(old).unwrap();
+        assert_eq!((row.games, row.pairs, row.sprt), (2, Pentanomial::default(), None));
     }
 
     #[test]

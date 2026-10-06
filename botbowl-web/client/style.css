@@ -64,7 +64,7 @@ body {
 /* ----------------------------------------------------------------- lobby */
 
 .lobby {
-  max-width: 720px; margin: 48px auto; padding: 0 24px 64px;
+  max-width: 980px; margin: 48px auto; padding: 0 24px 64px;
 }
 .lobby h1 { font-size: 34px; margin: 0 0 4px; letter-spacing: -0.5px; }
 .lobby .subtitle { color: var(--ink-dim); margin: 0 0 32px; }
@@ -106,6 +106,9 @@ button:disabled { opacity: .4; cursor: default; }
   margin-top: 12px; padding: 12px 28px; font-size: 15px; font-weight: 600;
   background: var(--accent); color: #10161f; border: none;
 }
+.seats { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.seat-picker .knobs { margin-top: 12px; }
+.seat-picker h2 .hint { text-transform: none; letter-spacing: 0; margin-left: 6px; }
 .lobby footer { margin-top: 40px; color: var(--ink-dim); font-size: 11px; }
 
 /* ------------------------------------------------------------ game frame */
@@ -123,7 +126,8 @@ button:disabled { opacity: .4; cursor: default; }
 .scoreboard .name { font-weight: 600; }
 .scoreboard .team.home .name { color: var(--home); }
 .scoreboard .team.away .name { color: var(--away); }
-.scoreboard .team.you .name::after { content: " (you)"; color: var(--ink-dim); font-weight: 400; }
+.scoreboard .seat { color: var(--ink-dim); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.scoreboard .team.you .seat { color: var(--ink); }
 .scoreboard .score { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .scoreboard .meta { color: var(--ink-dim); font-size: 11px; }
 .scoreboard .middle { display: flex; flex-direction: column; align-items: center; gap: 1px; }
@@ -315,23 +319,71 @@ button.act img { width: 20px; height: 20px; image-rendering: pixelated; }
   width: 100%; border: none; border-radius: 0; background: var(--bg-raised);
   padding: 6px; color: var(--ink-dim); text-align: left;
 }
-.inspector-body {
-  display: grid; grid-template-columns: 1.1fr 1fr 1.2fr;
-  grid-template-areas: "summary summary summary" "cands pv tree";
+/* Decision log on the left, the selected decision on the right. */
+.inspector-split {
+  display: grid; grid-template-columns: minmax(300px, 420px) 1fr;
   gap: 16px; padding: 12px 14px 20px;
 }
-.inspector .empty, .inspector .hint { color: var(--ink-dim); padding: 12px 14px; }
-.summary {
-  grid-area: summary; display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline;
-  padding-bottom: 8px; border-bottom: 1px solid var(--line);
+.inspector .empty, .inspector .hint { color: var(--ink-dim); padding: 6px 0; font-size: 11px; }
+
+.decision-log { display: flex; flex-direction: column; min-width: 0; }
+.log-controls { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+.log-controls .check { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--ink-dim); margin-right: 6px; }
+.pill { font-size: 11px; padding: 1px 8px; border-radius: 10px; }
+.pill.on { border-color: var(--accent); color: var(--accent); }
+.log-rows {
+  max-height: 520px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg);
 }
-.summary .chosen { font-weight: 700; color: var(--accent); }
+.log-row {
+  display: grid; grid-template-columns: 44px 14px 26px 58px 1fr auto;
+  gap: 6px; align-items: baseline; padding: 2px 8px; font-size: 11px; cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.log-row.team-H { border-left-color: var(--home); }
+.log-row.team-A { border-left-color: var(--away); }
+.log-row:hover { background: rgba(255,255,255,.05); }
+.log-row.selected { background: rgba(111,179,255,.16); }
+.log-row .idx, .log-row .turn { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.log-row.team-H .team { color: var(--home); font-weight: 700; }
+.log-row.team-A .team { color: var(--away); font-weight: 700; }
+.log-row .who { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-row .act { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-row .badge { color: var(--ink-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.log-row .flag { grid-column: 5 / 7; color: var(--warn); font-size: 10px; }
+
+.detail { min-width: 0; }
+.detail.empty { color: var(--ink-dim); padding: 12px 0; }
+.detail-head {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+  padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.detail-head .played { font-weight: 700; color: var(--accent); font-size: 14px; }
+.detail-head .meta { color: var(--ink-dim); font-size: 12px; }
+.detail-head button { font-size: 11px; padding: 2px 8px; }
+button.warn { border-color: var(--warn); color: var(--warn); }
+
+.summary { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline; margin-bottom: 10px; }
 .summary span { color: var(--ink-dim); font-size: 12px; }
 .summary .solved { color: var(--good); }
 .summary .nn { color: var(--warn); }
-.candidates { grid-area: cands; }
-.pv { grid-area: pv; }
-.explorer { grid-area: tree; }
+.summary .warn { color: var(--warn); }
+.summary .config { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; flex-basis: 100%; }
+
+.search-grid {
+  display: grid; grid-template-columns: minmax(420px, 1.6fr) 1fr;
+  grid-template-areas: "root health" "root pv" "root tree";
+  gap: 12px 18px; align-items: start;
+}
+.root-table { grid-area: root; max-height: 640px; overflow-y: auto; }
+.search-grid .health { grid-area: health; }
+.search-grid .pv { grid-area: pv; }
+.search-grid .explorer { grid-area: tree; }
+.net-detail table { max-width: 520px; }
+th.sortable { cursor: pointer; text-decoration: underline dotted; }
+th.sortable.on { color: var(--accent); }
+.inspector tr.pruned { color: var(--ink-dim); opacity: .6; }
+.pv li.stale { cursor: default; opacity: .7; }
 .inspector h3 {
   margin: 0 0 8px; font-size: 10px; text-transform: uppercase;
   letter-spacing: 1.2px; color: var(--ink-dim);
@@ -340,17 +392,28 @@ button.act img { width: 20px; height: 20px; image-rendering: pixelated; }
 .inspector th {
   text-align: left; font-weight: 500; color: var(--ink-dim);
   font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
-  padding-bottom: 4px;
+  padding: 0 10px 4px; white-space: nowrap; border-bottom: 1px solid var(--line);
 }
-.inspector td { padding: 2px 6px 2px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+.inspector td { padding: 3px 10px; border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle; }
+.inspector th:first-child, .inspector td:first-child { padding-left: 0; }
+/* Numbers and their headers share one right edge; number columns shrink to
+   fit, and the action column takes whatever is left. */
+.inspector th.num, .inspector td.num { text-align: right; width: 1%; white-space: nowrap; }
+.inspector th.flags, .inspector td.flags { width: 1%; white-space: nowrap; }
 .inspector tr.chosen { color: var(--accent); font-weight: 600; }
 .inspector tbody tr:hover { background: rgba(255,255,255,.05); cursor: pointer; }
 .inspector td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .inspector td.action { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inspector td.flags { color: var(--ink-dim); font-size: 10px; }
-td.bar { position: relative; width: 74px; }
-td.bar .fill { display: block; height: 9px; background: var(--accent); opacity: .55; border-radius: 2px; }
-td.bar .bar-text { position: absolute; right: 4px; top: 0; font-size: 10px; color: var(--ink-dim); }
+/* A number over a faint bar of its share, both inside the cell: the value
+   right-aligned like every other number, the bar behind it. */
+td.bar { position: relative; width: 96px; min-width: 96px; text-align: right; }
+td.bar .fill {
+  position: absolute; left: 10px; top: 5px; bottom: 5px; max-width: calc(100% - 20px);
+  background: var(--accent); opacity: .3; border-radius: 2px;
+}
+.inspector td.bar:first-child .fill { left: 0; }
+td.bar .bar-text { position: relative; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 .pv ol { list-style: none; margin: 0; padding: 0; }
 .pv li {
@@ -379,6 +442,14 @@ td.bar .bar-text { position: absolute; right: 4px; top: 0; font-size: 10px; colo
 .health-row .v.warn { color: var(--warn); }
 .health-row .note { color: var(--ink-dim); font-size: 11px; }
 
+/* A board that is not the live game. */
+.hypothetical-banner {
+  display: flex; gap: 10px; align-items: center; justify-content: center;
+  padding: 4px 10px; margin-bottom: 6px; border: 1px solid var(--warn); border-radius: 6px;
+  color: var(--warn); font-size: 12px; background: rgba(224,177,85,.08);
+}
+.hypothetical-banner button { font-size: 11px; padding: 1px 8px; }
+
 /* ---------------------------------------------------------- debug drawer */
 
 .debug { background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
@@ -397,3 +468,69 @@ td.bar .bar-text { position: absolute; right: 4px; top: 0; font-size: 10px; colo
 .save .label { width: 100%; }
 .save input { flex: 1; min-width: 120px; }
 .save p { width: 100%; margin: 0; }
+
+/* ----------------------------------------------------- modes, teams, drives */
+.hidden { display: none !important; }
+button.link {
+  background: none; border: none; padding: 0 0 0 12px; color: var(--accent);
+  font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 500;
+}
+button.link:hover { text-decoration: underline; }
+.danger, button.link.danger { color: var(--bad); }
+button.danger { border-color: var(--bad); }
+.team-pick { margin-bottom: 10px; }
+.team-pick select { min-width: 160px; }
+.gameover .next-drive { margin-left: auto; border-color: var(--good); color: var(--good); }
+
+.team-choice { flex-direction: row; align-items: center; gap: 8px; display: flex; }
+.team-choice img { width: 28px; height: 28px; image-rendering: pixelated; }
+.teams code { color: var(--ink); }
+
+table.positions { border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+table.positions th {
+  text-align: left; font-size: 11px; color: var(--ink-dim); font-weight: 600;
+  padding: 0 6px 6px 0; text-transform: uppercase; letter-spacing: .04em;
+}
+table.positions td { padding: 4px 6px 4px 0; vertical-align: middle; border-top: 1px solid var(--line); }
+table.positions input.stat { width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
+table.positions input.pos-name { width: 130px; }
+td.skills { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.skill-chip {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 8px;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 12px; font-size: 12px;
+}
+.skill-chip button { background: none; border: none; padding: 0 4px; color: var(--ink-dim); }
+.skill-chip button:hover { color: var(--bad); }
+select.add-skill { font-size: 12px; padding: 3px 6px; }
+
+button.picture { padding: 2px; width: 40px; height: 40px; display: grid; place-items: center; }
+button.picture img { max-width: 34px; max-height: 34px; image-rendering: pixelated; }
+button.picture:hover { border-color: var(--accent); }
+
+.team-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.team-actions .start { margin-top: 0; }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50;
+  display: grid; place-items: center; padding: 16px;
+}
+.modal {
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px;
+  width: min(760px, 100%); max-height: 80vh; display: flex; flex-direction: column;
+}
+.modal-head { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+.modal-head input[type=text] { flex: 1; }
+.modal-head .upload {
+  display: inline-flex; align-items: center; padding: 6px 10px; cursor: pointer;
+  border: 1px solid var(--accent); border-radius: 6px; color: var(--accent);
+}
+.modal-head .upload input { display: none; }
+.picture-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px;
+  padding: 12px; overflow-y: auto;
+}
+.picture-grid button.picture { width: 44px; height: 44px; }
+
+/* Player sprites: an uploaded picture can be any size, so fit it to the square. */
+.sq img.player, .dugout img { object-fit: contain; }
+.lobby h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }

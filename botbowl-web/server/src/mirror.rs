@@ -363,6 +363,15 @@ pub fn role_to_proto(r: et::PlayerRole) -> pv::PlayerRole {
     }
 }
 
+pub fn role_from_proto(r: pv::PlayerRole) -> et::PlayerRole {
+    match r {
+        pv::PlayerRole::Lineman => et::PlayerRole::Lineman,
+        pv::PlayerRole::Blitzer => et::PlayerRole::Blitzer,
+        pv::PlayerRole::Thrower => et::PlayerRole::Thrower,
+        pv::PlayerRole::Catcher => et::PlayerRole::Catcher,
+    }
+}
+
 pub fn status_to_proto(s: em::PlayerStatus) -> pv::PlayerStatus {
     match s {
         em::PlayerStatus::Up => pv::PlayerStatus::Up,
@@ -413,6 +422,7 @@ pub fn skill_label(s: et::Skill) -> &'static str {
         et::Skill::SureHands => "Sure Hands",
         et::Skill::Tackle => "Tackle",
         et::Skill::Wrestle => "Wrestle",
+        et::Skill::StripBall => "Strip Ball",
         et::Skill::Claws => "Claws",
         et::Skill::Accurate => "Accurate",
         et::Skill::NervesOfSteel => "Nerves of Steel",

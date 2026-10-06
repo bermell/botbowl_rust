@@ -21,21 +21,25 @@
 //! across generations.
 
 use std::io;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use botbowl_curriculum::{available_lectures, make_lecture, run_trials, TrialStats};
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
-use botbowl_mcts::{BackupMode, PuctMode};
+use botbowl_mcts::PuctMode;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::board_sizes::board_label;
 use botbowl_play::bots::{
-    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_backup,
-    parse_puct, CandidateBot, Evaluator, NamedConfig, SearchConfig,
+    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_puct,
+    CandidateBot, Evaluator, NamedConfig, SearchConfig,
+};
+use botbowl_play::drives::{
+    drive_assignment, drive_rung_name, play_drive_game, position_state, DriveRung, PositionSet,
 };
 use botbowl_play::eval::{ladder_assignment, play_ladder_game, rung_name, LadderRow, LectureRow, Report};
+use botbowl_play::stats::Sprt;
 use botbowl_play::trace::ReuseTraceWriter;
 use botbowl_play::GAME_STACK_SIZE;
 
@@ -47,10 +51,6 @@ const LECTURE_MAX_STEPS: u32 = 2000;
 /// Refuse to start rather than run the wrong arm of a multi-hour head-to-head.
 fn puct_of(mode: &str, c: Option<f32>) -> PuctMode {
     parse_puct(mode, c).unwrap_or_else(|e| panic!("--puct-mode: {e}"))
-}
-
-fn backup_of(s: &str) -> BackupMode {
-    parse_backup(s).unwrap_or_else(|e| panic!("--backup: {e}"))
 }
 
 /// The candidate's search knobs. Every one is `Some`: `eval` has always
@@ -66,7 +66,6 @@ fn candidate_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConf
         workers: args.mcts_workers,
         puct: preset.is_none().then(|| puct_of(&args.puct_mode, args.puct_c)),
         horizon_turns: preset.is_none().then_some(args.horizon_turns),
-        backup: preset.is_none().then(|| backup_of(&args.backup)),
         fpu_reduction: preset.is_none().then_some(args.fpu_reduction),
         config: preset.map(|p| p.config),
     }
@@ -92,9 +91,6 @@ fn opponent_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConfi
         horizon_turns: preset
             .is_none()
             .then(|| args.vs_horizon_turns.unwrap_or(args.horizon_turns)),
-        backup: preset
-            .is_none()
-            .then(|| backup_of(args.vs_backup.as_deref().unwrap_or(&args.backup))),
         fpu_reduction: preset
             .is_none()
             .then(|| args.vs_fpu_reduction.unwrap_or(args.fpu_reduction)),
@@ -132,11 +128,39 @@ struct RungState {
     /// Handed out one game at a time. Full games vary several-fold in
     /// length, so a static split would idle workers at the tail.
     next_game: AtomicU32,
+    /// Plan 051: the rung's SPRT has a verdict, so no more games are handed out. Games already
+    /// in flight finish and are recorded; overshoot does not bias a sequential test.
+    decided: AtomicBool,
     /// `writeln!` of a whole JSONL line must be atomic against its peers.
     per_game: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
     /// Plan 043 `--trace-reuse`: `None` unless the flag was given. Shared across the rung's
     /// workers, and its own mutex keeps a row atomic.
     reuse_trace: Option<ReuseTraceWriter>,
+}
+
+/// Where a rung's games are played (plan 051): full games from kickoff on a board (`None` = the
+/// env board), or paired drives from a frozen position set on the set's board.
+#[derive(Clone, Copy)]
+enum Venue<'a> {
+    Games(Option<BoardDims>),
+    Drives(BoardDims, &'a DriveRung),
+}
+
+impl Venue<'_> {
+    fn board(&self) -> Option<BoardDims> {
+        match self {
+            Venue::Games(b) => *b,
+            Venue::Drives(b, _) => Some(*b),
+        }
+    }
+
+    /// `opponent@board` for games (plan 042), `opponent drives(set)@board` for drives.
+    fn rung_name(&self, opponent: &str) -> String {
+        match self {
+            Venue::Games(b) => rung_name(opponent, *b),
+            Venue::Drives(b, d) => drive_rung_name(opponent, &d.set, *b),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -145,14 +169,15 @@ fn run_ladder_rung(
     preset: Option<&NamedConfig>,
     nn: Option<&Arc<NnEvaluator>>,
     opponent: &str,
-    board: Option<BoardDims>,
+    venue: Venue<'_>,
     games: u32,
+    sprt: Option<Sprt>,
     make_opponent: impl Fn() -> Box<dyn Bot> + Sync,
 ) -> LadderRow {
     // Plan 042: on a multi-size ladder the rung is `opponent@board`, so the
     // per-game lines and the report rows group by board without a new
     // file format; on an env-board ladder it is the bare opponent name.
-    let name = &rung_name(opponent, board);
+    let name = &venue.rung_name(opponent);
     // Per-game side-relative record (plan 023 deferred item 5): the pooled
     // report line cannot distinguish a scoring-rate bias from a
     // win-conversion one, nor see who received the opening kickoff.
@@ -165,8 +190,11 @@ fn run_ladder_rung(
                 .expect("--per-game-out: cannot open"),
         )
     });
+    let mut row = LadderRow::on_board(opponent, venue.board()).with_sprt(sprt);
+    row.opponent = name.clone();
     let state = RungState {
-        row: Mutex::new(LadderRow::on_board(opponent, board)),
+        row: Mutex::new(row),
+        decided: AtomicBool::new(false),
         next_game: AtomicU32::new(0),
         per_game: Mutex::new(per_game),
         reuse_trace: args
@@ -185,7 +213,7 @@ fn run_ladder_rung(
     // than tract.
     let parallel = args.parallel_games.clamp(1, games.max(1)) as usize;
     if parallel == 1 {
-        run_rung_games(args, preset, nn, name, board, games, &make_opponent, &state);
+        run_rung_games(args, preset, nn, name, venue, games, &make_opponent, &state);
     } else {
         eprintln!("  vs {name}: {parallel} games in parallel");
         std::thread::scope(|s| {
@@ -195,7 +223,7 @@ fn run_ladder_rung(
                 std::thread::Builder::new()
                     .name(format!("rung-{i}"))
                     .stack_size(GAME_STACK_SIZE)
-                    .spawn_scoped(s, move || run_rung_games(args, preset, nn, name, board, games, mk, st))
+                    .spawn_scoped(s, move || run_rung_games(args, preset, nn, name, venue, games, mk, st))
                     .expect("spawn rung worker");
             }
         });
@@ -219,7 +247,7 @@ fn run_rung_games(
     preset: Option<&NamedConfig>,
     nn: Option<&Arc<NnEvaluator>>,
     name: &str,
-    board: Option<BoardDims>,
+    venue: Venue<'_>,
     games: u32,
     make_opponent: &(impl Fn() -> Box<dyn Bot> + Sync),
     state: &RungState,
@@ -227,22 +255,44 @@ fn run_rung_games(
     let mut candidate = candidate_bot(args, preset, nn);
     let mut opponent = make_opponent();
     loop {
+        if state.decided.load(Ordering::Relaxed) {
+            return;
+        }
         let g = state.next_game.fetch_add(1, Ordering::Relaxed);
         if g >= games {
             return;
         }
-        let (candidate_team, seed) = ladder_assignment(args.seed, g);
-        let line = play_ladder_game(
-            &mut *candidate,
-            &mut *opponent,
-            name,
-            g,
-            candidate_team,
-            seed,
-            args.max_steps,
-            board,
-            state.reuse_trace.as_ref(),
-        );
+        let line = match venue {
+            Venue::Games(board) => {
+                let (candidate_team, seed) = ladder_assignment(args.seed, g);
+                play_ladder_game(
+                    &mut *candidate,
+                    &mut *opponent,
+                    name,
+                    g,
+                    candidate_team,
+                    seed,
+                    args.max_steps,
+                    board,
+                    state.reuse_trace.as_ref(),
+                )
+            }
+            Venue::Drives(board, set) => {
+                let (i, attacks, dice) = drive_assignment(set.positions.len(), args.seed, g);
+                let seed = set.positions[i];
+                play_drive_game(
+                    &mut *candidate,
+                    &mut *opponent,
+                    name,
+                    g,
+                    seed,
+                    position_state(&set.bias, board, seed),
+                    attacks,
+                    dice,
+                    args.max_steps,
+                )
+            }
+        };
 
         if let Some(w) = state.per_game.lock().expect("per-game mutex").as_mut() {
             use std::io::Write;
@@ -252,9 +302,19 @@ fn run_rung_games(
 
         let mut row = state.row.lock().expect("row mutex");
         row.record(&line);
+        if row.decided() {
+            state.decided.store(true, Ordering::Relaxed);
+        }
         eprint!(
-            "\r  vs {name}: {}/{} (W{} D{} L{})",
-            row.games, games, row.wins, row.draws, row.losses
+            "\r  vs {name}: {}/{} (W{} D{} L{}){}",
+            row.games,
+            games,
+            row.wins,
+            row.draws,
+            row.losses,
+            row.sprt
+                .map(|s| format!(" LLR {:.2} [{:.2}, {:.2}] {:?}", s.llr, s.lower, s.upper, s.verdict))
+                .unwrap_or_default()
         );
     }
 }
@@ -343,19 +403,40 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         .sizes
         .boards()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // Plan 051: `--positions` replaces the boards with drive rungs, one per position set.
+    let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
+    let drive_sets: Vec<(BoardDims, DriveRung)> = match args.positions.as_deref() {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|path| {
+                let set = PositionSet::load(path)?;
+                Ok((set.board_dims()?, set.rung()?))
+            })
+            .collect::<Result<_, String>>()
+            .map_err(invalid)?,
+        None => Vec::new(),
+    };
+    let venues: Vec<Venue> = if drive_sets.is_empty() {
+        boards.iter().map(|&b| Venue::Games(b)).collect()
+    } else {
+        drive_sets.iter().map(|(b, d)| Venue::Drives(*b, d)).collect()
+    };
     let mut ladder: Vec<LadderRow> = Vec::new();
     if !args.skip_ladder {
         eprintln!(
-            "== opponent ladder ({} games per rung, {} on the vs rung{}) ==",
+            "== opponent ladder ({} {} per rung, {} on the vs rung{}) ==",
             args.games,
+            if drive_sets.is_empty() { "games" } else { "drives" },
             args.vs_games.unwrap_or(args.games),
-            if boards[0].is_some() {
+            if venues[0].board().is_some() {
                 format!(
                     ", boards {}",
-                    boards
+                    venues
                         .iter()
-                        .flatten()
-                        .map(|d| board_label(*d))
+                        .filter_map(|v| v.board())
+                        .map(board_label)
                         .collect::<Vec<_>>()
                         .join(" ")
                 )
@@ -372,15 +453,16 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     panic!("--rungs: expected `random`, `scripted` or `mcts-heuristic`, got `{name}`");
                 }
             }
-            for &board in &boards {
+            for &venue in &venues {
                 if wanted.contains(&"random") {
                     ladder.push(run_ladder_rung(
                         &args,
                         cand_preset.as_ref(),
                         nn.as_ref(),
                         "random",
-                        board,
+                        venue,
                         args.games,
+                        args.sprt,
                         || Box::new(RandomBot::new()),
                     ));
                 }
@@ -390,8 +472,9 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                         cand_preset.as_ref(),
                         nn.as_ref(),
                         "scripted",
-                        board,
+                        venue,
                         args.games,
+                        args.sprt,
                         || Box::new(ScriptedBot::new()),
                     ));
                 }
@@ -401,8 +484,9 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                         cand_preset.as_ref(),
                         nn.as_ref(),
                         "mcts-heuristic",
-                        board,
+                        venue,
                         args.games,
+                        args.sprt,
                         || Box::new(make_mcts(&opp, Evaluator::Heuristic, None)),
                     ));
                 }
@@ -420,28 +504,21 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                     format!("vs:{base} [{} v {}]", o.name, c.name)
                 }
             } else {
-                let (opp_puct, opp_horizon, opp_backup, opp_fpu) = (
+                let (opp_puct, opp_horizon, opp_fpu) = (
                     opp.puct.expect("set when no preset is named"),
                     opp.horizon_turns.expect("set when no preset is named"),
-                    opp.backup.expect("set when no preset is named"),
                     opp.fpu_reduction.expect("set when no preset is named"),
                 );
-                let (cand_horizon, cand_backup, cand_fpu) = (
+                let (cand_horizon, cand_fpu) = (
                     cand.horizon_turns.expect("set when no preset is named"),
-                    cand.backup.expect("set when no preset is named"),
                     cand.fpu_reduction.expect("set when no preset is named"),
                 );
                 format!(
-                    "vs:{} [{}{}{}{}]",
+                    "vs:{} [{}{}{}]",
                     evaluator_label(vs, args.vs_model.as_deref()),
                     opp_puct.label(),
                     if opp_horizon != cand_horizon {
                         format!(" horizon={opp_horizon}v{cand_horizon}")
-                    } else {
-                        String::new()
-                    },
-                    if opp_backup != cand_backup {
-                        format!(" {}v{}", opp_backup.label(), cand_backup.label())
                     } else {
                         String::new()
                     },
@@ -454,14 +531,15 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             };
             // The gating rung: `--vs-games` if given, else `--games`.
             let vs_games = args.vs_games.unwrap_or(args.games);
-            for &board in &boards {
+            for &venue in &venues {
                 ladder.push(run_ladder_rung(
                     &args,
                     cand_preset.as_ref(),
                     nn.as_ref(),
                     &label,
-                    board,
+                    venue,
                     vs_games,
+                    args.sprt,
                     || Box::new(make_mcts(&opp, vs, vs_nn.as_ref())),
                 ));
             }
@@ -481,11 +559,11 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         telemetry: Report::telemetry_of(&ladder),
         mcts_iters: args.mcts_iters,
         seed: args.seed,
-        board_env: if boards[0].is_some() {
-            boards
+        board_env: if venues[0].board().is_some() {
+            venues
                 .iter()
-                .flatten()
-                .map(|d| board_label(*d))
+                .filter_map(|v| v.board())
+                .map(board_label)
                 .collect::<Vec<_>>()
                 .join(",")
         } else {
@@ -509,27 +587,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         }
     }
     for r in &report.ladder {
-        println!(
-            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}",
-            r.opponent,
-            r.win_rate,
-            r.wins,
-            r.draws,
-            r.losses,
-            r.wins_as_home,
-            r.losses_as_home,
-            r.wins_as_away,
-            r.losses_as_away,
-            r.tds_for,
-            r.tds_against,
-            r.tds_by_home,
-            r.tds_by_away,
-            if r.unfinished > 0 {
-                format!("  [{} unfinished]", r.unfinished)
-            } else {
-                String::new()
-            },
-        );
+        println!("{}", r.report_line());
     }
 
     if let Some(out) = &args.out {

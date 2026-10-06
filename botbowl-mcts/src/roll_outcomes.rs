@@ -1,11 +1,12 @@
 use botbowl_engine::core::dices::{BlockDice, Coin, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8};
 use botbowl_engine::core::gamestate::GameState;
-use botbowl_engine::core::model::{Direction, Position};
+use botbowl_engine::core::model::{Direction, InjuryOutcome, Position};
 use botbowl_engine::core::procedures::block_procs::Push;
 use botbowl_engine::core::procedures::AnyProc;
 use botbowl_engine::core::table::{NumBlockDices, Skill};
 
 use crate::action::BbAction;
+use crate::dynamics::ChanceModel;
 
 /// Enumerate the possible outcomes of a `RequestedRoll` as MCTS chance
 /// children, each carrying the concrete engine `RollResult` that
@@ -25,6 +26,12 @@ use crate::action::BbAction;
 ///   down, plus the attacker's down-vs-down-and-push choice), weighted by
 ///   the exact probability the picker ends up with that outcome given
 ///   both players' skills and the push geometry.
+/// - `D6ThreeOutcomes` / `Sum2D6ThreeOutcomes` (the injury roll: stunned /
+///   KO / casualty) → up to three children at the real odds.
+/// - A raw `D6` (the pass roll) → one child per face.
+/// - `FoulArmor` / `FoulInjury` → one child per distinct (result, ejected)
+///   pair over the 36 two-dice rolls, so fouls can break armour and get the
+///   fouler sent off.
 /// - Every other roll type (including a `D8` that isn't a live ball
 ///   bounce) → a single child carrying the deterministic `RollResult`
 ///   from [`scripted_result`]. Single-child keeps the search tree
@@ -39,6 +46,26 @@ use crate::action::BbAction;
 /// breaks. (`bounce_outcomes` reads only board occupancy, OOB geometry
 /// and `state.bounce_squares` — all state fields, so it stays pure.)
 pub fn enumerate(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
+    enumerate_with(state, req, ChanceModel::Exact)
+}
+
+/// [`enumerate`] under an explicit roll model. `ChanceModel::Legacy` reproduces the pre-fix
+/// search for the rolls the exact model enumerates: see [`legacy_result`].
+pub fn enumerate_with(state: &GameState, req: &RequestedRoll, model: ChanceModel) -> Vec<BbAction> {
+    let scripted = match model {
+        ChanceModel::Exact | ChanceModel::ExactThroughHalf => false,
+        ChanceModel::Legacy => true,
+        ChanceModel::ExactScriptedPass => matches!(req, RequestedRoll::D6),
+        ChanceModel::InjuryOnly => !matches!(
+            req,
+            RequestedRoll::D6ThreeOutcomes(..) | RequestedRoll::Sum2D6ThreeOutcomes(..)
+        ),
+    };
+    if scripted {
+        if let Some(r) = legacy_result(req) {
+            return vec![BbAction::chance(r, 1.0)];
+        }
+    }
     match req {
         RequestedRoll::D6PassFail(target) => {
             let p_pass = target.success_prob();
@@ -57,6 +84,28 @@ pub fn enumerate(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
         RequestedRoll::D8 => enumerate_d8(state),
         RequestedRoll::ThrowIn => vec![throw_in_outcome(state)],
         RequestedRoll::BlockDice(n) => block_outcomes(state, *n),
+        RequestedRoll::D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
+        RequestedRoll::Sum2D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
+        // A raw D6 is read face by face by its proc (the pass: accurate / inaccurate / wildly
+        // inaccurate / fumble, depending on the passer's target and modifier), so every face is
+        // its own child. Faces the proc treats alike recombine into one node.
+        RequestedRoll::D6 => (1..=6u8)
+            .map(|f| BbAction::chance(RollResult::D6(D6::try_from(f).unwrap()), 1.0 / 6.0))
+            .collect(),
+        RequestedRoll::FoulArmor(target) => two_dice_outcomes(|a, b| RollResult::FoulArmor {
+            broken: target.is_success(a + b),
+            ejected: a == b,
+        }),
+        RequestedRoll::FoulInjury(ko, cas) => two_dice_outcomes(|a, b| RollResult::FoulInjury {
+            outcome: if cas.is_success(a + b) {
+                InjuryOutcome::Casualty
+            } else if ko.is_success(a + b) {
+                InjuryOutcome::KO
+            } else {
+                InjuryOutcome::Stunned
+            },
+            ejected: a == b,
+        }),
         _ => vec![BbAction::chance(scripted_result(req), 1.0)],
     }
 }
@@ -173,6 +222,67 @@ impl BlockContext {
 /// skills and the push geometry, so it is a pure function of `state`.
 /// Falls back to the all-`Pow` script when not actually mid-block
 /// (dummy states in tests).
+/// The single scripted outcome the pre-fix search used for each roll the exact model now
+/// enumerates: every armour break a casualty, every pass a fumble, every foul harmless.
+fn legacy_result(req: &RequestedRoll) -> Option<RollResult> {
+    Some(match req {
+        RequestedRoll::D6 => RollResult::D6(D6::One),
+        RequestedRoll::D6ThreeOutcomes(..) | RequestedRoll::Sum2D6ThreeOutcomes(..) => RollResult::Pass,
+        RequestedRoll::FoulArmor(target) => RollResult::FoulArmor {
+            broken: target.is_success(Sum2D6::Three),
+            ejected: false,
+        },
+        RequestedRoll::FoulInjury(..) => RollResult::FoulInjury {
+            outcome: InjuryOutcome::Stunned,
+            ejected: false,
+        },
+        _ => return None,
+    })
+}
+
+/// Rolls whose enumerated outcomes can reach the same post-roll state, so the search must merge
+/// them (`BloodBowlDynamics::merge_coinciding_outcomes`): a raw D6 is read by classes of faces,
+/// and a foul that neither breaks armour nor ejects can look like its neighbours.
+pub fn outcomes_may_coincide(req: &RequestedRoll) -> bool {
+    matches!(
+        req,
+        RequestedRoll::D6 | RequestedRoll::FoulArmor(_) | RequestedRoll::FoulInjury(..)
+    )
+}
+
+/// A three-band roll (the injury roll: stunned / KO / casualty) as up to three chance children:
+/// `Pass` at or above the high target, `MiddleOutcome` between the two, `Fail` below the low one.
+/// Bands a modifier has made impossible are dropped.
+fn three_outcomes(p_low: f32, p_high: f32) -> Vec<BbAction> {
+    [
+        (RollResult::Pass, p_high),
+        (RollResult::MiddleOutcome, p_low - p_high),
+        (RollResult::Fail, 1.0 - p_low),
+    ]
+    .into_iter()
+    .filter(|(_, p)| *p > 1e-6)
+    .map(|(r, p)| BbAction::chance(r, p))
+    .collect()
+}
+
+/// Every roll of two D6 folded by `result`, one chance child per distinct result, in first-seen
+/// order so the enumeration is deterministic.
+fn two_dice_outcomes(result: impl Fn(D6, D6) -> RollResult) -> Vec<BbAction> {
+    let mut acc: Vec<(RollResult, u32)> = Vec::new();
+    for a in 1..=6u8 {
+        for b in 1..=6u8 {
+            let r = result(D6::try_from(a).unwrap(), D6::try_from(b).unwrap());
+            match acc.iter_mut().find(|(x, _)| *x == r) {
+                Some((_, n)) => *n += 1,
+                None => acc.push((r, 1)),
+            }
+        }
+    }
+    acc.into_iter()
+        .map(|(r, n)| BbAction::chance(r, n as f32 / 36.0))
+        .collect()
+}
+
 fn block_outcomes(state: &GameState, n: NumBlockDices) -> Vec<BbAction> {
     let Some(AnyProc::Block(block)) = state.proc_stack_peek() else {
         return vec![BbAction::chance(scripted_result(&RequestedRoll::BlockDice(n)), 1.0)];
@@ -450,18 +560,6 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
         // Scatter = three D8 directions. Pick the same direction each
         // time; the engine treats the sequence as separate bounces.
         RequestedRoll::Scatter => RollResult::Scatter(d8_up(), d8_up(), d8_up()),
-        // Scripted as a fixed roll-of-3 against the target: armour holds
-        // for any realistic AV, but a weak (already-broken) 3+ target
-        // still cascades into the (scripted, Stunned) injury roll — see
-        // the `foul_armor_*` tests below, which pin this asymmetry.
-        RequestedRoll::FoulArmor(target) => RollResult::FoulArmor {
-            broken: target.is_success(Sum2D6::Three),
-            ejected: false,
-        },
-        RequestedRoll::FoulInjury(..) => RollResult::FoulInjury {
-            outcome: botbowl_engine::core::model::InjuryOutcome::Stunned,
-            ejected: false,
-        },
         // BlockDice: only reached by `block_outcomes`' fallback when the
         // state is not actually mid-block (no `Block` proc on top). A
         // deterministic Pow per die; exactly `num_dices` of them (plan
@@ -473,15 +571,19 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
             }
             RollResult::BlockDice(dices)
         }
-        // Raw value rolls — pick low constants.
-        RequestedRoll::D6 => RollResult::D6(D6::One),
+        // The kickoff-table roll: kickoffs are past every search horizon, so a constant is fine.
         RequestedRoll::Sum2D6 => RollResult::Sum2D6(Sum2D6::Two),
-        RequestedRoll::D6ThreeOutcomes(_, _) => RollResult::Pass,
-        RequestedRoll::Sum2D6ThreeOutcomes(_, _) => RollResult::Pass,
         RequestedRoll::Coin => RollResult::Coin(Coin::Heads),
 
-        RequestedRoll::D6PassFail(_) | RequestedRoll::Sum2D6PassFail(_) | RequestedRoll::ThrowIn => unreachable!(
-            "scripted_result: pass/fail and throw-in rolls are handled by enumerate, not scripted: {:?}",
+        RequestedRoll::D6PassFail(_)
+        | RequestedRoll::Sum2D6PassFail(_)
+        | RequestedRoll::D6ThreeOutcomes(..)
+        | RequestedRoll::Sum2D6ThreeOutcomes(..)
+        | RequestedRoll::D6
+        | RequestedRoll::FoulArmor(_)
+        | RequestedRoll::FoulInjury(..)
+        | RequestedRoll::ThrowIn => unreachable!(
+            "scripted_result: {:?} is enumerated at its real odds by `enumerate`, never scripted",
             req
         ),
     }
@@ -1126,51 +1228,156 @@ mod tests {
     // silently splits. See the `Foul armor breaks` and `Ball bounce/
     // scatter` sections of plan 003.
 
-    #[test]
-    fn foul_armor_holds_for_high_av() {
-        // SevenPlus target ~ AV 7. Roll-of-3 (the scripted constant) is
-        // a fail; armour holds, no injury cascade triggered.
-        let result = sole_result(&RequestedRoll::FoulArmor(Sum2D6Target::SevenPlus));
-        match result {
-            RollResult::FoulArmor { broken, ejected } => {
-                assert!(!broken, "expected armour to hold at AV 7");
-                assert!(!ejected, "fouler must not be ejected on the scripted path");
-            }
-            other => panic!("expected FoulArmor result, got {:?}", other),
-        }
+    /// `(result, probability)` for every chance child, probabilities summing to 1.
+    fn distribution(req: &RequestedRoll) -> Vec<(RollResult, f32)> {
+        let outcomes: Vec<(RollResult, f32)> = enumerate(&dummy_state(), req)
+            .into_iter()
+            .map(|a| match a {
+                BbAction::Chance { result, prob_bits } => (result, f32::from_bits(prob_bits)),
+                other => panic!("expected a chance child, got {other:?}"),
+            })
+            .collect();
+        let total: f32 = outcomes.iter().map(|(_, p)| p).sum();
+        assert!((total - 1.0).abs() < 1e-5, "{req:?}: probabilities sum to {total}");
+        outcomes
     }
 
-    #[test]
-    fn foul_armor_breaks_for_av_three() {
-        // ThreePlus target — armour needing just 3+ to break (an
-        // already-injured / shoeless target). Roll-of-3 succeeds
-        // against ThreePlus → armour broken. Documents the asymmetry:
-        // weak armour still cascades into the injury roll, which is
-        // itself scripted to Stunned (see test below).
-        let result = sole_result(&RequestedRoll::FoulArmor(Sum2D6Target::ThreePlus));
-        match result {
-            RollResult::FoulArmor { broken, .. } => assert!(broken, "roll-of-3 should beat ThreePlus"),
-            other => panic!("expected FoulArmor result, got {:?}", other),
-        }
+    fn mass(outcomes: &[(RollResult, f32)], pred: impl Fn(&RollResult) -> bool) -> f32 {
+        outcomes.iter().filter(|(r, _)| pred(r)).map(|(_, p)| p).sum()
     }
 
+    // The injury roll after an ordinary armour break: stunned below 8, KO on 8-9, casualty on
+    // 10+. A single scripted child made every break a casualty inside the search.
     #[test]
-    fn foul_injury_collapses_to_stunned() {
-        use botbowl_engine::core::model::InjuryOutcome;
-        // Typical Blood Bowl injury thresholds: KO at 8+, Cas at 10+.
-        // Roll-of-3 misses both → Stunned. Scripting this collapses
-        // the injury sub-tree to a single deterministic outcome.
-        let result = sole_result(&RequestedRoll::FoulInjury(
+    fn injury_roll_is_stunned_ko_or_casualty_at_the_real_odds() {
+        let d = distribution(&RequestedRoll::Sum2D6ThreeOutcomes(
             Sum2D6Target::EightPlus,
             Sum2D6Target::TenPlus,
         ));
-        match result {
-            RollResult::FoulInjury { outcome, ejected } => {
-                assert_eq!(outcome, InjuryOutcome::Stunned);
-                assert!(!ejected);
-            }
-            other => panic!("expected FoulInjury result, got {:?}", other),
+        assert_eq!(d.len(), 3);
+        let p = |r: RollResult| mass(&d, |x| *x == r);
+        assert!((p(RollResult::Fail) - 21.0 / 36.0).abs() < 1e-5, "stunned");
+        assert!((p(RollResult::MiddleOutcome) - 9.0 / 36.0).abs() < 1e-5, "KO");
+        assert!((p(RollResult::Pass) - 6.0 / 36.0).abs() < 1e-5, "casualty");
+    }
+
+    #[test]
+    fn a_three_outcome_roll_drops_impossible_bands() {
+        // 2+ and 2+: every roll clears both targets, so only the top band remains.
+        let d = distribution(&RequestedRoll::Sum2D6ThreeOutcomes(
+            Sum2D6Target::TwoPlus,
+            Sum2D6Target::TwoPlus,
+        ));
+        assert_eq!(d, vec![(RollResult::Pass, 1.0)]);
+        let d = distribution(&RequestedRoll::D6ThreeOutcomes(D6Target::ThreePlus, D6Target::FivePlus));
+        let p = |r: RollResult| mass(&d, |x| *x == r);
+        assert!((p(RollResult::Fail) - 2.0 / 6.0).abs() < 1e-5);
+        assert!((p(RollResult::MiddleOutcome) - 2.0 / 6.0).abs() < 1e-5);
+        assert!((p(RollResult::Pass) - 2.0 / 6.0).abs() < 1e-5);
+    }
+
+    // The pass roll is a raw D6 (accurate / inaccurate / wildly inaccurate / fumble are decided
+    // by the proc from the face). A scripted 1 made every pass a fumble inside the search.
+    #[test]
+    fn a_raw_d6_offers_every_face() {
+        let d = distribution(&RequestedRoll::D6);
+        assert_eq!(d.len(), 6);
+        for (r, p) in &d {
+            assert!(matches!(r, RollResult::D6(_)), "{r:?}");
+            assert!((p - 1.0 / 6.0).abs() < 1e-5);
         }
+    }
+
+    // Foul armour: broken on the target, fouler ejected on any double.
+    #[test]
+    fn foul_armour_breaks_and_ejects_at_the_real_odds() {
+        let d = distribution(&RequestedRoll::FoulArmor(Sum2D6Target::SevenPlus));
+        let broken = mass(&d, |r| matches!(r, RollResult::FoulArmor { broken: true, .. }));
+        let ejected = mass(&d, |r| matches!(r, RollResult::FoulArmor { ejected: true, .. }));
+        let both = mass(&d, |r| {
+            matches!(
+                r,
+                RollResult::FoulArmor {
+                    broken: true,
+                    ejected: true
+                }
+            )
+        });
+        assert!((broken - 21.0 / 36.0).abs() < 1e-5, "7+ on 2d6");
+        assert!((ejected - 6.0 / 36.0).abs() < 1e-5, "doubles");
+        assert!((both - 3.0 / 36.0).abs() < 1e-5, "4-4, 5-5, 6-6");
+    }
+
+    #[test]
+    fn foul_injury_is_stunned_ko_or_casualty_and_ejects_on_doubles() {
+        use botbowl_engine::core::model::InjuryOutcome;
+        let d = distribution(&RequestedRoll::FoulInjury(
+            Sum2D6Target::EightPlus,
+            Sum2D6Target::TenPlus,
+        ));
+        let outcome = |o: InjuryOutcome| {
+            mass(
+                &d,
+                |r| matches!(r, RollResult::FoulInjury { outcome, .. } if outcome == &o),
+            )
+        };
+        assert!((outcome(InjuryOutcome::Stunned) - 21.0 / 36.0).abs() < 1e-5);
+        assert!((outcome(InjuryOutcome::KO) - 9.0 / 36.0).abs() < 1e-5);
+        assert!((outcome(InjuryOutcome::Casualty) - 6.0 / 36.0).abs() < 1e-5);
+        let ejected = mass(&d, |r| matches!(r, RollResult::FoulInjury { ejected: true, .. }));
+        assert!((ejected - 6.0 / 36.0).abs() < 1e-5);
+    }
+
+    /// `ChanceModel::Legacy` is the pre-fix search, kept for head-to-heads: one scripted child
+    /// for exactly the rolls the exact model now enumerates, and nothing else changed.
+    #[test]
+    fn the_legacy_model_keeps_the_old_scripted_outcomes() {
+        let legacy = |req: RequestedRoll| {
+            let v = enumerate_with(&dummy_state(), &req, ChanceModel::Legacy);
+            assert_eq!(v.len(), 1, "{req:?}");
+            match &v[0] {
+                BbAction::Chance { result, .. } => result.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(legacy(RequestedRoll::D6), RollResult::D6(D6::One));
+        assert_eq!(
+            legacy(RequestedRoll::Sum2D6ThreeOutcomes(
+                Sum2D6Target::EightPlus,
+                Sum2D6Target::TenPlus
+            )),
+            RollResult::Pass
+        );
+        assert!(matches!(
+            legacy(RequestedRoll::FoulArmor(Sum2D6Target::SevenPlus)),
+            RollResult::FoulArmor {
+                broken: false,
+                ejected: false
+            }
+        ));
+        // Rolls the exact model never changed enumerate identically under both.
+        let req = RequestedRoll::D6PassFail(D6Target::ThreePlus);
+        assert_eq!(
+            enumerate_with(&dummy_state(), &req, ChanceModel::Legacy),
+            enumerate_with(&dummy_state(), &req, ChanceModel::Exact)
+        );
+    }
+
+    /// The diagnostic variants each script exactly the rolls they name.
+    #[test]
+    fn diagnostic_models_script_only_what_they_name() {
+        let n = |req: RequestedRoll, m: ChanceModel| enumerate_with(&dummy_state(), &req, m).len();
+        let injury = || RequestedRoll::Sum2D6ThreeOutcomes(Sum2D6Target::EightPlus, Sum2D6Target::TenPlus);
+        let foul = || RequestedRoll::FoulArmor(Sum2D6Target::SevenPlus);
+        assert_eq!(n(RequestedRoll::D6, ChanceModel::ExactScriptedPass), 1);
+        assert_eq!(n(injury(), ChanceModel::ExactScriptedPass), 3);
+        assert_eq!(n(RequestedRoll::D6, ChanceModel::ExactThroughHalf), 6);
+        assert_eq!(n(injury(), ChanceModel::InjuryOnly), 3);
+        assert_eq!(n(RequestedRoll::D6, ChanceModel::InjuryOnly), 1);
+        assert_eq!(n(foul(), ChanceModel::InjuryOnly), 1);
+        assert!(ChanceModel::ExactScriptedPass.stops_at_half());
+        assert!(!ChanceModel::ExactThroughHalf.stops_at_half());
+        assert!(!ChanceModel::InjuryOnly.stops_at_half());
     }
 
     #[test]

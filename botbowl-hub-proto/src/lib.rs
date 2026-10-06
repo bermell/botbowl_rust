@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub use botbowl_engine::core::model::BoardDims;
 pub use botbowl_play::board_sizes::SizeDist;
 pub use botbowl_play::bots::{Evaluator, SearchConfig};
+pub use botbowl_play::drives::DriveRung;
 pub use botbowl_play::eval::EvalGameLine;
 pub use botbowl_play::generate::GenerateConfig;
 
@@ -31,7 +32,48 @@ pub use botbowl_play::generate::GenerateConfig;
 // part of compatibility, not just the compiled capacity.
 // v6: `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, both riding inside re-exported
 // types (`SearchConfig.config`, `EvalGameLine.telemetry`), which postcard encodes positionally.
-pub const PROTOCOL_VERSION: u32 = 7;
+// v7 (plan 048): `GenerateConfig.exploration`.
+// v8: `MctsConfig.chance_model`, riding inside `SearchConfig.config`.
+// v9: `MctsConfig.trace_root_descents`.
+// v10 (plan 051): `Task::Eval.drives` (a drive rung's position set) and `EvalGameLine.attacker`.
+// v11 (plan 053): `MctsConfig.gumbel_m` and `MctsConfig.gumbel_scale`, inside `SearchConfig.config`.
+// v12 (plan 053): `MctsConfig.gumbel_q_floor`.
+// v13 (plan 055): the player-node backup is hardcoded to the mean; `MctsConfig.backup` and
+// `SearchConfig.backup` are gone. A v12 worker would silently play minimax, so it must not connect.
+// v14: `ToWorker::ModelName` — a cached model's name, so the cache is readable (and the web
+// play app on a worker box can offer its nets by name).
+// v15 (plan 047): per-player setup — `SimpleAT`/`PosAT` re-laid out, `MctsConfig.setup`,
+// `opponent_setup`, `setup_formation`, `GenerateConfig.next_drive`; a trajectory may carry two lines.
+pub const PROTOCOL_VERSION: u32 = 15;
+
+/// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
+/// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
+pub fn default_model_cache_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".cache/botbowl/models")
+}
+
+/// What a cached model was called on the hub, stored as JSON beside it (`<id hex>.json`). The
+/// file name stays the content hash — that is what the cache verifies — so the name lives here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelMeta {
+    /// The file name on the hub, e.g. `bbnet_mix16x9_gen10.onnx`: carries the `_WxH_` board tag.
+    pub name: String,
+    /// The path as the job named it on the hub, e.g. `runs/loopmix16x9g054/models/....onnx`.
+    pub source: String,
+    /// The hub's commit when the name was first sent.
+    pub hub_commit: String,
+    /// Unix seconds when this cache first heard the name.
+    pub first_seen_unix: u64,
+}
+
+impl ModelMeta {
+    pub fn path_for(onnx: &std::path::Path) -> std::path::PathBuf {
+        onnx.with_extension("json")
+    }
+}
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.
@@ -170,6 +212,9 @@ pub enum Task {
         /// Plan 042: the board this rung plays on; `None` = the worker's
         /// env board (which the capacity check makes the same as the hub's).
         board: Option<BoardDims>,
+        /// Plan 051: play single drives from these positions instead of full games. `board` is
+        /// then always `Some`, the set's board.
+        drives: Option<DriveRung>,
     },
     /// Play these games of one corpus shard. Game `g`'s seed is
     /// `seed_base + g`, exactly as `botbowl-ui dataset --seed seed_base`
@@ -304,6 +349,16 @@ pub enum ToWorker {
     Task(Task),
     /// Finish in-flight games, then expect the socket to close.
     Drain,
+    /// The name of a model a task is about to use, sent once per connection whether or not the
+    /// worker already holds it, so caches filled before names existed get named too.
+    ModelName {
+        id: ModelId,
+        /// File name on the hub.
+        name: String,
+        /// The path as the job named it.
+        source: String,
+        hub_commit: String,
+    },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
@@ -341,6 +396,11 @@ mod tests {
             },
             opponent: BotSpec::Scripted,
             board: Some(BoardDims::default()),
+            drives: Some(DriveRung {
+                set: "t".into(),
+                bias: Default::default(),
+                positions: vec![3, 5],
+            }),
         };
         let bytes = encode(&ToWorker::Task(task.clone()));
         let back: ToWorker = decode(&bytes).unwrap();

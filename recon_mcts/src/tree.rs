@@ -2073,7 +2073,30 @@ where
         }
     }
 
-    fn step_into(&self, mut node_state: S, mut node: ArcNode<GD, S, P, A, Q, I, M>) -> Option<S> {
+    fn step_into(&self, node_state: S, node: ArcNode<GD, S, P, A, Q, I, M>) -> Option<S> {
+        let mut path: Vec<(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)> = Vec::new();
+        let out = self.descend(node_state, node, &mut path);
+        // Every edge the descent took, whatever stopped it: see `GameDynamics::release_descent`.
+        // A twin swap (`None` action) replaces the placeholder its previous entry already covers.
+        for w in path.windows(2) {
+            let (parent, _) = &w[0];
+            let (child, action) = &w[1];
+            if action.is_none() {
+                continue;
+            }
+            if let Some(score) = child.score.read().unwrap().as_ref() {
+                GD::release_descent(&*self.game_dynamics, parent.player(), score);
+            }
+        }
+        out
+    }
+
+    fn descend(
+        &self,
+        mut node_state: S,
+        mut node: ArcNode<GD, S, P, A, Q, I, M>,
+        path: &mut Vec<(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)>,
+    ) -> Option<S> {
         // Descent guard: the recombined graph must be a DAG (see
         // `GameDynamics::State` docs), but a `GameDynamics` whose states
         // can recur creates a true cycle once the registry merges the
@@ -2082,7 +2105,6 @@ where
         // simple path, so revisiting a node proves a cycle: crash the
         // search with a diagnostic dump instead of hanging.
         let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
-        let mut path: Vec<(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)> = Vec::new();
         visited.insert(&*node.inner);
         path.push((ArcNode::clone(&node), None));
         loop {
@@ -2120,7 +2142,7 @@ where
                                 // hash-equality).
                                 node = twin;
                                 if !visited.insert(&*node.inner) {
-                                    self.panic_with_cycle_dump(&path, &node);
+                                    self.panic_with_cycle_dump(path, &node);
                                 }
                                 path.push((ArcNode::clone(&node), None));
                                 continue;
@@ -2173,7 +2195,7 @@ where
                             node = next_node;
                             node_state = new_state;
                             if !visited.insert(&*node.inner) {
-                                self.panic_with_cycle_dump(&path, &node);
+                                self.panic_with_cycle_dump(path, &node);
                             }
                             path.push((ArcNode::clone(&node), Some(action.clone())));
                         }

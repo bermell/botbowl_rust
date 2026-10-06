@@ -1,0 +1,5 @@
+# The shipped search with virtual loss off. At one worker virtual loss has no job to do, and it
+# leaks: it is only cleared when a backprop replaces the chosen child's score, which a descent cut off at
+# an incomplete chance node never does, so it piles up and buries the best children (2026-09-30).
+budget_mode = "visits"
+virtual_loss = 0

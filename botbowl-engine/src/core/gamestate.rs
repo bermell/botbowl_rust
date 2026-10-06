@@ -600,9 +600,23 @@ impl std::hash::Hash for GameState {
                 }
             }
         }
-        // `board_dims` is constant for the life of a game, `board` is a position index derived
-        // from `fielded_players`, and `dugout_players` never separated a pair in the measured
-        // corpus. All three stay in `PartialEq`, which is the direction that is always safe.
+        // The dugout: who is where, not their (fixed, id-implied) stat block. It did not separate
+        // a pair while the search modelled every armour break as a casualty, but a KO and a
+        // casualty differ *only* here, so with the injury roll enumerated they collided (4.4% of a
+        // search's states, `botbowl-mcts/tests/hash_quality.rs`).
+        for slot in &self.dugout_players {
+            match slot {
+                None => 0u8.hash(h),
+                Some(p) => {
+                    1u8.hash(h);
+                    p.id.hash(h);
+                    p.place.hash(h);
+                }
+            }
+        }
+        // `board_dims` is constant for the life of a game and `board` is a position index derived
+        // from `fielded_players`. Both stay in `PartialEq`, which is the direction that is always
+        // safe.
 
         // Ball, plus the squares it has already bounced through — two in-air states with
         // different bounce histories permit different next bounces.

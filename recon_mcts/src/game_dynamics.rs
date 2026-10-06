@@ -172,6 +172,17 @@ pub trait GameDynamics {
         A: Deref<Target = Self::Action>,
         Q: Deref<Target = Self::Score>;
 
+    /// Called once a descent has finished (after its backprop, however the descent ended), once
+    /// per edge it took, root first: `parent_player` is the player of the node the edge leaves and
+    /// `child_score` the score the edge's child holds now, if it has one.
+    ///
+    /// This is where a transient per-descent adjustment made in [`GameDynamics::select_node`]
+    /// (virtual loss) must be taken back. Clearing it only when a backprop happens to replace the
+    /// child's score is not enough: a descent whose backprop is cut off short of the root
+    /// (`backprop_scores` returning `None`) never replaces the scores above the cut, so their
+    /// adjustment would outlive the descent and accumulate. Default: nothing to undo.
+    fn release_descent(&self, _parent_player: &Self::Player, _child_score: &Self::Score) {}
+
     /// Take a leaf node's state and assign the node a score, whether via simulation or otherwise.
     ///
     /// Note that for a leaf where no actions are possible (i.e. a terminal node) the score should

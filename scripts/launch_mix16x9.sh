@@ -41,7 +41,14 @@ export INIT_CHAMPION="$PWD/models/az_v7/bbnet_14x7_gen23_v7.onnx"
 # the old scale) but gen23 already read 0.725 against it, past the ~0.75
 # re-anchor threshold in train_loop.sh — it would saturate within a few
 # generations. Never retrain or overwrite this file.
-export ANCHOR="$PWD/models/az_v7/bbnet_14x7_gen23_v7.onnx"
+#
+# Re-anchored from gen14 (2026-09-28) on a frozen copy of gen13: against gen23, gen13 read 0.710
+# (14x7) / 0.735 (16x9) / 0.630 (12x9) at 500 iterations with the visits budget, close enough to
+# the ~0.75 saturation point that further gains would have stopped showing. gen10-13 against gen23
+# is the last stretch of the old curve (on the 500-iteration scale); gen14+ reads against gen13
+# and starts near 0.5 again. The copy has its own name so the curve (keyed on the anchor's file
+# name) starts fresh and no generation export can ever overwrite it; it is read-only.
+export ANCHOR="$PWD/models/az_v7/anchor_mix16x9_gen13.onnx"
 # 100 per board from gen08 (2026-09-27): the curve had sat at 0.51-0.60 pooled since gen03, and
 # at 40 per board (pooled SE ~0.039) a 0.03-0.05 step is noise. 100 gives SE ~0.025 pooled.
 # Seeds are --seed 0 + game index, so the first 40 are the games gen01-07 played.

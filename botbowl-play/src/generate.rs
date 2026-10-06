@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use rand::SeedableRng;
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,7 @@ use botbowl_data::{Outcome, Sample, Trajectory, TrajectoryMeta};
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::TeamType;
-use botbowl_mcts::{MctsBot, SearchBudget, SearchTelemetry};
+use botbowl_mcts::{ExploreOutcome, ExploreStep, MctsBot, RootNoiseSpec, SampleSpec, SearchBudget, SearchTelemetry};
 use botbowl_nn::eval::NnEvaluator;
 
 use crate::board_sizes::SizeDist;
@@ -32,6 +32,104 @@ use crate::bots::{make_mcts, Evaluator, SearchConfig};
 // same seed.
 const OPPONENT_SEED_MIX: u64 = 0xA5A5_A5A5_A5A5_A5A5;
 const AGENT_SEED_MIX: u64 = 0x5A5A_5A5A_5A5A_5A5A;
+/// Plan 048: the exploration draws' own stream, so turning exploration on changes no other seed.
+const EXPLORE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
+/// The `--next-drive` record's explorer stream, disjoint from the first drive's.
+const NEXT_DRIVE_SEED_MIX: u64 = 0x2D2D_2D2D_2D2D_2D2D;
+
+/// Plan 048 (plan 032 #4): exploration in self-play. Generation only — eval has no such knob.
+///
+/// Root noise goes into every search whose tree is fresh (the first decision of each turn, and
+/// every reuse miss); a reused tree expanded its root long before it became the root, so it
+/// keeps its clean priors. `sample_moves` is counted per side: each bot draws its first
+/// `sample_moves` moves of the trajectory ∝ `visits^(1/temperature)` and plays best-Q after.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Exploration {
+    /// Dirichlet mixing weight ε; 0 turns the noise off.
+    pub noise_epsilon: f32,
+    /// Total Dirichlet concentration α; each root action gets `α / n_legal`.
+    pub noise_alpha: f32,
+    pub sample_moves: u32,
+    pub temperature: f32,
+}
+
+impl Exploration {
+    /// The CLI's four flags (`botbowl-ui dataset` and `botbowl-hub job generate` share them).
+    /// `None` — the greedy generator — when neither the noise nor the sampling is switched on.
+    pub fn from_flags(noise: Option<f32>, alpha: f32, sample_moves: u32, temperature: f32) -> Option<Self> {
+        let noise_epsilon = noise.unwrap_or(0.0);
+        (noise_epsilon > 0.0 || sample_moves > 0).then_some(Exploration {
+            noise_epsilon,
+            noise_alpha: alpha,
+            sample_moves,
+            temperature,
+        })
+    }
+
+    /// Provenance label, e.g. `explore(eps=0.25,alpha=10,k=2,t=1)`.
+    pub fn label(&self) -> String {
+        format!(
+            "explore(eps={},alpha={},k={},t={})",
+            self.noise_epsilon, self.noise_alpha, self.sample_moves, self.temperature
+        )
+    }
+}
+
+/// Per-side exploration state across one trajectory.
+struct Explorer {
+    cfg: Option<Exploration>,
+    rng: ChaCha8Rng,
+    decisions: [u32; 2],
+    noised: u32,
+    sampled: u32,
+    deviated: u32,
+}
+
+impl Explorer {
+    fn new(cfg: Option<Exploration>, seed: u64) -> Self {
+        Explorer {
+            cfg,
+            rng: ChaCha8Rng::seed_from_u64(seed ^ EXPLORE_SEED_MIX),
+            decisions: [0; 2],
+            noised: 0,
+            sampled: 0,
+            deviated: 0,
+        }
+    }
+
+    fn step(&mut self, side: usize) -> ExploreStep {
+        let Some(c) = self.cfg else {
+            return ExploreStep::default();
+        };
+        let n = self.decisions[side];
+        self.decisions[side] += 1;
+        ExploreStep {
+            noise: (c.noise_epsilon > 0.0).then(|| RootNoiseSpec {
+                epsilon: c.noise_epsilon,
+                alpha: c.noise_alpha,
+                seed: self.rng.gen(),
+            }),
+            sample: (n < c.sample_moves).then(|| SampleSpec {
+                temperature: c.temperature,
+                u: self.rng.gen(),
+            }),
+        }
+    }
+
+    fn record(&mut self, o: ExploreOutcome) {
+        self.noised += o.noised as u32;
+        self.sampled += o.sampled as u32;
+        self.deviated += o.deviated as u32;
+    }
+
+    fn stamp(&self, meta: TrajectoryMeta) -> TrajectoryMeta {
+        let Some(c) = self.cfg else { return meta };
+        meta.with_extra("explore", c.label())
+            .with_extra("explore_noised", self.noised.to_string())
+            .with_extra("explore_sampled", self.sampled.to_string())
+            .with_extra("explore_deviated", self.deviated.to_string())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum GenMode {
@@ -122,6 +220,9 @@ pub struct GenerateConfig {
     /// themselves travel in `SearchConfig`. `None` when no preset was named.
     #[serde(default)]
     pub config_name: Option<String>,
+    /// Plan 048: self-play exploration. `None` is the greedy generator every corpus so far used.
+    #[serde(default)]
+    pub exploration: Option<Exploration>,
     /// Plan 047 (random-start only): when the drive ends in a score, keep playing through the
     /// next drive — both setups, the kickoff and the turns until it too resolves — and write
     /// that drive as its own record. It is how kickoff setups reach the corpus: the setup
@@ -163,20 +264,17 @@ pub fn budget_label(cfg: &GenerateConfig) -> String {
         Evaluator::Nn => format!("nn:{}", cfg.model.as_deref().unwrap_or("?")),
         Evaluator::NnValue => format!("nn-value:{}", cfg.model.as_deref().unwrap_or("?")),
     };
-    // `make_mcts` takes the backup rule from `BLOOD_MCTS_BACKUP` when the
-    // config leaves it unset (both sides share it); stamp it into the
-    // corpus provenance when non-default so a plan-032 mean-backup corpus
-    // can never be mistaken for a minimax one.
-    let backup = match cfg.search.backup.unwrap_or_else(botbowl_mcts::BackupMode::from_env) {
-        botbowl_mcts::BackupMode::Minimax => String::new(),
-        b => format!(",{}", b.label()),
-    };
     // A named preset (plan 043) replaces the whole configuration, so the individual knobs above
     // stop describing the bot — the name is what does. Stamp it so a corpus can be traced back to
     // the configuration that generated it.
     let config = match &cfg.config_name {
         Some(name) => format!(",cfg={name}"),
         None => String::new(),
+    };
+    // Plan 048: an exploring generator must never be mistaken for the greedy one.
+    let config = match &cfg.exploration {
+        Some(e) => format!("{config},{}", e.label()),
+        None => config,
     };
     let workers = cfg.search.workers;
     // Same resolution as `make_mcts`: a pinned config's mode, else this process's environment.
@@ -186,13 +284,10 @@ pub fn budget_label(cfg: &GenerateConfig) -> String {
         .map_or_else(botbowl_mcts::BudgetMode::from_env, |c| c.budget_mode)
         == botbowl_mcts::BudgetMode::Visits;
     match cfg.search.budget {
-        SearchBudget::Time(d) => format!(
-            "mcts(time={}ms,workers={workers},eval={eval}{backup}{config})",
-            d.as_millis()
-        ),
+        SearchBudget::Time(d) => format!("mcts(time={}ms,workers={workers},eval={eval}{config})", d.as_millis()),
         SearchBudget::Iterations(n) => {
             let unit = if visits { "visits" } else { "iters" };
-            format!("mcts({unit}={n},workers={workers},eval={eval}{backup}{config})")
+            format!("mcts({unit}={n},workers={workers},eval={eval}{config})")
         }
     }
 }
@@ -222,6 +317,7 @@ impl BotPair {
         &mut self,
         state: &mut GameState,
         cfg: &GenerateConfig,
+        explorer: &mut Explorer,
         stop: impl Fn(&GameState) -> bool,
     ) -> (Vec<Sample>, SearchTelemetry) {
         let mut samples: Vec<Sample> = Vec::new();
@@ -230,12 +326,14 @@ impl BotPair {
         while !state.info.game_over && !stop(state) && steps < cfg.max_steps {
             let action = match state.available_actions.team {
                 Some(TeamType::Home) => {
-                    let (a, s) = self.home.get_action_with_record(state);
+                    let (a, s, o) = self.home.get_action_explore(state, explorer.step(0));
+                    explorer.record(o);
                     samples.push(s);
                     a
                 }
                 Some(TeamType::Away) => {
-                    let (a, s) = self.away.get_action_with_record(state);
+                    let (a, s, o) = self.away.get_action_explore(state, explorer.step(1));
+                    explorer.record(o);
                     samples.push(s);
                     a
                 }
@@ -266,8 +364,10 @@ fn mcts_vs_mcts_samples(
     nn: Option<&Arc<NnEvaluator>>,
     seed: u64,
     stop: impl Fn(&GameState) -> bool,
-) -> (Vec<Sample>, SearchTelemetry) {
-    BotPair::new(cfg, nn, seed).play(state, cfg, stop)
+) -> (Vec<Sample>, SearchTelemetry, Explorer) {
+    let mut explorer = Explorer::new(cfg.exploration, seed);
+    let (samples, telemetry) = BotPair::new(cfg, nn, seed).play(state, cfg, &mut explorer, stop);
+    (samples, telemetry, explorer)
 }
 
 /// Stamp a trajectory's search health into its provenance.
@@ -314,7 +414,7 @@ fn self_play_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, see
     state.set_logging_state(false);
 
     let board_dims = state.board_dims;
-    let (samples, telemetry) = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |_| false);
+    let (samples, telemetry, explorer) = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |_| false);
 
     let label = budget_label(cfg);
     let mut meta = TrajectoryMeta::new("self-play", board_dims)
@@ -328,7 +428,7 @@ fn self_play_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, see
     if let Some(name) = &cfg.config_name {
         meta = meta.with_extra("mcts_config", name.clone());
     }
-    let meta = with_telemetry(meta, &telemetry);
+    let meta = explorer.stamp(with_telemetry(meta, &telemetry));
     let outcome = Outcome::from_state(&state, None);
     Trajectory::new(meta, samples, outcome)
 }
@@ -391,16 +491,13 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
         }
         meta
     };
-    let drive_over = |s: &GameState, half: u8, home: u8, away: u8| {
-        s.home.score != home || s.away.score != away || s.info.half != half
-    };
-
     let mut bots = BotPair::new(cfg, nn, seed);
-    let (half, home, away) = (state.info.half, state.home.score, state.away.score);
+    let drive = crate::drives::DriveStart::of(&state);
     let meta = base_meta(1, "random", &state);
-    let (samples, telemetry) = bots.play(&mut state, cfg, |s| drive_over(s, half, home, away));
+    let mut explorer = Explorer::new(cfg.exploration, seed);
+    let (samples, telemetry) = bots.play(&mut state, cfg, &mut explorer, |s| drive.over(s));
     let mut out = vec![Trajectory::new(
-        with_telemetry(meta, &telemetry),
+        explorer.stamp(with_telemetry(meta, &telemetry)),
         samples,
         Outcome::from_state(&state, None),
     )];
@@ -408,13 +505,20 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
     // A score (not a half end, not game over) leaves the engine at the next
     // drive's first setup prompt: the scoring team kicks and is asked to
     // place its first player.
-    let scored = (state.home.score, state.away.score) != (home, away);
-    if cfg.next_drive && scored && !state.info.game_over && state.info.half == half && state.setup_team().is_some() {
-        let (home, away) = (state.home.score, state.away.score);
+    let scored = drive.scored(&state) != (0, 0);
+    if cfg.next_drive
+        && scored
+        && !state.info.game_over
+        && state.info.half == drive.half
+        && state.setup_team().is_some()
+    {
+        let next = crate::drives::DriveStart::of(&state);
         let meta = base_meta(2, "setup", &state);
-        let (samples, telemetry) = bots.play(&mut state, cfg, |s| drive_over(s, half, home, away));
+        // Its own exploration budget, like any drive's: the first moves sampled are the setup's.
+        let mut explorer = Explorer::new(cfg.exploration, seed ^ NEXT_DRIVE_SEED_MIX);
+        let (samples, telemetry) = bots.play(&mut state, cfg, &mut explorer, |s| next.over(s));
         out.push(Trajectory::new(
-            with_telemetry(meta, &telemetry),
+            explorer.stamp(with_telemetry(meta, &telemetry)),
             samples,
             Outcome::from_state(&state, None),
         ));

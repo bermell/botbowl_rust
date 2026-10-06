@@ -1,0 +1,6 @@
+# Plan 055: gumbel16_f1000 with a two-turn horizon instead of one (H3/H4: the search's leaves sit
+# mid-turn and the value head judges them; a longer horizon reaches the opponent's reply).
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+horizon_turns = 2

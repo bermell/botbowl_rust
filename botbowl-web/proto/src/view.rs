@@ -335,8 +335,9 @@ pub struct ViewState {
     /// Which side must supply the next action. `None` while the engine is
     /// mid-procedure or the game is over.
     pub to_act: Option<TeamType>,
-    /// The side this browser plays.
-    pub human: TeamType,
+    /// The sides this browser plays: one against a bot, none when two bots
+    /// play each other, both for hot-seat.
+    pub humans: Vec<TeamType>,
     /// `proc_stack_top()` — the rules subsystem currently asking.
     pub proc: String,
     pub active_player: Option<usize>,
@@ -358,6 +359,15 @@ pub struct ViewState {
 }
 
 impl ViewState {
+    pub fn is_human(&self, team: TeamType) -> bool {
+        self.humans.contains(&team)
+    }
+
+    /// Whether the side to act right now is played from this browser.
+    pub fn human_to_act(&self) -> bool {
+        self.to_act.is_some_and(|t| self.is_human(t))
+    }
+
     pub fn square(&self, pos: Position) -> Option<&SquareView> {
         self.squares.get(self.dims.index(pos))
     }

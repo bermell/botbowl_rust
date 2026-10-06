@@ -44,6 +44,22 @@ def points_and_var(row):
     return m, var
 
 
+def pair_counts(row):
+    """Plan 051: the row's pentanomial (pairs scoring 0, ½, 1, 1½, 2), or None on older reports."""
+    counts = (row.get("pairs") or {}).get("counts")
+    return list(counts) if counts and sum(counts) >= 2 else None
+
+
+def paired_se(counts):
+    """SE of the per-game score from mirrored pairs, as `botbowl_play::stats::Pentanomial::se`."""
+    n = sum(counts)
+    if n < 2:
+        return float("nan")
+    m = sum(i / 4 * c for i, c in enumerate(counts)) / n
+    var = sum((i / 4 - m) ** 2 * c for i, c in enumerate(counts)) / n
+    return math.sqrt(var / n)
+
+
 def anchor_row(report, anchor, board=None):
     """The vs-anchor row — on `board` (`14x7/4`) when given, else the first
     (plan 042 multi-size reports carry one row per board)."""
@@ -93,6 +109,7 @@ def load(run_dir, anchor, board=None):
             "gen": g, "src": src, "n": row["games"], "pts": pts, "var": var,
             "w": row["wins"], "d": row["draws"], "l": row["losses"],
             "heur": points_and_var(heur)[0] if heur else float("nan"),
+            "pairs": pair_counts(row),
         })
     return gens
 
@@ -109,6 +126,9 @@ def rolling(gens, window):
         l = n - w - d
         ss = w * (1 - m) ** 2 + d * (0.5 - m) ** 2 + l * m ** 2
         se = math.sqrt(ss / (n - 1) / n) if n > 1 else float("nan")
+        # Plan 051: when every generation in the window carries its pairs, pool them for the SE.
+        if span and all(x["pairs"] for x in span):
+            se = paired_se([sum(c) for c in zip(*(x["pairs"] for x in span))])
         out.append((m, se, n, len(span)))
     return out
 
@@ -159,7 +179,7 @@ def main():
             print(f"gen{a.summary:02d} has no anchor row yet", file=sys.stderr)
             return 1
         g, (rm, rse, rn, rk) = gens[i], roll[i]
-        se = math.sqrt(g["var"] / g["n"]) if g["n"] > 1 else float("nan")
+        se = paired_se(g["pairs"]) if g["pairs"] else (math.sqrt(g["var"] / g["n"]) if g["n"] > 1 else float("nan"))
         full = [r[0] for r in roll[: i + 1] if r[3] >= a.window]
         best = f"{max(full):.3f}" if full else f"n/a (window not full until gen{gens[0]['gen'] + a.window - 1:02d})"
         tag = f"@{a.board}" if a.board else ""
@@ -174,7 +194,7 @@ def main():
     print(f"vs {a.anchor}  ({a.run_dir}); rolling window {a.window} gens, games-pooled")
     print(f"{'gen':>5} {'src':>12} {'n':>4} {'pts':>6} {'±SE':>6} {'W-D-L':>10} {'roll':>6} {'±SE':>6} {'n':>4} {'heur':>6}")
     for g, (rm, rse, rn, rk) in zip(gens, roll):
-        se = math.sqrt(g["var"] / g["n"]) if g["n"] > 1 else float("nan")
+        se = paired_se(g["pairs"]) if g["pairs"] else (math.sqrt(g["var"] / g["n"]) if g["n"] > 1 else float("nan"))
         rs = f"{rm:.3f}" if rk >= a.window else f"({rm:.3f})"
         print(f"{g['gen']:>5} {g['src']:>12} {g['n']:>4} {g['pts']:.3f} {se:.3f} "
               f"{g['w']:>3}-{g['d']:>2}-{g['l']:<3} {rs:>7} {rse:.3f} {rn:>4} {g['heur']:.3f}")

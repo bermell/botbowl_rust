@@ -155,10 +155,12 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
         parallel_games: parallel,
         tx,
         known_models: cached_models.into_iter().collect(),
+        named_models: Default::default(),
         tasks: Default::default(),
         games_done: 0,
         last_seen: Instant::now(),
     });
+    hub.inner.lock().unwrap().name_cached_models();
     hub.changed.notify_waiters();
 
     let (mut sink, mut stream) = socket.split();

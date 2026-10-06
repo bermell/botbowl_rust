@@ -12,15 +12,19 @@
 //! - [`board_sizes`] — weighted board-size distributions and the seed-keyed
 //!   draw that decides which board a game is played on (plan 042).
 //! - [`bots`] — evaluator/search configuration and `MctsBot` construction.
+//! - [`drives`] — paired contested drives from frozen positions, a cheaper ladder rung (plan 051).
 //! - [`generate`] — self-play, random-start and curriculum trajectories.
 //! - [`eval`] — one ladder game, its per-game record, and the report rows
 //!   the per-game records fold into.
+//! - [`stats`] — paired-game scoring and the SPRT that stops a decided rung (plan 051).
 //! - [`trace`] — the opt-in per-decision tree-reuse trace (plan 043).
 
 pub mod board_sizes;
 pub mod bots;
+pub mod drives;
 pub mod eval;
 pub mod generate;
+pub mod stats;
 pub mod trace;
 
 /// Game workers only orchestrate — the search runs on `MctsBot`'s own

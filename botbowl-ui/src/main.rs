@@ -3,13 +3,22 @@ mod curriculum;
 mod dataset;
 mod eval;
 mod live;
+mod mc_label;
+mod override_audit;
 mod placement;
+mod positions;
 mod replay;
+mod value_bench;
 
 use clap::Parser;
 use std::io;
 
 use botbowl_ui::cli;
+
+/// As in `botbowl-worker`: `dataset` and `eval` play many MCTS games per process, and glibc
+/// malloc keeps the freed search trees in per-thread arenas instead of returning them.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> io::Result<()> {
     let cli = cli::Cli::parse();
@@ -22,5 +31,9 @@ fn main() -> io::Result<()> {
         cli::Command::Eval(args) => eval::run(args),
         cli::Command::Placement(args) => placement::run(args),
         cli::Command::Convergence(args) => convergence::run(args),
+        cli::Command::Positions(args) => positions::run(args),
+        cli::Command::OverrideAudit(args) => override_audit::run(args),
+        cli::Command::ValueBench(args) => value_bench::run(args),
+        cli::Command::McLabel(args) => mc_label::run(args),
     }
 }

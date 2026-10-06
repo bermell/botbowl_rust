@@ -19,6 +19,7 @@
 //! or worker machines folds together with [`SearchTelemetry::merge`] in any order — the same rule
 //! `botbowl_play::eval::LadderRow::record` encodes for eval rows.
 
+use botbowl_engine::core::model::Action as EngineAction;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -446,5 +447,46 @@ mod test {
         c.record(ReuseOutcome::AnchorMiss);
         assert_eq!(c.attempts(), 4);
         assert_eq!(c.rate(), Some(0.5));
+    }
+}
+
+/// Opt-in diagnostic (`MctsConfig::trace_root_descents`, `BLOOD_MCTS_TRACE_ROOT=1`): how many
+/// descents each root child was *selected* for. The visit counts the tree reports are not that.
+/// Backprop sets a node's visits to the sum of its children's, so in a recombining DAG a subtree
+/// shared by several root children is credited to each of them, and a descent that stops at an
+/// incomplete chance node or a terminal leaf is not credited at all until the next full backprop.
+///
+/// Held by the bot and shared with every tree it builds, so a reused tree (whose dynamics were
+/// built for an earlier root) still counts against the current root. Costs a `GameState`
+/// comparison per player-node selection while enabled, and nothing when not.
+#[derive(Debug, Default)]
+pub struct RootDescents {
+    inner: std::sync::Mutex<(
+        Option<botbowl_engine::core::gamestate::GameState>,
+        Vec<(EngineAction, u32)>,
+    )>,
+}
+
+impl RootDescents {
+    /// Start counting for a new root.
+    pub fn reset(&self, root: botbowl_engine::core::gamestate::GameState) {
+        *self.inner.lock().unwrap() = (Some(root), Vec::new());
+    }
+
+    /// Count `action` if `parent` is the current root.
+    pub fn record(&self, parent: &botbowl_engine::core::gamestate::GameState, action: EngineAction) {
+        let mut g = self.inner.lock().unwrap();
+        if g.0.as_ref() != Some(parent) {
+            return;
+        }
+        match g.1.iter_mut().find(|(a, _)| *a == action) {
+            Some((_, n)) => *n += 1,
+            None => g.1.push((action, 1)),
+        }
+    }
+
+    /// Descents per root child for the current root.
+    pub fn counts(&self) -> Vec<(EngineAction, u32)> {
+        self.inner.lock().unwrap().1.clone()
     }
 }

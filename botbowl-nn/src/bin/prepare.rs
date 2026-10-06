@@ -49,7 +49,9 @@ use botbowl_nn::encode::{
 };
 use botbowl_nn::npy;
 use botbowl_nn::perspective::mover_for;
-use botbowl_nn::targets::{policy_target_of, value_target_blended, PolicyTargetKind, SolvedRootPolicy};
+use botbowl_nn::targets::{
+    policy_target_of, value_target_blended, value_targets_td_lambda, PolicyTargetKind, SolvedRootPolicy,
+};
 
 /// Layout schema version — bump when the tensor layout / channel meaning
 /// changes so a stale prepared dir can be rejected.
@@ -103,6 +105,9 @@ enum PolicyTargetArg {
     Visits,
     /// Completed-Q: softmax(ln prior + q_mover / --tau) (plan 032 #7).
     Cq,
+    /// Gumbel MuZero completed-Q: softmax(ln prior + (c_visit + maxN)·c_scale·q̂), q̂ the
+    /// root's min-max-normalised completed Q (plan 049 finding 1).
+    Gumbel,
 }
 
 #[derive(Parser, Debug)]
@@ -126,10 +131,26 @@ struct Args {
     /// Temperature for `--policy-target cq`, in Q points (1000 = one TD).
     #[arg(long, default_value_t = 100.0)]
     tau: f32,
+    /// `--policy-target gumbel`: the visit offset c_visit in `(c_visit + maxN)·c_scale`.
+    #[arg(long = "gumbel-c-visit", default_value_t = 50.0)]
+    gumbel_c_visit: f32,
+    /// `--policy-target gumbel`: c_scale. 0.1 is what plan 049's audit measured (24% of argmaxes
+    /// moved off the prior on gen21, vs 19% at cq tau=20 and 8% at tau=100).
+    #[arg(long = "gumbel-c-scale", default_value_t = 0.1)]
+    gumbel_c_scale: f32,
+    /// `--policy-target gumbel`: floor on a root's normalising Q range, in Q points, so a near-tie
+    /// cannot read as a full-scale gap. 0 = no floor.
+    #[arg(long = "gumbel-min-range", default_value_t = 0.0)]
+    gumbel_min_range: f32,
     /// Plan 036 W3. Value label = `L * drive_outcome + (1 - L) * root_search_value`,
     /// both mover-signed. `1.0` (the default) is the pure outcome, bit for bit.
     #[arg(long = "value-blend", default_value_t = 1.0)]
     value_blend: f32,
+    /// Plan 056. Value label = TD(lambda) along the drive: the later decisions' root values,
+    /// weighted `(1 - L) * L^(k-1)`, ending in the outcome with weight `L^K` (no sample's own root
+    /// value). `1.0` is the pure outcome; excludes `--value-blend`.
+    #[arg(long = "value-td-lambda", conflicts_with = "value_blend")]
+    value_td_lambda: Option<f32>,
     /// Plan 036 W5. Drop rows whose `(spatial, global)` bytes have already been
     /// written, keeping the first. Plan 031 D3 measured 12.8% of rows as exact
     /// duplicates — intra-drive block/push/reroll chains with disjoint legal
@@ -237,6 +258,11 @@ fn main() {
     let kind = match args.policy_target {
         PolicyTargetArg::Visits => PolicyTargetKind::Visits,
         PolicyTargetArg::Cq => PolicyTargetKind::CompletedQ { tau: args.tau },
+        PolicyTargetArg::Gumbel => PolicyTargetKind::GumbelQ {
+            c_visit: args.gumbel_c_visit,
+            c_scale: args.gumbel_c_scale,
+            min_range: args.gumbel_min_range,
+        },
     };
 
     // Keyed by (w, h) engine dims.
@@ -267,7 +293,8 @@ fn main() {
             // sum to 1 per drive after filtering and dedup — the whole point is
             // that each drive contributes one unit of value gradient per epoch.
             let before: BTreeMap<(usize, usize), usize> = groups.iter().map(|(k, g)| (*k, g.n)).collect();
-            for sample in &traj.samples {
+            let td_values = args.value_td_lambda.map(|l| value_targets_td_lambda(&traj.samples, l));
+            for (si, sample) in traj.samples.iter().enumerate() {
                 total_read += 1;
                 if sample.root_visits < args.min_root_visits && !sample.scripted {
                     total_below_min += 1;
@@ -280,7 +307,10 @@ fn main() {
                         continue;
                     }
                 };
-                let value = match value_target_blended(sample, args.value_blend) {
+                let value = match td_values
+                    .as_ref()
+                    .map_or_else(|| value_target_blended(sample, args.value_blend), |td| td[si])
+                {
                     Some(v) => v,
                     None => {
                         // Value target missing (outcome not backfilled) — the
@@ -395,7 +425,9 @@ fn main() {
             // layout a checkpoint is compatible with, and a v6 net loads a
             // blended corpus perfectly well. This string is what tells you
             // which corpus a net was fitted to.
-            "value_target": if args.value_blend >= 1.0 {
+            "value_target": if let Some(l) = args.value_td_lambda {
+                format!("mover_signed_td_lambda({l:.3})")
+            } else if args.value_blend >= 1.0 {
                 "mover_signed_drive_outcome".to_string()
             } else {
                 format!(
@@ -405,6 +437,7 @@ fn main() {
                 )
             },
             "value_blend": args.value_blend,
+            "value_td_lambda": args.value_td_lambda,
             // Plan 036 W4: `weight.npy` is always written (1/len(drive)); it is
             // the *trainer* that decides whether to apply it, so a corpus never
             // has to be re-prepared to try the arm.

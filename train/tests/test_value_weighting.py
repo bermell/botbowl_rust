@@ -41,7 +41,7 @@ def _batch(values, weights):
 def test_unweighted_is_the_plain_mse():
     model = _ConstModel(0.0)
     batch = _batch([1.0, -1.0, 0.5], [0.5, 0.25, 0.25])
-    _, vl, _ = compute_losses(model, batch, "cpu")
+    _, vl, _, _ = compute_losses(model, batch, "cpu")
     assert torch.allclose(vl, torch.tensor((1.0 + 1.0 + 0.25) / 3))
 
 
@@ -50,8 +50,8 @@ def test_uniform_weights_reproduce_the_plain_mse():
     # the same scale, so --value-weight means one thing in both arms.
     model = _ConstModel(0.0)
     batch = _batch([1.0, -1.0, 0.5], [0.1, 0.1, 0.1])
-    _, plain, _ = compute_losses(model, batch, "cpu")
-    _, weighted, _ = compute_losses(model, batch, "cpu", per_drive_value_weight=True)
+    _, plain, _, _ = compute_losses(model, batch, "cpu")
+    _, weighted, _, _ = compute_losses(model, batch, "cpu", per_drive_value_weight=True)
     assert torch.allclose(plain, weighted)
 
 
@@ -62,8 +62,8 @@ def test_weighting_reweights_by_drive_length():
     # the loss is the mean of their squared errors.
     model = _ConstModel(0.0)
     batch = _batch([1.0, 2.0, 2.0, 2.0, 2.0], [1.0, 0.25, 0.25, 0.25, 0.25])
-    _, plain, _ = compute_losses(model, batch, "cpu")
-    _, weighted, _ = compute_losses(model, batch, "cpu", per_drive_value_weight=True)
+    _, plain, _, _ = compute_losses(model, batch, "cpu")
+    _, weighted, _, _ = compute_losses(model, batch, "cpu", per_drive_value_weight=True)
     assert torch.allclose(plain, torch.tensor((1.0 + 4 * 4.0) / 5))
     assert torch.allclose(weighted, torch.tensor((1.0 + 4.0) / 2))
     assert weighted < plain

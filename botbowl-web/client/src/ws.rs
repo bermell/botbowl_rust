@@ -19,7 +19,8 @@ thread_local! {
     static SOCKET: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
 }
 
-/// `ws://<this host>/ws` — the client is always served by its own server.
+/// `ws://<this host><this page's directory>ws` — the client is always served by its own
+/// server, at `/` standalone and at `/play/` on the hub, so the socket sits next to the page.
 fn endpoint() -> String {
     let location = web_sys::window().expect("a window").location();
     let protocol = if location.protocol().as_deref() == Ok("https:") {
@@ -28,7 +29,10 @@ fn endpoint() -> String {
         "ws"
     };
     let host = location.host().unwrap_or_else(|_| "127.0.0.1:8080".into());
-    format!("{protocol}://{host}/ws")
+    let path = location.pathname().unwrap_or_else(|_| "/".into());
+    let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
+    let dir = if dir.is_empty() { "/" } else { dir };
+    format!("{protocol}://{host}{dir}ws")
 }
 
 /// Send one message. Silently drops when the socket is not open — every
@@ -88,8 +92,28 @@ fn handle(app: App, msg: ServerMsg) {
     match msg {
         ServerMsg::Lobby(lobby) => {
             app.spec.set(Some(lobby.defaults.clone()));
+            app.teams.set(lobby.teams.clone());
+            app.pictures.set(lobby.pictures.clone());
+            app.step_mode.set(lobby.step_mode);
+            if let Some(ms) = lobby.step_mode.millis() {
+                app.step_ms.set(ms);
+            }
             app.lobby.set(Some(*lobby));
         }
+        ServerMsg::Teams(teams) => {
+            app.teams.set(teams);
+            app.notice.set(Some("saved".into()));
+        }
+        ServerMsg::PictureSaved { picture, pictures } => {
+            app.pictures.set(pictures);
+            app.uploaded.set(Some(picture));
+        }
+        ServerMsg::DriveOver {
+            attacker,
+            scored,
+            home_score,
+            away_score,
+        } => app.drive_over.set(Some((attacker, scored, home_score, away_score))),
         ServerMsg::View(view) => {
             // A stale view can arrive after an undo or a race; the sequence
             // number is monotonic per session, so ignore anything older.
@@ -115,19 +139,39 @@ fn handle(app: App, msg: ServerMsg) {
         ServerMsg::BotThinking { team, budget } => {
             app.thinking.set(Some(format!("{team:?} thinking — {budget}")));
         }
-        ServerMsg::BotMoved { report, .. } => {
-            if let Some(report) = report {
-                app.node.set(None);
-                app.node_path.set(Vec::new());
-                app.hypothetical.set(None);
-                app.report.set(Some(*report));
+        ServerMsg::Decision(record) => {
+            // Following the game: a new search replaces the tree the explorer
+            // was walking, so drop back to the live board with it.
+            if app.selected.get_untracked().is_none() && record.search.is_some() {
+                app.back_to_live();
             }
+            app.decisions.update(|d| {
+                // After an undo the server reuses indices; the truncation
+                // message has already cut the log back, this is belt and braces.
+                d.truncate(record.index as usize);
+                d.push(*record);
+            });
+        }
+        ServerMsg::DecisionsTruncated { keep } => {
+            app.decisions.update(|d| d.truncate(keep as usize));
+            if app.selected.get_untracked().is_some_and(|i| i >= keep) {
+                app.selected.set(None);
+            }
+            if app.board_of.get_untracked().is_some_and(|i| i >= keep) {
+                app.back_to_live();
+            }
+        }
+        ServerMsg::DecisionBoard { index, view } => {
+            app.node.set(None);
+            app.node_path.set(Vec::new());
+            app.board_of.set(Some(index));
+            app.hypothetical.set(Some(*view));
         }
         ServerMsg::Node(node) => {
             app.node_path.set(node.path.clone());
             app.node.set(Some(*node));
         }
-        ServerMsg::Valuation { value_home } => app.valuation.set(Some(value_home)),
+        ServerMsg::Net(readout) => app.net_now.set(Some(*readout)),
         ServerMsg::RollPinned(roll) => app.pinned.set(roll),
         ServerMsg::Saved { path } => app.saved.set(Some(path)),
         ServerMsg::GameOver {

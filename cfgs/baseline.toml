@@ -6,7 +6,6 @@
 #
 # Copy this file to name a variant and set only what you are changing:
 #
-#   backup = "mean"            # minimax (default) | mean
 #   fpu_reduction = 0.25       # Leela/KataGo FPU reduction k, in Q points
 #   horizon_turns = 2          # own-turns of lookahead before a state counts terminal
 #   tie_break = "hash"         # hash (default) | asc | desc | endzone

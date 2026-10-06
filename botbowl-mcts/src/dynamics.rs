@@ -31,13 +31,15 @@ use rand_chacha::ChaCha8Rng;
 use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, Status, StoreState, Tree, TreeAlias};
 
 use crate::action::{BbAction, BbPlayer};
+use crate::exploration::{sample_index, ExploreStep, RootNoise, RootNoiseSpec};
+use crate::gumbel::{ForcedRoot, Halving, RootChild};
 use crate::priors::prior_for_engine_action;
 use crate::pruning::{self, should_prune};
 use crate::report::{self, Edge, NodeStats, NodeView, SearchSummary};
 use crate::roll_outcomes;
 use crate::score::leaf_score;
 use crate::scripted;
-use crate::telemetry::{RecombinationCounts, ReuseDecision, ReuseOutcome, SearchTelemetry};
+use crate::telemetry::{RecombinationCounts, ReuseDecision, ReuseOutcome, RootDescents, SearchTelemetry};
 
 /// PUCT exploration constant. Sized so that the `c · P · √N(parent) /
 /// (1 + N(a))` term is comparable to leaf-score magnitudes (game score
@@ -132,61 +134,6 @@ impl PuctMode {
             PuctMode::NormalisedQ { c, range_floor } => {
                 format!("puct=norm(c={c},floor={range_floor})")
             }
-        }
-    }
-}
-
-/// How a **player** node aggregates its children's Q in `backprop_scores`
-/// (plan 032 #2). Chance nodes always take the probability-weighted
-/// expectation regardless of this setting.
-///
-/// `Minimax` is the historical rule and the default. It is exact for the
-/// heuristic leaf, which is a deterministic function of the state inside
-/// the horizon; with a learned leaf it is a max over noisy estimates and
-/// plan 031 D1 measured it adding **+0.09 to +0.10** of a drive outcome of
-/// optimism at the root on every generation, with the bare net at +0.03.
-/// `Mean` is the AlphaZero remedy: a child's Q is the visit-weighted mean
-/// of everything backed up through it, so one lucky leaf cannot carry a
-/// whole subtree. The mean also changes what FPU (= parent Q) and
-/// `PUCT_C` see — the parent is no longer its best child — so a `c`
-/// re-tune belongs with any switch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackupMode {
-    /// Home max / Away min over child Q; visits sum.
-    #[default]
-    Minimax,
-    /// `Σ visits·Q / Σ visits` over child Q; visits sum. Integer
-    /// arithmetic throughout so the result is independent of the order
-    /// `recon_mcts` hands children back in (the chance branch needs a
-    /// covariant sort for the same reason; here the sum is exact).
-    Mean,
-}
-
-impl BackupMode {
-    /// `BLOOD_MCTS_BACKUP={minimax|mean}`; unset or unrecognised ⇒ `Minimax`.
-    pub fn from_env() -> Self {
-        match std::env::var("BLOOD_MCTS_BACKUP").ok().as_deref().map(str::trim) {
-            Some("mean") | Some("avg") | Some("average") => BackupMode::Mean,
-            _ => BackupMode::Minimax,
-        }
-    }
-
-    /// Parse the CLI spelling; `None` on an unknown word so callers can
-    /// refuse to start a multi-hour match with a misspelt arm.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim() {
-            "minimax" | "max" => Some(BackupMode::Minimax),
-            "mean" | "avg" | "average" => Some(BackupMode::Mean),
-            _ => None,
-        }
-    }
-
-    /// Provenance tag for corpora and reports (same role as `PuctMode::label`).
-    pub fn label(&self) -> &'static str {
-        match self {
-            BackupMode::Minimax => "backup=minimax",
-            BackupMode::Mean => "backup=mean",
         }
     }
 }
@@ -310,6 +257,47 @@ impl BudgetMode {
     }
 }
 
+/// How the search models the rolls it cannot branch on for free.
+///
+/// `Exact` (default) enumerates the injury roll (stunned / KO / casualty), the pass roll (every
+/// face, merged where faces coincide) and both foul rolls (armour, injury, ejection on doubles)
+/// at their real odds, and ends the search at half time. `Legacy` is the model every corpus up
+/// to 2026-09-29 was searched under: a broken armour was always a casualty, every pass fumbled,
+/// a foul never broke armour or got the fouler sent off, and the horizon ran through half time.
+/// It exists only so the fixed search can play the old one head to head in one process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChanceModel {
+    #[default]
+    Exact,
+    Legacy,
+    /// Diagnostic: exact, except the pass roll stays scripted to a fumble.
+    ExactScriptedPass,
+    /// Diagnostic: exact rolls, but the horizon runs through half time.
+    ExactThroughHalf,
+    /// Diagnostic: only the injury roll is exact; passes fumble, fouls are harmless, and the
+    /// horizon runs through half time.
+    InjuryOnly,
+}
+
+impl ChanceModel {
+    /// `BLOOD_MCTS_CHANCE={exact|legacy}`; unset or unrecognised ⇒ `Exact`.
+    pub fn from_env() -> Self {
+        match std::env::var("BLOOD_MCTS_CHANCE").ok().as_deref().map(str::trim) {
+            Some("legacy") => ChanceModel::Legacy,
+            Some("exact_scripted_pass") => ChanceModel::ExactScriptedPass,
+            Some("exact_through_half") => ChanceModel::ExactThroughHalf,
+            Some("injury_only") => ChanceModel::InjuryOnly,
+            _ => ChanceModel::Exact,
+        }
+    }
+
+    /// Does the horizon end the search at half time under this model?
+    pub fn stops_at_half(self) -> bool {
+        matches!(self, ChanceModel::Exact | ChanceModel::ExactScriptedPass)
+    }
+}
+
 /// MCTS workers spawned by `MctsBot::get_action` get an explicit
 /// 16 MB stack instead of the OS-default ~2 MB. Sized for headroom
 /// against the recursive `Node::get_state` and `Arc<Node>` drop
@@ -340,6 +328,15 @@ pub struct BbScore {
     /// from `BLOOD_MCTS_VIRTUAL_LOSS` via `MctsBot::new` (default 30,
     /// `0` disables).
     pub virtual_loss: AtomicI32,
+    /// The drive outcome this node is *proven* to reach, Home-centric: `+1` Home scores, `-1`
+    /// Away scores, `0` the drive ends with no score. `None` = not proven (a value-head or
+    /// heuristic estimate is somewhere below). Set at leaves the drive is over at (the anchor's
+    /// exact-outcome check) and propagated by `backprop_scores`: a chance node is proven when
+    /// every outcome is proven to the same result; a player node when one child is a proven score
+    /// for the side to move (it can just take it), or every child is proven to the same result.
+    /// It exists because the player-node backup is a mean: averaging a proven touchdown with the
+    /// lines explored beside it would hide a certain score (see `backprop_scores`).
+    pub proven: Option<i8>,
 }
 
 impl Clone for BbScore {
@@ -349,6 +346,7 @@ impl Clone for BbScore {
             score: self.score,
             node_kind: self.node_kind,
             virtual_loss: AtomicI32::new(self.virtual_loss.load(Ordering::Relaxed)),
+            proven: self.proven,
         }
     }
 }
@@ -369,12 +367,11 @@ impl Clone for BbScore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HorizonAnchor {
     pub agent_team: TeamType,
-    /// `Half` zeroes both turn counters when the second half starts, so
-    /// without this a late-first-half root would search through the
-    /// half-time setups and kickoff until someone scored (the turn test
-    /// below never fires after the reset). A half change is the end of the
-    /// drive, which is exactly what the horizon bounds.
+    /// The half the root is in. Both turn counters reset at half time, so the turn test alone
+    /// cannot see the half end; this can.
     pub half: u8,
+    /// End the search (and the drive) at half time. `false` only under `ChanceModel::Legacy`.
+    pub stop_at_half: bool,
     pub home_turn: u8,
     pub away_turn: u8,
     pub home_score: u8,
@@ -404,6 +401,7 @@ impl HorizonAnchor {
         Self {
             agent_team,
             half: state.info.half,
+            stop_at_half: true,
             home_turn: state.info.home_turn,
             away_turn: state.info.away_turn,
             home_score: state.home.score,
@@ -424,15 +422,17 @@ impl HorizonAnchor {
         (state.home.score as i64 - self.home_score as i64) - (state.away.score as i64 - self.away_score as i64)
     }
 
+    /// Has the drive the root is in ended — the game over, a score, or the half over? Its value
+    /// is then known exactly: [`score_delta`](Self::score_delta), which is 0 when the half
+    /// simply ran out. Matches how the corpus labels a drive (`generate.rs` ends a random-start
+    /// trajectory at a score or the end of the half).
+    pub fn drive_over(&self, state: &GameState) -> bool {
+        state.info.game_over || self.score_changed(state) || (self.stop_at_half && state.info.half != self.half)
+    }
+
     /// Has the state moved past the horizon? True ⇒ treat as terminal.
     pub fn diverged(&self, state: &GameState) -> bool {
-        if state.info.game_over {
-            return true;
-        }
-        if state.home.score != self.home_score || state.away.score != self.away_score {
-            return true;
-        }
-        if state.info.half != self.half {
+        if self.drive_over(state) {
             return true;
         }
         // The agent's turn counter only advances when it's their turn
@@ -694,9 +694,6 @@ pub struct BloodBowlDynamics {
     /// Plan 023 instrument: how exact ties are broken in `select_node`
     /// and at the root. `Hash` (default) is the shipped behaviour.
     pub tie_break: TieBreak,
-    /// Plan 032 #2: player-node aggregation rule. `Minimax` (default) is
-    /// the shipped behaviour.
-    pub backup: BackupMode,
     /// Plan 032 #3: first-play-urgency reduction `k`, in Q points (the
     /// ±1000 = TD scale). `0.0` (default) is the shipped behaviour — an
     /// unexplored child is estimated at exactly the parent's Q. With
@@ -708,6 +705,46 @@ pub struct BloodBowlDynamics {
     /// the first visit at a node is unaffected. Raw PUCT only — the
     /// normalised frame has its own FPU handling.
     pub fpu_reduction: f32,
+    /// Plan 048: self-play root noise for this search, keyed to its root
+    /// state (see `exploration.rs` for why that keeps recombination pure).
+    /// `None` (default, and always in eval) is the shipped search.
+    pub root_noise: Option<Arc<RootNoise>>,
+    /// Opt-in: count the descents each root child is selected for (`RootDescents`).
+    pub root_trace: Option<Arc<RootDescents>>,
+    /// Which roll model the chance nodes use; see [`ChanceModel`].
+    pub chance_model: ChanceModel,
+    /// Plan 053: the root move the next descent must take, set by the Gumbel search loop.
+    /// `None` (default) is the shipped PUCT root.
+    pub forced_root: Option<Arc<ForcedRoot>>,
+}
+
+impl BloodBowlDynamics {
+    /// Merge chance outcomes that reach the same state into one child with their summed
+    /// probability. A raw D6 is enumerated face by face, but its proc reads classes of faces
+    /// (the pass: every accurate face resolves identically), and `recon_mcts` cannot hold two
+    /// chance edges from one parent into one recombined child: dropping such a tree panics
+    /// ("could not remove dropped node as child's parents") or deadlocks. Pure — it compares
+    /// the states `apply_action` reaches — so recombination is unaffected.
+    fn merge_coinciding_outcomes(&self, state: &GameState, outcomes: Vec<BbAction>) -> Vec<BbAction> {
+        let mut kept: Vec<(Option<GameState>, BbAction, f32)> = Vec::with_capacity(outcomes.len());
+        for a in outcomes {
+            let p = a.prob_f32().unwrap_or(0.0);
+            let next = self.apply_action(state.clone(), &a);
+            let same = next
+                .as_ref()
+                .and_then(|n| kept.iter_mut().find(|(s, _, _)| s.as_ref() == Some(n)));
+            match same {
+                Some((_, _, q)) => *q += p,
+                None => kept.push((next, a, p)),
+            }
+        }
+        kept.into_iter()
+            .map(|(_, a, p)| match a {
+                BbAction::Chance { result, .. } => BbAction::chance(result, p),
+                other => other,
+            })
+            .collect()
+    }
 }
 
 impl Default for BloodBowlDynamics {
@@ -721,8 +758,11 @@ impl Default for BloodBowlDynamics {
             evaluator: Evaluator::default(),
             puct: PuctMode::default(),
             tie_break: TieBreak::default(),
-            backup: BackupMode::default(),
             fpu_reduction: 0.0,
+            root_noise: None,
+            root_trace: None,
+            chance_model: ChanceModel::Exact,
+            forced_root: None,
         }
     }
 }
@@ -982,8 +1022,11 @@ impl GameDynamics for BloodBowlDynamics {
         // child state exists — most rolls (scripted/collapsed) resolve into
         // the same team's next decision or a pending follow-up roll, but the
         // true pass/fail branches and turnover-causing failures change it.
-        if state.pending_roll.is_some() {
-            let outcomes = roll_outcomes::enumerate(state, state.pending_roll.as_ref().unwrap());
+        if let Some(req) = state.pending_roll.as_ref() {
+            let outcomes = roll_outcomes::enumerate_with(state, req, self.chance_model);
+            if outcomes.len() > 1 && roll_outcomes::outcomes_may_coincide(req) {
+                return Some(self.merge_coinciding_outcomes(state, outcomes));
+            }
             return Some(outcomes);
         }
 
@@ -1025,12 +1068,15 @@ impl GameDynamics for BloodBowlDynamics {
         // Priors: the heuristic computes one per action; the NN does a
         // single forward over the whole (already-pruned) legal set and
         // gathers per-action logits. NN priors *replace* scripted priors.
-        let priors: Vec<f32> = match &self.evaluator {
+        let mut priors: Vec<f32> = match &self.evaluator {
             Evaluator::Heuristic | Evaluator::PureTd | Evaluator::NnValue(_) => {
                 filtered.iter().map(|a| prior_for_engine_action(state, *a)).collect()
             }
             Evaluator::Nn(nn) => nn.priors(state, &filtered),
         };
+        if let Some(noise) = &self.root_noise {
+            noise.apply(state, &filtered, &mut priors);
+        }
         let actions: Vec<BbAction> = filtered
             .into_iter()
             .zip(priors)
@@ -1041,6 +1087,21 @@ impl GameDynamics for BloodBowlDynamics {
         } else {
             Some(actions)
         }
+    }
+
+    /// Take back the virtual loss `select_node` added to this edge's child. Every descent calls
+    /// this for every edge it took, after its backprop, however it ended (see
+    /// `recon_mcts::GameDynamics::release_descent`), so at one worker virtual loss is exactly
+    /// inert (`tests/virtual_loss_inert.rs`). Chance edges never carry any. Saturating at 0: a
+    /// child that was still unscored when selected got none, and may have been scored since.
+    fn release_descent(&self, parent_player: &Self::Player, child_score: &Self::Score) {
+        if self.virtual_loss == 0 || *parent_player == BbPlayer::Chance {
+            return;
+        }
+        let vl = self.virtual_loss;
+        let _ = child_score
+            .virtual_loss
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some((v - vl).max(0)));
     }
 
     /// The mover at the child reached by `action`.
@@ -1198,8 +1259,10 @@ impl GameDynamics for BloodBowlDynamics {
         // increment applied to the chosen child. Set to 0 on the chance
         // branch (probability-driven; divergence isn't the goal) and to
         // `self.virtual_loss` on the player branch. Subtracting it from
-        // Q in `puct_value` pushes other workers off this path until the
-        // next backprop replaces the BbScore (which resets vl to 0).
+        // Q in `puct_value` pushes other workers off this path until this
+        // descent ends and `release_descent` takes it back. (It used to wait
+        // for a backprop to replace the score, which a descent cut off below
+        // this node never did: the penalty leaked and piled up.)
         let bump_chosen = |chosen: &BbAction, vl: i32| {
             for (q, a) in scores_and_actions.clone().into_iter() {
                 if *a.deref() == *chosen {
@@ -1270,7 +1333,27 @@ impl GameDynamics for BloodBowlDynamics {
         //
         // Scores are Home-centric. Home maximises PUCT; Away mirrors
         // by negating Q before adding the exploration bonus.
-        let _ = parent_node_state; // no longer needed for priors; kept in case future rules want it.
+        // Plan 053: the Gumbel search loop names the root move of this descent. The first
+        // player-node selection of a descent is the root's (a descent starts there, and the
+        // root is a player turn), so taking the slot here can only ever apply it at the root.
+        // A move that is not on offer (solved, so hidden from selection) falls through to PUCT.
+        if let Some(want) = self.forced_root.as_ref().and_then(|f| f.take()) {
+            let forced = scores_and_actions
+                .clone()
+                .into_iter()
+                .find_map(|(_, a)| match a.deref() {
+                    BbAction::Player { action, .. } if *action == want => Some(a.deref().clone()),
+                    _ => None,
+                });
+            if let Some(pick) = forced {
+                bump_chosen(&pick, self.virtual_loss);
+                if let Some(trace) = &self.root_trace {
+                    trace.record(parent_node_state, want);
+                }
+                return pick;
+            }
+            self.forced_root.as_ref().unwrap().note_missed();
+        }
         let home_perspective = *parent_player == BbPlayer::Home;
         // For `TieBreak::Mover`: the endzone the side to move is attacking.
         let tie_frame = MoverFrame::for_team(
@@ -1381,13 +1464,16 @@ impl GameDynamics for BloodBowlDynamics {
             }
         };
         bump_chosen(&pick.1, self.virtual_loss);
+        if let (Some(trace), BbAction::Player { action, .. }) = (&self.root_trace, &pick.1) {
+            trace.record(parent_node_state, *action);
+        }
         pick.1
     }
 
     fn backprop_scores<II, Q, A>(
         &self,
         player: &Self::Player,
-        _score_current: Option<&Self::Score>,
+        score_current: Option<&Self::Score>,
         child_scores_and_actions: II,
     ) -> Option<Self::Score>
     where
@@ -1396,6 +1482,11 @@ impl GameDynamics for BloodBowlDynamics {
         A: Deref<Target = Self::Action>,
         Q: Deref<Target = Self::Score>,
     {
+        // Virtual loss belongs to the descents still in flight through this node, not to its
+        // score: carry it over to the replacement so `release_descent` takes back exactly what
+        // `select_node` added. Resetting it here was half of the leak (the other half: a descent
+        // whose backprop never reached the node kept its penalty forever).
+        let in_flight = score_current.map_or(0, |s| s.virtual_loss.load(Ordering::Relaxed));
         // Chance node: probability-weighted average over visited children.
         //
         // Detect a chance node by its children's action variant rather
@@ -1437,7 +1528,7 @@ impl GameDynamics for BloodBowlDynamics {
             // hold `Q`/`A` (`lockref::Ref`s) across the sort, which would
             // pull a second `Ref` while the first is alive and deadlock
             // under contention (plan 013, `lockref-guard`).
-            let mut terms: Vec<(String, u32, f64, i64)> = child_scores_and_actions
+            let mut terms: Vec<(String, u32, f64, i64, Option<i8>)> = child_scores_and_actions
                 .into_iter()
                 .map(|(q, a)| {
                     let key = match a.deref() {
@@ -1449,14 +1540,22 @@ impl GameDynamics for BloodBowlDynamics {
                         q.visits.load(Ordering::Relaxed),
                         a.prob_f32().unwrap_or(0.0) as f64,
                         q.score,
+                        q.proven,
                     )
                 })
                 .collect();
             terms.sort_by(|a, b| a.0.cmp(&b.0));
-            for (_, v, prob, score) in terms.into_iter() {
+            // Proven only if every outcome is proven to the same drive result.
+            let mut proven: Option<Option<i8>> = None;
+            for (_, v, prob, score, p) in terms.into_iter() {
                 if v == 0 {
                     continue;
                 }
+                proven = match proven {
+                    None => Some(p),
+                    Some(acc) if acc == p => Some(acc),
+                    Some(_) => Some(None),
+                };
                 weighted_sum += prob * score as f64;
                 total_prob += prob;
                 total_visits += v;
@@ -1487,53 +1586,69 @@ impl GameDynamics for BloodBowlDynamics {
                 visits: AtomicU32::new(total_visits),
                 score: avg as i64,
                 node_kind: BbPlayer::Chance,
-                virtual_loss: AtomicI32::new(0),
+                virtual_loss: AtomicI32::new(in_flight),
+                proven: proven.flatten(),
             });
         }
 
-        // Player node. Scores are Home-centric, so Home maximises and
-        // Away minimises (plan 006 — adversarial backprop). Visits
-        // sum across children so PUCT's √N(parent) reflects total
-        // descents (plan 007 — matches the Chance branch above).
+        // Player node. Scores are Home-centric. Visits sum across children so PUCT's √N(parent)
+        // reflects total descents (plan 007 — matches the Chance branch above).
         //
-        // Plan 032 #2: under `BackupMode::Mean` the node's Q is instead the
-        // visit-weighted mean of its children — exact integer arithmetic,
-        // one truncating division at the end (symmetric under negation, so
-        // the Home/Away mirror tests keep holding). A child with zero
-        // recorded visits (fresh placeholder scored but not yet descended)
-        // contributes nothing to the mean; if *every* child is at zero the
-        // plain mean of their scores is used so the node is never left
+        //
+        // The node's Q is the visit-weighted mean of its children's Q (the AlphaZero backup), exact
+        // integer arithmetic with one truncating division at the end (symmetric under negation, so
+        // the Home/Away mirror tests keep holding). The mean has no side, so Home and Away share it.
+        // A child with zero recorded visits (scored, never descended) contributes nothing; if
+        // *every* child is at zero the plain mean of their scores is used, so the node is never left
         // unscored while it has scored children.
-        let want_max = *player == BbPlayer::Home;
-        let mut best_score: Option<i64> = None;
+        //
+        // We tried minimax (Home max / Away min over child Q, the rule from the heuristic-leaf era)
+        // and it didn't work with a learned leaf: a max over noisy value estimates picks the
+        // children the net overrates, and a Blood Bowl turn stacks many same-side max nodes, so the
+        // optimism compounds. Measured: +0.10 of a drive outcome of root optimism (plan 031 D1), and
+        // against the bare policy of the same net on contested drives the minimax Gumbel search lost
+        // (0.482) where the mean won (0.526; plan 055, exp064, 2026-10-05). Hardcoded since.
+        //
+        // The one place a max is right is an *exact* value, and the mean would get those wrong: a
+        // proven touchdown for the side to move, averaged with the lines explored beside it, can
+        // read below an unproven alternative, so the bot would decline a certain score. Proven
+        // outcomes (`BbScore::proven`) therefore short-circuit the mean: if any child is a proven
+        // score for the mover, the node is that score, proven (an MCTS-solver win). Only the win
+        // rule, not "every child proven to the same result": recon_mcts leaves unscored children
+        // out of this iterator, so "all proven" could ignore a better unscored move.
+        let mover_win: i8 = if *player == BbPlayer::Home { 1 } else { -1 };
         let mut total_visits: u32 = 0;
         let mut weighted_sum: i128 = 0;
         let mut plain_sum: i128 = 0;
         let mut n_children: i128 = 0;
+        let mut proven_win: Option<i64> = None;
         for (q, _) in child_scores_and_actions.into_iter() {
             let v = q.visits.load(Ordering::Relaxed);
             total_visits += v;
-            let s = q.score;
-            weighted_sum += i128::from(v) * i128::from(s);
-            plain_sum += i128::from(s);
+            weighted_sum += i128::from(v) * i128::from(q.score);
+            plain_sum += i128::from(q.score);
             n_children += 1;
-            best_score = match best_score {
-                None => Some(s),
-                Some(b) if (want_max && s > b) || (!want_max && s < b) => Some(s),
-                Some(b) => Some(b),
-            };
+            if q.proven == Some(mover_win) {
+                // Several proven scores: the best one for the mover (they differ only under the
+                // heuristic leaf, whose TD value carries positional terms).
+                let better = |a: i64, b: i64| if mover_win > 0 { a.max(b) } else { a.min(b) };
+                proven_win = Some(proven_win.map_or(q.score, |w| better(w, q.score)));
+            }
         }
-        let score = match (self.backup, best_score) {
-            (_, None) => return None,
-            (BackupMode::Minimax, Some(b)) => b,
-            (BackupMode::Mean, Some(_)) if total_visits > 0 => (weighted_sum / i128::from(total_visits)) as i64,
-            (BackupMode::Mean, Some(_)) => (plain_sum / n_children) as i64,
+        if n_children == 0 {
+            return None;
+        }
+        let (score, proven) = match proven_win {
+            Some(w) => (w, Some(mover_win)),
+            None if total_visits > 0 => ((weighted_sum / i128::from(total_visits)) as i64, None),
+            None => ((plain_sum / n_children) as i64, None),
         };
         Some(BbScore {
             visits: AtomicU32::new(total_visits),
             score,
             node_kind: *player,
-            virtual_loss: AtomicI32::new(0),
+            virtual_loss: AtomicI32::new(in_flight),
+            proven,
         })
     }
 
@@ -1601,7 +1716,7 @@ impl GameDynamics for BloodBowlDynamics {
                 None => (state.home.score as i64 - state.away.score as i64).clamp(-1, 1) * 1000,
             },
             // Exact-outcome carve-out: once someone has scored since the
-            // anchor (or the game has ended), the drive outcome is *known*
+            // anchor (or the game or the half has ended), the drive outcome is *known*
             // — exactly the value the net is trained to predict. Asking
             // the NN here would (a) replace a gold-standard target with an
             // estimate that recon_mcts then freezes into solved subtrees
@@ -1619,7 +1734,7 @@ impl GameDynamics for BloodBowlDynamics {
             // `NnValue` takes priors from the scripted heuristic and must not
             // pay for a policy tensor it will never read.
             Evaluator::Nn(nn) => match &self.horizon {
-                Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                Some(anchor) if anchor.drive_over(state) => {
                     LEAF_STATS.exact_outcome.fetch_add(1, Ordering::Relaxed);
                     anchor.score_delta(state).clamp(-1, 1) * 1000
                 }
@@ -1629,7 +1744,7 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             },
             Evaluator::NnValue(nn) => match &self.horizon {
-                Some(anchor) if state.info.game_over || anchor.score_changed(state) => {
+                Some(anchor) if anchor.drive_over(state) => {
                     LEAF_STATS.exact_outcome.fetch_add(1, Ordering::Relaxed);
                     anchor.score_delta(state).clamp(-1, 1) * 1000
                 }
@@ -1639,11 +1754,19 @@ impl GameDynamics for BloodBowlDynamics {
                 }
             },
         };
+        // The drive's result is known exactly here, under every evaluator (the heuristic and pure-TD
+        // leaves too): the player-node mean must not average it away (see `backprop_scores`).
+        let proven = self
+            .horizon
+            .as_ref()
+            .filter(|anchor| anchor.drive_over(state))
+            .map(|anchor| anchor.score_delta(state).clamp(-1, 1) as i8);
         Some(BbScore {
             visits: AtomicU32::new(1),
             score,
             node_kind: player_for_state(state),
             virtual_loss: AtomicI32::new(0),
+            proven,
         })
     }
 }
@@ -1888,8 +2011,6 @@ pub struct MctsConfig {
     pub puct: PuctMode,
     /// Plan 023 ordering instrument. Production leaves this at `Hash`.
     pub tie_break: TieBreak,
-    /// Plan 032 #2 player-node aggregation rule.
-    pub backup: BackupMode,
     /// Plan 032 #3 FPU reduction `k`, in Q points. `0.0` is plain FPU.
     pub fpu_reduction: f32,
     /// How many own-turns the search may look ahead before a state counts as
@@ -1929,6 +2050,21 @@ pub struct MctsConfig {
     /// evaluator's opinion of the post-kickoff position; `2` lets it search that turn.
     #[serde(default)]
     pub setup_horizon_turns: u8,
+    /// The roll model; `Legacy` only for the head-to-head against the pre-fix search.
+    pub chance_model: ChanceModel,
+    /// Diagnostic: count the descents each root child is selected for (`RootDescents`), reported
+    /// in `SearchSummary::root_descents`. Costs a state comparison per player-node selection.
+    pub trace_root_descents: bool,
+    /// Plan 053: Gumbel root search over this many root moves (sequential halving). `0` is the
+    /// shipped PUCT root. The budget then counts descents whatever `budget_mode` says, and the
+    /// search runs on one thread whatever `workers` says.
+    pub gumbel_m: u16,
+    /// Plan 053: scale of the Gumbel noise on the root logits. `0` plays deterministically (the
+    /// top `gumbel_m` by prior); `1` is the paper's sampling, for self-play.
+    pub gumbel_scale: f32,
+    /// Plan 053: the smallest Q range (Q points, ±1000 = a touchdown) the halving's min-max
+    /// normalisation divides by. `0` is the paper's rule; see `gumbel::Halving::new`.
+    pub gumbel_q_floor: f32,
 }
 
 impl MctsConfig {
@@ -1941,7 +2077,6 @@ impl MctsConfig {
             virtual_loss: DEFAULT_VIRTUAL_LOSS,
             puct: PuctMode::Raw { c: PUCT_C },
             tie_break: TieBreak::Hash,
-            backup: BackupMode::Minimax,
             fpu_reduction: 0.0,
             horizon_turns: 1,
             horizon: true,
@@ -1954,6 +2089,11 @@ impl MctsConfig {
             setup_formation: SetupFormation::Line,
             setup_budget_scale: 1.0,
             setup_horizon_turns: 0,
+            chance_model: ChanceModel::Exact,
+            trace_root_descents: false,
+            gumbel_m: 0,
+            gumbel_scale: 0.0,
+            gumbel_q_floor: 0.0,
         }
     }
 
@@ -1992,7 +2132,6 @@ impl MctsConfig {
             },
         };
         cfg.tie_break = TieBreak::from_env();
-        cfg.backup = BackupMode::from_env();
         cfg.fpu_reduction = env_f32("BLOOD_MCTS_FPU_REDUCTION").unwrap_or(0.0).max(0.0);
         cfg.horizon_turns = std::env::var("BLOOD_MCTS_HORIZON_TURNS")
             .ok()
@@ -2003,6 +2142,8 @@ impl MctsConfig {
         cfg.stats = std::env::var("BLOOD_MCTS_STATS").ok().as_deref() == Some("1");
         cfg.leaf_stats = std::env::var("BLOOD_MCTS_LEAF_STATS").ok().as_deref() == Some("1");
         cfg.debug_root = std::env::var("BLOOD_MCTS_DEBUG_ROOT").ok().as_deref() == Some("1");
+        cfg.chance_model = ChanceModel::from_env();
+        cfg.trace_root_descents = std::env::var("BLOOD_MCTS_TRACE_ROOT").ok().as_deref() == Some("1");
         cfg.budget_mode = BudgetMode::from_env();
         cfg.setup = SetupPolicy::from_env("BLOOD_MCTS_SETUP");
         cfg.opponent_setup = SetupPolicy::from_env("BLOOD_MCTS_OPPONENT_SETUP");
@@ -2012,6 +2153,12 @@ impl MctsConfig {
             .ok()
             .and_then(|v| v.trim().parse::<u8>().ok())
             .unwrap_or(0);
+        cfg.gumbel_m = std::env::var("BLOOD_MCTS_GUMBEL_M")
+            .ok()
+            .and_then(|v| v.trim().parse::<u16>().ok())
+            .unwrap_or(0);
+        cfg.gumbel_scale = env_f32("BLOOD_MCTS_GUMBEL_SCALE").unwrap_or(0.0).max(0.0);
+        cfg.gumbel_q_floor = env_f32("BLOOD_MCTS_GUMBEL_Q_FLOOR").unwrap_or(0.0).max(0.0);
         cfg
     }
 }
@@ -2042,6 +2189,13 @@ pub struct MctsBot {
     last_anchor: Option<HorizonAnchor>,
     /// Summary of the most recent search, for [`MctsBot::last_search`].
     last_search: Option<report::SearchSummary>,
+    /// Shared with every tree this bot builds when `config.trace_root_descents` is on.
+    root_trace: Option<Arc<RootDescents>>,
+    /// Plan 053: the Gumbel search loop's root slot, shared with every tree this bot builds. It
+    /// must outlive a search: a reused tree keeps the dynamics it was built with, so a slot made
+    /// per search was never read on reused trees (about 60% of decisions ran plain PUCT descents
+    /// under a Gumbel pick until the review of 2026-10-03).
+    forced_root: Option<Arc<ForcedRoot>>,
     /// [`MctsBot::release_stale_tree`] dropped the cache. The next search then reports the
     /// `AnchorMiss` it would have seen, not `NoCache`.
     released_stale: bool,
@@ -2074,6 +2228,8 @@ impl MctsBot {
             last_search: None,
             released_stale: false,
             telemetry: SearchTelemetry::default(),
+            root_trace: None,
+            forced_root: None,
             setup_choice: None,
             rng: ChaCha8Rng::from_entropy(),
         }
@@ -2175,7 +2331,9 @@ impl MctsBot {
         if self.cached_tree.is_none() {
             return;
         }
-        if HorizonAnchor::capture_with_depth(state, anchor.agent_team, anchor.turn_depth) != anchor {
+        let mut now = HorizonAnchor::capture_with_depth(state, anchor.agent_team, anchor.turn_depth);
+        now.stop_at_half = anchor.stop_at_half;
+        if now != anchor {
             self.cached_tree = None;
             self.released_stale = true;
         }
@@ -2259,20 +2417,9 @@ impl MctsBot {
         self
     }
 
-    /// Override the env-var default for the player-node backup rule
-    /// (plan 032 #2). Same A/B caveat as `with_puct`.
-    pub fn with_backup(mut self, backup: BackupMode) -> Self {
-        self.config.backup = backup;
-        self
-    }
-
     pub fn with_budget_mode(mut self, mode: BudgetMode) -> Self {
         self.config.budget_mode = mode;
         self
-    }
-
-    pub fn backup(&self) -> BackupMode {
-        self.config.backup
     }
 
     /// Override the env-var default for the FPU reduction (plan 032 #3),
@@ -2314,6 +2461,12 @@ struct SearchResult {
     reuse: ReuseDecision,
     /// What this search alone cost the registry.
     recombination: RecombinationCounts,
+    /// Plan 048: the noise this search was offered. Whether it took effect — only a fresh tree
+    /// expands its root under it — is `RootNoise::applied`.
+    root_noise: Option<Arc<RootNoise>>,
+    /// Plan 053: the move a Gumbel search chose (its best survivor), which replaces the best-Q
+    /// child. `None` for a PUCT search.
+    gumbel_pick: Option<EngineAction>,
 }
 
 impl MctsBot {
@@ -2321,7 +2474,20 @@ impl MctsBot {
     /// children + root aggregate). Handles tree reuse/caching internally;
     /// callers turn the result into an action ([`MctsBot::get_action`]) or
     /// a training sample ([`MctsBot::get_action_with_record`]).
-    fn run_search(&mut self, state: &GameState) -> SearchResult {
+    /// This search's horizon anchor, under this bot's roll model.
+    /// Plan 047: a root in the bot's own setup may look further ahead (`setup_horizon_turns`).
+    fn capture_anchor(&self, root_state: &GameState, agent_team: TeamType) -> HorizonAnchor {
+        let turns = if root_state.setup_team() == Some(agent_team) && self.config.setup_horizon_turns > 0 {
+            self.config.setup_horizon_turns
+        } else {
+            self.config.horizon_turns
+        };
+        let mut anchor = HorizonAnchor::capture_with_depth(root_state, agent_team, turns);
+        anchor.stop_at_half = self.config.chance_model.stops_at_half();
+        anchor
+    }
+
+    fn run_search(&mut self, state: &GameState, noise: Option<RootNoiseSpec>) -> SearchResult {
         let search_started = std::time::Instant::now();
         // Clone the state and turn on roll-by-roll stepping for the
         // search. `DiceMode::RegisterRolls` keeps `pending_roll` visible
@@ -2361,22 +2527,21 @@ impl MctsBot {
         // `config.horizon == false` disables the horizon for A/B comparison
         // (e.g. against the historical unbounded baseline).
         let horizon_disabled = !self.config.horizon;
-        // Plan 047: a setup root may run on its own budget and lookahead.
+        // Plan 047: a setup root may run on its own budget (and lookahead: `capture_anchor`).
         let in_own_setup = state.setup_team() == Some(agent_team);
-        let horizon_turns = if in_own_setup && self.config.setup_horizon_turns > 0 {
-            self.config.setup_horizon_turns
+        let root_noise = noise.map(|spec| Arc::new(RootNoise::new(root_state.clone(), spec)));
+        if self.config.trace_root_descents {
+            self.root_trace
+                .get_or_insert_with(Default::default)
+                .reset(root_state.clone());
         } else {
-            self.config.horizon_turns
-        };
+            self.root_trace = None;
+        }
         let gd = BloodBowlDynamics {
             horizon: if horizon_disabled {
                 None
             } else {
-                Some(HorizonAnchor::capture_with_depth(
-                    &root_state,
-                    agent_team,
-                    horizon_turns,
-                ))
+                Some(self.capture_anchor(&root_state, agent_team))
             },
             agent_team: Some(agent_team),
             opponent_setup: self.config.opponent_setup,
@@ -2385,10 +2550,30 @@ impl MctsBot {
             evaluator: self.evaluator.clone(),
             puct: self.config.puct,
             tie_break: self.config.tie_break,
-            backup: self.config.backup,
             fpu_reduction: self.config.fpu_reduction,
+            root_noise: root_noise.clone(),
+            root_trace: self.root_trace.clone(),
+            chance_model: self.config.chance_model,
+            forced_root: None,
         };
         let n_workers = self.config.workers.max(1);
+        // Plan 053: Gumbel root search, with its schedule seeded by the root state so a search is
+        // reproducible (only when it draws noise at all).
+        let gumbel_m = self.config.gumbel_m as usize;
+        let gumbel_scale = self.config.gumbel_scale;
+        let gumbel_q_floor = self.config.gumbel_q_floor;
+        let gumbel_seed = if gumbel_m > 0 && gumbel_scale > 0.0 {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            root_state.hash(&mut h);
+            h.finish()
+        } else {
+            0
+        };
+        let forced_root = (gumbel_m > 0).then(|| Arc::clone(self.forced_root.get_or_insert_with(Default::default)));
+        let mut gd = gd;
+        gd.forced_root = forced_root.clone();
+        let mut gumbel_pick: Option<EngineAction> = None;
         let budget = if in_own_setup {
             self.budget.scaled(self.config.setup_budget_scale)
         } else {
@@ -2420,11 +2605,7 @@ impl MctsBot {
         let new_anchor = if horizon_disabled {
             None
         } else {
-            Some(HorizonAnchor::capture_with_depth(
-                &root_state,
-                agent_team,
-                horizon_turns,
-            ))
+            Some(self.capture_anchor(&root_state, agent_team))
         };
         let anchor_matches = self.config.tree_reuse && self.cached_tree.is_some() && new_anchor == self.last_anchor;
 
@@ -2527,6 +2708,19 @@ impl MctsBot {
                 // headroom is cheap insurance against future regressions
                 // where it might creep back up.
                 match budget {
+                    SearchBudget::Iterations(total) if forced_root.is_some() => {
+                        gumbel_pick = Self::run_gumbel(
+                            &*tree,
+                            forced_root.as_ref().unwrap(),
+                            total,
+                            gumbel_m,
+                            gumbel_scale,
+                            gumbel_seed,
+                            gumbel_q_floor,
+                            agent_team,
+                            steps_ref,
+                        );
+                    }
                     SearchBudget::Iterations(total) => {
                         let base = total / n_workers;
                         let rem = total % n_workers;
@@ -2724,6 +2918,8 @@ impl MctsBot {
             elapsed: search_started.elapsed(),
             reuse,
             recombination: recomb_delta,
+            root_noise,
+            gumbel_pick,
         }
     }
 
@@ -2995,9 +3191,109 @@ impl MctsBot {
             },
             evaluator_value,
             reuse: result.reuse.clone(),
+            root_descents: self.root_trace.as_ref().map(|t| t.counts()),
             recombination: result.recombination,
             telemetry: self.telemetry.clone(),
         }
+    }
+
+    /// Plan 053: spend `total` descents on sequential halving at the root and return the move to
+    /// play. One thread: each step's root move is named in `forced` before the step and taken by
+    /// `select_node` at the root. Returns `None` when the root offers fewer than two moves (the
+    /// budget is then spent as plain PUCT steps, and the best-Q rule picks as usual).
+    #[allow(clippy::too_many_arguments)]
+    fn run_gumbel<T: SearchTree<GD = BloodBowlDynamics>>(
+        tree: &T,
+        forced: &ForcedRoot,
+        total: usize,
+        m: usize,
+        gumbel_scale: f32,
+        seed: u64,
+        q_floor: f32,
+        agent_team: TeamType,
+        steps: &AtomicU64,
+    ) -> Option<EngineAction> {
+        let sign = if agent_team == TeamType::Home { 1.0 } else { -1.0 };
+        let children = || -> Vec<RootChild> {
+            tree.get_next_move_info()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(a, info)| match &a {
+                    BbAction::Player { action, .. } => Some(RootChild {
+                        action: *action,
+                        logit: a.prior_f32().unwrap_or(1.0).max(1e-6).ln(),
+                        q: info.score.as_ref().map(|s| sign * s.score as f32),
+                        visits: info.score.as_ref().map_or(0, |s| s.visits.load(Ordering::Relaxed)),
+                        solved: info.solved,
+                    }),
+                    BbAction::Chance { .. } => None,
+                })
+                .collect()
+        };
+        let root = || {
+            let info = tree.get_root_info();
+            (info.score.as_ref().map_or(0.0, |s| sign * s.score as f32), info.solved)
+        };
+        // Returns false when the named move was not on offer (it got solved since the phase began):
+        // that descent ran as plain PUCT below the root instead.
+        let step = |a: Option<EngineAction>| {
+            forced.set(a);
+            tree.step();
+            forced.set(None);
+            steps.fetch_add(1, Ordering::Relaxed);
+            !forced.take_missed()
+        };
+        let mut used = 0usize;
+        // A fresh root is expanded by its first descent, which selects nothing below it.
+        if total > 0 && tree.get_next_move_info().is_none_or(|c| c.is_empty()) {
+            step(None);
+            used += 1;
+        }
+        let kids = children();
+        if kids.len() < 2 {
+            while used < total && !root().1 {
+                step(None);
+                used += 1;
+            }
+            return None;
+        }
+        let mut halving = Halving::new(&kids, m, gumbel_scale, seed, total, q_floor);
+        'search: while used < total && !root().1 {
+            let kids = children();
+            // Solved moves need no descents (their value is exact) and are hidden from selection. When
+            // every survivor is solved the decision among them is exact, and the search stops early,
+            // as a solved PUCT root does.
+            let live: Vec<EngineAction> = halving
+                .survivors()
+                .iter()
+                .filter(|a| kids.iter().any(|c| c.action == **a && !c.solved))
+                .copied()
+                .collect();
+            if live.is_empty() {
+                break;
+            }
+            let mut live = live;
+            for _ in 0..halving.per_action() {
+                if live.is_empty() {
+                    break;
+                }
+                let mut i = 0;
+                while i < live.len() {
+                    if used >= total {
+                        break 'search;
+                    }
+                    let took = step(Some(live[i]));
+                    used += 1;
+                    if took {
+                        i += 1;
+                    } else {
+                        live.remove(i);
+                    }
+                }
+            }
+            halving.halve(&children(), root().0);
+        }
+        Some(halving.pick(&children(), root().0))
     }
 
     /// Pick the root child to play from a completed search. See the
@@ -3073,18 +3369,67 @@ impl MctsBot {
     /// `outcome_value` on the sample is left `None`; backfill it at the end
     /// of the trajectory (see [`botbowl_data::Trajectory::backfill_outcome_value`]).
     pub fn get_action_with_record(&mut self, state: &GameState) -> (EngineAction, Sample) {
+        let (action, sample, _) = self.get_action_explore(state, ExploreStep::default());
+        (action, sample)
+    }
+
+    /// [`MctsBot::get_action_with_record`] with plan 048's self-play exploration: optional root
+    /// noise for this search and optional visit-proportional sampling of the played move. With
+    /// `ExploreStep::default()` it is exactly `get_action_with_record`.
+    ///
+    /// The sample's `chosen_action` is the move actually played, and its root priors are the
+    /// clean, pre-noise ones — the policy target must not learn the noise (`exploration.rs`).
+    ///
+    /// Plan 053: a Gumbel search (`gumbel_m > 0`) brings its own exploration — the Gumbel noise
+    /// on the root logits (`gumbel_scale`) — and plays its best survivor. Both plan-048 knobs are
+    /// ignored under it: Dirichlet noise would distort the logits the halving ranks by, and a
+    /// visit-sampled move would overrule the halving with visits it concentrated on purpose.
+    pub fn get_action_explore(
+        &mut self,
+        state: &GameState,
+        step: ExploreStep,
+    ) -> (EngineAction, Sample, ExploreOutcome) {
         if let Some(action) = self.unsearched_setup_pick(state) {
             self.last_search = None;
-            return (action, Self::scripted_sample(state, action));
+            return (action, Self::scripted_sample(state, action), ExploreOutcome::default());
         }
-        let result = self.run_search(state);
-        let action = Self::pick_best_action(
-            &result.move_info,
-            result.agent_team,
-            self.config.tie_break,
-            MoverFrame::for_team(state, result.agent_team),
-            self.config.debug_root,
-        );
+        let step = if self.config.gumbel_m > 0 {
+            ExploreStep::default()
+        } else {
+            step
+        };
+        let result = self.run_search(state, step.noise);
+        let best = result.gumbel_pick.unwrap_or_else(|| {
+            Self::pick_best_action(
+                &result.move_info,
+                result.agent_team,
+                self.config.tie_break,
+                MoverFrame::for_team(state, result.agent_team),
+                self.config.debug_root,
+            )
+        });
+        let sampled = step.sample.and_then(|sp| {
+            let player: Vec<(EngineAction, u32)> = result
+                .move_info
+                .iter()
+                .filter_map(|(a, info)| match a {
+                    BbAction::Player { action, .. } => Some((
+                        *action,
+                        info.score.as_ref().map_or(0, |s| s.visits.load(Ordering::Relaxed)),
+                    )),
+                    BbAction::Chance { .. } => None,
+                })
+                .collect();
+            let visits: Vec<u32> = player.iter().map(|(_, v)| *v).collect();
+            sample_index(&visits, sp.temperature, sp.u).map(|i| player[i].0)
+        });
+        let action = sampled.unwrap_or(best);
+        let noise = result.root_noise.as_ref().filter(|n| n.applied());
+        let outcome = ExploreOutcome {
+            noised: noise.is_some(),
+            sampled: sampled.is_some(),
+            deviated: action != best,
+        };
         self.last_search = Some(self.summarise(state, &result, action));
 
         let children = result
@@ -3106,7 +3451,9 @@ impl MctsBot {
                     action: engine_action,
                     visits,
                     q,
-                    prior: a.prior_f32(),
+                    prior: noise
+                        .and_then(|n| n.clean_prior(&engine_action))
+                        .or_else(|| a.prior_f32()),
                     solved: info.solved,
                     terminal: matches!(info.n_children, Status::Terminal),
                 })
@@ -3131,8 +3478,19 @@ impl MctsBot {
             outcome_value: None,
             scripted: false,
         };
-        (action, sample)
+        (action, sample, outcome)
     }
+}
+
+/// What plan 048's exploration did to one decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExploreOutcome {
+    /// Root noise took effect (a fresh tree expanded the root under it).
+    pub noised: bool,
+    /// The move was drawn ∝ visits.
+    pub sampled: bool,
+    /// The move played is not the best-Q child greedy play would have chosen.
+    pub deviated: bool,
 }
 
 impl Bot for MctsBot {
@@ -3141,14 +3499,16 @@ impl Bot for MctsBot {
             self.last_search = None;
             return action;
         }
-        let result = self.run_search(state);
-        let action = Self::pick_best_action(
-            &result.move_info,
-            result.agent_team,
-            self.config.tie_break,
-            MoverFrame::for_team(state, result.agent_team),
-            self.config.debug_root,
-        );
+        let result = self.run_search(state, None);
+        let action = result.gumbel_pick.unwrap_or_else(|| {
+            Self::pick_best_action(
+                &result.move_info,
+                result.agent_team,
+                self.config.tie_break,
+                MoverFrame::for_team(state, result.agent_team),
+                self.config.debug_root,
+            )
+        });
         self.last_search = Some(self.summarise(state, &result, action));
         action
     }
@@ -3178,6 +3538,7 @@ mod tests {
             score,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         }
     }
 
@@ -3188,54 +3549,12 @@ mod tests {
         BbAction::player(EngineAction::Simple(SimpleAT::EndTurn), 1.0)
     }
 
-    #[test]
-    fn backprop_player_home_maximises_and_sums_visits() {
-        let dynamics = BloodBowlDynamics::default();
-        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
-        let children = [child(-5, 2), child(10, 5), child(3, 1)];
-        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
-        let result = dynamics
-            .backprop_scores(&BbPlayer::Home, None, pairs)
-            .expect("backprop should yield a score");
-        assert_eq!(result.score, 10, "Home should pick the max-Q child");
-        assert_eq!(
-            result.visits.load(Ordering::Relaxed),
-            8,
-            "visits should sum across children, not max"
-        );
-        assert_eq!(result.node_kind, BbPlayer::Home);
-    }
-
-    #[test]
-    fn backprop_player_away_minimises_and_sums_visits() {
-        let dynamics = BloodBowlDynamics::default();
-        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
-        let children = [child(-5, 2), child(10, 5), child(3, 1)];
-        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
-        let result = dynamics
-            .backprop_scores(&BbPlayer::Away, None, pairs)
-            .expect("backprop should yield a score");
-        assert_eq!(
-            result.score, -5,
-            "Away should pick the min-Q child (Home-centric scoring)"
-        );
-        assert_eq!(result.visits.load(Ordering::Relaxed), 8);
-        assert_eq!(
-            result.node_kind,
-            BbPlayer::Away,
-            "node_kind should mirror the player owning the node"
-        );
-    }
-
-    /// Plan 032 #2 — `BackupMode::Mean` is the visit-weighted mean for
-    /// *both* sides (the mean has no side), independent of child order,
-    /// and symmetric under negation (so the D9 mirror property survives).
+    /// The player-node backup is the visit-weighted mean for *both* sides (the mean has no side),
+    /// independent of child order, symmetric under negation (so the D9 mirror property survives),
+    /// and visits still sum.
     #[test]
     fn backprop_mean_is_visit_weighted_and_order_independent() {
-        let dynamics = BloodBowlDynamics {
-            backup: BackupMode::Mean,
-            ..BloodBowlDynamics::default()
-        };
+        let dynamics = BloodBowlDynamics::default();
         let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
         let children = [child(-5, 2), child(10, 5), child(3, 1)];
         // (-10 + 50 + 3) / 8 = 43 / 8 = 5 (truncated)
@@ -3259,14 +3578,11 @@ mod tests {
     }
 
     /// A player node whose children have all been scored but never
-    /// descended (visits 0) must still get a score under `Mean`, or the
-    /// node becomes a backprop dead end.
+    /// descended (visits 0) must still get a score, or the node becomes a
+    /// backprop dead end.
     #[test]
     fn backprop_mean_falls_back_to_plain_mean_at_zero_visits() {
-        let dynamics = BloodBowlDynamics {
-            backup: BackupMode::Mean,
-            ..BloodBowlDynamics::default()
-        };
+        let dynamics = BloodBowlDynamics::default();
         let actions = [placeholder_action(), placeholder_action()];
         let children = [child(4, 0), child(-10, 0)];
         let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
@@ -3333,15 +3649,6 @@ mod tests {
         assert_eq!(picked, explored);
     }
 
-    #[test]
-    fn backup_mode_defaults_to_minimax_and_parses() {
-        assert_eq!(BloodBowlDynamics::default().backup, BackupMode::Minimax);
-        assert_eq!(BackupMode::parse("mean"), Some(BackupMode::Mean));
-        assert_eq!(BackupMode::parse("minimax"), Some(BackupMode::Minimax));
-        assert_eq!(BackupMode::parse("median"), None);
-        assert_eq!(BackupMode::Mean.label(), "backup=mean");
-    }
-
     /// `apply_action` must collapse scripted player decisions
     /// (coin toss, kick/receive, block-die picks) into a single
     /// engine advance so the MCTS DAG doesn't carry nodes for
@@ -3384,6 +3691,67 @@ mod tests {
             !still_kick_receive,
             "post-apply: kick/receive should have been scripted-through too"
         );
+    }
+
+    fn proven_child(score: i64, visits: u32, proven: i8) -> BbScore {
+        BbScore {
+            proven: Some(proven),
+            ..child(score, visits)
+        }
+    }
+
+    /// The mean must not average away a certain score: a proven touchdown for the side to move
+    /// wins the node outright, however few visits it has next to well-visited estimates.
+    #[test]
+    fn a_proven_score_for_the_mover_short_circuits_the_mean() {
+        let dynamics = BloodBowlDynamics::default();
+        let actions = [placeholder_action(), placeholder_action(), placeholder_action()];
+        let home_td = proven_child(1000, 1, 1);
+        let children = [child(300, 50), home_td.clone(), child(200, 40)];
+        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+        let r = dynamics.backprop_scores(&BbPlayer::Home, None, pairs).expect("score");
+        assert_eq!((r.score, r.proven), (1000, Some(1)));
+        assert_eq!(r.visits.load(Ordering::Relaxed), 91, "visits still sum");
+
+        // At an Away node a proven *Home* score is not Away's to take: plain mean, unproven.
+        let pairs: Vec<(&BbScore, &BbAction)> = children.iter().zip(actions.iter()).collect();
+        let r = dynamics.backprop_scores(&BbPlayer::Away, None, pairs).expect("score");
+        assert_eq!(r.proven, None);
+        assert_eq!(r.score, (300 * 50 + 1000 + 200 * 40) / 91);
+
+        // Mirror: an Away touchdown wins an Away node.
+        let mirrored = [child(-300, 50), proven_child(-1000, 1, -1), child(-200, 40)];
+        let pairs: Vec<(&BbScore, &BbAction)> = mirrored.iter().zip(actions.iter()).collect();
+        let r = dynamics.backprop_scores(&BbPlayer::Away, None, pairs).expect("score");
+        assert_eq!((r.score, r.proven), (-1000, Some(-1)));
+    }
+
+    /// A chance node is proven only when every outcome is proven to the same drive result.
+    #[test]
+    fn a_chance_node_is_proven_only_when_every_outcome_agrees() {
+        use botbowl_engine::core::dices::RollResult;
+
+        let dynamics = BloodBowlDynamics::default();
+        let pass = BbAction::chance(RollResult::Pass, 0.5);
+        let fail = BbAction::chance(RollResult::Fail, 0.5);
+        let (a, b) = (proven_child(1000, 2, 1), proven_child(1000, 1, 1));
+        let r = dynamics
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&a, &pass), (&b, &fail)])
+            .expect("complete");
+        assert_eq!(r.proven, Some(1));
+        let c = proven_child(0, 1, 0);
+        let r = dynamics
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&a, &pass), (&c, &fail)])
+            .expect("complete");
+        assert_eq!(
+            r.proven, None,
+            "a touchdown on one roll and no score on the other is a gamble"
+        );
+        let d = child(1000, 1);
+        let r = dynamics
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&a, &pass), (&d, &fail)])
+            .expect("complete");
+        assert_eq!(r.proven, None, "an estimate on either branch keeps the node unproven");
     }
 
     /// The chance-node expectation must not be emitted while outcomes
@@ -3503,28 +3871,43 @@ mod tests {
         );
     }
 
-    /// `Half` resets both turn counters to zero when the second half starts,
-    /// so the turn-based test alone can never fire after half-time: a turn-8
-    /// root would run through the half-time setups and kickoff until a score.
+    /// Both teams' turn counters reset to 0 when the second half starts, so a turn-only horizon
+    /// captured at a first-half turn-8 root can never fire: the search used to run on through
+    /// half time into the second half. The end of the half ends the drive, so it is past the
+    /// horizon and a known outcome, the same as a score.
     #[test]
-    fn half_change_is_past_the_horizon() {
+    fn the_end_of_the_half_is_past_the_horizon_and_ends_the_drive() {
         use botbowl_engine::core::gamestate::GameStateBuilder;
         use botbowl_engine::core::model::{Position, TeamType};
 
-        let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
-        state.info.home_turn = 8;
-        state.info.away_turn = 8;
-        let anchor = HorizonAnchor::capture(&state, TeamType::Home);
-        assert!(!anchor.diverged(&state), "the root itself is inside the horizon");
+        let mut root = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        root.info.half = 1;
+        root.info.home_turn = 8;
+        root.info.away_turn = 8;
+        for team in [TeamType::Home, TeamType::Away] {
+            let anchor = HorizonAnchor::capture(&root, team);
+            assert!(!anchor.diverged(&root));
+            assert!(!anchor.drive_over(&root));
 
-        // What `Half::step` does at the start of the second half.
-        state.info.half = 2;
-        state.info.home_turn = 0;
-        state.info.away_turn = 0;
-        assert!(
-            anchor.diverged(&state),
-            "a new half ends the drive the search is bounding"
-        );
+            let mut second_half = root.clone();
+            second_half.info.half = 2;
+            second_half.info.home_turn = 0;
+            second_half.info.away_turn = 0;
+            assert!(anchor.diverged(&second_half), "{team:?}: half time must end the search");
+            assert!(anchor.drive_over(&second_half), "{team:?}: half time ends the drive");
+            assert_eq!(
+                anchor.score_delta(&second_half),
+                0,
+                "a drive ended by half time is worth 0"
+            );
+
+            // The legacy model's horizon runs straight through half time, as it used to.
+            let legacy = HorizonAnchor {
+                stop_at_half: false,
+                ..anchor
+            };
+            assert!(!legacy.diverged(&second_half), "{team:?}: legacy ignores the half");
+        }
     }
 
     /// `leaf_case` exists only to describe what `score_leaf` did, so the one
@@ -3653,12 +4036,14 @@ mod tests {
             score: 50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let b = BbScore {
             visits: AtomicU32::new(10),
             score: -50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let parent_visits = 100.0;
         let prior = 0.5;
@@ -3691,6 +4076,7 @@ mod tests {
             score: 525,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let parent_visits = 100.0;
         let prior = 5.0;
@@ -3710,6 +4096,7 @@ mod tests {
             score: 1069,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let v_td = puct_value(Some(&td), parent_visits, prior, true, fpu, PUCT_C);
         assert!(
@@ -3747,6 +4134,7 @@ mod tests {
                     score: q,
                     node_kind: BbPlayer::Home,
                     virtual_loss: AtomicI32::new(0),
+                    proven: None,
                 };
                 let fpu = 525.0;
                 let ve = puct_value(Some(&explored), 100.0, 5.0, true, fpu, c);
@@ -3767,12 +4155,14 @@ mod tests {
             score: 50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
         let b = BbScore {
             visits: AtomicU32::new(10),
             score: -50,
             node_kind: BbPlayer::Home,
             virtual_loss: AtomicI32::new(0),
+            proven: None,
         };
 
         // Home frame: lo=-50, hi=+50 after the flip (identity).
@@ -3817,6 +4207,7 @@ mod tests {
                                 score: *q,
                                 node_kind: BbPlayer::Home,
                                 virtual_loss: AtomicI32::new(0),
+                                proven: None,
                             };
                             (i, puct_value_normalised(Some(&sc), 100.0, *p, home, lo, &frame))
                         })
@@ -3852,6 +4243,7 @@ mod tests {
                         score: alpha * q,
                         node_kind: BbPlayer::Home,
                         virtual_loss: AtomicI32::new(0),
+                        proven: None,
                     };
                     (i, puct_value(Some(&sc), 100.0, *p, true, 0.0, PUCT_C))
                 })
@@ -3889,6 +4281,7 @@ mod tests {
                         score: *q,
                         node_kind: BbPlayer::Home,
                         virtual_loss: AtomicI32::new(0),
+                        proven: None,
                     };
                     (i, puct_value_normalised(Some(&sc), 400.0, *p, true, lo, &frame))
                 })
@@ -3918,6 +4311,7 @@ mod tests {
                 score: hi as i64,
                 node_kind: BbPlayer::Home,
                 virtual_loss: AtomicI32::new(vl),
+                proven: None,
             };
             let v0 = puct_value_normalised(Some(&mk(0)), 100.0, 1.0, true, lo, &frame);
             let v1 = puct_value_normalised(Some(&mk(1)), 100.0, 1.0, true, lo, &frame);
@@ -3977,6 +4371,7 @@ mod tests {
                 score: lo as i64,
                 node_kind: BbPlayer::Home,
                 virtual_loss: AtomicI32::new(0),
+                proven: None,
             };
             let v = puct_value_normalised(Some(&sc), 100.0, 1.0, true, lo, &f);
             assert!(v.is_finite(), "range {lo}..{hi} produced {v}");
@@ -4043,6 +4438,7 @@ mod tests {
                         score: *q,
                         node_kind: BbPlayer::Home,
                         virtual_loss: AtomicI32::new(0),
+                        proven: None,
                     };
                     (i, puct_value_normalised(Some(&sc), 100.0, *p, true, 0.0, &frame))
                 })
@@ -4070,6 +4466,7 @@ mod tests {
                 score,
                 node_kind: BbPlayer::Home,
                 virtual_loss: AtomicI32::new(0),
+                proven: None,
             };
             let parent_term = parent_visits.max(1.0).sqrt();
             let expected_some = (score as f32 - 0.0) + PUCT_C * prior * parent_term / (1.0 + visits as f32);

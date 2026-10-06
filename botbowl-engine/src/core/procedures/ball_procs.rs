@@ -460,10 +460,8 @@ impl Procedure for DeflectOrResolve {
             ProcInput::Nothing => {
                 self.intercepters = game_state.get_intercepters(deflect_team, self.from, self.to);
                 if self.intercepters.is_empty() {
-                    println!("no intercepters");
                     None
                 } else if self.intercepters.len() == 1 {
-                    println!("only one intercepter");
                     Some(self.intercepters[0])
                 } else {
                     let mut aa = AvailableActions::new(deflect_team);
@@ -822,9 +820,9 @@ mod tests {
     #[test]
     fn throw_in_distance_is_scaled_down_on_a_narrow_board() {
         use crate::core::dices::{RollResult, Sum2D6, D3};
+        use crate::core::gamestate::BuilderState;
         use crate::core::procedures::ball_procs::ThrowIn;
         use crate::core::procedures::AnyProc;
-        use crate::core::gamestate::BuilderState;
 
         let dims = BoardDims::new(16, 9, 3); // 14x7 playable
         assert_eq!(dims.scatter_divisor(), 2, "test assumes a divisor of 2");

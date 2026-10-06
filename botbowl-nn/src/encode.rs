@@ -65,17 +65,30 @@ const P_AV: usize = 7;
 /// Non-skill per-player planes: the eight above.
 const PLAYER_SCALARS: usize = 8;
 
-/// First of the per-skill planes — one per [`Skill`] variant, at
+/// First of the per-skill planes — one per encoded [`Skill`], at
 /// `SKILL_BASE + skill.index()`.
 const SKILL_BASE: usize = PLAYER_BASE + PLAYER_SCALARS;
 
-/// Skill planes, in channel order: **every** [`Skill`] variant, ordered by
+/// How many skills have a plane: the first `ENCODED_SKILLS` of [`Skill::ALL`]. The rest are
+/// skills the engine names but does not implement yet (`StripBall`), appended at the end of
+/// `ALL` so no encoded skill's index moves; each one that gets a plane is a schema bump.
+const ENCODED_SKILLS: usize = 39;
+
+/// Skill planes, in channel order: the encoded prefix of [`Skill::ALL`], ordered by
 /// [`Skill::index`]. Derived from the engine's enum rather than a hand-picked
 /// subset, so a net can reason about any skill the engine can field.
-const SKILL_PLANES: [Skill; Skill::COUNT] = Skill::ALL;
+const SKILL_PLANES: [Skill; ENCODED_SKILLS] = {
+    let mut out = [Skill::ALL[0]; ENCODED_SKILLS];
+    let mut i = 0;
+    while i < ENCODED_SKILLS {
+        out[i] = Skill::ALL[i];
+        i += 1;
+    }
+    out
+};
 
 /// First of the planes that are not per-player.
-const SHARED_BASE: usize = SKILL_BASE + Skill::COUNT;
+const SHARED_BASE: usize = SKILL_BASE + ENCODED_SKILLS;
 
 /// Spatial channel count `C`.
 pub const SPATIAL_CHANNELS: usize = SHARED_BASE + 12;
@@ -484,7 +497,7 @@ mod tests {
         // 2 present + 8 shared per-player + 39 skill + 12 shared. Pinned so a
         // change to the engine's `Skill` enum shows up here as a failing
         // test, next to the `NN_SCHEMA_VERSION` bump it requires.
-        assert_eq!(SPATIAL_CHANNELS, 2 + PLAYER_SCALARS + Skill::COUNT + 12);
+        assert_eq!(SPATIAL_CHANNELS, 2 + PLAYER_SCALARS + ENCODED_SKILLS + 12);
         assert_eq!(SPATIAL_CHANNELS, 61);
         assert_eq!(spatial_channel_scales().len(), SPATIAL_CHANNELS);
         assert_eq!(GLOBAL_FEATURES, 18);
@@ -597,8 +610,12 @@ mod tests {
     #[test]
     fn every_skill_has_its_own_plane_and_the_names_agree() {
         let names = spatial_channel_names();
-        for sk in Skill::ALL {
+        for sk in SKILL_PLANES {
             assert_eq!(names[SKILL_BASE + sk.index()], format!("skill_{sk:?}").to_lowercase());
+        }
+        // A skill without a plane must sit past the encoded prefix, or it would alias one.
+        for sk in &Skill::ALL[ENCODED_SKILLS..] {
+            assert!(sk.index() >= ENCODED_SKILLS, "{sk:?} has no plane but an encoded index");
         }
         // The skill planes are unpaired, so no name may carry a side.
         for name in &names[PLAYER_BASE..SHARED_BASE] {

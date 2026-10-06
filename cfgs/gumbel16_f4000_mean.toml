@@ -1,0 +1,6 @@
+# Plan 055 (exp064b): q floor 4000 with a mean backup, when the backup was still a knob. The mean
+# is now the only backup (hardcoded 2026-10-05), so this is gumbel16_f4000; kept so the exp064b
+# rows that name it still resolve.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 4000

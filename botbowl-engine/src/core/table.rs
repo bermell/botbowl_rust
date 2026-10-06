@@ -85,6 +85,7 @@ pub enum Skill {
     SureHands,
     Tackle,
     Wrestle,
+    StripBall,
     // Mutation Skills
     Claws,
     // Passing Skills
@@ -162,10 +163,13 @@ impl Skill {
         Skill::Throw,
         Skill::WildAnimal,
         Skill::KickOffReturn,
+        // Appended, not grouped with General, so every earlier index (and NN skill plane) keeps
+        // its place.
+        Skill::StripBall,
     ];
 
     /// Number of skill variants.
-    pub const COUNT: usize = 39;
+    pub const COUNT: usize = 40;
 
     /// Dense index of a skill within [`Skill::ALL`].
     ///
@@ -213,6 +217,7 @@ impl Skill {
             Skill::Throw => 36,
             Skill::WildAnimal => 37,
             Skill::KickOffReturn => 38,
+            Skill::StripBall => 39,
         }
     }
 

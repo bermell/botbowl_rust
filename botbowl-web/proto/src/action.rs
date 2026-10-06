@@ -84,24 +84,28 @@ impl PosAT {
         PosAT::PlacePlayer,
     ];
 
-    /// Label for the action menu / tooltip.
+    /// The variant's own name, sentence-cased — `StartMove` is "Start move"
+    /// (the engine and Python botbowl's `START_MOVE`). One vocabulary across
+    /// the buttons, the menus, the logs and the inspector, so what you read in
+    /// the UI is what you grep for in the engine. Pinned to the variant names
+    /// by `labels_are_the_variant_names`.
     pub fn label(self) -> &'static str {
         match self {
-            PosAT::StartMove => "Move",
-            PosAT::StartBlitz => "Blitz",
-            PosAT::StartPass => "Pass",
-            PosAT::StartFoul => "Foul",
-            PosAT::SelectPosition => "Place here",
-            PosAT::Push => "Push here",
+            PosAT::StartMove => "Start move",
+            PosAT::StartBlitz => "Start blitz",
+            PosAT::StartPass => "Start pass",
+            PosAT::StartFoul => "Start foul",
+            PosAT::SelectPosition => "Select position",
+            PosAT::Push => "Push",
             PosAT::FollowUp => "Follow up",
-            PosAT::StartHandoff => "Hand-off",
-            PosAT::Handoff => "Hand off to",
-            PosAT::Pass => "Pass to",
-            PosAT::Move => "Step here",
+            PosAT::StartHandoff => "Start handoff",
+            PosAT::Handoff => "Handoff",
+            PosAT::Pass => "Pass",
+            PosAT::Move => "Move",
             PosAT::Foul => "Foul",
-            PosAT::StartBlock => "Block",
+            PosAT::StartBlock => "Start block",
             PosAT::Block => "Block",
-            PosAT::PlacePlayer => "Place here",
+            PosAT::PlacePlayer => "Place player",
         }
     }
 
@@ -175,23 +179,24 @@ impl SimpleAT {
         SimpleAT::BenchPlayer,
     ];
 
+    /// The variant's own name, sentence-cased — see [`PosAT::label`].
     pub fn label(self) -> &'static str {
         match self {
-            SimpleAT::SelectBothDown => "Both Down",
-            SimpleAT::SelectPow => "POW!",
-            SimpleAT::SelectPush => "Push",
-            SimpleAT::SelectPowPush => "POW!/Push",
-            SimpleAT::SelectSkull => "Attacker Down",
+            SimpleAT::SelectBothDown => "Select both down",
+            SimpleAT::SelectPow => "Select pow",
+            SimpleAT::SelectPush => "Select push",
+            SimpleAT::SelectPowPush => "Select pow push",
+            SimpleAT::SelectSkull => "Select skull",
             SimpleAT::UseReroll => "Use reroll",
-            SimpleAT::DontUseReroll => "No reroll",
-            SimpleAT::EndPlayerTurn => "End player action",
+            SimpleAT::DontUseReroll => "Dont use reroll",
+            SimpleAT::EndPlayerTurn => "End player turn",
             SimpleAT::EndTurn => "End turn",
             SimpleAT::Heads => "Heads",
             SimpleAT::Tails => "Tails",
             SimpleAT::Kick => "Kick",
             SimpleAT::Receive => "Receive",
-            SimpleAT::KickoffAimMiddle => "Aim at middle",
-            SimpleAT::BenchPlayer => "Sit out",
+            SimpleAT::KickoffAimMiddle => "Kickoff aim middle",
+            SimpleAT::BenchPlayer => "Bench player",
         }
     }
 
@@ -229,5 +234,39 @@ impl Action {
             Action::Positional(at, p) => format!("{} ({},{})", at.label(), p.x, p.y),
             Action::Simple(at) => at.label().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `StartMove` -> "Start move": split at each capital, lower-case all but
+    /// the first word.
+    fn sentence_case(camel: &str) -> String {
+        let mut out = String::new();
+        for (i, c) in camel.chars().enumerate() {
+            if c.is_uppercase() && i > 0 {
+                out.push(' ');
+                out.extend(c.to_lowercase());
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn labels_are_the_variant_names() {
+        for at in PosAT::ALL {
+            assert_eq!(at.label(), sentence_case(&format!("{at:?}")));
+        }
+        for at in SimpleAT::ALL {
+            assert_eq!(at.label(), sentence_case(&format!("{at:?}")));
+        }
+        assert_eq!(
+            Action::Positional(PosAT::StartMove, Position::new(11, 7)).describe(),
+            "Start move (11,7)"
+        );
     }
 }

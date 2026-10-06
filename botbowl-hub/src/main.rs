@@ -13,9 +13,10 @@ use botbowl_hub::http::request;
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, SizeDist};
 use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
-use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_backup, parse_puct, CandidateBot};
+use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_puct, CandidateBot};
+use botbowl_play::drives::{drive_rung_name, DriveRung, PositionSet};
 use botbowl_play::eval::rung_name;
-use botbowl_play::generate::{GenMode, RandomStartBias};
+use botbowl_play::generate::{Exploration, GenMode, RandomStartBias};
 
 #[derive(Parser, Debug)]
 #[command(name = "botbowl-hub", about = "Job queue for distributed generation/eval (plan 041)")]
@@ -34,7 +35,7 @@ enum Command {
         job: JobCommand,
     },
     /// Print the daemon's status.
-    Status(ClientArgs),
+    Status(StatusArgs),
 }
 
 #[derive(Args, Debug)]
@@ -60,6 +61,120 @@ struct ServeArgs {
     /// indistinguishable from a healthy one and strands its games.
     #[arg(long, default_value_t = 120)]
     worker_timeout: u64,
+    /// The training loop's run directory (`runs/<run>`). The status page then also shows the
+    /// loop's latest status lines and, while the box trains a net, the trainer's progress.
+    #[arg(long)]
+    run_dir: Option<PathBuf>,
+    #[command(flatten)]
+    play: PlayArgs,
+    /// Directories hashed at startup so a worker's cached nets can be named on connect (repeat
+    /// the flag for more). Default `<repo>/runs` and `<repo>/models`.
+    #[arg(long = "model-index-dir")]
+    model_index_dirs: Vec<PathBuf>,
+}
+
+/// The web play app at `/play/` (botbowl-web-server's router, nested). Every path defaults from
+/// this crate's source location, not the working directory.
+#[derive(Args, Debug)]
+struct PlayArgs {
+    /// Do not serve `/play/`.
+    #[arg(long, default_value_t = false)]
+    no_play: bool,
+    /// `trunk build --release` output of `botbowl-web/client`. Without one, `/play/` is off.
+    /// This and the other `--play-*-dir`s override `~/.config/botbowl/web.toml`.
+    #[arg(long)]
+    play_dist_dir: Option<PathBuf>,
+    /// The sprite directory (`assets_dir` in web.toml). Default
+    /// `<repo>/../botbowl/botbowl/web/static/img` when it exists.
+    #[arg(long)]
+    play_assets_dir: Option<PathBuf>,
+    /// Where the lobby finds `.onnx` nets first (then web.toml's `models_dirs` and the worker
+    /// cache). Default `<repo>/models`.
+    #[arg(long)]
+    play_models_dir: Option<PathBuf>,
+    /// Saved teams and uploaded pictures. Default `~/.config/botbowl/teams`.
+    #[arg(long)]
+    play_teams_dir: Option<PathBuf>,
+    /// The most search threads one bot may use in a browser game, whatever the lobby asks —
+    /// the hub listens on the network, and its box is also training.
+    #[arg(long, default_value_t = 4)]
+    play_max_workers: usize,
+}
+
+/// The repo root, from this crate's source path.
+fn repo_path(relative: &str) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(relative);
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// The play app's router, or `None` (with the reason on stderr) when it is off. Paths: the
+/// `--play-*` flags, then `~/.config/botbowl/web.toml`, then the built-in defaults.
+fn play_router(a: &PlayArgs) -> Option<axum::Router> {
+    use botbowl_web_server::{compiled_capacity, config, teams, AppState, PlayOptions};
+    if a.no_play {
+        return None;
+    }
+    let paths = match config::resolve(config::Flags {
+        dist_dir: a.play_dist_dir.clone(),
+        models_dir: a.play_models_dir.clone(),
+        assets_dir: a.play_assets_dir.clone(),
+        teams_dir: a.play_teams_dir.clone(),
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[hub] /play off: {e}");
+            return None;
+        }
+    };
+    if !paths.dist_dir.join("index.html").is_file() {
+        eprintln!(
+            "[hub] /play off: no client build at {} (cd botbowl-web/client && trunk build --release)",
+            paths.dist_dir.display()
+        );
+        return None;
+    }
+    if paths.assets_dir.is_none() {
+        eprintln!(
+            "[hub] /play: no sprite directory (assets_dir in {}, or --play-assets-dir); the pitch draws without pictures",
+            paths.config.display()
+        );
+    }
+    let capacity = compiled_capacity();
+    let app = std::sync::Arc::new(AppState {
+        capacity,
+        models_dir: paths.models_dir.clone(),
+        recordings_dir: repo_path("data/web-games"),
+        model_cache: Default::default(),
+        server: format!(
+            "botbowl-hub {} (capacity {}x{}/{})",
+            &botbowl_data::git_commit()[..12],
+            capacity.width,
+            capacity.height,
+            capacity.team_size
+        ),
+        opts: PlayOptions {
+            max_workers: Some(a.play_max_workers.max(1)),
+            teams: teams::TeamStore {
+                dir: paths.teams_dir.clone(),
+            },
+            assets_dir: paths.assets_dir.clone(),
+            allow_recording_paths: false,
+            extra_model_dirs: paths.extra_model_dirs.clone(),
+            worker_cache: paths.worker_cache.clone(),
+            ..PlayOptions::default()
+        },
+    });
+    eprintln!(
+        "[hub] /play: config {}, capacity {}x{}/{}, {} model(s), teams in {}, at most {} search thread(s) per bot",
+        paths.config.display(),
+        capacity.width,
+        capacity.height,
+        capacity.team_size,
+        app.list_models().len(),
+        paths.teams_dir.as_deref().map(|d| d.display().to_string()).unwrap_or_else(|| "-".into()),
+        a.play_max_workers.max(1),
+    );
+    Some(botbowl_web_server::router(app, paths.assets_dir.as_deref(), Some(&paths.dist_dir)))
 }
 
 #[derive(Args, Debug, Clone)]
@@ -70,6 +185,21 @@ struct ClientArgs {
     /// Default `~/.config/botbowl/hub.token`, the file `serve` uses.
     #[arg(long)]
     token_file: Option<PathBuf>,
+    /// What the job is called on the status page (`gen03 drives vs gen21`). Ignored by `status`.
+    #[arg(long)]
+    label: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct StatusArgs {
+    #[command(flatten)]
+    client: ClientArgs,
+    /// The status page as text, instead of the JSON.
+    #[arg(long, default_value_t = false)]
+    text: bool,
+    /// With `--text`: the loop's run directory, as `serve --run-dir`.
+    #[arg(long)]
+    run_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -162,6 +292,20 @@ struct GenerateJobArgs {
     /// the name is stamped into the corpus provenance.
     #[arg(long)]
     bot_config: Option<PathBuf>,
+    /// Plan 048: root Dirichlet noise weight ε in self-play, flag-for-flag with
+    /// `botbowl-ui dataset` (0.25 is the AlphaZero value). Unset
+    /// keeps the greedy generator. Generation only; eval has no such flag.
+    #[arg(long)]
+    explore_noise: Option<f32>,
+    /// Plan 048: total Dirichlet concentration α; each root action gets α / n_legal.
+    #[arg(long, default_value_t = 10.0)]
+    explore_alpha: f32,
+    /// Plan 048: each side plays its first K moves of a trajectory ∝ visits^(1/T), not best-Q.
+    #[arg(long, default_value_t = 0)]
+    explore_sample_moves: u32,
+    /// Plan 048: the sampling temperature T for `--explore-sample-moves`.
+    #[arg(long, default_value_t = 1.0)]
+    explore_temperature: f32,
     #[arg(long, default_value_t = 100_000)]
     max_steps: u32,
     /// (curriculum mode) Lecture name.
@@ -289,8 +433,8 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
     if evaluator.needs_model() && a.model.is_none() {
         return Err("--evaluator nn/nn-value requires --model PATH".into());
     }
-    // Resolved on the submitter for the same reason the backup rule is: a preset must describe
-    // the games, not the machine that happened to play them.
+    // Resolved on the submitter: a preset must describe the games, not the machine that happened
+    // to play them.
     let preset = a
         .bot_config
         .as_deref()
@@ -304,20 +448,24 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
             workers: a.mcts_workers,
             // `dataset` leaves these `None`, meaning "the bot's env-driven default"; keep that,
             // because `candidate_label`/the provenance label read these fields and a `Some` here
-            // would change every corpus label. The backup rule is the exception — it is stamped
-            // into the label, so it is resolved here, from the submitting environment.
+            // would change every corpus label.
             //
             // `pinned_to_env` below then fills `config` with the *whole* resolved `MctsConfig`
             // from this same environment, so "env-driven default" means the hub's environment,
             // once, and not whichever worker happened to pick the shard up.
             puct: None,
             horizon_turns: None,
-            backup: Some(botbowl_mcts::BackupMode::from_env()),
             fpu_reduction: None,
             config: preset.as_ref().map(|p| p.config),
         }
         .pinned_to_env(),
         config_name: preset.as_ref().map(|p| p.name.clone()),
+        exploration: Exploration::from_flags(
+            a.explore_noise,
+            a.explore_alpha,
+            a.explore_sample_moves,
+            a.explore_temperature,
+        ),
         evaluator,
         model: a.model.clone(),
         max_steps: a.max_steps,
@@ -385,6 +533,7 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         shards,
         truncate: a.truncate,
         batch: a.batch,
+        label: a.client.label.clone(),
     })
 }
 
@@ -451,6 +600,15 @@ struct EvalJobArgs {
     max_steps: u32,
     #[arg(long)]
     opponent_iters: Option<usize>,
+    /// Plan 051: stop a rung once a sequential test on its mirrored pairs decides,
+    /// `S0:S1[:ALPHA:BETA]`. Flag-for-flag with `botbowl-ui eval --sprt`.
+    #[arg(long, value_parser = botbowl_play::stats::Sprt::parse)]
+    sprt: Option<botbowl_play::stats::Sprt>,
+    /// Plan 051: play every rung as paired drives from these position sets (comma-separated),
+    /// one rung per set on its own board. `--board-sizes` is ignored. Flag-for-flag with
+    /// `botbowl-ui eval --positions`.
+    #[arg(long)]
+    positions: Option<String>,
     /// Accepted for CLI compatibility; the hub never runs lectures.
     #[arg(long, default_value_t = true, hide = true)]
     skip_lectures: bool,
@@ -463,13 +621,13 @@ struct EvalJobArgs {
     /// Candidate bot preset (plan 043). Flag-for-flag with `botbowl-ui eval`.
     #[arg(
         long,
-        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "backup", "fpu_reduction"]
+        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "fpu_reduction"]
     )]
     bot_config: Option<PathBuf>,
     /// Opponent bot preset; defaults to the candidate's.
     #[arg(
         long,
-        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_backup", "vs_fpu_reduction"]
+        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_fpu_reduction"]
     )]
     vs_config: Option<PathBuf>,
     #[arg(long, default_value = "raw")]
@@ -484,10 +642,6 @@ struct EvalJobArgs {
     horizon_turns: u8,
     #[arg(long)]
     vs_horizon_turns: Option<u8>,
-    #[arg(long, default_value = "minimax")]
-    backup: String,
-    #[arg(long)]
-    vs_backup: Option<String>,
     #[arg(long, default_value_t = 0.0)]
     fpu_reduction: f32,
     #[arg(long)]
@@ -554,10 +708,6 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             .then(|| parse_puct(&a.puct_mode, a.puct_c).map_err(|e| format!("--puct-mode: {e}")))
             .transpose()?,
         horizon_turns: cand_preset.is_none().then_some(a.horizon_turns),
-        backup: cand_preset
-            .is_none()
-            .then(|| parse_backup(&a.backup).map_err(|e| format!("--backup: {e}")))
-            .transpose()?,
         fpu_reduction: cand_preset.is_none().then_some(a.fpu_reduction),
         config: cand_preset.as_ref().map(|p| p.config),
     }
@@ -580,10 +730,6 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         horizon_turns: opp_preset
             .is_none()
             .then(|| a.vs_horizon_turns.unwrap_or(a.horizon_turns)),
-        backup: opp_preset
-            .is_none()
-            .then(|| parse_backup(a.vs_backup.as_deref().unwrap_or(&a.backup)).map_err(|e| format!("--vs-backup: {e}")))
-            .transpose()?,
         fpu_reduction: opp_preset
             .is_none()
             .then(|| a.vs_fpu_reduction.unwrap_or(a.fpu_reduction)),
@@ -609,6 +755,20 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             .map(Some)
             .collect(),
     };
+    // Plan 051: `--positions` replaces the boards with one drive rung per position set.
+    let venues: Vec<(Option<BoardDims>, Option<DriveRung>)> = match a.positions.as_deref() {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(|path| {
+                let set = PositionSet::load(path)?;
+                Ok((Some(set.board_dims()?), Some(set.rung()?)))
+            })
+            .collect::<Result<_, String>>()
+            .map_err(|e| format!("--positions: {e}"))?,
+        None => boards.into_iter().map(|b| (b, None)).collect(),
+    };
     let mut rungs = Vec::new();
     if !a.skip_fixed_rungs {
         for name in a.rungs.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -626,12 +786,13 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
                     ))
                 }
             };
-            for &board in &boards {
+            for (board, drives) in &venues {
                 rungs.push(RungReq {
-                    name: rung_name(name, board),
+                    name: venue_name(name, *board, drives.as_ref()),
                     games: a.games,
                     opponent: opponent.clone(),
-                    board,
+                    board: *board,
+                    drives: drives.clone(),
                 });
             }
         }
@@ -652,27 +813,20 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             (Some(o), None) => format!("vs:{base} [{o_name} v flags]", o_name = o.name),
             (None, Some(c)) => format!("vs:{base} [flags v {c_name}]", c_name = c.name),
             (None, None) => {
-                let (opp_puct, opp_h, opp_b, opp_f) = (
+                let (opp_puct, opp_h, opp_f) = (
                     opp.puct.expect("set when no preset is named"),
                     opp.horizon_turns.expect("set when no preset is named"),
-                    opp.backup.expect("set when no preset is named"),
                     opp.fpu_reduction.expect("set when no preset is named"),
                 );
-                let (cand_h, cand_b, cand_f) = (
+                let (cand_h, cand_f) = (
                     cand.horizon_turns.expect("set when no preset is named"),
-                    cand.backup.expect("set when no preset is named"),
                     cand.fpu_reduction.expect("set when no preset is named"),
                 );
                 format!(
-                    "vs:{base} [{}{}{}{}]",
+                    "vs:{base} [{}{}{}]",
                     opp_puct.label(),
                     if opp_h != cand_h {
                         format!(" horizon={opp_h}v{cand_h}")
-                    } else {
-                        String::new()
-                    },
-                    if opp_b != cand_b {
-                        format!(" {}v{}", opp_b.label(), cand_b.label())
                     } else {
                         String::new()
                     },
@@ -684,16 +838,17 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
                 )
             }
         };
-        for &board in &boards {
+        for (board, drives) in &venues {
             rungs.push(RungReq {
-                name: rung_name(&label, board),
+                name: venue_name(&label, *board, drives.as_ref()),
                 games: a.vs_games.unwrap_or(a.games),
                 opponent: BotReq::Mcts {
                     search: opp,
                     evaluator: vs,
                     model: a.vs_model.as_ref().map(abs),
                 },
-                board,
+                board: *board,
+                drives: drives.clone(),
             });
         }
     }
@@ -718,7 +873,18 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         per_game_out: abs(&a.per_game_out),
         report_out: abs(&a.out),
         batch: a.batch,
+        sprt: a.sprt,
+        label: a.client.label.clone(),
     })
+}
+
+/// The rung label, as `botbowl-ui eval` spells it: `opponent@board` for games, `opponent
+/// drives(set)@board` for drives.
+fn venue_name(opponent: &str, board: Option<BoardDims>, drives: Option<&DriveRung>) -> String {
+    match (drives, board) {
+        (Some(d), Some(b)) => drive_rung_name(opponent, &d.set, b),
+        _ => rung_name(opponent, board),
+    }
 }
 
 fn print_generate_lines(s: &JobStatus) {
@@ -794,23 +960,7 @@ fn print_report_lines(s: &JobStatus) {
     if let Some(r) = &s.report {
         println!("== report card: {} ==", r.candidate);
         for row in &r.ladder {
-            println!(
-                "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}",
-                row.opponent,
-                row.win_rate,
-                row.wins,
-                row.draws,
-                row.losses,
-                row.wins_as_home,
-                row.losses_as_home,
-                row.wins_as_away,
-                row.losses_as_away,
-                row.tds_for,
-                row.tds_against,
-                row.tds_by_home,
-                row.tds_by_away,
-                if row.unfinished > 0 { format!("  [{} unfinished]", row.unfinished) } else { String::new() },
-            );
+            println!("{}", row.report_line());
         }
     }
 }
@@ -830,13 +980,18 @@ fn main() {
                 {
                     eprintln!("[hub] {}", list.describe());
                 }
-                let (_hub, addr, task) = Hub::start(HubConfig {
-                    bind: a.bind,
-                    token,
-                    allow_commit_mismatch: a.allow_commit_mismatch,
-                    allowed_commits: a.allowed_commits.clone(),
-                    worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
-                })
+                let play = play_router(&a.play);
+                let (hub, addr, task) = Hub::start_with(
+                    HubConfig {
+                        bind: a.bind,
+                        token,
+                        allow_commit_mismatch: a.allow_commit_mismatch,
+                        allowed_commits: a.allowed_commits.clone(),
+                        worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
+                        run_dir: a.run_dir.clone(),
+                    },
+                    play,
+                )
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("[hub] cannot bind {}: {e}", a.bind);
@@ -848,18 +1003,39 @@ fn main() {
                     if botbowl_data::git_dirty() { "-dirty" } else { "" },
                     addr.port()
                 );
+                let index_dirs = if a.model_index_dirs.is_empty() {
+                    vec![repo_path("runs"), repo_path("models")]
+                } else {
+                    a.model_index_dirs.clone()
+                };
+                let indexing = hub.index_models(index_dirs.clone());
+                std::thread::spawn(move || {
+                    if let Ok(n) = indexing.join() {
+                        eprintln!(
+                            "[hub] {n} net(s) indexed under {}; workers' caches are named from them",
+                            index_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
+                        );
+                    }
+                });
                 tokio::select! {
                     _ = task => {}
                     _ = tokio::signal::ctrl_c() => eprintln!("[hub] shutting down"),
                 }
             });
         }
-        Command::Status(c) => {
+        Command::Status(a) => {
+            let c = &a.client;
             let token = read_token(&token_path(&c.token_file));
             match request("GET", &format!("{}/api/status", c.hub), &token, None) {
                 Ok((200, body)) => {
                     let s: HubStatus = serde_json::from_str(&body).expect("status json");
-                    println!("{}", serde_json::to_string_pretty(&s).unwrap());
+                    if a.text {
+                        let port = c.hub.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(0);
+                        let page = botbowl_hub::page::gather(s, port, a.run_dir.as_deref());
+                        print!("{}", botbowl_hub::page::render(&page, std::time::SystemTime::now()));
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&s).unwrap());
+                    }
                 }
                 Ok((code, body)) => {
                     eprintln!("hub returned {code}: {body}");

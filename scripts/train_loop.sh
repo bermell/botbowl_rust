@@ -120,6 +120,21 @@ MCTS_ITERS="${MCTS_ITERS:-1000}"
 # The benchmark's budget, both seats. Separate from generation's so a run can generate cheaper
 # without moving the anchor curve's scale mid-run.
 EVAL_MCTS_ITERS="${EVAL_MCTS_ITERS:-$MCTS_ITERS}"
+# What `--mcts-iters` counts, per phase: `iterations` (real descents) or `visits` (root visits,
+# which include the reused subtree and the DAG's double counting; about 255 descents at 500 under
+# the fixed search, plan 049). The hub client pins BLOOD_MCTS_BUDGET into every job, so these
+# set it per call. Empty = inherit the environment, as before.
+GEN_BUDGET_MODE="${GEN_BUDGET_MODE:-}"
+EVAL_BUDGET_MODE="${EVAL_BUDGET_MODE:-}"
+# Per-board-group generation budgets (exp057: wide 16x9 roots need several times the descents
+# 14x7 does). `SIZES@ITERS@SHARDS@GAMES` groups separated by `;`, e.g.
+#   "12x5:2,14x7:8@1000@0 2 4 6@300;16x9:15@4000@1 3 5 7@225"
+# Each group is its own `job generate` with an explicit weighted `--board-sizes` list, its own
+# `--mcts-iters` and shard set, all run side by side. Interleave the shards so the train/val split
+# (TRAIN_SHARDS/VAL_SHARDS) holds both groups. Shards must cover NN_SHARDS exactly once. Empty =
+# one job over SIZE_MODE's distribution at MCTS_ITERS, as before. Set SIZE_MODE=list so the
+# centred curriculum stays off: its centre would not reach the groups' lists.
+GEN_SPLIT="${GEN_SPLIT:-}"
 EVAL_GAMES="${EVAL_GAMES:-30}"              # per fixed ladder rung, paired Home/Away
 # Fixed rungs kept in the report card. `random` read 1.000 in every one of
 # nine generations and `scripted` sits at 0.87-0.95 where 30 games is noise.
@@ -193,6 +208,16 @@ SELECT_ON="${SELECT_ON:-combined}"
 # across it, val_value is. Set POLICY_TARGET=visits to revert.
 POLICY_TARGET="${POLICY_TARGET:-cq}"        # visits|cq
 CQ_TAU="${CQ_TAU:-100}"                     # in Q points (1000 = one TD); only for cq
+# Plan 048: self-play exploration flags for `job generate`, e.g.
+# "--explore-noise 0.25 --explore-alpha 10 --explore-sample-moves 2". Empty = the greedy generator.
+EXPLORE_ARGS="${EXPLORE_ARGS:-}"
+# Plan 053: bot presets (cfgs/*.toml) for the two phases. GEN_BOT_CONFIG shapes every generated game
+# (e.g. cfgs/gumbel16_f1000_gen.toml, Gumbel root search with its own exploration noise, under which
+# EXPLORE_ARGS is ignored). EVAL_BOT_CONFIG is played by *both* sides of the benchmark, so it
+# compares nets, not searches (e.g. cfgs/gumbel16_f1000.toml). Unset = the env-driven search as
+# before. A preset names its own budget mode, so GEN/EVAL_BUDGET_MODE do not apply under one.
+GEN_BOT_CONFIG="${GEN_BOT_CONFIG:-}"
+EVAL_BOT_CONFIG="${EVAL_BOT_CONFIG:-}"
 PREPARE_TARGET_ARGS="--policy-target $POLICY_TARGET"
 [ "$POLICY_TARGET" = cq ] && PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --tau $CQ_TAU"
 # Plan 036, adopted 2026-09-17 from gen04 on. The value head was fitting the
@@ -237,6 +262,9 @@ VALUE_WEIGHT="${VALUE_WEIGHT:-0.25}"        # W1; 1.0 = the old unweighted sum
 PER_DRIVE_VALUE_WEIGHT="${PER_DRIVE_VALUE_WEIGHT:-on}"   # W4; on|off
 PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --value-blend $VALUE_BLEND"
 TRAIN_TARGET_ARGS="--value-weight $VALUE_WEIGHT"
+# Extra `bbnn.train` flags, e.g. `--freeze-bn` (exp061) — appended to every generation's training.
+TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
+TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS $TRAIN_EXTRA_ARGS"
 [ "$PER_DRIVE_VALUE_WEIGHT" = on ] && TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS --per-drive-value-weight"
 # Validate every N optimizer steps instead of once per epoch (plan 031 D4/D5,
 # adopted 2026-09-07). The warm-started fine-tunes gen04-07 all restored at
@@ -291,6 +319,25 @@ WARM_FROM="${WARM_FROM:-latest}"
 # 1e-3 those steps are large enough to undo the warm start; 2e-4 is the
 # fine-tuning default that keeps it.
 WARM_LR="${WARM_LR:-2e-4}"
+# Plan 054 E1: after each fine-tune, score it against its generator on the generation's own
+# held-out shards (scripts/absorb_probe.py) and put the deltas on status.md. on|off.
+ABSORB_PROBE="${ABSORB_PROBE:-on}"
+# Plan 056: Monte Carlo value labels. After each generation, `botbowl-ui mc-label` rewrites its
+# train shards into $GEN_DIR/mc/ with every sample's outcome replaced by the mean of this many
+# policy-only drive playouts under the generator's net (arm F: value RMS -15%, its search beat the
+# blend-0.5 control's 0.533 head to head). The window then trains and validates on mc/shard*.jsonl
+# (the absorption probe keeps the raw val shards). Pair with VALUE_BLEND=1.0 (the label is used as
+# is) and SELECT_ON=combined. 0 = off, the raw outcome as before.
+MC_LABEL_PLAYOUTS="${MC_LABEL_PLAYOUTS:-0}"
+MC_LABEL_PARALLEL="${MC_LABEL_PARALLEL:-16}"
+# Plan 056 §2: score every new net's value head on a frozen MC benchmark (scripts/value_bench.sh,
+# seconds) next to its generator; the benchmark .jsonl path, or empty = off.
+VALUE_BENCH="${VALUE_BENCH:-}"
+# Plan 055 §6: the standing net check (scripts/net_check.sh, the search-improvement curve over a
+# budget ladder) on each generation's generator, on the corpus it just generated, in the background
+# alongside labelling and training (~35-90 min). on|off.
+NET_CHECK="${NET_CHECK:-off}"
+NET_CHECK_CONFIG="${NET_CHECK_CONFIG:-$REPO/cfgs/gumbel16_f1000.toml}"
 SCRATCH_LR="${SCRATCH_LR:-1e-3}"            # used when there is nothing to warm-start from
 # A .pt that must never be warm-started from, however the WARM_FROM rules
 # would otherwise reach it. Exists for the from-scratch AlphaZero run: its
@@ -390,6 +437,29 @@ MODEL_DIR="${MODEL_DIR:-$REPO/models}"      # test never touches real models/
 # ~0.75 — a saturated anchor stops discriminating.
 ANCHOR="${ANCHOR:-$MODEL_DIR/bbnet_14x7_gen03.onnx}"
 ANCHOR_GAMES="${ANCHOR_GAMES:-40}"          # paired Home/Away on --seed 0, every generation
+# Plan 051: what each generation's benchmark plays.
+#   games  (default) the full-game match against $ANCHOR above, every generation.
+#   drives paired contested drives against $DRIVE_REF, from $DRIVE_POSITIONS (comma-separated sets
+#          from `botbowl-ui positions`, screened with $DRIVE_REF itself), each set its own rung,
+#          stopped by SPRT $DRIVE_SPRT at the latest after $DRIVE_CAP drives. Drives alone: the
+#          user decides when full games are needed (2026-10-03), so both full-game add-ons are
+#          off by default. P1_GAMES > 0 confirms a drive H1 on full games (SPRT against
+#          $DRIVE_REF, at most that many per board) alongside the next generation;
+#          ANCHOR_EVERY > 0 plays the full-game anchor match every that many generations.
+EVAL_VENUE="${EVAL_VENUE:-games}"
+DRIVE_REF="${DRIVE_REF:-}"
+# DRIVE_REF=parent: each generation plays the net that generated its data (gen G vs gen G-1; gen01 vs
+# INIT_CHAMPION), so every verdict answers "did this step help". Steps of +0.02 all read H0 against
+# their parents, so ORIGIN_EVERY > 0 adds a fixed-size match (no SPRT, ORIGIN_DRIVES per set) against
+# ORIGIN_REF (default INIT_CHAMPION) every that many generations: the cumulative trend.
+ORIGIN_EVERY="${ORIGIN_EVERY:-0}"
+ORIGIN_REF="${ORIGIN_REF:-${INIT_CHAMPION:-}}"
+ORIGIN_DRIVES="${ORIGIN_DRIVES:-400}"
+DRIVE_POSITIONS="${DRIVE_POSITIONS:-}"
+DRIVE_SPRT="${DRIVE_SPRT:-0.5:0.55}"
+DRIVE_CAP="${DRIVE_CAP:-800}"
+P1_GAMES="${P1_GAMES:-0}"
+ANCHOR_EVERY="${ANCHOR_EVERY:-0}"
 # -----------------------------------------------------------------------------
 
 NN_SHARDS="0 1 2 3 4 5 6 7" # generated by the champion (nn-value); pure
@@ -469,7 +539,13 @@ window_shards() {
         d="$RUN_DIR/$(printf 'gen%02d' "$i")"
         [ -e "$d/.generated" ] || continue
         for k in $shards; do
-            [ -s "$d/shard$k.jsonl" ] && out="$out $d/shard$k.jsonl"
+            # Plan 056: a generation's MC-labelled copy of a shard replaces the raw one, train and val
+            # alike, so val_value measures progress toward the label being trained.
+            if [ "$MC_LABEL_PLAYOUTS" -gt 0 ] && [ -s "$d/mc/shard$k.jsonl" ]; then
+                out="$out $d/mc/shard$k.jsonl"
+            elif [ -s "$d/shard$k.jsonl" ]; then
+                out="$out $d/shard$k.jsonl"
+            fi
         done
     done
     echo "$out"
@@ -543,7 +619,7 @@ hub_start() {
         log "hub already running on $HUB_URL; reusing"
         return 0
     fi
-    "$HUB" serve --bind "0.0.0.0:$HUB_PORT" --token-file "$HUB_TOKEN_FILE" >> "$RUN_DIR/hub.log" 2>&1 &
+    "$HUB" serve --bind "0.0.0.0:$HUB_PORT" --token-file "$HUB_TOKEN_FILE" --run-dir "$RUN_DIR" >> "$RUN_DIR/hub.log" 2>&1 &
     HUB_PID=$!
     local i=0
     until "$HUB" status --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" > /dev/null 2>&1; do
@@ -563,6 +639,47 @@ hub_stop() {
 }
 # $1 = parallel games, $2 = log file (per phase, so a fallback warning is
 # attributable); the sidecar socket is passed when the server is up.
+# Run a command with BLOOD_MCTS_BUDGET set to $1, or as-is when $1 is empty.
+with_budget() {
+    local mode="$1"; shift
+    if [ -n "$mode" ]; then BLOOD_MCTS_BUDGET="$mode" "$@"; else "$@"; fi
+}
+# One generation's games: a single job, or one job per GEN_SPLIT group side by side. Same seed
+# layout either way (shard K of gen G starts at SEED_BASE + G*1e6 + K*1e5), so a split corpus has
+# the seeds a single job would have had.
+generate_jobs() {
+    local gen_dir="$1" champ="$2" size_args="$3" group sizes iters shards games i=0 rc=0
+    local -a pids=()
+    if [ -z "$GEN_SPLIT" ]; then
+        # shellcheck disable=SC2086
+        with_budget "$GEN_BUDGET_MODE" "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+            --mode random-start --games "$GAMES_PER_SHARD" \
+            --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
+            --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$champ" \
+            $size_args $EXPLORE_ARGS ${NEXT_DRIVE:+--next-drive} ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
+            --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" --label "$GG generate" \
+            --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.log" 2>&1
+        return $?
+    fi
+    IFS=';' read -ra groups <<< "$GEN_SPLIT"
+    for group in "${groups[@]}"; do
+        IFS='@' read -r sizes iters shards games <<< "$group"
+        log "$GG generate group $i: $games/shard at $iters, shards $shards, boards $sizes"
+        # shellcheck disable=SC2086
+        with_budget "$GEN_BUDGET_MODE" "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+            --mode random-start --games "$games" \
+            --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
+            --mcts-iters "$iters" --evaluator "$EVALUATOR" --model "$champ" \
+            --board-sizes "$sizes" --cells-per-player "$SIZE_CELLS_PER_PLAYER" $EXPLORE_ARGS ${NEXT_DRIVE:+--next-drive} ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
+            --shards "$shards" --heuristic-shards "" --label "$GG generate ($sizes at $iters)" \
+            --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.$i.log" 2>&1 &
+        pids+=($!)
+        i=$((i + 1))
+    done
+    for p in "${pids[@]}"; do wait "$p" || rc=1; done
+    cat "$gen_dir"/generate.[0-9]*.log > "$gen_dir/generate.log" 2>/dev/null
+    return $rc
+}
 worker_start() {
     local extra=""
     [ -n "$NN_SERVER_PID" ] && extra="--nn-server $NN_SOCKET"
@@ -622,6 +739,20 @@ else
 fi
 status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gateless, anchor $(basename "$ANCHOR") x$ANCHOR_GAMES, max $MAX_GENS gens, board capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, sizes $SIZE_MODE$([ "$SIZE_MODE" = fixed ] || echo " ($(size_gen_args | tr -s ' \\\n' ' ')); eval on $EVAL_BOARD_SIZES")"
 [ -f "$ANCHOR" ] || die "anchor model not found: $ANCHOR"
+for f in $GEN_BOT_CONFIG $EVAL_BOT_CONFIG; do [ -f "$f" ] || die "bot preset not found: $f"; done
+preset_name() { if [ -n "$1" ]; then basename "$1" .toml; else echo "env default"; fi; }
+[ -n "$GEN_BOT_CONFIG$EVAL_BOT_CONFIG" ] && status "search presets: generate $(preset_name "$GEN_BOT_CONFIG"), benchmark $(preset_name "$EVAL_BOT_CONFIG") on both sides$(grep -qs '^gumbel_m *= *[1-9]' "$GEN_BOT_CONFIG" && [ -n "$EXPLORE_ARGS" ] && echo "; EXPLORE_ARGS is ignored under a Gumbel generation preset")"
+case "$EVAL_VENUE" in
+    games) ;;
+    drives)
+        [ "$DRIVE_REF" = parent ] || [ -f "$DRIVE_REF" ] || die "EVAL_VENUE=drives needs DRIVE_REF, a model file or 'parent' (got '$DRIVE_REF')"
+        [ "$DRIVE_REF" != parent ] || [ -f "${INIT_CHAMPION:-}" ] || die "DRIVE_REF=parent needs INIT_CHAMPION (gen01's generator)"
+        [ "$ORIGIN_EVERY" -eq 0 ] || [ -f "$ORIGIN_REF" ] || die "ORIGIN_EVERY needs ORIGIN_REF, a model file (got '$ORIGIN_REF')"
+        for f in ${DRIVE_POSITIONS//,/ }; do [ -f "$f" ] || die "position set not found: $f"; done
+        [ -n "$DRIVE_POSITIONS" ] || die "EVAL_VENUE=drives needs DRIVE_POSITIONS"
+        status "benchmark: drives vs $([ "$DRIVE_REF" = parent ] && echo "each generation's generator" || basename "$DRIVE_REF")$([ "$ORIGIN_EVERY" -gt 0 ] && echo ", and vs $(basename "$ORIGIN_REF") every $ORIGIN_EVERY gens ($ORIGIN_DRIVES per set, no SPRT)") from $(for f in ${DRIVE_POSITIONS//,/ }; do basename "$f" .json; done | paste -sd,), SPRT $DRIVE_SPRT, cap $DRIVE_CAP drives per set$([ "$P1_GAMES" -gt 0 ] && echo "; H1 confirmed on full games (P1, cap $P1_GAMES per board)")$([ "$ANCHOR_EVERY" -gt 0 ] && echo "; anchor $(basename "$ANCHOR") every $ANCHOR_EVERY gens")" ;;
+    *) die "EVAL_VENUE must be games or drives, got $EVAL_VENUE" ;;
+esac
 
 # ---- build ------------------------------------------------------------------
 # The documented launch is `nohup scripts/train_loop.sh &`, which gets a
@@ -738,7 +869,7 @@ if [ ! -f "$(champion)" ]; then
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
                 --epochs "$EPOCHS" --device "$TRAIN_DEVICE" \
                 $TRAIN_TARGET_ARGS \
-                --out "$MODEL.pt" --onnx "$MODEL.onnx" \
+                --out "$MODEL.pt" --onnx "$MODEL.onnx" --progress "$GEN_DIR/train.progress.json" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "gen00 training failed — see train.log"
         fi
@@ -768,44 +899,87 @@ fi
 # crash loses the in-flight eval with the hub; the next launch resubmits it,
 # because only eval_finish writes .evaluated.
 EVAL_PENDING_G=""
-EVAL_CLIENT_PID=""
+EVAL_JOBS=()   # "pid name dir" per job of the pending generation's eval
 EVAL_T0=0
-eval_submit() {
-    local G="$1" GG GEN_DIR MODEL RUNG_ARGS RUNG_DESC
-    GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"; MODEL="$MODEL_DIR/bbnet_${TIER}_$GG"
-    # No fixed rungs -> --skip-fixed-rungs, which keeps only the --vs rung
-    # (the anchor). Passing `--rungs ""` would also work, but the dedicated
-    # flag says the intent out loud.
-    if [ -n "$EVAL_RUNGS" ]; then
-        RUNG_ARGS="--rungs $EVAL_RUNGS"
-        RUNG_DESC="$EVAL_GAMES games/rung ($EVAL_RUNGS) + "
-    else
-        RUNG_ARGS="--skip-fixed-rungs"
-        RUNG_DESC="no fixed rungs, "
-    fi
-    status "$GG eval submitted: ${RUNG_DESC}$ANCHOR_GAMES vs anchor $(basename "$ANCHOR")$([ "$SIZE_MODE" = fixed ] || echo ", on each of $EVAL_BOARD_SIZES"), alongside the next generation on the hub"
+# eval_job NAME DIR LABEL [job eval args...]: one eval job in the background, writing DIR/report.json
+# (and eval.games.jsonl, eval.log). A DIR that already has its report is skipped, so a relaunch
+# resubmits only what the crash lost.
+eval_job() {
+    local name="$1" dir="$2" label="$3"; shift 3
+    [ -s "$dir/report.json" ] && return 0
+    mkdir -p "$dir"; rm -f "$dir/eval.games.jsonl"
     # shellcheck disable=SC2086
-    "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
-            --evaluator "$EVALUATOR" --model "$MODEL.onnx" \
-            --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" --seed 0 \
-            $RUNG_ARGS $(size_eval_args) \
-            --vs-games "$ANCHOR_GAMES" \
-            --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR" \
-            --per-game-out "$GEN_DIR/eval.games.jsonl" \
-            --out "$GEN_DIR/report.json" --wait > "$GEN_DIR/eval.log" 2>&1 &
-    EVAL_CLIENT_PID=$!
+    with_budget "$EVAL_BUDGET_MODE" "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+            --label "$label" --evaluator "$EVALUATOR" --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" \
+            ${EVAL_BOT_CONFIG:+--bot-config "$EVAL_BOT_CONFIG" --vs-config "$EVAL_BOT_CONFIG"} \
+            "$@" --per-game-out "$dir/eval.games.jsonl" --out "$dir/report.json" --wait > "$dir/eval.log" 2>&1 &
+    EVAL_JOBS+=("$! $name $dir")
+}
+# genNN for the loop's own and the anchor's nets, else the file stem: what we call a net.
+net_name() { basename "$1" .onnx | sed -E 's/^(bbnet|anchor)_.*_(gen[0-9]+)$/\2/'; }
+# The net gen $1 is benchmarked against: DRIVE_REF, or with DRIVE_REF=parent the net that generated
+# it (the previous generation's, gen01's being INIT_CHAMPION).
+drive_ref_of() {
+    if [ "$DRIVE_REF" != parent ]; then echo "$DRIVE_REF"
+    elif [ "$1" -le 1 ]; then echo "$INIT_CHAMPION"
+    else echo "$MODEL_DIR/bbnet_${TIER}_$(printf 'gen%02d' $(($1 - 1))).onnx"; fi
+}
+eval_submit() {
+    local G="$1" GG GEN_DIR MODEL RUNG_ARGS RUNG_DESC PG
+    GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"; MODEL="$MODEL_DIR/bbnet_${TIER}_$GG"
+    PG=$(printf 'gen%02d' $((G - 1)))
+    EVAL_JOBS=()
+    if [ "$EVAL_VENUE" = drives ]; then
+        REF=$(drive_ref_of "$G")
+        eval_job drives "$GEN_DIR/drives" "$GG drives vs $(net_name "$REF")" \
+            --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
+            --positions "$DRIVE_POSITIONS" --sprt "$DRIVE_SPRT" --vs-games "$DRIVE_CAP" \
+            --vs-evaluator "$EVALUATOR" --vs-model "$REF"
+        if [ "$ORIGIN_EVERY" -gt 0 ] && [ $((G % ORIGIN_EVERY)) -eq 0 ]; then
+            eval_job origin "$GEN_DIR/drives_origin" "$GG drives vs $(net_name "$ORIGIN_REF") (origin)" \
+                --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
+                --positions "$DRIVE_POSITIONS" --vs-games "$ORIGIN_DRIVES" \
+                --vs-evaluator "$EVALUATOR" --vs-model "$ORIGIN_REF"
+        fi
+        # P1: the previous generation's drive H1, on full games against the same reference.
+        if [ "$P1_GAMES" -gt 0 ] && [ -e "$RUN_DIR/$PG/.confirm" ]; then
+            # shellcheck disable=SC2046
+            eval_job p1 "$RUN_DIR/$PG/p1" "$PG full games vs $(net_name "$(drive_ref_of $((G - 1)))") (P1)" \
+                --model "$MODEL_DIR/bbnet_${TIER}_$PG.onnx" --seed 0 --skip-fixed-rungs $(size_eval_args) \
+                --sprt "$DRIVE_SPRT" --vs-games "$P1_GAMES" \
+                --vs-evaluator "$EVALUATOR" --vs-model "$(drive_ref_of $((G - 1)))"
+        fi
+    fi
+    if [ "$EVAL_VENUE" = games ] || { [ "$ANCHOR_EVERY" -gt 0 ] && [ $((G % ANCHOR_EVERY)) -eq 0 ]; }; then
+        # No fixed rungs -> --skip-fixed-rungs, which keeps only the --vs rung
+        # (the anchor). Passing `--rungs ""` would also work, but the dedicated
+        # flag says the intent out loud.
+        if [ -n "$EVAL_RUNGS" ]; then
+            RUNG_ARGS="--rungs $EVAL_RUNGS"
+            RUNG_DESC="$EVAL_GAMES games/rung ($EVAL_RUNGS) + "
+        else
+            RUNG_ARGS="--skip-fixed-rungs"
+            RUNG_DESC=""
+        fi
+        # shellcheck disable=SC2046,SC2086
+        eval_job anchor "$GEN_DIR" "$GG full games vs $(net_name "$ANCHOR") (anchor)" \
+            --model "$MODEL.onnx" --seed 0 $RUNG_ARGS $(size_eval_args) \
+            --vs-games "$ANCHOR_GAMES" --vs-evaluator "$EVALUATOR" --vs-model "$ANCHOR"
+    fi
+    status "$GG eval submitted: $(for j in "${EVAL_JOBS[@]}"; do set -- $j; echo "$2"; done | paste -sd' ')${RUNG_DESC:+ ($RUNG_DESC)}, alongside the next generation on the hub"
     EVAL_PENDING_G="$G"
     EVAL_T0=$(date +%s)
 }
-# Wait for the in-flight eval, if any, then report it. Needs games to run on:
+# Wait for the in-flight eval jobs, if any, then report them. Needs games to run on:
 # if this box's worker is not up (a resume that skipped generation, or the
 # last generation), it starts the sidecar and worker for the wait and stops
 # them after.
 eval_finish() {
     [ -n "$EVAL_PENDING_G" ] || return 0
-    local G="$EVAL_PENDING_G" GG GEN_DIR started=""
+    local G="$EVAL_PENDING_G" GG GEN_DIR started="" j pid name dir alive=""
     GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"
-    if kill -0 "$EVAL_CLIENT_PID" 2>/dev/null; then
+    for j in "${EVAL_JOBS[@]}"; do read -r pid _ _ <<< "$j"; kill -0 "$pid" 2>/dev/null && alive=1; done
+    if [ -n "$alive" ]; then
         if [ -z "$WORKER_PID" ]; then
             nn_server_start "$(champion)"
             worker_start "$EVAL_PARALLEL_GAMES" "$GEN_DIR/eval.worker.log"
@@ -813,12 +987,16 @@ eval_finish() {
         fi
         status "$GG eval still running $((($(date +%s) - EVAL_T0) / 60)) min in; waiting for it"
     fi
-    if ! wait "$EVAL_CLIENT_PID"; then
-        [ -n "$started" ] && { worker_stop; nn_server_stop; }
-        die "$GG eval failed — see eval.log and hub.log"
-    fi
+    for j in "${EVAL_JOBS[@]}"; do
+        read -r pid name dir <<< "$j"
+        if ! wait "$pid"; then
+            [ -n "$started" ] && { worker_stop; nn_server_stop; }
+            die "$GG $name eval failed — see $dir/eval.log and hub.log"
+        fi
+    done
     [ -n "$started" ] && { worker_stop; nn_server_stop; }
     EVAL_PENDING_G=""
+    EVAL_JOBS=()
     touch "$GEN_DIR/.evaluated"
     eval_report "$G" "$((($(date +%s) - EVAL_T0) / 60))"
 }
@@ -829,11 +1007,29 @@ eval_finish() {
 # first relaunch silently reverted it to gen03 and generated gen08 from the
 # wrong net).
 eval_report() {
-    local G="$1" MINUTES="$2" GG GEN_DIR SUMMARY_LINE CURVE BL PB
+    local G="$1" MINUTES="$2" GG GEN_DIR PG SUMMARY_LINE CURVE BL PB
     GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"
+    PG=$(printf 'gen%02d' $((G - 1)))
     [ -f "$GEN_DIR/verdict" ] && return 0
-    SUMMARY_LINE=$("$PY" "$SUMMARY" "$GEN_DIR/report.json")
     echo "BENCHMARKED" > "$GEN_DIR/verdict"
+    # Plan 051: the drive match against the reference, and the previous generation's P1.
+    if [ -s "$GEN_DIR/drives/report.json" ]; then
+        status "$GG drives done (${MINUTES} min, overlapped): $("$PY" "$SUMMARY" "$GEN_DIR/drives/report.json")"
+        status "$GG drives vs $(net_name "$(drive_ref_of "$G")"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" | paste -sd'|')"
+        if [ "$P1_GAMES" -gt 0 ] && grep -q '"verdict": *"H1"' "$GEN_DIR/drives/report.json"; then
+            touch "$GEN_DIR/.confirm"
+            status "$GG drive H1 against $(net_name "$DRIVE_REF"): P1 confirmation on full games follows with the next generation"
+        fi
+    fi
+    if [ -s "$GEN_DIR/drives_origin/report.json" ]; then
+        status "$GG vs origin $(net_name "$ORIGIN_REF"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" --sub drives_origin | paste -sd'|')"
+    fi
+    if [ -s "$RUN_DIR/$PG/p1/report.json" ] && [ ! -e "$RUN_DIR/$PG/.p1_reported" ]; then
+        status "$PG P1 vs $(net_name "$DRIVE_REF"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" --sub p1 | paste -sd'|')"
+        touch "$RUN_DIR/$PG/.p1_reported"
+    fi
+    [ -s "$GEN_DIR/report.json" ] || return 0
+    SUMMARY_LINE=$("$PY" "$SUMMARY" "$GEN_DIR/report.json")
     status "$GG eval done (${MINUTES} min, overlapped): $SUMMARY_LINE"
     # The curve is what the benchmark is for: this generation's point, the
     # 3-gen rolling mean, and the advisory flags — all against the same
@@ -882,15 +1078,8 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # tract and warns once, in generate.worker.log).
         worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
         SIZE_ARGS=$(size_gen_args)
-        status "$GG generate: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
-        # shellcheck disable=SC2086
-        if ! "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
-                --mode random-start --games "$GAMES_PER_SHARD" \
-                --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
-                --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$CHAMP" \
-                $SIZE_ARGS ${NEXT_DRIVE:+--next-drive} \
-                --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" \
-                --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
+        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
+        if ! generate_jobs "$GEN_DIR" "$CHAMP" "$SIZE_ARGS"; then
             worker_stop
             nn_server_stop
             die "$GG generate failed — see generate.log, hub.log and generate.worker.log"
@@ -932,6 +1121,49 @@ while [ "$G" -le "$MAX_GENS" ]; do
     fi
     # A resume that skipped generation may still hold a pending eval.
     eval_finish
+
+    # -- 1b. the standing net check (plan 055 §6), in the background ------------
+    # On this generation's generator and the corpus it just played, which it was not trained on.
+    # Its own sidecar and threads; the result lands on status.md whenever it finishes.
+    if [ "$NET_CHECK" = on ] && [ ! -e "$GEN_DIR/.trained" ] && [ ! -e "$GEN_DIR/.net_checked" ] \
+        && [ ! -e "$GEN_DIR/.net_check_started" ]; then
+        NC_NET="$(champion)"
+        touch "$GEN_DIR/.net_check_started"
+        (
+            "$REPO/scripts/net_check.sh" "$NC_NET" "$GEN_DIR" "$GEN_DIR/net_check" "$NET_CHECK_CONFIG" \
+                > "$GEN_DIR/net_check.log" 2>&1 \
+                && status "$GG net check ($(basename "$NC_NET") on its own $GG corpus): $(cat "$GEN_DIR/net_check/net_check.txt")" \
+                && touch "$GEN_DIR/.net_checked" \
+                || status "WARN: $GG net check failed — see $GEN_DIR/net_check.log"
+            rm -f "$GEN_DIR/.net_check_started"
+        ) &
+        status "$GG net check started in the background ($(basename "$NC_NET"))"
+    fi
+
+    # -- 1c. Monte Carlo value labels (plan 056) ---------------------------------
+    # The generator's policy plays every train sample's drive out MC_LABEL_PLAYOUTS times; the window
+    # trains on the means. Its own sidecar run on the card the generate phase just released.
+    if [ "$MC_LABEL_PLAYOUTS" -gt 0 ] && [ ! -e "$GEN_DIR/.mc_labelled" ] && [ ! -e "$GEN_DIR/.trained" ]; then
+        check_stop "before $GG mc-label"
+        SECONDS=0
+        MC_NET="$(champion)"
+        nn_server_start "$MC_NET"
+        # Train and val shards: val_value then scores the same label the net trains toward, which
+        # is what lets restore-on-combined see the value head improve (gen02 restored its init on a
+        # flat val_policy and discarded the value progress).
+        MC_IN=""; for K in $TRAIN_SHARDS $VAL_SHARDS; do MC_IN="$MC_IN $GEN_DIR/shard$K.jsonl"; done
+        status "$GG mc-label: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}"
+        # shellcheck disable=SC2086
+        "$UI" mc-label --corpus $MC_IN --model "$MC_NET" ${NN_SERVER_PID:+--nn-server "$NN_SOCKET"} \
+            --playouts "$MC_LABEL_PLAYOUTS" --parallel "$MC_LABEL_PARALLEL" --seed "$((56000 + G))" \
+            --out-dir "$GEN_DIR/mc" 2>> "$GEN_DIR/mc_label.log"
+        MC_RC=$?
+        nn_server_stop
+        [ "$MC_RC" -eq 0 ] || die "$GG mc-label failed — see $GEN_DIR/mc_label.log"
+        for K in $TRAIN_SHARDS $VAL_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || die "$GG mc/shard$K.jsonl missing"; done
+        touch "$GEN_DIR/.mc_labelled"
+        status "$GG mc-label done ($((SECONDS / 60)) min): $(grep -o '([0-9]* left unlabelled)' "$GEN_DIR/mc_label.log" | tr -dc '0-9\n' | awk '{s+=$1} END {print s+0}') trajectories left unlabelled"
+    fi
 
     # -- 2. prepare -----------------------------------------------------------
     # Nothing downstream of training reads prepared_*, and prune_prepared
@@ -1007,13 +1239,39 @@ while [ "$G" -le "$MAX_GENS" ]; do
                 --epochs "$EPOCHS" --device "$TRAIN_DEVICE" $INIT_ARGS \
                 --select-on "$SELECT_ON" --eval-every "$EVAL_EVERY" \
                 $TRAIN_TARGET_ARGS \
-                --out "$MODEL.pt" --onnx "$MODEL.onnx" \
+                --out "$MODEL.pt" --onnx "$MODEL.onnx" --progress "$GEN_DIR/train.progress.json" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "$GG training failed — see train.log"
         fi
         BEST=$(grep 'restored best-val weights' "$GEN_DIR/train.log" | tail -1)
         BASE=$(grep 'warm-start baseline' "$GEN_DIR/train.log" | tail -1)
         status "$GG train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}${BASE:+ (warm-start baseline was${BASE##*val_value})}"
+        # Plan 054 E1: did this fine-tune absorb the search's improvement? Score the new net and the
+        # net that generated this generation on this generation's own held-out shards: a positive
+        # dlogP(played) with dtop1 >= 0 and dvalMSE <= 0 is a generation that learned something.
+        # Minutes, on the GPU the sidecar has just released; diagnostic only, never fatal.
+        if [ "$ABSORB_PROBE" = on ] && [ -f "$CHAMP_PT" ]; then
+            PROBE_IN=""; for K in $VAL_SHARDS; do [ -s "$GEN_DIR/shard$K.jsonl" ] && PROBE_IN="$PROBE_IN $GEN_DIR/shard$K.jsonl"; done
+            rm -rf "$GEN_DIR/probe_val"
+            # shellcheck disable=SC2086
+            if [ -n "$PROBE_IN" ] && "$PREPARE" --in $PROBE_IN --out "$GEN_DIR/probe_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+                && "$PY" "$REPO/scripts/absorb_probe.py" --summary --val "$GEN_DIR/probe_val" \
+                    "generator=$CHAMP_PT" "$GG=$MODEL.pt" > "$GEN_DIR/absorb.txt" 2>&1; then
+                status "$GG absorption: $(grep '^ABSORB' "$GEN_DIR/absorb.txt" | sed 's/^ABSORB [^:]*: //')"
+            else
+                status "WARN: $GG absorption probe failed — see $GEN_DIR/absorb.txt"
+            fi
+            rm -rf "$GEN_DIR/probe_val"
+        fi
+        # Plan 056 §2: the value head against Monte Carlo truth, the new net paired with its generator.
+        if [ -n "$VALUE_BENCH" ] && [ -f "$VALUE_BENCH" ]; then
+            if "$REPO/scripts/value_bench.sh" "$VALUE_BENCH" "$GEN_DIR/value_bench" \
+                    "generator=$TRAIN_CHAMP" "$GG=$MODEL.onnx" > "$GEN_DIR/value_bench.log" 2>&1; then
+                status "$GG value bench: $(grep -E '^VALUE_BENCH' "$GEN_DIR/value_bench/summary.txt" | sed 's/^VALUE_BENCH_*//' | paste -sd'|')"
+            else
+                status "WARN: $GG value bench failed — see $GEN_DIR/value_bench.log"
+            fi
+        fi
         echo "$MODEL.pt" > "$LATEST_FILE"
         # Gateless: the net just trained generates the next generation,
         # unconditionally. The benchmark below measures it; it does not

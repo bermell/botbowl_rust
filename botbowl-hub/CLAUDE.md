@@ -23,8 +23,29 @@ botbowl-hub job eval --evaluator nn --model X.onnx --vs-evaluator nn --vs-model 
 botbowl-hub job generate --mode random-start --games 600 --mcts-iters 1000 --evaluator nn --model X.onnx \
     --seed-base 22000000 --shard-seed-stride 100000 --shards "0 1 2 3 4 5 6 7" --heuristic-shards "" \
     --truncate --out-dir runs/<run>/gen12 --wait       # writes gen12/shard$K.jsonl, shard K seeded at base + K*stride
-botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text page
+botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is the status page in a terminal
+# http://hub:7777/ is an index; http://hub:7777/status the status page: jobs by --label
+# (`job ... --label "gen03 generate"`), rungs and status lines shortened to how we name things
+# (page.rs), and with `serve --run-dir` the loop's latest status lines plus the trainer's progress
+# (`bbnn.train --progress`). http://hub:7777/play/ is the web play app (below).
 ```
+
+## `/play/`: the web play app, nested
+
+`serve` mounts `botbowl-web-server`'s whole router under `/play/` (`Hub::start_with`,
+`main.rs::play_router`), so its game socket is `/play/ws` and `/ws` stays the workers'. The
+client is built with relative URLs (`Trunk.toml` `public_url = "./"`, page-relative socket and
+sprite paths), so the same `dist/` serves standalone at `/` and here; `/play` redirects to
+`/play/` because relative URLs need the slash. It is off, with a line on stderr, when there is no
+client build (`cd botbowl-web/client && trunk build --release`) or with `--no-play`.
+
+Because the hub listens on the network, the play app here is fenced: `--play-max-workers`
+(default 4) caps each bot's search threads whatever the lobby asks, and `StartFrom::Recording`
+(the browser naming a server path) is refused. Paths (`--play-dist-dir`, `--play-models-dir`,
+`--play-assets-dir`, `--play-teams-dir`) override `~/.config/botbowl/web.toml`, which overrides
+the defaults from the crate's source path — the same file and resolver (`config::resolve`) as
+`botbowl-web-server`. Browser games run in
+the hub process: they cost CPU on the training box, nothing else — they never touch the job queue.
 
 ## Invariants
 
@@ -36,7 +57,8 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   preset — and `GenerateConfig.config_name`; both ride inside the re-exported `botbowl-play`
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
   **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
-  re-exported types. Postcard is positional, so a new field anywhere in a type that crosses the
+  re-exported types. **v10** (plan 051) added `Task::Eval.drives` (a drive rung's position set)
+  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. Postcard is positional, so a new field anywhere in a type that crosses the
   wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
@@ -96,15 +118,31 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   and opponent are independent `BotSpec`s on the wire, so `--mcts-iters X --opponent-iters 1000
   --board-sizes 14x7/4,16x9/6` is one job, and every arm is described by the submission rather
   than by the boxes that happened to be connected. Two things the rung label still will not show:
-  an **iteration** asymmetry (the label only carries puct/horizon/backup/fpu differences, and
+  an **iteration** asymmetry (the label only carries puct/horizon/fpu differences, and
   `report.mcts_iters` is the candidate's alone — put the budget in the output file name), and a
   second custom opponent (`--vs-evaluator` gives exactly one per job, so one job per arm).
+- **`job eval --sprt S0:S1[:A:B]` stops a decided rung (plan 051), on the hub alone.** The rule
+  rides in `EvalJobRequest.sprt`, the local JSON API, so no worker frame changed and there was no
+  protocol bump. Each `Rung`'s row is built `.with_sprt(rule)`. The pair fold and the test live in
+  `LadderRow::record`. When a rung decides, its queued games are dropped, `requeue` skips it, and
+  `all_done` counts it as done. In-flight games are not cancelled, since the protocol has no cancel:
+  they finish on the workers, and when the whole job is already `Done` they retire (freeing the
+  stream) without touching the report or the per-game file, so `report.json` is written once.
+  While the job still runs, they are recorded, like the ui's overshoot.
 - **Search telemetry rides on `EvalGameLine`** and folds through `LadderRow::record`, so the hub's
   `report.json` carries the identical `telemetry` block the single-process driver writes. There is
   no distributed `--trace-reuse`: a per-decision trace is a local diagnostic.
 - **Models are bytes, identified by BLAKE3.** `ModelId::of(onnx)`. The hub reads a path once at
   submit and ships bytes only to workers whose `Hello.cached_models` lack the id. Worker cache:
   `~/.cache/botbowl/models/<hex>.onnx`, verified by rehash on startup.
+- **Names travel separately from bytes (protocol v14).** The file name stays the hash — it is what
+  the cache verifies — and `ToWorker::ModelName { id, name, source, hub_commit }` is written
+  beside it as `<hex>.json` (`ModelMeta`). The hub sends it once per connection for every model
+  a worker holds or is about to use, whenever it knows a path for it: a job's model path, or the
+  startup index (`Hub::index_models`, every `.onnx` under `<repo>/runs` and `<repo>/models`, or
+  `serve --model-index-dir ...`), so a cache filled before names existed is named on its next
+  connect, not only the nets a job happens to touch. The web play app reads those names to offer
+  a worker box's cached nets (`botbowl-web/CLAUDE.md`).
 - **A worker probes every net once before any game uses it** (`ModelStore::get`): a
   schema-mismatched ONNX panics inside tract, and inside `MctsBot` that poisons tree locks and
   aborts the process on unwind. The probe turns it into `TaskFailed`; three failures of one game
@@ -133,8 +171,8 @@ botbowl-hub status            # JSON;  curl http://hub:7777/  is the plain-text 
   `serde_json::to_vec` line, zstd level 3 (~575 KB -> ~30 KB); the hub decompresses and appends
   the bytes verbatim plus `\n`, i.e. `DatasetWriter` format, so `prepare` is untouched.
   `cfg.model` is the *path string as typed* (it is the provenance label); the bytes travel by
-  `ModelId`. The label's backup rule is resolved from the hub's `BLOOD_MCTS_BACKUP` at submit,
-  never from a worker's environment — as is every other search knob, via `pinned_to_env` (see the
+  `ModelId`. Search knobs are resolved from the hub's environment at submit, never from a
+  worker's, via `pinned_to_env` (see the
   submitter-resolves-everything invariant above). A helper box's `BLOOD_MCTS_*` reaches nothing.
 - **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
   task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries

@@ -41,3 +41,12 @@ Module map: `tree.rs` (DAG + worker coordination), `game_dynamics.rs` (trait), `
 ## Conventions
 
 - Run `cargo fmt` before committing (per `.cursor/rules/about.mdc`).
+
+## `GameDynamics::release_descent` (2026-09-30)
+
+Called by `Tree::step_into` after every descent, once per edge on the descent's path, root first,
+with the edge's parent player and its child's current score. It is where a per-descent adjustment
+made in `select_node` (virtual loss) gets taken back. Default no-op, so nim and any `DynGD` user are
+unchanged. It exists because relying on a backprop to *replace* the child's score leaks: a descent
+whose backprop is cut off (`backprop_scores` returning `None`) never replaces the scores above the
+cut. `step_into` wraps `descend`, which is the old loop, so every exit path is covered.

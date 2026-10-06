@@ -47,6 +47,8 @@ pub struct WorkerConn {
     pub tx: mpsc::UnboundedSender<ToWorker>,
     /// Models this worker is known to hold (reported cached, or sent by us).
     pub known_models: HashSet<ModelId>,
+    /// Models whose `ModelName` this connection has been sent.
+    pub named_models: HashSet<ModelId>,
     pub tasks: HashSet<TaskId>,
     pub games_done: u64,
     pub last_seen: Instant,
@@ -57,6 +59,7 @@ struct Rung {
     total: u32,
     opponent: BotSpec,
     board: Option<BoardDims>,
+    drives: Option<botbowl_play::drives::DriveRung>,
     row: LadderRow,
     done: HashSet<u32>,
 }
@@ -97,6 +100,7 @@ struct InFlight {
 
 pub struct Job {
     id: JobId,
+    label: Option<String>,
     kind: Kind,
     batch: u16,
     /// `(unit index, game)` not yet handed out.
@@ -104,6 +108,8 @@ pub struct Job {
     failures: HashMap<(usize, u32), u32>,
     state: JobState,
     started: Instant,
+    /// When it left `Running`, so a finished job's elapsed time stops.
+    ended: Option<Instant>,
 }
 
 impl Job {
@@ -123,6 +129,9 @@ impl Job {
                         tds_for: r.row.tds_for,
                         tds_against: r.row.tds_against,
                         decisions: r.row.telemetry.as_ref().map_or(0, |t| t.searches),
+                        points_se: r.row.pairs.se(),
+                        pairs: r.row.pairs.pairs(),
+                        sprt: r.row.sprt,
                     })),
                 })
                 .collect(),
@@ -146,8 +155,21 @@ impl Job {
         }
     }
 
+    /// Every unit has all its games in, or (plan 051) its SPRT is decided. A decided rung's games
+    /// still in flight are not waited for.
     fn all_done(&self) -> bool {
-        self.units().iter().all(|u| u.done >= u.total)
+        self.units()
+            .iter()
+            .enumerate()
+            .all(|(i, u)| u.done >= u.total || self.unit_decided(i))
+    }
+
+    /// Plan 051: an eval rung whose SPRT has a verdict takes no more games.
+    fn unit_decided(&self, unit: usize) -> bool {
+        match &self.kind {
+            Kind::Eval { rungs, .. } => rungs[unit].row.decided(),
+            Kind::Generate { .. } => false,
+        }
     }
 
     fn status(&self, workers_connected: usize) -> JobStatus {
@@ -157,10 +179,11 @@ impl Job {
                 Kind::Eval { .. } => JobKind::Eval,
                 Kind::Generate { .. } => JobKind::Generate,
             },
+            label: self.label.clone(),
             workers_connected,
             state: self.state.clone(),
             units: self.units(),
-            elapsed_secs: self.started.elapsed().as_secs(),
+            elapsed_secs: self.ended.unwrap_or_else(Instant::now).duration_since(self.started).as_secs(),
             report: match &self.kind {
                 Kind::Eval { report, .. } => report.clone(),
                 Kind::Generate { .. } => None,
@@ -182,6 +205,7 @@ impl Job {
                 candidate: candidate.clone(),
                 opponent: rungs[unit].opponent.clone(),
                 board: rungs[unit].board,
+                drives: rungs[unit].drives.clone(),
             },
             Kind::Generate { shards } => {
                 let s = &shards[unit];
@@ -200,6 +224,7 @@ impl Job {
     fn fail(&mut self, error: String) {
         eprintln!("[hub] job {} failed: {error}", self.id);
         self.state = JobState::Failed { error };
+        self.ended.get_or_insert_with(Instant::now);
         self.pending.clear();
     }
 }
@@ -248,10 +273,54 @@ fn open_out(path: &Path, truncate: bool) -> io::Result<io::BufWriter<std::fs::Fi
     Ok(io::BufWriter::new(f))
 }
 
+/// Tell one worker what model `m` is called here.
+fn send_name(w: &mut WorkerConn, m: ModelId, path: &Path) {
+    let _ = w.tx.send(ToWorker::ModelName {
+        id: m,
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        source: path.to_string_lossy().into_owned(),
+        hub_commit: botbowl_data::git_commit().to_string(),
+    });
+    w.named_models.insert(m);
+}
+
+/// Every `.onnx` under `dirs` (a few levels deep), by content hash. The first path wins.
+pub fn index_models(dirs: &[PathBuf]) -> HashMap<ModelId, PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut HashMap<ModelId, PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let path = e.path();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_dir() {
+                if depth > 0 {
+                    walk(&path, depth - 1, out);
+                }
+            } else if path.extension().is_some_and(|x| x == "onnx") {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    out.entry(ModelId::of(&bytes)).or_insert(path);
+                }
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for d in dirs {
+        walk(d, 6, &mut out);
+    }
+    out
+}
+
 #[derive(Default)]
 pub struct Inner {
     pub workers: HashMap<WorkerId, WorkerConn>,
     pub models: HashMap<ModelId, Arc<Vec<u8>>>,
+    /// The path each model was first loaded from, for `ToWorker::ModelName`.
+    pub model_paths: HashMap<ModelId, PathBuf>,
+    /// Every net found on this box at startup (`Hub::index_models`), so the models a worker
+    /// already holds can be named on connect, not only the ones a job happens to use.
+    pub model_index: HashMap<ModelId, PathBuf>,
     jobs: BTreeMap<JobId, Job>,
     in_flight: HashMap<TaskId, InFlight>,
     next_worker: WorkerId,
@@ -270,7 +339,32 @@ impl Inner {
             std::fs::read(path).map_err(|e| io::Error::new(e.kind(), format!("model {}: {e}", path.display())))?;
         let id = ModelId::of(&bytes);
         self.models.entry(id).or_insert_with(|| Arc::new(bytes));
+        self.model_paths.entry(id).or_insert_with(|| path.to_path_buf());
         Ok(id)
+    }
+
+    /// Where model `m` came from on this box: a job's path, else the startup index.
+    fn model_path(&self, m: &ModelId) -> Option<&PathBuf> {
+        self.model_paths.get(m).or_else(|| self.model_index.get(m))
+    }
+
+    /// Send `ModelName` for every model a connected worker holds and has not been told the name
+    /// of, wherever this box knows it from. Called when a worker connects and when the startup
+    /// index finishes, so a cache filled before names existed gets named on its next connect.
+    pub fn name_cached_models(&mut self) {
+        let mut sends = Vec::new();
+        for (wid, w) in &self.workers {
+            for m in w.known_models.difference(&w.named_models) {
+                if let Some(path) = self.model_path(m) {
+                    sends.push((*wid, *m, path.clone()));
+                }
+            }
+        }
+        for (wid, m, path) in sends {
+            if let Some(w) = self.workers.get_mut(&wid) {
+                send_name(w, m, &path);
+            }
+        }
     }
 
     fn resolve_bot(&mut self, req: &BotReq) -> io::Result<BotSpec> {
@@ -316,15 +410,15 @@ impl Inner {
         let mut pending = VecDeque::new();
         for (i, r) in req.rungs.iter().enumerate() {
             let opponent = self.resolve_bot(&r.opponent)?;
+            let mut row = LadderRow::new(&r.name).with_sprt(req.sprt);
+            row.board = r.board.map(board_label);
             rungs.push(Rung {
                 name: r.name.clone(),
                 total: r.games,
                 opponent,
                 board: r.board,
-                row: LadderRow {
-                    board: r.board.map(board_label),
-                    ..LadderRow::new(&r.name)
-                },
+                drives: r.drives.clone(),
+                row,
                 done: HashSet::new(),
             });
             pending.extend((0..r.games).map(|g| (i, g)));
@@ -334,6 +428,7 @@ impl Inner {
         }
         let per_game = open_out(&req.per_game_out, false)?;
         let batch = req.batch;
+        let label = req.label.clone();
         let kind = Kind::Eval {
             req,
             candidate,
@@ -341,7 +436,7 @@ impl Inner {
             per_game,
             report: None,
         };
-        Ok(self.insert_job(kind, batch, pending))
+        Ok(self.insert_job(kind, label, batch, pending))
     }
 
     pub fn submit_generate(&mut self, req: GenerateJobRequest) -> io::Result<JobId> {
@@ -385,20 +480,22 @@ impl Inner {
             });
             pending.extend((0..s.games).map(|g| (i, g)));
         }
-        Ok(self.insert_job(Kind::Generate { shards }, req.batch, pending))
+        Ok(self.insert_job(Kind::Generate { shards }, req.label, req.batch, pending))
     }
 
-    fn insert_job(&mut self, kind: Kind, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
+    fn insert_job(&mut self, kind: Kind, label: Option<String>, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
         let id = self.next_job;
         self.next_job += 1;
         let job = Job {
             id,
+            label,
             kind,
             batch,
             pending,
             failures: HashMap::new(),
             state: JobState::Running,
             started: Instant::now(),
+            ended: None,
         };
         eprintln!(
             "[hub] job {id} submitted: {}",
@@ -511,6 +608,10 @@ impl Inner {
             w.tasks.remove(&task);
         }
         if let Some(job) = self.jobs.get_mut(&f.job) {
+            // Plan 051: a decided rung's games are not wanted any more.
+            if job.state != JobState::Running || job.unit_decided(f.unit) {
+                return;
+            }
             for g in f.remaining {
                 job.pending.push_front((f.unit, g));
             }
@@ -600,7 +701,16 @@ impl Inner {
                         worker: wid,
                     },
                 );
+                let paths: Vec<(ModelId, PathBuf)> = needed
+                    .iter()
+                    .filter_map(|m| self.model_path(m).map(|p| (*m, p.clone())))
+                    .collect();
                 let w = self.workers.get_mut(&wid).expect("worker exists");
+                for (m, path) in &paths {
+                    if !w.named_models.contains(m) {
+                        send_name(w, *m, path);
+                    }
+                }
                 for m in needed {
                     if !w.known_models.contains(&m) {
                         if let Some(bytes) = self.models.get(&m) {
@@ -649,6 +759,12 @@ impl Inner {
             return;
         };
         let Some(job) = self.jobs.get_mut(&job_id) else { return };
+        // Plan 051: a job that finished on its SPRT verdicts still has games in flight. They retire
+        // above (freeing the worker's stream) but change nothing, so the report is written once.
+        if job.state != JobState::Running {
+            self.dispatch();
+            return;
+        }
         let Kind::Eval {
             rungs, per_game, req, ..
         } = &mut job.kind
@@ -657,7 +773,16 @@ impl Inner {
         };
         let r = &mut rungs[unit];
         if r.name == line.rung && r.done.insert(line.game) {
+            let was_decided = r.row.decided();
             r.row.record(&line);
+            if !was_decided && r.row.decided() {
+                let s = r.row.sprt.expect("decided implies a test");
+                eprintln!(
+                    "[hub] job {job_id} rung {}: SPRT {:?} after {} pairs (LLR {:.2}), dropping its queued games",
+                    r.name, s.verdict, s.pairs, s.llr
+                );
+                job.pending.retain(|&(u, _)| u != unit);
+            }
             if let Err(e) = serde_json::to_writer(&mut *per_game, &line)
                 .map_err(io::Error::other)
                 .and_then(|_| per_game.write_all(b"\n"))
@@ -753,6 +878,7 @@ impl Inner {
     }
 
     fn finish(job: &mut Job) {
+        job.ended = Some(Instant::now());
         let elapsed = job.started.elapsed().as_secs();
         match &mut job.kind {
             Kind::Eval { req, rungs, report, .. } => {

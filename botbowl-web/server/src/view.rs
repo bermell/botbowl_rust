@@ -24,25 +24,29 @@ use crate::mirror;
 /// server's stdout and is a rules-engine trace rather than anything a player
 /// wants to read. The session keeps a short human-facing log instead.
 pub struct DeriveCtx {
-    pub human: em::TeamType,
+    /// The sides played from the browser.
+    pub humans: Vec<botbowl_web_proto::TeamType>,
     pub seq: u64,
     pub can_undo: bool,
     pub bot_thinking: bool,
     pub log_tail: Vec<String>,
     pub step_mode: botbowl_web_proto::msg::StepMode,
     pub paused: bool,
+    /// Each side's team, for the players' pictures.
+    pub looks: std::sync::Arc<crate::teams::Looks>,
 }
 
 impl Default for DeriveCtx {
     fn default() -> Self {
         DeriveCtx {
-            human: em::TeamType::Home,
+            humans: vec![botbowl_web_proto::TeamType::Home],
             seq: 0,
             can_undo: false,
             bot_thinking: false,
             log_tail: Vec::new(),
             step_mode: botbowl_web_proto::msg::StepMode::default(),
             paused: false,
+            looks: Default::default(),
         }
     }
 }
@@ -88,7 +92,7 @@ fn square_kind(state: &GameState, pos: Position) -> pv::SquareKind {
     pv::SquareKind::Normal
 }
 
-fn player_view(state: &GameState, p: &em::FieldedPlayer, has_ball: bool) -> pv::PlayerView {
+fn player_view(state: &GameState, ctx: &DeriveCtx, p: &em::FieldedPlayer, has_ball: bool) -> pv::PlayerView {
     let team = p.stats.team;
     let role = mirror::role_to_proto(p.stats.role);
     // Every skill the engine knows, not a hand-picked six: the curriculum can
@@ -107,7 +111,7 @@ fn player_view(state: &GameState, p: &em::FieldedPlayer, has_ball: bool) -> pv::
         role,
         status: mirror::status_to_proto(p.status),
         used: p.used,
-        sprite: role.sprite(mirror::team_to_proto(team), p.used),
+        sprite: ctx.looks.sprite(&p.stats, p.used),
         st: p.stats.str_,
         ma: p.stats.ma,
         ag: p.stats.ag,
@@ -217,7 +221,7 @@ fn scoreboard(state: &GameState) -> pv::Scoreboard {
     }
 }
 
-fn dugout(state: &GameState, team: em::TeamType) -> pv::DugoutView {
+fn dugout(state: &GameState, ctx: &DeriveCtx, team: em::TeamType) -> pv::DugoutView {
     let mut players: Vec<pv::DugoutPlayerView> = state
         .get_dugout()
         .filter(|p| p.stats.team == team)
@@ -229,7 +233,7 @@ fn dugout(state: &GameState, team: em::TeamType) -> pv::DugoutView {
                 role,
                 place: mirror::dugout_place_to_proto(p.place),
                 // Bench players have not acted, so they get the `an` sprite.
-                sprite: role.sprite(mirror::team_to_proto(team), false),
+                sprite: ctx.looks.sprite(&p.stats, false),
             }
         })
         .collect();
@@ -274,7 +278,7 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
 
     for p in state.get_players_on_pitch() {
         if let Some(idx) = index_of(dims, p.position) {
-            squares[idx].player = Some(player_view(state, p, carrier == Some(p.id)));
+            squares[idx].player = Some(player_view(state, ctx, p, carrier == Some(p.id)));
         }
     }
 
@@ -364,10 +368,13 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         },
         scoreboard: scoreboard(state),
         squares,
-        dugouts: vec![dugout(state, em::TeamType::Home), dugout(state, em::TeamType::Away)],
+        dugouts: vec![
+            dugout(state, ctx, em::TeamType::Home),
+            dugout(state, ctx, em::TeamType::Away),
+        ],
         simple_actions,
         to_act,
-        human: mirror::team_to_proto(ctx.human),
+        humans: ctx.humans.clone(),
         proc: state.proc_stack_top().unwrap_or("-").to_string(),
         active_player: state.info.active_player,
         pending_roll: state.pending_roll.map(mirror::requested_roll_to_proto),

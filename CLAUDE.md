@@ -13,7 +13,7 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
   - `botbowl-play/` — "play one game, return its record": the process-agnostic core under `botbowl-ui dataset`/`eval` (trajectory generation, ladder games, `EvalGameLine`/`LadderRow`/`Report`, bot construction). No files, threads or CLI in it; plan 041's hub/worker reuse it verbatim. Depends on engine, curriculum, mcts, nn, data.
   - `botbowl-hub/`, `botbowl-worker/`, `botbowl-hub-proto/` — distributed generation and eval (plan 041): the hub on the training box queues game batches, workers on any machine dial in over a websocket and stream results back (trajectories zstd-compressed); the hub writes the same files (`shard$K.jsonl`, `eval.games.jsonl`, `report.json`) the local phases wrote. Shared `CLAUDE.md` in `botbowl-hub/`. Depend on `botbowl-play`.
   - `botbowl-ui/` — `ratatui` terminal frontend with `live` / `replay` / `snapshot` / `curriculum` subcommands, plus the headless `dataset` / `eval` shells over `botbowl-play`. Depends on the other four.
-  - `botbowl-web/{proto,server,client}/` — human-vs-bot play in a browser, with the bot's search shown next to the board (plan 034). `proto` is engine-free and compiles to wasm32; `server` owns the `GameState` and the bots; `client` is a Leptos CSR app built with `trunk`. Has its own `CLAUDE.md`.
+  - `botbowl-web/{proto,server,client}/` — human-vs-bot or bot-vs-bot play in a browser (MCTS always on a net), full games or random-start drives, with custom teams, a decision log and the search behind every bot move shown next to the board (plan 034). Also served by the hub at `/play/`. `proto` is engine-free and compiles to wasm32; `server` owns the `GameState` and the bots; `client` is a Leptos CSR app built with `trunk`. Has its own `CLAUDE.md`.
 - `recon_mcts/` — generic **re**combining, **con**current MCTS library (safe std-only Rust). A **nested, separate Cargo workspace**, deliberately in the botbowl workspace's `exclude` list — don't merge it in (its `tests/nim/` member compiles with `--features test_internals` by default). Has its own `CLAUDE.md`. No dependency on the botbowl crates.
 
 ## Plans
@@ -25,6 +25,11 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 - **State-hash discrimination:** `plans/044-plan--state-hash-discrimination.md` — `GameState::hash` now walks the procedure stack and `GameInfo` whole, taking colliding states from 36.8% to 0% and wasted state comparisons from 4.07 to 0.12 per registry probe.
 - **Per-player kickoff setup:** `plans/047-plan--per-player-setup.md` — `Setup` asks one `PlacePlayer`/`BenchPlayer` decision per player (reserves staged in the own endzone, fixed queue, the mask guarantees legality); formations are planners (`auto_setup`); NN schema v8 (`bbnn.migrate` permutes a v7 policy head); MCTS `setup`/`opponent_setup`/`setup_formation` preset knobs, an in-tree opponent model, scripted one-hot teacher samples; `--next-drive` follows a scored drive into the setup it causes and writes it as a second record.
 - **Board-size curriculum:** `plans/042-plan--board-size-curriculum.md` — mixed-size generation (`--board-sizes` / `--size-centre …` on `dataset` and `job generate`, per-board eval rungs via `eval --board-sizes`), schema v7, the trainer's multi-dims loader and `train_loop.sh`'s `SIZE_MODE`. Experiments E0–E5 there are the next thing to run.
+- **Fast bot ranking:** `plans/051-plan--fast-bot-ranking.md` — SPRT with pentanomial pair scoring and a score margin on the eval ladder, a validation harness of net pairs with gold results, and a paired contested-drive rung kind; proxies are adopted only after the harness passes them against full-game ground truth.
+  **Current phase: drives are the metric, alone.** Judge experiments and the loop on paired contested drives (SPRT). Do not add, run or propose full-game confirmation, P1 checks or anchor matches; the user says when full games are needed.
+- **Gumbel root search:** `plans/053-plan--gumbel-root-search.md` — sequential halving over the top-m root moves (`MctsConfig.gumbel_m`, `cfgs/gumbel16_iters.toml`), PUCT below the root; the fix candidate for 16x9's wide fans, measured on drives.
+- **Search must beat policy:** `plans/055-plan--search-must-beat-policy.md` — DONE 2026-10-06. Under the mean backup at player nodes (hardcoded, ce4eda1), the search beats its bare policy and gains with budget: 0.525 / 0.542 / 0.590 at 250 / 1000 / 4000 descents. `scripts/net_check.sh` is the standing per-net check. The loop restarted 2026-10-06 as `runs/loopmix16x9g056` (`scripts/launch_plan056.sh`, plan 056 §7: plan 054's train step plus MC-averaged value labels, init arm F).
+- **Value labels:** `plans/056-plan--value-labels.md` — **MC-averaged value labels win** (`botbowl-ui mc-label`, 8 policy-only playouts per sample): value RMS −15% on the frozen MC benchmark (`scripts/value_bench.sh`), and the search beats the control's 0.533 head to head and its own policy 0.582 at 1000 descents. TD(λ) only removes bias. Plan 055's budget gate holds under the mean backup (0.525 / 0.542 / 0.590 vs policy at 250 / 1000 / 4000); `scripts/net_check.sh` is the standing per-net check.
 - **Current focus: bot capability** (priors, leaf-score, pruning, scripted heuristics, new lectures). Performance work is deprioritized — don't propose perf tuning, profiling reruns, or speed micro-benchmarks unless explicitly asked.
 
 ## Commands
@@ -48,7 +53,9 @@ cargo run --release -p botbowl-web-server -- \
 ```
 
 Both commands work from any directory — the server's `--dist-dir`/`--models-dir` defaults are
-resolved from its own crate path, not the cwd.
+resolved from its own crate path, not the cwd. `botbowl-hub serve` also serves the same app at
+`http://<hub>:7777/play/` (with `/` an index and `/status` the status page) once the client is
+built; teams saved from the editor land in `~/.config/botbowl/teams/`. Both read `~/.config/botbowl/web.toml` (sprites, model dirs; created on first run) and also offer the nets in a worker's `~/.cache/botbowl/models`, by the names the hub sends (protocol v14).
 
 Bot presets and search telemetry (plan 043; every flag is optional — unset is exactly the old behaviour):
 

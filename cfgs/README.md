@@ -18,7 +18,7 @@ botbowl-ui eval --evaluator nn --model bbnet.onnx \
 botbowl-ui dataset --mode random-start --bot-config cfgs/baseline.toml --out shard0.jsonl
 ```
 
-`--bot-config` is exclusive with the per-knob flags (`--puct-mode`, `--backup`,
+`--bot-config` is exclusive with the per-knob flags (`--puct-mode`,
 `--fpu-reduction`, `--horizon-turns` and their `--vs-` twins): a run is either fully described by
 a preset or fully described by flags, never half of each. `--mcts-workers` is the exception — it
 applies either way, because it is a property of the machine rather than of the bot.
@@ -43,3 +43,15 @@ setup_horizon_turns = 0      # own-turns of lookahead at a setup root; 0 = horiz
 
 `cfgs/setup-teacher.toml` is the gen-0 setup teacher: formation-driven placements recorded as
 one-hot scripted samples.
+`chance_model = "legacy"` restores the pre-2026-09-29 roll model: a broken armour always a
+casualty, every pass a fumble, fouls harmless, and a horizon that runs through half time. It
+exists for one head-to-head, `exact_visits.toml` against `legacy_chance_visits.toml` on the same
+net; `BLOOD_MCTS_CHANCE=legacy` is the environment spelling.
+
+`gumbel16_iters.toml` (plan 053) replaces the PUCT root with sequential halving over the top 16
+moves by prior (`gumbel_m`; `gumbel_scale` adds the Gumbel noise self-play would use). The
+budget counts descents, and the search runs on one thread. Its rival at equal cost is
+`exact_iters.toml`.
+
+`policy_only.toml` (plan 054 E5) is `gumbel_m = 1` with no noise: it plays the prior's argmax.
+Against `gumbel16_f1000` on the same net it measures how much the search adds to the policy.

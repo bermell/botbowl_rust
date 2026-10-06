@@ -398,6 +398,7 @@ dependencies = [
  "botbowl-hub-proto",
  "botbowl-mcts",
  "botbowl-play",
+ "botbowl-web-server",
  "botbowl-worker",
  "clap",
  "futures-util",
@@ -432,6 +433,7 @@ dependencies = [
  "botbowl-nn",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
+ "rand_distr",
  "recon_mcts",
  "serde",
 ]
@@ -481,6 +483,7 @@ dependencies = [
  "clap",
  "crossterm",
  "insta",
+ "mimalloc",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
  "ratatui",
@@ -514,9 +517,12 @@ name = "botbowl-web-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "botbowl-engine",
+ "botbowl-hub-proto",
  "botbowl-mcts",
  "botbowl-nn",
+ "botbowl-play",
  "botbowl-web-proto",
  "clap",
  "futures-util",
@@ -526,6 +532,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "toml 0.8.23",
  "tower-http",
 ]
 
@@ -540,6 +547,7 @@ dependencies = [
  "botbowl-play",
  "clap",
  "futures-util",
+ "mimalloc",
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.24.0",
@@ -1840,6 +1848,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8355be11b20d696c8f18f6cc018c4e372165b1fa8126cef092399c9951984ffa"
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1990,6 +2007,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "mimalloc"
+version = "0.1.52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+dependencies = [
+ "libmimalloc-sys",
 ]
 
 [[package]]

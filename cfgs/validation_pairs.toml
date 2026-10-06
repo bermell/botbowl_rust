@@ -1,0 +1,43 @@
+# Plan 051 step 2: the frozen net pairs every ranking proxy is validated against. Gold results
+# are played once per binary into runs/validation/<name>/ (scripts/plan051_gold.sh), and a binary
+# change that touches play (engine rules, search) invalidates them: re-play into a new directory,
+# never overwrite. History only picked the pairs; it is not the gold.
+#
+# Every pair plays under one search for both seats, so the harness measures the ability to order
+# *nets*. A config-vs-config pair is added once one has a gold result of its own (plan 051).
+
+config = "exact_visits"        # cfgs/exact_visits.toml: the loop's eval search, both seats
+mcts_iters = 500
+boards = "14x7,16x9"
+games_per_board = 200          # 100 mirrored pairs per board, 400 games per pair
+seed = 51000                   # away from the loop's eval seed 0 and plan 045's 45000
+
+[[pair]]
+name = "zero_gen21_gen21"
+kind = "zero gap"
+candidate = "models/az_v7/bbnet_mix16x9_gen21.onnx"
+opponent = "models/az_v7/bbnet_mix16x9_gen21.onnx"
+
+[[pair]]
+name = "zeroish_exp052_s1_s2"
+kind = "zero-ish gap: two training seeds of one recipe (exp052)"
+candidate = "models/az_v7/exp052_ctl_s1.onnx"
+opponent = "models/az_v7/exp052_ctl_s2.onnx"
+
+[[pair]]
+name = "small_gen21_gen13"
+kind = "small gap (plan 049: 0.50 +- 0.03 on the anchor)"
+candidate = "models/az_v7/bbnet_mix16x9_gen21.onnx"
+opponent = "models/az_v7/bbnet_mix16x9_gen13.onnx"
+
+[[pair]]
+name = "medium_gen13_gen08"
+kind = "medium gap, mid-curve"
+candidate = "models/az_v7/bbnet_mix16x9_gen13.onnx"
+opponent = "models/az_v7/bbnet_mix16x9_gen08.onnx"
+
+[[pair]]
+name = "large_gen13_gen03"
+kind = "large gap, sanity: must be trivial"
+candidate = "models/az_v7/bbnet_mix16x9_gen13.onnx"
+opponent = "models/az_v7/bbnet_mix16x9_gen03.onnx"

@@ -1,0 +1,8 @@
+# Plan 053 step 3: `gumbel16_f1000` for self-play generation. Gumbel noise on the root logits
+# (scale 1, the paper's) is the exploration: it varies which 16 moves are considered and breaks
+# near-ties among the survivors. Plan 048's Dirichlet noise and visit-sampled moves are ignored
+# under Gumbel (`MctsBot::get_action_explore`).
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+gumbel_scale = 1.0

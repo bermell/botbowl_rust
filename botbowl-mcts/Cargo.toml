@@ -9,8 +9,10 @@ botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
 botbowl-nn = { version = "0.1.0", path = "../botbowl-nn/" }
 recon_mcts = { version = "0.1.0", path = "../recon_mcts/", features = ["lockref-guard"] }
 serde = { version = "1", features = ["derive"] }
+# Plan 048: root Dirichlet noise in self-play (`exploration.rs`).
 rand = "0.8"
 rand_chacha = "0.3"
+rand_distr = "0.4"
 
 [features]
 # Opt-in gate for the heavy profiling benches in `tests/expand_bench.rs`.
@@ -24,8 +26,6 @@ expand_bench = []
 
 [dev-dependencies]
 botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
-rand = "0.8"
-rand_chacha = "0.3"
 # Unions with the `dependencies` recon_mcts feature set for test targets only
 # (resolver = "2" keeps this out of the lib build) — plan 023's exact-equality
 # search-mirror test needs reproducible children-map iteration order.

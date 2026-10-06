@@ -31,11 +31,12 @@ use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_hub_proto::{
-    decode, encode, BotSpec, BuildInfo, ModelId, RejectReason, Task, ToHub, ToWorker, PROTOCOL_VERSION,
+    decode, encode, BotSpec, BuildInfo, ModelId, ModelMeta, RejectReason, Task, ToHub, ToWorker, PROTOCOL_VERSION,
 };
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::make_mcts;
+use botbowl_play::drives::{drive_assignment, play_drive_game, position_state};
 use botbowl_play::eval::{ladder_assignment, play_ladder_game};
 use botbowl_play::generate::play_trajectory;
 use botbowl_play::GAME_STACK_SIZE;
@@ -163,6 +164,28 @@ impl ModelStore {
         let tmp = self.path(&id).with_extension("onnx.part");
         std::fs::write(&tmp, onnx)?;
         std::fs::rename(&tmp, self.path(&id))
+    }
+
+    /// Record what the hub calls a model, as `<id>.json` beside it. Keeps the first-seen time
+    /// across renames; writes nothing when the name is unchanged.
+    pub fn name(&self, id: &ModelId, name: &str, source: &str, hub_commit: &str) -> io::Result<()> {
+        let path = ModelMeta::path_for(&self.path(id));
+        let old: Option<ModelMeta> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if old.as_ref().is_some_and(|m| m.name == name && m.source == source) {
+            return Ok(());
+        }
+        let meta = ModelMeta {
+            name: name.to_string(),
+            source: source.to_string(),
+            hub_commit: hub_commit.to_string(),
+            first_seen_unix: old.map(|m| m.first_seen_unix).unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs())
+            }),
+        };
+        let json = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
+        std::fs::write(path, json)
     }
 
     pub fn has(&self, id: &ModelId) -> bool {
@@ -365,6 +388,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
             candidate,
             opponent,
             board,
+            drives,
         } => {
             let (mut cand, mut opp) = match (make_bot(candidate, store), make_bot(opponent, store)) {
                 (Ok(c), Ok(o)) => (c, o),
@@ -383,13 +407,34 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
             let area = mem_governor::cost_units(cells, iters_of(candidate))
                 + mem_governor::cost_units(cells, iters_of(opponent));
             for &g in games {
-                let (team, game_seed) = ladder_assignment(*seed, g);
                 let _slot = admit_game(governor, area, rung);
-                // No `--trace-reuse` on the distributed path: a per-decision trace is a local
-                // diagnostic, and the telemetry the hub's report needs already rides in the line.
-                let line = play_ladder_game(
-                    &mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps, *board, None,
-                );
+                let line = match (drives, *board) {
+                    // Plan 051: a drive from a frozen position, regenerated from its seed.
+                    (Some(set), Some(b)) => {
+                        let (i, attacks, dice) = drive_assignment(set.positions.len(), *seed, g);
+                        let p = set.positions[i];
+                        play_drive_game(
+                            &mut *cand,
+                            &mut *opp,
+                            rung,
+                            g,
+                            p,
+                            position_state(&set.bias, b, p),
+                            attacks,
+                            dice,
+                            *max_steps,
+                        )
+                    }
+                    _ => {
+                        let (team, game_seed) = ladder_assignment(*seed, g);
+                        // No `--trace-reuse` on the distributed path: a per-decision trace is a
+                        // local diagnostic, and the telemetry the hub's report needs already
+                        // rides in the line.
+                        play_ladder_game(
+                            &mut *cand, &mut *opp, rung, g, team, game_seed, *max_steps, *board, None,
+                        )
+                    }
+                };
                 // Send failures mean the hub is gone; the channel is
                 // unbounded and outlives the socket, so this only fails
                 // when the whole worker is shutting down.
@@ -624,6 +669,11 @@ pub async fn run_once(
             frame = stream.next() => {
                 match frame {
                     Some(Ok(Message::Binary(b))) => match decode::<ToWorker>(&b) {
+                        Ok(ToWorker::ModelName { id, name, source, hub_commit }) => {
+                            if let Err(e) = store.name(&id, &name, &source, &hub_commit) {
+                                eprintln!("[worker] could not record the name of model {id}: {e}");
+                            }
+                        }
                         Ok(ToWorker::Model { id, onnx }) => {
                             if let Err(e) = store.put(id, &onnx) {
                                 eprintln!("[worker] rejecting model {id}: {e}");

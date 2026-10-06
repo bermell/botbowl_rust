@@ -28,6 +28,24 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
 - **Fold logic lives next to the record.** `LadderRow::record` is how a rung's per-game lines
   become the report row, in any order from any number of producers. The hub rebuilds
   `report.json` from workers' lines with exactly this.
+- **Pairs fold inside `LadderRow::record` (plan 051).** Games `2k`/`2k+1` share a seed with the
+  sides swapped, so `record` scores them as one `stats::Pentanomial` sample, using a half-pair
+  stash keyed by `game / 2`. The stash is `#[serde(skip)]`, and `finish` drops leftovers. Both fold
+  owners (the ui rung runner and the hub `Rung`) therefore pair identically. Build the row with
+  `.with_sprt(rule)` to have `record` refresh the test, and poll `decided()` to stop handing out
+  games. **A private field means no struct-update syntax from other crates**: build with
+  `LadderRow::new` and set `board` afterwards.
+- **Drive rungs (plan 051, `drives.rs`).** A position set is a recipe (`PositionSet`: board, bias,
+  seeds, optional screen), and `position_state(bias, board, seed)` regenerates each position the
+  way `random_start_trajectory` draws a corpus game. `drive_assignment` pairs game `2k`/`2k+1` on
+  one position with the sides swapped and one dice seed, so the pentanomial fold applies
+  unchanged. A drive line's `home_score` / `away_score` are the drive's own touchdowns, its `seed`
+  is the position's seed, and `attacker` (the team to move) is set. That trailing field is what
+  marks a line as a drive, and it follows the `board` / `telemetry` serialisation rules. Rung
+  names are `opponent drives(set)@board`, keeping the opponent as a prefix so `vs:` detection
+  still works. **`DriveStart` is the one drive-end rule** (a score on either side, a half change,
+  game over): `random_start_trajectory`, `play_drive_game` and `botbowl-ui override-audit`'s
+  playouts all stop on it, and `outcome_for` scores it in the value target's units.
 - **Clap-free.** CLI enums live in `botbowl-ui/src/cli.rs` with `From` impls onto the types here.
 - **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
   weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform

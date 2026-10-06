@@ -32,6 +32,143 @@ pub enum Command {
     /// Measure how the search output converges with iteration budget, to
     /// justify `--mcts-iters` (plan 025). Headless, read-only.
     Convergence(ConvergenceArgs),
+    /// Write a frozen position set for drive rungs (plan 051): `seeds` only, before screening.
+    /// Screen it with a reference self-play drive rung and `scripts/positions_screen.py`.
+    Positions(PositionsArgs),
+    /// Plan 055 phase 2: replay corpus decisions where the search overrules its policy, and
+    /// play each move's drive out with policy-only on both sides (paired dice) for a Monte Carlo
+    /// value that does not depend on the value head. Headless; summarise with
+    /// `scripts/override_audit_summary.py`.
+    OverrideAudit(OverrideAuditArgs),
+    /// Plan 056: score a net's value head on a frozen Monte Carlo value benchmark
+    /// (`scripts/value_bench_freeze.py`): replay each state, one forward, no search. Summarise with
+    /// `scripts/value_bench_summary.py`.
+    ValueBench(ValueBenchArgs),
+    /// Plan 056 arm F: rewrite a corpus with Monte Carlo value labels, each sample's
+    /// `outcome_value` the mean of `--playouts` policy-only drive playouts from its state.
+    McLabel(McLabelArgs),
+}
+
+/// `override-audit` (plan 055 §3 phase 2). See `override_audit.rs` for what each row holds.
+#[derive(clap::Args, Debug, Clone)]
+pub struct OverrideAuditArgs {
+    /// Random-start trajectory shards to sample decisions from.
+    #[arg(long, required = true, num_args = 1..)]
+    pub corpus: Vec<String>,
+    /// The net: the search's evaluator and the policy both sides play the drives out with.
+    #[arg(long)]
+    pub model: String,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// The search whose picks are audited: a deterministic eval preset.
+    #[arg(long, default_value = "cfgs/gumbel16_f1000.toml")]
+    pub search_config: std::path::PathBuf,
+    #[arg(long, default_value_t = 1000)]
+    pub search_iters: usize,
+    /// Stop after this many override rows (every row under `--all`).
+    #[arg(long, default_value_t = 1000)]
+    pub decisions: u32,
+    /// Drive playouts per audited move.
+    #[arg(long, default_value_t = 64)]
+    pub playouts: u32,
+    /// Share of non-override decisions kept as the control.
+    #[arg(long, default_value_t = 0.2)]
+    pub control_frac: f64,
+    /// Keep every decision, override or not.
+    #[arg(long)]
+    pub all: bool,
+    /// Sampling order, control draws and playout dice all derive from it.
+    #[arg(long, default_value_t = 55_000)]
+    pub seed: u64,
+    /// Decisions audited at once, one thread each. With `--nn-server` they share the GPU's batches.
+    #[arg(long, default_value_t = 1)]
+    pub parallel: usize,
+    /// Only these playable boards, `14x7` (any team size) or `14x7/4`; comma-separated or repeated.
+    #[arg(long = "board", value_delimiter = ',')]
+    pub boards: Vec<String>,
+    /// Only decisions with at least this many legal moves (1 cannot be overruled).
+    #[arg(long, default_value_t = 2)]
+    pub min_fan: usize,
+    /// Safety cap on engine steps per playout.
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    /// Output JSONL, one row per kept decision.
+    #[arg(long)]
+    pub out: String,
+}
+
+/// `value-bench` (plan 056 §2). See `value_bench.rs`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ValueBenchArgs {
+    /// The frozen benchmark: JSONL, one state per line (`corpus`, 1-based `line`, `sample`, `mc`, ...).
+    #[arg(long)]
+    pub bench: String,
+    /// The net whose value head is scored.
+    #[arg(long)]
+    pub model: String,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// States scored at once, one thread each.
+    #[arg(long, default_value_t = 4)]
+    pub parallel: usize,
+    /// Output JSONL: every benchmark line with `v` (the net's V(s), mover's frame) and `model` added.
+    #[arg(long)]
+    pub out: String,
+}
+
+/// `mc-label` (plan 056 arm F). See `mc_label.rs`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct McLabelArgs {
+    /// Random-start trajectory shards; each is written to `--out-dir` under its own name.
+    #[arg(long, required = true, num_args = 1..)]
+    pub corpus: Vec<String>,
+    /// The net whose policy plays both sides of every playout.
+    #[arg(long)]
+    pub model: String,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// Playouts averaged per sample.
+    #[arg(long, default_value_t = 8)]
+    pub playouts: u32,
+    /// Playout dice derive from it, the trajectory's seed and the sample index.
+    #[arg(long, default_value_t = 56_000)]
+    pub seed: u64,
+    /// Trajectories labelled at once, one thread each.
+    #[arg(long, default_value_t = 8)]
+    pub parallel: usize,
+    /// Safety cap on engine steps per playout.
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    #[arg(long)]
+    pub out_dir: String,
+}
+
+/// `positions`: the candidate positions of a drive-rung set on one board.
+#[derive(clap::Args, Debug, Clone)]
+pub struct PositionsArgs {
+    /// Playable board, `14x7` or `14x7/4`.
+    #[arg(long)]
+    pub board: String,
+    #[arg(long, default_value_t = botbowl_play::board_sizes::DEFAULT_CELLS_PER_PLAYER)]
+    pub cells_per_player: f64,
+    /// Positions to keep.
+    #[arg(long, default_value_t = 500)]
+    pub count: u32,
+    /// First seed tried. Keep far from corpus seeds (the loop uses 10_000_000 + ...).
+    #[arg(long, default_value_t = 70_000_000)]
+    pub seed_base: u64,
+    /// Skip positions where the side to move has fewer turns than this left in the half: the
+    /// clock, not the bots, would end the drive.
+    #[arg(long, default_value_t = botbowl_play::drives::MIN_TURNS_LEFT)]
+    pub min_turns_left: u8,
+    /// Set name for rung labels; defaults to the output file's stem.
+    #[arg(long)]
+    pub name: Option<String>,
+    #[arg(long)]
+    pub out: String,
 }
 
 /// Re-search the same random-start states at a ladder of iteration budgets and
@@ -86,6 +223,20 @@ pub struct ConvergenceArgs {
     /// their seed slot; raise --states to compensate.
     #[arg(long, default_value_t = 0)]
     pub min_legal: usize,
+    /// Playable board for the random starts (`14x7/4`); defaults to the env board.
+    #[arg(long)]
+    pub board: Option<String>,
+    /// States probed at once, each on its own thread. With `--nn-server` they share the GPU's
+    /// batches; one stream on a batching server is slower than tract.
+    #[arg(long, default_value_t = 1)]
+    pub parallel: usize,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// A bot preset (`cfgs/*.toml`) instead of the `--puct-*` flags, e.g. plan 053's
+    /// `cfgs/gumbel16_iters.toml`. Its name joins the selection rule in each row's `puct` field.
+    #[arg(long, conflicts_with_all = ["puct_c", "puct_range_floor"])]
+    pub bot_config: Option<std::path::PathBuf>,
     /// Random-start placement biases (defaults match generation).
     #[command(flatten)]
     pub bias: BiasArgs,
@@ -331,6 +482,19 @@ pub struct DatasetArgs {
     /// provenance. See `cfgs/README.md`.
     #[arg(long)]
     pub bot_config: Option<PathBuf>,
+    /// Plan 048: root Dirichlet noise weight ε in self-play (0.25 is the AlphaZero value). Unset
+    /// keeps the greedy generator. Generation only; eval has no such flag.
+    #[arg(long)]
+    pub explore_noise: Option<f32>,
+    /// Plan 048: total Dirichlet concentration α; each root action gets α / n_legal.
+    #[arg(long, default_value_t = 10.0)]
+    pub explore_alpha: f32,
+    /// Plan 048: each side plays its first K moves of a trajectory ∝ visits^(1/T), not best-Q.
+    #[arg(long, default_value_t = 0)]
+    pub explore_sample_moves: u32,
+    /// Plan 048: the sampling temperature T for `--explore-sample-moves`.
+    #[arg(long, default_value_t = 1.0)]
+    pub explore_temperature: f32,
     /// Games to play concurrently in this process (plan 024 Stage 4).
     ///
     /// Games are independent — own state, own bots, own seed — so this
@@ -425,6 +589,12 @@ pub struct EvalArgs {
     /// cheapest information in the report card.
     #[arg(long)]
     pub vs_games: Option<u32>,
+    /// Plan 051: stop a rung once a sequential test on its mirrored pairs decides,
+    /// `S0:S1[:ALPHA:BETA]` (alpha and beta default to 0.05), e.g. `0.5:0.55`. Every ladder rung,
+    /// each board's included, runs its own test, and `--games` / `--vs-games` become caps. Unset:
+    /// a fixed game count, exactly as before.
+    #[arg(long, value_parser = parse_sprt)]
+    pub sprt: Option<botbowl_play::stats::Sprt>,
     /// Base seed: lecture trials and game pairs are derived from it, so two
     /// candidates run with the same seed face identical situations.
     #[arg(long, default_value_t = 0)]
@@ -456,7 +626,7 @@ pub struct EvalArgs {
     /// flags below. See `cfgs/README.md`.
     #[arg(
         long,
-        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "backup", "fpu_reduction"]
+        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "fpu_reduction"]
     )]
     pub bot_config: Option<PathBuf>,
     /// Per-decision tree-reuse trace, as JSONL (plan 043). Off by default: `report.json` always
@@ -468,7 +638,7 @@ pub struct EvalArgs {
     /// configuration head-to-head: the same net under two configurations.
     #[arg(
         long,
-        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_backup", "vs_fpu_reduction"]
+        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_fpu_reduction"]
     )]
     pub vs_config: Option<PathBuf>,
     /// Candidate PUCT selection rule: `raw` or `normalised` (plan 026).
@@ -494,14 +664,6 @@ pub struct EvalArgs {
     /// run a horizon head-to-head in one process.
     #[arg(long)]
     pub vs_horizon_turns: Option<u8>,
-    /// Candidate player-node backup rule: `minimax` (default) or `mean`
-    /// (plan 032 #2).
-    #[arg(long, default_value = "minimax")]
-    pub backup: String,
-    /// Opponent backup rule; defaults to the candidate's. Set this to run
-    /// a backup-rule head-to-head in one process.
-    #[arg(long)]
-    pub vs_backup: Option<String>,
     /// Candidate FPU reduction `k` in Q points (plan 032 #3): unexplored
     /// children are estimated at `parent_Q − k·√(visited prior share)`.
     /// 0 (default) is the shipped plain-FPU behaviour.
@@ -533,6 +695,11 @@ pub struct EvalArgs {
     /// Boards to run the ladder on (plan 042).
     #[command(flatten)]
     pub sizes: EvalSizeArgs,
+    /// Plan 051: play every rung as paired drives from these position sets (comma-separated
+    /// files from `positions` + `scripts/positions_screen.py`), one rung per set on the set's own
+    /// board, instead of full games. `--board-sizes` is ignored. `--games` counts drives.
+    #[arg(long)]
+    pub positions: Option<String>,
 }
 
 /// Resolve the inference-sidecar socket: the `--nn-server` flag, else the
@@ -631,6 +798,10 @@ pub struct SnapshotArgs {
     /// Search iterations per move for any MCTS bot in play.
     #[arg(long, default_value_t = 1000)]
     pub mcts_iters: usize,
+}
+
+fn parse_sprt(s: &str) -> Result<botbowl_play::stats::Sprt, String> {
+    botbowl_play::stats::Sprt::parse(s)
 }
 
 fn parse_size(s: &str) -> Result<(u16, u16), String> {

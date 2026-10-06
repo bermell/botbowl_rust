@@ -61,6 +61,7 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         allow_commit_mismatch: false,
         allowed_commits: allowlist_path(),
         worker_timeout,
+        run_dir: None,
     })
     .await
     .unwrap();
@@ -91,6 +92,7 @@ fn spawn_worker(cfg: WorkerConfig) -> tokio::task::JoinHandle<Result<Ended, Fata
 fn cfg() -> GenerateConfig {
     GenerateConfig {
         config_name: None,
+        exploration: None,
         mode: GenMode::RandomStart,
         search: SearchConfig::iterations(2),
         evaluator: Evaluator::Heuristic,
@@ -119,6 +121,7 @@ fn job(dir: &PathBuf, truncate: bool) -> GenerateJobRequest {
             .collect(),
         truncate,
         batch: 2,
+        label: None,
     }
 }
 

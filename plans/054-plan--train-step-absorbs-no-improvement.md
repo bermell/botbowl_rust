@@ -1,0 +1,447 @@
+# Plan 054 — the train step absorbs none of the search's improvement
+
+**Adopted 2026-10-06:** the train step here (lr 5e-5, `--init-candidate --eval-at 250,500`,
+restore on val_policy, `--freeze-bn`, cq tau 100) runs in the restarted loop `runs/loopmix16x9g056`
+(plan 056 §7), with plan 056's MC-averaged value labels. exp067's arms used exactly this step, and
+its policy absorption was steady (dtop1 +0.002, dKL −0.009 against the generator on gen07).
+
+**Superseded for now by plan 055 (2026-10-04 night):** E5 showed the search does not beat its own
+policy, so there is no improvement for any train step to absorb. The loop relaunch (E8) is on
+HOLD (`runs/loopmix16x9g054/HOLD`) and E2b is not run; exp063 is stopped at its gate. The train
+step fixes here stand and apply once the loop resumes.
+
+**Status:** Written 2026-10-04 from the Gumbel loop's first six generations; diagnosis measured on
+the corpus (§2-3) and confirmed by a code audit (§7); nine one-generation fine-tunes probed (§3.1).
+**2026-10-04 evening, at the user's request:** the Gumbel loop was aborted during gen08's
+generation (gen07 trained), and the plan was implemented and launched as
+`scripts/exp063_plan054.sh` (out `runs/exp063/`): E2 drives D1/D2 plus the D4 reference and E5,
+E4's probes alongside, then the gate below into E8 (`scripts/launch_plan054.sh`, run dir
+`runs/loopmix16x9g054`) or E2b. Implemented: the trainer's restore fix (`--init-candidate`,
+`--eval-at`, `--select-on policy`), the per-generation absorption probe in `train_loop.sh`
+(`ABSORB_PROBE`, on by default), `cfgs/policy_only.toml`. Deferred, needing `prepare` (game-code)
+changes that would lock the laptop out until it rebuilds: the `played`/`debiased` targets (E2) and
+the value-label switches (E6). **Drives only (plan 051).** Training uses Gumbel-generated data
+only; PUCT corpora are for diagnostics, not for training arms.
+
+## 1. The observation
+
+`runs/loopmix16x9g` (plan 053 step 3; Gumbel m=16, q floor 1000, 1000 descents, 2400 drives per
+generation, 3-gen window, cq τ=100, value blend 0.5, warm fine-tune at lr 2e-4 for 3 epochs,
+FREEZE_BN=1) started from d1k gen04 and is flat against it:
+
+| vs d1k gen04, drives | gen01 | gen02 | gen03 | gen04 | gen05 |
+|---|---|---|---|---|---|
+| 14x7 | 0.490 ± 0.024 | 0.445 ± 0.038 | 0.502 ± 0.022 | 0.498 ± 0.023 | 0.420 ± 0.038 |
+| 16x9 | 0.482 ± 0.029 | 0.422 ± 0.042 | 0.460 ± 0.034 | 0.506 ± 0.019 | 0.488 ± 0.023 |
+
+All H0. Each fine-tune moves val policy CE by about 0.005 nats in 7 minutes, and the restore step
+picks among checkpoints whose pooled val differs by less than 0.006. exp062 (cold start on gen01's
+2400 drives, 15 epochs) scored 0.346 / 0.264 against gen04: one generation of data is nowhere
+near enough to learn the policy from scratch, so the warm start carries essentially everything.
+
+This is the fourth loop to plateau (mix16x9 gen14-21, vl0, d1k, now Gumbel). The search was fixed
+three times (virtual loss, roll model, Gumbel root); the train step has had the same shape since
+plan 036. This plan is about the train step.
+
+## 2. What the Gumbel corpus says about the target (no training involved)
+
+`scripts/target_stats.py` on `gen05/shard0` (3733 unsolved multi-child roots; gen01 agrees within
+0.01 everywhere). Q in points, TD = 1000; "played" is the move the Gumbel search played
+(`gumbel_scale = 1`, so a sample from the search's improved policy).
+
+- **Fans:** children p50 9 / p90 90; visited p50 9 / p90 25; max child visits p50 721.
+- **The prior is sharp but not collapsed:** p(max) p50 0.82; 42% of decisions have p(max) > 0.9,
+  24% > 0.99; H(prior) mean 0.76 nats. gen01 → gen05 moved it from 0.727 to 0.762: no sharpening
+  trend inside the Gumbel loop.
+- **The search disagrees with the prior often:** played ≠ prior argmax in **31%** of decisions;
+  the best-Q visited child ≠ prior argmax in 48%; top-2 Q gap p50 22 points, p90 269.
+- **The targets, against the generating prior:**
+
+| target | KL(target‖prior) mean / p50 / p90 | argmax moved off the prior | mean P(played) |
+|---|---|---|---|
+| prior itself | 0 | 0 | 0.626 |
+| **cq τ=100 (the loop's)** | **0.046 / 0.004 / 0.119** | **7.3%** | **0.665** |
+| cq τ=50 | 0.122 / 0.010 / 0.333 | 11% | 0.688 |
+| cq τ=30 | 0.231 / 0.019 / 0.690 | 16% | 0.706 |
+| cq τ=20 | 0.363 / 0.029 / 1.121 | 20% | 0.719 |
+| **gumbel σ, floor 1000 (= the search's own rule)** | **0.472 / 0.043 / 1.440** | **22%** | **0.737** |
+| gumbel σ, floor 300 | 0.826 / 0.099 / 2.708 | 30% | 0.725 |
+| gumbel σ, floor 0 (the paper's) | 1.077 / 0.175 / 3.534 | 34% | 0.705 |
+| visits | 1.891 / 1.182 / 4.294 | 37% | 0.415 |
+
+The search overrules the prior in 22-31% of decisions; the cq τ=100 target does so in 7%. The
+target that puts the most mass on the moves the search actually played is the search's own
+selection rule (gumbel σ with the floor 1000 the search plays with). τ=100 sits 3.5× softer than
+that rule (a 1-TD Q gap is 10 logits at τ=100 and about 35 under σ with maxN ≈ 300).
+
+## 3. What training did with it: the absorption probe
+
+`scripts/absorb_probe.py` scores nets on one generation's held-out shards (4 and 7). The two
+target-free columns are the ones that matter: **P(played)** — how much probability the net gives
+the move the search played — and top-1 = played. If a fine-tune absorbs the search's improvement,
+the net trained on a generation must give its played moves more probability than the net that
+generated it did.
+
+**gen06's held-out shards (generated by g_gen05):**
+
+| net | KL(target‖net) | P(played) | top-1 = played | val value MSE |
+|---|---|---|---|---|
+| d1k gen04 (origin) | 0.107 | 0.682 | 0.726 | 0.0950 |
+| g_gen01 | 0.087 | 0.687 | 0.733 | 0.0914 |
+| g_gen04 | 0.065 | 0.691 | 0.737 | 0.0883 |
+| **g_gen05, the generator** | **0.049** | **0.694** | **0.742** | 0.0872 |
+| **g_gen06, trained on this data (window gen04-06)** | **0.060** | **0.692** | **0.741** | 0.0868 |
+| exp062 cold start (gen01 data) | 0.240 | 0.639 | 0.698 | 0.1349 |
+
+**gen01's held-out shards (generated by d1k gen04; g_gen01 was a window-of-one fine-tune, the
+only Gumbel data there was):**
+
+| net | KL(target‖net) | P(played) | top-1 = played |
+|---|---|---|---|
+| d1k gen04, the generator | 0.046 | 0.702 | 0.751 |
+| **g_gen01, trained on this data** | **0.058** | **0.703** | **0.750** |
+| g_gen02 | 0.063 | 0.701 | 0.750 |
+| g_gen05 | 0.074 | 0.704 | 0.750 |
+
+Three facts:
+
+1. **Training raises P(played) by nothing** (+0.001 and −0.002), with the 3-gen window and with a
+   window of one. The ~0.05 nats of improvement in the target does not reach the weights.
+2. **Training makes the fit to the target worse than the generator's**, by about 0.012 nats, in
+   both cases. The target is the generator's prior plus a per-sample Q shift; whatever the
+   fine-tune adds (Adam restarting from zero moments at 2e-4, y-flip augmentation against a
+   y-asymmetric target, finite data) costs more fit than the shift is worth.
+3. **Each net fits its own generation best, and the fit decays with lineage distance** (d1k gen04
+   0.107 → g_gen05 0.049 on gen06's data). The KL column measures "distance from the generator",
+   not learning. The 3-gen window therefore pulls every fine-tune toward two older selves. It is
+   not the only mechanism — the window-of-one gen01 absorbed nothing either — but it is a drag.
+
+So each generation = generator + ~0.01 nats of training noise + ~0 absorbed improvement. The loop
+is a random walk around its starting point, which is what the drive table shows. This also
+explains plan 049's "the generating net fits each val slice better than any later net, by 8σ" and
+plan 047's "a wide warm fine-tune learns nothing from 3.7× the data": under a prior-anchored
+target with ~0.05 nats of content, more data from other generators is more anchors, not more
+signal.
+
+**Why sharper targets lost before and may win now.** exp050/052 (leaky PUCT, 500 visits) had
+τ=20 +0.064; exp055 (fixed search, 255 descents) had τ=100 +0.13 over τ=20; exp059 (PUCT, 1000
+descents) had τ=50/20 and gumbel σ level or below τ=100. Under PUCT most children carry one or two
+visits, so a target that trusts Q amplifies noise. Under sequential halving the finalists carry
+hundreds of descents each (max child visits p50 721), so the Q the target trusts is the Q the
+search trusted when it played. None of the sharper-target A/Bs has been run on Gumbel data.
+
+### 3.1 Window-of-one arms on gen06's data (fine-tunes of g_gen05, 3 epochs, loop recipe)
+
+Run 2026-10-04 evening on the shared GPU (~5 min each). Held-out: gen06 shards 4+7.
+
+| arm | KL(cq100‖net) | KL(gumσ1000‖net) | log P(played) | P(played) | top-1 = played | val value MSE |
+|---|---|---|---|---|---|---|
+| g_gen05 (generator) | 0.049 | 0.479 | −0.780 | 0.694 | 0.742 | 0.087 |
+| loop gen06 (window 3, cq100) | 0.060 | 0.480 | −0.781 | 0.692 | 0.741 | 0.087 |
+| window 1, cq100 | 0.058 | 0.470 | −0.777 | 0.692 | 0.742 | 0.090 |
+| **window 1, gumbel σ floor 1000** | 0.109 | **0.413** | **−0.755** | **0.662** | 0.739 | 0.094 |
+| window 1, cq100, no y-flip | 0.056 | — | −0.781 | 0.692 | 0.741 | 0.087 |
+| **window 1, cq100, lr 5e-5** | **0.049** | — | **−0.770** | **0.694** | **0.743** | **0.086** |
+| window 1, cq τ=50 | 0.062 | — | −0.759 | 0.688 | 0.742 | 0.089 |
+| window 1, cq τ=30 | 0.071 | — | −0.756 | 0.684 | 0.741 | 0.092 |
+| **window 1, cq τ=50, lr 5e-5** | 0.052 | — | **−0.759** | 0.691 | **0.744** | **0.087** |
+| window 1, cq τ=30, lr 5e-5 | 0.061 | — | −0.751 | 0.683 | 0.743 | 0.088 |
+| window 1, gumbel σ floor 1000, lr 5e-5 | 0.092 | — | −0.747 | 0.666 | 0.742 | 0.088 |
+
+Weights: `models/az_v7/plan054_w1_<arm>.pt` (the four lr 5e-5 arms also as `.onnx`, ready for
+drives); logs and probe outputs in `runs/plan054/`.
+
+- **The window is not the stall.** Window 1 with the loop's target reproduces the loop's result
+  (P(played) 0.692, KL +0.009 over the generator) and costs value accuracy (a third of the data).
+- **The matched target moves the net, but not cleanly.** log P(played) improves by 0.025 nats
+  (eight times cq100's 0.003), yet mean P(played) falls 0.03 and top-1 = played slips: the net
+  takes mass off the prior's favourites and spreads it. The restore landed at step 3000 of 6000
+  (epoch 1) and 0.41 of the target's 0.48 nats stays unlearnable — the σ target is sharp but
+  mostly per-sample variation at this data size, which is §7.3's visit-bias caveat showing up.
+  The value head also suffers (0.094): a high-gradient policy loss on a shared trunk at value
+  weight 0.25.
+- **lr 5e-5 is the first arm to pass the gate on every column.** The +0.01 nats of fit the loop's
+  recipe loses is gone (KL 0.049 = the generator's), log P(played) gains 0.010 nats (3× the
+  2e-4 arm's 0.003), top-1 and mean P(played) edge up, and the value head improves (0.086 <
+  0.087). The no-augment arm shows the y-flip is not the noise source: it is the Adam restart at
+  2e-4 (§7.1). Restored at step 2000 of 6000, so even 5e-5 overshoots eventually; the restore fix
+  (init as a candidate, early validation, select on policy) is still needed.
+- **Sharpness is a monotone trade at lr 2e-4.** log P(played) gain over the generator: τ=100
+  +0.003, τ=50 +0.021, τ=30 +0.024, σ +0.025; mean P(played) cost: −0.002, −0.006, −0.010,
+  −0.031; value MSE 0.090, 0.089, 0.092, 0.094. **τ=50 takes 85% of the σ arm's log gain at a
+  fifth of its mean-P cost with top-1 held** — the knee is around τ=50, not at the search's own
+  σ. (Consistent with §7.3: beyond the knee the extra sharpness is visit-bias and noise.)
+- **At lr 5e-5 the sharper targets stop hurting.** log P(played) gain: τ=100 +0.010, τ=50
+  +0.021, τ=30 +0.029, σ +0.033; top-1 = played is *above* the generator in all four (0.742 →
+  0.743-0.744), where at 2e-4 it slipped; value MSE 0.086 / 0.087 / 0.088 / 0.088 against the
+  generator's 0.087. Mean P(played) still drops with sharpness (−0.000, −0.003, −0.011, −0.028).
+- **Candidate recipe: cq τ=50 at lr 5e-5.** It passes the gate on every column (log P(played)
+  +0.021 nats, top-1 +0.002, value MSE no worse) with a mean-P cost inside noise. τ=30 and σ at
+  5e-5 are the sharper alternatives if drives say the gate under-rewards sharpness. Nothing here
+  is strength yet — these are one-generation fine-tunes judged on their own data. Drives decide
+  (E2).
+
+## 4. Diagnosis
+
+The training step is not a policy-improvement operator at the moment:
+
+- **Target:** cq τ=100 carries ~0.05 nats of improvement per sample (7% of argmaxes move), chosen
+  under PUCT when sharper targets amplified visit noise. The search it now describes overrules the
+  prior in 22-31% of decisions with well-visited finalists.
+- **Trainer noise ≈ target signal:** ~0.012 nats of fit lost per fine-tune, against ~0.05 nats of
+  improvement content, of which ~0 is absorbed.
+- **Window:** three generators' priors in one window, best-val selected on the pooled val, pull
+  the net toward the window's mean net. The restore then picks among checkpoints that differ by
+  less than the noise.
+- **Value label:** half of it is the generator's own root Q (self-referential); the value head is
+  what Gumbel ranks finalists by (top-2 Q gap p50 22 points against a value RMSE of ~300 points
+  per leaf), so its quality is now directly the search's discrimination.
+- **Data per generation:** 2400 drives ≈ 60k samples cannot teach the policy function (cold start
+  KL 0.24, 0.64 P(played)); the loop lives entirely on the warm start.
+
+The levers, in the order the evidence points: the target (sections 2-3), the anchoring (window /
+reanalysis), trainer noise (lr, Adam restart, augmentation), the value target, and only then
+capacity (plan 032 #9: 2.9× params bought nothing at 2.2 M samples).
+
+## 5. Experiments
+
+Every arm trains on Gumbel data only. Fine-tunes take ~7 min alone, ~20 min while the sidecar
+holds the GPU. Drive matches on the shared hub run ~2 h per board pair at the loop's SPRT
+(0.5:0.55, cap 800). The absorption probe is the cheap first gate; drives decide.
+
+### E1 — absorption probe as a standing diagnostic (minutes; no games)
+
+`scripts/absorb_probe.py --val <prepared held-out> NAME=net.pt …` and `scripts/target_stats.py
+<shard.jsonl>`. Add the probe to `train_loop.sh` after each fine-tune: score the new net and its
+generator on the new generation's shards 4+7 and print **ΔP(played)** and **ΔKL(target‖net)** to
+`status.md`. A generation that learned nothing is then known in two minutes, not after a two-hour
+drive match. Pass for any training change below: **Δlog P(played) > 0 with top-1 = played not
+lower and val value MSE not worse** than the generator's. (Mean P(played) and log P(played) can
+move in opposite directions — §3.1's σ arm did — so both are reported; the log is what a prior
+feeding a search needs, top-1 is what greedy play needs.)
+
+### E2 — the target, on Gumbel data (the main experiment)
+
+Fine-tune g_gen05 (or the newest generator) on one generation's data, window 1, loop recipe
+otherwise, one change per arm:
+
+| arm | `prepare` flags | why |
+|---|---|---|
+| control | `--policy-target cq --tau 100` | the loop's |
+| **matched** | `--policy-target gumbel --gumbel-min-range 1000` (c_visit 50, c_scale 0.1) | the search's own rule |
+| middle | `--policy-target cq --tau 30` | ≈ the σ scale at maxN 300 |
+| **played** | one-hot on the move played, mixed `0.5·cq100 + 0.5·onehot(played)` (new `prepare --policy-target played --played-mix 0.5`) | Q-free: under `gumbel_scale = 1` the played move is a sample of the search's improved policy, so this target is immune to the visit-bias in §7.3; the mix cuts its variance |
+| debiased | matched or middle, with Q corrected by the measured visits slope (`q − k·ln(1+N)`, k from the Gumbel corpus; new `prepare --q-visit-debias k`) | tests §7.3 directly |
+
+§3.1 already ran the control, matched and middle arms (and τ=50) at both learning rates on
+gen06's data. The probe's verdict: train at lr 5e-5, and τ=50 is the knee. The `played` and
+`debiased` arms need `prepare` changes and wait for the first drive result. Measure the
+Q-vs-visits slope on Gumbel data before building the debiased arm (`target_stats.py` extension,
+minutes): if the finalists' Q premium over the dropped candidates is mostly effort, it matters;
+if not, drop it.
+
+**Drives** (`exp063`; all paired, both seats `gumbel16_f1000` at 1000 descents, the
+`contested_14x7_gen04g` / `contested_16x9_gen04g` sets, `--seed 63000`; the candidates are
+fine-tunes of g_gen05, so the opponent is **g_gen05**, the parent). Run concurrently on one hub:
+
+- **D1** `plan054_w1_cq50_lr5e5` vs g_gen05 — the candidate recipe.
+- **D2** `plan054_w1_cq100_lr5e5` vs g_gen05 — the lr change alone.
+- **D4** the loop's own gen06 vs g_gen05 — what the old recipe did in the same step.
+- **E5** (below) on the same hub.
+- **D3** `plan054_w1_cq30_lr5e5` vs g_gen05 — only if D1 reads above 0.5, on the relaunched
+  loop's hub.
+
+**Fixed 300 pairs per board, not SPRT** (changed at launch). A one-step gain is small by
+construction (+0.02-0.03), SPRT 0.5:0.55 is built to find 0.55, and its H0 latches early
+(exp059's τ=50 arm latched at 16 pairs; the minimum is a game-code constant). 300 pairs gives a
+per-board SE of about 0.015 and a two-board SE of about 0.011.
+
+**Decide (pre-registered, implemented in exp063's gate).** An arm qualifies when its two-board
+mean is at least 0.5 + 2 SE and neither board is below 0.5 − 2 SE (its own SE). Of the
+qualifiers, the higher mean becomes the loop's recipe and E8 launches from that net. No
+qualifier: E2b runs, and the loop waits for the user.
+
+**Results (exp063, 2026-10-05 00:24; fixed 300 pairs per board, vs the parent g_gen05):**
+
+| arm | 14x7 | 16x9 | two-board mean | gate |
+|---|---|---|---|---|
+| D1 cq τ=50 @ 5e-5 | 0.517 ± 0.015 | 0.502 ± 0.014 | 0.510 ± 0.010 | no |
+| D2 cq τ=100 @ 5e-5 | 0.533 ± 0.014 | 0.529 ± 0.016 | 0.531 ± 0.010 | **passes** |
+| D4 loop gen06 (old recipe, window 3) | 0.512 ± 0.014 | 0.538 ± 0.017 | 0.525 ± 0.011 | (reference) |
+| E5 policy-only vs Gumbel@1000 (g_gen05) | 0.512 ± 0.015 | 0.522 ± 0.016 | 0.517 ± 0.011 | — |
+
+- D2 passed the gate, but **D4, the old recipe, is within noise of it** (0.525 vs 0.531): the lower
+  lr is not shown to help in play. All three fine-tunes sit slightly above their parent.
+- τ=50 is the worst of the three on 16x9 although it led the probe: the probe over-rewards
+  sharpness. Keep τ=100.
+- E5 is the result that matters: the search does not beat its own policy (plan 055). The gate's
+  E8 call was a no-op (`runs/loopmix16x9g054/HOLD`), and exp064 stopped exp063 before E2b.
+
+**E2b — amplified one-step test.** Train from d1k gen04 on **all seven Gumbel generations at
+once** (gen01-06 whole plus gen07's training shards; gen07's 4+7 are the val), 3 epochs, two
+arms: the old recipe (cq100 at 2e-4, select on combined) and the new one (cq50 at 5e-5 with the
+restore fix). Each plays d1k gen04 on the same drives. The old-recipe arm says what the data alone
+is worth; the gap to the new arm is seven generations of target signal in one fine-tune.
+
+### E3 — anchoring: window and reanalysis-lite (demoted by §3.1)
+
+Window 1 alone changed nothing on the probe and cost value accuracy, so the window is not the
+first lever. It returns once E2 has a target that carries signal:
+
+1. **Window 1 vs window 3** at the winning E2 target (one fine-tune each, E1 gate, drives vs the
+   parent). Window 1 is free: `WINDOW_GENS=1`.
+2. **If window 1 wins but starves the value head** (val value MSE on raw outcome, plan 050's
+   `wdl_summary.py` metric, worse than window 3's), build **reanalysis-lite**: `prepare` writes
+   each action's completed mover-Q shift and the root's max visits instead of a baked
+   distribution; `train.py` forms the target per batch as
+   `softmax(stopgrad(logits_θ) + σ(q̂))` from the *current* net's logits. Old generations then
+   contribute their search's Q without pulling the policy toward the net that generated them.
+   This is the MuZero Reanalyse policy update without re-running search.
+
+### E4 — trainer noise (probe first; drives only for a winner)
+
+On the same window-1 data as E2's control, one change each, judged by E1's two numbers. §7.1 is
+the finding behind this: the shipped net is +0.011 nats worse than its init every generation
+and the init is never a candidate.
+
+- **Restore fix (no experiment needed):** make the warm-start init a restore candidate, validate
+  at steps 250/500/1000 and at the final step, and select on `val_policy` alone (§7.7: the
+  combined criterion is decided by value noise). This alone stops a generation from shipping a
+  net worse than the one it started from.
+- **`--lr 5e-5`: passed the probe (§3.1)** — KL to target equal to the generator's, +0.010 nats
+  log P(played), value MSE better. Try `2e-5` as well; the 5e-5 arm still restored at step 2000
+  of 6000, so a lower rate or a decay may absorb more before drifting.
+- Adam warmup over the first ~500 steps, or carrying the optimizer state across generations
+  (`--init-opt`, new flag: the loop is meant to be one SGD run, and it restarts Adam every
+  generation).
+- `--no-augment` (plan 031 D7 said augmentation helps the policy under the old target; the target
+  is y-asymmetric through the search's chance model, so re-check under Gumbel).
+- Select on the newest generation's val only, instead of on the pooled window val.
+
+Only the arm that cuts the KL loss below the generator's **and** raises P(played) goes to drives,
+in the same match format as E2.
+
+### E5 — how much is there to absorb? The search's edge over the bare policy
+
+`cfgs/policy_only.toml`: `gumbel_m = 1`, `gumbel_scale = 0`, `budget_mode = "iterations"`, played
+at `--mcts-iters 8`. With one survivor the halving plays the prior's argmax (`Halving::new`
+truncates to `m.max(1)`; one survivor gives one phase, so no division by zero). Match it against
+`gumbel16_f1000` at 1000 descents on the same net (g_gen05), paired drives on both boards.
+
+**Read.** The score is the per-generation ceiling on what training could absorb. 0.60+ means a
+large edge the trainer is wasting (E2-E4 are the fix). Near 0.52 means the search barely improves
+on the policy, and the bottleneck is the value head the halving ranks by (E6 first).
+
+### E6 — the value target (after E2; the halving ranks by this head)
+
+- **Metric:** val value MSE against the *raw* drive outcome (`prepare --value-blend 1.0` on the
+  held-out shards, `scripts/wdl_summary.py`), not against the blended label.
+- **Blend the played child's Q, not the root's.** §7.6: `root_value` is the best child's Q
+  (minimax), optimistic by +0.04 to +0.09 under Gumbel and not the move played in 54% of wide
+  roots. The played child's Q is one field away in the same record (`children[chosen].q`); a
+  `prepare --value-root played` switch is a few lines and removes the "values a move it didn't
+  take" half of the bias. Measure E[label − outcome] before and after.
+- **n-step / TD(λ) label:** a sample's label becomes `(1−λ) Σ λ^k root_value_{t+k} + λ^K z` along
+  its own drive (mover-signed), replacing the same-state root Q in the blend. Every trajectory
+  carries `root_value` per decision and `outcome_value`, so this is a `prepare` change
+  (`--value-td-lambda`). It removes the self-referential half of the label while keeping the
+  variance reduction the blend was adopted for (plan 036 W3).
+- **Value weight 1.0 under per-drive weighting**, now that FREEZE_BN removed one source of value
+  noise (exp061).
+- Judge by the metric first; a 5%+ MSE gain on raw outcome goes to drives.
+
+### E7 — capacity (deferred)
+
+Only after E2/E3 show absorption on the probe: width 96 / blocks 8 warm-started by widening, or a
+cold start on the full Gumbel corpus once it is ≥ 20 generations. Plan 032 #9's null result
+stands until the target carries signal.
+
+### E8 — the loop relaunch
+
+`scripts/launch_plan054.sh <net.onnx> <tau>`, started by exp063's gate: a fresh
+`runs/loopmix16x9g054` from the winning E2 net, `CQ_TAU` from E2, `WARM_LR=5e-5`,
+`SELECT_ON=policy`, `EVAL_EVERY=1000`, `--freeze-bn --init-candidate --eval-at 250,500`, the
+absorption probe on, `WINDOW_GENS=3`, generation and the d1k gen04 drive anchor exactly as
+runs/loopmix16x9g. The original sketch: `WINDOW_GENS` per E3, `POLICY_TARGET=gumbel` with
+`--gumbel-min-range 1000` (needs the `PREPARE_TARGET_ARGS` wiring in `train_loop.sh`, which only
+knows `cq`), E4's lr/warmup if it won, the E1 probe line per generation, drives vs the fixed d1k
+gen04 anchor as now. Expect the anchor curve to show a trend only over 3+ generations; the per-gen
+probe is the early signal.
+
+## 6. Order and cost
+
+| step | box time | needs code | state |
+|---|---|---|---|
+| E2 fine-tunes + probes (9 arms) | — | — | **done 2026-10-04 (§3.1)** |
+| E2 drives D1, D2, D4 + E5 (fixed 300 pairs) | ~5 h hub | `scripts/exp063_plan054.sh` | **running (exp063)** |
+| E5 ceiling match | in the line above | `cfgs/policy_only.toml` | **running (exp063)** |
+| E1 probe in the loop + restore fix | — | `ABSORB_PROBE`; `--init-candidate --eval-at --select-on policy` | **done** |
+| E2 D3 (cq30) | ~2 h hub | exp063 | automatic if D1 > 0.5 and the gate passed |
+| E4 probes: the relaunch recipe at 5e-5 and 2e-5 | 20 min GPU | exp063 | **running**; warmup / `--init-opt` not built |
+| E6 value arms | 1 h GPU + 4 h hub | `--value-root played`, `--value-td-lambda` in `prepare` | after E2 |
+| E3 window / reanalysis-lite | 1 h GPU + 4 h hub | only if triggered | after E2 |
+| E8 relaunch | — | `scripts/launch_plan054.sh` | automatic if the gate passes; else E2b, then the user |
+
+The E2 drives fit in one night alongside generation; the loop keeps running meanwhile (its data
+is what the arms train on), and its gen07+ nets are also candidates to re-probe.
+
+## 7. Audit of the chain (2026-10-04)
+
+A review agent read the Gumbel → `prepare` → `train.py` chain the same day (read-only; scratch in
+`/tmp/audit_gumbel/`). What it confirmed, with the pointers:
+
+1. **Every checkpoint is worse than its warm start, and the warm start cannot be restored.** On
+   gen06's full val set the init (g_gen05) scores val_policy 0.6084; every gen06 checkpoint reads
+   0.6139-0.6156 (restored: 0.6141). The combined criterion agrees (init 0.7246 vs restored
+   0.7286). Step 2500, the first candidate, is already +0.007 above the init and training never
+   comes back. Per generation, KL(target‖net) shipped vs init: gen04 0.057 vs 0.046, gen05 0.051
+   vs 0.039, gen06 0.062 vs 0.051 — **+0.011 nats every generation**. `train.py:344-348` logs
+   only val_value for the init and excludes it from the restore; `:458/:468` validate only at
+   multiples of 2500, so the last 13% of steps are never a candidate. Fresh Adam moments at 2e-4
+   kick the net away first. *Fix:* make the init a restore candidate, validate at 250/500/1000
+   and at the final step, and try lr 2e-5 or a warmup (E4).
+2. **The window mixes three nets' priors into the targets.** Consecutive nets disagree with each
+   other's targets by 0.011-0.016 nats — the same size as the target's improvement content
+   (0.039-0.051). Every sample is trained 9 times (3 epochs × 3 windows) against *its own
+   generator's* prior. *Fix:* anchor the target on the init net (reanalysis-lite, E3.2) or
+   `WINDOW_GENS=1`.
+3. **The search weights Q 6-8× more sharply than its target.** σ = (50 + maxN)·0.1·q̂ with the
+   range floored at 1000 (`gumbel.rs:21-22`, `:161-175`) is about one nat per 13-18 Q points;
+   τ=100 is one nat per 100. **Caveat, suspected:** Q rises with visits (plan 049: about +41 Q
+   per e-fold) and halving concentrates visits — median visits by rank on wide roots are 515,
+   275, 166, 112, 73, 52, 44, 39, 18, 15, … 9 — so the finalists carry roughly +140-160 Q from
+   effort alone. A target matched to σ would partly teach "play what halving kept", which may be
+   part of why sharper targets lost in exp059. *Fix:* the E2 matched arm, plus a visit-debiased
+   Q arm and a Q-free arm (played-move one-hot), and measure the Q-vs-visits slope on Gumbel data.
+4. **`--policy-target gumbel` is not exactly the search's rule, but close.** The search
+   normalises q̂ over the survivors, the target over all children (`targets.rs:179-181`); an
+   unscored survivor takes the root Q in the search (the minimax max, `dynamics.rs:2969-2971`)
+   but the visit-weighted mean in the target (`targets.rs:217-221`). The 1000 floor binds in 89%
+   of roots, so they mostly coincide; `--gumbel-min-range` defaults to 0 and must be passed. On
+   gen06 data the floor-1000 target's argmax equals the played move 78% overall, 57% on wide
+   roots.
+5. **Tail completion is not a lever.** Prior mass on unvisited children of wide roots is 1.26%
+   on average and stays 0.97% under cq.
+6. **The value label is optimistic and refers to a move that wasn't played.** `root_value`
+   equals the best child's Q exactly (minimax backup). E[root − outcome], mover frame, is
+   +0.04 to +0.09 per Gumbel shard (gen06 +0.091, gen01 +0.043) against +0.033 for the same net
+   under PUCT; the blend passes half of that into the label. Under Gumbel the played move is not
+   the best-Q child in 54% of wide roots. Shard noise is ±0.04, so "worse than PUCT" is not
+   proven. Goes to E6.
+7. **Checkpoint selection is decided by value noise.** In gen06 val_policy spans 0.0017 across
+   checkpoints and val_value 0.0040; the unweighted sum is the value head's noise. gen06 restored
+   step 7500; the policy optimum was step 12500.
+
+**Facts checked and sound:** recorded priors are the clean net softmax × n (Gumbel noise lives
+only in the halving's ranking, `gumbel.rs:90-100`; Dirichlet is forced off under Gumbel); the
+whole fan is recorded (wide roots K median 71, visited median 16); Q is Home-centric and negated
+for Away in `targets.rs:69-74`; `chosen` is the move played; batch 32, plain Adam, lr 2e-4
+constant, no warmup/decay/EMA, fresh moments every generation; the policy CE gather matches
+`eval.rs`; `val_policy` includes H(target) (gen06: 0.614 = 0.555 + 0.059); FREEZE_BN puts all 14
+BN layers in eval mode, γ/β train, running stats in gen06.pt equal gen05.pt equal d1k gen04.pt,
+and the ONNX export folds the same stats; `PerDimsBatchSampler` is proportional and one-board per
+batch (the 14x7 eval board is 7.3% of training samples, 16x9 20.8%); validation holds out 25% of
+all data, two thirds of it from older generators. Model: globals FC 18→16 broadcast and
+concatenated, stem 3x3 77→64, 6 residual blocks, policy 1x1 64→30, value 1x1 64→32 → mean over
+all cells including the OOB border → FC 32→64→1 tanh; 0.50 M params; receptive field 27×27. Minor:
+the Gumbel seed is a hash of the root state, so a repeated position always draws the same noise.
