@@ -221,9 +221,9 @@ impl Skill {
 
     pub fn good_skills() -> Vec<Skill> {
         vec![
-            Skill::Dodge,
-            Skill::Block,
-            Skill::Catch,
+            Skill::Dodge, //implemented
+            Skill::Block, //implemented
+            Skill::Catch, //implemented
             Skill::JumpUp,
             Skill::SideStep,
             Skill::Guard,
@@ -231,7 +231,7 @@ impl Skill {
             Skill::Frenzy,
             Skill::Tackle,
             Skill::Wrestle,
-            Skill::SureHands,
+            Skill::SureHands, //implemented
             Skill::StandFirm,
         ]
     }
