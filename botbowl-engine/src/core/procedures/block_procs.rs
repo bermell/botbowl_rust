@@ -176,9 +176,10 @@ impl Push {
 
     fn calculate_next_state(&mut self, game_state: &mut GameState) -> ProcState {
         let pushed = game_state.get_player_at(self.on).unwrap();
-        // Stand Firm: the blocked player's coach may refuse the push. Nobody moves, so there is
-        // no follow-up; a knockdown (queued under this proc) still happens, in place.
-        if !self.questions.stand_firm_asked && self.moves_to_make.is_empty() {
+        // Stand Firm: the pushed player's coach may refuse the push — the blocked player's, or
+        // any a chain push reaches. Then nobody is pushed at all, so there is no follow-up; a
+        // knockdown (queued under this proc) still happens, in place.
+        if !self.questions.stand_firm_asked {
             self.questions.stand_firm_asked = true;
             if pushed.has_skill(Skill::StandFirm) {
                 return self.ask(PushSkill::StandFirm, game_state);
@@ -965,6 +966,38 @@ mod tests {
         assert_eq!(state.get_available_actions().team, Some(TeamType::Home));
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, Position::new((6, 2)))));
         assert!(state.is_legal_action(&Action::Positional(PosAT::Push, away_pos + (1, 0))));
+    }
+
+    /// Stand Firm in a chain push: if the player pushed into uses it, nobody is pushed.
+    #[test]
+    fn stand_firm_stops_a_chain_push() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_away_players(&[(7, 2), (7, 3), (7, 4)])
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        let firm = state.get_player_id_at(Position::new((7, 3))).unwrap();
+        state.get_mut_player_unsafe(firm).stats.give_skill(Skill::StandFirm);
+
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, Position::new((7, 3)));
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        state.step_simple(SimpleAT::UseSkill);
+
+        assert_eq!(state.get_player_unsafe(attacker).position, attacker_pos);
+        assert_eq!(state.get_player_unsafe(defender).position, defender_pos);
+        assert_eq!(state.get_player_unsafe(firm).position, Position::new((7, 3)));
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "no follow-up"
+        );
     }
 
     /// Guard: a marked player still assists a block. The home assister next to the defender is
