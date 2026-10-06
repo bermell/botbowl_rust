@@ -293,7 +293,7 @@ fn block_outcomes(state: &GameState, n: NumBlockDices) -> Vec<BbAction> {
     let ctx = BlockContext {
         attacker_block: attacker.has_skill(Skill::Block),
         defender_block: defender.has_skill(Skill::Block),
-        defender_dodge: defender.has_skill(Skill::Dodge),
+        defender_dodge: botbowl_engine::core::procedures::dodge_saves_from_stumble(attacker, defender),
         crowd_push: Push::is_crowd_push(attacker.position, defender.position, state),
     };
     let num_dice = u8::from(n) as usize;
@@ -1022,6 +1022,20 @@ mod tests {
         assert!(probs_sum_to_one(&outcomes));
         assert_prob(&outcomes, &[BlockDice::Pow], 1, 6);
         assert_prob(&outcomes, &[BlockDice::Push], 3, 6);
+    }
+
+    /// Tackle on the attacker takes the defender's Dodge out of the Stumble: PowPush is a
+    /// knockdown again.
+    #[test]
+    fn block_attacker_tackle_beats_defender_dodge() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |s| {
+            give_skill(s, DEF, Skill::Dodge);
+            give_skill(s, ATT, Skill::Tackle);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::Pow], 2, 6);
+        assert_prob(&outcomes, &[BlockDice::Push], 2, 6);
     }
 
     /// Defender on the sideline with the attacker pushing straight out:

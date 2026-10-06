@@ -54,7 +54,7 @@ impl Default for DeriveCtx {
 /// How a pathfinder roll reads in the move-probability tooltip.
 fn event_label(event: &PathingEvent) -> String {
     match event {
-        PathingEvent::Dodge(t) => format!("Dodge {}+", *t as u8),
+        PathingEvent::Dodge(t, _) => format!("Dodge {}+", *t as u8),
         PathingEvent::GFI(t) => format!("GFI {}+", *t as u8),
         PathingEvent::Pickup(t) => format!("Pickup {}+", *t as u8),
         PathingEvent::Block(_, n) => format!("Block ({} dice)", mirror::num_block_dices_to_proto(*n).signed()),

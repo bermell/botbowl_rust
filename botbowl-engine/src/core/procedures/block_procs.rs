@@ -5,7 +5,7 @@ use crate::core::gamestate::GameState;
 use crate::core::model::{
     other_team, Action, AvailableActions, Direction, PlayerStatus, Position, ProcState, Procedure,
 };
-use crate::core::model::{BallState, PlayerID, ProcInput};
+use crate::core::model::{BallState, FieldedPlayer, PlayerID, ProcInput};
 use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
 use crate::core::procedures::movement_procs;
@@ -411,6 +411,11 @@ impl Procedure for BlockAction {
     }
 }
 
+/// Does the defender's Dodge turn a Stumble (`PowPush`) into a plain push? Not against Tackle.
+pub fn dodge_saves_from_stumble(attacker: &FieldedPlayer, defender: &FieldedPlayer) -> bool {
+    defender.has_skill(Skill::Dodge) && !attacker.has_skill(Skill::Tackle)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Block {
     dices: NumBlockDices,
@@ -535,7 +540,8 @@ impl Procedure for Block {
                         push = true;
                     }
                     SimpleAT::SelectPowPush => {
-                        if !game_state.get_player_unsafe(self.defender).has_skill(Skill::Dodge) {
+                        let attacker = game_state.get_player_unsafe(attacker_id);
+                        if !dodge_saves_from_stumble(attacker, game_state.get_player_unsafe(self.defender)) {
                             knockdown_proc.id = Some(self.defender);
                         }
                         push = true;
@@ -1017,6 +1023,38 @@ mod tests {
         state.fix_d6(2); //crowd injury
         state.step_positional(PosAT::FollowUp, defender_pos);
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+    }
+
+    /// Tackle: a defender with Dodge still goes down on a Stumble from a Tackle blocker.
+    #[test]
+    fn tackle_beats_dodge_on_a_stumble() {
+        let stumble_with = |tackle: bool| {
+            let attacker_pos = Position::new((5, 3));
+            let defender_pos = Position::new((6, 3));
+            let mut state = GameStateBuilder::new()
+                .add_home_player(attacker_pos)
+                .add_away_player(defender_pos)
+                .build();
+            let attacker = state.get_player_id_at(attacker_pos).unwrap();
+            let defender = state.get_player_id_at(defender_pos).unwrap();
+            state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Dodge);
+            if tackle {
+                state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Tackle);
+            }
+            state.step_positional(PosAT::StartBlock, attacker_pos);
+            state.fix_blockdice(BlockDice::PowPush);
+            state.step_positional(PosAT::Block, defender_pos);
+            state.step_simple(SimpleAT::SelectPowPush);
+            state.step_positional(PosAT::Push, defender_pos + (1, 0));
+            if tackle {
+                state.fix_d6(1); //armor
+                state.fix_d6(1); //armor
+            }
+            state.step_positional(PosAT::FollowUp, defender_pos);
+            state.get_player_unsafe(defender).status
+        };
+        assert_eq!(stumble_with(false), PlayerStatus::Up);
+        assert_eq!(stumble_with(true), PlayerStatus::Down);
     }
 
     #[test]

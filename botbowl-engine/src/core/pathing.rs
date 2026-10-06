@@ -13,12 +13,18 @@ type OptRcNode = Option<Arc<Node>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum PathingEvent {
-    Dodge(D6Target),
+    /// The roll's target, and whether the square being left is marked by an opposing Tackle
+    /// player (no Dodge re-roll then).
+    Dodge(D6Target, bool),
     GFI(D6Target),
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
-    Pass { to: Position, pass: D6Target, modifer: i8 },
+    Pass {
+        to: Position,
+        pass: D6Target,
+        modifer: i8,
+    },
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
@@ -29,7 +35,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::Handoff(_, _) => true,
         PathingEvent::Foul(_, _) => true,
         PathingEvent::Touchdown(_) => true,
-        PathingEvent::Dodge(_) => false,
+        PathingEvent::Dodge(..) => false,
         PathingEvent::GFI(_) => false,
         PathingEvent::Pickup(_) => false,
         PathingEvent::Block(_, _) => false,
@@ -220,7 +226,7 @@ impl Node {
                 PathingEvent::Handoff(_, _) => false,
                 PathingEvent::Foul(_, _) => false,
                 PathingEvent::StandUp => false,
-                PathingEvent::Dodge(_) => true,
+                PathingEvent::Dodge(..) => true,
                 PathingEvent::GFI(_) => true,
                 PathingEvent::Pickup(_) => true,
                 PathingEvent::Touchdown(_) => true,
@@ -273,9 +279,9 @@ impl Node {
         self.prob *= target.success_prob();
         self.events.push_back(PathingEvent::GFI(target));
     }
-    fn apply_dodge(&mut self, target: D6Target) {
+    fn apply_dodge(&mut self, target: D6Target, tackled: bool) {
         self.prob *= target.success_prob();
-        self.events.push_back(PathingEvent::Dodge(target));
+        self.events.push_back(PathingEvent::Dodge(target, tackled));
     }
     fn apply_pickup(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
@@ -738,7 +744,11 @@ impl<'a> GameInfo<'a> {
             next_node.apply_gfi(self.gfi_target);
         }
         if self.tackles_zones_at(parent_node.position) > 0 {
-            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]));
+            let tackled = self
+                .game_state
+                .get_adj_players(parent_node.position)
+                .any(|p| p.stats.team != self.team && p.has_tackle_zone() && p.has_skill(Skill::Tackle));
+            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]), tackled);
         }
         match self.ball {
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
@@ -1248,7 +1258,7 @@ mod tests {
                 PositionOrEvent::Position(Position::new((7, 5))),
                 PositionOrEvent::Position(Position::new((6, 4))),
                 PositionOrEvent::Position(Position::new((5, 3))),
-                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, false)),
                 PositionOrEvent::Position(Position::new((4, 2))),
                 PositionOrEvent::Position(Position::new((3, 1))),
                 PositionOrEvent::Position(Position::new((2, 1))),
