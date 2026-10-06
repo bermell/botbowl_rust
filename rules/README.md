@@ -55,7 +55,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Violent Innovator | Devious | Earn SPP for casualties caused via Special Actions | No | — | Simple |
 | Block | General | Choose not to be knocked down on a Both Down result | Yes (`block_procs.rs`) | No | Simple |
 | Dauntless | General | Roll to temporarily match a higher-Strength opponent for a Block | No | — | Simple |
-| Fend | General | Opponent can't Follow-up after pushing you back | No | — | Simple |
+| Fend | General | Opponent can't Follow-up after pushing you back | Yes (`block_procs.rs::FollowUp`; a `UseSkill`/`DontUseSkill` decision, beats Frenzy) | Yes (`fend_*`) | Simple |
 | Frenzy* | General | Must Follow-up and make a second Block Action if the target is Pushed Back | Yes (`block_procs.rs::FollowUp`, `FrenzyBlock`) | Yes (`frenzy_*`) | Simple |
 | Kick | General | Kicked ball may deviate D3 instead of D6 | No | — | Simple |
 | Pro | General | Once per activation, re-roll one die on a 3+ | No | — | Simple |

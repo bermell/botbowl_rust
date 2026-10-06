@@ -52,6 +52,9 @@ pub struct Push {
     /// into.
     #[serde(default)]
     strip_ball: Option<PlayerID>,
+    /// Fend: this player, the one blocked, may stop the blocker following up.
+    #[serde(default)]
+    fend: Option<PlayerID>,
 }
 
 impl Push {
@@ -64,6 +67,7 @@ impl Push {
             follow_up_pos: on,
             questions: PushQuestions::default(),
             strip_ball: None,
+            fend: None,
         })
     }
     pub fn new_pure(from: Position, on: Position) -> Push {
@@ -75,6 +79,7 @@ impl Push {
             follow_up_pos: on,
             questions: PushQuestions::default(),
             strip_ball: None,
+            fend: None,
         }
     }
 
@@ -226,7 +231,7 @@ impl Push {
             PushSquares::Crowd(position_in_crowd) => {
                 self.moves_to_make.push((self.on, position_in_crowd));
                 self.do_moves(game_state);
-                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
+                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos, self.fend))
             }
             PushSquares::ChainPush(positions) | PushSquares::FreeSquares(positions) => {
                 aa.insert_positional(PosAT::Push, positions);
@@ -271,7 +276,7 @@ impl Procedure for Push {
             ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
                 self.moves_to_make.push((self.on, position));
                 self.do_moves(game_state);
-                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
+                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos, self.fend))
             }
             _ => panic!("very wrong!"),
         }
@@ -282,16 +287,32 @@ impl Procedure for Push {
 pub struct FollowUp {
     to: Position,
     //from is active player,
+    /// The pushed player with Fend, until their coach has answered.
+    #[serde(default)]
+    fend: Option<PlayerID>,
 }
 impl FollowUp {
-    pub fn new(to: Position) -> AnyProc {
-        AnyProc::FollowUp(FollowUp { to })
+    pub fn new(to: Position, fend: Option<PlayerID>) -> AnyProc {
+        AnyProc::FollowUp(FollowUp { to, fend })
     }
 }
 impl Procedure for FollowUp {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let player = game_state.get_active_player().unwrap();
         match input {
+            ProcInput::Nothing if self.fend.is_some() => {
+                let fender = game_state.get_player_unsafe(self.fend.unwrap());
+                let mut aa = AvailableActions::new(fender.stats.team);
+                aa.insert_simple(SimpleAT::UseSkill);
+                aa.insert_simple(SimpleAT::DontUseSkill);
+                ProcState::NeedAction(aa)
+            }
+            // Fend: no follow-up, even for Frenzy.
+            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) => ProcState::Done,
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill)) => {
+                self.fend = None;
+                self.step(game_state, ProcInput::Nothing)
+            }
             ProcInput::Nothing => {
                 let mut aa = AvailableActions::new(player.stats.team);
                 if player.has_skill(Skill::Frenzy) {
@@ -662,6 +683,9 @@ impl Block {
             {
                 push.strip_ball = Some(self.defender);
             }
+            if game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) {
+                push.fend = Some(self.defender);
+            }
             procs.push(AnyProc::Push(push));
         }
         ProcState::from(procs)
@@ -848,9 +872,11 @@ impl Procedure for FrenzyBlock {
         let Ok(defender) = game_state.get_player(self.defender) else {
             return ProcState::Done; // pushed off the pitch
         };
-        // The follow-up was forced, so a pushed defender still on the pitch is adjacent. One who
-        // stood firm was not pushed at all.
-        if attacker.status != PlayerStatus::Up || defender.status != PlayerStatus::Up || defender.position == self.from
+        // One who stood firm was not pushed at all; one who used Fend is no longer adjacent.
+        if attacker.status != PlayerStatus::Up
+            || defender.status != PlayerStatus::Up
+            || defender.position == self.from
+            || attacker.position.distance_to(&defender.position) > 1
         {
             return ProcState::Done;
         }
@@ -1591,6 +1617,62 @@ mod tests {
         let (mut state, _, _, _) = block_stand_firm(BlockDice::Push, true);
         state.step_simple(SimpleAT::UseSkill);
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+    }
+
+    /// A home blocker pushes an away Fend defender one square straight back.
+    fn push_a_fend_defender(frenzy: bool) -> (crate::core::gamestate::GameState, Position, Position) {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Fend);
+        if frenzy {
+            state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Frenzy);
+        }
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        (state, attacker_pos, defender_pos)
+    }
+
+    /// Fend: the pushed defender's coach may stop the blocker following up.
+    #[test]
+    fn fend_stops_the_follow_up() {
+        let (mut state, attacker_pos, _) = push_a_fend_defender(false);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.get_player_at(attacker_pos).is_some(), "the blocker stays put");
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "no follow-up"
+        );
+    }
+
+    /// Declined, the blocker chooses as usual.
+    #[test]
+    fn declining_fend_allows_the_follow_up() {
+        let (mut state, attacker_pos, defender_pos) = push_a_fend_defender(false);
+        state.step_simple(SimpleAT::DontUseSkill);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, defender_pos)));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, attacker_pos)));
+    }
+
+    /// Fend beats Frenzy: no forced follow-up, so no second block.
+    #[test]
+    fn fend_stops_a_frenzy_follow_up_and_second_block() {
+        let (mut state, attacker_pos, _) = push_a_fend_defender(true);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.get_player_at(attacker_pos).is_some(), "the blocker stays put");
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "no second block"
+        );
     }
 
     /// A Push on an away ball carrier; returns who holds the ball afterwards.
