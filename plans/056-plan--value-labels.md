@@ -388,10 +388,22 @@ gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value 
   drives vs the anchor, the net check) judges whether that helps. The risk to watch: restart noise
   accumulating if the fine-tunes are mostly noise. The loop stops after gen05's generation and is
   relaunched, so gen05 is the first generation trained without the init candidate.
-- **Stopped 2026-10-06 (the user):** after gen05's generation, to incorporate new work and to
-  make the drive eval faster. gen05's corpus is generated but not labelled or trained; gen04's
-  drives were cut short by the stop.
-- **The loop runs on pre-merge code.** Commits pushed from the web/hub worktree on 2026-10-06
+- **Run closed 2026-10-06 20:14 (the user): killed mid-gen05.** Master moved under it:
+  - 16 newly implemented skills (Strip Ball, Guard, Mighty Blow, Frenzy, Tackle, Wrestle, Stand
+    Firm, Sidestep, Jump Up, Fend, Grab, Juggernaut, Brawler, Claws, Dauntless, Arm Bar);
+  - per-player kickoff setup;
+  - schema v8 (policy channels re-laid) and v9 (`UseSkill`/`DontUseSkill`, A 30 → 32);
+  - hub protocol v14.
+  Every corpus so far is unusable for training on it. The format broke (`PathingEvent::Dodge` is
+  now a tuple variant, so old trajectories don't deserialize), and the rules changed:
+  `good_skills()` hands random-start players skills that did nothing before and act now. The nets
+  carry over exactly through `bbnn.migrate` (v7 → v8 → v9).
+- **What carries into the next run:**
+  - the recipe (§7, with MC-labelled val, `SELECT_ON=combined` and no init candidate);
+  - the migrated nets (gen03's weights, which were the run's last generator, and arm F);
+  - the tools: value bench, net check, mc-label.
+  The value benchmark must be re-frozen from an audit under the new rules.
+- **(Superseded by the close above.) The loop ran on pre-merge code.** Commits pushed from the web/hub worktree on 2026-10-06
   (3594c9a..d55c1b9) add `Skill::StripBall`. That takes `Skill::COUNT` 39 → 40, which adds a
   spatial input plane (`encode.rs`: `SHARED_BASE = SKILL_BASE + Skill::COUNT`), so every
   existing net is incompatible with a build that includes them. They also bump the hub protocol to
