@@ -179,6 +179,19 @@ impl Push {
         ProcState::from(procs)
     }
 
+    /// Stand Firm stopped the push. Strip Ball still works: the carrier drops the ball in their
+    /// own square, and it bounces.
+    fn strip_in_place(&self, game_state: &mut GameState) -> ProcState {
+        match self.strip_ball {
+            Some(id) if game_state.ball == BallState::Carried(id) => {
+                let position = game_state.get_player_unsafe(id).position;
+                game_state.set_ball(BallState::InAir(position));
+                ProcState::DoneNew(ball_procs::Bounce::new())
+            }
+            _ => ProcState::Done,
+        }
+    }
+
     /// Ask the pushed player's coach about `skill`.
     fn ask(&mut self, skill: PushSkill, game_state: &GameState) -> ProcState {
         self.questions.pending = Some(skill);
@@ -235,7 +248,7 @@ impl Procedure for Push {
             ProcInput::Action(Action::Simple(answer @ (SimpleAT::UseSkill | SimpleAT::DontUseSkill))) => {
                 let used = answer == SimpleAT::UseSkill;
                 match self.questions.pending.take() {
-                    Some(PushSkill::StandFirm) if used => ProcState::Done,
+                    Some(PushSkill::StandFirm) if used => self.strip_in_place(game_state),
                     Some(PushSkill::StandFirm) => self.calculate_next_state(game_state),
                     Some(PushSkill::SideStep) => {
                         self.questions.sidestep = Some(used);
@@ -1621,6 +1634,31 @@ mod tests {
         assert_eq!(ball, BallState::OnGround(Position::new((7, 2))));
         let (ball, carrier) = push_the_carrier(true, true);
         assert_eq!(ball, BallState::Carried(carrier), "Sure Hands");
+    }
+
+    /// Strip Ball works on a Stand Firm carrier too: they are not pushed, but still drop the
+    /// ball in their own square, and it bounces.
+    #[test]
+    fn strip_ball_works_on_a_carrier_who_stands_firm() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_ball_pos(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::StripBall);
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::StandFirm);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.fix_d8_direction(Direction::up()); //bounce to an empty square
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.get_player_unsafe(defender).position, defender_pos);
+        assert_eq!(state.ball, BallState::OnGround(defender_pos + Direction::up()));
     }
 
     #[test]
