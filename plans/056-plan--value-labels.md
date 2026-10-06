@@ -340,7 +340,8 @@ over gen01-06 (14x7 0.42-0.50, 16x9 0.42-0.51).
 |---|---|---|---|---|---|---|---|---|
 | 01 | arm F | 72 min (laptop on) | 45 min, 0 unlabelled | +0.003, +0.002, −0.007 | 0.236 / −0.00 → 0.242 / +0.05 | +0.002/+0.002/+0.005/+0.005 MONOTONE; 0.50 | 0.506 ± 0.018 (H0, 200 pairs) | **0.583 ± 0.029 (H1, 68 pairs)** |
 | 02 | gen01 | 110 min | 47 min | 0, 0, 0 (**restored its init**) | unchanged (= gen01) | +0.001/+0.002/+0.005/+0.009 MONOTONE; 0.47 | 0.508 ± 0.016 (H0, 262 pairs) | **0.551 ± 0.018 (H1, 179 pairs)** |
-| 03 | gen02 (= gen01) | 233 min (laptop gone) | 59 min, train+val, 0 unlabelled; restored step 9000 of 15621 (combined) | +0.002, +0.0014, +0.003 (vs raw outcome; the head now tracks MC values) | 0.242 / +0.046 → **0.236 / +0.035 (paired −2.4%, ~9 SE)** | +0.001/+0.003/+0.007/**+0.013** MONOTONE; 0.49 (gen02 = gen01's weights, on gen03) | | |
+| 03 | gen02 (= gen01) | 233 min (laptop gone) | 59 min, train+val, 0 unlabelled; restored step 9000 of 15621 (combined) | +0.002, +0.0014, +0.003 (vs raw outcome; the head now tracks MC values) | 0.242 / +0.046 → **0.236 / +0.035 (paired −2.4%, ~9 SE)** | +0.001/+0.003/+0.007/**+0.013** MONOTONE; 0.49 (gen02 = gen01's weights, on gen03) | 0.516 ± 0.012 (H0, 373 pairs) | 0.508 ± 0.018 (H0, 154 pairs) |
+| 04 | gen03 | 143 min (laptop back, 6 streams) | | | | | | |
 
 gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value bench's drift
 (+0.05 bias) is expected (its truth is g_gen05's policy, see above); watch the trend.
@@ -364,3 +365,12 @@ gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value 
   - gen03 is the first generation trained under the fix.
 - gen02's drives re-measure gen01's net (same weights) and agree: H1 on 16x9 again (0.551), even
   on 14x7.
+
+**gen03, the first net trained under the fix: mixed in play.**
+- 14x7 0.516 is a touch above gen01; 16x9 0.508 is below gen01's 0.551-0.583 (~2 SE), while
+  its value bench improved 2.4%.
+- SPRT stopping biases each estimate toward its verdict: gen01's 0.583 stopped at H1 after 68
+  pairs, so it reads high, and the two gen01 measurements pooled are ~0.56.
+- One generation does not make a trend. If gen04 repeats it, look at whether the combined
+  restore now favours value over policy; the value term is now the larger and noisier part of
+  the sum.
