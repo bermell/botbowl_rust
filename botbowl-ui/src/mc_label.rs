@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rand::{RngCore, SeedableRng};
@@ -89,48 +89,35 @@ fn sample_rng(base: u64, traj_seed: u64, drive: u32, k: usize) -> ChaCha8Rng {
     ChaCha8Rng::seed_from_u64(base ^ id)
 }
 
-/// Relabel one trajectory in place. `false` if it could not be replayed (left as it was).
-fn label(
-    nn: &Arc<NnEvaluator>,
-    traj: &mut Trajectory,
-    first: Option<&Trajectory>,
+/// One sample's label: the mean, in Home's frame (the frame `outcome_value` is backfilled in), of
+/// `--playouts` policy-only drive playouts from `state`, with dice from [`sample_rng`].
+fn sample_label(
+    home: &mut PolicyBot,
+    away: &mut PolicyBot,
+    state: &GameState,
+    mut rng: ChaCha8Rng,
     args: &McLabelArgs,
-    tag: &str,
-) -> bool {
-    let states = match replay_all(traj, first) {
-        Ok(s) => s,
-        Err(why) => {
-            eprintln!("left unlabelled (seed {:?}): {why}", traj.meta.seed);
-            return false;
-        }
-    };
-    let traj_seed = traj.meta.seed.unwrap_or(0);
-    let drive = drive_of(&traj.meta);
-    let mut home = PolicyBot::new(Arc::clone(nn));
-    let mut away = PolicyBot::new(Arc::clone(nn));
-    for (k, (sample, state)) in traj.samples.iter_mut().zip(&states).enumerate() {
-        let mut rng = sample_rng(args.seed, traj_seed, drive, k);
-        let mut sum = 0.0f64;
-        for _ in 0..args.playouts {
-            // Home's frame, the frame `outcome_value` is backfilled in.
-            let (p, _) = play_out(
-                state,
-                None,
-                TeamType::Home,
-                &mut home,
-                &mut away,
-                None,
-                rng.next_u64(),
-                args.max_steps,
-            );
-            sum += p.outcome as f64;
-        }
-        sample.outcome_value = Some((sum / args.playouts as f64) as f32);
+) -> f32 {
+    let mut sum = 0.0f64;
+    for _ in 0..args.playouts {
+        let (p, _) = play_out(
+            state,
+            None,
+            TeamType::Home,
+            home,
+            away,
+            None,
+            rng.next_u64(),
+            args.max_steps,
+        );
+        sum += p.outcome as f64;
     }
-    traj.meta.extra.insert("value_label".into(), tag.to_string());
-    true
+    (sum / args.playouts as f64) as f32
 }
 
+/// One shard. The work is spread over samples, not trajectories: a trajectory is replayed once
+/// (cheap), then every one of its samples is a separate work item, so one long drive does not leave
+/// the other threads idle at the end of the shard (they did: 16 and 64 threads took the same time).
 fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str) -> io::Result<()> {
     let name = Path::new(input)
         .file_name()
@@ -142,72 +129,80 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
     }
     let partial = done.with_extension("jsonl.partial");
     let started = Instant::now();
-    let lines: Vec<String> = BufReader::new(File::open(input)?)
-        .lines()
-        .collect::<io::Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|l| !l.trim().is_empty())
-        .collect();
-    // Next-drive records replay through their seed's first drive: index the first drives by seed.
-    #[derive(serde::Deserialize)]
-    struct MetaOnly {
-        meta: TrajectoryMeta,
-    }
-    let mut first_drive: HashMap<u64, usize> = HashMap::new();
-    for (i, line) in lines.iter().enumerate() {
-        let m: MetaOnly = serde_json::from_str(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        if let (Some(seed), 1) = (m.meta.seed, drive_of(&m.meta)) {
-            first_drive.insert(seed, i);
+    let invalid = |e: serde_json::Error| io::Error::new(io::ErrorKind::InvalidData, e);
+    let mut trajs: Vec<Trajectory> = Vec::new();
+    for line in BufReader::new(File::open(input)?).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
         }
+        let t: Trajectory = serde_json::from_str(&line).map_err(invalid)?;
+        if t.meta.board_capacity != BoardCapacity::current() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{input}: corpus built at capacity {:?}, this binary is {:?}",
+                    t.meta.board_capacity,
+                    BoardCapacity::current()
+                ),
+            ));
+        }
+        trajs.push(t);
     }
-    let out = Mutex::new(io::BufWriter::new(File::create(&partial)?));
+    // Next-drive records replay through their seed's first drive.
+    let first_drive: HashMap<u64, usize> = trajs
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| drive_of(&t.meta) == 1)
+        .filter_map(|(i, t)| t.meta.seed.map(|s| (s, i)))
+        .collect();
+    let replayed: Vec<Option<Vec<GameState>>> = trajs
+        .iter()
+        .map(|t| {
+            let first = t
+                .meta
+                .seed
+                .filter(|_| drive_of(&t.meta) > 1)
+                .and_then(|s| first_drive.get(&s))
+                .map(|&j| &trajs[j]);
+            replay_all(t, first)
+                .map_err(|why| eprintln!("left unlabelled (seed {:?}): {why}", t.meta.seed))
+                .ok()
+        })
+        .collect();
+    let items: Vec<(usize, usize)> = replayed
+        .iter()
+        .enumerate()
+        .filter_map(|(t, r)| r.as_ref().map(|states| (t, states.len())))
+        .flat_map(|(t, n)| (0..n).map(move |k| (t, k)))
+        .collect();
+    // f32 labels by item, as bits.
+    let labels: Vec<AtomicU32> = (0..items.len()).map(|_| AtomicU32::new(0)).collect();
     let next = AtomicUsize::new(0);
-    let failed = AtomicUsize::new(0);
-    let samples = AtomicUsize::new(0);
-    let worker = || -> io::Result<()> {
+    let worker = || {
+        let mut home = PolicyBot::new(Arc::clone(nn));
+        let mut away = PolicyBot::new(Arc::clone(nn));
         loop {
             let i = next.fetch_add(1, Ordering::Relaxed);
-            let Some(line) = lines.get(i) else { return Ok(()) };
-            let mut traj: Trajectory =
-                serde_json::from_str(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            if traj.meta.board_capacity != BoardCapacity::current() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "{input}: corpus built at capacity {:?}, this binary is {:?}",
-                        traj.meta.board_capacity,
-                        BoardCapacity::current()
-                    ),
-                ));
-            }
-            let first: Option<Trajectory> = match (drive_of(&traj.meta), traj.meta.seed) {
-                (d, Some(seed)) if d > 1 => first_drive
-                    .get(&seed)
-                    .map(|&j| serde_json::from_str(&lines[j]))
-                    .transpose()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-                _ => None,
-            };
-            if label(nn, &mut traj, first.as_ref(), args, tag) {
-                samples.fetch_add(traj.samples.len(), Ordering::Relaxed);
-            } else {
-                failed.fetch_add(1, Ordering::Relaxed);
-            }
-            let text = serde_json::to_string(&traj)?;
-            let mut f = out.lock().expect("output mutex");
-            f.write_all(text.as_bytes())?;
-            f.write_all(b"\n")?;
-            if (i + 1).is_multiple_of(25) {
+            let Some(&(t, k)) = items.get(i) else { return };
+            let traj = &trajs[t];
+            let state = &replayed[t].as_ref().expect("items only cover replayed trajectories")[k];
+            let rng = sample_rng(args.seed, traj.meta.seed.unwrap_or(0), drive_of(&traj.meta), k);
+            labels[i].store(
+                sample_label(&mut home, &mut away, state, rng, args).to_bits(),
+                Ordering::Relaxed,
+            );
+            if (i + 1).is_multiple_of(2000) {
                 eprintln!(
-                    "  {input}: {} / {} trajectories, {:.0}s",
+                    "  {input}: {} / {} samples, {:.0}s",
                     i + 1,
-                    lines.len(),
+                    items.len(),
                     started.elapsed().as_secs_f64()
                 );
             }
         }
     };
-    std::thread::scope(|scope| -> io::Result<()> {
+    std::thread::scope(|scope| {
         let handles: Vec<_> = (0..args.parallel.max(1))
             .map(|i| {
                 std::thread::Builder::new()
@@ -218,19 +213,30 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
             })
             .collect();
         for h in handles {
-            h.join().expect("mc-label thread panicked")?;
+            h.join().expect("mc-label thread panicked");
         }
-        Ok(())
-    })?;
-    out.into_inner().expect("output mutex").flush()?;
+    });
+    for (i, &(t, k)) in items.iter().enumerate() {
+        trajs[t].samples[k].outcome_value = Some(f32::from_bits(labels[i].load(Ordering::Relaxed)));
+    }
+    let mut out = io::BufWriter::new(File::create(&partial)?);
+    for (t, traj) in trajs.iter_mut().enumerate() {
+        if replayed[t].is_some() {
+            traj.meta.extra.insert("value_label".into(), tag.to_string());
+        }
+        out.write_all(serde_json::to_string(traj)?.as_bytes())?;
+        out.write_all(b"\n")?;
+    }
+    out.flush()?;
+    drop(out);
     fs::rename(&partial, &done)?;
     eprintln!(
         "mc-label: {} -> {}: {} trajectories ({} left unlabelled), {} samples x {} playouts in {:.0}s",
         input,
         done.display(),
-        lines.len(),
-        failed.load(Ordering::Relaxed),
-        samples.load(Ordering::Relaxed),
+        trajs.len(),
+        replayed.iter().filter(|r| r.is_none()).count(),
+        items.len(),
         args.playouts,
         started.elapsed().as_secs_f64()
     );
