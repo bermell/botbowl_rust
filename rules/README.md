@@ -38,7 +38,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Jump Up | Agility | Stand up for free while prone; can attempt a Block Action while prone | Yes (`movement_procs.rs::standup_cost`, `block_procs.rs::JumpUp`) | Yes (`jump_up_*`) | Simple |
 | Leap | Agility | Leap over an adjacent square regardless of contents, reduced negative modifier | No | — | Simple |
 | Safe Pair of Hands | Agility | Place the ball in an adjacent square instead of it bouncing when knocked down | No | — | Simple |
-| Sidestep | Agility | Choose your own square when pushed back | No | — | Simple |
+| Sidestep | Agility | Choose your own square when pushed back | Yes (`block_procs.rs::Push::get_push_squares`) | Yes (`sidestep_*`) | Simple |
 | Sprint | Agility | One extra Rush attempt during a Move Action | No | — | Simple |
 | Sure Feet | Agility | Re-roll one Rush (GFI) die per turn | Yes (`movement_procs.rs::GfiProc::reroll_skill`) | No | Simple |
 | Dirty Player | Devious | +1 to Armour or Injury Roll during a Foul Action | No | — | Simple |

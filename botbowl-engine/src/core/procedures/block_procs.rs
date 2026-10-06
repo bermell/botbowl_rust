@@ -18,6 +18,9 @@ enum PushSquares {
     Crowd(Position),
     ChainPush(Vec<Position>),
     FreeSquares(Vec<Position>),
+    /// The pushed player has Sidestep: their own coach picks among these, every free square
+    /// adjacent to them.
+    Sidestep(Vec<Position>),
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Push {
@@ -59,6 +62,18 @@ impl Push {
     }
 
     fn get_push_squares(on: Position, from: Position, game_state: &GameState) -> PushSquares {
+        if game_state
+            .get_player_at(on)
+            .is_some_and(|p| p.has_skill(Skill::SideStep))
+        {
+            let free: Vec<Position> = game_state
+                .get_adj_positions(on)
+                .filter(|&pos| !game_state.is_out(pos) && game_state.get_player_at(pos).is_none())
+                .collect();
+            if !free.is_empty() {
+                return PushSquares::Sidestep(free);
+            }
+        }
         let direction = on - from;
         let opposite_pos = on + direction;
         let mut push_squares = match direction {
@@ -133,6 +148,11 @@ impl Push {
                 ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
             }
             PushSquares::ChainPush(positions) | PushSquares::FreeSquares(positions) => {
+                aa.insert_positional(PosAT::Push, positions);
+                ProcState::NeedAction(aa)
+            }
+            PushSquares::Sidestep(positions) => {
+                let mut aa = AvailableActions::new(game_state.get_player_at(self.on).unwrap().stats.team);
                 aa.insert_positional(PosAT::Push, positions);
                 ProcState::NeedAction(aa)
             }
@@ -607,6 +627,60 @@ mod tests {
         assert!(player.used);
         assert!(!state.info.turnover);
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+    }
+
+    /// Sidestep: a pushed player's own coach picks the square, from every free square adjacent
+    /// to them — not just the three away from the blocker.
+    #[test]
+    fn sidestep_lets_the_pushed_player_choose_any_free_adjacent_square() {
+        let home_pos = Position::new((5, 3));
+        let away_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+        let defender = state.get_player_id_at(away_pos).unwrap();
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::SideStep);
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, away_pos);
+        state.step_simple(SimpleAT::SelectPush);
+
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        let sideways = Position::new((6, 2));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, sideways)));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, home_pos)));
+        state.step_positional(PosAT::Push, sideways);
+        assert_eq!(state.get_player_unsafe(defender).position, sideways);
+    }
+
+    /// Sidestep keeps a player on the pitch while any square next to them is free: a push that
+    /// would go into the crowd becomes the player's own choice of square.
+    #[test]
+    fn sidestep_avoids_the_crowd() {
+        let home_pos = Position::new((6, 2));
+        let away_pos = Position::new((6, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+        assert!(
+            super::Push::is_crowd_push(home_pos, away_pos, &state),
+            "the plain push goes into the crowd"
+        );
+        let defender = state.get_player_id_at(away_pos).unwrap();
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::SideStep);
+        assert!(!super::Push::is_crowd_push(home_pos, away_pos, &state));
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, away_pos);
+        state.step_simple(SimpleAT::SelectPush);
+
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        state.step_positional(PosAT::Push, Position::new((5, 1)));
+        assert_eq!(state.get_player_unsafe(defender).position, Position::new((5, 1)));
     }
 
     #[test]
