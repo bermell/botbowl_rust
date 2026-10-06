@@ -55,6 +55,10 @@ pub struct Push {
     /// Fend: this player, the one blocked, may stop the blocker following up.
     #[serde(default)]
     fend: Option<PlayerID>,
+    /// Grab: the blocker's target can't Sidestep, and outside a Blitz may be pushed into any
+    /// free square next to them. Only the target: cleared when a chain push moves on.
+    #[serde(default)]
+    grab: bool,
 }
 
 impl Push {
@@ -68,6 +72,7 @@ impl Push {
             questions: PushQuestions::default(),
             strip_ball: None,
             fend: None,
+            grab: false,
         })
     }
     pub fn new_pure(from: Position, on: Position) -> Push {
@@ -80,6 +85,7 @@ impl Push {
             questions: PushQuestions::default(),
             strip_ball: None,
             fend: None,
+            grab: false,
         }
     }
 
@@ -91,7 +97,8 @@ impl Push {
     /// a free square. Read-only; used by the MCTS block-outcome model to fold
     /// "push into the crowd" into the defender-removed outcome.
     pub fn is_crowd_push(from: Position, on: Position, game_state: &GameState) -> bool {
-        if Push::sidestep_squares(on, game_state).is_some() {
+        let grab = game_state.get_player_at(from).is_some_and(|p| p.has_skill(Skill::Grab));
+        if !grab && Push::sidestep_squares(on, game_state).is_some() {
             return false;
         }
         matches!(Push::get_push_squares(on, from, game_state), PushSquares::Crowd(_))
@@ -103,11 +110,15 @@ impl Push {
         if !game_state.get_player_at(on)?.has_skill(Skill::SideStep) {
             return None;
         }
-        let free: Vec<Position> = game_state
+        let free = Push::free_squares_next_to(on, game_state);
+        (!free.is_empty()).then_some(free)
+    }
+
+    fn free_squares_next_to(on: Position, game_state: &GameState) -> Vec<Position> {
+        game_state
             .get_adj_positions(on)
             .filter(|&pos| !game_state.is_out(pos) && game_state.get_player_at(pos).is_none())
-            .collect();
-        (!free.is_empty()).then_some(free)
+            .collect()
     }
 
     fn get_push_squares(on: Position, from: Position, game_state: &GameState) -> PushSquares {
@@ -218,7 +229,7 @@ impl Push {
             }
         }
         // Sidestep: the pushed player's coach may pick any free adjacent square instead.
-        let sidestep = Push::sidestep_squares(self.on, game_state);
+        let sidestep = Push::sidestep_squares(self.on, game_state).filter(|_| !self.grab);
         if let Some(squares) = sidestep {
             match self.questions.sidestep {
                 None => return self.ask(PushSkill::SideStep, game_state),
@@ -233,7 +244,14 @@ impl Push {
                 self.do_moves(game_state);
                 ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos, self.fend))
             }
-            PushSquares::ChainPush(positions) | PushSquares::FreeSquares(positions) => {
+            PushSquares::ChainPush(mut positions) | PushSquares::FreeSquares(mut positions) => {
+                if self.grab && !game_state.info.blitz_this_activation {
+                    for square in Push::free_squares_next_to(self.on, game_state) {
+                        if !positions.contains(&square) {
+                            positions.push(square);
+                        }
+                    }
+                }
                 aa.insert_positional(PosAT::Push, positions);
                 ProcState::NeedAction(aa)
             }
@@ -271,6 +289,7 @@ impl Procedure for Push {
                 self.from = self.on;
                 self.on = position_to;
                 self.questions = PushQuestions::default();
+                self.grab = false;
                 self.calculate_next_state(game_state)
             }
             ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
@@ -686,6 +705,7 @@ impl Block {
             if game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) {
                 push.fend = Some(self.defender);
             }
+            push.grab = game_state.get_player_unsafe(attacker_id).has_skill(Skill::Grab);
             procs.push(AnyProc::Push(push));
         }
         ProcState::from(procs)
@@ -1673,6 +1693,96 @@ mod tests {
             state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
             "no second block"
         );
+    }
+
+    /// A home Grab blocker pushes an away defender; `blockers` are away players behind the
+    /// defender. Returns the state at the push-square choice (or the defender's Sidestep
+    /// question), and the defender's square.
+    fn grab_push(blitz: bool, sidestep: bool, blockers: &[(i8, i8)]) -> (crate::core::gamestate::GameState, Position) {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut builder = GameStateBuilder::new();
+        builder.add_home_player(attacker_pos).add_away_player(defender_pos);
+        for &square in blockers {
+            builder.add_away_player(Position::new(square));
+        }
+        let mut state = builder.build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Grab);
+        if sidestep {
+            state.get_mut_player_unsafe(defender).stats.give_skill(Skill::SideStep);
+        }
+        let start = if blitz { PosAT::StartBlitz } else { PosAT::StartBlock };
+        state.step_positional(start, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        (state, defender_pos)
+    }
+
+    /// Grab: the blocker may push the target into any free square next to them.
+    #[test]
+    fn grab_pushes_into_any_free_square_next_to_the_target() {
+        let (mut state, defender_pos) = grab_push(false, false, &[]);
+        let beside = defender_pos + (0, -1);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (1, 0))));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, beside)));
+        state.step_positional(PosAT::Push, beside);
+        assert!(state.get_player_at(beside).is_some());
+    }
+
+    /// Grab may push into a free square instead of a chain push.
+    #[test]
+    fn grab_may_avoid_a_chain_push() {
+        let (state, defender_pos) = grab_push(false, false, &[(7, 2), (7, 3), (7, 4)]);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (1, 0))));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (0, 1))));
+    }
+
+    /// In a Blitz, Grab picks no squares ...
+    #[test]
+    fn grab_picks_no_squares_in_a_blitz() {
+        let (state, defender_pos) = grab_push(true, false, &[]);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (1, 0))));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (0, -1))));
+    }
+
+    /// ... but in a Blitz too the target can't Sidestep.
+    #[test]
+    fn grab_stops_sidestep() {
+        let (state, defender_pos) = grab_push(true, true, &[]);
+        assert_eq!(
+            state.get_available_actions().team,
+            Some(TeamType::Home),
+            "no Sidestep question"
+        );
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (0, -1))));
+    }
+
+    /// ... so a Sidestep target on the sideline goes into the crowd.
+    #[test]
+    fn grab_sends_a_sidestep_target_on_the_sideline_into_the_crowd() {
+        let home_pos = Position::new((6, 2));
+        let away_pos = Position::new((6, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+        let attacker = state.get_player_id_at(home_pos).unwrap();
+        let defender = state.get_player_id_at(away_pos).unwrap();
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::SideStep);
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Grab);
+        assert!(super::Push::is_crowd_push(home_pos, away_pos, &state));
+    }
+
+    /// Grab picks the square of its target only, not of a player a chain push reaches.
+    #[test]
+    fn grab_does_not_pick_the_square_of_a_chain_pushed_player() {
+        let (mut state, defender_pos) = grab_push(false, false, &[(7, 2), (7, 3), (7, 4)]);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, Position::new((8, 3)))));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, Position::new((6, 2)))));
     }
 
     /// A Push on an away ball carrier; returns who holds the ball afterwards.

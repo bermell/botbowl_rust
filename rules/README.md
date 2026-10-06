@@ -93,7 +93,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Brawler | Strength | Re-roll a single Both Down result | No | — | Simple |
 | Break Tackle | Strength | Once per turn, +1 to +3 Agility Test bonus when dodging, based on your Strength | No | — | Simple |
 | Bullseye | Strength | A Superb Throw Team-mate result lands exactly, no scatter | No | — | Simple\* |
-| Grab | Strength | Choose the push-back square; opponent can't use Sidestep | No | — | Simple |
+| Grab | Strength | Choose the push-back square; opponent can't use Sidestep | Yes (`block_procs.rs::Push::grab`; the extra squares are offered with the push squares, never instead of a crowd push) | Yes (`grab_*`) | Simple |
 | Guard | Strength | Provide Offensive/Defensive Assist regardless of how many are marking you | Yes (`gamestate.rs::get_blockdices_from`, `pathing.rs` foul assists) | Yes (`guard_*`) | Simple |
 | Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | No | — | Simple |
 | Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | Yes (`casualty_procs.rs::Armor`/`Injury`, set by `block_procs.rs::Block`) | Yes (`mighty_blow_*`) | Simple |
