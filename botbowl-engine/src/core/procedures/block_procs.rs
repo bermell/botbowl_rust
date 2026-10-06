@@ -48,6 +48,10 @@ pub struct Push {
     follow_up_pos: Position,
     #[serde(default)]
     questions: PushQuestions,
+    /// Strip Ball: this player, if carrying the ball, drops it in the square they are pushed
+    /// into.
+    #[serde(default)]
+    strip_ball: Option<PlayerID>,
 }
 
 impl Push {
@@ -59,6 +63,7 @@ impl Push {
             knockdown_proc: None,
             follow_up_pos: on,
             questions: PushQuestions::default(),
+            strip_ball: None,
         })
     }
     pub fn new_pure(from: Position, on: Position) -> Push {
@@ -69,6 +74,7 @@ impl Push {
             knockdown_proc: None,
             follow_up_pos: on,
             questions: PushQuestions::default(),
+            strip_ball: None,
         }
     }
 
@@ -151,6 +157,14 @@ impl Push {
                 //Means there was only one push which was the already handled crowd push, so we can forget about any knockdown proc
                 self.knockdown_proc = None;
             }
+        } else if let Some(id) = self
+            .strip_ball
+            .filter(|&id| matches!(game_state.ball, BallState::Carried(c) if c == id))
+        {
+            // Strip Ball: the carrier drops the ball where they were pushed to, and it bounces.
+            let position = game_state.get_player_unsafe(id).position;
+            game_state.set_ball(BallState::InAir(position));
+            procs.push(ball_procs::Bounce::new());
         } else if matches!(game_state.ball, BallState::OnGround(ball_pos) if ball_pos == last_push_to) {
             // A player shoved onto a loose ball dislodges it — the ball may
             // never come to rest under a player. Only the *last* square of a
@@ -624,10 +638,18 @@ impl Block {
         }
 
         if push {
-            procs.push(Push::new(
+            let mut push = Push::new_pure(
                 game_state.get_player_unsafe(attacker_id).position,
                 game_state.get_player_unsafe(self.defender).position,
-            ));
+            );
+            // Strip Ball: a carrier pushed back drops the ball (one knocked down drops it anyway,
+            // from the same square).
+            if game_state.get_player_unsafe(attacker_id).has_skill(Skill::StripBall)
+                && !game_state.get_player_unsafe(self.defender).has_skill(Skill::SureHands)
+            {
+                push.strip_ball = Some(self.defender);
+            }
+            procs.push(AnyProc::Push(push));
         }
         ProcState::from(procs)
     }
@@ -1556,6 +1578,49 @@ mod tests {
         let (mut state, _, _, _) = block_stand_firm(BlockDice::Push, true);
         state.step_simple(SimpleAT::UseSkill);
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+    }
+
+    /// A Push on an away ball carrier; returns who holds the ball afterwards.
+    fn push_the_carrier(strip_ball: bool, sure_hands: bool) -> (BallState, PlayerID) {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_ball_pos(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(defender));
+        if strip_ball {
+            state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::StripBall);
+        }
+        if sure_hands {
+            state.get_mut_player_unsafe(defender).stats.give_skill(Skill::SureHands);
+        }
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        if strip_ball && !sure_hands {
+            state.fix_d8_direction(Direction::up()); //bounce to an empty square
+        }
+        state.step_positional(PosAT::FollowUp, attacker_pos);
+        assert_eq!(state.get_player_unsafe(defender).status, PlayerStatus::Up);
+        (state.ball, defender)
+    }
+
+    /// Strip Ball: a carrier pushed back by the Strip Ball player drops the ball, which bounces
+    /// from the square they were pushed into. Sure Hands keeps it.
+    #[test]
+    fn strip_ball_knocks_the_ball_loose_on_a_push() {
+        let (ball, carrier) = push_the_carrier(false, false);
+        assert_eq!(ball, BallState::Carried(carrier));
+        let (ball, _) = push_the_carrier(true, false);
+        assert_eq!(ball, BallState::OnGround(Position::new((7, 2))));
+        let (ball, carrier) = push_the_carrier(true, true);
+        assert_eq!(ball, BallState::Carried(carrier), "Sure Hands");
     }
 
     #[test]
