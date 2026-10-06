@@ -341,7 +341,7 @@ over gen01-06 (14x7 0.42-0.50, 16x9 0.42-0.51).
 | 01 | arm F | 72 min (laptop on) | 45 min, 0 unlabelled | +0.003, +0.002, −0.007 | 0.236 / −0.00 → 0.242 / +0.05 | +0.002/+0.002/+0.005/+0.005 MONOTONE; 0.50 | 0.506 ± 0.018 (H0, 200 pairs) | **0.583 ± 0.029 (H1, 68 pairs)** |
 | 02 | gen01 | 110 min | 47 min | 0, 0, 0 (**restored its init**) | unchanged (= gen01) | +0.001/+0.002/+0.005/+0.009 MONOTONE; 0.47 | 0.508 ± 0.016 (H0, 262 pairs) | **0.551 ± 0.018 (H1, 179 pairs)** |
 | 03 | gen02 (= gen01) | 233 min (laptop gone) | 59 min, train+val, 0 unlabelled; restored step 9000 of 15621 (combined) | +0.002, +0.0014, +0.003 (vs raw outcome; the head now tracks MC values) | 0.242 / +0.046 → **0.236 / +0.035 (paired −2.4%, ~9 SE)** | +0.001/+0.003/+0.007/**+0.013** MONOTONE; 0.49 (gen02 = gen01's weights, on gen03) | 0.516 ± 0.012 (H0, 373 pairs) | 0.508 ± 0.018 (H0, 154 pairs) |
-| 04 | gen03 | 143 min (laptop back, 6 streams) | 59 min, 0 unlabelled; **restored its init (step 0 of 15633)** | 0 (= gen03) | unchanged | | | |
+| 04 | gen03 | 143 min (laptop back, 6 streams) | 59 min, 0 unlabelled; **restored its init (step 0 of 15633)** | 0 (= gen03) | unchanged | +0.000/+0.002/+0.007/**+0.014** MONOTONE; **slope 0.80**, value RMS 0.198 bias +0.003 (gen03 on gen04) | (stopped) | (stopped) |
 
 gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value bench's drift
 (+0.05 bias) is expected (its truth is g_gen05's policy, see above); watch the trend.
@@ -388,6 +388,9 @@ gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value 
   drives vs the anchor, the net check) judges whether that helps. The risk to watch: restart noise
   accumulating if the fine-tunes are mostly noise. The loop stops after gen05's generation and is
   relaunched, so gen05 is the first generation trained without the init candidate.
+- **Stopped 2026-10-06 (the user):** after gen05's generation, to incorporate new work and to
+  make the drive eval faster. gen05's corpus is generated but not labelled or trained; gen04's
+  drives were cut short by the stop.
 - **The loop runs on pre-merge code.** Commits pushed from the web/hub worktree on 2026-10-06
   (3594c9a..d55c1b9) add `Skill::StripBall`. That takes `Skill::COUNT` 39 → 40, which adds a
   spatial input plane (`encode.rs`: `SHARED_BASE = SKILL_BASE + Skill::COUNT`), so every
