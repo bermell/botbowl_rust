@@ -337,6 +337,11 @@ VALUE_BENCH="${VALUE_BENCH:-}"
 # budget ladder) on each generation's generator, on the corpus it just generated, in the background
 # alongside labelling and training (~35-90 min). on|off.
 NET_CHECK="${NET_CHECK:-off}"
+# Drive benchmark cadence (the user, 2026-10-06): the drives vs the reference cost 2-4 h of shared
+# worker time per generation and cannot resolve a one-generation step anyway, so play them every
+# DRIVE_EVAL_EVERY generations (and on the last). Every generation still gets the cheap signals:
+# absorption, value bench, net check. 1 = every generation, as before.
+DRIVE_EVAL_EVERY="${DRIVE_EVAL_EVERY:-1}"
 NET_CHECK_CONFIG="${NET_CHECK_CONFIG:-$REPO/cfgs/gumbel16_f1000.toml}"
 SCRATCH_LR="${SCRATCH_LR:-1e-3}"            # used when there is nothing to warm-start from
 # A .pt that must never be warm-started from, however the WARM_FROM rules
@@ -1288,7 +1293,11 @@ while [ "$G" -le "$MAX_GENS" ]; do
     # Submitted, not waited for: it runs alongside the next generation (see
     # eval_submit). An already-evaluated generation just gets its report.
     check_stop "before $GG eval"
-    if [ ! -e "$GEN_DIR/.evaluated" ]; then
+    if [ ! -e "$GEN_DIR/.evaluated" ] && [ $((G % DRIVE_EVAL_EVERY)) -ne 0 ] && [ "$G" -lt "$MAX_GENS" ]; then
+        echo "SKIPPED" > "$GEN_DIR/verdict"
+        touch "$GEN_DIR/.evaluated"
+        status "$GG benchmark skipped (DRIVE_EVAL_EVERY=$DRIVE_EVAL_EVERY; next at gen$(printf '%02d' $(( (G / DRIVE_EVAL_EVERY + 1) * DRIVE_EVAL_EVERY ))))"
+    elif [ ! -e "$GEN_DIR/.evaluated" ]; then
         eval_submit "$G"
     else
         eval_report "$G" "?"
