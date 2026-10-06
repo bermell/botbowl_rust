@@ -1038,6 +1038,23 @@ impl GameState {
     }
 
     pub fn get_blockdices_from(&self, attacker: PlayerID, attacker_pos: Position, defender: PlayerID) -> NumBlockDices {
+        let strength = self.get_player_unsafe(attacker).stats.str_;
+        self.blockdices(attacker, attacker_pos, defender, strength)
+    }
+
+    /// The dice for a block in which the attacker's unmodified strength is `strength` (Dauntless).
+    pub fn get_blockdices_at_strength(&self, attacker: PlayerID, defender: PlayerID, strength: u8) -> NumBlockDices {
+        let attacker_pos = self.get_player_unsafe(attacker).position;
+        self.blockdices(attacker, attacker_pos, defender, strength)
+    }
+
+    fn blockdices(
+        &self,
+        attacker: PlayerID,
+        attacker_pos: Position,
+        defender: PlayerID,
+        strength: u8,
+    ) -> NumBlockDices {
         let attr = self.get_player_unsafe(attacker);
         let defr = self.get_player_unsafe(defender);
 
@@ -1046,7 +1063,7 @@ impl GameState {
         // debug_assert!(attr.has_tackle_zone());
         debug_assert_eq!(defr.status, PlayerStatus::Up);
 
-        let mut attr_str = attr.stats.str_;
+        let mut attr_str = strength;
         let mut defr_str = defr.stats.str_;
 
         attr_str += self

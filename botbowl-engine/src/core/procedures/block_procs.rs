@@ -766,7 +766,26 @@ impl Procedure for Block {
             game_state.get_active_player_mut().unwrap().add_move(1);
         }
         match input {
-            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices)),
+            ProcInput::Nothing => {
+                // Dauntless against a stronger defender: a D6 plus strength beating theirs
+                // matches it for this block. No roll when no D6 can.
+                let attacker = game_state.get_active_player().unwrap();
+                let gap = game_state.get_player_unsafe(self.defender).stats.str_ as i8 - attacker.stats.str_ as i8;
+                if attacker.has_skill(Skill::Dauntless) && (1..=5).contains(&gap) {
+                    let target = D6Target::try_from(gap as u8 + 1).unwrap();
+                    ProcState::NeedRoll(RequestedRoll::D6PassFail(target))
+                } else {
+                    ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices))
+                }
+            }
+            ProcInput::Roll(RollResult::Pass) => {
+                let attacker = game_state.info.active_player.unwrap();
+                let strength = game_state.get_player_unsafe(self.defender).stats.str_;
+                self.dices = game_state.get_blockdices_at_strength(attacker, self.defender, strength);
+                self.is_uphill = matches!(self.dices, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill);
+                ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices))
+            }
+            ProcInput::Roll(RollResult::Fail) => ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices)),
             ProcInput::Roll(RollResult::BlockDice(rolls)) if self.pending == Some(BlockSkill::Brawler) => {
                 self.pending = None;
                 let slot = self.roll.iter().position(|&d| d == Some(BlockDice::BothDown)).unwrap();
@@ -2176,6 +2195,73 @@ mod tests {
         assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPow)));
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPush)));
+    }
+
+    /// A home Dauntless blocker with strength `att` against an away defender with `def`, plus
+    /// `assists` home players next to the defender. Declares the block with `d6` (if any) and
+    /// `dice` queued; returns the block's dice count.
+    fn dauntless_block(att: u8, def: u8, assists: &[(i8, i8)], d6: Option<u8>, dice: &[BlockDice]) -> NumBlockDices {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut builder = GameStateBuilder::new();
+        builder.add_home_player(attacker_pos).add_away_player(defender_pos);
+        for &square in assists {
+            builder.add_home_player(Position::new(square));
+        }
+        let mut state = builder.build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Dauntless);
+        state.get_mut_player_unsafe(attacker).stats.str_ = att;
+        state.get_mut_player_unsafe(defender).stats.str_ = def;
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        if let Some(d6) = d6 {
+            state.fix_d6(d6);
+        }
+        for &die in dice {
+            state.fix_blockdice(die);
+        }
+        state.step_positional(PosAT::Block, defender_pos);
+        match state.proc_stack_peek() {
+            Some(crate::core::procedures::AnyProc::Block(block)) => block.num_dices(),
+            top => panic!("expected the block, got {top:?}"),
+        }
+    }
+
+    /// Dauntless: D6 + strength beating a stronger defender's strength matches it.
+    #[test]
+    fn dauntless_matches_a_stronger_defender() {
+        assert_eq!(
+            dauntless_block(3, 4, &[], Some(2), &[BlockDice::Push]),
+            NumBlockDices::One
+        );
+    }
+
+    /// Only beating it: a tie is not enough.
+    #[test]
+    fn dauntless_can_fail() {
+        let dice = [BlockDice::Push, BlockDice::Push];
+        assert_eq!(dauntless_block(3, 4, &[], Some(1), &dice), NumBlockDices::TwoUphill);
+    }
+
+    /// Assists count on top of the matched strength.
+    #[test]
+    fn dauntless_strength_takes_assists() {
+        let dice = [BlockDice::Push, BlockDice::Push];
+        assert_eq!(dauntless_block(3, 5, &[(7, 2)], Some(3), &dice), NumBlockDices::Two);
+    }
+
+    /// No roll when even a 6 can't beat the defender's strength.
+    #[test]
+    fn dauntless_does_not_roll_when_it_cannot_win() {
+        let dice = [BlockDice::Push; 3];
+        assert_eq!(dauntless_block(1, 7, &[], None, &dice), NumBlockDices::ThreeUphill);
+    }
+
+    /// No roll against a defender who is not stronger.
+    #[test]
+    fn dauntless_does_not_roll_against_an_equal() {
+        assert_eq!(dauntless_block(3, 3, &[], None, &[BlockDice::Push]), NumBlockDices::One);
     }
 
     /// A Push on an away ball carrier; returns who holds the ball afterwards.
