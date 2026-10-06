@@ -256,6 +256,9 @@ pub struct KnockDown {
     /// `id` was knocked down by a block from a player with Mighty Blow.
     #[serde(default)]
     mighty_blow: bool,
+    /// `second_id` (the blocker) was knocked down by a block against a player with Mighty Blow.
+    #[serde(default)]
+    second_mighty_blow: bool,
 }
 impl KnockDown {
     pub fn new(id: PlayerID) -> AnyProc {
@@ -263,6 +266,7 @@ impl KnockDown {
             id: Some(id),
             second_id: None,
             mighty_blow: false,
+            second_mighty_blow: false,
         })
     }
     pub fn new_pure(id: PlayerID) -> KnockDown {
@@ -270,6 +274,7 @@ impl KnockDown {
             id: Some(id),
             second_id: None,
             mighty_blow: false,
+            second_mighty_blow: false,
         }
     }
     pub fn new_empty() -> AnyProc {
@@ -277,6 +282,7 @@ impl KnockDown {
             id: None,
             second_id: None,
             mighty_blow: false,
+            second_mighty_blow: false,
         })
     }
 }
@@ -314,7 +320,11 @@ impl Procedure for KnockDown {
             let (knocked_down, p_should_bounce_ball) = knock_down_player(game_state, *id);
             should_bounce_ball |= p_should_bounce_ball;
             if knocked_down {
-                let mighty_blow = self.mighty_blow && Some(*id) == self.id;
+                let mighty_blow = if Some(*id) == self.id {
+                    self.mighty_blow
+                } else {
+                    self.second_mighty_blow
+                };
                 armor_procs.push(casualty_procs::Armor::new_block(*id, mighty_blow))
             }
         }
@@ -550,6 +560,7 @@ impl Procedure for Block {
                     id: None,
                     second_id: None,
                     mighty_blow: game_state.get_player_unsafe(attacker_id).has_skill(Skill::MightyBlow),
+                    second_mighty_blow: game_state.get_player_unsafe(self.defender).has_skill(Skill::MightyBlow),
                 };
 
                 match dice_action_type {
@@ -615,6 +626,7 @@ fn both_down(game_state: &mut GameState, defender: PlayerID) -> ProcState {
         id: None,
         second_id: None,
         mighty_blow: attacker.has_skill(Skill::MightyBlow),
+        second_mighty_blow: game_state.get_player_unsafe(defender).has_skill(Skill::MightyBlow),
     };
     if !attacker.has_skill(Skill::Block) {
         knockdown_proc.second_id = Some(attacker_id);
@@ -1001,6 +1013,42 @@ mod tests {
         state.fix_d6(3);
         state.step_simple(SimpleAT::SelectBothDown);
         assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+    }
+
+    /// The defender's Mighty Blow counts against a blocker the block knocks down: an 8 breaks
+    /// the attacker's AV 8, on a Skull and on a Both Down alike.
+    #[test]
+    fn a_defenders_mighty_blow_hits_a_fallen_blocker() {
+        for die in [BlockDice::Skull, BlockDice::BothDown] {
+            let attacker_pos = Position::new((5, 3));
+            let defender_pos = Position::new((6, 3));
+            let mut state = GameStateBuilder::new()
+                .add_home_player(attacker_pos)
+                .add_away_player(defender_pos)
+                .build();
+            let attacker = state.get_player_id_at(attacker_pos).unwrap();
+            let defender = state.get_player_id_at(defender_pos).unwrap();
+            state.get_mut_player_unsafe(attacker).stats.av = 8;
+            state
+                .get_mut_player_unsafe(defender)
+                .stats
+                .give_skill(Skill::MightyBlow);
+            state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Block);
+
+            state.step_positional(PosAT::StartBlock, attacker_pos);
+            state.fix_blockdice(die);
+            state.step_positional(PosAT::Block, defender_pos);
+            state.fix_d6(5); //armour: 8 breaks only with Mighty Blow
+            state.fix_d6(3);
+            state.fix_d6(1); //injury: stunned
+            state.fix_d6(2);
+            state.step_simple(SimpleAT::from(die));
+            assert_eq!(
+                state.get_player_unsafe(attacker).status,
+                PlayerStatus::Stunned,
+                "{die:?}"
+            );
+        }
     }
 
     /// A home Frenzy blocker next to an away defender, with plenty of room behind the defender.
