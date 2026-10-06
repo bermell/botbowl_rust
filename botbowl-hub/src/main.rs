@@ -65,6 +65,116 @@ struct ServeArgs {
     /// loop's latest status lines and, while the box trains a net, the trainer's progress.
     #[arg(long)]
     run_dir: Option<PathBuf>,
+    #[command(flatten)]
+    play: PlayArgs,
+    /// Directories hashed at startup so a worker's cached nets can be named on connect (repeat
+    /// the flag for more). Default `<repo>/runs` and `<repo>/models`.
+    #[arg(long = "model-index-dir")]
+    model_index_dirs: Vec<PathBuf>,
+}
+
+/// The web play app at `/play/` (botbowl-web-server's router, nested). Every path defaults from
+/// this crate's source location, not the working directory.
+#[derive(Args, Debug)]
+struct PlayArgs {
+    /// Do not serve `/play/`.
+    #[arg(long, default_value_t = false)]
+    no_play: bool,
+    /// `trunk build --release` output of `botbowl-web/client`. Without one, `/play/` is off.
+    /// This and the other `--play-*-dir`s override `~/.config/botbowl/web.toml`.
+    #[arg(long)]
+    play_dist_dir: Option<PathBuf>,
+    /// The sprite directory (`assets_dir` in web.toml). Default
+    /// `<repo>/../botbowl/botbowl/web/static/img` when it exists.
+    #[arg(long)]
+    play_assets_dir: Option<PathBuf>,
+    /// Where the lobby finds `.onnx` nets first (then web.toml's `models_dirs` and the worker
+    /// cache). Default `<repo>/models`.
+    #[arg(long)]
+    play_models_dir: Option<PathBuf>,
+    /// Saved teams and uploaded pictures. Default `~/.config/botbowl/teams`.
+    #[arg(long)]
+    play_teams_dir: Option<PathBuf>,
+    /// The most search threads one bot may use in a browser game, whatever the lobby asks —
+    /// the hub listens on the network, and its box is also training.
+    #[arg(long, default_value_t = 4)]
+    play_max_workers: usize,
+}
+
+/// The repo root, from this crate's source path.
+fn repo_path(relative: &str) -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(relative);
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// The play app's router, or `None` (with the reason on stderr) when it is off. Paths: the
+/// `--play-*` flags, then `~/.config/botbowl/web.toml`, then the built-in defaults.
+fn play_router(a: &PlayArgs) -> Option<axum::Router> {
+    use botbowl_web_server::{compiled_capacity, config, teams, AppState, PlayOptions};
+    if a.no_play {
+        return None;
+    }
+    let paths = match config::resolve(config::Flags {
+        dist_dir: a.play_dist_dir.clone(),
+        models_dir: a.play_models_dir.clone(),
+        assets_dir: a.play_assets_dir.clone(),
+        teams_dir: a.play_teams_dir.clone(),
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[hub] /play off: {e}");
+            return None;
+        }
+    };
+    if !paths.dist_dir.join("index.html").is_file() {
+        eprintln!(
+            "[hub] /play off: no client build at {} (cd botbowl-web/client && trunk build --release)",
+            paths.dist_dir.display()
+        );
+        return None;
+    }
+    if paths.assets_dir.is_none() {
+        eprintln!(
+            "[hub] /play: no sprite directory (assets_dir in {}, or --play-assets-dir); the pitch draws without pictures",
+            paths.config.display()
+        );
+    }
+    let capacity = compiled_capacity();
+    let app = std::sync::Arc::new(AppState {
+        capacity,
+        models_dir: paths.models_dir.clone(),
+        recordings_dir: repo_path("data/web-games"),
+        model_cache: Default::default(),
+        server: format!(
+            "botbowl-hub {} (capacity {}x{}/{})",
+            &botbowl_data::git_commit()[..12],
+            capacity.width,
+            capacity.height,
+            capacity.team_size
+        ),
+        opts: PlayOptions {
+            max_workers: Some(a.play_max_workers.max(1)),
+            teams: teams::TeamStore {
+                dir: paths.teams_dir.clone(),
+            },
+            assets_dir: paths.assets_dir.clone(),
+            allow_recording_paths: false,
+            extra_model_dirs: paths.extra_model_dirs.clone(),
+            worker_cache: paths.worker_cache.clone(),
+            ..PlayOptions::default()
+        },
+    });
+    eprintln!(
+        "[hub] /play: config {}, capacity {}x{}/{}, {} model(s), teams in {}, at most {} search thread(s) per bot",
+        paths.config.display(),
+        capacity.width,
+        capacity.height,
+        capacity.team_size,
+        app.list_models().len(),
+        paths.teams_dir.as_deref().map(|d| d.display().to_string()).unwrap_or_else(|| "-".into()),
+        a.play_max_workers.max(1),
+    );
+    Some(botbowl_web_server::router(app, paths.assets_dir.as_deref(), Some(&paths.dist_dir)))
 }
 
 #[derive(Args, Debug, Clone)]
@@ -866,14 +976,18 @@ fn main() {
                 {
                     eprintln!("[hub] {}", list.describe());
                 }
-                let (_hub, addr, task) = Hub::start(HubConfig {
-                    bind: a.bind,
-                    token,
-                    allow_commit_mismatch: a.allow_commit_mismatch,
-                    allowed_commits: a.allowed_commits.clone(),
-                    worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
-                    run_dir: a.run_dir.clone(),
-                })
+                let play = play_router(&a.play);
+                let (hub, addr, task) = Hub::start_with(
+                    HubConfig {
+                        bind: a.bind,
+                        token,
+                        allow_commit_mismatch: a.allow_commit_mismatch,
+                        allowed_commits: a.allowed_commits.clone(),
+                        worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
+                        run_dir: a.run_dir.clone(),
+                    },
+                    play,
+                )
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("[hub] cannot bind {}: {e}", a.bind);
@@ -885,6 +999,20 @@ fn main() {
                     if botbowl_data::git_dirty() { "-dirty" } else { "" },
                     addr.port()
                 );
+                let index_dirs = if a.model_index_dirs.is_empty() {
+                    vec![repo_path("runs"), repo_path("models")]
+                } else {
+                    a.model_index_dirs.clone()
+                };
+                let indexing = hub.index_models(index_dirs.clone());
+                std::thread::spawn(move || {
+                    if let Ok(n) = indexing.join() {
+                        eprintln!(
+                            "[hub] {n} net(s) indexed under {}; workers' caches are named from them",
+                            index_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
+                        );
+                    }
+                });
                 tokio::select! {
                     _ = task => {}
                     _ = tokio::signal::ctrl_c() => eprintln!("[hub] shutting down"),

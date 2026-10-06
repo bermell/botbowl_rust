@@ -7,6 +7,7 @@ use crate::action::{Action, TeamType};
 use crate::decision::{DecisionRecord, NetReadout};
 use crate::dice::{DiceEvent, RollResult};
 use crate::search::{NodeExpansion, SearchEdge};
+use crate::team::{SkillInfo, TeamDef, DEFAULT_TEAM};
 use crate::view::ViewState;
 
 /// A board size in the terms the lobby and the model filenames use: the
@@ -103,7 +104,8 @@ pub struct MctsSpec {
     pub budget: Budget,
     /// The net, by the path (or basename) the lobby's `ModelInfo` offered.
     pub model: String,
-    /// `None` = `available_parallelism()`.
+    /// Search threads. `None` = `available_parallelism()`, capped by the server's
+    /// `--play-max-workers` when it has one.
     pub workers: Option<usize>,
     pub puct: PuctSpec,
     pub fpu_reduction: f32,
@@ -120,7 +122,9 @@ impl Default for MctsSpec {
         MctsSpec {
             budget: Budget::Iterations(2000),
             model: String::new(),
-            workers: None,
+            // One thread unless asked: a browser tab left open on bot-vs-bot must not take the
+            // whole machine.
+            workers: Some(1),
             puct: PuctSpec::Raw { c: 10.0 },
             fpu_reduction: 0.0,
             horizon_turns: 1,
@@ -219,6 +223,21 @@ pub enum StartFrom {
     CoinToss,
     /// A `botbowl-ui`-compatible `Recording` file, resumed at one micro-step.
     Recording { path: String, step: usize },
+    /// One drive from a random-start position — the same draw the training corpus makes for this
+    /// seed (`botbowl_play::drives::position_state` with the default bias). It ends when either
+    /// side scores, the half changes or the game ends ([`ServerMsg::DriveOver`]). `None` = a
+    /// fresh seed each time.
+    RandomDrive { seed: Option<u64> },
+}
+
+impl StartFrom {
+    pub fn is_drive(&self) -> bool {
+        matches!(self, StartFrom::RandomDrive { .. })
+    }
+}
+
+fn default_team() -> String {
+    DEFAULT_TEAM.to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -231,19 +250,25 @@ pub struct GameSpec {
     /// Seeds the server's own dice RNG. `None` = from entropy.
     pub seed: Option<u64>,
     pub start: StartFrom,
+    /// [`TeamDef::name`]s. A random-start drive keeps its generated players and only takes the
+    /// team's pictures, so the position stays the training distribution.
+    #[serde(default = "default_team")]
+    pub home_team: String,
+    #[serde(default = "default_team")]
+    pub away_team: String,
 }
 
 impl GameSpec {
-    /// The 14x7 default the plan targets first: the browser plays Home against
-    /// an MCTS bot on the newest net that fits the board, or against the random
-    /// bot when the server has no such net.
+    /// The 14x7 default: two MCTS bots on the newest net that fits the board, one search thread
+    /// each, or the random bot when the server has no such net. Bot-vs-bot rather than you-vs-bot
+    /// so that opening the page shows a game, and one thread so that it costs little.
     pub fn default_for(capacity: BoardSpec, models: &[ModelInfo]) -> Self {
         let board = if BoardSpec::new(14, 7, 4).validate(capacity).is_ok() {
             BoardSpec::new(14, 7, 4)
         } else {
             capacity
         };
-        let away = match models.iter().find(|m| m.fits(board)) {
+        let bot = match models.iter().find(|m| m.fits(board)) {
             Some(m) => BotSpec::Mcts(MctsSpec {
                 model: m.path.clone(),
                 ..Default::default()
@@ -252,10 +277,12 @@ impl GameSpec {
         };
         GameSpec {
             board,
-            home: Seat::Human,
-            away: Seat::Bot(away),
+            home: Seat::Bot(bot.clone()),
+            away: Seat::Bot(bot),
             seed: None,
             start: StartFrom::CoinToss,
+            home_team: default_team(),
+            away_team: default_team(),
         }
     }
 
@@ -307,6 +334,19 @@ pub struct LobbyInfo {
     pub defaults: GameSpec,
     /// Server version line for the footer.
     pub server: String,
+    /// Built-in teams first, then the saved ones.
+    pub teams: Vec<TeamDef>,
+    /// Every skill the engine has, for the team editor.
+    pub skills: Vec<SkillInfo>,
+    /// Pictures the editor can offer: sprite stems under `img/iconssmall/`, then uploaded
+    /// `custom/<file>`s.
+    pub pictures: Vec<String>,
+    /// The server can save teams (it has a config directory).
+    pub can_save_teams: bool,
+    /// The pacing a new connection starts with.
+    pub step_mode: StepMode,
+    /// [`StartFrom::Recording`] is accepted (off when the server listens on the network).
+    pub can_resume: bool,
 }
 
 /// How fast the session is allowed to run through the steps the human does
@@ -376,6 +416,16 @@ pub enum ClientMsg {
     ShowDecision {
         index: u64,
     },
+    /// Create or overwrite a saved team (by name). Answered with [`ServerMsg::Teams`].
+    SaveTeam(TeamDef),
+    DeleteTeam {
+        name: String,
+    },
+    /// An image for a position, as a `data:image/...;base64,` URL. Answered with
+    /// [`ServerMsg::PictureSaved`].
+    UploadPicture {
+        data_url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,6 +471,21 @@ pub enum ServerMsg {
         winner: Option<TeamType>,
         home_score: u8,
         away_score: u8,
+    },
+    /// A random-start drive ended: `scored` is the side that scored, `None` when the half (or
+    /// the game) ran out first.
+    DriveOver {
+        attacker: TeamType,
+        scored: Option<TeamType>,
+        home_score: u8,
+        away_score: u8,
+    },
+    /// The team list after a save or delete.
+    Teams(Vec<TeamDef>),
+    /// The picture path an upload was stored under, plus the refreshed picture list.
+    PictureSaved {
+        picture: String,
+        pictures: Vec<String>,
     },
     Error(String),
 }

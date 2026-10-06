@@ -11,6 +11,7 @@ mod inspector;
 mod lobby;
 mod pitch;
 mod state;
+mod teams;
 mod ws;
 
 fn main() {

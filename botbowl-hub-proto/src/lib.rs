@@ -40,7 +40,38 @@ pub use botbowl_play::generate::GenerateConfig;
 // v12 (plan 053): `MctsConfig.gumbel_q_floor`.
 // v13 (plan 055): the player-node backup is hardcoded to the mean; `MctsConfig.backup` and
 // `SearchConfig.backup` are gone. A v12 worker would silently play minimax, so it must not connect.
-pub const PROTOCOL_VERSION: u32 = 13;
+// v14: `ToWorker::ModelName` — a cached model's name, so the cache is readable (and the web
+// play app on a worker box can offer its nets by name).
+pub const PROTOCOL_VERSION: u32 = 14;
+
+/// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
+/// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
+pub fn default_model_cache_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".cache/botbowl/models")
+}
+
+/// What a cached model was called on the hub, stored as JSON beside it (`<id hex>.json`). The
+/// file name stays the content hash — that is what the cache verifies — so the name lives here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelMeta {
+    /// The file name on the hub, e.g. `bbnet_mix16x9_gen10.onnx`: carries the `_WxH_` board tag.
+    pub name: String,
+    /// The path as the job named it on the hub, e.g. `runs/loopmix16x9g054/models/....onnx`.
+    pub source: String,
+    /// The hub's commit when the name was first sent.
+    pub hub_commit: String,
+    /// Unix seconds when this cache first heard the name.
+    pub first_seen_unix: u64,
+}
+
+impl ModelMeta {
+    pub fn path_for(onnx: &std::path::Path) -> std::path::PathBuf {
+        onnx.with_extension("json")
+    }
+}
 
 /// The one shared secret per machine, `$XDG_CONFIG_HOME/botbowl/hub.token` (else
 /// `~/.config/botbowl/hub.token`): the default for the hub, its clients and the worker alike.
@@ -313,6 +344,16 @@ pub enum ToWorker {
     Task(Task),
     /// Finish in-flight games, then expect the socket to close.
     Drain,
+    /// The name of a model a task is about to use, sent once per connection whether or not the
+    /// worker already holds it, so caches filled before names existed get named too.
+    ModelName {
+        id: ModelId,
+        /// File name on the hub.
+        name: String,
+        /// The path as the job named it.
+        source: String,
+        hub_commit: String,
+    },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {

@@ -47,6 +47,8 @@ pub struct WorkerConn {
     pub tx: mpsc::UnboundedSender<ToWorker>,
     /// Models this worker is known to hold (reported cached, or sent by us).
     pub known_models: HashSet<ModelId>,
+    /// Models whose `ModelName` this connection has been sent.
+    pub named_models: HashSet<ModelId>,
     pub tasks: HashSet<TaskId>,
     pub games_done: u64,
     pub last_seen: Instant,
@@ -271,10 +273,54 @@ fn open_out(path: &Path, truncate: bool) -> io::Result<io::BufWriter<std::fs::Fi
     Ok(io::BufWriter::new(f))
 }
 
+/// Tell one worker what model `m` is called here.
+fn send_name(w: &mut WorkerConn, m: ModelId, path: &Path) {
+    let _ = w.tx.send(ToWorker::ModelName {
+        id: m,
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        source: path.to_string_lossy().into_owned(),
+        hub_commit: botbowl_data::git_commit().to_string(),
+    });
+    w.named_models.insert(m);
+}
+
+/// Every `.onnx` under `dirs` (a few levels deep), by content hash. The first path wins.
+pub fn index_models(dirs: &[PathBuf]) -> HashMap<ModelId, PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut HashMap<ModelId, PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let path = e.path();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_dir() {
+                if depth > 0 {
+                    walk(&path, depth - 1, out);
+                }
+            } else if path.extension().is_some_and(|x| x == "onnx") {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    out.entry(ModelId::of(&bytes)).or_insert(path);
+                }
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for d in dirs {
+        walk(d, 6, &mut out);
+    }
+    out
+}
+
 #[derive(Default)]
 pub struct Inner {
     pub workers: HashMap<WorkerId, WorkerConn>,
     pub models: HashMap<ModelId, Arc<Vec<u8>>>,
+    /// The path each model was first loaded from, for `ToWorker::ModelName`.
+    pub model_paths: HashMap<ModelId, PathBuf>,
+    /// Every net found on this box at startup (`Hub::index_models`), so the models a worker
+    /// already holds can be named on connect, not only the ones a job happens to use.
+    pub model_index: HashMap<ModelId, PathBuf>,
     jobs: BTreeMap<JobId, Job>,
     in_flight: HashMap<TaskId, InFlight>,
     next_worker: WorkerId,
@@ -293,7 +339,32 @@ impl Inner {
             std::fs::read(path).map_err(|e| io::Error::new(e.kind(), format!("model {}: {e}", path.display())))?;
         let id = ModelId::of(&bytes);
         self.models.entry(id).or_insert_with(|| Arc::new(bytes));
+        self.model_paths.entry(id).or_insert_with(|| path.to_path_buf());
         Ok(id)
+    }
+
+    /// Where model `m` came from on this box: a job's path, else the startup index.
+    fn model_path(&self, m: &ModelId) -> Option<&PathBuf> {
+        self.model_paths.get(m).or_else(|| self.model_index.get(m))
+    }
+
+    /// Send `ModelName` for every model a connected worker holds and has not been told the name
+    /// of, wherever this box knows it from. Called when a worker connects and when the startup
+    /// index finishes, so a cache filled before names existed gets named on its next connect.
+    pub fn name_cached_models(&mut self) {
+        let mut sends = Vec::new();
+        for (wid, w) in &self.workers {
+            for m in w.known_models.difference(&w.named_models) {
+                if let Some(path) = self.model_path(m) {
+                    sends.push((*wid, *m, path.clone()));
+                }
+            }
+        }
+        for (wid, m, path) in sends {
+            if let Some(w) = self.workers.get_mut(&wid) {
+                send_name(w, m, &path);
+            }
+        }
     }
 
     fn resolve_bot(&mut self, req: &BotReq) -> io::Result<BotSpec> {
@@ -630,7 +701,16 @@ impl Inner {
                         worker: wid,
                     },
                 );
+                let paths: Vec<(ModelId, PathBuf)> = needed
+                    .iter()
+                    .filter_map(|m| self.model_path(m).map(|p| (*m, p.clone())))
+                    .collect();
                 let w = self.workers.get_mut(&wid).expect("worker exists");
+                for (m, path) in &paths {
+                    if !w.named_models.contains(m) {
+                        send_name(w, *m, path);
+                    }
+                }
                 for m in needed {
                     if !w.known_models.contains(&m) {
                         if let Some(bytes) = self.models.get(&m) {

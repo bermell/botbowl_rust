@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use botbowl_web_proto::dice::{BlockDice, RollResult};
-use botbowl_web_proto::msg::{ClientMsg, StepMode};
+use botbowl_web_proto::msg::{ClientMsg, StartFrom, StepMode};
 use botbowl_web_proto::search::SearchEdge;
 use botbowl_web_proto::view::{BallView, SquareKind, SquareView, ViewState};
 use botbowl_web_proto::{Action, Position, TeamType};
@@ -48,11 +48,18 @@ fn Scoreboard() -> impl IntoView {
             let s = v.scoreboard;
             let turn = |t: TeamType| if t == TeamType::Home { s.home_turn } else { s.away_turn };
             let seat = |t: TeamType| app.spec.get().map(|g| g.seat(t).label()).unwrap_or_default();
+            let team = |t: TeamType| {
+                app.spec
+                    .get()
+                    .map(|g| if t == TeamType::Home { g.home_team } else { g.away_team })
+                    .unwrap_or_default()
+            };
+            let drive = app.spec.get().is_some_and(|g| g.start.is_drive());
             let (home_human, away_human) = (v.is_human(TeamType::Home), v.is_human(TeamType::Away));
             view! {
                 <div class="scoreboard">
                     <div class="team home" class:you=home_human>
-                        <span class="name">"Home"</span>
+                        <span class="name">{format!("Home · {}", team(TeamType::Home))}</span>
                         <span class="seat">{seat(TeamType::Home)}</span>
                         <span class="score">{s.home_score}</span>
                         <span class="meta">
@@ -73,10 +80,12 @@ fn Scoreboard() -> impl IntoView {
                                 _ => format!("{:?}'s turn", s.team_turn),
                             }}
                         </span>
-                        <span class="turnmark">{format!("turn {} of the drive", turn(s.team_turn))}</span>
+                        <span class="turnmark">
+                            {format!("turn {} of the half{}", turn(s.team_turn), if drive { " · random drive" } else { "" })}
+                        </span>
                     </div>
                     <div class="team away" class:you=away_human>
-                        <span class="name">"Away"</span>
+                        <span class="name">{format!("Away · {}", team(TeamType::Away))}</span>
                         <span class="seat">{seat(TeamType::Away)}</span>
                         <span class="score">{s.away_score}</span>
                         <span class="meta">
@@ -281,7 +290,7 @@ fn square(
                             class:active=p.active
                             class:down=p.status != botbowl_web_proto::view::PlayerStatus::Up
                             class:used=p.used
-                            src=format!("/img/{}", p.sprite)
+                            src=format!("img/{}", p.sprite)
                             alt=p.role.label()
                         />
                     }
@@ -290,7 +299,7 @@ fn square(
                 .player
                 .as_ref()
                 .and_then(|p| p.status.overlay())
-                .map(|o| view! { <img class="status" src=format!("/img/{o}") alt="" /> })}
+                .map(|o| view! { <img class="status" src=format!("img/{o}") alt="" /> })}
             {sq
                 .ball
                 .map(|b| {
@@ -299,12 +308,12 @@ fn square(
                         BallView::InAir => "ball/tball.gif",
                         BallView::OnGround => "ball/sball.gif",
                     };
-                    view! { <img class="ball" src=format!("/img/{src}") alt="ball" /> }
+                    view! { <img class="ball" src=format!("img/{src}") alt="ball" /> }
                 })}
             {sq
                 .block_dice
                 .filter(|_| actionable)
-                .map(|d| view! { <img class="blockdice" src=format!("/img/{}", d.badge()) alt="" /> })}
+                .map(|d| view! { <img class="blockdice" src=format!("img/{}", d.badge()) alt="" /> })}
             {(overlay == Overlay::Risk && actionable && sq.move_prob.is_some_and(|p| p < 1.0))
                 .then(|| {
                     view! {
@@ -378,7 +387,7 @@ fn ActionMenu() -> impl IntoView {
                                     ws::send(&ClientMsg::Act(Action::Positional(at, pos)));
                                 }>
                                     {at.icon()
-                                        .map(|icon| view! { <img src=format!("/img/{icon}") alt="" /> })}
+                                        .map(|icon| view! { <img src=format!("img/{icon}") alt="" /> })}
                                     {at.label()}
                                 </button>
                             }
@@ -532,7 +541,7 @@ fn Dugout(side: usize) -> impl IntoView {
                                             .map(|p| {
                                                 view! {
                                                     <img
-                                                        src=format!("/img/{}", p.sprite)
+                                                        src=format!("img/{}", p.sprite)
                                                         title=p.role.label()
                                                         alt=p.role.label()
                                                     />
@@ -573,7 +582,7 @@ fn Panel() -> impl IntoView {
                                             .map(|f| {
                                                 view! {
                                                     <img
-                                                        src=format!("/img/{}", f.img)
+                                                        src=format!("img/{}", f.img)
                                                         title=f.label.clone()
                                                         alt=f.label.clone()
                                                     />
@@ -635,7 +644,7 @@ fn SimpleActions() -> impl IntoView {
                                                     .img
                                                     .clone()
                                                     .map(|img| {
-                                                        view! { <img src=format!("/img/{img}") alt="" /> }
+                                                        view! { <img src=format!("img/{img}") alt="" /> }
                                                     })}
                                                 {a.label.clone()}
                                             </button>
@@ -679,7 +688,38 @@ fn SimpleActions() -> impl IntoView {
 #[component]
 fn GameOver() -> impl IntoView {
     let app = expect_context::<App>();
-    move || {
+    // A drive that ended: who scored, and a button for the next one — the same spec, so a
+    // drive with no pinned position seed draws a fresh position, and a pinned one replays it.
+    let drive = move || {
+        app.drive_over.get().map(|(attacker, scored, home, away)| {
+            let next = move |_| {
+                let Some(spec) = app.spec.get_untracked() else { return };
+                app.reset_game();
+                app.spec.set(Some(spec.clone()));
+                ws::send(&ClientMsg::NewGame(spec));
+            };
+            let replay = matches!(
+                app.spec.get_untracked().map(|s| s.start),
+                Some(StartFrom::RandomDrive { seed: Some(_) })
+            );
+            view! {
+                <div class="gameover">
+                    <span class="result">
+                        {match scored {
+                            Some(t) if t == attacker => format!("{t:?} scored"),
+                            Some(t) => format!("{t:?} scored against the drive"),
+                            None => format!("{attacker:?}'s drive ended without a score"),
+                        }}
+                    </span>
+                    <span class="score">{format!("{home} — {away}")}</span>
+                    <button class="next-drive" on:click=next>
+                        {if replay { "Replay this drive" } else { "Next drive" }}
+                    </button>
+                </div>
+            }
+        })
+    };
+    let game = move || {
         app.game_over.get().map(|(winner, home, away)| {
             view! {
                 <div class="gameover">
@@ -693,6 +733,10 @@ fn GameOver() -> impl IntoView {
                 </div>
             }
         })
+    };
+    view! {
+        {drive}
+        {game}
     }
 }
 
@@ -812,7 +856,7 @@ fn Debug() -> impl IntoView {
                                                 pin(Some(RollResult::BlockDice { faces: vec![face] }))
                                             }
                                         >
-                                            <img src=format!("/img/{}", face.img()) alt=face.label() />
+                                            <img src=format!("img/{}", face.img()) alt=face.label() />
                                         </button>
                                     }
                                 })

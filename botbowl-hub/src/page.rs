@@ -157,8 +157,33 @@ pub fn render_html(input: &PageInput, now: SystemTime) -> String {
          <meta http-equiv=\"refresh\" content=\"30\"><title>botbowl hub</title>\
          <style>body{{margin:0;padding:12px;background:#fff;color:#111}}\
          pre{{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;margin:0}}\
+         a{{color:inherit}}\
          @media (prefers-color-scheme:dark){{body{{background:#111;color:#ddd}}}}</style>\
-         </head><body><pre>{text}</pre></body></html>"
+         </head><body><pre><a href=\"/\">hub</a> · status\n\n{text}</pre></body></html>"
+    )
+}
+
+/// `GET /`: what this port serves, in the status page's style.
+pub fn render_index(has_play: bool) -> String {
+    let play = if has_play {
+        "<li><a href=\"/play/\">/play</a> — play the bots in a browser, or watch two of them; \
+         ordinary games, random-start drives, and a team editor</li>"
+    } else {
+        "<li>/play — not served (<code>serve --no-play</code>, or no client build)</li>"
+    };
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>botbowl hub</title>\
+         <style>body{{margin:0;padding:16px;background:#fff;color:#111;\
+         font:14px/1.6 ui-monospace,Menlo,Consolas,monospace}}a{{color:inherit}}\
+         ul{{padding-left:1.2em}}code{{opacity:.7}}\
+         @media (prefers-color-scheme:dark){{body{{background:#111;color:#ddd}}}}</style>\
+         </head><body><h3 style=\"margin:0 0 8px\">botbowl hub</h3><ul>\
+         <li><a href=\"/status\">/status</a> — jobs, workers and the training loop</li>\
+         {play}\
+         <li>/ws — where workers connect (<code>botbowl-worker --hub ws://&lt;host&gt;/ws</code>)</li>\
+         </ul></body></html>"
     )
 }
 

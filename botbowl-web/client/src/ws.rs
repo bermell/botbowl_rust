@@ -19,7 +19,8 @@ thread_local! {
     static SOCKET: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
 }
 
-/// `ws://<this host>/ws` — the client is always served by its own server.
+/// `ws://<this host><this page's directory>ws` — the client is always served by its own
+/// server, at `/` standalone and at `/play/` on the hub, so the socket sits next to the page.
 fn endpoint() -> String {
     let location = web_sys::window().expect("a window").location();
     let protocol = if location.protocol().as_deref() == Ok("https:") {
@@ -28,7 +29,10 @@ fn endpoint() -> String {
         "ws"
     };
     let host = location.host().unwrap_or_else(|_| "127.0.0.1:8080".into());
-    format!("{protocol}://{host}/ws")
+    let path = location.pathname().unwrap_or_else(|_| "/".into());
+    let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
+    let dir = if dir.is_empty() { "/" } else { dir };
+    format!("{protocol}://{host}{dir}ws")
 }
 
 /// Send one message. Silently drops when the socket is not open — every
@@ -88,8 +92,28 @@ fn handle(app: App, msg: ServerMsg) {
     match msg {
         ServerMsg::Lobby(lobby) => {
             app.spec.set(Some(lobby.defaults.clone()));
+            app.teams.set(lobby.teams.clone());
+            app.pictures.set(lobby.pictures.clone());
+            app.step_mode.set(lobby.step_mode);
+            if let Some(ms) = lobby.step_mode.millis() {
+                app.step_ms.set(ms);
+            }
             app.lobby.set(Some(*lobby));
         }
+        ServerMsg::Teams(teams) => {
+            app.teams.set(teams);
+            app.notice.set(Some("saved".into()));
+        }
+        ServerMsg::PictureSaved { picture, pictures } => {
+            app.pictures.set(pictures);
+            app.uploaded.set(Some(picture));
+        }
+        ServerMsg::DriveOver {
+            attacker,
+            scored,
+            home_score,
+            away_score,
+        } => app.drive_over.set(Some((attacker, scored, home_score, away_score))),
         ServerMsg::View(view) => {
             // A stale view can arrive after an undo or a race; the sequence
             // number is monotonic per session, so ignore anything older.

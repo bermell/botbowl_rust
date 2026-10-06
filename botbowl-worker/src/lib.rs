@@ -31,7 +31,7 @@ use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_hub_proto::{
-    decode, encode, BotSpec, BuildInfo, ModelId, RejectReason, Task, ToHub, ToWorker, PROTOCOL_VERSION,
+    decode, encode, BotSpec, BuildInfo, ModelId, ModelMeta, RejectReason, Task, ToHub, ToWorker, PROTOCOL_VERSION,
 };
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
@@ -164,6 +164,28 @@ impl ModelStore {
         let tmp = self.path(&id).with_extension("onnx.part");
         std::fs::write(&tmp, onnx)?;
         std::fs::rename(&tmp, self.path(&id))
+    }
+
+    /// Record what the hub calls a model, as `<id>.json` beside it. Keeps the first-seen time
+    /// across renames; writes nothing when the name is unchanged.
+    pub fn name(&self, id: &ModelId, name: &str, source: &str, hub_commit: &str) -> io::Result<()> {
+        let path = ModelMeta::path_for(&self.path(id));
+        let old: Option<ModelMeta> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if old.as_ref().is_some_and(|m| m.name == name && m.source == source) {
+            return Ok(());
+        }
+        let meta = ModelMeta {
+            name: name.to_string(),
+            source: source.to_string(),
+            hub_commit: hub_commit.to_string(),
+            first_seen_unix: old.map(|m| m.first_seen_unix).unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs())
+            }),
+        };
+        let json = serde_json::to_vec_pretty(&meta).map_err(io::Error::other)?;
+        std::fs::write(path, json)
     }
 
     pub fn has(&self, id: &ModelId) -> bool {
@@ -632,6 +654,11 @@ pub async fn run_once(
             frame = stream.next() => {
                 match frame {
                     Some(Ok(Message::Binary(b))) => match decode::<ToWorker>(&b) {
+                        Ok(ToWorker::ModelName { id, name, source, hub_commit }) => {
+                            if let Err(e) = store.name(&id, &name, &source, &hub_commit) {
+                                eprintln!("[worker] could not record the name of model {id}: {e}");
+                            }
+                        }
                         Ok(ToWorker::Model { id, onnx }) => {
                             if let Err(e) = store.put(id, &onnx) {
                                 eprintln!("[worker] rejecting model {id}: {e}");

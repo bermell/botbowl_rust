@@ -468,3 +468,69 @@ td.bar .bar-text { position: relative; font-size: 12px; color: var(--ink); font-
 .save .label { width: 100%; }
 .save input { flex: 1; min-width: 120px; }
 .save p { width: 100%; margin: 0; }
+
+/* ----------------------------------------------------- modes, teams, drives */
+.hidden { display: none !important; }
+button.link {
+  background: none; border: none; padding: 0 0 0 12px; color: var(--accent);
+  font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 500;
+}
+button.link:hover { text-decoration: underline; }
+.danger, button.link.danger { color: var(--bad); }
+button.danger { border-color: var(--bad); }
+.team-pick { margin-bottom: 10px; }
+.team-pick select { min-width: 160px; }
+.gameover .next-drive { margin-left: auto; border-color: var(--good); color: var(--good); }
+
+.team-choice { flex-direction: row; align-items: center; gap: 8px; display: flex; }
+.team-choice img { width: 28px; height: 28px; image-rendering: pixelated; }
+.teams code { color: var(--ink); }
+
+table.positions { border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+table.positions th {
+  text-align: left; font-size: 11px; color: var(--ink-dim); font-weight: 600;
+  padding: 0 6px 6px 0; text-transform: uppercase; letter-spacing: .04em;
+}
+table.positions td { padding: 4px 6px 4px 0; vertical-align: middle; border-top: 1px solid var(--line); }
+table.positions input.stat { width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
+table.positions input.pos-name { width: 130px; }
+td.skills { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.skill-chip {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 8px;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 12px; font-size: 12px;
+}
+.skill-chip button { background: none; border: none; padding: 0 4px; color: var(--ink-dim); }
+.skill-chip button:hover { color: var(--bad); }
+select.add-skill { font-size: 12px; padding: 3px 6px; }
+
+button.picture { padding: 2px; width: 40px; height: 40px; display: grid; place-items: center; }
+button.picture img { max-width: 34px; max-height: 34px; image-rendering: pixelated; }
+button.picture:hover { border-color: var(--accent); }
+
+.team-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.team-actions .start { margin-top: 0; }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50;
+  display: grid; place-items: center; padding: 16px;
+}
+.modal {
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px;
+  width: min(760px, 100%); max-height: 80vh; display: flex; flex-direction: column;
+}
+.modal-head { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+.modal-head input[type=text] { flex: 1; }
+.modal-head .upload {
+  display: inline-flex; align-items: center; padding: 6px 10px; cursor: pointer;
+  border: 1px solid var(--accent); border-radius: 6px; color: var(--accent);
+}
+.modal-head .upload input { display: none; }
+.picture-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px;
+  padding: 12px; overflow-y: auto;
+}
+.picture-grid button.picture { width: 44px; height: 44px; }
+
+/* Player sprites: an uploaded picture can be any size, so fit it to the square. */
+.sq img.player, .dugout img { object-fit: contain; }
+.lobby h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }

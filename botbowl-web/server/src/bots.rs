@@ -18,6 +18,7 @@
 //!    so it can read the net out on positions the search never scored — a
 //!    human's decision, or a root child before the search moved its value.
 
+use botbowl_hub_proto::{ModelId, ModelMeta};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -205,6 +206,73 @@ pub fn list_models(dir: &Path) -> Vec<ModelInfo> {
     collect_models(dir, dir, 3, &mut models);
     models.sort_by(|a, b| b.0.cmp(&a.0));
     models.into_iter().map(|(_, m)| m).collect()
+}
+
+/// Every net this server offers: each of `dirs` in order (newest first within a directory), then
+/// the worker cache's — minus any whose bytes a directory already holds.
+pub fn list_all_models(dirs: &[PathBuf], worker_cache: Option<&Path>) -> Vec<ModelInfo> {
+    let mut models: Vec<ModelInfo> = dirs.iter().flat_map(|d| list_models(d)).collect();
+    if let Some(cache) = worker_cache {
+        let cached = list_cached_models(cache);
+        if !cached.is_empty() {
+            let local = local_ids(&models, &cached);
+            models.extend(cached.into_iter().filter(|(id, _)| !local.contains(id)).map(|(_, m)| m));
+        }
+    }
+    models
+}
+
+/// The content hashes of the local models that could be one of `cached` (same size), so a net
+/// that is both in `models/` and in the cache is offered once. Hashing only on a size match keeps
+/// a lobby load from reading every net on disk.
+fn local_ids(local: &[ModelInfo], cached: &[(ModelId, ModelInfo)]) -> std::collections::HashSet<ModelId> {
+    let size = |p: &str| std::fs::metadata(p).map(|m| m.len()).ok();
+    let sizes: std::collections::HashSet<u64> = cached.iter().filter_map(|(_, m)| size(&m.path)).collect();
+    local
+        .iter()
+        .filter(|m| size(&m.path).is_some_and(|s| sizes.contains(&s)))
+        .filter_map(|m| std::fs::read(&m.path).ok().map(|b| ModelId::of(&b)))
+        .collect()
+}
+
+/// A worker's model cache (`<hex>.onnx` + the hub's `<hex>.json` name): named nets first, newest
+/// first within each group. A model
+/// the hub has not named yet is listed by its hash and offered on every board, like any untagged
+/// net; the probe still refuses one that does not load.
+pub fn list_cached_models(dir: &Path) -> Vec<(ModelId, ModelInfo)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(std::time::SystemTime, ModelId, ModelInfo)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let id = ModelId::from_hex(path.file_name()?.to_str()?.strip_suffix(".onnx")?)?;
+            let meta: Option<ModelMeta> = std::fs::read(ModelMeta::path_for(&path))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok());
+            let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            let info = match meta {
+                Some(meta) => ModelInfo {
+                    path: path.to_string_lossy().into_owned(),
+                    board_tag: board_tag_of(&meta.name),
+                    name: format!(
+                        "cache: {}",
+                        meta.source.trim_start_matches("./").trim_start_matches("runs/")
+                    ),
+                },
+                None => ModelInfo {
+                    path: path.to_string_lossy().into_owned(),
+                    board_tag: None,
+                    name: format!("cache: {}… (unnamed)", &id.to_hex()[..12]),
+                },
+            };
+            Some((modified, id, info))
+        })
+        .collect();
+    // Named first (an unnamed hash is the last thing anyone wants to pick), newest first within.
+    out.sort_by_key(|(modified, _, m)| (m.name.ends_with("(unnamed)"), std::cmp::Reverse(*modified)));
+    out.into_iter().map(|(_, id, m)| (id, m)).collect()
 }
 
 fn collect_models(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(std::time::SystemTime, ModelInfo)>) {
@@ -403,6 +471,60 @@ fn resolve_model<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The worker cache is offered by the hub's names, with the name's board tag; an unnamed
+    /// entry by its hash; and a net already in a models directory only once.
+    #[test]
+    fn the_worker_cache_is_listed_by_the_hubs_names() {
+        let root = std::env::temp_dir().join(format!("botbowl-web-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (local, cache) = (root.join("models"), root.join("cache"));
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let put = |bytes: &[u8], meta: Option<(&str, &str)>| {
+            let id = ModelId::of(bytes);
+            let onnx = cache.join(format!("{}.onnx", id.to_hex()));
+            std::fs::write(&onnx, bytes).unwrap();
+            if let Some((name, source)) = meta {
+                let meta = ModelMeta {
+                    name: name.into(),
+                    source: source.into(),
+                    hub_commit: "c".into(),
+                    first_seen_unix: 0,
+                };
+                std::fs::write(ModelMeta::path_for(&onnx), serde_json::to_vec(&meta).unwrap()).unwrap();
+            }
+            id
+        };
+        put(
+            b"net-a",
+            Some(("bbnet_14x7_gen23.onnx", "runs/loop14/models/bbnet_14x7_gen23.onnx")),
+        );
+        let unnamed = put(b"net-b", None);
+        put(
+            b"net-c",
+            Some(("bbnet_16x9_gen01.onnx", "runs/x/bbnet_16x9_gen01.onnx")),
+        );
+        // net-c is also a local file, under another name.
+        std::fs::write(local.join("mine_16x9.onnx"), b"net-c").unwrap();
+
+        let all = list_all_models(std::slice::from_ref(&local), Some(&cache));
+        let names: Vec<&str> = all.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(all.len(), 3, "{names:?}");
+        assert_eq!(all[0].name, "mine_16x9.onnx", "local directories come first");
+        let a = all
+            .iter()
+            .find(|m| m.name == "cache: loop14/models/bbnet_14x7_gen23.onnx")
+            .unwrap();
+        assert_eq!(a.board_tag.as_deref(), Some("14x7"));
+        let b = all.iter().find(|m| m.name.contains(&unnamed.to_hex()[..12])).unwrap();
+        assert_eq!(b.board_tag, None);
+        assert!(
+            !names.iter().any(|n| n.contains("gen01")),
+            "a local net is not offered twice: {names:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn board_tags_come_from_the_filename_convention() {

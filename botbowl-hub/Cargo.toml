@@ -11,6 +11,8 @@ botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
 botbowl-mcts = { version = "0.1.0", path = "../botbowl-mcts/" }
 botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
 botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
+# The web play app, served under /play/.
+botbowl-web-server = { version = "0.1.0", path = "../botbowl-web/server/" }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
 futures-util = "0.3"
