@@ -35,7 +35,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Dodge | Agility | Re-roll one failed dodge Agility Test per turn; also affects the Stumble result | Yes (`movement_procs.rs`, `block_procs.rs`) | Yes (`dodge_reroll`) | Simple |
 | Defensive | Agility | Marked opponents can't use Guard or Put the Boot In | No | — | Simple |
 | Hit and Run | Agility | After a Block/Stab, move one free square ignoring Tackle Zones | No | — | Simple |
-| Jump Up | Agility | Stand up for free while prone; can attempt a Block Action while prone | No | — | Simple |
+| Jump Up | Agility | Stand up for free while prone; can attempt a Block Action while prone | Yes (`movement_procs.rs::standup_cost`, `block_procs.rs::JumpUp`) | Yes (`jump_up_*`) | Simple |
 | Leap | Agility | Leap over an adjacent square regardless of contents, reduced negative modifier | No | — | Simple |
 | Safe Pair of Hands | Agility | Place the ball in an adjacent square instead of it bouncing when knocked down | No | — | Simple |
 | Sidestep | Agility | Choose your own square when pushed back | No | — | Simple |

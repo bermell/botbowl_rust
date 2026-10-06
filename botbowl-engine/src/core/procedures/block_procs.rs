@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::dices::{BlockDice, RequestedRoll, RollResult};
+use crate::core::dices::{BlockDice, D6Target, RequestedRoll, RollResult, RollTarget};
 use crate::core::gamestate::GameState;
 use crate::core::model::{
     other_team, Action, AvailableActions, Direction, PlayerStatus, Position, ProcState, Procedure,
@@ -8,6 +8,7 @@ use crate::core::model::{
 use crate::core::model::{BallState, PlayerID, ProcInput};
 use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
+use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
 use super::AnyProc;
@@ -274,11 +275,16 @@ impl Procedure for KnockDown {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct BlockAction {}
+pub struct BlockAction {
+    /// The player jumped up to make this block (Jump Up), so they must block: no
+    /// `EndPlayerTurn`.
+    #[serde(default)]
+    must_block: bool,
+}
 
 impl BlockAction {
     pub fn new() -> AnyProc {
-        AnyProc::BlockAction(BlockAction {})
+        AnyProc::BlockAction(BlockAction { must_block: false })
     }
     fn fill_available_actions(&mut self, game_state: &mut GameState) {
         let player = game_state.get_active_player().unwrap();
@@ -310,7 +316,43 @@ impl BlockAction {
         *game_state.available_actions = AvailableActions::default();
         game_state.available_actions.team = Some(team);
         game_state.available_actions.has_paths = true;
-        game_state.available_actions.insert_simple(SimpleAT::EndPlayerTurn);
+        if !self.must_block {
+            game_state.available_actions.insert_simple(SimpleAT::EndPlayerTurn);
+        }
+    }
+}
+
+/// Jump Up: a prone player declaring a Block first makes an Agility test at +1. On a pass they
+/// stand up (for free) and must block; on a fail they stay prone and their activation ends —
+/// not a turnover.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct JumpUp {
+    id: PlayerID,
+    target: D6Target,
+}
+impl JumpUp {
+    pub fn new(game_state: &GameState, id: PlayerID) -> AnyProc {
+        let target = *game_state.get_player_unsafe(id).ag_target().add_modifer(1);
+        AnyProc::JumpUp(SimpleProcContainer::new(JumpUp { id, target }))
+    }
+}
+impl SimpleProc for JumpUp {
+    fn d6_target(&self) -> D6Target {
+        self.target
+    }
+    fn reroll_skill(&self) -> Option<Skill> {
+        None
+    }
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
+        game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Up;
+        vec![AnyProc::BlockAction(BlockAction { must_block: true })]
+    }
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
+        game_state.get_mut_player_unsafe(self.id).used = true;
+        Vec::new()
+    }
+    fn player_id(&self) -> PlayerID {
+        self.id
     }
 }
 impl Procedure for BlockAction {
@@ -501,6 +543,71 @@ mod tests {
         model::{DugoutPlace, PlayerStats, Position, TeamType},
         table::PosAT,
     };
+
+    /// A prone away player next to a standing home player, with no team re-rolls in play. Home
+    /// ends its turn so Away's actions are computed with the player already down.
+    fn prone_blocker(jump_up: bool) -> (crate::core::gamestate::GameState, Position, Position) {
+        let home_pos = Position::new((5, 3));
+        let away_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+        state.get_mut_team(TeamType::Away).rerolls = 0;
+        let id = state.get_player_id_at(away_pos).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+        if jump_up {
+            state.get_mut_player_unsafe(id).stats.give_skill(Skill::JumpUp);
+        }
+        state.step_simple(SimpleAT::EndTurn);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        (state, away_pos, home_pos)
+    }
+
+    #[test]
+    fn a_prone_player_without_jump_up_cannot_block() {
+        let (state, blocker, _) = prone_blocker(false);
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::StartBlock, blocker)));
+    }
+
+    /// Jump Up: a prone player may declare a Block, standing up on an Agility test at +1 (AG 3
+    /// needs a 3+ instead of a 4+). Once up they must block — the action cannot be abandoned.
+    #[test]
+    fn jump_up_blocks_from_prone_on_an_agility_test() {
+        let (mut state, blocker, target) = prone_blocker(true);
+        let id = state.get_player_id_at(blocker).unwrap();
+        assert_eq!(state.get_player_unsafe(id).stats.ag, 3);
+
+        state.fix_d6(3);
+        state.step_positional(PosAT::StartBlock, blocker);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Block, target)));
+        assert!(
+            !state.is_legal_action(&Action::Simple(SimpleAT::EndPlayerTurn)),
+            "a player who jumped up must block"
+        );
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Up);
+
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, target);
+        state.step_simple(SimpleAT::SelectPush);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Up);
+    }
+
+    /// A failed Jump Up leaves the player prone and ends their activation — not a turnover.
+    #[test]
+    fn a_failed_jump_up_ends_the_activation_without_a_turnover() {
+        let (mut state, blocker, _) = prone_blocker(true);
+        let id = state.get_player_id_at(blocker).unwrap();
+
+        state.fix_d6(2);
+        state.step_positional(PosAT::StartBlock, blocker);
+
+        let player = state.get_player_unsafe(id);
+        assert_eq!(player.status, PlayerStatus::Down);
+        assert!(player.used);
+        assert!(!state.info.turnover);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+    }
 
     #[test]
     fn crowd_chain_push() {

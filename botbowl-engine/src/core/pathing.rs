@@ -323,12 +323,12 @@ impl Node {
         self.events.push_back(PathingEvent::Touchdown(id));
         // Touchdown does not change action_type — pickup/move still drives expansion.
     }
-    fn apply_standup(&mut self) {
+    fn apply_standup(&mut self, cost: u8) {
         self.events.push_back(PathingEvent::StandUp);
-        // Real rules: standing up costs 3 squares, but a player with MA < 3
-        // just spends their whole movement allowance rather than going
-        // negative (reachable once `BoardDims::ma_cap` allows MA < 3).
-        self.moves_left = self.moves_left.saturating_sub(3);
+        // Real rules: standing up costs 3 squares (nothing with Jump Up), but a
+        // player with MA < 3 just spends their whole movement allowance rather
+        // than going negative (reachable once `BoardDims::ma_cap` allows MA < 3).
+        self.moves_left = self.moves_left.saturating_sub(cost);
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -800,7 +800,7 @@ impl<'a> PathFinder<'a> {
         if standing_up {
             assert!(player.moves_left() == player.stats.ma);
             debug_assert!(matches!(player.status, PlayerStatus::Down));
-            root_node.apply_standup();
+            root_node.apply_standup(crate::core::procedures::movement_procs::standup_cost(player));
         }
 
         let root_node = Arc::new(root_node);

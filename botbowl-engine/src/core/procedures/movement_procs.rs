@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::model::ProcInput;
-use crate::core::model::{Action, AvailableActions, PlayerID, PlayerStatus, ProcState, Procedure};
+use crate::core::model::{Action, AvailableActions, FieldedPlayer, PlayerID, PlayerStatus, ProcState, Procedure};
 use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
 };
@@ -41,6 +41,14 @@ impl SimpleProc for GfiProc {
         self.id
     }
 }
+/// Squares of movement standing up costs: 3, or nothing with Jump Up.
+pub fn standup_cost(player: &FieldedPlayer) -> u8 {
+    if player.has_skill(Skill::JumpUp) {
+        0
+    } else {
+        3
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct StandUp {
     id: PlayerID,
@@ -53,8 +61,9 @@ impl StandUp {
 impl Procedure for StandUp {
     fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         debug_assert_eq!(game_state.get_player_unsafe(self.id).status, PlayerStatus::Down); // can only standup if down, not if stunned
-        game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Up;
-        game_state.get_mut_player_unsafe(self.id).add_move(3);
+        let player = game_state.get_mut_player_unsafe(self.id);
+        player.status = PlayerStatus::Up;
+        player.add_move(standup_cost(player));
 
         ProcState::Done
     }
@@ -1015,6 +1024,23 @@ mod tests {
 
         state.step_simple(SimpleAT::EndPlayerTurn);
         assert!(state.get_player_unsafe(id).used);
+    }
+
+    #[test]
+    fn jump_up_stands_up_without_spending_movement() {
+        let start_pos = Position::new((2, 1));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+        state.get_mut_player_unsafe(id).stats.give_skill(Skill::JumpUp);
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, start_pos);
+
+        let player = state.get_player_unsafe(id);
+        assert_eq!(player.status, PlayerStatus::Up);
+        assert_eq!(player.moves_left(), player.stats.ma, "standing up was free");
     }
 
     #[test]

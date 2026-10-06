@@ -181,7 +181,12 @@ impl Turn {
         if !positions.is_empty() {
             let block_positions: Vec<Position> = positions
                 .iter()
-                .filter(|&&pos| game_state.get_player_at(pos).unwrap().status == PlayerStatus::Up)
+                .filter(|&&pos| {
+                    // Jump Up lets a prone player declare a Block (it rolls to stand first).
+                    let player = game_state.get_player_at(pos).unwrap();
+                    player.status == PlayerStatus::Up
+                        || (player.status == PlayerStatus::Down && player.has_skill(Skill::JumpUp))
+                })
                 .filter(|&&pos| {
                     game_state
                         .get_adj_players(pos)
@@ -247,6 +252,10 @@ impl Procedure for Turn {
                     info.blitz_this_activation = true;
                 }
                 PosAT::StartBlock => {
+                    let id = info.active_player.unwrap();
+                    if game_state.get_player_unsafe(id).status == PlayerStatus::Down {
+                        return ProcState::NotDoneNew(block_procs::JumpUp::new(game_state, id));
+                    }
                     return ProcState::NotDoneNew(block_procs::BlockAction::new());
                 }
                 _ => unreachable!(),
