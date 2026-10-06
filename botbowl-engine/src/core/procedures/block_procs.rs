@@ -1661,6 +1661,60 @@ mod tests {
         assert_eq!(state.ball, BallState::OnGround(defender_pos + Direction::up()));
     }
 
+    /// ... and when a player further down a chain push stands firm: nobody moves, but the
+    /// carrier still loses the ball.
+    #[test]
+    fn strip_ball_works_when_a_chain_push_is_stopped_by_stand_firm() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_away_players(&[(7, 2), (7, 3), (7, 4)])
+            .add_ball_pos(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        let firm = state.get_player_id_at(Position::new((7, 3))).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::StripBall);
+        state.get_mut_player_unsafe(firm).stats.give_skill(Skill::StandFirm);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, Position::new((7, 3)));
+        state.fix_d8_direction(Direction::up()); //bounce to an empty square
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.get_player_unsafe(defender).position, defender_pos);
+        assert_eq!(state.ball, BallState::OnGround(defender_pos + Direction::up()));
+    }
+
+    /// A Stumble the defender's Dodge turns into a push is a push: the carrier loses the ball.
+    #[test]
+    fn strip_ball_works_on_a_dodged_stumble() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_ball_pos(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::StripBall);
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Dodge);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::PowPush);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPowPush);
+        let pushed_to = defender_pos + (1, 0);
+        state.step_positional(PosAT::Push, pushed_to);
+        state.fix_d8_direction(Direction::up()); //bounce to an empty square
+        state.step_positional(PosAT::FollowUp, attacker_pos);
+        assert_eq!(state.get_player_unsafe(defender).status, PlayerStatus::Up);
+        assert_eq!(state.ball, BallState::OnGround(pushed_to + Direction::up()));
+    }
+
     #[test]
     fn crowd_chain_push() {
         let mut field = "".to_string();
