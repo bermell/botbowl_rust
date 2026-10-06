@@ -643,6 +643,29 @@ mod tests {
         assert_eq!(pick_with(true), Some(Action::Simple(SimpleAT::SelectPowPush)));
     }
 
+    /// Asked about an optional skill (Wrestle here), the bot uses it.
+    #[test]
+    fn uses_an_offered_skill() {
+        use crate::core::dices::BlockDice;
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Wrestle);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectBothDown);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+        assert_eq!(
+            ScriptedBot::new().get_action(&state),
+            Action::Simple(SimpleAT::UseSkill)
+        );
+    }
+
     /// At a clean turn start with a 2DB matchup available, the ladder issues a
     /// START_BLOCK rather than ending the turn.
     #[test]
