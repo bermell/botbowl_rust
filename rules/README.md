@@ -66,7 +66,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Taunt | General | Force an opponent to Follow-up when they push you back | No | — | Simple |
 | Wrestle | General | Both Down becomes both players placed prone, regardless of other skills | Yes (`block_procs.rs::Wrestle`; a `UseSkill`/`DontUseSkill` decision, never a turnover) | Yes (`wrestle_*`) | Simple |
 | Big Hand | Mutation | Ignore all negative modifiers when picking up the ball | No | — | Simple |
-| Claws | Mutation | Natural 8+ on an Armour Roll you inflict always breaks armour | No | — | Simple |
+| Claws | Mutation | Natural 8+ on an Armour Roll you inflict always breaks armour | Yes (`casualty_procs.rs::Blow`, set by `block_procs.rs::Block`; the defender's too, on a fallen blocker) | Yes (`claws_*`) | Simple |
 | Disturbing Presence* | Mutation | -1 to opposition Pass/Throw/Catch/Intercept tests within 3 squares | No | — | Simple |
 | Extra Arms | Mutation | +1 Agility Test to Catch/Pick Up/Intercept | No | — | Simple |
 | Foul Appearance* | Mutation | Chance to cancel an opponent's Block/Special Action targeting you | No | — | Simple |
@@ -96,7 +96,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Grab | Strength | Choose the push-back square; opponent can't use Sidestep | Yes (`block_procs.rs::Push::grab`; the extra squares are offered with the push squares, never instead of a crowd push; no opposition player Sidesteps) | Yes (`grab_*`) | Simple |
 | Guard | Strength | Provide Offensive/Defensive Assist regardless of how many are marking you | Yes (`gamestate.rs::get_blockdices_from`, `pathing.rs` foul assists) | Yes (`guard_*`) | Simple |
 | Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | Yes (`block_procs.rs::juggernaut_blitz`; Both Down → Push is a `UseSkill`/`DontUseSkill` decision; applies to every opposition player a chain push reaches) | Yes (`juggernaut_*`) | Simple |
-| Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | Yes (`casualty_procs.rs::Armor`/`Injury`, set by `block_procs.rs::Block`) | Yes (`mighty_blow_*`) | Simple |
+| Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | Yes (`casualty_procs.rs::Blow`/`Injury`, set by `block_procs.rs::Block`) | Yes (`mighty_blow_*`) | Simple |
 | Multiple Block | Strength | Block two adjacent opponents at once, at -2 Strength | No | — | Bigger (Block Action gains a second targeted square) |
 | Stand Firm | Strength | Choose not to be pushed back during a Block | Yes (`block_procs.rs::Push`; a `UseSkill`/`DontUseSkill` decision, chain pushes too) | Yes (`stand_firm_*`) | Simple |
 | Strong Arm | Strength | +1 Passing Ability Test on a Throw Team-mate Action | No | — | Simple\* |

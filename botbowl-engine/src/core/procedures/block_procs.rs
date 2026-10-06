@@ -8,6 +8,7 @@ use crate::core::model::{
 use crate::core::model::{BallState, FieldedPlayer, PlayerID, ProcInput, TeamType};
 use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
+use crate::core::procedures::casualty_procs::Blow;
 use crate::core::procedures::movement_procs;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
@@ -364,36 +365,36 @@ impl Procedure for FollowUp {
 pub struct KnockDown {
     id: Option<PlayerID>,
     second_id: Option<PlayerID>,
-    /// `id` was knocked down by a block from a player with Mighty Blow.
+    /// The blocker's blow, for `id`'s armour.
     #[serde(default)]
-    mighty_blow: bool,
-    /// `second_id` (the blocker) was knocked down by a block against a player with Mighty Blow.
+    blow: Blow,
+    /// The defender's blow, for `second_id` (the blocker) knocked down by the block.
     #[serde(default)]
-    second_mighty_blow: bool,
+    second_blow: Blow,
 }
 impl KnockDown {
     pub fn new(id: PlayerID) -> AnyProc {
         AnyProc::KnockDown(KnockDown {
             id: Some(id),
             second_id: None,
-            mighty_blow: false,
-            second_mighty_blow: false,
+            blow: Blow::default(),
+            second_blow: Blow::default(),
         })
     }
     pub fn new_pure(id: PlayerID) -> KnockDown {
         KnockDown {
             id: Some(id),
             second_id: None,
-            mighty_blow: false,
-            second_mighty_blow: false,
+            blow: Blow::default(),
+            second_blow: Blow::default(),
         }
     }
     pub fn new_empty() -> AnyProc {
         AnyProc::KnockDown(KnockDown {
             id: None,
             second_id: None,
-            mighty_blow: false,
-            second_mighty_blow: false,
+            blow: Blow::default(),
+            second_blow: Blow::default(),
         })
     }
 }
@@ -431,12 +432,12 @@ impl Procedure for KnockDown {
             let (knocked_down, p_should_bounce_ball) = knock_down_player(game_state, *id);
             should_bounce_ball |= p_should_bounce_ball;
             if knocked_down {
-                let mighty_blow = if Some(*id) == self.id {
-                    self.mighty_blow
+                let blow = if Some(*id) == self.id {
+                    self.blow
                 } else {
-                    self.second_mighty_blow
+                    self.second_blow
                 };
-                armor_procs.push(casualty_procs::Armor::new_block(*id, mighty_blow))
+                armor_procs.push(casualty_procs::Armor::new_block(*id, blow))
             }
         }
         if should_bounce_ball {
@@ -691,8 +692,8 @@ impl Block {
         let mut knockdown_proc: KnockDown = KnockDown {
             id: None,
             second_id: None,
-            mighty_blow: game_state.get_player_unsafe(attacker_id).has_skill(Skill::MightyBlow),
-            second_mighty_blow: game_state.get_player_unsafe(self.defender).has_skill(Skill::MightyBlow),
+            blow: Blow::by(game_state.get_player_unsafe(attacker_id)),
+            second_blow: Blow::by(game_state.get_player_unsafe(self.defender)),
         };
 
         match dice_action_type {
@@ -846,8 +847,8 @@ fn both_down(game_state: &mut GameState, defender: PlayerID) -> ProcState {
     let mut knockdown_proc = KnockDown {
         id: None,
         second_id: None,
-        mighty_blow: attacker.has_skill(Skill::MightyBlow),
-        second_mighty_blow: game_state.get_player_unsafe(defender).has_skill(Skill::MightyBlow),
+        blow: Blow::by(attacker),
+        second_blow: Blow::by(game_state.get_player_unsafe(defender)),
     };
     if !attacker.has_skill(Skill::Block) {
         knockdown_proc.second_id = Some(attacker_id);
@@ -1222,6 +1223,12 @@ mod tests {
     /// Pow on an AV 8 defender (armour breaks on 9+), with the given armour and injury dice.
     /// Returns where the defender ended up: on the pitch with a status, or in the dugout.
     fn pow_on_av8(mighty_blow: bool, armour: (u8, u8), injury: Option<(u8, u8)>) -> Option<PlayerStatus> {
+        let skills: &[Skill] = if mighty_blow { &[Skill::MightyBlow] } else { &[] };
+        pow_on(8, skills, armour, injury)
+    }
+
+    /// Pow by a blocker with `skills` on a defender with `av`; see `pow_on_av8`.
+    fn pow_on(av: u8, skills: &[Skill], armour: (u8, u8), injury: Option<(u8, u8)>) -> Option<PlayerStatus> {
         let attacker_pos = Position::new((5, 3));
         let defender_pos = Position::new((6, 3));
         let mut state = GameStateBuilder::new()
@@ -1230,12 +1237,9 @@ mod tests {
             .build();
         let attacker = state.get_player_id_at(attacker_pos).unwrap();
         let defender = state.get_player_id_at(defender_pos).unwrap();
-        state.get_mut_player_unsafe(defender).stats.av = 8;
-        if mighty_blow {
-            state
-                .get_mut_player_unsafe(attacker)
-                .stats
-                .give_skill(Skill::MightyBlow);
+        state.get_mut_player_unsafe(defender).stats.av = av;
+        for &skill in skills {
+            state.get_mut_player_unsafe(attacker).stats.give_skill(skill);
         }
         state.step_positional(PosAT::StartBlock, attacker_pos);
         state.fix_blockdice(BlockDice::Pow);
@@ -1265,6 +1269,53 @@ mod tests {
     fn mighty_blow_adds_to_injury_when_armour_breaks_anyway() {
         assert_eq!(pow_on_av8(false, (5, 5), Some((4, 3))), Some(PlayerStatus::Stunned));
         assert_eq!(pow_on_av8(true, (5, 5), Some((4, 3))), None, "knocked out");
+    }
+
+    /// Claws: a natural 8 breaks any armour ...
+    #[test]
+    fn claws_breaks_any_armour_on_a_natural_8() {
+        assert_eq!(pow_on(10, &[], (4, 4), None), Some(PlayerStatus::Down));
+        assert_eq!(
+            pow_on(10, &[Skill::Claws], (4, 4), Some((3, 4))),
+            Some(PlayerStatus::Stunned)
+        );
+    }
+
+    /// ... but nothing less does.
+    #[test]
+    fn claws_needs_a_natural_8() {
+        assert_eq!(pow_on(10, &[Skill::Claws], (4, 3), None), Some(PlayerStatus::Down));
+    }
+
+    /// Armour Claws breaks leaves Mighty Blow's +1 for the injury roll: a 7 becomes an 8, KO.
+    #[test]
+    fn claws_leaves_mighty_blow_for_injury() {
+        let skills = [Skill::Claws, Skill::MightyBlow];
+        assert_eq!(pow_on(9, &skills, (4, 4), Some((4, 3))), None, "knocked out");
+    }
+
+    /// A defender's Claws counts against a blocker the block knocks down.
+    #[test]
+    fn a_defenders_claws_hit_a_fallen_blocker() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.av = 10;
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Claws);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Skull);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.fix_d6(4); //armour: a natural 8
+        state.fix_d6(4);
+        state.fix_d6(1); //injury: stunned
+        state.fix_d6(2);
+        state.step_simple(SimpleAT::SelectSkull);
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Stunned);
     }
 
     /// Mighty Blow is for the player the block knocks down, never the blocker's own fall: on a

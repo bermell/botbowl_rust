@@ -2,40 +2,68 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::dices::{RequestedRoll, RollResult, RollTarget, Sum2D6Target};
 use crate::core::gamestate::GameState;
-use crate::core::model::{BallState, PlayerID};
+use crate::core::model::{BallState, FieldedPlayer, PlayerID};
 use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};
 use crate::core::model::{InjuryOutcome, ProcInput};
 use crate::core::procedures::ball_procs;
+use crate::core::table::Skill;
 
 use super::AnyProc;
+
+/// What the player who knocked someone down in a block brings to their armour roll.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Blow {
+    /// Mighty Blow's +1, for the armour roll or else the injury roll. The armour roll then has
+    /// three outcomes — holds, breaks only with the +1, breaks on its own — so the +1 goes to
+    /// armour exactly when that is what breaks it, and to injury otherwise.
+    pub mighty_blow: bool,
+    /// Claws: a natural 8+ breaks the armour, whatever its value.
+    pub claws: bool,
+}
+impl Blow {
+    pub fn by(player: &FieldedPlayer) -> Blow {
+        Blow {
+            mighty_blow: player.has_skill(Skill::MightyBlow),
+            claws: player.has_skill(Skill::Claws),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Armor {
     id: PlayerID,
     foul_target: Option<(PlayerID, Sum2D6Target)>,
-    /// Mighty Blow's +1, for the armour roll or else the injury roll. The armour roll then has
-    /// three outcomes — holds, breaks only with the +1, breaks on its own — so the +1 goes to
-    /// armour exactly when that is what breaks it, and to injury otherwise.
     #[serde(default)]
-    mighty_blow: bool,
+    blow: Blow,
 }
 impl Armor {
     pub fn new(id: PlayerID) -> AnyProc {
-        Armor::new_block(id, false)
+        Armor::new_block(id, Blow::default())
     }
-    pub fn new_block(id: PlayerID, mighty_blow: bool) -> AnyProc {
+    pub fn new_block(id: PlayerID, blow: Blow) -> AnyProc {
         AnyProc::Armor(Armor {
             id,
             foul_target: None,
-            mighty_blow,
+            blow,
         })
     }
     pub fn new_foul(id: PlayerID, target: Sum2D6Target, fouler_id: PlayerID) -> AnyProc {
         AnyProc::Armor(Armor {
             id,
             foul_target: Some((fouler_id, target)),
-            mighty_blow: false,
+            blow: Blow::default(),
         })
+    }
+
+    /// The armour roll that breaks the armour, with `modifier` added to it.
+    fn target(&self, game_state: &GameState, modifier: i8) -> Sum2D6Target {
+        let mut target = game_state.get_player_unsafe(self.id).armor_target();
+        target.add_modifer(modifier);
+        if self.blow.claws {
+            target.min(Sum2D6Target::EightPlus)
+        } else {
+            target
+        }
     }
 }
 impl Procedure for Armor {
@@ -46,21 +74,19 @@ impl Procedure for Armor {
             ProcInput::Nothing if self.foul_target.is_some() => {
                 return ProcState::NeedRoll(RequestedRoll::FoulArmor(self.foul_target.unwrap().1));
             }
-            ProcInput::Nothing if self.mighty_blow => {
-                let target = game_state.get_player_unsafe(self.id).armor_target();
-                let mut with_mighty_blow = target;
-                with_mighty_blow.add_modifer(1);
-                return ProcState::NeedRoll(RequestedRoll::Sum2D6ThreeOutcomes(with_mighty_blow, target));
+            ProcInput::Nothing if self.blow.mighty_blow => {
+                return ProcState::NeedRoll(RequestedRoll::Sum2D6ThreeOutcomes(
+                    self.target(game_state, 1),
+                    self.target(game_state, 0),
+                ));
             }
             ProcInput::Nothing => {
-                return ProcState::NeedRoll(RequestedRoll::Sum2D6PassFail(
-                    game_state.get_player_unsafe(self.id).armor_target(),
-                ));
+                return ProcState::NeedRoll(RequestedRoll::Sum2D6PassFail(self.target(game_state, 0)));
             }
             // Broken only thanks to Mighty Blow: it is spent on the armour.
             ProcInput::Roll(RollResult::MiddleOutcome) => true,
             // Broken on its own: Mighty Blow, if any, goes to the injury roll.
-            ProcInput::Roll(RollResult::Pass) if self.mighty_blow => {
+            ProcInput::Roll(RollResult::Pass) if self.blow.mighty_blow => {
                 injury_proc.mighty_blow = true;
                 true
             }
