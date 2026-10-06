@@ -98,7 +98,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | No | — | Simple |
 | Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | Yes (`casualty_procs.rs::Armor`/`Injury`, set by `block_procs.rs::Block`) | Yes (`mighty_blow_*`) | Simple |
 | Multiple Block | Strength | Block two adjacent opponents at once, at -2 Strength | No | — | Bigger (Block Action gains a second targeted square) |
-| Stand Firm | Strength | Choose not to be pushed back during a Block | No | — | Simple |
+| Stand Firm | Strength | Choose not to be pushed back during a Block | Partly (`block_procs.rs::Push`: the blocked player, a `UseSkill`/`DontUseSkill` decision; not yet in chain pushes) | Yes (`stand_firm_*`) | Simple |
 | Strong Arm | Strength | +1 Passing Ability Test on a Throw Team-mate Action | No | — | Simple\* |
 | Thick Skull | Strength | Knocked-out only on a 9 (or 8 if also Stunty) instead of 8 (or 7) | No | — | Simple |
 | Always Hungry* | Trait | Risk eating your own team-mate when performing a Throw Team-mate Action | No | — | Simple\* |

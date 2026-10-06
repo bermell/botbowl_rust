@@ -30,6 +30,9 @@ pub struct Push {
     knockdown_proc: Option<KnockDown>,
     moves_to_make: Vec<(Position, Position)>,
     follow_up_pos: Position,
+    /// The blocked player's Stand Firm has been asked about.
+    #[serde(default)]
+    stand_firm_asked: bool,
 }
 
 impl Push {
@@ -40,6 +43,7 @@ impl Push {
             moves_to_make: Vec::with_capacity(1),
             knockdown_proc: None,
             follow_up_pos: on,
+            stand_firm_asked: false,
         })
     }
     pub fn new_pure(from: Position, on: Position) -> Push {
@@ -49,6 +53,7 @@ impl Push {
             moves_to_make: Vec::with_capacity(1),
             knockdown_proc: None,
             follow_up_pos: on,
+            stand_firm_asked: false,
         }
     }
 
@@ -164,6 +169,22 @@ impl Push {
 impl Procedure for Push {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {
+            // Stand Firm: the blocked player's coach may refuse the push. Nobody moves, so there
+            // is no follow-up; a knockdown (queued under this proc) still happens, in place.
+            ProcInput::Nothing if self.moves_to_make.is_empty() && !self.stand_firm_asked => {
+                self.stand_firm_asked = true;
+                match game_state.get_player_at(self.on) {
+                    Some(p) if p.has_skill(Skill::StandFirm) => {
+                        let mut aa = AvailableActions::new(p.stats.team);
+                        aa.insert_simple(SimpleAT::UseSkill);
+                        aa.insert_simple(SimpleAT::DontUseSkill);
+                        ProcState::NeedAction(aa)
+                    }
+                    _ => self.calculate_next_state(game_state),
+                }
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) => ProcState::Done,
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill)) => self.calculate_next_state(game_state),
             ProcInput::Nothing if self.moves_to_make.is_empty() => self.calculate_next_state(game_state),
             ProcInput::Nothing => self.handle_aftermath(game_state),
             ProcInput::Action(Action::Positional(PosAT::Push, position_to))
@@ -555,7 +576,10 @@ impl Procedure for Block {
 
                 // Frenzy: once the push, follow-up and any knockdown have resolved, block again.
                 if push && !self.frenzy_second && game_state.get_player_unsafe(attacker_id).has_skill(Skill::Frenzy) {
-                    procs.push(FrenzyBlock::new(self.defender));
+                    procs.push(FrenzyBlock::new(
+                        self.defender,
+                        game_state.get_player_unsafe(self.defender).position,
+                    ));
                 }
 
                 //if attacker is knocked down it's a turnover
@@ -680,17 +704,20 @@ impl Procedure for Wrestle {
 }
 
 /// Frenzy's second block against the same target, once the first block has fully resolved.
-/// Only if the target is still standing next to a still-standing blocker. In a Blitz it costs a square of movement, or a Rush when none is left; a failed
+/// Only if the target was pushed and is still standing next to a still-standing blocker. In a Blitz it costs a square of movement, or a Rush when none is left; a failed
 /// Rush knocks the blocker over and there is no second block.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FrenzyBlock {
     defender: PlayerID,
+    /// Where the defender stood when blocked: no second block unless they were pushed off it.
+    from: Position,
     rushed: bool,
 }
 impl FrenzyBlock {
-    pub fn new(defender: PlayerID) -> AnyProc {
+    pub fn new(defender: PlayerID, from: Position) -> AnyProc {
         AnyProc::FrenzyBlock(FrenzyBlock {
             defender,
+            from,
             rushed: false,
         })
     }
@@ -701,8 +728,10 @@ impl Procedure for FrenzyBlock {
         let Ok(defender) = game_state.get_player(self.defender) else {
             return ProcState::Done; // pushed off the pitch
         };
-        // The follow-up was forced, so a defender still on the pitch is adjacent.
-        if attacker.status != PlayerStatus::Up || defender.status != PlayerStatus::Up {
+        // The follow-up was forced, so a pushed defender still on the pitch is adjacent. One who
+        // stood firm was not pushed at all.
+        if attacker.status != PlayerStatus::Up || defender.status != PlayerStatus::Up || defender.position == self.from
+        {
             return ProcState::Done;
         }
         let attacker_id = attacker.id;
@@ -1271,6 +1300,73 @@ mod tests {
             state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
             "still Home's turn"
         );
+    }
+
+    /// A home blocker against an away Stand Firm defender, after the given die is selected.
+    fn block_stand_firm(
+        die: BlockDice,
+        frenzy: bool,
+    ) -> (crate::core::gamestate::GameState, PlayerID, PlayerID, Position) {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::StandFirm);
+        if frenzy {
+            state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Frenzy);
+        }
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(die);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::from(die));
+        (state, attacker, defender, defender_pos)
+    }
+
+    /// Stand Firm: the defender's coach may refuse the push; nobody moves, no follow-up.
+    #[test]
+    fn stand_firm_refuses_the_push() {
+        let (mut state, attacker, defender, defender_pos) = block_stand_firm(BlockDice::Push, false);
+        let attacker_pos = state.get_player_unsafe(attacker).position;
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.get_player_unsafe(defender).position, defender_pos);
+        assert_eq!(state.get_player_unsafe(attacker).position, attacker_pos);
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "no follow-up"
+        );
+    }
+
+    /// Declined, the push is the blocker's as usual.
+    #[test]
+    fn declining_stand_firm_is_a_normal_push() {
+        let (mut state, _, _, defender_pos) = block_stand_firm(BlockDice::Push, false);
+        state.step_simple(SimpleAT::DontUseSkill);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Home));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (1, 0))));
+    }
+
+    /// A knockdown still happens, in the defender's own square.
+    #[test]
+    fn stand_firm_goes_down_in_place() {
+        let (mut state, _, defender, defender_pos) = block_stand_firm(BlockDice::Pow, false);
+        state.fix_d6(1); //armour
+        state.fix_d6(1);
+        state.step_simple(SimpleAT::UseSkill);
+        let player = state.get_player_unsafe(defender);
+        assert_eq!((player.position, player.status), (defender_pos, PlayerStatus::Down));
+    }
+
+    /// Frenzy blocks again only after a push: a defender who stood firm was not pushed.
+    #[test]
+    fn frenzy_does_not_block_again_when_the_target_stands_firm() {
+        let (mut state, _, _, _) = block_stand_firm(BlockDice::Push, true);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
     }
 
     #[test]

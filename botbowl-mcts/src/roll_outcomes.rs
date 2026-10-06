@@ -302,7 +302,9 @@ fn block_outcomes(state: &GameState, n: NumBlockDices) -> Vec<BbAction> {
         attacker_block: attacker.has_skill(Skill::Block),
         defender_block: defender.has_skill(Skill::Block),
         defender_dodge: botbowl_engine::core::procedures::dodge_saves_from_stumble(attacker, defender),
-        crowd_push: Push::is_crowd_push(attacker.position, defender.position, state),
+        // A Stand Firm defender may refuse the push, so a crowd push is not certain removal.
+        crowd_push: Push::is_crowd_push(attacker.position, defender.position, state)
+            && !defender.has_skill(Skill::StandFirm),
         wrestle: attacker.has_skill(Skill::Wrestle) || defender.has_skill(Skill::Wrestle),
     };
     let num_dice = u8::from(n) as usize;
@@ -1059,6 +1061,22 @@ mod tests {
         assert!(probs_sum_to_one(&outcomes));
         assert_prob(&outcomes, &[BlockDice::BothDown], 1, 6);
         assert_prob(&outcomes, &[BlockDice::Skull], 1, 6);
+    }
+
+    /// A Stand Firm defender on the sideline may refuse the push into the crowd, so a push die
+    /// is not the defender leaving the pitch: Push stays its own child.
+    #[test]
+    fn block_crowd_push_against_stand_firm_is_not_folded() {
+        let def = Position::new((6, 1));
+        let att = Position::new((6, 2));
+        let state = state_paused_on_block(att, def, &[], NumBlockDices::One, |s| {
+            let id = s.get_player_id_at(def).unwrap();
+            s.get_mut_player_unsafe(id).stats.give_skill(Skill::StandFirm);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::Push], 2, 6);
+        assert_prob(&outcomes, &[BlockDice::Pow], 2, 6);
     }
 
     /// Defender on the sideline with the attacker pushing straight out:
