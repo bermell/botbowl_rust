@@ -304,7 +304,7 @@ one recipe:
 | generation | Gumbel m=16 at 1000 descents (`cfgs/gumbel16_f1000_gen.toml`), 8 × 300 drives, sizes centred on 16x9 | plan 053 |
 | value label | **MC-averaged**: `MC_LABEL_PLAYOUTS=8` policy-only playouts per train and val sample under the generator, `VALUE_BLEND=1.0` (val labelled too from gen03) | §3 arm F |
 | policy label | cq tau 100 | plan 049 |
-| train step | warm from the latest net, lr 5e-5, `--freeze-bn --init-candidate --eval-at 250,500`, value weight 0.25, per-drive value weight, 3 epochs, window 3 gens; restore on **val_policy + val_value against MC-labelled val shards** (`SELECT_ON=combined`, from gen03; gen01-02 used val_policy alone, see the results) | plan 054, amended |
+| train step | warm from the latest net, lr 5e-5, `--freeze-bn --eval-at 250,500` (`--init-candidate` until gen04, dropped from gen05), value weight 0.25, per-drive value weight, 3 epochs, window 3 gens; restore on **val_policy + val_value against MC-labelled val shards** (`SELECT_ON=combined`, from gen03; gen01-02 used val_policy alone, see the results) | plan 054, amended |
 | init | **arm F** (`models/az_v7/plan056_armF.{onnx,pt}` = `runs/exp067/arms/F`) | §3 |
 | benchmark | gateless; drives vs the fixed d1k gen04 anchor, gen04g contested sets, SPRT 0.5:0.55, cap 800 | plan 051/054 |
 | per-generation diagnostics on status.md | absorption probe (plan 054 E1); `value bench` (this plan's §2, the new net paired with its generator, seconds); `net check` (plan 055 §6, the generator on its own fresh corpus, in the background) | |
@@ -383,3 +383,14 @@ gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value 
   behaviour by more than noise, so the restore picks among ties, and the init is one of them.
 - It is plan 054's "the train step absorbs nothing" in a milder form. gen01 and gen03 moved a
   little (gen03: value bench −2.4%, absorb dP(played) +0.002); gen02 and gen04 did not move at all.
+- **Decision (the user, 2026-10-06): drop `--init-candidate`** (`f4300f8`). Every generation now
+  keeps its best *trained* checkpoint on val_policy + val_value, as AlphaZero does, and play (the
+  drives vs the anchor, the net check) judges whether that helps. The risk to watch: restart noise
+  accumulating if the fine-tunes are mostly noise. The loop stops after gen05's generation and is
+  relaunched, so gen05 is the first generation trained without the init candidate.
+- **The loop runs on pre-merge code.** Commits pushed from the web/hub worktree on 2026-10-06
+  (3594c9a..d55c1b9) add `Skill::StripBall`. That takes `Skill::COUNT` 39 → 40, which adds a
+  spatial input plane (`encode.rs`: `SHARED_BASE = SKILL_BASE + Skill::COUNT`), so every
+  existing net is incompatible with a build that includes them. They also bump the hub protocol to
+  v14, which locks out the laptop on 8cc6ce7. The loop's working tree stays at the pre-merge
+  commit until that is resolved: don't `git pull` in the main checkout while the loop runs.
