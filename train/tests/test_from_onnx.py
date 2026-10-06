@@ -81,5 +81,5 @@ def test_a_recovered_v6_net_still_migrates_to_v7(tmp_path):
     sd = state_dict_from_onnx(path)
     assert mig.detect_schema(sd) == 6
     out, src, dst = mig.migrate(sd, log=lambda *_: None)
-    assert (src, dst) == (6, 7)
-    assert mig.detect_schema(out) == 7
+    assert (src, dst) == (6, mig.CURRENT)
+    assert mig.detect_schema(out) == mig.CURRENT

@@ -219,8 +219,9 @@ mod tests {
             board_sizes: Some(botbowl_play::board_sizes::SizeDist::single(board)),
             config_name: None,
             exploration: None,
+            next_drive: false,
         };
-        play_trajectory(&cfg, None, seed).unwrap().unwrap()
+        play_trajectory(&cfg, None, seed).unwrap().remove(0)
     }
 
     /// Every benchmark line comes back with the net's V of the *replayed* state in the mover's

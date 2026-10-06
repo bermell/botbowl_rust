@@ -42,7 +42,10 @@ pub use botbowl_play::generate::GenerateConfig;
 // `SearchConfig.backup` are gone. A v12 worker would silently play minimax, so it must not connect.
 // v14: `ToWorker::ModelName` — a cached model's name, so the cache is readable (and the web
 // play app on a worker box can offer its nets by name).
-pub const PROTOCOL_VERSION: u32 = 14;
+// v15 (plan 047): per-player setup — `SimpleAT`/`PosAT` re-laid out, `MctsConfig.setup`,
+// `opponent_setup`, `setup_formation`, `GenerateConfig.next_drive`; a trajectory may carry two lines.
+// v16: `SimpleAT::UseSkill` / `DontUseSkill` (engine actions, inside trajectories and game states).
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
@@ -268,11 +271,14 @@ pub enum ToHub {
         task: TaskId,
         line: EvalGameLine,
     },
-    /// One finished trajectory: its JSON line (without the newline), zstd
-    /// compressed. The hub appends the decompressed bytes verbatim, so the
-    /// shard file is byte-for-byte what `DatasetWriter` writes. Empty
-    /// `zstd_json` means the game legitimately produced nothing (a
-    /// curriculum trial the mode skipped); the game still counts as done.
+    /// One finished game: its trajectory records as JSON lines, newline-
+    /// separated with no trailing newline, zstd compressed. Usually one line;
+    /// two when a random-start drive scored and `--next-drive` played the
+    /// drive it set up (plan 047). The hub appends each line as
+    /// `DatasetWriter` would, so the shard file is byte-for-byte what a local
+    /// run writes. Empty `zstd_json` means the game legitimately produced
+    /// nothing (a curriculum trial the mode skipped); the game still counts
+    /// as done.
     TrajectoryDone {
         task: TaskId,
         game: u32,

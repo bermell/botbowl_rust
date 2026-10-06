@@ -653,15 +653,43 @@ fn SimpleActions() -> impl IntoView {
                                     .collect_view()}
                             </div>
                             {view
-                                .setup_legal
-                                .map(|legal| {
+                                .setup
+                                .clone()
+                                .map(|setup| {
+                                    let who = if view.is_human(setup.team) && view.humans.len() == 1 {
+                                        "Setup".to_string()
+                                    } else {
+                                        format!("{:?} setup", setup.team)
+                                    };
                                     view! {
-                                        <div class="setup-note" class:bad=!legal>
-                                            {if legal {
-                                                "formation is legal".to_string()
-                                            } else {
-                                                "formation is not a legal setup".to_string()
-                                            }}
+                                        <div class="setup-panel">
+                                            <div class="setup-note">
+                                                {format!(
+                                                    "{who}: placing player {} of {} ({} waiting)",
+                                                    setup.placed + 1,
+                                                    setup.team_size,
+                                                    setup.waiting,
+                                                )}
+                                            </div>
+                                            <div class="buttons">
+                                                {setup
+                                                    .formations
+                                                    .iter()
+                                                    .cloned()
+                                                    .map(|name| {
+                                                        let label = format!("{name} setup");
+                                                        view! {
+                                                            <button
+                                                                class="act"
+                                                                disabled=!enabled
+                                                                on:click=move |_| ws::send(&ClientMsg::AutoSetup(name.clone()))
+                                                            >
+                                                                {label}
+                                                            </button>
+                                                        }
+                                                    })
+                                                    .collect_view()}
+                                            </div>
                                         </div>
                                     }
                                 })}

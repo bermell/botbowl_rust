@@ -142,6 +142,13 @@ pub struct Sample {
     /// `None` before backfilling.
     #[serde(default)]
     pub outcome_value: Option<f32>,
+    /// Plan 047: the action was not searched — a formation plan answered a setup
+    /// placement (the gen-0 teacher shard), or the rules left one legal action.
+    /// `children` then holds every legal action with one visit on the chosen one,
+    /// so the policy target is one-hot on it; `root_visits` is 1 and `prepare`
+    /// must not drop it as an under-searched root.
+    #[serde(default)]
+    pub scripted: bool,
 }
 
 /// How a trajectory ended — the value-target ground truth.
@@ -428,6 +435,7 @@ mod tests {
             root_visits: 100,
             root_solved: false,
             outcome_value: None,
+            scripted: false,
         }
     }
 

@@ -1,0 +1,9 @@
+# Plan 047 gen-0 setup teacher: the bot never searches its own kickoff setup.
+# Each placement is answered by a formation drawn per drive from those that
+# fit the board, and recorded as a one-hot *scripted* sample, so the first
+# net starts with formation-like placement priors instead of uniform ones.
+# Everything else is the shipped configuration.
+#
+#   botbowl-ui dataset --mode random-start --next-drive --bot-config cfgs/setup-teacher.toml ...
+setup = "formation"
+setup_formation = "random"

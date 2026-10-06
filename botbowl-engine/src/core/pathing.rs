@@ -7,18 +7,32 @@ use serde::{Deserialize, Serialize};
 
 use super::dices::{D6Target, RollTarget, Sum2D6Target};
 use super::gamestate::GameState;
-use super::table::{NumBlockDices, PosAT};
+use super::table::{NumBlockDices, PosAT, Skill};
 
 type OptRcNode = Option<Arc<Node>>;
 
+/// Skills of the opposing players marking the square a dodge leaves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub struct DodgeMarkers {
+    /// A Tackle player: their coach may deny the Dodge re-roll.
+    pub tackle: bool,
+    /// An Arm Bar player: a fall takes +1 on the armour or injury roll.
+    pub arm_bar: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum PathingEvent {
-    Dodge(D6Target),
+    /// The roll's target, and who marks the square being left.
+    Dodge(D6Target, DodgeMarkers),
     GFI(D6Target),
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
     Handoff(PlayerID, D6Target),
-    Pass { to: Position, pass: D6Target, modifer: i8 },
+    Pass {
+        to: Position,
+        pass: D6Target,
+        modifer: i8,
+    },
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
@@ -29,7 +43,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::Handoff(_, _) => true,
         PathingEvent::Foul(_, _) => true,
         PathingEvent::Touchdown(_) => true,
-        PathingEvent::Dodge(_) => false,
+        PathingEvent::Dodge(..) => false,
         PathingEvent::GFI(_) => false,
         PathingEvent::Pickup(_) => false,
         PathingEvent::Block(_, _) => false,
@@ -220,7 +234,7 @@ impl Node {
                 PathingEvent::Handoff(_, _) => false,
                 PathingEvent::Foul(_, _) => false,
                 PathingEvent::StandUp => false,
-                PathingEvent::Dodge(_) => true,
+                PathingEvent::Dodge(..) => true,
                 PathingEvent::GFI(_) => true,
                 PathingEvent::Pickup(_) => true,
                 PathingEvent::Touchdown(_) => true,
@@ -273,9 +287,9 @@ impl Node {
         self.prob *= target.success_prob();
         self.events.push_back(PathingEvent::GFI(target));
     }
-    fn apply_dodge(&mut self, target: D6Target) {
+    fn apply_dodge(&mut self, target: D6Target, markers: DodgeMarkers) {
         self.prob *= target.success_prob();
-        self.events.push_back(PathingEvent::Dodge(target));
+        self.events.push_back(PathingEvent::Dodge(target, markers));
     }
     fn apply_pickup(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
@@ -323,12 +337,12 @@ impl Node {
         self.events.push_back(PathingEvent::Touchdown(id));
         // Touchdown does not change action_type — pickup/move still drives expansion.
     }
-    fn apply_standup(&mut self) {
+    fn apply_standup(&mut self, cost: u8) {
         self.events.push_back(PathingEvent::StandUp);
-        // Real rules: standing up costs 3 squares, but a player with MA < 3
-        // just spends their whole movement allowance rather than going
-        // negative (reachable once `BoardDims::ma_cap` allows MA < 3).
-        self.moves_left = self.moves_left.saturating_sub(3);
+        // Real rules: standing up costs 3 squares (nothing with Jump Up), but a
+        // player with MA < 3 just spends their whole movement allowance rather
+        // than going negative (reachable once `BoardDims::ma_cap` allows MA < 3).
+        self.moves_left = self.moves_left.saturating_sub(cost);
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -433,12 +447,9 @@ impl<'a> GameInfo<'a> {
 
     fn new(game_state: &'a GameState, player: &FieldedPlayer) -> GameInfo<'a> {
         let dodge_target = *player.ag_target().add_modifer(1);
-        let mut gfi_target = D6Target::TwoPlus;
+        let gfi_target = crate::core::procedures::movement_procs::rush_target(game_state);
         let mut pickup_target = *player.ag_target().add_modifer(1);
 
-        if game_state.info.weather == Weather::Blizzard {
-            gfi_target.add_modifer(-1);
-        }
         if game_state.info.weather == Weather::Rain {
             pickup_target.add_modifer(-1);
         }
@@ -604,7 +615,8 @@ impl<'a> GameInfo<'a> {
                 .filter(|adj_player| {
                     adj_player.id != self.id
                         && adj_player.stats.team == self.team
-                        && self.game_state.get_tz_on(adj_player.id) == 0
+                        // Guard assists however many opponents mark the assister.
+                        && (adj_player.has_skill(Skill::Guard) || self.game_state.get_tz_on(adj_player.id) == 0)
                 })
                 .count() as i8,
         );
@@ -615,7 +627,8 @@ impl<'a> GameInfo<'a> {
                 .filter(|adj_player| {
                     adj_player.stats.team != self.team
                         && adj_player.has_tackle_zone()
-                        && self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0
+                        && (adj_player.has_skill(Skill::Guard)
+                            || self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0)
                 })
                 .count() as i8),
         );
@@ -739,7 +752,16 @@ impl<'a> GameInfo<'a> {
             next_node.apply_gfi(self.gfi_target);
         }
         if self.tackles_zones_at(parent_node.position) > 0 {
-            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]));
+            let marked_by = |skill| {
+                self.game_state
+                    .get_adj_players(parent_node.position)
+                    .any(|p| p.stats.team != self.team && p.has_tackle_zone() && p.has_skill(skill))
+            };
+            let markers = DodgeMarkers {
+                tackle: marked_by(Skill::Tackle),
+                arm_bar: marked_by(Skill::ArmBar),
+            };
+            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]), markers);
         }
         match self.ball {
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
@@ -800,7 +822,7 @@ impl<'a> PathFinder<'a> {
         if standing_up {
             assert!(player.moves_left() == player.stats.ma);
             debug_assert!(matches!(player.status, PlayerStatus::Down));
-            root_node.apply_standup();
+            root_node.apply_standup(crate::core::procedures::movement_procs::standup_cost(player));
         }
 
         let root_node = Arc::new(root_node);
@@ -1249,7 +1271,7 @@ mod tests {
                 PositionOrEvent::Position(Position::new((7, 5))),
                 PositionOrEvent::Position(Position::new((6, 4))),
                 PositionOrEvent::Position(Position::new((5, 3))),
-                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, Default::default())),
                 PositionOrEvent::Position(Position::new((4, 2))),
                 PositionOrEvent::Position(Position::new((3, 1))),
                 PositionOrEvent::Position(Position::new((2, 1))),

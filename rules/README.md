@@ -35,10 +35,10 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Dodge | Agility | Re-roll one failed dodge Agility Test per turn; also affects the Stumble result | Yes (`movement_procs.rs`, `block_procs.rs`) | Yes (`dodge_reroll`) | Simple |
 | Defensive | Agility | Marked opponents can't use Guard or Put the Boot In | No | — | Simple |
 | Hit and Run | Agility | After a Block/Stab, move one free square ignoring Tackle Zones | No | — | Simple |
-| Jump Up | Agility | Stand up for free while prone; can attempt a Block Action while prone | No | — | Simple |
+| Jump Up | Agility | Stand up for free while prone; can attempt a Block Action while prone | Yes (`movement_procs.rs::standup_cost`, `block_procs.rs::JumpUp`) | Yes (`jump_up_*`) | Simple |
 | Leap | Agility | Leap over an adjacent square regardless of contents, reduced negative modifier | No | — | Simple |
 | Safe Pair of Hands | Agility | Place the ball in an adjacent square instead of it bouncing when knocked down | No | — | Simple |
-| Sidestep | Agility | Choose your own square when pushed back | No | — | Simple |
+| Sidestep | Agility | Choose your own square when pushed back | Yes (`block_procs.rs::Push`; a `UseSkill`/`DontUseSkill` decision) | Yes (`sidestep_*`) | Simple |
 | Sprint | Agility | One extra Rush attempt during a Move Action | No | — | Simple |
 | Sure Feet | Agility | Re-roll one Rush (GFI) die per turn | Yes (`movement_procs.rs::GfiProc::reroll_skill`) | No | Simple |
 | Dirty Player | Devious | +1 to Armour or Injury Roll during a Foul Action | No | — | Simple |
@@ -54,19 +54,19 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Sneaky Git | Devious | Not sent off for a natural double Armour Roll on a Foul (unless armour breaks) | No | — | Simple |
 | Violent Innovator | Devious | Earn SPP for casualties caused via Special Actions | No | — | Simple |
 | Block | General | Choose not to be knocked down on a Both Down result | Yes (`block_procs.rs`) | No | Simple |
-| Dauntless | General | Roll to temporarily match a higher-Strength opponent for a Block | No | — | Simple |
-| Fend | General | Opponent can't Follow-up after pushing you back | No | — | Simple |
-| Frenzy* | General | Must Follow-up and make a second Block Action if the target is Pushed Back | No | — | Simple |
+| Dauntless | General | Roll to temporarily match a higher-Strength opponent for a Block | Yes (`block_procs.rs::Block`, before the block dice; automatic — rolling never hurts) | Yes (`dauntless_*`) | Simple |
+| Fend | General | Opponent can't Follow-up after pushing you back | Yes (`block_procs.rs::Push::fend`; automatic, beats Frenzy) | Yes (`fend_*`) | Simple |
+| Frenzy* | General | Must Follow-up and make a second Block Action if the target is Pushed Back | Yes (`block_procs.rs::FollowUp`, `FrenzyBlock`) | Yes (`frenzy_*`) | Simple |
 | Kick | General | Kicked ball may deviate D3 instead of D6 | No | — | Simple |
 | Pro | General | Once per activation, re-roll one die on a 3+ | No | — | Simple |
 | Steady Footing | General | On a 6, avoid being Knocked Down/Fall Over | No | — | Simple |
-| Strip Ball | General | Ball carrier drops the ball when pushed back by your Block | No | — | Simple |
+| Strip Ball | General | Ball carrier drops the ball when pushed back by your Block | Yes (`block_procs.rs::Push::strip_ball`, set in `Block::resolve`; automatic) | Yes (`strip_ball_*`) | Simple |
 | Sure Hands | General | Re-roll a failed pick-up; immune to Strip Ball | Yes (`ball_procs.rs::PickupProc::reroll_skill`) | Yes (`pickup_success`) | Simple |
-| Tackle | General | Opponent can't use Dodge Skill leaving your TZ, or vs. a Stumble result | No | — | Simple |
+| Tackle | General | Opponent can't use Dodge Skill leaving your TZ, or vs. a Stumble result | Yes (`UseSkill`/`DontUseSkill` decisions: `procedure_tools.rs` contested re-roll, `block_procs.rs::Block`) | Yes (`tackle_*`) | Simple |
 | Taunt | General | Force an opponent to Follow-up when they push you back | No | — | Simple |
-| Wrestle | General | Both Down becomes both players placed prone, regardless of other skills | No | — | Simple |
+| Wrestle | General | Both Down becomes both players placed prone, regardless of other skills | Yes (`block_procs.rs::Wrestle`; a `UseSkill`/`DontUseSkill` decision, never a turnover) | Yes (`wrestle_*`) | Simple |
 | Big Hand | Mutation | Ignore all negative modifiers when picking up the ball | No | — | Simple |
-| Claws | Mutation | Natural 8+ on an Armour Roll you inflict always breaks armour | No | — | Simple |
+| Claws | Mutation | Natural 8+ on an Armour Roll you inflict always breaks armour | Yes (`casualty_procs.rs::Blow`, set by `block_procs.rs::Block`; the defender's too, on a fallen blocker) | Yes (`claws_*`) | Simple |
 | Disturbing Presence* | Mutation | -1 to opposition Pass/Throw/Catch/Intercept tests within 3 squares | No | — | Simple |
 | Extra Arms | Mutation | +1 Agility Test to Catch/Pick Up/Intercept | No | — | Simple |
 | Foul Appearance* | Mutation | Chance to cancel an opponent's Block/Special Action targeting you | No | — | Simple |
@@ -89,16 +89,16 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Pass | Passing | Re-roll a failed Passing Ability Test | No — `Skill::Throw` exists and is granted to the Thrower template, but no code checks it; pass accuracy is driven only by base `pass` stat + modifiers | — | Simple |
 | Punt | Passing | Punt Special Action to kick the ball downfield | No | — | Bigger (new Special Action) |
 | Safe Pass | Passing | A natural 1 on a Pass doesn't fumble; ends activation instead, no turnover | No | — | Simple |
-| Arm Bar | Strength | +1 Armour/Injury Roll when an opponent falls dodging/leaping/jumping from your TZ | No | — | Simple |
-| Brawler | Strength | Re-roll a single Both Down result | No | — | Simple |
+| Arm Bar | Strength | +1 Armour/Injury Roll when an opponent falls dodging/leaping/jumping from your TZ | Yes (`pathing.rs::DodgeMarkers`, `movement_procs.rs::DodgeProc`; automatic, the +1 goes like Mighty Blow's; dodges only — no Leap/Jump yet) | Yes (`arm_bar_*`) | Simple |
+| Brawler | Strength | Re-roll a single Both Down result | Yes (`block_procs.rs::Block::brawler_available`; `UseSkill` offered with the dice, Block action only, excludes the team re-roll) | Yes (`brawler_*`) | Simple |
 | Break Tackle | Strength | Once per turn, +1 to +3 Agility Test bonus when dodging, based on your Strength | No | — | Simple |
 | Bullseye | Strength | A Superb Throw Team-mate result lands exactly, no scatter | No | — | Simple\* |
-| Grab | Strength | Choose the push-back square; opponent can't use Sidestep | No | — | Simple |
-| Guard | Strength | Provide Offensive/Defensive Assist regardless of how many are marking you | No | — | Simple |
-| Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | No | — | Simple |
-| Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | No | — | Simple |
+| Grab | Strength | Choose the push-back square; opponent can't use Sidestep | Yes (`block_procs.rs::Push::grab`; the extra squares are offered with the push squares, never instead of a crowd push; no opposition player Sidesteps) | Yes (`grab_*`) | Simple |
+| Guard | Strength | Provide Offensive/Defensive Assist regardless of how many are marking you | Yes (`gamestate.rs::get_blockdices_from`, `pathing.rs` foul assists) | Yes (`guard_*`) | Simple |
+| Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | Yes (`block_procs.rs::juggernaut_blitz`; Both Down → Push is a `UseSkill`/`DontUseSkill` decision; applies to every opposition player a chain push reaches) | Yes (`juggernaut_*`) | Simple |
+| Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | Yes (`casualty_procs.rs::Blow`/`Injury`, set by `block_procs.rs::Block`) | Yes (`mighty_blow_*`) | Simple |
 | Multiple Block | Strength | Block two adjacent opponents at once, at -2 Strength | No | — | Bigger (Block Action gains a second targeted square) |
-| Stand Firm | Strength | Choose not to be pushed back during a Block | No | — | Simple |
+| Stand Firm | Strength | Choose not to be pushed back during a Block | Yes (`block_procs.rs::Push`; a `UseSkill`/`DontUseSkill` decision, chain pushes too) | Yes (`stand_firm_*`) | Simple |
 | Strong Arm | Strength | +1 Passing Ability Test on a Throw Team-mate Action | No | — | Simple\* |
 | Thick Skull | Strength | Knocked-out only on a 9 (or 8 if also Stunty) instead of 8 (or 7) | No | — | Simple |
 | Always Hungry* | Trait | Risk eating your own team-mate when performing a Throw Team-mate Action | No | — | Simple\* |

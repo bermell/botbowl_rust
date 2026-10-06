@@ -300,6 +300,25 @@ pub struct SimpleActionView {
     pub img: Option<String>,
 }
 
+/// The open kickoff setup, when there is one. Setup is one decision per
+/// player: the engine asks about `ViewState::active_player`, offers
+/// `PosAT::PlacePlayer` squares (and `SimpleAT::BenchPlayer` while the roster
+/// has a spare), and closes the setup itself once `team_size` are placed.
+/// Players still waiting are staged in their own end zone column with
+/// `used == true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupView {
+    pub team: TeamType,
+    /// Players already placed this setup.
+    pub placed: usize,
+    /// Players still waiting to be placed or benched.
+    pub waiting: usize,
+    pub team_size: usize,
+    /// Names of the formations that fit this board (`"Line"`, ...), for the
+    /// auto-setup buttons; sent back verbatim in `ClientMsg::AutoSetup`.
+    pub formations: Vec<String>,
+}
+
 /// Everything the client needs to draw one moment of the game.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewState {
@@ -327,8 +346,8 @@ pub struct ViewState {
     pub pending_roll: Option<RequestedRoll>,
     pub log_tail: Vec<String>,
     pub can_undo: bool,
-    /// During setup: whether the current placement is legal enough to end on.
-    pub setup_legal: Option<bool>,
+    /// The open setup, while a team is placing players for a kickoff.
+    pub setup: Option<SetupView>,
     /// True while a bot search is running.
     pub bot_thinking: bool,
     /// How the session is pacing the steps the human does not answer.

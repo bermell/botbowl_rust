@@ -176,7 +176,10 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
                     continue;
                 }
                 assert_eq!(record.team, TeamType::Away);
-                let report = *record.search.expect("the MCTS bot must report its search");
+                // A heuristic bot answers its kickoff setup from a formation, without a
+                // search (plan 047); those decisions carry no report.
+                let Some(report) = record.search else { continue };
+                let report = *report;
                 assert_eq!(report.chosen, action, "the report must be about the move played");
                 assert_eq!(report.agent, TeamType::Away);
                 assert_eq!(report.evaluator, "nn", "the web bot always searches on the net");

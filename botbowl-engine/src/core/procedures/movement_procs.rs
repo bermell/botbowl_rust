@@ -1,15 +1,20 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::model::ProcInput;
-use crate::core::model::{Action, AvailableActions, PlayerID, PlayerStatus, ProcState, Procedure};
+use crate::core::model::{Action, AvailableActions, FieldedPlayer, PlayerID, PlayerStatus, ProcState, Procedure};
 use crate::core::pathing::{
-    event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
+    event_ends_player_action, CustomIntoIter, DodgeMarkers, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
 };
+use crate::core::procedures::casualty_procs::Blow;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs, game_procs};
 use crate::core::table::*;
 
-use crate::core::{dices::D6Target, gamestate::GameState};
+use crate::core::model::{other_team, TeamType, Weather};
+use crate::core::{
+    dices::{D6Target, RollTarget},
+    gamestate::GameState,
+};
 
 use super::{casualty_procs, AnyProc};
 
@@ -22,6 +27,19 @@ impl GfiProc {
     fn new(id: PlayerID, target: D6Target) -> AnyProc {
         AnyProc::GfiProc(SimpleProcContainer::new(GfiProc { target, id }))
     }
+    /// A Rush outside a path (Frenzy's second block in a Blitz), at the weather's target.
+    pub fn new_rush(game_state: &GameState, id: PlayerID) -> AnyProc {
+        GfiProc::new(id, rush_target(game_state))
+    }
+}
+
+/// The Rush (GFI) target: 2+, 3+ in a blizzard.
+pub fn rush_target(game_state: &GameState) -> D6Target {
+    let mut target = D6Target::TwoPlus;
+    if game_state.info.weather == Weather::Blizzard {
+        target.add_modifer(-1);
+    }
+    target
 }
 impl SimpleProc for GfiProc {
     fn d6_target(&self) -> D6Target {
@@ -41,6 +59,14 @@ impl SimpleProc for GfiProc {
         self.id
     }
 }
+/// Squares of movement standing up costs: 3, or nothing with Jump Up.
+pub fn standup_cost(player: &FieldedPlayer) -> u8 {
+    if player.has_skill(Skill::JumpUp) {
+        0
+    } else {
+        3
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct StandUp {
     id: PlayerID,
@@ -53,8 +79,9 @@ impl StandUp {
 impl Procedure for StandUp {
     fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
         debug_assert_eq!(game_state.get_player_unsafe(self.id).status, PlayerStatus::Down); // can only standup if down, not if stunned
-        game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Up;
-        game_state.get_mut_player_unsafe(self.id).add_move(3);
+        let player = game_state.get_mut_player_unsafe(self.id);
+        player.status = PlayerStatus::Up;
+        player.add_move(standup_cost(player));
 
         ProcState::Done
     }
@@ -63,10 +90,13 @@ impl Procedure for StandUp {
 pub struct DodgeProc {
     target: D6Target,
     id: PlayerID,
+    /// Who marks the square left.
+    #[serde(default)]
+    markers: DodgeMarkers,
 }
 impl DodgeProc {
-    fn new(id: PlayerID, target: D6Target) -> AnyProc {
-        AnyProc::DodgeProc(SimpleProcContainer::new(DodgeProc { target, id }))
+    fn new(id: PlayerID, target: D6Target, markers: DodgeMarkers) -> AnyProc {
+        AnyProc::DodgeProc(SimpleProcContainer::new(DodgeProc { target, id, markers }))
     }
 }
 impl SimpleProc for DodgeProc {
@@ -78,9 +108,20 @@ impl SimpleProc for DodgeProc {
         Some(Skill::Dodge)
     }
 
+    fn skill_reroll_contested_by(&self, game_state: &GameState) -> Option<TeamType> {
+        self.markers
+            .tackle
+            .then(|| other_team(game_state.get_player_unsafe(self.id).stats.team))
+    }
+
     fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.info.turnover = true;
-        vec![block_procs::KnockDown::new(self.id)]
+        // Arm Bar: +1 to the armour or injury roll, the way Mighty Blow's goes.
+        let blow = Blow {
+            mighty_blow: self.markers.arm_bar,
+            ..Blow::default()
+        };
+        vec![block_procs::KnockDown::new_with_blow(self.id, blow)]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -89,7 +130,7 @@ impl SimpleProc for DodgeProc {
 }
 fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
     match roll {
-        PathingEvent::Dodge(target) => vec![DodgeProc::new(active_player, target)],
+        PathingEvent::Dodge(target, markers) => vec![DodgeProc::new(active_player, target, markers)],
         PathingEvent::GFI(target) => vec![GfiProc::new(active_player, target)],
         PathingEvent::Pickup(target) => vec![ball_procs::PickupProc::new(active_player, target)],
         PathingEvent::Block(id, dices) => vec![block_procs::Block::new(dices, id)],
@@ -363,6 +404,93 @@ mod tests {
         Ok(())
     }
 
+    /// Tackle: dodging out of a square a Tackle player marks, the Tackle player's coach may deny
+    /// the Dodge re-roll — they are asked when it would be used. A 2 fails the 3+ dodge; with no
+    /// team re-rolls, a denied dodger falls.
+    #[test]
+    fn tackle_may_deny_the_dodge_reroll_when_leaving_its_zone() {
+        let start_pos = Position::new((3, 3));
+        // `tackle`: None = the marker has no Tackle, Some(used) = it has, and is (not) used.
+        let dodge_with = |tackle: Option<bool>| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(Position::new((4, 3)))
+                .build();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            let id = state.get_player_id_at(start_pos).unwrap();
+            state.get_mut_player_unsafe(id).stats.give_skill(Skill::Dodge);
+            if tackle.is_some() {
+                let marker = state.get_player_id_at(Position::new((4, 3))).unwrap();
+                state.get_mut_player_unsafe(marker).stats.give_skill(Skill::Tackle);
+            }
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fix_d6(2); //fail the 3+ dodge
+            let rest = |state: &mut GameState| {
+                if tackle == Some(true) {
+                    state.fix_d6(1); //armor
+                    state.fix_d6(1); //armor
+                } else {
+                    state.fix_d6(3); //Dodge re-roll passes
+                }
+            };
+            if tackle.is_none() {
+                rest(&mut state);
+            }
+            state.step_positional(PosAT::Move, Position::new((2, 4)));
+            if let Some(used) = tackle {
+                assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+                rest(&mut state);
+                state.step_simple(if used {
+                    SimpleAT::UseSkill
+                } else {
+                    SimpleAT::DontUseSkill
+                });
+            }
+            state.get_player_unsafe(id).status
+        };
+        assert_eq!(dodge_with(None), PlayerStatus::Up);
+        assert_eq!(dodge_with(Some(false)), PlayerStatus::Up);
+        assert_eq!(dodge_with(Some(true)), PlayerStatus::Down);
+    }
+
+    /// Arm Bar: a player falling as they dodge out of an Arm Bar player's tackle zone takes +1 on
+    /// the armour (or injury) roll — an 8 breaks AV 8 only with it. A prone Arm Bar player has no
+    /// tackle zone; the second marker still makes it a dodge.
+    #[test]
+    fn arm_bar_hits_a_player_falling_out_of_its_zone() {
+        let start_pos = Position::new((3, 3));
+        let fall = |arm_bar: bool, prone: bool| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(Position::new((4, 3)))
+                .add_away_player(Position::new((4, 2)))
+                .build();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            let id = state.get_player_id_at(start_pos).unwrap();
+            state.get_mut_player_unsafe(id).stats.av = 8;
+            let marker = state.get_player_id_at(Position::new((4, 3))).unwrap();
+            if arm_bar {
+                state.get_mut_player_unsafe(marker).stats.give_skill(Skill::ArmBar);
+            }
+            if prone {
+                state.get_mut_player_unsafe(marker).status = PlayerStatus::Down;
+            }
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fix_d6(2); //fail the 3+ dodge
+            state.fix_d6(5); //armour: 8
+            state.fix_d6(3);
+            if arm_bar && !prone {
+                state.fix_d6(1); //injury: stunned
+                state.fix_d6(2);
+            }
+            state.step_positional(PosAT::Move, Position::new((2, 4)));
+            state.get_player_unsafe(id).status
+        };
+        assert_eq!(fall(false, false), PlayerStatus::Down);
+        assert_eq!(fall(true, false), PlayerStatus::Stunned);
+        assert_eq!(fall(true, true), PlayerStatus::Down);
+    }
+
     #[test]
     fn dodge_reroll() -> Result<()> {
         let start_pos = Position::new((1, 1));
@@ -548,9 +676,9 @@ mod tests {
 
         let expected_steps: Vec<PositionOrEvent> = vec![
             PositionOrEvent::Position(Position::new((2, 1))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, Default::default())),
             PositionOrEvent::Position(Position::new((3, 1))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, Default::default())),
             // (4,2) and (3,2) are interchangeable here — same probability,
             // same events, same remaining movement — so which one the
             // pathfinder returns is decided by `expand_node`'s direction
@@ -559,11 +687,11 @@ mod tests {
             // the probability below is the assertion that carries meaning.
             PositionOrEvent::Position(Position::new((4, 2))),
             PositionOrEvent::Position(Position::new((4, 3))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, Default::default())),
             PositionOrEvent::Position(Position::new((4, 4))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, Default::default())),
             PositionOrEvent::Position(Position::new((4, 5))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, Default::default())),
             PositionOrEvent::Position(Position::new((4, 6))),
             PositionOrEvent::Event(PathingEvent::GFI(D6Target::TwoPlus)),
             PositionOrEvent::Event(PathingEvent::Pickup(D6Target::ThreePlus)),
@@ -959,6 +1087,80 @@ mod tests {
 
         assert_eq!(state.get_player_unsafe(id).position, foul_from_pos);
     }
+    /// Guard assists a foul too: the assister next to the prone victim is marked by another away
+    /// player, so only Guard lets it count. AV 8 needs a 9 to break; the assist makes an 8 do.
+    #[test]
+    fn guard_assists_a_foul_while_marked() {
+        let fouler_pos = Position::new((5, 3));
+        let victim_pos = Position::new((6, 3));
+        let assister_pos = Position::new((7, 2));
+        let foul_with = |guard: bool| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(fouler_pos)
+                .add_home_player(assister_pos)
+                .add_away_player(victim_pos)
+                .add_away_player(Position::new((8, 1)))
+                .build();
+            let victim = state.get_player_id_at(victim_pos).unwrap();
+            state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+            state.get_mut_player_unsafe(victim).stats.av = 8;
+            if guard {
+                let assister = state.get_player_id_at(assister_pos).unwrap();
+                state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+            }
+            state.step_positional(PosAT::StartFoul, fouler_pos);
+            state.fix_d6(5); //armor
+            state.fix_d6(3); //armor
+            if guard {
+                state.fix_d6(1); //injury: stunned
+                state.fix_d6(2); //injury
+            }
+            state.step_positional(PosAT::Foul, victim_pos);
+            state.get_player_unsafe(victim).status
+        };
+        assert_eq!(
+            foul_with(false),
+            PlayerStatus::Down,
+            "an 8 does not break AV 8 unassisted"
+        );
+        assert_eq!(foul_with(true), PlayerStatus::Stunned);
+    }
+
+    /// And a defensive foul assist: the victim's team-mate next to the fouler is marked by
+    /// another home player. AV 8 breaks on a 9 unless the Guard assist makes it need a 10.
+    #[test]
+    fn guard_defends_a_foul_while_marked() {
+        let fouler_pos = Position::new((5, 3));
+        let victim_pos = Position::new((6, 3));
+        let assister_pos = Position::new((4, 2));
+        let foul_with = |guard: bool| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(fouler_pos)
+                .add_home_player(Position::new((3, 1)))
+                .add_away_player(victim_pos)
+                .add_away_player(assister_pos)
+                .build();
+            let victim = state.get_player_id_at(victim_pos).unwrap();
+            state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+            state.get_mut_player_unsafe(victim).stats.av = 8;
+            if guard {
+                let assister = state.get_player_id_at(assister_pos).unwrap();
+                state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+            }
+            state.step_positional(PosAT::StartFoul, fouler_pos);
+            state.fix_d6(5); //armor
+            state.fix_d6(4); //armor
+            if !guard {
+                state.fix_d6(1); //injury: stunned
+                state.fix_d6(2); //injury
+            }
+            state.step_positional(PosAT::Foul, victim_pos);
+            state.get_player_unsafe(victim).status
+        };
+        assert_eq!(foul_with(false), PlayerStatus::Stunned, "a 9 breaks AV 8 unassisted");
+        assert_eq!(foul_with(true), PlayerStatus::Down);
+    }
+
     #[test]
     fn standup_pathing() {
         // Needs a (3,3) diagonal plus a push square — requires at least 7 rows.
@@ -1015,6 +1217,23 @@ mod tests {
 
         state.step_simple(SimpleAT::EndPlayerTurn);
         assert!(state.get_player_unsafe(id).used);
+    }
+
+    #[test]
+    fn jump_up_stands_up_without_spending_movement() {
+        let start_pos = Position::new((2, 1));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+
+        let id = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(id).status = PlayerStatus::Down;
+        state.get_mut_player_unsafe(id).stats.give_skill(Skill::JumpUp);
+
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.step_positional(PosAT::Move, start_pos);
+
+        let player = state.get_player_unsafe(id);
+        assert_eq!(player.status, PlayerStatus::Up);
+        assert_eq!(player.moves_left(), player.stats.ma, "standing up was free");
     }
 
     #[test]

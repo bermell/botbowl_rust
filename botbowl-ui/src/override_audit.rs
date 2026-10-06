@@ -828,7 +828,9 @@ mod tests {
     fn a_playout_is_a_function_of_state_move_and_seed() {
         let nn = tiny_net();
         let board = boards()[0];
-        let state = position_state(&RandomStartBias::default(), board, 77);
+        // A position whose drive reaches the dice: under the v8 action layout (plan 047) the
+        // fixture net's argmax is often `EndTurn`, and many positions just run out the half.
+        let state = position_state(&RandomStartBias::default(), board, 81);
         let mover = attacker_of(&state);
         let (legal, _, best) = PolicyBot::new(Arc::clone(&nn)).priors(&state);
         let mut finals = Vec::new();
@@ -917,6 +919,7 @@ mod tests {
             root_visits: 0,
             root_solved: false,
             outcome_value: None,
+            scripted: false,
         };
         let traj = Trajectory::new(
             TrajectoryMeta::new("random-start", state.board_dims),
@@ -946,8 +949,9 @@ mod tests {
             board_sizes: Some(botbowl_play::board_sizes::SizeDist::single(board)),
             config_name: None,
             exploration: None,
+            next_drive: false,
         };
-        let original = play_trajectory(&cfg, None, 4242).unwrap().unwrap();
+        let original = play_trajectory(&cfg, None, 4242).unwrap().remove(0);
         let traj: Trajectory = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
         let mut with_paths = 0;
         for (k, s) in original.samples.iter().enumerate() {

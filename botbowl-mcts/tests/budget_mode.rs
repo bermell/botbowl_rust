@@ -62,7 +62,12 @@ fn drive(mode: BudgetMode, moves: usize) -> Vec<Decision> {
         }
         let before = bot.telemetry().iterations;
         let action = bot.get_action(&state);
-        let s = bot.last_search().expect("a completed search leaves a summary");
+        // A kickoff setup after a score is answered from a formation, without a search (plan
+        // 047); only searched decisions are the subject here.
+        let Some(s) = bot.last_search() else {
+            state.step(action).unwrap();
+            continue;
+        };
         out.push(Decision {
             reuse: s.reuse.outcome,
             iterations: bot.telemetry().iterations - before,

@@ -55,6 +55,7 @@ pub fn pos_at_to_proto(at: et::PosAT) -> pa::PosAT {
         et::PosAT::Foul => pa::PosAT::Foul,
         et::PosAT::StartBlock => pa::PosAT::StartBlock,
         et::PosAT::Block => pa::PosAT::Block,
+        et::PosAT::PlacePlayer => pa::PosAT::PlacePlayer,
     }
 }
 
@@ -74,6 +75,7 @@ pub fn pos_at_from_proto(at: pa::PosAT) -> et::PosAT {
         pa::PosAT::Foul => et::PosAT::Foul,
         pa::PosAT::StartBlock => et::PosAT::StartBlock,
         pa::PosAT::Block => et::PosAT::Block,
+        pa::PosAT::PlacePlayer => et::PosAT::PlacePlayer,
     }
 }
 
@@ -92,12 +94,10 @@ pub fn simple_at_to_proto(at: et::SimpleAT) -> pa::SimpleAT {
         et::SimpleAT::Tails => pa::SimpleAT::Tails,
         et::SimpleAT::Kick => pa::SimpleAT::Kick,
         et::SimpleAT::Receive => pa::SimpleAT::Receive,
-        et::SimpleAT::SetupLine => pa::SimpleAT::SetupLine,
-        et::SimpleAT::EndSetup => pa::SimpleAT::EndSetup,
         et::SimpleAT::KickoffAimMiddle => pa::SimpleAT::KickoffAimMiddle,
-        et::SimpleAT::SetupSpread => pa::SimpleAT::SetupSpread,
-        et::SimpleAT::SetupWedge => pa::SimpleAT::SetupWedge,
-        et::SimpleAT::SetupZone => pa::SimpleAT::SetupZone,
+        et::SimpleAT::BenchPlayer => pa::SimpleAT::BenchPlayer,
+        et::SimpleAT::UseSkill => pa::SimpleAT::UseSkill,
+        et::SimpleAT::DontUseSkill => pa::SimpleAT::DontUseSkill,
     }
 }
 
@@ -116,12 +116,10 @@ pub fn simple_at_from_proto(at: pa::SimpleAT) -> et::SimpleAT {
         pa::SimpleAT::Tails => et::SimpleAT::Tails,
         pa::SimpleAT::Kick => et::SimpleAT::Kick,
         pa::SimpleAT::Receive => et::SimpleAT::Receive,
-        pa::SimpleAT::SetupLine => et::SimpleAT::SetupLine,
-        pa::SimpleAT::EndSetup => et::SimpleAT::EndSetup,
         pa::SimpleAT::KickoffAimMiddle => et::SimpleAT::KickoffAimMiddle,
-        pa::SimpleAT::SetupSpread => et::SimpleAT::SetupSpread,
-        pa::SimpleAT::SetupWedge => et::SimpleAT::SetupWedge,
-        pa::SimpleAT::SetupZone => et::SimpleAT::SetupZone,
+        pa::SimpleAT::BenchPlayer => et::SimpleAT::BenchPlayer,
+        pa::SimpleAT::UseSkill => et::SimpleAT::UseSkill,
+        pa::SimpleAT::DontUseSkill => et::SimpleAT::DontUseSkill,
     }
 }
 
@@ -428,6 +426,7 @@ pub fn skill_label(s: et::Skill) -> &'static str {
         et::Skill::SureHands => "Sure Hands",
         et::Skill::Tackle => "Tackle",
         et::Skill::Wrestle => "Wrestle",
+        et::Skill::StripBall => "Strip Ball",
         et::Skill::Claws => "Claws",
         et::Skill::Accurate => "Accurate",
         et::Skill::NervesOfSteel => "Nerves of Steel",
@@ -465,9 +464,9 @@ mod tests {
             assert_eq!(simple_at_to_proto(simple_at_from_proto(at)), at);
         }
         // ...and the engine side is covered by the same identity, because the
-        // maps are bijections between two 14- and 19-variant enums.
-        assert_eq!(pa::PosAT::ALL.len(), 14);
-        assert_eq!(pa::SimpleAT::ALL.len(), 19);
+        // maps are bijections between enums of the same size (15 positional, 17 simple).
+        assert_eq!(pa::PosAT::ALL.len(), 15);
+        assert_eq!(pa::SimpleAT::ALL.len(), 17);
     }
 
     #[test]

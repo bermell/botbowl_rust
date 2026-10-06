@@ -279,11 +279,17 @@ impl BoardDims {
         let (los, wing) = self.bands();
         (wing + los + 1)..=(self.height - 2)
     }
+    /// The endzone `team` scores in — the far end of the opponent's half.
     pub fn endzone_x(&self, team: TeamType) -> Coord {
         match team {
             TeamType::Home => 1,
             TeamType::Away => self.width - 2,
         }
+    }
+    /// The endzone `team` defends — the back column of its own half, where
+    /// `Setup` stages the players waiting to be placed.
+    pub fn own_endzone_x(&self, team: TeamType) -> Coord {
+        self.endzone_x(other_team(team))
     }
     /// LOS-to-endzone distance is `width/2 - 1` for either team (the pitch is
     /// symmetric), so this is team-independent.

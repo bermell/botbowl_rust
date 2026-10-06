@@ -1,7 +1,7 @@
 use botbowl_engine::core::dices::{BlockDice, Coin, RequestedRoll, RollResult, RollTarget, Sum2D6, D3, D6, D8};
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Direction, InjuryOutcome, Position};
-use botbowl_engine::core::procedures::block_procs::Push;
+use botbowl_engine::core::procedures::block_procs::{juggernaut_blitz, Push};
 use botbowl_engine::core::procedures::AnyProc;
 use botbowl_engine::core::table::{NumBlockDices, Skill};
 
@@ -135,6 +135,12 @@ enum BlockOutcome {
     DefDownNoPush,
     /// Defender pushed back, nobody down: `Push`, or `PowPush` against Dodge.
     Push,
+    /// `BothDown` with a Wrestle player in the block, or by a Juggernaut blitzer: a use-it-or-not
+    /// decision follows (both placed prone or a Push, else the Both Down as normal), searched as a
+    /// node of its own. Ranked just
+    /// below `Push` for the attacker — a rough place for an outcome whose value depends on who
+    /// decides.
+    Wrestle,
     /// Nobody moves, nobody falls: `BothDown` when both have Block.
     NothingHappens,
     /// Both players down, turnover: `BothDown` when neither has Block.
@@ -169,6 +175,9 @@ struct BlockContext {
     defender_block: bool,
     defender_dodge: bool,
     crowd_push: bool,
+    /// A Both Down asks a skill question: either player has Wrestle, or the blocker is a
+    /// Juggernaut blitzer.
+    both_down_asks: bool,
 }
 
 impl BlockContext {
@@ -177,6 +186,7 @@ impl BlockContext {
         let push_effect = if self.crowd_push { DefDownPush } else { Push };
         match die {
             BlockDice::Skull => AttDown,
+            BlockDice::BothDown if self.both_down_asks => Wrestle,
             BlockDice::BothDown => match (self.attacker_block, self.defender_block) {
                 (true, true) => NothingHappens,
                 (true, false) => DefDownNoPush,
@@ -196,7 +206,7 @@ impl BlockContext {
         use BlockOutcome::*;
         match outcome {
             DefDownPush => BlockDice::Pow,
-            DefDownNoPush | NothingHappens | AllDown => BlockDice::BothDown,
+            DefDownNoPush | Wrestle | NothingHappens | AllDown => BlockDice::BothDown,
             Push => BlockDice::Push,
             AttDown => BlockDice::Skull,
         }
@@ -293,8 +303,13 @@ fn block_outcomes(state: &GameState, n: NumBlockDices) -> Vec<BbAction> {
     let ctx = BlockContext {
         attacker_block: attacker.has_skill(Skill::Block),
         defender_block: defender.has_skill(Skill::Block),
-        defender_dodge: defender.has_skill(Skill::Dodge),
-        crowd_push: Push::is_crowd_push(attacker.position, defender.position, state),
+        defender_dodge: botbowl_engine::core::procedures::dodge_saves_from_stumble(attacker, defender),
+        // A Stand Firm defender may refuse the push, so a crowd push is not certain removal.
+        crowd_push: Push::is_crowd_push(attacker.position, defender.position, state)
+            && (!defender.has_skill(Skill::StandFirm) || juggernaut_blitz(state)),
+        both_down_asks: attacker.has_skill(Skill::Wrestle)
+            || defender.has_skill(Skill::Wrestle)
+            || juggernaut_blitz(state),
     };
     let num_dice = u8::from(n) as usize;
     let defender_picks = matches!(n, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill);
@@ -879,6 +894,17 @@ mod tests {
         expected_dice: NumBlockDices,
         setup: impl FnOnce(&mut GameState),
     ) -> GameState {
+        paused_on_block_by(PosAT::StartBlock, att, def, extra, expected_dice, setup)
+    }
+
+    fn paused_on_block_by(
+        start: PosAT,
+        att: Position,
+        def: Position,
+        extra: &[(Position, TeamType)],
+        expected_dice: NumBlockDices,
+        setup: impl FnOnce(&mut GameState),
+    ) -> GameState {
         let mut builder = GameStateBuilder::new();
         builder.add_home_player(att).add_away_player(def);
         for (pos, team) in extra {
@@ -890,7 +916,7 @@ mod tests {
         let mut state = builder.build();
         setup(&mut state);
         state.set_dice_mode(DiceMode::RegisterRolls);
-        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::StartBlock, att)));
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(start, att)));
         state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::Block, def)));
         assert_eq!(state.proc_stack_top(), Some("Block"), "expected to be mid-block");
         assert_eq!(state.pending_roll, Some(RequestedRoll::BlockDice(expected_dice)));
@@ -1022,6 +1048,77 @@ mod tests {
         assert!(probs_sum_to_one(&outcomes));
         assert_prob(&outcomes, &[BlockDice::Pow], 1, 6);
         assert_prob(&outcomes, &[BlockDice::Push], 3, 6);
+    }
+
+    /// Tackle on the attacker takes the defender's Dodge out of the Stumble: PowPush is a
+    /// knockdown again.
+    #[test]
+    fn block_attacker_tackle_beats_defender_dodge() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |s| {
+            give_skill(s, DEF, Skill::Dodge);
+            give_skill(s, ATT, Skill::Tackle);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::Pow], 2, 6);
+        assert_prob(&outcomes, &[BlockDice::Push], 2, 6);
+    }
+
+    /// With a Wrestle player in the block, Both Down is a decision (use it or not), so it is its
+    /// own child — not folded into the attacker-down Skull even when the defender has Block.
+    #[test]
+    fn block_both_down_with_wrestle_is_its_own_child() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |s| {
+            give_skill(s, ATT, Skill::Wrestle);
+            give_skill(s, DEF, Skill::Block);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::BothDown], 1, 6);
+        assert_prob(&outcomes, &[BlockDice::Skull], 1, 6);
+    }
+
+    /// So is Both Down for a Juggernaut blitzer, who may play it as a Push.
+    #[test]
+    fn block_both_down_with_juggernaut_in_a_blitz_is_its_own_child() {
+        let state = paused_on_block_by(PosAT::StartBlitz, ATT, DEF, &[], NumBlockDices::One, |s| {
+            give_skill(s, ATT, Skill::Juggernaut);
+            give_skill(s, DEF, Skill::Block);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::BothDown], 1, 6);
+        assert_prob(&outcomes, &[BlockDice::Skull], 1, 6);
+    }
+
+    /// A Stand Firm defender on the sideline may refuse the push into the crowd, so a push die
+    /// is not the defender leaving the pitch: Push stays its own child.
+    #[test]
+    fn block_crowd_push_against_stand_firm_is_not_folded() {
+        let def = Position::new((6, 1));
+        let att = Position::new((6, 2));
+        let state = state_paused_on_block(att, def, &[], NumBlockDices::One, |s| {
+            let id = s.get_player_id_at(def).unwrap();
+            s.get_mut_player_unsafe(id).stats.give_skill(Skill::StandFirm);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::Push], 2, 6);
+        assert_prob(&outcomes, &[BlockDice::Pow], 2, 6);
+    }
+
+    /// ... unless a Juggernaut blitzer takes Stand Firm away.
+    #[test]
+    fn block_crowd_push_against_stand_firm_is_folded_for_a_juggernaut_blitz() {
+        let def = Position::new((6, 1));
+        let att = Position::new((6, 2));
+        let state = paused_on_block_by(PosAT::StartBlitz, att, def, &[], NumBlockDices::One, |s| {
+            give_skill(s, def, Skill::StandFirm);
+            give_skill(s, att, Skill::Juggernaut);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert!(prob_of(&outcomes, &[BlockDice::Push]).is_none());
     }
 
     /// Defender on the sideline with the attacker pushing straight out:

@@ -1,10 +1,11 @@
 //! Training-data trajectories (grand-plan steps 6–7).
 //!
 //! Drives the MCTS bot through one self-play game, one random-start drive
-//! or one curriculum lecture trial, harvesting a [`botbowl_data::Sample`]
-//! at every agent decision (state + raw search distribution + root value),
-//! then backfills the drive/game outcome into one [`Trajectory`] stamped
-//! with the git commit and board config that produced it.
+//! (plus, under `--next-drive`, the drive it sets up — plan 047) or one
+//! curriculum lecture trial, harvesting a [`botbowl_data::Sample`] at every
+//! agent decision (state + raw search distribution + root value), then
+//! backfills the drive/game outcome into one [`Trajectory`] per drive,
+//! stamped with the git commit and board config that produced it.
 
 use std::sync::Arc;
 
@@ -20,7 +21,7 @@ use botbowl_data::{Outcome, Sample, Trajectory, TrajectoryMeta};
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::TeamType;
-use botbowl_mcts::{ExploreOutcome, ExploreStep, RootNoiseSpec, SampleSpec, SearchBudget, SearchTelemetry};
+use botbowl_mcts::{ExploreOutcome, ExploreStep, MctsBot, RootNoiseSpec, SampleSpec, SearchBudget, SearchTelemetry};
 use botbowl_nn::eval::NnEvaluator;
 
 use crate::board_sizes::SizeDist;
@@ -33,6 +34,8 @@ const OPPONENT_SEED_MIX: u64 = 0xA5A5_A5A5_A5A5_A5A5;
 const AGENT_SEED_MIX: u64 = 0x5A5A_5A5A_5A5A_5A5A;
 /// Plan 048: the exploration draws' own stream, so turning exploration on changes no other seed.
 const EXPLORE_SEED_MIX: u64 = 0x3C3C_3C3C_3C3C_3C3C;
+/// The `--next-drive` record's explorer stream, disjoint from the first drive's.
+const NEXT_DRIVE_SEED_MIX: u64 = 0x2D2D_2D2D_2D2D_2D2D;
 
 /// Plan 048 (plan 032 #4): exploration in self-play. Generation only — eval has no such knob.
 ///
@@ -220,6 +223,13 @@ pub struct GenerateConfig {
     /// Plan 048: self-play exploration. `None` is the greedy generator every corpus so far used.
     #[serde(default)]
     pub exploration: Option<Exploration>,
+    /// Plan 047 (random-start only): when the drive ends in a score, keep playing through the
+    /// next drive — both setups, the kickoff and the turns until it too resolves — and write
+    /// that drive as its own record. It is how kickoff setups reach the corpus: the setup
+    /// samples are labelled by the drive they set up, and the roster they set up with is
+    /// whatever the first drive left (injuries, knock-outs, the randomised stats).
+    #[serde(default)]
+    pub next_drive: bool,
 }
 
 impl GenerateConfig {
@@ -229,18 +239,20 @@ impl GenerateConfig {
     }
 }
 
-/// Play one trajectory for `seed`. `Ok(None)` is reserved for modes that
-/// can legitimately produce nothing; `Err` is a configuration error (an
-/// unknown lecture) that will recur on every seed, so callers should stop.
+/// Play the trajectories one `seed` produces: one, or none for a mode that
+/// can legitimately produce nothing, or two when a random-start drive scores
+/// and [`GenerateConfig::next_drive`] carries on into the next one. `Err` is
+/// a configuration error (an unknown lecture) that will recur on every seed,
+/// so callers should stop.
 pub fn play_trajectory(
     cfg: &GenerateConfig,
     nn: Option<&Arc<NnEvaluator>>,
     seed: u64,
-) -> Result<Option<Trajectory>, String> {
+) -> Result<Vec<Trajectory>, String> {
     match cfg.mode {
-        GenMode::SelfPlay => Ok(Some(self_play_trajectory(cfg, nn, seed))),
-        GenMode::RandomStart => Ok(Some(random_start_trajectory(cfg, nn, seed))),
-        GenMode::Curriculum => curriculum_trajectory(cfg, nn, seed),
+        GenMode::SelfPlay => Ok(vec![self_play_trajectory(cfg, nn, seed)]),
+        GenMode::RandomStart => Ok(random_start_trajectory(cfg, nn, seed)),
+        GenMode::Curriculum => curriculum_trajectory(cfg, nn, seed).map(|t| t.into_iter().collect()),
     }
 }
 
@@ -280,10 +292,72 @@ pub fn budget_label(cfg: &GenerateConfig) -> String {
     }
 }
 
-/// Play `state` with MctsBot on both teams, sampling both teams'
-/// decisions, until game over, the step cap, or `stop(state)` — the
-/// latter lets random-start mode end the trajectory at the end of the
-/// current drive instead of playing the game out.
+/// The two MctsBots of a self-play game, so a game can be played in
+/// segments (plan 047: a drive, then the drive after it) by the same bots.
+struct BotPair {
+    home: MctsBot,
+    away: MctsBot,
+}
+
+impl BotPair {
+    fn new(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, seed: u64) -> Self {
+        let mut home = make_mcts(&cfg.search, cfg.evaluator, nn);
+        let mut away = make_mcts(&cfg.search, cfg.evaluator, nn);
+        home.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xA));
+        away.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xB));
+        BotPair { home, away }
+    }
+
+    /// Play `state` with MctsBot on both teams, sampling both teams'
+    /// decisions, until game over, the step cap, or `stop(state)` — the
+    /// latter lets random-start mode end a segment at the end of the
+    /// current drive instead of playing the game out. The telemetry is
+    /// this segment's alone.
+    fn play(
+        &mut self,
+        state: &mut GameState,
+        cfg: &GenerateConfig,
+        explorer: &mut Explorer,
+        stop: impl Fn(&GameState) -> bool,
+    ) -> (Vec<Sample>, SearchTelemetry) {
+        let mut samples: Vec<Sample> = Vec::new();
+        let mut steps = 0u32;
+
+        while !state.info.game_over && !stop(state) && steps < cfg.max_steps {
+            let action = match state.available_actions.team {
+                Some(TeamType::Home) => {
+                    let (a, s, o) = self.home.get_action_explore(state, explorer.step(0));
+                    explorer.record(o);
+                    samples.push(s);
+                    a
+                }
+                Some(TeamType::Away) => {
+                    let (a, s, o) = self.away.get_action_explore(state, explorer.step(1));
+                    explorer.record(o);
+                    samples.push(s);
+                    a
+                }
+                // Under RollDice, `step` auto-resolves chance internally, so a
+                // running game always presents a team to act until game-over.
+                None => break,
+            };
+            state.step(action).expect("engine step failed during self-play");
+            // The idle side's tree from its last turn cannot be reused once the turn moves on;
+            // free it now rather than at that side's next search.
+            self.home.release_stale_tree(state);
+            self.away.release_stale_tree(state);
+            steps += 1;
+        }
+        // Plan 043: both bots' search health, pooled. A self-play trajectory has no "candidate"
+        // side to single out, and the two are configured identically, so one number is the
+        // honest summary.
+        let mut telemetry = self.home.take_telemetry();
+        telemetry.merge(&self.away.take_telemetry());
+        (samples, telemetry)
+    }
+}
+
+/// See [`BotPair::play`]; one segment with fresh bots.
 fn mcts_vs_mcts_samples(
     state: &mut GameState,
     cfg: &GenerateConfig,
@@ -292,43 +366,7 @@ fn mcts_vs_mcts_samples(
     stop: impl Fn(&GameState) -> bool,
 ) -> (Vec<Sample>, SearchTelemetry, Explorer) {
     let mut explorer = Explorer::new(cfg.exploration, seed);
-    let mut home = make_mcts(&cfg.search, cfg.evaluator, nn);
-    let mut away = make_mcts(&cfg.search, cfg.evaluator, nn);
-    home.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xA));
-    away.set_seed(ChaCha8Rng::seed_from_u64(seed ^ 0xB));
-
-    let mut samples: Vec<Sample> = Vec::new();
-    let mut steps = 0u32;
-
-    while !state.info.game_over && !stop(state) && steps < cfg.max_steps {
-        let action = match state.available_actions.team {
-            Some(TeamType::Home) => {
-                let (a, s, o) = home.get_action_explore(state, explorer.step(0));
-                explorer.record(o);
-                samples.push(s);
-                a
-            }
-            Some(TeamType::Away) => {
-                let (a, s, o) = away.get_action_explore(state, explorer.step(1));
-                explorer.record(o);
-                samples.push(s);
-                a
-            }
-            // Under RollDice, `step` auto-resolves chance internally, so a
-            // running game always presents a team to act until game-over.
-            None => break,
-        };
-        state.step(action).expect("engine step failed during self-play");
-        // The idle side's tree from its last turn cannot be reused once the turn moves on; free
-        // it now rather than at that side's next search.
-        home.release_stale_tree(state);
-        away.release_stale_tree(state);
-        steps += 1;
-    }
-    // Plan 043: both bots' search health, pooled. A self-play trajectory has no "candidate" side
-    // to single out, and the two are configured identically, so one number is the honest summary.
-    let mut telemetry = home.take_telemetry();
-    telemetry.merge(away.telemetry());
+    let (samples, telemetry) = BotPair::new(cfg, nn, seed).play(state, cfg, &mut explorer, stop);
     (samples, telemetry, explorer)
 }
 
@@ -396,12 +434,18 @@ fn self_play_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, see
 }
 
 /// One MctsBot-vs-MctsBot **drive** from a randomized mid-game state
-/// (plan 019): the trajectory ends when either team scores, the half
-/// ends, or the game ends — never plays into the next drive. Everything
-/// after the drive resolves would be downstream of self-play (correlated
-/// states, bot-chosen kickoff formations) instead of the diverse random
-/// placement this mode exists to provide (plan 020).
-fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, seed: u64) -> Trajectory {
+/// (plan 019): the record ends when either team scores, the half ends, or
+/// the game ends. Everything after the drive resolves would be downstream
+/// of self-play (correlated states) instead of the diverse random placement
+/// this mode exists to provide (plan 020) — with one exception, plan 047:
+/// under [`GenerateConfig::next_drive`] a drive that *scores* is followed
+/// through the kickoff that comes next (both per-player setups, the kick,
+/// the turns) until that drive resolves too, and that second drive is its
+/// own record (`drive = 2`, `start = setup`). Two records, not one, so every
+/// per-drive consumer (`prepare`'s per-drive weight, `td_rate.py`, the hub's
+/// TD count) keeps meaning what it means, and the setup samples are labelled
+/// by the drive they set up, nothing else.
+fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, seed: u64) -> Vec<Trajectory> {
     let mut rs = cfg.bias.to_config();
     // Alternate the placement temperature per game so the corpus mixes
     // sharp (clustered) and flat (scattered) player distributions.
@@ -414,43 +458,72 @@ fn random_start_trajectory(cfg: &GenerateConfig, nn: Option<&Arc<NnEvaluator>>, 
     state.set_logging_state(false);
 
     let board_dims = state.board_dims;
-    let (start_half, start_home_turn, start_away_turn) = (state.info.half, state.info.home_turn, state.info.away_turn);
-    let (start_home_score, start_away_score) = (state.home.score, state.away.score);
-    let start_score = format!("{start_home_score}-{start_away_score}");
-    let drive = crate::drives::DriveStart::of(&state);
-    let (samples, telemetry, explorer) = mcts_vs_mcts_samples(&mut state, cfg, nn, seed, |s| drive.over(s));
-
     let label = budget_label(cfg);
     let bias = &cfg.bias;
-    let mut meta = TrajectoryMeta::new("random-start", board_dims)
-        .with_bots(label.clone(), label)
-        .with_seed(seed)
-        .with_extra("mode", "random-start")
-        .with_extra("max_steps", cfg.max_steps.to_string())
-        .with_extra("ball_distance", bias.ball_distance.to_string())
-        .with_extra("front_line", bias.front_line.to_string())
-        .with_extra("mark_teammate", bias.mark_teammate.to_string())
-        .with_extra("mark_opponent", bias.mark_opponent.to_string())
-        .with_extra("own_side", bias.own_side.to_string())
-        .with_extra("temperature", rs.temperature.to_string())
-        .with_extra("temperature2", bias.temperature2.to_string())
-        .with_extra("drive_bounded", "true".to_string())
-        .with_extra("carried_prob", bias.carried_prob.to_string())
-        .with_extra("line_fraction", bias.line_fraction.to_string())
-        .with_extra("pocket_fraction", bias.pocket_fraction.to_string())
-        .with_extra("start_half", start_half.to_string())
-        .with_extra("start_home_turn", start_home_turn.to_string())
-        .with_extra("start_away_turn", start_away_turn.to_string())
-        .with_extra("start_score", start_score);
-    if let Some(d) = &cfg.board_sizes {
-        meta = meta.with_extra("size_dist", d.label.clone());
+    let base_meta = |drive: u32, start: &str, s: &GameState| {
+        let mut meta = TrajectoryMeta::new("random-start", board_dims)
+            .with_bots(label.clone(), label.clone())
+            .with_seed(seed)
+            .with_extra("mode", "random-start")
+            .with_extra("max_steps", cfg.max_steps.to_string())
+            .with_extra("ball_distance", bias.ball_distance.to_string())
+            .with_extra("front_line", bias.front_line.to_string())
+            .with_extra("mark_teammate", bias.mark_teammate.to_string())
+            .with_extra("mark_opponent", bias.mark_opponent.to_string())
+            .with_extra("own_side", bias.own_side.to_string())
+            .with_extra("temperature", rs.temperature.to_string())
+            .with_extra("temperature2", bias.temperature2.to_string())
+            .with_extra("drive_bounded", "true".to_string())
+            .with_extra("carried_prob", bias.carried_prob.to_string())
+            .with_extra("line_fraction", bias.line_fraction.to_string())
+            .with_extra("pocket_fraction", bias.pocket_fraction.to_string())
+            .with_extra("drive", drive.to_string())
+            .with_extra("start", start)
+            .with_extra("start_half", s.info.half.to_string())
+            .with_extra("start_home_turn", s.info.home_turn.to_string())
+            .with_extra("start_away_turn", s.info.away_turn.to_string())
+            .with_extra("start_score", format!("{}-{}", s.home.score, s.away.score));
+        if let Some(d) = &cfg.board_sizes {
+            meta = meta.with_extra("size_dist", d.label.clone());
+        }
+        if let Some(name) = &cfg.config_name {
+            meta = meta.with_extra("mcts_config", name.clone());
+        }
+        meta
+    };
+    let mut bots = BotPair::new(cfg, nn, seed);
+    let drive = crate::drives::DriveStart::of(&state);
+    let meta = base_meta(1, "random", &state);
+    let mut explorer = Explorer::new(cfg.exploration, seed);
+    let (samples, telemetry) = bots.play(&mut state, cfg, &mut explorer, |s| drive.over(s));
+    let mut out = vec![Trajectory::new(
+        explorer.stamp(with_telemetry(meta, &telemetry)),
+        samples,
+        Outcome::from_state(&state, None),
+    )];
+
+    // A score (not a half end, not game over) leaves the engine at the next
+    // drive's first setup prompt: the scoring team kicks and is asked to
+    // place its first player.
+    let scored = drive.scored(&state) != (0, 0);
+    if cfg.next_drive
+        && scored
+        && !state.info.game_over
+        && state.info.half == drive.half
+        && state.setup_team().is_some()
+    {
+        let next = crate::drives::DriveStart::of(&state);
+        let meta = base_meta(2, "setup", &state);
+        // Its own exploration budget, like any drive's: the first moves sampled are the setup's.
+        let mut explorer = Explorer::new(cfg.exploration, seed ^ NEXT_DRIVE_SEED_MIX);
+        let (samples, telemetry) = bots.play(&mut state, cfg, &mut explorer, |s| next.over(s));
+        out.push(Trajectory::new(
+            explorer.stamp(with_telemetry(meta, &telemetry)),
+            samples,
+            Outcome::from_state(&state, None),
+        ));
     }
-    if let Some(name) = &cfg.config_name {
-        meta = meta.with_extra("mcts_config", name.clone());
-    }
-    let meta = explorer.stamp(with_telemetry(meta, &telemetry));
-    let outcome = Outcome::from_state(&state, None);
-    Trajectory::new(meta, samples, outcome)
+    out
 }
 
 /// One curriculum lecture trial: MctsBot agent vs RandomBot opponent.

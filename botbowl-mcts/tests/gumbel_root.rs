@@ -181,8 +181,11 @@ fn halving_also_drives_a_reused_tree() {
     let mut b = bot(M, 0.0);
     for _ in 0..16 {
         let a = b.get_action(&state);
-        let s = b.last_search().unwrap();
-        if s.reuse.outcome == botbowl_mcts::ReuseOutcome::Reused && s.children.len() > M as usize {
+        // A heuristic bot answers a kickoff setup from a formation, without a search (plan 047).
+        let searched = b.last_search().cloned();
+        if let Some(s) =
+            searched.filter(|s| s.reuse.outcome == botbowl_mcts::ReuseOutcome::Reused && s.children.len() > M as usize)
+        {
             let descents = s.root_descents.clone().unwrap();
             // Every descent of a reused search is named (no expansion step), apart from fallbacks
             // of moves solved mid-phase; plain PUCT spreads over far more than M moves.

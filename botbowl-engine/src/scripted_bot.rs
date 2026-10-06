@@ -12,6 +12,7 @@ use crate::bots::Bot;
 use crate::core::gamestate::GameState;
 use crate::core::model::{other_team, Action, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType};
 use crate::core::pathing::{Node, PathFinder};
+use crate::core::procedures::Formation;
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
 /// Minimum success probability for the bot to attempt a path that ends in a
@@ -71,12 +72,7 @@ impl Bot for ScriptedBot {
 fn first_legal_simple_or_any(state: &GameState) -> Option<Action> {
     let all = state.get_all_actions();
     // Prefer the most "neutral" simple action.
-    for preferred in [
-        SimpleAT::EndTurn,
-        SimpleAT::EndPlayerTurn,
-        SimpleAT::EndSetup,
-        SimpleAT::DontUseReroll,
-    ] {
+    for preferred in [SimpleAT::EndTurn, SimpleAT::EndPlayerTurn, SimpleAT::DontUseReroll] {
         let candidate = Action::Simple(preferred);
         if all.contains(&candidate) {
             return Some(candidate);
@@ -100,15 +96,11 @@ fn decide(state: &GameState) -> (Action, Vec<Action>) {
         return (Action::Simple(SimpleAT::Receive), vec![]);
     }
 
-    // Setup — let the engine pick a default formation, then end setup on the next call.
-    if simple.contains(&SimpleAT::SetupLine) {
-        return (
-            Action::Simple(SimpleAT::SetupLine),
-            vec![Action::Simple(SimpleAT::EndSetup)],
-        );
-    }
-    if simple.contains(&SimpleAT::EndSetup) {
-        return (Action::Simple(SimpleAT::EndSetup), vec![]);
+    // Setup — place the queued player where the default line formation puts it.
+    if let Some(team) = state.setup_team() {
+        if let Some(action) = Formation::Line.next_action(state, team) {
+            return (action, vec![]);
+        }
     }
 
     // Kickoff aim
@@ -338,14 +330,11 @@ fn pick_block_die(state: &GameState, simple: &std::collections::HashSet<SimpleAT
     // Pow-push (defender stumbles / falls): take it unless defender has Dodge and we lack Tackle.
     if simple.contains(&SimpleAT::SelectPowPush) {
         let (attacker, defender) = active_block_attacker_defender(state);
-        let defender_dodges = defender.map(|d| d.has_skill(Skill::Dodge)).unwrap_or(false);
-        let attacker_has_tackle = attacker
-            .map(|a| a.has_skill(Skill::Block /* TODO: Tackle when added */))
-            .unwrap_or(false);
-        let _ = attacker_has_tackle;
-        // Tackle isn't in the Skill enum yet, so the choice collapses to "always take it";
-        // when defender has Dodge they'd just dodge it out, but it's still better than
-        // a plain push or both-down.
+        let defender_dodges = match (attacker, defender) {
+            (Some(a), Some(d)) => crate::core::procedures::dodge_saves_from_stumble(a, d),
+            (None, Some(d)) => d.has_skill(Skill::Dodge),
+            _ => false,
+        };
         if !defender_dodges {
             return Some(Action::Simple(SimpleAT::SelectPowPush));
         }
@@ -624,6 +613,59 @@ mod tests {
         }
     }
 
+    /// Against a Dodge defender the bot takes a Stumble only when its blocker has Tackle.
+    #[test]
+    fn takes_a_stumble_against_dodge_only_with_tackle() {
+        use crate::core::dices::BlockDice;
+        let pick_with = |tackle: bool| {
+            let attacker_pos = Position::new((5, 3));
+            let defender_pos = Position::new((6, 3));
+            let mut state = GameStateBuilder::new()
+                .add_home_player(attacker_pos)
+                .add_home_player(Position::new((7, 4))) // the assist that makes it two dice
+                .add_away_player(defender_pos)
+                .build();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            let attacker = state.get_player_id_at(attacker_pos).unwrap();
+            let defender = state.get_player_id_at(defender_pos).unwrap();
+            state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Dodge);
+            if tackle {
+                state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Tackle);
+            }
+            state.step_positional(PosAT::StartBlock, attacker_pos);
+            state.fix_blockdice(BlockDice::PowPush);
+            state.fix_blockdice(BlockDice::Push);
+            state.step_positional(PosAT::Block, defender_pos);
+            let simple = state.available_actions.get_simple().clone();
+            pick_block_die(&state, &simple)
+        };
+        assert_eq!(pick_with(false), Some(Action::Simple(SimpleAT::SelectPush)));
+        assert_eq!(pick_with(true), Some(Action::Simple(SimpleAT::SelectPowPush)));
+    }
+
+    /// Asked about an optional skill (Wrestle here), the bot uses it.
+    #[test]
+    fn uses_an_offered_skill() {
+        use crate::core::dices::BlockDice;
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Wrestle);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectBothDown);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+        assert_eq!(
+            ScriptedBot::new().get_action(&state),
+            Action::Simple(SimpleAT::UseSkill)
+        );
+    }
+
     /// At a clean turn start with a 2DB matchup available, the ladder issues a
     /// START_BLOCK rather than ending the turn.
     #[test]
@@ -678,10 +720,7 @@ mod tests {
             .build();
 
         let pick = |state: &mut GameState, team: TeamType| -> Position {
-            let positions: Vec<Position> = state
-                .get_players_on_pitch_in_team(team)
-                .map(|p| p.position)
-                .collect();
+            let positions: Vec<Position> = state.get_players_on_pitch_in_team(team).map(|p| p.position).collect();
             let mut aa = AvailableActions::new(team);
             aa.insert_positional(PosAT::SelectPosition, positions);
             state.available_actions = aa;

@@ -33,7 +33,7 @@ from typing import Callable
 
 import torch
 
-from .model import GLOBAL_FEATURES, SPATIAL_CHANNELS, BBNet
+from .model import GLOBAL_FEATURES, POLICY_CHANNELS, SCHEMA_VERSION, SPATIAL_CHANNELS, BBNet
 
 # ---------------------------------------------------------------------------
 # Schema registry: what the encoder emitted at each nn_schema_version.
@@ -41,28 +41,54 @@ from .model import GLOBAL_FEATURES, SPATIAL_CHANNELS, BBNet
 # checkpoints still exist need an entry.
 
 SCHEMAS: dict[int, dict] = {
-    6: {"C": 59, "F": 15},
-    7: {"C": 61, "F": 18},
+    6: {"C": 59, "F": 15, "A": 30},
+    7: {"C": 61, "F": 18, "A": 30},
+    # v8 re-laid the policy channels for the per-player setup without changing
+    # a shape; it is told apart from v7 by the ``schema_version`` buffer.
+    8: {"C": 61, "F": 18, "A": 30},
+    # v9 appended the optional-skill actions UseSkill / DontUseSkill (A 30 -> 32).
+    9: {"C": 61, "F": 18, "A": 32},
 }
-CURRENT = max(v for v, s in SCHEMAS.items() if (s["C"], s["F"]) == (SPATIAL_CHANNELS, GLOBAL_FEATURES))
+CURRENT = SCHEMA_VERSION
+assert SCHEMAS[CURRENT] == {"C": SPATIAL_CHANNELS, "F": GLOBAL_FEATURES, "A": POLICY_CHANNELS}
+# The first schema whose checkpoints carry the marker; anything older is
+# identified by shape alone.
+FIRST_MARKED = 8
 
 StateDict = dict[str, torch.Tensor]
 
 
 def detect_schema(sd: StateDict) -> int:
-    """The schema a state_dict was trained at, from its input-side shapes.
+    """The schema a state_dict was trained at.
 
-    ``stem.weight`` is ``[width, C + global_embed, 3, 3]`` and
-    ``global_fc.weight`` is ``[global_embed, F]``, so ``C`` and ``F`` fall out
-    exactly; an unknown ``(C, F)`` pair is an error, never a guess.
+    From v8 on the checkpoint says so itself (``schema_version``). Before
+    that, from its input-side shapes: ``stem.weight`` is
+    ``[width, C + global_embed, 3, 3]`` and ``global_fc.weight`` is
+    ``[global_embed, F]``, so ``C`` and ``F`` fall out exactly; an unknown
+    ``(C, F)`` pair is an error, never a guess.
     """
+    if "schema_version" in sd:
+        v = int(sd["schema_version"])
+        if v not in SCHEMAS:
+            raise ValueError(f"checkpoint says schema v{v}, which is unknown (known: {sorted(SCHEMAS)})")
+        return v
     embed = sd["global_fc.weight"].shape[0]
     f = sd["global_fc.weight"].shape[1]
     c = sd["stem.weight"].shape[1] - embed
     for v, s in SCHEMAS.items():
-        if (s["C"], s["F"]) == (c, f):
+        if v < FIRST_MARKED and (s["C"], s["F"]) == (c, f):
             return v
-    raise ValueError(f"no known schema has C={c} F={f} (known: {SCHEMAS})")
+    raise ValueError(f"no known unmarked schema has C={c} F={f} (known: {SCHEMAS})")
+
+
+def _load_any(model: BBNet, sd: StateDict) -> BBNet:
+    """Strict load that tolerates only the absence of the v8 marker (an
+    older checkpoint); every weight must still match."""
+    if "schema_version" not in sd:
+        sd = dict(sd)
+        sd["schema_version"] = model.schema_version.clone()
+    model.load_state_dict(sd, strict=True)
+    return model
 
 
 def shape_of(sd: StateDict) -> dict:
@@ -73,6 +99,7 @@ def shape_of(sd: StateDict) -> dict:
         "global_embed": int(embed),
         "spatial_ch": int(sd["stem.weight"].shape[1] - embed),
         "global_f": int(sd["global_fc.weight"].shape[1]),
+        "policy_ch": int(sd["policy_head.weight"].shape[0]),
         "value_hidden": int(sd["value_fc1.weight"].shape[0]),
     }
 
@@ -129,6 +156,10 @@ class Migration:
     apply: Callable[[StateDict], StateDict]
     embed: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]] | None = None
     exact: bool = True
+    # A step that re-lays the policy channels lists ``(old, new)`` pairs; the
+    # verifier then compares those channels pairwise (the dropped ones have
+    # no counterpart, the added ones are zero) instead of the whole tensor.
+    policy_map: list[tuple[int, int]] | None = None
 
     def verify(
         self, old: StateDict, new: StateDict, trials: int = 4, atol: float = 1e-5, rtol: float = 1e-5, seed: int = 0
@@ -150,10 +181,8 @@ class Migration:
         to carry, while a genuinely non-preserving step is off by O(1) and is
         still caught by a mile.
         """
-        a = BBNet(**shape_of(old))
-        a.load_state_dict(old)
-        b = BBNet(**shape_of(new))
-        b.load_state_dict(new)
+        a = _load_any(BBNet(**shape_of(old), schema_version=self.src), old)
+        b = _load_any(BBNet(**shape_of(new), schema_version=self.dst), new)
         a.eval()
         b.eval()
         g = torch.Generator().manual_seed(seed)
@@ -167,6 +196,10 @@ class Migration:
                 pa, va = a(spatial, global_)
                 s2, g2 = self.embed(spatial, global_) if self.embed else (spatial, global_)
                 pb, vb = b(s2, g2)
+                if self.policy_map:
+                    olds = [o for o, _ in self.policy_map]
+                    news = [n for _, n in self.policy_map]
+                    pa, pb = pa[:, olds], pb[:, news]
                 worst = max(worst, (pa - pb).abs().max().item(), (va - vb).abs().max().item())
                 scale = max(scale, pa.abs().max().item(), va.abs().max().item())
         bound = atol + rtol * scale
@@ -193,6 +226,41 @@ def _embed_6_to_7(spatial, global_):
     return embed_inputs(spatial, global_, SCHEMAS[6]["C"], 2, SCHEMAS[6]["F"], 3)
 
 
+# Per-player setup (schema v8). Pinned on the Rust side by
+# `botbowl-nn/src/actions.rs::v8_channel_layout_matches_the_migration`.
+#   positional 0..13 unchanged; 14 = PlacePlayer (new, zero)
+#   simple block shifts by one: old 14+i -> 15+i for i in 0..12
+#   old 14+13 SetupLine and 14+14 EndSetup are dropped (the actions no longer exist)
+#   old 14+15 KickoffAimMiddle -> 15+13; 15+14 = BenchPlayer (new, zero)
+POLICY_MAP_7_TO_8: list[tuple[int, int]] = (
+    [(i, i) for i in range(14)] + [(14 + i, 15 + i) for i in range(13)] + [(14 + 15, 15 + 13)]
+)
+
+
+def _v7_to_v8(sd: StateDict) -> StateDict:
+    out = dict(sd)
+    w, b = sd["policy_head.weight"], sd["policy_head.bias"]
+    nw, nb = torch.zeros_like(w), torch.zeros_like(b)
+    for old, new in POLICY_MAP_7_TO_8:
+        nw[new] = w[old]
+        nb[new] = b[old]
+    out["policy_head.weight"], out["policy_head.bias"] = nw, nb
+    out["schema_version"] = torch.tensor(8, dtype=torch.int32)
+    return out
+
+
+def _v8_to_v9(sd: StateDict) -> StateDict:
+    """Schema v9: UseSkill / DontUseSkill appended as policy channels 30/31. Every v8 channel
+    keeps its index and weights; the new ones start at zero."""
+    out = dict(sd)
+    w, b = sd["policy_head.weight"], sd["policy_head.bias"]
+    n = SCHEMAS[9]["A"] - SCHEMAS[8]["A"]
+    out["policy_head.weight"] = torch.cat([w, w.new_zeros((n, *w.shape[1:]))])
+    out["policy_head.bias"] = torch.cat([b, b.new_zeros(n)])
+    out["schema_version"] = torch.tensor(9, dtype=torch.int32)
+    return out
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         6,
@@ -201,6 +269,21 @@ MIGRATIONS: list[Migration] = [
         "playable_w/playable_h/team_size globals (F 15->18), zero-initialised",
         _v6_to_v7,
         _embed_6_to_7,
+    ),
+    Migration(
+        7,
+        8,
+        "per-player setup: policy channels re-laid (PlacePlayer at 14, BenchPlayer at 29, "
+        "formation channels dropped), retained channels keep their weights; schema_version marker added",
+        _v7_to_v8,
+        policy_map=POLICY_MAP_7_TO_8,
+    ),
+    Migration(
+        8,
+        9,
+        "optional-skill actions UseSkill/DontUseSkill appended (A 30->32), zero-initialised",
+        _v8_to_v9,
+        policy_map=[(i, i) for i in range(30)],
     ),
 ]
 

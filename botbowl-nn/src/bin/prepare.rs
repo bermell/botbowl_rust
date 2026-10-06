@@ -73,7 +73,16 @@ use botbowl_nn::targets::{
 // C 59 → 61) and three size globals (`playable_w`, `playable_h`, `team_size`,
 // F 15 → 18), so a net trained on mixed board sizes can tell the boards apart
 // by something other than its distance to the zero padding.
-const NN_SCHEMA_VERSION: u32 = 7;
+// v8 (per-player setup): the policy channels are re-laid — `PosAT::PlacePlayer`
+// at 14, the simple block shifted to 15.., `KickoffAimMiddle` at 28 and
+// `SimpleAT::BenchPlayer` at 29; the five formation actions are gone. Same
+// shapes as v7 (C 61, F 18, A 30), so a v7 net *loads* but reads the wrong
+// channels — `train/src/bbnn/migrate.py` permutes the head and stamps a
+// `schema_version` marker into the checkpoint. Setup decisions appear in a
+// corpus for the first time.
+// v9: `SimpleAT::UseSkill` / `DontUseSkill` appended at 30/31 (A 30 → 32) for optional skills
+// (Wrestle, Stand Firm). Every v8 channel keeps its index; `migrate.py` appends two zero rows.
+const NN_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {
@@ -289,7 +298,7 @@ fn main() {
             let td_values = args.value_td_lambda.map(|l| value_targets_td_lambda(&traj.samples, l));
             for (si, sample) in traj.samples.iter().enumerate() {
                 total_read += 1;
-                if sample.root_visits < args.min_root_visits {
+                if sample.root_visits < args.min_root_visits && !sample.scripted {
                     total_below_min += 1;
                     continue;
                 }

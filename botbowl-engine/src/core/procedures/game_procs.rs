@@ -181,7 +181,12 @@ impl Turn {
         if !positions.is_empty() {
             let block_positions: Vec<Position> = positions
                 .iter()
-                .filter(|&&pos| game_state.get_player_at(pos).unwrap().status == PlayerStatus::Up)
+                .filter(|&&pos| {
+                    // Jump Up lets a prone player declare a Block (it rolls to stand first).
+                    let player = game_state.get_player_at(pos).unwrap();
+                    player.status == PlayerStatus::Up
+                        || (player.status == PlayerStatus::Down && player.has_skill(Skill::JumpUp))
+                })
                 .filter(|&&pos| {
                     game_state
                         .get_adj_players(pos)
@@ -247,6 +252,10 @@ impl Procedure for Turn {
                     info.blitz_this_activation = true;
                 }
                 PosAT::StartBlock => {
+                    let id = info.active_player.unwrap();
+                    if game_state.get_player_unsafe(id).status == PlayerStatus::Down {
+                        return ProcState::NotDoneNew(block_procs::JumpUp::new(game_state, id));
+                    }
                     return ProcState::NotDoneNew(block_procs::BlockAction::new());
                 }
                 _ => unreachable!(),
@@ -276,9 +285,8 @@ impl Procedure for GameOver {
         };
         game_state.info.game_over = true;
 
-        // TODO: why doesn't this just return Done? Why does it need to offer an EndSetup action?!
+        // TODO: why doesn't this just return Done? Why does it need to offer an action?!
         let mut aa = AvailableActions::new(TeamType::Home);
-        aa.insert_simple(SimpleAT::EndSetup);
         aa.insert_simple(SimpleAT::DontUseReroll);
         ProcState::NeedAction(aa)
     }
@@ -427,6 +435,7 @@ mod tests {
     use crate::core::{
         gamestate::{BuilderState, GameState, GameStateBuilder},
         model::{Position, TeamType},
+        procedures::{auto_setup, Formation},
         table::PosAT,
     };
     use crate::standard_state;
@@ -676,12 +685,10 @@ mod tests {
         // The kicking team (Away here) sets up first — BB2020, fixed in
         // 2ea14e7; this test still expected the receiver to go first.
         assert!(state.away_to_act());
-        state.step_simple(SimpleAT::SetupLine);
-        state.step_simple(SimpleAT::EndSetup);
+        auto_setup(&mut state, Formation::Line);
 
         assert!(state.home_to_act());
-        state.step_simple(SimpleAT::SetupLine);
-        state.step_simple(SimpleAT::EndSetup);
+        auto_setup(&mut state, Formation::Line);
 
         state.fix_d8_direction(Direction::up()); // scatter direction
         state.fix_d6(5); // scatter length
@@ -746,10 +753,17 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        assert_eq!(state.get_players_on_pitch().count(), 0);
+        assert!(
+            state.get_players_on_pitch().all(|p| p.used),
+            "the scoring team is staged for the next setup"
+        );
 
         // check that the action belongs to the scoring team, not the opponent
-        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
+        assert_eq!(
+            state.setup_team(),
+            Some(TeamType::Home),
+            "the scoring team sets up (it kicks)"
+        );
         assert_eq!(state.available_actions.team, Some(TeamType::Home));
     }
 
@@ -836,8 +850,15 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        assert_eq!(state.get_players_on_pitch().count(), 0);
-        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
+        // The drive is over: everyone went back to the dugout and the scoring
+        // team, which kicks next, already has its reserves staged for the
+        // next setup.
+        assert!(state.get_players_on_pitch().all(|p| p.used));
+        assert_eq!(
+            state.setup_team(),
+            Some(TeamType::Home),
+            "the scoring team sets up (it kicks)"
+        );
     }
 
     #[test]
@@ -894,8 +915,15 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        assert_eq!(state.get_players_on_pitch().count(), 0);
-        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
+        // The drive is over: everyone went back to the dugout and the scoring
+        // team, which kicks next, already has its reserves staged for the
+        // next setup.
+        assert!(state.get_players_on_pitch().all(|p| p.used));
+        assert_eq!(
+            state.setup_team(),
+            Some(TeamType::Home),
+            "the scoring team sets up (it kicks)"
+        );
     }
 
     #[test]
@@ -916,8 +944,15 @@ mod tests {
 
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
-        assert_eq!(state.get_players_on_pitch().count(), 0);
-        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
+        // The drive is over: everyone went back to the dugout and the scoring
+        // team, which kicks next, already has its reserves staged for the
+        // next setup.
+        assert!(state.get_players_on_pitch().all(|p| p.used));
+        assert_eq!(
+            state.setup_team(),
+            Some(TeamType::Home),
+            "the scoring team sets up (it kicks)"
+        );
     }
     #[test]
     fn dice_policy_forces_pickup_success() {
@@ -1028,8 +1063,15 @@ mod tests {
         assert_eq!(state.home.score, 1);
         assert_eq!(state.away.score, 0);
 
-        assert_eq!(state.get_players_on_pitch().count(), 0);
-        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SetupLine)));
+        // The drive is over: everyone went back to the dugout and the scoring
+        // team, which kicks next, already has its reserves staged for the
+        // next setup.
+        assert!(state.get_players_on_pitch().all(|p| p.used));
+        assert_eq!(
+            state.setup_team(),
+            Some(TeamType::Home),
+            "the scoring team sets up (it kicks)"
+        );
     }
 
     #[test]

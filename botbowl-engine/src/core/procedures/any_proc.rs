@@ -5,7 +5,9 @@ use crate::core::procedures::ball_procs::{
     Bounce, Catch, Deflect, DeflectOrResolve, Pass, PickupProc, ThrowIn, Touchback, Touchdown,
 };
 
-use crate::core::procedures::block_procs::{Block, BlockAction, FollowUp, KnockDown, Push};
+use crate::core::procedures::block_procs::{
+    Block, BlockAction, FollowUp, FrenzyBlock, JumpUp, KnockDown, Push, Wrestle,
+};
 use crate::core::procedures::casualty_procs::{Armor, Ejection, EjectionTurnover, Injury};
 use crate::core::procedures::game_procs::{
     ChooseKickReceive, CoinToss, GameOver, Half, KOWakeUp, Turn, TurnStunned, TurnoverIfPossessionLost,
@@ -74,10 +76,12 @@ any_proc! {
     Ejection(Ejection),
     EjectionTurnover(EjectionTurnover),
     FollowUp(FollowUp),
+    FrenzyBlock(FrenzyBlock),
     GameOver(GameOver),
     GfiProc(SimpleProcContainer<GfiProc>),
     Half(Half),
     Injury(Injury),
+    JumpUp(SimpleProcContainer<JumpUp>),
     KOWakeUp(KOWakeUp),
     Kickoff(Kickoff),
     KickoffTable(KickoffTable),
@@ -95,4 +99,5 @@ any_proc! {
     Turn(Turn),
     TurnStunned(TurnStunned),
     TurnoverIfPossessionLost(TurnoverIfPossessionLost),
+    Wrestle(Wrestle),
 }

@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 
 from .data import MultiDimsDataset, PreparedDataset, collate, make_loader, open_prepared
 from .export import export_onnx
-from .model import BBNet, masked_policy_logits
+from .model import BBNet, masked_policy_logits, check_schema
 
 
 def seed_everything(seed):
@@ -284,6 +284,7 @@ def train(
     # first steps and undo the warm start, so callers should pass a lower
     # --lr when using --init (train_loop.sh does).
     if init is not None:
+        check_schema(state)
         if init_head != value_head:
             # Plan 050: the value head's last layer changes shape (64->1 vs 64->3). Everything
             # else warm-starts; that one layer starts fresh, and nothing else may be missing.

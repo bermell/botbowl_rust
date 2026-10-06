@@ -89,7 +89,11 @@ fn pick_for_attacker(
     attacker: Option<&FieldedPlayer>,
     defender: Option<&FieldedPlayer>,
 ) -> Option<SimpleAT> {
-    let defender_dodges = defender.map(|d| d.has_skill(Skill::Dodge)).unwrap_or(false);
+    let defender_dodges = match (attacker, defender) {
+        (Some(a), Some(d)) => botbowl_engine::core::procedures::dodge_saves_from_stumble(a, d),
+        (None, Some(d)) => d.has_skill(Skill::Dodge),
+        _ => false,
+    };
     let attacker_has_block = attacker.map(|a| a.has_skill(Skill::Block)).unwrap_or(false);
     let defender_has_block = defender.map(|d| d.has_skill(Skill::Block)).unwrap_or(false);
     let both_down_fells_defender_only = attacker_has_block && !defender_has_block;
@@ -232,6 +236,25 @@ mod tests {
         state.get_mut_player(def_id).unwrap().stats.give_skill(Skill::Dodge);
         offer(&mut state, &[SimpleAT::SelectPowPush, SimpleAT::SelectPush]);
         assert_eq!(scripted_pick(&state), Some(EngineAction::Simple(SimpleAT::SelectPush)));
+    }
+
+    #[test]
+    fn attacker_with_tackle_takes_pow_push_against_dodge() {
+        let mut state = block_state(
+            Position::new((5, 5)),
+            Position::new((6, 5)),
+            TeamType::Home,
+            Position::new((5, 5)),
+        );
+        let def_id = state.get_player_id_at(Position::new((6, 5))).unwrap();
+        state.get_mut_player(def_id).unwrap().stats.give_skill(Skill::Dodge);
+        let att_id = state.get_player_id_at(Position::new((5, 5))).unwrap();
+        state.get_mut_player(att_id).unwrap().stats.give_skill(Skill::Tackle);
+        offer(&mut state, &[SimpleAT::SelectPowPush, SimpleAT::SelectPush]);
+        assert_eq!(
+            scripted_pick(&state),
+            Some(EngineAction::Simple(SimpleAT::SelectPowPush))
+        );
     }
 
     #[test]

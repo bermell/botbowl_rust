@@ -24,6 +24,7 @@ fn cfg(exploration: Option<Exploration>) -> GenerateConfig {
         board_sizes: Some(SizeDist::single(BoardDims::new(16, 9, 4))),
         config_name: None,
         exploration,
+        next_drive: false,
     }
 }
 
@@ -36,7 +37,7 @@ const EXPLORE: Exploration = Exploration {
 
 #[test]
 fn an_exploring_trajectory_says_what_it_did() {
-    let t = play_trajectory(&cfg(Some(EXPLORE)), None, 3).unwrap().unwrap();
+    let t = play_trajectory(&cfg(Some(EXPLORE)), None, 3).unwrap().remove(0);
     let extra = |k: &str| t.meta.extra.get(k).cloned().unwrap_or_default();
     assert_eq!(extra("explore"), EXPLORE.label());
     assert!(t.meta.home_bot.contains(&EXPLORE.label()), "label: {}", t.meta.home_bot);
@@ -50,7 +51,7 @@ fn an_exploring_trajectory_says_what_it_did() {
 
 #[test]
 fn the_greedy_generator_carries_no_exploration_stamp() {
-    let t = play_trajectory(&cfg(None), None, 3).unwrap().unwrap();
+    let t = play_trajectory(&cfg(None), None, 3).unwrap().remove(0);
     assert!(!t.meta.extra.keys().any(|k| k.starts_with("explore")));
     assert!(!t.meta.home_bot.contains("explore"));
 }

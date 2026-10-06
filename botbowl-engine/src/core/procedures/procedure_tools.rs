@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::dices::{D6Target, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
 use crate::core::model::ProcInput;
-use crate::core::model::{Action, AvailableActions, PlayerID, ProcState, Procedure};
+use crate::core::model::{Action, AvailableActions, PlayerID, ProcState, Procedure, TeamType};
 use crate::core::table::{SimpleAT, Skill};
 
 use super::AnyProc;
@@ -12,6 +12,12 @@ use super::AnyProc;
 pub trait SimpleProc {
     fn d6_target(&self) -> D6Target; //called immidiately before
     fn reroll_skill(&self) -> Option<Skill>;
+    /// The team that may deny the skill re-roll with a skill of its own (Tackle against
+    /// Dodge). It is asked `UseSkill` / `DontUseSkill` when the re-roll would be used.
+    /// Default: nobody.
+    fn skill_reroll_contested_by(&self, game_state: &GameState) -> Option<TeamType> {
+        None
+    }
     /// Called exactly once, when the procedure first takes the stack —
     /// before its roll is requested. For state the roll's outcome handlers
     /// depend on regardless of pass/fail (e.g. `Catch` moves the ball to
@@ -38,6 +44,10 @@ impl From<Vec<AnyProc>> for ProcState {
 pub enum RollProcState {
     Init,
     RerollUsed,
+    /// The other team was asked whether to deny the skill re-roll.
+    SkillReRollContested,
+    /// ... and denied it.
+    SkillReRollDenied,
     //WaitingForSkillReroll,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -72,6 +82,18 @@ where
                 return ProcState::from(self.proc.apply_failure(game_state))
             }
             ProcInput::Roll(RollResult::Fail) => (/*figure out if reroll is available below*/),
+            ProcInput::Action(Action::Simple(SimpleAT::UseSkill))
+                if self.state == RollProcState::SkillReRollContested =>
+            {
+                self.state = RollProcState::SkillReRollDenied;
+            }
+            // Not denied: the skill re-roll goes ahead below (the state is no longer `Init`, so
+            // the question is not asked again).
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill))
+                if self.state == RollProcState::SkillReRollContested =>
+            {
+                ()
+            }
             ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
                 return ProcState::from(self.proc.apply_failure(game_state));
             }
@@ -86,7 +108,19 @@ where
         };
 
         match self.proc.reroll_skill() {
-            Some(skill) if game_state.get_player_unsafe(self.id()).can_use_skill(skill) => {
+            Some(skill)
+                if game_state.get_player_unsafe(self.id()).can_use_skill(skill)
+                    && self.state != RollProcState::SkillReRollDenied =>
+            {
+                if self.state == RollProcState::Init {
+                    if let Some(team) = self.proc.skill_reroll_contested_by(game_state) {
+                        self.state = RollProcState::SkillReRollContested;
+                        let mut aa = AvailableActions::new(team);
+                        aa.insert_simple(SimpleAT::UseSkill);
+                        aa.insert_simple(SimpleAT::DontUseSkill);
+                        return ProcState::NeedAction(aa);
+                    }
+                }
                 game_state.get_mut_player_unsafe(self.id()).use_skill(skill);
                 self.state = RollProcState::RerollUsed;
                 return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));

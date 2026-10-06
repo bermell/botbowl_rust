@@ -233,8 +233,9 @@ mod tests {
             board_sizes: Some(botbowl_play::board_sizes::SizeDist::single(board)),
             config_name: None,
             exploration: None,
+            next_drive: false,
         };
-        play_trajectory(&cfg, None, seed).unwrap().unwrap()
+        play_trajectory(&cfg, None, seed).unwrap().remove(0)
     }
 
     /// Each label is the mean of that many policy-only playouts from the replayed state, in Home's

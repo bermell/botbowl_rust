@@ -735,3 +735,99 @@ async fn teams_are_chosen_by_name() {
         }
     }
 }
+
+/// `AutoSetup` plays out the whole of the human's setup with one of the
+/// formations the view named, as one undoable decision — so a player who does
+/// not want to place eleven pieces by hand still gets the per-player undo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_setup_finishes_the_humans_setup_as_one_undoable_decision() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    let _lobby = recv(&mut socket).await;
+    send(
+        &mut socket,
+        ClientMsg::NewGame(GameSpec {
+            board: test_board(),
+            home: Seat::Human,
+            away: Seat::Bot(BotSpec::Random),
+            seed: Some(5),
+            start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
+        }),
+    )
+    .await;
+
+    // Answer the coin toss and whatever else comes first, until the view says
+    // Home is placing players.
+    let mut setup_view: Option<ViewState> = None;
+    while setup_view.is_none() {
+        if let ServerMsg::View(view) = recv(&mut socket).await {
+            if view.to_act != Some(TeamType::Home) || view.scoreboard.game_over || view.bot_thinking {
+                continue;
+            }
+            if view.setup.as_ref().is_some_and(|s| s.team == TeamType::Home) {
+                setup_view = Some(*view);
+            } else {
+                let action = legal_actions(&view)[0];
+                send(&mut socket, ClientMsg::Act(action)).await;
+            }
+        }
+    }
+    let before = setup_view.unwrap();
+    let setup = before.setup.clone().unwrap();
+    assert_eq!(setup.placed, 0);
+    assert_eq!(setup.team_size, test_board().team_size);
+    assert!(setup.formations.contains(&"Line".to_string()), "{:?}", setup.formations);
+    assert!(
+        before
+            .squares
+            .iter()
+            .any(|s| s.actions.contains(&botbowl_web_proto::PosAT::PlacePlayer)),
+        "the setup view offers per-square placement"
+    );
+
+    // An unknown formation is ignored, not fatal: the socket stays up and the
+    // real request after it still works.
+    send(&mut socket, ClientMsg::AutoSetup("Pyramid".into())).await;
+    send(&mut socket, ClientMsg::AutoSetup(setup.formations[0].clone())).await;
+
+    let mut after: Option<ViewState> = None;
+    while after.is_none() {
+        if let ServerMsg::View(view) = recv(&mut socket).await {
+            if view.to_act == Some(TeamType::Home) && !view.scoreboard.game_over && !view.bot_thinking {
+                after = Some(*view);
+            }
+        }
+    }
+    let after = after.unwrap();
+    assert!(
+        after.setup.as_ref().is_none_or(|s| s.team != TeamType::Home),
+        "Home's setup is over, got {:?}",
+        after.setup
+    );
+    let fielded = after
+        .squares
+        .iter()
+        .filter(|s| s.player.as_ref().is_some_and(|p| p.team == TeamType::Home))
+        .count();
+    assert_eq!(fielded, test_board().team_size, "the formation fielded a full team");
+    assert!(after.can_undo);
+
+    // One undo lands back on the very first placement prompt.
+    send(&mut socket, ClientMsg::Undo).await;
+    let mut rewound: Option<ViewState> = None;
+    while rewound.is_none() {
+        if let ServerMsg::View(view) = recv(&mut socket).await {
+            if view.to_act == Some(TeamType::Home) && !view.bot_thinking {
+                rewound = Some(*view);
+            }
+        }
+    }
+    let rewound = rewound.unwrap();
+    assert_eq!(
+        rewound.squares, before.squares,
+        "undo must restore the setup prompt exactly"
+    );
+    assert_eq!(rewound.setup, before.setup);
+}

@@ -3,7 +3,7 @@
 //! method here; the websocket and HTTP layers only translate.
 //!
 //! Scheduling is deliberately simple (plan 041 decision 7): free streams go
-//! round-robin over the running jobs (plan 046: a generation's eval shares the
+//! round-robin over the running jobs (plan 047: a generation's eval shares the
 //! fleet with the next generation), a task is a small batch of games from one *unit* (a
 //! ladder rung of an eval job, a corpus shard of a generate job), a
 //! worker holds at most `parallel_games` tasks, and anything a departed
@@ -622,7 +622,7 @@ impl Inner {
     ///
     /// Free streams go round-robin over every running job with games left, one task at a time, so
     /// concurrent jobs share the fleet: `train_loop.sh` runs a generation's eval alongside the next
-    /// generation's games (plan 046 item 0), and handing everything to the oldest job would
+    /// generation's games (plan 047 item 0), and handing everything to the oldest job would
     /// serialise them again.
     ///
     /// **Round-robin counts tasks, not stream time**, and an eval task (a full game, often at a
@@ -809,28 +809,37 @@ impl Inner {
         };
         let s = &mut shards[unit];
         if s.done.insert(game) && !zstd_json.is_empty() {
+            // One JSON line per record; a game that played the drive after its
+            // score sends two (plan 047). Each is written as its own line.
             let written = zstd::decode_all(&zstd_json[..])
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("zstd: {e}")))
                 .and_then(|json| {
-                    if json.is_empty() || json.contains(&b'\n') {
+                    let lines: Vec<&[u8]> = json.split(|b| *b == b'\n').collect();
+                    if lines.iter().any(|l| l.is_empty()) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "trajectory is not a single JSON line",
+                            "trajectory payload has an empty line",
                         ));
                     }
-                    s.writer.write_all(&json)?;
-                    s.writer.write_all(b"\n")?;
+                    for line in &lines {
+                        s.writer.write_all(line)?;
+                        s.writer.write_all(b"\n")?;
+                    }
                     s.writer.flush()?;
                     Ok(json)
                 });
             match written {
                 Ok(json) => {
-                    s.written += 1;
                     s.samples += samples as u64;
                     // Page statistics only: a line the peek cannot read is still a valid
-                    // corpus line, so it is written and just not counted here.
-                    if let Some((board, tds)) = drive_summary(&json) {
-                        s.stats.add(board, tds, samples as u64);
+                    // corpus line, so it is written and just not counted here. The
+                    // samples are attributed to the first record; the count is a page
+                    // figure, not a corpus one.
+                    for (i, line) in json.split(|b| *b == b'\n').enumerate() {
+                        s.written += 1;
+                        if let Some((board, tds)) = drive_summary(line) {
+                            s.stats.add(board, tds, if i == 0 { samples as u64 } else { 0 });
+                        }
                     }
                 }
                 Err(e) => {

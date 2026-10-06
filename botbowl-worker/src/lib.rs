@@ -484,7 +484,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
                         let _ = out.send(ToHub::TaskFailed { task: *id, error: e });
                         return;
                     }
-                    Ok(None) => {
+                    Ok(trajs) if trajs.is_empty() => {
                         let _ = out.send(ToHub::TrajectoryDone {
                             task: *id,
                             game: g,
@@ -492,22 +492,37 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
                             zstd_json: Vec::new(),
                         });
                     }
-                    Ok(Some(traj)) => {
-                        let json = serde_json::to_vec(&traj).expect("trajectory serializes");
+                    Ok(trajs) => {
+                        // One JSON line per record, newline-separated (plan 047: a drive that
+                        // scored may be followed by the drive it set up). The hub splits them.
+                        let mut json = Vec::new();
+                        let mut samples = 0u32;
+                        for (i, traj) in trajs.iter().enumerate() {
+                            if i > 0 {
+                                json.push(b'\n');
+                            }
+                            serde_json::to_writer(&mut json, traj).expect("trajectory serializes");
+                            samples += traj.samples.len() as u32;
+                            eprintln!(
+                                "[worker] {shard} seed={seed} drive={} samples={} z_home={:+} score={}-{}",
+                                traj.meta.extra.get("drive").map_or("1", String::as_str),
+                                traj.samples.len(),
+                                traj.outcome.z_home,
+                                traj.outcome.home_score,
+                                traj.outcome.away_score,
+                            );
+                        }
                         let zstd_json = zstd::encode_all(&json[..], TRAJECTORY_ZSTD_LEVEL).expect("zstd encode");
                         eprintln!(
-                            "[worker] {shard} seed={seed} samples={} z_home={:+} score={}-{} ({} KB -> {} KB)",
-                            traj.samples.len(),
-                            traj.outcome.z_home,
-                            traj.outcome.home_score,
-                            traj.outcome.away_score,
+                            "[worker] {shard} seed={seed} {} record(s) ({} KB -> {} KB)",
+                            trajs.len(),
                             json.len() / 1024,
                             zstd_json.len() / 1024
                         );
                         let _ = out.send(ToHub::TrajectoryDone {
                             task: *id,
                             game: g,
-                            samples: traj.samples.len() as u32,
+                            samples,
                             zstd_json,
                         });
                     }
