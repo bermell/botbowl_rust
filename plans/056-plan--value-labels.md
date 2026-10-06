@@ -340,7 +340,7 @@ over gen01-06 (14x7 0.42-0.50, 16x9 0.42-0.51).
 |---|---|---|---|---|---|---|---|---|
 | 01 | arm F | 72 min (laptop on) | 45 min, 0 unlabelled | +0.003, +0.002, −0.007 | 0.236 / −0.00 → 0.242 / +0.05 | +0.002/+0.002/+0.005/+0.005 MONOTONE; 0.50 | 0.506 ± 0.018 (H0, 200 pairs) | **0.583 ± 0.029 (H1, 68 pairs)** |
 | 02 | gen01 | 110 min | 47 min | 0, 0, 0 (**restored its init**) | unchanged (= gen01) | +0.001/+0.002/+0.005/+0.009 MONOTONE; 0.47 | 0.508 ± 0.016 (H0, 262 pairs) | **0.551 ± 0.018 (H1, 179 pairs)** |
-| 03 | gen02 (= gen01) | 233 min (laptop gone) | train+val, first under the fix | | | | | |
+| 03 | gen02 (= gen01) | 233 min (laptop gone) | 59 min, train+val, 0 unlabelled; restored step 9000 of 15621 (combined) | +0.002, +0.0014, +0.003 (vs raw outcome; the head now tracks MC values) | 0.242 / +0.046 → **0.236 / +0.035 (paired −2.4%, ~9 SE)** | (running) | | |
 
 gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value bench's drift
 (+0.05 bias) is expected (its truth is g_gen05's policy, see above); watch the trend.
