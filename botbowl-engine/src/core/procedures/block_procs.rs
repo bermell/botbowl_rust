@@ -986,7 +986,10 @@ impl FrenzyBlock {
 }
 impl Procedure for FrenzyBlock {
     fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
-        let attacker = game_state.get_active_player().unwrap();
+        // The first block can end the activation (it did in self-play): no blocker, no second block.
+        let Some(attacker) = game_state.get_active_player() else {
+            return ProcState::Done;
+        };
         let Ok(defender) = game_state.get_player(self.defender) else {
             return ProcState::Done; // pushed off the pitch
         };
@@ -1535,6 +1538,42 @@ mod tests {
         assert_eq!(state.get_player_unsafe(attacker).total_movement_left(), 0);
         state.step_positional(PosAT::FollowUp, defender_pos);
         assert_ne!(state.proc_stack_top(), Some("Block"));
+    }
+
+    /// A blocker who follows up into the endzone with the ball scores: the touchdown ends the
+    /// activation, so there is no active player and no second block. The loop's generator panicked
+    /// here (`get_active_player().unwrap()` on a finished activation).
+    #[test]
+    fn frenzy_has_no_second_block_after_a_touchdown() {
+        let attacker_pos = Position::new((2, 3));
+        let defender_pos = Position::new((1, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_ball_pos(attacker_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Frenzy);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.fix_d6(1); //crowd injury
+        state.fix_d6(2); //crowd injury
+        state.step_positional(PosAT::FollowUp, defender_pos);
+        assert_eq!(state.home.score, 1, "the follow-up into the endzone scores");
+    }
+
+    /// Whatever ended the activation before the second block (the generator hit this in self-play:
+    /// `get_active_player().unwrap()` panicked), a finished activation has no second block.
+    #[test]
+    fn frenzy_block_without_an_active_player_is_done() {
+        let (mut state, _, defender, defender_pos) = frenzy_block();
+        assert!(state.get_active_player().is_none());
+        let super::AnyProc::FrenzyBlock(mut proc) = super::FrenzyBlock::new(defender, defender_pos) else {
+            unreachable!()
+        };
+        assert!(matches!(proc.step(&mut state, ProcInput::Nothing), ProcState::Done));
     }
 
     /// A target pushed into the crowd has left the pitch: no second block.
