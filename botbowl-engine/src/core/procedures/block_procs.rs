@@ -59,6 +59,10 @@ pub struct Push {
     /// free square next to them. Only the target: cleared when a chain push moves on.
     #[serde(default)]
     grab: bool,
+    /// Juggernaut in a Blitz: the blocker's target can't Stand Firm. Cleared when a chain push
+    /// moves on.
+    #[serde(default)]
+    juggernaut: bool,
 }
 
 impl Push {
@@ -73,6 +77,7 @@ impl Push {
             strip_ball: None,
             fend: None,
             grab: false,
+            juggernaut: false,
         })
     }
     pub fn new_pure(from: Position, on: Position) -> Push {
@@ -86,6 +91,7 @@ impl Push {
             strip_ball: None,
             fend: None,
             grab: false,
+            juggernaut: false,
         }
     }
 
@@ -224,7 +230,7 @@ impl Push {
         // knockdown (queued under this proc) still happens, in place.
         if !self.questions.stand_firm_asked {
             self.questions.stand_firm_asked = true;
-            if pushed.has_skill(Skill::StandFirm) {
+            if pushed.has_skill(Skill::StandFirm) && !self.juggernaut {
                 return self.ask(PushSkill::StandFirm, game_state);
             }
         }
@@ -290,6 +296,7 @@ impl Procedure for Push {
                 self.on = position_to;
                 self.questions = PushQuestions::default();
                 self.grab = false;
+                self.juggernaut = false;
                 self.calculate_next_state(game_state)
             }
             ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
@@ -574,6 +581,9 @@ pub struct Block {
     /// The blocker's answer on Tackle, once asked (a Stumble against a Dodge defender).
     #[serde(default)]
     tackle: Option<bool>,
+    /// The blocker has been asked about Juggernaut (a Both Down in a Blitz).
+    #[serde(default)]
+    juggernaut_asked: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 enum BlockProcState {
@@ -594,6 +604,7 @@ impl Block {
             is_uphill: matches!(dices, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill),
             frenzy_second: false,
             tackle: None,
+            juggernaut_asked: false,
         })
     }
 
@@ -637,6 +648,18 @@ impl Block {
     }
 }
 impl Block {
+    /// A Both Down, unless someone may Wrestle.
+    fn both_down_or_wrestle(&self, game_state: &mut GameState) -> ProcState {
+        if [game_state.info.active_player.unwrap(), self.defender]
+            .iter()
+            .any(|&id| game_state.get_player_unsafe(id).has_skill(Skill::Wrestle))
+        {
+            ProcState::DoneNew(Wrestle::new(self.defender))
+        } else {
+            both_down(game_state, self.defender)
+        }
+    }
+
     /// Apply the chosen die (any but a Both Down, which `step` routes itself).
     fn resolve(&mut self, game_state: &mut GameState, dice_action_type: SimpleAT) -> ProcState {
         let attacker_id = game_state.info.active_player.unwrap();
@@ -702,7 +725,8 @@ impl Block {
             {
                 push.strip_ball = Some(self.defender);
             }
-            if game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) {
+            push.juggernaut = juggernaut_blitz(game_state);
+            if game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) && !push.juggernaut {
                 push.fend = Some(self.defender);
             }
             push.grab = game_state.get_player_unsafe(attacker_id).has_skill(Skill::Grab);
@@ -739,14 +763,23 @@ impl Procedure for Block {
                 // ProcState::NotDone //I think it should be available_actions here...
                 ProcState::NeedAction(self.available_actions(game_state))
             }
+            // Juggernaut: in a Blitz the blocker's coach may play a Both Down as a Push.
             ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown))
-                if [game_state.info.active_player.unwrap(), self.defender]
-                    .iter()
-                    .any(|&id| game_state.get_player_unsafe(id).has_skill(Skill::Wrestle)) =>
+                if juggernaut_blitz(game_state) && !self.juggernaut_asked =>
             {
-                ProcState::DoneNew(Wrestle::new(self.defender))
+                self.juggernaut_asked = true;
+                let mut aa = AvailableActions::new(game_state.get_active_player().unwrap().stats.team);
+                aa.insert_simple(SimpleAT::UseSkill);
+                aa.insert_simple(SimpleAT::DontUseSkill);
+                ProcState::NeedAction(aa)
             }
-            ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown)) => both_down(game_state, self.defender),
+            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) if self.juggernaut_asked => {
+                self.resolve(game_state, SimpleAT::SelectPush)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill)) if self.juggernaut_asked => {
+                self.both_down_or_wrestle(game_state)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown)) => self.both_down_or_wrestle(game_state),
             // Tackle: on a Stumble against a Dodge defender the blocker's coach is asked whether to
             // use it (knocking the defender down) or let Dodge turn it into a push.
             ProcInput::Action(Action::Simple(SimpleAT::SelectPowPush))
@@ -767,6 +800,12 @@ impl Procedure for Block {
             _ => unreachable!(),
         }
     }
+}
+
+/// The active player blocks with Juggernaut in a Blitz: their target can't use Fend, Stand Firm
+/// or Wrestle, and a Both Down may be played as a Push.
+pub fn juggernaut_blitz(game_state: &GameState) -> bool {
+    game_state.info.blitz_this_activation && game_state.get_active_player().unwrap().has_skill(Skill::Juggernaut)
 }
 
 /// A Both Down, played as normal: whoever lacks Block is knocked down, and the blocker going
@@ -859,7 +898,7 @@ impl Procedure for Wrestle {
         if self.stage == WrestleStage::AttackerAsked {
             self.stage = WrestleStage::DefenderAsked;
             let defender = game_state.get_player_unsafe(self.defender);
-            if defender.has_skill(Skill::Wrestle) {
+            if defender.has_skill(Skill::Wrestle) && !juggernaut_blitz(game_state) {
                 return Wrestle::ask(defender.stats.team);
             }
         }
@@ -1783,6 +1822,140 @@ mod tests {
         state.step_positional(PosAT::Push, defender_pos + (1, 0));
         assert!(state.is_legal_action(&Action::Positional(PosAT::Push, Position::new((8, 3)))));
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, Position::new((6, 2)))));
+    }
+
+    /// A home Juggernaut blocker against an away defender with `defender_skills`, by Blitz or
+    /// Block; `others` are away players. Returns the state after `die` is selected.
+    fn juggernaut_block(
+        blitz: bool,
+        die: BlockDice,
+        defender_skills: &[Skill],
+        others: &[(i8, i8)],
+    ) -> (crate::core::gamestate::GameState, PlayerID, PlayerID, Position) {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut builder = GameStateBuilder::new();
+        builder.add_home_player(attacker_pos).add_away_player(defender_pos);
+        for &square in others {
+            builder.add_away_player(Position::new(square));
+        }
+        let mut state = builder.build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state
+            .get_mut_player_unsafe(attacker)
+            .stats
+            .give_skill(Skill::Juggernaut);
+        for &skill in defender_skills {
+            state.get_mut_player_unsafe(defender).stats.give_skill(skill);
+        }
+        let start = if blitz { PosAT::StartBlitz } else { PosAT::StartBlock };
+        state.step_positional(start, attacker_pos);
+        state.fix_blockdice(die);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::from(die));
+        (state, attacker, defender, defender_pos)
+    }
+
+    /// Juggernaut: in a Blitz, the blocker may play a Both Down as a Push.
+    #[test]
+    fn juggernaut_may_push_on_a_both_down_in_a_blitz() {
+        let (mut state, attacker, _, defender_pos) = juggernaut_block(true, BlockDice::BothDown, &[], &[]);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Home));
+        state.step_simple(SimpleAT::UseSkill);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Up);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, defender_pos)));
+    }
+
+    /// Declined, the Both Down is played: the blocker without Block falls, a turnover.
+    #[test]
+    fn declining_juggernaut_plays_the_both_down() {
+        let (mut state, attacker, _, _) = juggernaut_block(true, BlockDice::BothDown, &[], &[]);
+        for _ in 0..4 {
+            state.fix_d6(1); // both armour rolls
+        }
+        state.step_simple(SimpleAT::DontUseSkill);
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away), "a turnover");
+    }
+
+    /// Outside a Blitz there is no question: the Both Down is played.
+    #[test]
+    fn juggernaut_does_nothing_in_a_block() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        state
+            .get_mut_player_unsafe(attacker)
+            .stats
+            .give_skill(Skill::Juggernaut);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, defender_pos);
+        for _ in 0..4 {
+            state.fix_d6(1); // both armour rolls
+        }
+        state.step_simple(SimpleAT::SelectBothDown);
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+    }
+
+    /// The Blitz target can't Stand Firm ...
+    #[test]
+    fn juggernaut_beats_stand_firm() {
+        let (state, _, _, defender_pos) = juggernaut_block(true, BlockDice::Push, &[Skill::StandFirm], &[]);
+        assert_eq!(
+            state.get_available_actions().team,
+            Some(TeamType::Home),
+            "no Stand Firm question"
+        );
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (1, 0))));
+    }
+
+    /// ... though a player a chain push reaches still may.
+    #[test]
+    fn juggernaut_lets_a_chain_pushed_player_stand_firm() {
+        let (mut state, _, _, defender_pos) = juggernaut_block(true, BlockDice::Push, &[], &[(7, 2), (7, 3), (7, 4)]);
+        let behind = state.get_player_id_at(defender_pos + (1, 0)).unwrap();
+        state.get_mut_player_unsafe(behind).stats.give_skill(Skill::StandFirm);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        assert_eq!(
+            state.get_available_actions().team,
+            Some(TeamType::Away),
+            "the Stand Firm question"
+        );
+    }
+
+    /// ... nor Fend ...
+    #[test]
+    fn juggernaut_beats_fend() {
+        let (mut state, _, _, defender_pos) = juggernaut_block(true, BlockDice::Push, &[Skill::Fend], &[]);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, defender_pos)));
+    }
+
+    /// ... nor Wrestle.
+    #[test]
+    fn juggernaut_beats_wrestle() {
+        let (mut state, attacker, _, _) = juggernaut_block(true, BlockDice::BothDown, &[Skill::Wrestle], &[]);
+        assert_eq!(
+            state.get_available_actions().team,
+            Some(TeamType::Home),
+            "the Juggernaut question"
+        );
+        for _ in 0..4 {
+            state.fix_d6(1); // both armour rolls
+        }
+        state.step_simple(SimpleAT::DontUseSkill);
+        assert_eq!(
+            state.get_player_unsafe(attacker).status,
+            PlayerStatus::Down,
+            "no Wrestle question"
+        );
     }
 
     /// A Push on an away ball carrier; returns who holds the ball afterwards.

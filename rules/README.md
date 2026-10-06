@@ -95,7 +95,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Bullseye | Strength | A Superb Throw Team-mate result lands exactly, no scatter | No | — | Simple\* |
 | Grab | Strength | Choose the push-back square; opponent can't use Sidestep | Yes (`block_procs.rs::Push::grab`; the extra squares are offered with the push squares, never instead of a crowd push) | Yes (`grab_*`) | Simple |
 | Guard | Strength | Provide Offensive/Defensive Assist regardless of how many are marking you | Yes (`gamestate.rs::get_blockdices_from`, `pathing.rs` foul assists) | Yes (`guard_*`) | Simple |
-| Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | No | — | Simple |
+| Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | Yes (`block_procs.rs::juggernaut_blitz`; Both Down → Push is a `UseSkill`/`DontUseSkill` decision; a chain-pushed player keeps Stand Firm) | Yes (`juggernaut_*`) | Simple |
 | Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | Yes (`casualty_procs.rs::Armor`/`Injury`, set by `block_procs.rs::Block`) | Yes (`mighty_blow_*`) | Simple |
 | Multiple Block | Strength | Block two adjacent opponents at once, at -2 Strength | No | — | Bigger (Block Action gains a second targeted square) |
 | Stand Firm | Strength | Choose not to be pushed back during a Block | Yes (`block_procs.rs::Push`; a `UseSkill`/`DontUseSkill` decision, chain pushes too) | Yes (`stand_firm_*`) | Simple |
