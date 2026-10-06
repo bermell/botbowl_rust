@@ -55,14 +55,10 @@ pub struct Push {
     /// Fend: the blocker may not follow up.
     #[serde(default)]
     fend: bool,
-    /// Grab: the blocker's target can't Sidestep, and outside a Blitz may be pushed into any
-    /// free square next to them. Only the target: cleared when a chain push moves on.
+    /// Grab outside a Blitz: the blocker's target may be pushed into any free square next to
+    /// them. Only the target: cleared when a chain push moves on.
     #[serde(default)]
     grab: bool,
-    /// Juggernaut in a Blitz: the blocker's target can't Stand Firm. Cleared when a chain push
-    /// moves on.
-    #[serde(default)]
-    juggernaut: bool,
 }
 
 impl Push {
@@ -77,7 +73,6 @@ impl Push {
             strip_ball: None,
             fend: false,
             grab: false,
-            juggernaut: false,
         })
     }
     pub fn new_pure(from: Position, on: Position) -> Push {
@@ -91,7 +86,6 @@ impl Push {
             strip_ball: None,
             fend: false,
             grab: false,
-            juggernaut: false,
         }
     }
 
@@ -225,17 +219,22 @@ impl Push {
 
     fn calculate_next_state(&mut self, game_state: &mut GameState) -> ProcState {
         let pushed = game_state.get_player_at(self.on).unwrap();
+        let attacker = game_state.get_active_player().unwrap();
+        let opposing = pushed.stats.team != attacker.stats.team;
         // Stand Firm: the pushed player's coach may refuse the push — the blocked player's, or
         // any a chain push reaches. Then nobody is pushed at all, so there is no follow-up; a
         // knockdown (queued under this proc) still happens, in place.
         if !self.questions.stand_firm_asked {
             self.questions.stand_firm_asked = true;
-            if pushed.has_skill(Skill::StandFirm) && !self.juggernaut {
+            // Not against a Juggernaut blitzer.
+            if pushed.has_skill(Skill::StandFirm) && !(opposing && juggernaut_blitz(game_state)) {
                 return self.ask(PushSkill::StandFirm, game_state);
             }
         }
-        // Sidestep: the pushed player's coach may pick any free adjacent square instead.
-        let sidestep = Push::sidestep_squares(self.on, game_state).filter(|_| !self.grab);
+        // Sidestep: the pushed player's coach may pick any free adjacent square instead. Not
+        // against a Grab blocker.
+        let grabbed = opposing && attacker.has_skill(Skill::Grab);
+        let sidestep = Push::sidestep_squares(self.on, game_state).filter(|_| !grabbed);
         if let Some(squares) = sidestep {
             match self.questions.sidestep {
                 None => return self.ask(PushSkill::SideStep, game_state),
@@ -305,7 +304,6 @@ impl Procedure for Push {
                 self.on = position_to;
                 self.questions = PushQuestions::default();
                 self.grab = false;
-                self.juggernaut = false;
                 self.calculate_next_state(game_state)
             }
             ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
@@ -718,8 +716,8 @@ impl Block {
             {
                 push.strip_ball = Some(self.defender);
             }
-            push.juggernaut = juggernaut_blitz(game_state);
-            push.fend = game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) && !push.juggernaut;
+            push.fend =
+                game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) && !juggernaut_blitz(game_state);
             push.grab = game_state.get_player_unsafe(attacker_id).has_skill(Skill::Grab);
             procs.push(AnyProc::Push(push));
         }
@@ -1895,18 +1893,68 @@ mod tests {
         assert!(state.is_legal_action(&Action::Positional(PosAT::Push, defender_pos + (1, 0))));
     }
 
-    /// ... though a player a chain push reaches still may.
+    /// A home blocker with `attacker_skill` (blitzing or blocking) pushes an away defender
+    /// straight into a `behind_team` player with `behind_skill`, the only way back. Returns the
+    /// state once that player is reached.
+    fn chain_push_into(
+        attacker_skill: Skill,
+        blitz: bool,
+        behind_team: TeamType,
+        behind_skill: Skill,
+    ) -> crate::core::gamestate::GameState {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let behind_pos = Position::new((7, 3));
+        let mut builder = GameStateBuilder::new();
+        builder
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_away_player(Position::new((7, 2)))
+            .add_away_player(Position::new((7, 4)));
+        match behind_team {
+            TeamType::Home => builder.add_home_player(behind_pos),
+            TeamType::Away => builder.add_away_player(behind_pos),
+        };
+        let mut state = builder.build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let behind = state.get_player_id_at(behind_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(attacker_skill);
+        state.get_mut_player_unsafe(behind).stats.give_skill(behind_skill);
+        let start = if blitz { PosAT::StartBlitz } else { PosAT::StartBlock };
+        state.step_positional(start, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, behind_pos);
+        state
+    }
+
+    /// Juggernaut takes Stand Firm from every opposition player a chain push reaches ...
     #[test]
-    fn juggernaut_lets_a_chain_pushed_player_stand_firm() {
-        let (mut state, _, _, defender_pos) = juggernaut_block(true, BlockDice::Push, &[], &[(7, 2), (7, 3), (7, 4)]);
-        let behind = state.get_player_id_at(defender_pos + (1, 0)).unwrap();
-        state.get_mut_player_unsafe(behind).stats.give_skill(Skill::StandFirm);
-        state.step_positional(PosAT::Push, defender_pos + (1, 0));
-        assert_eq!(
-            state.get_available_actions().team,
-            Some(TeamType::Away),
-            "the Stand Firm question"
-        );
+    fn juggernaut_beats_stand_firm_down_a_chain_push() {
+        let state = chain_push_into(Skill::Juggernaut, true, TeamType::Away, Skill::StandFirm);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+    }
+
+    /// ... but not from the blitzer's team-mates.
+    #[test]
+    fn juggernaut_lets_a_team_mate_stand_firm() {
+        let state = chain_push_into(Skill::Juggernaut, true, TeamType::Home, Skill::StandFirm);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+    }
+
+    /// Grab likewise takes Sidestep from every opposition player ...
+    #[test]
+    fn grab_stops_sidestep_down_a_chain_push() {
+        let state = chain_push_into(Skill::Grab, false, TeamType::Away, Skill::SideStep);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+    }
+
+    /// ... but not from the blocker's team-mates.
+    #[test]
+    fn grab_lets_a_team_mate_sidestep() {
+        let state = chain_push_into(Skill::Grab, false, TeamType::Home, Skill::SideStep);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
     }
 
     /// ... nor Fend ...
