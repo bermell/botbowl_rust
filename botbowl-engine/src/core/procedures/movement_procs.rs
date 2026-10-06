@@ -9,7 +9,7 @@ use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs, game_procs};
 use crate::core::table::*;
 
-use crate::core::model::Weather;
+use crate::core::model::{other_team, TeamType, Weather};
 use crate::core::{
     dices::{D6Target, RollTarget},
     gamestate::GameState,
@@ -89,7 +89,7 @@ impl Procedure for StandUp {
 pub struct DodgeProc {
     target: D6Target,
     id: PlayerID,
-    /// Leaving a square a Tackle player marks: no Dodge re-roll.
+    /// Leaving a square a Tackle player marks: their coach may deny the Dodge re-roll.
     #[serde(default)]
     tackled: bool,
 }
@@ -104,7 +104,12 @@ impl SimpleProc for DodgeProc {
     }
 
     fn reroll_skill(&self) -> Option<Skill> {
-        (!self.tackled).then_some(Skill::Dodge)
+        Some(Skill::Dodge)
+    }
+
+    fn skill_reroll_contested_by(&self, game_state: &GameState) -> Option<TeamType> {
+        self.tackled
+            .then(|| other_team(game_state.get_player_unsafe(self.id).stats.team))
     }
 
     fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
@@ -392,12 +397,14 @@ mod tests {
         Ok(())
     }
 
-    /// Tackle: dodging out of a square a Tackle player marks, the Dodge re-roll is lost. A 2
-    /// fails the 3+ dodge; with no team re-rolls, the dodger falls.
+    /// Tackle: dodging out of a square a Tackle player marks, the Tackle player's coach may deny
+    /// the Dodge re-roll — they are asked when it would be used. A 2 fails the 3+ dodge; with no
+    /// team re-rolls, a denied dodger falls.
     #[test]
-    fn tackle_denies_the_dodge_reroll_when_leaving_its_zone() {
+    fn tackle_may_deny_the_dodge_reroll_when_leaving_its_zone() {
         let start_pos = Position::new((3, 3));
-        let dodge_with = |tackle: bool| {
+        // `tackle`: None = the marker has no Tackle, Some(used) = it has, and is (not) used.
+        let dodge_with = |tackle: Option<bool>| {
             let mut state = GameStateBuilder::new()
                 .add_home_player(start_pos)
                 .add_away_player(Position::new((4, 3)))
@@ -405,23 +412,38 @@ mod tests {
             state.get_mut_team(TeamType::Home).rerolls = 0;
             let id = state.get_player_id_at(start_pos).unwrap();
             state.get_mut_player_unsafe(id).stats.give_skill(Skill::Dodge);
-            if tackle {
+            if tackle.is_some() {
                 let marker = state.get_player_id_at(Position::new((4, 3))).unwrap();
                 state.get_mut_player_unsafe(marker).stats.give_skill(Skill::Tackle);
             }
             state.step_positional(PosAT::StartMove, start_pos);
             state.fix_d6(2); //fail the 3+ dodge
-            if tackle {
-                state.fix_d6(1); //armor
-                state.fix_d6(1); //armor
-            } else {
-                state.fix_d6(3); //Dodge re-roll passes
+            let rest = |state: &mut GameState| {
+                if tackle == Some(true) {
+                    state.fix_d6(1); //armor
+                    state.fix_d6(1); //armor
+                } else {
+                    state.fix_d6(3); //Dodge re-roll passes
+                }
+            };
+            if tackle.is_none() {
+                rest(&mut state);
             }
             state.step_positional(PosAT::Move, Position::new((2, 4)));
+            if let Some(used) = tackle {
+                assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+                rest(&mut state);
+                state.step_simple(if used {
+                    SimpleAT::UseSkill
+                } else {
+                    SimpleAT::DontUseSkill
+                });
+            }
             state.get_player_unsafe(id).status
         };
-        assert_eq!(dodge_with(false), PlayerStatus::Up);
-        assert_eq!(dodge_with(true), PlayerStatus::Down);
+        assert_eq!(dodge_with(None), PlayerStatus::Up);
+        assert_eq!(dodge_with(Some(false)), PlayerStatus::Up);
+        assert_eq!(dodge_with(Some(true)), PlayerStatus::Down);
     }
 
     #[test]

@@ -62,7 +62,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Steady Footing | General | On a 6, avoid being Knocked Down/Fall Over | No | — | Simple |
 | Strip Ball | General | Ball carrier drops the ball when pushed back by your Block | No | — | Simple |
 | Sure Hands | General | Re-roll a failed pick-up; immune to Strip Ball | Yes (`ball_procs.rs::PickupProc::reroll_skill`) | Yes (`pickup_success`) | Simple |
-| Tackle | General | Opponent can't use Dodge Skill leaving your TZ, or vs. a Stumble result | Yes (`pathing.rs` dodge events, `block_procs.rs::dodge_saves_from_stumble`) | Yes (`tackle_*`) | Simple |
+| Tackle | General | Opponent can't use Dodge Skill leaving your TZ, or vs. a Stumble result | Yes (`UseSkill`/`DontUseSkill` decisions: `procedure_tools.rs` contested re-roll, `block_procs.rs::Block`) | Yes (`tackle_*`) | Simple |
 | Taunt | General | Force an opponent to Follow-up when they push you back | No | — | Simple |
 | Wrestle | General | Both Down becomes both players placed prone, regardless of other skills | Yes (`block_procs.rs::Wrestle`; a `UseSkill`/`DontUseSkill` decision, never a turnover) | Yes (`wrestle_*`) | Simple |
 | Big Hand | Mutation | Ignore all negative modifiers when picking up the ball | No | — | Simple |

@@ -488,7 +488,8 @@ impl Procedure for BlockAction {
     }
 }
 
-/// Does the defender's Dodge turn a Stumble (`PowPush`) into a plain push? Not against Tackle.
+/// Does the defender's Dodge turn a Stumble (`PowPush`) into a plain push? Not against Tackle,
+/// assuming the blocker uses it (the MCTS block model and the scripted picks; the engine asks).
 pub fn dodge_saves_from_stumble(attacker: &FieldedPlayer, defender: &FieldedPlayer) -> bool {
     defender.has_skill(Skill::Dodge) && !attacker.has_skill(Skill::Tackle)
 }
@@ -503,6 +504,9 @@ pub struct Block {
     /// Frenzy's second block, which does not chain into a third.
     #[serde(default)]
     frenzy_second: bool,
+    /// The blocker's answer on Tackle, once asked (a Stumble against a Dodge defender).
+    #[serde(default)]
+    tackle: Option<bool>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 enum BlockProcState {
@@ -522,6 +526,7 @@ impl Block {
             roll: Default::default(),
             is_uphill: matches!(dices, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill),
             frenzy_second: false,
+            tackle: None,
         })
     }
 
@@ -564,6 +569,70 @@ impl Block {
         aa
     }
 }
+impl Block {
+    /// Apply the chosen die (any but a Both Down, which `step` routes itself).
+    fn resolve(&mut self, game_state: &mut GameState, dice_action_type: SimpleAT) -> ProcState {
+        let attacker_id = game_state.info.active_player.unwrap();
+        let mut push = false;
+        let mut knockdown_proc: KnockDown = KnockDown {
+            id: None,
+            second_id: None,
+            mighty_blow: game_state.get_player_unsafe(attacker_id).has_skill(Skill::MightyBlow),
+            second_mighty_blow: game_state.get_player_unsafe(self.defender).has_skill(Skill::MightyBlow),
+        };
+
+        match dice_action_type {
+            SimpleAT::SelectPow => {
+                knockdown_proc.id = Some(self.defender);
+                push = true;
+            }
+            SimpleAT::SelectPush => {
+                push = true;
+            }
+            SimpleAT::SelectPowPush => {
+                // Dodge turns a Stumble into a push, unless the blocker used Tackle.
+                let dodges = game_state.get_player_unsafe(self.defender).has_skill(Skill::Dodge);
+                if !dodges || self.tackle == Some(true) {
+                    knockdown_proc.id = Some(self.defender);
+                }
+                push = true;
+            }
+
+            SimpleAT::SelectSkull => knockdown_proc.second_id = Some(attacker_id),
+            _ => panic!("very wrong!"),
+        }
+
+        let mut procs: Vec<AnyProc> = Vec::with_capacity(4);
+
+        // Frenzy: once the push, follow-up and any knockdown have resolved, block again.
+        if push && !self.frenzy_second && game_state.get_player_unsafe(attacker_id).has_skill(Skill::Frenzy) {
+            procs.push(FrenzyBlock::new(
+                self.defender,
+                game_state.get_player_unsafe(self.defender).position,
+            ));
+        }
+
+        //if attacker is knocked down it's a turnover
+        if knockdown_proc.second_id.is_some() {
+            game_state.info.turnover = true;
+        }
+
+        // if any player is knocked down we add the knockdown proc making it the last proc
+        // to be executed of the returned ones
+        if knockdown_proc.id.is_some() || knockdown_proc.second_id.is_some() {
+            procs.push(AnyProc::KnockDown(knockdown_proc));
+        }
+
+        if push {
+            procs.push(Push::new(
+                game_state.get_player_unsafe(attacker_id).position,
+                game_state.get_player_unsafe(self.defender).position,
+            ));
+        }
+        ProcState::from(procs)
+    }
+}
+
 impl Procedure for Block {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         if game_state.info.player_action_type.unwrap() == PosAT::StartBlitz {
@@ -599,65 +668,23 @@ impl Procedure for Block {
                 ProcState::DoneNew(Wrestle::new(self.defender))
             }
             ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown)) => both_down(game_state, self.defender),
-            ProcInput::Action(Action::Simple(dice_action_type)) => {
-                let attacker_id = game_state.info.active_player.unwrap();
-                let mut push = false;
-                let mut knockdown_proc: KnockDown = KnockDown {
-                    id: None,
-                    second_id: None,
-                    mighty_blow: game_state.get_player_unsafe(attacker_id).has_skill(Skill::MightyBlow),
-                    second_mighty_blow: game_state.get_player_unsafe(self.defender).has_skill(Skill::MightyBlow),
-                };
-
-                match dice_action_type {
-                    SimpleAT::SelectPow => {
-                        knockdown_proc.id = Some(self.defender);
-                        push = true;
-                    }
-                    SimpleAT::SelectPush => {
-                        push = true;
-                    }
-                    SimpleAT::SelectPowPush => {
-                        let attacker = game_state.get_player_unsafe(attacker_id);
-                        if !dodge_saves_from_stumble(attacker, game_state.get_player_unsafe(self.defender)) {
-                            knockdown_proc.id = Some(self.defender);
-                        }
-                        push = true;
-                    }
-
-                    SimpleAT::SelectSkull => knockdown_proc.second_id = Some(attacker_id),
-                    _ => panic!("very wrong!"),
-                }
-
-                let mut procs: Vec<AnyProc> = Vec::with_capacity(4);
-
-                // Frenzy: once the push, follow-up and any knockdown have resolved, block again.
-                if push && !self.frenzy_second && game_state.get_player_unsafe(attacker_id).has_skill(Skill::Frenzy) {
-                    procs.push(FrenzyBlock::new(
-                        self.defender,
-                        game_state.get_player_unsafe(self.defender).position,
-                    ));
-                }
-
-                //if attacker is knocked down it's a turnover
-                if knockdown_proc.second_id.is_some() {
-                    game_state.info.turnover = true;
-                }
-
-                // if any player is knocked down we add the knockdown proc making it the last proc
-                // to be executed of the returned ones
-                if knockdown_proc.id.is_some() || knockdown_proc.second_id.is_some() {
-                    procs.push(AnyProc::KnockDown(knockdown_proc));
-                }
-
-                if push {
-                    procs.push(Push::new(
-                        game_state.get_player_unsafe(attacker_id).position,
-                        game_state.get_player_unsafe(self.defender).position,
-                    ));
-                }
-                ProcState::from(procs)
+            // Tackle: on a Stumble against a Dodge defender the blocker's coach is asked whether to
+            // use it (knocking the defender down) or let Dodge turn it into a push.
+            ProcInput::Action(Action::Simple(SimpleAT::SelectPowPush))
+                if self.tackle.is_none()
+                    && game_state.get_player_unsafe(self.defender).has_skill(Skill::Dodge)
+                    && game_state.get_active_player().unwrap().has_skill(Skill::Tackle) =>
+            {
+                let mut aa = AvailableActions::new(game_state.get_active_player().unwrap().stats.team);
+                aa.insert_simple(SimpleAT::UseSkill);
+                aa.insert_simple(SimpleAT::DontUseSkill);
+                ProcState::NeedAction(aa)
             }
+            ProcInput::Action(Action::Simple(answer @ (SimpleAT::UseSkill | SimpleAT::DontUseSkill))) => {
+                self.tackle = Some(answer == SimpleAT::UseSkill);
+                self.resolve(game_state, SimpleAT::SelectPowPush)
+            }
+            ProcInput::Action(Action::Simple(dice_action_type)) => self.resolve(game_state, dice_action_type),
             _ => unreachable!(),
         }
     }
@@ -1302,10 +1329,12 @@ mod tests {
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
     }
 
-    /// Tackle: a defender with Dodge still goes down on a Stumble from a Tackle blocker.
+    /// Tackle: a defender with Dodge still goes down on a Stumble from a Tackle blocker — if the
+    /// blocker's coach uses it; they are asked once the Stumble is picked.
     #[test]
-    fn tackle_beats_dodge_on_a_stumble() {
-        let stumble_with = |tackle: bool| {
+    fn tackle_may_beat_dodge_on_a_stumble() {
+        // `tackle`: None = the blocker has no Tackle, Some(used) = it has, and is (not) used.
+        let stumble_with = |tackle: Option<bool>| {
             let attacker_pos = Position::new((5, 3));
             let defender_pos = Position::new((6, 3));
             let mut state = GameStateBuilder::new()
@@ -1315,23 +1344,32 @@ mod tests {
             let attacker = state.get_player_id_at(attacker_pos).unwrap();
             let defender = state.get_player_id_at(defender_pos).unwrap();
             state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Dodge);
-            if tackle {
+            if tackle.is_some() {
                 state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Tackle);
             }
             state.step_positional(PosAT::StartBlock, attacker_pos);
             state.fix_blockdice(BlockDice::PowPush);
             state.step_positional(PosAT::Block, defender_pos);
             state.step_simple(SimpleAT::SelectPowPush);
+            if let Some(used) = tackle {
+                assert_eq!(state.get_available_actions().team, Some(TeamType::Home));
+                state.step_simple(if used {
+                    SimpleAT::UseSkill
+                } else {
+                    SimpleAT::DontUseSkill
+                });
+            }
             state.step_positional(PosAT::Push, defender_pos + (1, 0));
-            if tackle {
+            if tackle == Some(true) {
                 state.fix_d6(1); //armor
                 state.fix_d6(1); //armor
             }
             state.step_positional(PosAT::FollowUp, defender_pos);
             state.get_player_unsafe(defender).status
         };
-        assert_eq!(stumble_with(false), PlayerStatus::Up);
-        assert_eq!(stumble_with(true), PlayerStatus::Down);
+        assert_eq!(stumble_with(None), PlayerStatus::Up);
+        assert_eq!(stumble_with(Some(false)), PlayerStatus::Up);
+        assert_eq!(stumble_with(Some(true)), PlayerStatus::Down);
     }
 
     /// A Both Down between a home blocker and an away defender, either of them with Wrestle.
