@@ -11,11 +11,19 @@ use super::table::{NumBlockDices, PosAT, Skill};
 
 type OptRcNode = Option<Arc<Node>>;
 
+/// Skills of the opposing players marking the square a dodge leaves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
+pub struct DodgeMarkers {
+    /// A Tackle player: their coach may deny the Dodge re-roll.
+    pub tackle: bool,
+    /// An Arm Bar player: a fall takes +1 on the armour or injury roll.
+    pub arm_bar: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum PathingEvent {
-    /// The roll's target, and whether the square being left is marked by an opposing Tackle
-    /// player (no Dodge re-roll then).
-    Dodge(D6Target, bool),
+    /// The roll's target, and who marks the square being left.
+    Dodge(D6Target, DodgeMarkers),
     GFI(D6Target),
     Pickup(D6Target),
     Block(PlayerID, NumBlockDices),
@@ -279,9 +287,9 @@ impl Node {
         self.prob *= target.success_prob();
         self.events.push_back(PathingEvent::GFI(target));
     }
-    fn apply_dodge(&mut self, target: D6Target, tackled: bool) {
+    fn apply_dodge(&mut self, target: D6Target, markers: DodgeMarkers) {
         self.prob *= target.success_prob();
-        self.events.push_back(PathingEvent::Dodge(target, tackled));
+        self.events.push_back(PathingEvent::Dodge(target, markers));
     }
     fn apply_pickup(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
@@ -744,11 +752,16 @@ impl<'a> GameInfo<'a> {
             next_node.apply_gfi(self.gfi_target);
         }
         if self.tackles_zones_at(parent_node.position) > 0 {
-            let tackled = self
-                .game_state
-                .get_adj_players(parent_node.position)
-                .any(|p| p.stats.team != self.team && p.has_tackle_zone() && p.has_skill(Skill::Tackle));
-            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]), tackled);
+            let marked_by = |skill| {
+                self.game_state
+                    .get_adj_players(parent_node.position)
+                    .any(|p| p.stats.team != self.team && p.has_tackle_zone() && p.has_skill(skill))
+            };
+            let markers = DodgeMarkers {
+                tackle: marked_by(Skill::Tackle),
+                arm_bar: marked_by(Skill::ArmBar),
+            };
+            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]), markers);
         }
         match self.ball {
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
@@ -1258,7 +1271,7 @@ mod tests {
                 PositionOrEvent::Position(Position::new((7, 5))),
                 PositionOrEvent::Position(Position::new((6, 4))),
                 PositionOrEvent::Position(Position::new((5, 3))),
-                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, false)),
+                PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, Default::default())),
                 PositionOrEvent::Position(Position::new((4, 2))),
                 PositionOrEvent::Position(Position::new((3, 1))),
                 PositionOrEvent::Position(Position::new((2, 1))),

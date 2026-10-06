@@ -381,6 +381,15 @@ impl KnockDown {
             second_blow: Blow::default(),
         })
     }
+    /// `id` falls; `blow` is for their armour roll.
+    pub fn new_with_blow(id: PlayerID, blow: Blow) -> AnyProc {
+        AnyProc::KnockDown(KnockDown {
+            id: Some(id),
+            second_id: None,
+            blow,
+            second_blow: Blow::default(),
+        })
+    }
     pub fn new_pure(id: PlayerID) -> KnockDown {
         KnockDown {
             id: Some(id),

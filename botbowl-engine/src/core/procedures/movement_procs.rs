@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::core::model::ProcInput;
 use crate::core::model::{Action, AvailableActions, FieldedPlayer, PlayerID, PlayerStatus, ProcState, Procedure};
 use crate::core::pathing::{
-    event_ends_player_action, CustomIntoIter, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
+    event_ends_player_action, CustomIntoIter, DodgeMarkers, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
 };
+use crate::core::procedures::casualty_procs::Blow;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs, game_procs};
 use crate::core::table::*;
@@ -89,13 +90,13 @@ impl Procedure for StandUp {
 pub struct DodgeProc {
     target: D6Target,
     id: PlayerID,
-    /// Leaving a square a Tackle player marks: their coach may deny the Dodge re-roll.
+    /// Who marks the square left.
     #[serde(default)]
-    tackled: bool,
+    markers: DodgeMarkers,
 }
 impl DodgeProc {
-    fn new(id: PlayerID, target: D6Target, tackled: bool) -> AnyProc {
-        AnyProc::DodgeProc(SimpleProcContainer::new(DodgeProc { target, id, tackled }))
+    fn new(id: PlayerID, target: D6Target, markers: DodgeMarkers) -> AnyProc {
+        AnyProc::DodgeProc(SimpleProcContainer::new(DodgeProc { target, id, markers }))
     }
 }
 impl SimpleProc for DodgeProc {
@@ -108,13 +109,19 @@ impl SimpleProc for DodgeProc {
     }
 
     fn skill_reroll_contested_by(&self, game_state: &GameState) -> Option<TeamType> {
-        self.tackled
+        self.markers
+            .tackle
             .then(|| other_team(game_state.get_player_unsafe(self.id).stats.team))
     }
 
     fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.info.turnover = true;
-        vec![block_procs::KnockDown::new(self.id)]
+        // Arm Bar: +1 to the armour or injury roll, the way Mighty Blow's goes.
+        let blow = Blow {
+            mighty_blow: self.markers.arm_bar,
+            ..Blow::default()
+        };
+        vec![block_procs::KnockDown::new_with_blow(self.id, blow)]
     }
 
     fn player_id(&self) -> PlayerID {
@@ -123,7 +130,7 @@ impl SimpleProc for DodgeProc {
 }
 fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
     match roll {
-        PathingEvent::Dodge(target, tackled) => vec![DodgeProc::new(active_player, target, tackled)],
+        PathingEvent::Dodge(target, markers) => vec![DodgeProc::new(active_player, target, markers)],
         PathingEvent::GFI(target) => vec![GfiProc::new(active_player, target)],
         PathingEvent::Pickup(target) => vec![ball_procs::PickupProc::new(active_player, target)],
         PathingEvent::Block(id, dices) => vec![block_procs::Block::new(dices, id)],
@@ -446,6 +453,44 @@ mod tests {
         assert_eq!(dodge_with(Some(true)), PlayerStatus::Down);
     }
 
+    /// Arm Bar: a player falling as they dodge out of an Arm Bar player's tackle zone takes +1 on
+    /// the armour (or injury) roll — an 8 breaks AV 8 only with it. A prone Arm Bar player has no
+    /// tackle zone; the second marker still makes it a dodge.
+    #[test]
+    fn arm_bar_hits_a_player_falling_out_of_its_zone() {
+        let start_pos = Position::new((3, 3));
+        let fall = |arm_bar: bool, prone: bool| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(Position::new((4, 3)))
+                .add_away_player(Position::new((4, 2)))
+                .build();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            let id = state.get_player_id_at(start_pos).unwrap();
+            state.get_mut_player_unsafe(id).stats.av = 8;
+            let marker = state.get_player_id_at(Position::new((4, 3))).unwrap();
+            if arm_bar {
+                state.get_mut_player_unsafe(marker).stats.give_skill(Skill::ArmBar);
+            }
+            if prone {
+                state.get_mut_player_unsafe(marker).status = PlayerStatus::Down;
+            }
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fix_d6(2); //fail the 3+ dodge
+            state.fix_d6(5); //armour: 8
+            state.fix_d6(3);
+            if arm_bar && !prone {
+                state.fix_d6(1); //injury: stunned
+                state.fix_d6(2);
+            }
+            state.step_positional(PosAT::Move, Position::new((2, 4)));
+            state.get_player_unsafe(id).status
+        };
+        assert_eq!(fall(false, false), PlayerStatus::Down);
+        assert_eq!(fall(true, false), PlayerStatus::Stunned);
+        assert_eq!(fall(true, true), PlayerStatus::Down);
+    }
+
     #[test]
     fn dodge_reroll() -> Result<()> {
         let start_pos = Position::new((1, 1));
@@ -631,9 +676,9 @@ mod tests {
 
         let expected_steps: Vec<PositionOrEvent> = vec![
             PositionOrEvent::Position(Position::new((2, 1))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, false)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, Default::default())),
             PositionOrEvent::Position(Position::new((3, 1))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, false)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, Default::default())),
             // (4,2) and (3,2) are interchangeable here — same probability,
             // same events, same remaining movement — so which one the
             // pathfinder returns is decided by `expand_node`'s direction
@@ -642,11 +687,11 @@ mod tests {
             // the probability below is the assertion that carries meaning.
             PositionOrEvent::Position(Position::new((4, 2))),
             PositionOrEvent::Position(Position::new((4, 3))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, false)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, Default::default())),
             PositionOrEvent::Position(Position::new((4, 4))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, false)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::FourPlus, Default::default())),
             PositionOrEvent::Position(Position::new((4, 5))),
-            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, false)),
+            PositionOrEvent::Event(PathingEvent::Dodge(D6Target::ThreePlus, Default::default())),
             PositionOrEvent::Position(Position::new((4, 6))),
             PositionOrEvent::Event(PathingEvent::GFI(D6Target::TwoPlus)),
             PositionOrEvent::Event(PathingEvent::Pickup(D6Target::ThreePlus)),

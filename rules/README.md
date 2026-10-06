@@ -89,7 +89,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Pass | Passing | Re-roll a failed Passing Ability Test | No — `Skill::Throw` exists and is granted to the Thrower template, but no code checks it; pass accuracy is driven only by base `pass` stat + modifiers | — | Simple |
 | Punt | Passing | Punt Special Action to kick the ball downfield | No | — | Bigger (new Special Action) |
 | Safe Pass | Passing | A natural 1 on a Pass doesn't fumble; ends activation instead, no turnover | No | — | Simple |
-| Arm Bar | Strength | +1 Armour/Injury Roll when an opponent falls dodging/leaping/jumping from your TZ | No | — | Simple |
+| Arm Bar | Strength | +1 Armour/Injury Roll when an opponent falls dodging/leaping/jumping from your TZ | Yes (`pathing.rs::DodgeMarkers`, `movement_procs.rs::DodgeProc`; automatic, the +1 goes like Mighty Blow's; dodges only — no Leap/Jump yet) | Yes (`arm_bar_*`) | Simple |
 | Brawler | Strength | Re-roll a single Both Down result | Yes (`block_procs.rs::Block::brawler_available`; `UseSkill` offered with the dice, Block action only, excludes the team re-roll) | Yes (`brawler_*`) | Simple |
 | Break Tackle | Strength | Once per turn, +1 to +3 Agility Test bonus when dodging, based on your Strength | No | — | Simple |
 | Bullseye | Strength | A Superb Throw Team-mate result lands exactly, no scatter | No | — | Simple\* |
