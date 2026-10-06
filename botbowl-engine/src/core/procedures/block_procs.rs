@@ -8,6 +8,7 @@ use crate::core::model::{
 use crate::core::model::{BallState, PlayerID, ProcInput};
 use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
+use crate::core::procedures::movement_procs;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
 
@@ -199,7 +200,12 @@ impl Procedure for FollowUp {
         match input {
             ProcInput::Nothing => {
                 let mut aa = AvailableActions::new(player.stats.team);
-                aa.insert_positional(PosAT::FollowUp, vec![player.position, self.to]);
+                if player.has_skill(Skill::Frenzy) {
+                    // Frenzy must follow up.
+                    aa.insert_positional(PosAT::FollowUp, vec![self.to]);
+                } else {
+                    aa.insert_positional(PosAT::FollowUp, vec![player.position, self.to]);
+                }
                 ProcState::NeedAction(aa)
             }
             ProcInput::Action(Action::Positional(PosAT::FollowUp, position)) => {
@@ -412,6 +418,9 @@ pub struct Block {
     state: BlockProcState,
     roll: [Option<BlockDice>; 3],
     is_uphill: bool,
+    /// Frenzy's second block, which does not chain into a third.
+    #[serde(default)]
+    frenzy_second: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 enum BlockProcState {
@@ -430,6 +439,7 @@ impl Block {
             state: BlockProcState::Init,
             roll: Default::default(),
             is_uphill: matches!(dices, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill),
+            frenzy_second: false,
         })
     }
 
@@ -535,7 +545,12 @@ impl Procedure for Block {
                     _ => panic!("very wrong!"),
                 }
 
-                let mut procs: Vec<AnyProc> = Vec::with_capacity(3);
+                let mut procs: Vec<AnyProc> = Vec::with_capacity(4);
+
+                // Frenzy: once the push, follow-up and any knockdown have resolved, block again.
+                if push && !self.frenzy_second && game_state.get_player_unsafe(attacker_id).has_skill(Skill::Frenzy) {
+                    procs.push(FrenzyBlock::new(self.defender));
+                }
 
                 //if attacker is knocked down it's a turnover
                 if knockdown_proc.second_id.is_some() {
@@ -558,6 +573,53 @@ impl Procedure for Block {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+/// Frenzy's second block against the same target, once the first block has fully resolved.
+/// Only if the target is still standing next to a still-standing blocker. In a Blitz it costs a square of movement, or a Rush when none is left; a failed
+/// Rush knocks the blocker over and there is no second block.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct FrenzyBlock {
+    defender: PlayerID,
+    rushed: bool,
+}
+impl FrenzyBlock {
+    pub fn new(defender: PlayerID) -> AnyProc {
+        AnyProc::FrenzyBlock(FrenzyBlock {
+            defender,
+            rushed: false,
+        })
+    }
+}
+impl Procedure for FrenzyBlock {
+    fn step(&mut self, game_state: &mut GameState, _input: ProcInput) -> ProcState {
+        let attacker = game_state.get_active_player().unwrap();
+        let Ok(defender) = game_state.get_player(self.defender) else {
+            return ProcState::Done; // pushed off the pitch
+        };
+        // The follow-up was forced, so a defender still on the pitch is adjacent.
+        if attacker.status != PlayerStatus::Up || defender.status != PlayerStatus::Up {
+            return ProcState::Done;
+        }
+        let attacker_id = attacker.id;
+        if game_state.info.blitz_this_activation && !self.rushed {
+            if attacker.total_movement_left() == 0 {
+                return ProcState::Done;
+            }
+            let needs_rush = attacker.moves_left() == 0;
+            game_state.get_mut_player_unsafe(attacker_id).add_move(1);
+            if needs_rush {
+                self.rushed = true;
+                return ProcState::NotDoneNew(movement_procs::GfiProc::new_rush(game_state, attacker_id));
+            }
+        }
+        let dices = game_state.get_blockdices(attacker_id, self.defender);
+        let AnyProc::Block(mut block) = Block::new(dices, self.defender) else {
+            unreachable!()
+        };
+        block.frenzy_second = true;
+        ProcState::DoneNew(AnyProc::Block(block))
     }
 }
 
@@ -807,6 +869,154 @@ mod tests {
         state.fix_d6(3);
         state.step_simple(SimpleAT::SelectBothDown);
         assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+    }
+
+    /// A home Frenzy blocker next to an away defender, with plenty of room behind the defender.
+    fn frenzy_block() -> (crate::core::gamestate::GameState, PlayerID, PlayerID, Position) {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Frenzy);
+        (state, attacker, defender, defender_pos)
+    }
+
+    /// Frenzy: the blocker must follow up a push.
+    #[test]
+    fn frenzy_must_follow_up() {
+        let (mut state, attacker, _, defender_pos) = frenzy_block();
+        let attacker_pos = state.get_player_unsafe(attacker).position;
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, defender_pos)));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::FollowUp, attacker_pos)));
+    }
+
+    /// Frenzy: a target still standing after the push is blocked again, once.
+    #[test]
+    fn frenzy_blocks_a_pushed_target_a_second_time() {
+        let (mut state, attacker, defender, defender_pos) = frenzy_block();
+        let attacker_pos = state.get_player_unsafe(attacker).position;
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        let pushed_to = defender_pos + (1, 0);
+        state.step_positional(PosAT::Push, pushed_to);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::FollowUp, defender_pos);
+
+        assert_eq!(state.proc_stack_top(), Some("Block"), "the second block's dice are up");
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, pushed_to + (1, 0));
+        state.step_positional(PosAT::FollowUp, pushed_to);
+        assert_eq!(state.get_player_unsafe(defender).position, pushed_to + (1, 0));
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "two blocks, not three"
+        );
+    }
+
+    /// No second block once the target is down.
+    #[test]
+    fn frenzy_stops_when_the_target_goes_down() {
+        let (mut state, attacker, _, defender_pos) = frenzy_block();
+        let attacker_pos = state.get_player_unsafe(attacker).position;
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPow);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.step_positional(PosAT::FollowUp, defender_pos);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+    }
+
+    /// In a Blitz the second block costs a square of movement like the first ...
+    #[test]
+    fn frenzy_second_block_in_a_blitz_costs_a_square() {
+        let (mut state, attacker, _, defender_pos) = frenzy_block();
+        let attacker_pos = state.get_player_unsafe(attacker).position;
+        state.get_mut_player_unsafe(attacker).stats.ma = 2;
+        state.step_positional(PosAT::StartBlitz, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        let pushed_to = defender_pos + (1, 0);
+        state.step_positional(PosAT::Push, pushed_to);
+        assert_eq!(state.get_player_unsafe(attacker).moves_left(), 1);
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_positional(PosAT::FollowUp, defender_pos);
+        assert_eq!(state.get_player_unsafe(attacker).moves_left(), 0);
+        assert_eq!(state.proc_stack_top(), Some("Block"));
+    }
+
+    /// ... and with none left, a Rush. Failing it knocks the blocker over: turnover, no block.
+    #[test]
+    fn frenzy_second_block_in_a_blitz_may_need_a_rush() {
+        let (mut state, attacker, _, defender_pos) = frenzy_block();
+        let attacker_pos = state.get_player_unsafe(attacker).position;
+        state.get_mut_player_unsafe(attacker).stats.ma = 1;
+        state.get_mut_team(TeamType::Home).rerolls = 0;
+        state.step_positional(PosAT::StartBlitz, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        assert_eq!(state.get_player_unsafe(attacker).moves_left(), 0);
+        state.fix_d6(1); //rush
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.step_positional(PosAT::FollowUp, defender_pos);
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away), "a turnover");
+    }
+
+    /// A Blitz with no movement and no Rushes left has no second block.
+    #[test]
+    fn frenzy_has_no_second_block_without_movement_left() {
+        let (mut state, attacker, _, defender_pos) = frenzy_block();
+        let attacker_pos = state.get_player_unsafe(attacker).position;
+        state.get_mut_player_unsafe(attacker).stats.ma = 0;
+        state.get_mut_player_unsafe(attacker).moves = 1; // one Rush already spent
+        state.step_positional(PosAT::StartBlitz, attacker_pos);
+        state.fix_d6(6); //rush into the block
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, defender_pos + (1, 0));
+        assert_eq!(state.get_player_unsafe(attacker).total_movement_left(), 0);
+        state.step_positional(PosAT::FollowUp, defender_pos);
+        assert_ne!(state.proc_stack_top(), Some("Block"));
+    }
+
+    /// A target pushed into the crowd has left the pitch: no second block.
+    #[test]
+    fn frenzy_has_no_second_block_after_a_crowd_push() {
+        let attacker_pos = Position::new((6, 2));
+        let defender_pos = Position::new((6, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Frenzy);
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.fix_d6(1); //crowd injury
+        state.fix_d6(2); //crowd injury
+        state.step_positional(PosAT::FollowUp, defender_pos);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
     }
 
     #[test]

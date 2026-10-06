@@ -433,12 +433,9 @@ impl<'a> GameInfo<'a> {
 
     fn new(game_state: &'a GameState, player: &FieldedPlayer) -> GameInfo<'a> {
         let dodge_target = *player.ag_target().add_modifer(1);
-        let mut gfi_target = D6Target::TwoPlus;
+        let gfi_target = crate::core::procedures::movement_procs::rush_target(game_state);
         let mut pickup_target = *player.ag_target().add_modifer(1);
 
-        if game_state.info.weather == Weather::Blizzard {
-            gfi_target.add_modifer(-1);
-        }
         if game_state.info.weather == Weather::Rain {
             pickup_target.add_modifer(-1);
         }

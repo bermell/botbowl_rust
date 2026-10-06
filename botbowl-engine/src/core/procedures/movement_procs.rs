@@ -9,7 +9,11 @@ use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
 use crate::core::procedures::{ball_procs, block_procs, game_procs};
 use crate::core::table::*;
 
-use crate::core::{dices::D6Target, gamestate::GameState};
+use crate::core::model::Weather;
+use crate::core::{
+    dices::{D6Target, RollTarget},
+    gamestate::GameState,
+};
 
 use super::{casualty_procs, AnyProc};
 
@@ -22,6 +26,19 @@ impl GfiProc {
     fn new(id: PlayerID, target: D6Target) -> AnyProc {
         AnyProc::GfiProc(SimpleProcContainer::new(GfiProc { target, id }))
     }
+    /// A Rush outside a path (Frenzy's second block in a Blitz), at the weather's target.
+    pub fn new_rush(game_state: &GameState, id: PlayerID) -> AnyProc {
+        GfiProc::new(id, rush_target(game_state))
+    }
+}
+
+/// The Rush (GFI) target: 2+, 3+ in a blizzard.
+pub fn rush_target(game_state: &GameState) -> D6Target {
+    let mut target = D6Target::TwoPlus;
+    if game_state.info.weather == Weather::Blizzard {
+        target.add_modifer(-1);
+    }
+    target
 }
 impl SimpleProc for GfiProc {
     fn d6_target(&self) -> D6Target {
