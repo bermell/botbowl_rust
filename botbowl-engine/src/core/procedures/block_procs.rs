@@ -52,9 +52,9 @@ pub struct Push {
     /// into.
     #[serde(default)]
     strip_ball: Option<PlayerID>,
-    /// Fend: this player, the one blocked, may stop the blocker following up.
+    /// Fend: the blocker may not follow up.
     #[serde(default)]
-    fend: Option<PlayerID>,
+    fend: bool,
     /// Grab: the blocker's target can't Sidestep, and outside a Blitz may be pushed into any
     /// free square next to them. Only the target: cleared when a chain push moves on.
     #[serde(default)]
@@ -75,7 +75,7 @@ impl Push {
             follow_up_pos: on,
             questions: PushQuestions::default(),
             strip_ball: None,
-            fend: None,
+            fend: false,
             grab: false,
             juggernaut: false,
         })
@@ -89,7 +89,7 @@ impl Push {
             follow_up_pos: on,
             questions: PushQuestions::default(),
             strip_ball: None,
-            fend: None,
+            fend: false,
             grab: false,
             juggernaut: false,
         }
@@ -248,7 +248,7 @@ impl Push {
             PushSquares::Crowd(position_in_crowd) => {
                 self.moves_to_make.push((self.on, position_in_crowd));
                 self.do_moves(game_state);
-                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos, self.fend))
+                self.follow_up(game_state)
             }
             PushSquares::ChainPush(mut positions) | PushSquares::FreeSquares(mut positions) => {
                 if self.grab && !game_state.info.blitz_this_activation {
@@ -261,6 +261,15 @@ impl Push {
                 aa.insert_positional(PosAT::Push, positions);
                 ProcState::NeedAction(aa)
             }
+        }
+    }
+
+    /// The pushes are done: the blocker may follow up, unless the target has Fend.
+    fn follow_up(&mut self, game_state: &mut GameState) -> ProcState {
+        if self.fend {
+            self.handle_aftermath(game_state)
+        } else {
+            ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos))
         }
     }
 
@@ -302,7 +311,7 @@ impl Procedure for Push {
             ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
                 self.moves_to_make.push((self.on, position));
                 self.do_moves(game_state);
-                ProcState::NotDoneNew(FollowUp::new(self.follow_up_pos, self.fend))
+                self.follow_up(game_state)
             }
             _ => panic!("very wrong!"),
         }
@@ -313,32 +322,16 @@ impl Procedure for Push {
 pub struct FollowUp {
     to: Position,
     //from is active player,
-    /// The pushed player with Fend, until their coach has answered.
-    #[serde(default)]
-    fend: Option<PlayerID>,
 }
 impl FollowUp {
-    pub fn new(to: Position, fend: Option<PlayerID>) -> AnyProc {
-        AnyProc::FollowUp(FollowUp { to, fend })
+    pub fn new(to: Position) -> AnyProc {
+        AnyProc::FollowUp(FollowUp { to })
     }
 }
 impl Procedure for FollowUp {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         let player = game_state.get_active_player().unwrap();
         match input {
-            ProcInput::Nothing if self.fend.is_some() => {
-                let fender = game_state.get_player_unsafe(self.fend.unwrap());
-                let mut aa = AvailableActions::new(fender.stats.team);
-                aa.insert_simple(SimpleAT::UseSkill);
-                aa.insert_simple(SimpleAT::DontUseSkill);
-                ProcState::NeedAction(aa)
-            }
-            // Fend: no follow-up, even for Frenzy.
-            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) => ProcState::Done,
-            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill)) => {
-                self.fend = None;
-                self.step(game_state, ProcInput::Nothing)
-            }
             ProcInput::Nothing => {
                 let mut aa = AvailableActions::new(player.stats.team);
                 if player.has_skill(Skill::Frenzy) {
@@ -726,9 +719,7 @@ impl Block {
                 push.strip_ball = Some(self.defender);
             }
             push.juggernaut = juggernaut_blitz(game_state);
-            if game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) && !push.juggernaut {
-                push.fend = Some(self.defender);
-            }
+            push.fend = game_state.get_player_unsafe(self.defender).has_skill(Skill::Fend) && !push.juggernaut;
             push.grab = game_state.get_player_unsafe(attacker_id).has_skill(Skill::Grab);
             procs.push(AnyProc::Push(push));
         }
@@ -1700,12 +1691,10 @@ mod tests {
         (state, attacker_pos, defender_pos)
     }
 
-    /// Fend: the pushed defender's coach may stop the blocker following up.
+    /// Fend: the blocker may not follow up a pushed Fend player.
     #[test]
     fn fend_stops_the_follow_up() {
-        let (mut state, attacker_pos, _) = push_a_fend_defender(false);
-        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
-        state.step_simple(SimpleAT::UseSkill);
+        let (state, attacker_pos, _) = push_a_fend_defender(false);
         assert!(state.get_player_at(attacker_pos).is_some(), "the blocker stays put");
         assert!(
             state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
@@ -1713,20 +1702,10 @@ mod tests {
         );
     }
 
-    /// Declined, the blocker chooses as usual.
-    #[test]
-    fn declining_fend_allows_the_follow_up() {
-        let (mut state, attacker_pos, defender_pos) = push_a_fend_defender(false);
-        state.step_simple(SimpleAT::DontUseSkill);
-        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, defender_pos)));
-        assert!(state.is_legal_action(&Action::Positional(PosAT::FollowUp, attacker_pos)));
-    }
-
     /// Fend beats Frenzy: no forced follow-up, so no second block.
     #[test]
     fn fend_stops_a_frenzy_follow_up_and_second_block() {
-        let (mut state, attacker_pos, _) = push_a_fend_defender(true);
-        state.step_simple(SimpleAT::UseSkill);
+        let (state, attacker_pos, _) = push_a_fend_defender(true);
         assert!(state.get_player_at(attacker_pos).is_some(), "the blocker stays put");
         assert!(
             state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
