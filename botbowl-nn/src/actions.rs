@@ -1,8 +1,8 @@
 //! Bijection between engine [`Action`]s and policy-head cells.
 //!
-//! The policy head has `A = 30` channels: the 15 [`PosAT`] variants map
-//! to channels `0..15`, the 15 [`SimpleAT`] variants to channels
-//! `15..30`. The forward and inverse maps are **exhaustive matches** on
+//! The policy head has `A = 32` channels: the 15 [`PosAT`] variants map
+//! to channels `0..15`, the 17 [`SimpleAT`] variants to channels
+//! `15..32`. The forward and inverse maps are **exhaustive matches** on
 //! the engine enums — adding a variant there is a compile error here, a
 //! deliberate trip-wire forcing a schema version bump (the manifest
 //! records `A` and the channel names).
@@ -22,7 +22,7 @@ use crate::perspective::canonical_x;
 /// Number of positional action types → policy channels `0..NUM_POS_AT`.
 pub const NUM_POS_AT: usize = 15;
 /// Number of simple action types → policy channels `NUM_POS_AT..POLICY_CHANNELS`.
-pub const NUM_SIMPLE_AT: usize = 15;
+pub const NUM_SIMPLE_AT: usize = 17;
 /// Policy-head channel count `A`.
 pub const POLICY_CHANNELS: usize = NUM_POS_AT + NUM_SIMPLE_AT;
 
@@ -62,7 +62,7 @@ pub fn pos_at_index(at: PosAT) -> usize {
     }
 }
 
-/// Simple action type → index `0..15` (policy channel is `NUM_POS_AT + this`).
+/// Simple action type → index `0..17` (policy channel is `NUM_POS_AT + this`).
 pub fn simple_at_index(at: SimpleAT) -> usize {
     match at {
         SimpleAT::SelectBothDown => 0,
@@ -84,6 +84,9 @@ pub fn simple_at_index(at: SimpleAT) -> usize {
         // carries a v7 head across (the retained channels keep their weights).
         SimpleAT::KickoffAimMiddle => 13,
         SimpleAT::BenchPlayer => 14,
+        // Schema v9: optional skills (Wrestle, Stand Firm, ...), appended.
+        SimpleAT::UseSkill => 15,
+        SimpleAT::DontUseSkill => 16,
     }
 }
 
@@ -127,6 +130,8 @@ pub fn simple_at_from_index(i: usize) -> SimpleAT {
         12 => SimpleAT::Receive,
         13 => SimpleAT::KickoffAimMiddle,
         14 => SimpleAT::BenchPlayer,
+        15 => SimpleAT::UseSkill,
+        16 => SimpleAT::DontUseSkill,
         _ => panic!("simple_at index {i} out of range 0..{NUM_SIMPLE_AT}"),
     }
 }
@@ -172,10 +177,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_channel_count_is_thirty() {
-        assert_eq!(POLICY_CHANNELS, 30);
+    fn policy_channel_count_is_thirty_two() {
+        assert_eq!(POLICY_CHANNELS, 32);
         assert_eq!(NUM_POS_AT, 15);
-        assert_eq!(NUM_SIMPLE_AT, 15);
+        assert_eq!(NUM_SIMPLE_AT, 17);
     }
 
     #[test]
@@ -224,6 +229,8 @@ mod tests {
             Receive,
             KickoffAimMiddle,
             BenchPlayer,
+            UseSkill,
+            DontUseSkill,
         ];
         assert_eq!(all.len(), NUM_SIMPLE_AT);
         for (i, at) in all.into_iter().enumerate() {
@@ -237,6 +244,15 @@ mod tests {
     /// positional channel is unchanged, the simple block shifted by one for
     /// the new `PlacePlayer` channel, and `KickoffAimMiddle` moved from the
     /// old 14+15 into the slot the dropped formation actions freed.
+    /// The v8 → v9 step `train/src/bbnn/migrate.py` applies: every v8 channel keeps its index,
+    /// the two optional-skill channels are appended.
+    #[test]
+    fn v9_channel_layout_matches_the_migration() {
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::BenchPlayer), 29);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::UseSkill), 30);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::DontUseSkill), 31);
+    }
+
     #[test]
     fn v8_channel_layout_matches_the_migration() {
         assert_eq!(pos_at_index(PosAT::Block), 13);

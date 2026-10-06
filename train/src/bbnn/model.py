@@ -11,15 +11,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Must match botbowl-nn/src/encode.rs and actions.rs (nn_schema_version 8).
+# Must match botbowl-nn/src/encode.rs and actions.rs (nn_schema_version 9).
 SPATIAL_CHANNELS = 61
 GLOBAL_FEATURES = 18
-POLICY_CHANNELS = 30
+POLICY_CHANNELS = 32
 # The schema the action/encoder layout above is at. Stored in every checkpoint
 # as the ``schema_version`` buffer: v8 (per-player setup) re-laid the policy
 # channels without changing a single tensor shape, so shapes alone can no
 # longer say which schema a state_dict is at. `bbnn.migrate` reads it.
-SCHEMA_VERSION = 8
+# v9 appended UseSkill / DontUseSkill (A 30 -> 32).
+SCHEMA_VERSION = 9
 
 
 class SchemaError(ValueError):

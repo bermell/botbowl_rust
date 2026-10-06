@@ -80,7 +80,9 @@ use botbowl_nn::targets::{
 // channels — `train/src/bbnn/migrate.py` permutes the head and stamps a
 // `schema_version` marker into the checkpoint. Setup decisions appear in a
 // corpus for the first time.
-const NN_SCHEMA_VERSION: u32 = 8;
+// v9: `SimpleAT::UseSkill` / `DontUseSkill` appended at 30/31 (A 30 → 32) for optional skills
+// (Wrestle, Stand Firm). Every v8 channel keeps its index; `migrate.py` appends two zero rows.
+const NN_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {

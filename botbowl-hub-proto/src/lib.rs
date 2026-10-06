@@ -44,7 +44,8 @@ pub use botbowl_play::generate::GenerateConfig;
 // play app on a worker box can offer its nets by name).
 // v15 (plan 047): per-player setup — `SimpleAT`/`PosAT` re-laid out, `MctsConfig.setup`,
 // `opponent_setup`, `setup_formation`, `GenerateConfig.next_drive`; a trajectory may carry two lines.
-pub const PROTOCOL_VERSION: u32 = 15;
+// v16: `SimpleAT::UseSkill` / `DontUseSkill` (engine actions, inside trajectories and game states).
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.

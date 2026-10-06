@@ -46,6 +46,8 @@ SCHEMAS: dict[int, dict] = {
     # v8 re-laid the policy channels for the per-player setup without changing
     # a shape; it is told apart from v7 by the ``schema_version`` buffer.
     8: {"C": 61, "F": 18, "A": 30},
+    # v9 appended the optional-skill actions UseSkill / DontUseSkill (A 30 -> 32).
+    9: {"C": 61, "F": 18, "A": 32},
 }
 CURRENT = SCHEMA_VERSION
 assert SCHEMAS[CURRENT] == {"C": SPATIAL_CHANNELS, "F": GLOBAL_FEATURES, "A": POLICY_CHANNELS}
@@ -97,6 +99,7 @@ def shape_of(sd: StateDict) -> dict:
         "global_embed": int(embed),
         "spatial_ch": int(sd["stem.weight"].shape[1] - embed),
         "global_f": int(sd["global_fc.weight"].shape[1]),
+        "policy_ch": int(sd["policy_head.weight"].shape[0]),
         "value_hidden": int(sd["value_fc1.weight"].shape[0]),
     }
 
@@ -246,6 +249,18 @@ def _v7_to_v8(sd: StateDict) -> StateDict:
     return out
 
 
+def _v8_to_v9(sd: StateDict) -> StateDict:
+    """Schema v9: UseSkill / DontUseSkill appended as policy channels 30/31. Every v8 channel
+    keeps its index and weights; the new ones start at zero."""
+    out = dict(sd)
+    w, b = sd["policy_head.weight"], sd["policy_head.bias"]
+    n = SCHEMAS[9]["A"] - SCHEMAS[8]["A"]
+    out["policy_head.weight"] = torch.cat([w, w.new_zeros((n, *w.shape[1:]))])
+    out["policy_head.bias"] = torch.cat([b, b.new_zeros(n)])
+    out["schema_version"] = torch.tensor(9, dtype=torch.int32)
+    return out
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         6,
@@ -262,6 +277,13 @@ MIGRATIONS: list[Migration] = [
         "formation channels dropped), retained channels keep their weights; schema_version marker added",
         _v7_to_v8,
         policy_map=POLICY_MAP_7_TO_8,
+    ),
+    Migration(
+        8,
+        9,
+        "optional-skill actions UseSkill/DontUseSkill appended (A 30->32), zero-initialised",
+        _v8_to_v9,
+        policy_map=[(i, i) for i in range(30)],
     ),
 ]
 

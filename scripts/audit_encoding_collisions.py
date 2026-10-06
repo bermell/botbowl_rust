@@ -34,7 +34,7 @@ POS_AT = [
 SIMPLE_AT = [
     "SelectBothDown", "SelectPow", "SelectPush", "SelectPowPush", "SelectSkull",
     "UseReroll", "DontUseReroll", "EndPlayerTurn", "EndTurn", "Heads", "Tails",
-    "Kick", "Receive", "KickoffAimMiddle", "BenchPlayer",
+    "Kick", "Receive", "KickoffAimMiddle", "BenchPlayer", "UseSkill", "DontUseSkill",
 ]
 
 

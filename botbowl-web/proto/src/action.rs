@@ -158,10 +158,13 @@ pub enum SimpleAT {
     /// Setup: send the player being placed to the reserves instead. Only
     /// offered while the team can spare them.
     BenchPlayer,
+    /// Use / don't use an optional skill (Wrestle, Stand Firm).
+    UseSkill,
+    DontUseSkill,
 }
 
 impl SimpleAT {
-    pub const ALL: [SimpleAT; 15] = [
+    pub const ALL: [SimpleAT; 17] = [
         SimpleAT::SelectBothDown,
         SimpleAT::SelectPow,
         SimpleAT::SelectPush,
@@ -177,6 +180,8 @@ impl SimpleAT {
         SimpleAT::Receive,
         SimpleAT::KickoffAimMiddle,
         SimpleAT::BenchPlayer,
+        SimpleAT::UseSkill,
+        SimpleAT::DontUseSkill,
     ];
 
     /// The variant's own name, sentence-cased — see [`PosAT::label`].
@@ -197,6 +202,8 @@ impl SimpleAT {
             SimpleAT::Receive => "Receive",
             SimpleAT::KickoffAimMiddle => "Kickoff aim middle",
             SimpleAT::BenchPlayer => "Bench player",
+            SimpleAT::UseSkill => "Use skill",
+            SimpleAT::DontUseSkill => "Dont use skill",
         }
     }
 

@@ -42,6 +42,10 @@ pub enum SimpleAT {
     /// fielding it. Only offered while the team can still field its minimum
     /// without that player.
     BenchPlayer,
+    /// Use / don't use an optional skill (Wrestle, Stand Firm, ...). Which skill is asked about
+    /// is the procedure on top of the stack.
+    UseSkill,
+    DontUseSkill,
 }
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
