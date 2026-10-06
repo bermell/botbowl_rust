@@ -90,7 +90,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Punt | Passing | Punt Special Action to kick the ball downfield | No | — | Bigger (new Special Action) |
 | Safe Pass | Passing | A natural 1 on a Pass doesn't fumble; ends activation instead, no turnover | No | — | Simple |
 | Arm Bar | Strength | +1 Armour/Injury Roll when an opponent falls dodging/leaping/jumping from your TZ | No | — | Simple |
-| Brawler | Strength | Re-roll a single Both Down result | No | — | Simple |
+| Brawler | Strength | Re-roll a single Both Down result | Yes (`block_procs.rs::Block::brawler_available`; `UseSkill` offered with the dice, Block action only, excludes the team re-roll) | Yes (`brawler_*`) | Simple |
 | Break Tackle | Strength | Once per turn, +1 to +3 Agility Test bonus when dodging, based on your Strength | No | — | Simple |
 | Bullseye | Strength | A Superb Throw Team-mate result lands exactly, no scatter | No | — | Simple\* |
 | Grab | Strength | Choose the push-back square; opponent can't use Sidestep | Yes (`block_procs.rs::Push::grab`; the extra squares are offered with the push squares, never instead of a crowd push; no opposition player Sidesteps) | Yes (`grab_*`) | Simple |

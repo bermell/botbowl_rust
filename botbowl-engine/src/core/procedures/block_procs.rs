@@ -572,9 +572,18 @@ pub struct Block {
     /// The blocker's answer on Tackle, once asked (a Stumble against a Dodge defender).
     #[serde(default)]
     tackle: Option<bool>,
-    /// The blocker has been asked about Juggernaut (a Both Down in a Blitz).
+    /// The skill the blocker's coach has been asked about, or the Brawler re-roll in flight.
     #[serde(default)]
-    juggernaut_asked: bool,
+    pending: Option<BlockSkill>,
+    /// A die has been re-rolled, by a team re-roll or Brawler: none may be re-rolled again.
+    #[serde(default)]
+    rerolled: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
+enum BlockSkill {
+    Tackle,
+    Juggernaut,
+    Brawler,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 enum BlockProcState {
@@ -595,7 +604,8 @@ impl Block {
             is_uphill: matches!(dices, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill),
             frenzy_second: false,
             tackle: None,
-            juggernaut_asked: false,
+            pending: None,
+            rerolled: false,
         })
     }
 
@@ -615,6 +625,15 @@ impl Block {
             .filter_map(|&r| r.map(SimpleAT::from))
             .for_each(|at| aa.insert_simple(at));
     }
+    /// Brawler: in a Block action (not a Blitz) the blocker may re-roll one Both Down, unless a
+    /// die has been re-rolled already.
+    fn brawler_available(&self, game_state: &GameState) -> bool {
+        !self.rerolled
+            && !game_state.info.blitz_this_activation
+            && game_state.get_active_player().unwrap().has_skill(Skill::Brawler)
+            && self.roll.contains(&Some(BlockDice::BothDown))
+    }
+
     fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let mut aa = AvailableActions::new_empty();
         let team = game_state.get_active_player().unwrap().stats.team;
@@ -630,15 +649,29 @@ impl Block {
             }
             BlockProcState::UphillSelectReroll => {
                 aa.team = Some(team);
-                aa.insert_simple(SimpleAT::UseReroll);
+                if game_state.get_active_players_team().unwrap().can_use_reroll() {
+                    aa.insert_simple(SimpleAT::UseReroll);
+                }
                 aa.insert_simple(SimpleAT::DontUseReroll);
             }
             BlockProcState::Init => panic!("should not happen!"),
+        }
+        if self.brawler_available(game_state) {
+            aa.insert_simple(SimpleAT::UseSkill);
         }
         aa
     }
 }
 impl Block {
+    /// Ask the blocker's coach whether to use `skill`.
+    fn ask(&mut self, skill: BlockSkill, game_state: &GameState) -> ProcState {
+        self.pending = Some(skill);
+        let mut aa = AvailableActions::new(game_state.get_active_player().unwrap().stats.team);
+        aa.insert_simple(SimpleAT::UseSkill);
+        aa.insert_simple(SimpleAT::DontUseSkill);
+        ProcState::NeedAction(aa)
+    }
+
     /// A Both Down, unless someone may Wrestle.
     fn both_down_or_wrestle(&self, game_state: &mut GameState) -> ProcState {
         if [game_state.info.active_player.unwrap(), self.defender]
@@ -733,18 +766,28 @@ impl Procedure for Block {
         }
         match input {
             ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices)),
+            ProcInput::Roll(RollResult::BlockDice(rolls)) if self.pending == Some(BlockSkill::Brawler) => {
+                self.pending = None;
+                let slot = self.roll.iter().position(|&d| d == Some(BlockDice::BothDown)).unwrap();
+                self.roll[slot] = rolls[0];
+                self.state = BlockProcState::SelectDice;
+                ProcState::NeedAction(self.available_actions(game_state))
+            }
             ProcInput::Roll(RollResult::BlockDice(rolls)) => {
                 self.roll = rolls;
                 let reroll_available = game_state.get_active_players_team().unwrap().can_use_reroll();
-                self.state = match (reroll_available, self.is_uphill) {
-                    (true, true) => BlockProcState::UphillSelectReroll,
-                    (true, false) => BlockProcState::SelectDiceOrReroll,
-                    (false, _) => BlockProcState::SelectDice,
+                // Uphill the blocker must get a say before the defender picks.
+                let blocker_asked = reroll_available || self.brawler_available(game_state);
+                self.state = match (reroll_available, blocker_asked, self.is_uphill) {
+                    (_, true, true) => BlockProcState::UphillSelectReroll,
+                    (true, _, false) => BlockProcState::SelectDiceOrReroll,
+                    _ => BlockProcState::SelectDice,
                 };
                 ProcState::NeedAction(self.available_actions(game_state))
             }
             ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
                 game_state.get_active_players_team_mut().unwrap().use_reroll();
+                self.rerolled = true;
                 ProcState::NeedRoll(RequestedRoll::BlockDice(self.dices))
             }
             ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
@@ -753,37 +796,35 @@ impl Procedure for Block {
                 ProcState::NeedAction(self.available_actions(game_state))
             }
             // Juggernaut: in a Blitz the blocker's coach may play a Both Down as a Push.
-            ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown))
-                if juggernaut_blitz(game_state) && !self.juggernaut_asked =>
-            {
-                self.juggernaut_asked = true;
-                let mut aa = AvailableActions::new(game_state.get_active_player().unwrap().stats.team);
-                aa.insert_simple(SimpleAT::UseSkill);
-                aa.insert_simple(SimpleAT::DontUseSkill);
-                ProcState::NeedAction(aa)
-            }
-            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) if self.juggernaut_asked => {
-                self.resolve(game_state, SimpleAT::SelectPush)
-            }
-            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill)) if self.juggernaut_asked => {
-                self.both_down_or_wrestle(game_state)
+            ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown)) if juggernaut_blitz(game_state) => {
+                self.ask(BlockSkill::Juggernaut, game_state)
             }
             ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown)) => self.both_down_or_wrestle(game_state),
             // Tackle: on a Stumble against a Dodge defender the blocker's coach is asked whether to
             // use it (knocking the defender down) or let Dodge turn it into a push.
             ProcInput::Action(Action::Simple(SimpleAT::SelectPowPush))
-                if self.tackle.is_none()
-                    && game_state.get_player_unsafe(self.defender).has_skill(Skill::Dodge)
+                if game_state.get_player_unsafe(self.defender).has_skill(Skill::Dodge)
                     && game_state.get_active_player().unwrap().has_skill(Skill::Tackle) =>
             {
-                let mut aa = AvailableActions::new(game_state.get_active_player().unwrap().stats.team);
-                aa.insert_simple(SimpleAT::UseSkill);
-                aa.insert_simple(SimpleAT::DontUseSkill);
-                ProcState::NeedAction(aa)
+                self.ask(BlockSkill::Tackle, game_state)
             }
             ProcInput::Action(Action::Simple(answer @ (SimpleAT::UseSkill | SimpleAT::DontUseSkill))) => {
-                self.tackle = Some(answer == SimpleAT::UseSkill);
-                self.resolve(game_state, SimpleAT::SelectPowPush)
+                let used = answer == SimpleAT::UseSkill;
+                match self.pending.take() {
+                    Some(BlockSkill::Tackle) => {
+                        self.tackle = Some(used);
+                        self.resolve(game_state, SimpleAT::SelectPowPush)
+                    }
+                    Some(BlockSkill::Juggernaut) if used => self.resolve(game_state, SimpleAT::SelectPush),
+                    Some(BlockSkill::Juggernaut) => self.both_down_or_wrestle(game_state),
+                    // Brawler, offered with the dice: re-roll one Both Down.
+                    None if used => {
+                        self.pending = Some(BlockSkill::Brawler);
+                        self.rerolled = true;
+                        ProcState::NeedRoll(RequestedRoll::BlockDice(NumBlockDices::One))
+                    }
+                    pending => panic!("{answer:?} with {pending:?} pending"),
+                }
             }
             ProcInput::Action(Action::Simple(dice_action_type)) => self.resolve(game_state, dice_action_type),
             _ => unreachable!(),
@@ -1983,6 +2024,107 @@ mod tests {
             PlayerStatus::Down,
             "no Wrestle question"
         );
+    }
+
+    /// A home Brawler blocker (Block action, or Blitz) against an away defender. `strength` is
+    /// (attacker, defender); `rerolls` the home team's. Returns the state with `dice` rolled.
+    fn brawler_block(
+        blitz: bool,
+        strength: (u8, u8),
+        rerolls: u8,
+        dice: &[BlockDice],
+    ) -> crate::core::gamestate::GameState {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Brawler);
+        state.get_mut_player_unsafe(attacker).stats.str_ = strength.0;
+        state.get_mut_player_unsafe(defender).stats.str_ = strength.1;
+        state.get_mut_team(TeamType::Home).rerolls = rerolls;
+        let start = if blitz { PosAT::StartBlitz } else { PosAT::StartBlock };
+        state.step_positional(start, attacker_pos);
+        for &die in dice {
+            state.fix_blockdice(die);
+        }
+        state.step_positional(PosAT::Block, defender_pos);
+        state
+    }
+
+    /// Brawler: the blocker may re-roll a Both Down.
+    #[test]
+    fn brawler_rerolls_a_both_down() {
+        let mut state = brawler_block(false, (3, 3), 0, &[BlockDice::BothDown]);
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPow)));
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::SelectBothDown)));
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)), "once");
+    }
+
+    /// Only a single die.
+    #[test]
+    fn brawler_rerolls_one_both_down_of_several() {
+        let mut state = brawler_block(false, (4, 3), 0, &[BlockDice::BothDown, BlockDice::BothDown]);
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPow)));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectBothDown)));
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)), "once");
+    }
+
+    /// Only a Both Down.
+    #[test]
+    fn brawler_needs_a_both_down() {
+        let state = brawler_block(false, (3, 3), 0, &[BlockDice::Skull]);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+    }
+
+    /// Only in a Block action, not a Blitz.
+    #[test]
+    fn brawler_does_nothing_in_a_blitz() {
+        let state = brawler_block(true, (3, 3), 0, &[BlockDice::BothDown]);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+    }
+
+    /// A die is never re-rolled twice: no team re-roll after Brawler ...
+    #[test]
+    fn no_team_reroll_after_brawler() {
+        let mut state = brawler_block(false, (3, 3), 1, &[BlockDice::BothDown]);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        state.fix_blockdice(BlockDice::Skull);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+    }
+
+    /// ... and no Brawler after a team re-roll.
+    #[test]
+    fn no_brawler_after_a_team_reroll() {
+        let mut state = brawler_block(false, (3, 3), 1, &[BlockDice::BothDown]);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_simple(SimpleAT::UseReroll);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectBothDown)));
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+    }
+
+    /// Uphill the blocker may use Brawler before the defender picks a die.
+    #[test]
+    fn brawler_rerolls_before_the_defender_picks_uphill() {
+        let mut state = brawler_block(false, (3, 4), 0, &[BlockDice::BothDown, BlockDice::Push]);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Home));
+        assert!(
+            !state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)),
+            "no team re-rolls"
+        );
+        state.fix_blockdice(BlockDice::Pow);
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPow)));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPush)));
     }
 
     /// A Push on an away ball carrier; returns who holds the ball afterwards.
