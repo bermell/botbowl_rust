@@ -341,7 +341,7 @@ over gen01-06 (14x7 0.42-0.50, 16x9 0.42-0.51).
 | 01 | arm F | 72 min (laptop on) | 45 min, 0 unlabelled | +0.003, +0.002, −0.007 | 0.236 / −0.00 → 0.242 / +0.05 | +0.002/+0.002/+0.005/+0.005 MONOTONE; 0.50 | 0.506 ± 0.018 (H0, 200 pairs) | **0.583 ± 0.029 (H1, 68 pairs)** |
 | 02 | gen01 | 110 min | 47 min | 0, 0, 0 (**restored its init**) | unchanged (= gen01) | +0.001/+0.002/+0.005/+0.009 MONOTONE; 0.47 | 0.508 ± 0.016 (H0, 262 pairs) | **0.551 ± 0.018 (H1, 179 pairs)** |
 | 03 | gen02 (= gen01) | 233 min (laptop gone) | 59 min, train+val, 0 unlabelled; restored step 9000 of 15621 (combined) | +0.002, +0.0014, +0.003 (vs raw outcome; the head now tracks MC values) | 0.242 / +0.046 → **0.236 / +0.035 (paired −2.4%, ~9 SE)** | +0.001/+0.003/+0.007/**+0.013** MONOTONE; 0.49 (gen02 = gen01's weights, on gen03) | 0.516 ± 0.012 (H0, 373 pairs) | 0.508 ± 0.018 (H0, 154 pairs) |
-| 04 | gen03 | 143 min (laptop back, 6 streams) | | | | | | |
+| 04 | gen03 | 143 min (laptop back, 6 streams) | 59 min, 0 unlabelled; **restored its init (step 0 of 15633)** | 0 (= gen03) | unchanged | | | |
 
 gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value bench's drift
 (+0.05 bias) is expected (its truth is g_gen05's policy, see above); watch the trend.
@@ -374,3 +374,12 @@ gen01 is the first net in any Gumbel loop to beat the anchor on 16x9. The value 
 - One generation does not make a trend. If gen04 repeats it, look at whether the combined
   restore now favours value over policy; the value term is now the larger and noisier part of
   the sum.
+
+**gen04 restored its init again, and here the selection is not the problem.**
+- Both val curves were flat for all 15.6k steps: val_policy 0.556 ± 0.0015 and val_value
+  0.082 ± 0.0007, against MC-labelled val. Train loss did not fall either (policy ~0.545, value
+  ~0.070).
+- At lr 5e-5 on a 3-generation window, the fine-tune no longer changes the net's held-out
+  behaviour by more than noise, so the restore picks among ties, and the init is one of them.
+- It is plan 054's "the train step absorbs nothing" in a milder form. gen01 and gen03 moved a
+  little (gen03: value bench −2.4%, absorb dP(played) +0.002); gen02 and gen04 did not move at all.
