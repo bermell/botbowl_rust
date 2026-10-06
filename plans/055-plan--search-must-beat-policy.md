@@ -1,6 +1,15 @@
 # Plan 055 — the search must beat the policy before the loop can learn anything
 
-**Status:** Written 2026-10-04 night. Phase 1 done 2026-10-05 05:13 (results below §3 phase 1):
+**Status (2026-10-06): DONE: the search beats its policy, and more search never hurts.** Under
+the mean backup (hardcoded since ce4eda1, with the proven-win rule), g_gen05's Gumbel search beats
+its own bare policy 0.525 / 0.542 / 0.590 at 250 / 1000 / 4000 descents (exp066, §6). With plan
+056's MC-averaged value labels, the search at 1000 already beats its policy 0.582. The loop's gate
+(§4) is met, and the loop restarted on 2026-10-06 as `runs/loopmix16x9g056`
+(`scripts/launch_plan056.sh`, plan 056 §7). `runs/loopmix16x9g054/HOLD` stays: that run is
+superseded and never launched. `scripts/net_check.sh` (§6) is the standing per-net check, run by
+the loop every generation.
+
+**History:** Written 2026-10-04 night. Phase 1 done 2026-10-05 05:13 (results below §3 phase 1):
 the search loses to its policy unless it is made to override less (q floor 4000) or to back up
 the mean; PUCT loses by 0.13. Phase 1 was launched as
 `scripts/exp064_search_vs_policy.sh` (out `runs/exp064/`), taking over from exp063 at its gate.

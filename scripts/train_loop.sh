@@ -322,6 +322,21 @@ WARM_LR="${WARM_LR:-2e-4}"
 # Plan 054 E1: after each fine-tune, score it against its generator on the generation's own
 # held-out shards (scripts/absorb_probe.py) and put the deltas on status.md. on|off.
 ABSORB_PROBE="${ABSORB_PROBE:-on}"
+# Plan 056: Monte Carlo value labels. After each generation, `botbowl-ui mc-label` rewrites its
+# train shards into $GEN_DIR/mc/ with every sample's outcome replaced by the mean of this many
+# policy-only drive playouts under the generator's net (arm F: value RMS -15%, its search beat the
+# blend-0.5 control's 0.533 head to head). The window then trains on mc/shard*.jsonl; val shards
+# stay raw. Pair with VALUE_BLEND=1.0 (the label is used as is). 0 = off, the raw outcome as before.
+MC_LABEL_PLAYOUTS="${MC_LABEL_PLAYOUTS:-0}"
+MC_LABEL_PARALLEL="${MC_LABEL_PARALLEL:-16}"
+# Plan 056 §2: score every new net's value head on a frozen MC benchmark (scripts/value_bench.sh,
+# seconds) next to its generator; the benchmark .jsonl path, or empty = off.
+VALUE_BENCH="${VALUE_BENCH:-}"
+# Plan 055 §6: the standing net check (scripts/net_check.sh, the search-improvement curve over a
+# budget ladder) on each generation's generator, on the corpus it just generated, in the background
+# alongside labelling and training (~35-90 min). on|off.
+NET_CHECK="${NET_CHECK:-off}"
+NET_CHECK_CONFIG="${NET_CHECK_CONFIG:-$REPO/cfgs/gumbel16_f1000.toml}"
 SCRATCH_LR="${SCRATCH_LR:-1e-3}"            # used when there is nothing to warm-start from
 # A .pt that must never be warm-started from, however the WARM_FROM rules
 # would otherwise reach it. Exists for the from-scratch AlphaZero run: its
@@ -522,7 +537,12 @@ window_shards() {
         d="$RUN_DIR/$(printf 'gen%02d' "$i")"
         [ -e "$d/.generated" ] || continue
         for k in $shards; do
-            [ -s "$d/shard$k.jsonl" ] && out="$out $d/shard$k.jsonl"
+            # Plan 056: a generation's MC-labelled copy of a train shard replaces the raw one.
+            if [ "$kind" = train ] && [ "$MC_LABEL_PLAYOUTS" -gt 0 ] && [ -s "$d/mc/shard$k.jsonl" ]; then
+                out="$out $d/mc/shard$k.jsonl"
+            elif [ -s "$d/shard$k.jsonl" ]; then
+                out="$out $d/shard$k.jsonl"
+            fi
         done
     done
     echo "$out"
@@ -1099,6 +1119,46 @@ while [ "$G" -le "$MAX_GENS" ]; do
     # A resume that skipped generation may still hold a pending eval.
     eval_finish
 
+    # -- 1b. the standing net check (plan 055 §6), in the background ------------
+    # On this generation's generator and the corpus it just played, which it was not trained on.
+    # Its own sidecar and threads; the result lands on status.md whenever it finishes.
+    if [ "$NET_CHECK" = on ] && [ ! -e "$GEN_DIR/.trained" ] && [ ! -e "$GEN_DIR/.net_checked" ] \
+        && [ ! -e "$GEN_DIR/.net_check_started" ]; then
+        NC_NET="$(champion)"
+        touch "$GEN_DIR/.net_check_started"
+        (
+            "$REPO/scripts/net_check.sh" "$NC_NET" "$GEN_DIR" "$GEN_DIR/net_check" "$NET_CHECK_CONFIG" \
+                > "$GEN_DIR/net_check.log" 2>&1 \
+                && status "$GG net check ($(basename "$NC_NET") on its own $GG corpus): $(cat "$GEN_DIR/net_check/net_check.txt")" \
+                && touch "$GEN_DIR/.net_checked" \
+                || status "WARN: $GG net check failed — see $GEN_DIR/net_check.log"
+            rm -f "$GEN_DIR/.net_check_started"
+        ) &
+        status "$GG net check started in the background ($(basename "$NC_NET"))"
+    fi
+
+    # -- 1c. Monte Carlo value labels (plan 056) ---------------------------------
+    # The generator's policy plays every train sample's drive out MC_LABEL_PLAYOUTS times; the window
+    # trains on the means. Its own sidecar run on the card the generate phase just released.
+    if [ "$MC_LABEL_PLAYOUTS" -gt 0 ] && [ ! -e "$GEN_DIR/.mc_labelled" ] && [ ! -e "$GEN_DIR/.trained" ]; then
+        check_stop "before $GG mc-label"
+        SECONDS=0
+        MC_NET="$(champion)"
+        nn_server_start "$MC_NET"
+        MC_IN=""; for K in $TRAIN_SHARDS; do MC_IN="$MC_IN $GEN_DIR/shard$K.jsonl"; done
+        status "$GG mc-label: $(echo $TRAIN_SHARDS | wc -w) train shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}"
+        # shellcheck disable=SC2086
+        "$UI" mc-label --corpus $MC_IN --model "$MC_NET" ${NN_SERVER_PID:+--nn-server "$NN_SOCKET"} \
+            --playouts "$MC_LABEL_PLAYOUTS" --parallel "$MC_LABEL_PARALLEL" --seed "$((56000 + G))" \
+            --out-dir "$GEN_DIR/mc" 2>> "$GEN_DIR/mc_label.log"
+        MC_RC=$?
+        nn_server_stop
+        [ "$MC_RC" -eq 0 ] || die "$GG mc-label failed — see $GEN_DIR/mc_label.log"
+        for K in $TRAIN_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || die "$GG mc/shard$K.jsonl missing"; done
+        touch "$GEN_DIR/.mc_labelled"
+        status "$GG mc-label done ($((SECONDS / 60)) min): $(grep -c 'left unlabelled' "$GEN_DIR/mc_label.log") trajectories left unlabelled"
+    fi
+
     # -- 2. prepare -----------------------------------------------------------
     # Nothing downstream of training reads prepared_*, and prune_prepared
     # deletes them (with their marker) a generation later — so on a resume
@@ -1196,6 +1256,15 @@ while [ "$G" -le "$MAX_GENS" ]; do
                 status "WARN: $GG absorption probe failed — see $GEN_DIR/absorb.txt"
             fi
             rm -rf "$GEN_DIR/probe_val"
+        fi
+        # Plan 056 §2: the value head against Monte Carlo truth, the new net paired with its generator.
+        if [ -n "$VALUE_BENCH" ] && [ -f "$VALUE_BENCH" ]; then
+            if "$REPO/scripts/value_bench.sh" "$VALUE_BENCH" "$GEN_DIR/value_bench" \
+                    "generator=$TRAIN_CHAMP" "$GG=$MODEL.onnx" > "$GEN_DIR/value_bench.log" 2>&1; then
+                status "$GG value bench: $(grep -E '^VALUE_BENCH' "$GEN_DIR/value_bench/summary.txt" | sed 's/^VALUE_BENCH_*//' | paste -sd'|')"
+            else
+                status "WARN: $GG value bench failed — see $GEN_DIR/value_bench.log"
+            fi
         fi
         echo "$MODEL.pt" > "$LATEST_FILE"
         # Gateless: the net just trained generates the next generation,

@@ -1,6 +1,6 @@
 # Plan 056 — value labels: train the value head on something closer to the truth
 
-**Status:** Written 2026-10-05 from plan 055's override audit. Arms done 2026-10-06: **MC-averaged labels (arm F) win**: benchmark RMS −15%, its search beats the control's 0.533 head to head and its policy 0.582 at 1000 descents. Next: adopt it in the loop (the user's call). Drives only (plan 051);
+**Status:** Written 2026-10-05 from plan 055's override audit. Arms done 2026-10-06: **MC-averaged labels (arm F) win**: benchmark RMS −15%, its search beats the control's 0.533 head to head and its policy 0.582 at 1000 descents. **Adopted: the loop restarted 2026-10-06 with MC labels (§7).** Drives only (plan 051);
 training uses Gumbel-generated data only. Judged first on a Monte Carlo value benchmark (minutes,
 no games), then by plan 055's budget criterion ("more search never hurts").
 
@@ -236,8 +236,7 @@ The benchmark's caveat (F's labels share its definition) is answered by play.
   - labelling only every second sample of a drive, to halve the cost.
 - **Plan 055's gate is met under the mean backup:** the search beats its policy at every budget,
   and the curve is monotone up to 4000. With F's head, 1000 descents beat the policy by 0.58.
-  Whether to lift `runs/loopmix16x9g054/HOLD` and restart the loop (plan 054's train step plus
-  this label) is the user's call.
+  The user, 2026-10-06: restart training. See §7.
 
 ## 4. Metrics and decision
 
@@ -292,3 +291,41 @@ into the loop when it restarts (plan 055's budget gate, plan 054's train step).
 - **The continuation mismatch** (§1 caveat) could be measured directly by redoing a few hundred
   benchmark states' MC with search play instead of policy play. Expensive; only if the bias
   question stays open after the arms.
+
+## 7. The loop restart (2026-10-06, the user's go)
+
+`scripts/launch_plan056.sh` → `scripts/train_loop.sh` into **`runs/loopmix16x9g056`** (tier
+`mix16x9g056`, nets `models/az_v7/bbnet_mix16x9g056_genNN`). Everything plans 054-056 found, in
+one recipe:
+
+| piece | setting | from |
+|---|---|---|
+| backup at player nodes | visit-weighted mean, proven-win short-circuit (hardcoded) | plan 055, ce4eda1 |
+| generation | Gumbel m=16 at 1000 descents (`cfgs/gumbel16_f1000_gen.toml`), 8 × 300 drives, sizes centred on 16x9 | plan 053 |
+| value label | **MC-averaged**: `MC_LABEL_PLAYOUTS=8` policy-only playouts per train sample under the generator, `VALUE_BLEND=1.0` (val stays the raw outcome) | §3 arm F |
+| policy label | cq tau 100 | plan 049 |
+| train step | warm from the latest net, lr 5e-5, `--freeze-bn --init-candidate --eval-at 250,500`, restore on val_policy, value weight 0.25, per-drive value weight, 3 epochs, window 3 gens | plan 054 |
+| init | **arm F** (`models/az_v7/plan056_armF.{onnx,pt}` = `runs/exp067/arms/F`) | §3 |
+| benchmark | gateless; drives vs the fixed d1k gen04 anchor, gen04g contested sets, SPRT 0.5:0.55, cap 800 | plan 051/054 |
+| per-generation diagnostics on status.md | absorption probe (plan 054 E1); `value bench` (this plan's §2, the new net paired with its generator, seconds); `net check` (plan 055 §6, the generator on its own fresh corpus, in the background) | |
+
+**New loop knobs** (`train_loop.sh`, all off by default):
+- `MC_LABEL_PLAYOUTS` / `MC_LABEL_PARALLEL`: the `mc-label` pass after generation. It writes
+  `genNN/mc/shard*.jsonl` and the `.mc_labelled` marker; `window_shards` then trains on the
+  labelled copies.
+- `VALUE_BENCH`: the benchmark path.
+- `NET_CHECK` / `NET_CHECK_CONFIG`: writes `genNN/net_check/` and a status line when done.
+
+**Costs per generation:** generation ~2 h; MC labelling ~45-60 min (alongside the background net
+check); training ~10 min; the benchmark overlaps the next generation.
+
+**What to watch:**
+- the drive score vs the d1k gen04 anchor, generation by generation (the loop's curve);
+- the net check staying MONOTONE, with gain per decision at 1000 not falling;
+- the value bench's RMS on the g05 benchmark. Its MC truth is g_gen05's policy, so later nets'
+  figures drift as their policies move. Read it as a trend, and re-freeze a benchmark from a new
+  net's audit when that drift matters;
+- absorption: dlogP(played) > 0, dtop1 ≥ 0.
+
+**Laptop:** it joins the loop's hub on :13337. The allowlist admits exp066's commits (8cc6ce7 and
+earlier), since nothing a worker runs has changed since.

@@ -1,5 +1,10 @@
 # Plan 054 — the train step absorbs none of the search's improvement
 
+**Adopted 2026-10-06:** the train step here (lr 5e-5, `--init-candidate --eval-at 250,500`,
+restore on val_policy, `--freeze-bn`, cq tau 100) runs in the restarted loop `runs/loopmix16x9g056`
+(plan 056 §7), with plan 056's MC-averaged value labels. exp067's arms used exactly this step, and
+its policy absorption was steady (dtop1 +0.002, dKL −0.009 against the generator on gen07).
+
 **Superseded for now by plan 055 (2026-10-04 night):** E5 showed the search does not beat its own
 policy, so there is no improvement for any train step to absorb. The loop relaunch (E8) is on
 HOLD (`runs/loopmix16x9g054/HOLD`) and E2b is not run; exp063 is stopped at its gate. The train
