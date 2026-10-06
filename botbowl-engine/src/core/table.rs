@@ -140,6 +140,7 @@ impl Skill {
         Skill::SureHands,
         Skill::Tackle,
         Skill::Wrestle,
+        Skill::StripBall,
         // Mutation Skills
         Skill::Claws,
         // Passing Skills
@@ -166,7 +167,7 @@ impl Skill {
     ];
 
     /// Number of skill variants.
-    pub const COUNT: usize = 39;
+    pub const COUNT: usize = 40;
 
     /// Dense index of a skill within [`Skill::ALL`].
     ///
@@ -214,6 +215,7 @@ impl Skill {
             Skill::Throw => 36,
             Skill::WildAnimal => 37,
             Skill::KickOffReturn => 38,
+            Skill::StripBall => 39,
         }
     }
 
