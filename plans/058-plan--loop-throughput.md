@@ -82,3 +82,22 @@ nodes.
 `FrenzyBlock::step` unwrapped the active player before its own guards. When the first block ended
 the activation, a generator thread panicked; that happened 3 times in 48 self-play drives on the new
 master. Fixed with a test that steps the procedure with no active player (`c27c30c`).
+
+## 6. The run (`runs/loopmix16x9v9`, launched 2026-10-06 21:37, `ae721b7`)
+
+**Expectation (the user):** the first generations may read oddly, because of the new rules and the
+net migration; the loop should converge.
+
+**Value benchmark under the new rules:** `runs/value_bench/v9_gen01_val.jsonl`, 3023 states from
+gen01's held-out shards (4, 7; never trained on). MC is under the init net's policy, 48 playouts,
+mean SE 0.071. Built by `scripts/value_bench_build_v9.sh` while gen01 labelled. The next-drive
+records are skipped there (the audit's replay is random-start only).
+
+**Kickoff setups and skills** (`scripts/corpus_skills_setup.py`):
+- Next-drive records are 45% of all records: 87% of drives score, so most get a second record.
+  That nearly doubles the samples per shard (~21k vs ~9.5k), so generation and labelling take
+  longer per generation.
+
+| gen | generate | drives / next-drive records (TD rate) | optional skills asked during, offered → used | setups (decisions each; players on the LoS) | MC label | train | value bench | net check | drives vs d1k gen04 v9 |
+|---|---|---|---|---|---|---|---|---|---|
+| 01 | 149 min (36 local + laptop 10) | 2400 (0.87) / 1944 (0.80) | Push 1508 → 64%, Wrestle 189 → 50%, Dodge 32 → 84%, Block 27 → 93% | 1944 (6.8; 2.8) | (running, ~15 min/shard alongside the audits) | | | | (gen03) |
