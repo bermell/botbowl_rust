@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Plan 056: restart the Gumbel loop (the user, 2026-10-06) with everything plans 054-056 found:
 #   - the mean backup at player nodes (hardcoded since ce4eda1; plan 055);
-#   - plan 054's train step: lr 5e-5, the warm start a restore candidate (--init-candidate,
-#     --eval-at 250,500, every 1000 after), --freeze-bn, cq tau 100; restore on val_policy +
+#   - plan 054's train step: lr 5e-5, validation at --eval-at 250,500 and every 1000 after
+#     (the warm start is no longer a restore candidate), --freeze-bn, cq tau 100; restore on val_policy +
 #     val_value against MC-labelled val shards (SELECT_ON=combined; on val_policy alone gen02 restored
 #     its init on a flat policy loss and threw the value head's progress away);
 #   - plan 056's value label: Monte Carlo averages, 8 policy-only playouts per train sample under
@@ -41,7 +41,10 @@ export EVAL_VENUE=drives DRIVE_REF="$M/bbnet_mix16x9d1k_gen04.onnx" DRIVE_SPRT=0
 export DRIVE_POSITIONS="$POS/contested_14x7_gen04g.json,$POS/contested_16x9_gen04g.json"
 export ORIGIN_EVERY=0
 export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=on
-export TRAIN_EXTRA_ARGS="--freeze-bn --init-candidate --eval-at 250,500"
+# No --init-candidate (the user, 2026-10-06): at lr 5e-5 the fine-tune moves val by less than noise,
+# so the warm start won the restore on ties and gen02/gen04 never moved. Keep a trained checkpoint
+# every generation, as AlphaZero does; play (drives, net check) judges whether it helped.
+export TRAIN_EXTRA_ARGS="--freeze-bn --eval-at 250,500"
 export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=16
 export VALUE_BENCH="$REPO/runs/value_bench/g05_gen06.jsonl" NET_CHECK=on
 export GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=12 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
