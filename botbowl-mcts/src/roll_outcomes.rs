@@ -135,6 +135,11 @@ enum BlockOutcome {
     DefDownNoPush,
     /// Defender pushed back, nobody down: `Push`, or `PowPush` against Dodge.
     Push,
+    /// `BothDown` with a Wrestle player in the block: a use-it-or-not decision follows (both
+    /// placed prone, or the Both Down as normal), searched as a node of its own. Ranked just
+    /// below `Push` for the attacker — a rough place for an outcome whose value depends on who
+    /// decides.
+    Wrestle,
     /// Nobody moves, nobody falls: `BothDown` when both have Block.
     NothingHappens,
     /// Both players down, turnover: `BothDown` when neither has Block.
@@ -169,6 +174,8 @@ struct BlockContext {
     defender_block: bool,
     defender_dodge: bool,
     crowd_push: bool,
+    /// Either player has Wrestle.
+    wrestle: bool,
 }
 
 impl BlockContext {
@@ -177,6 +184,7 @@ impl BlockContext {
         let push_effect = if self.crowd_push { DefDownPush } else { Push };
         match die {
             BlockDice::Skull => AttDown,
+            BlockDice::BothDown if self.wrestle => Wrestle,
             BlockDice::BothDown => match (self.attacker_block, self.defender_block) {
                 (true, true) => NothingHappens,
                 (true, false) => DefDownNoPush,
@@ -196,7 +204,7 @@ impl BlockContext {
         use BlockOutcome::*;
         match outcome {
             DefDownPush => BlockDice::Pow,
-            DefDownNoPush | NothingHappens | AllDown => BlockDice::BothDown,
+            DefDownNoPush | Wrestle | NothingHappens | AllDown => BlockDice::BothDown,
             Push => BlockDice::Push,
             AttDown => BlockDice::Skull,
         }
@@ -295,6 +303,7 @@ fn block_outcomes(state: &GameState, n: NumBlockDices) -> Vec<BbAction> {
         defender_block: defender.has_skill(Skill::Block),
         defender_dodge: botbowl_engine::core::procedures::dodge_saves_from_stumble(attacker, defender),
         crowd_push: Push::is_crowd_push(attacker.position, defender.position, state),
+        wrestle: attacker.has_skill(Skill::Wrestle) || defender.has_skill(Skill::Wrestle),
     };
     let num_dice = u8::from(n) as usize;
     let defender_picks = matches!(n, NumBlockDices::TwoUphill | NumBlockDices::ThreeUphill);
@@ -1036,6 +1045,20 @@ mod tests {
         assert!(probs_sum_to_one(&outcomes));
         assert_prob(&outcomes, &[BlockDice::Pow], 2, 6);
         assert_prob(&outcomes, &[BlockDice::Push], 2, 6);
+    }
+
+    /// With a Wrestle player in the block, Both Down is a decision (use it or not), so it is its
+    /// own child — not folded into the attacker-down Skull even when the defender has Block.
+    #[test]
+    fn block_both_down_with_wrestle_is_its_own_child() {
+        let state = state_paused_on_block(ATT, DEF, &[], NumBlockDices::One, |s| {
+            give_skill(s, ATT, Skill::Wrestle);
+            give_skill(s, DEF, Skill::Block);
+        });
+        let outcomes = enumerate(&state, &RequestedRoll::BlockDice(NumBlockDices::One));
+        assert!(probs_sum_to_one(&outcomes));
+        assert_prob(&outcomes, &[BlockDice::BothDown], 1, 6);
+        assert_prob(&outcomes, &[BlockDice::Skull], 1, 6);
     }
 
     /// Defender on the sideline with the attacker pushing straight out:

@@ -5,7 +5,7 @@ use crate::core::gamestate::GameState;
 use crate::core::model::{
     other_team, Action, AvailableActions, Direction, PlayerStatus, Position, ProcState, Procedure,
 };
-use crate::core::model::{BallState, FieldedPlayer, PlayerID, ProcInput};
+use crate::core::model::{BallState, FieldedPlayer, PlayerID, ProcInput, TeamType};
 use crate::core::procedures::ball_procs;
 use crate::core::procedures::casualty_procs;
 use crate::core::procedures::movement_procs;
@@ -514,6 +514,14 @@ impl Procedure for Block {
                 // ProcState::NotDone //I think it should be available_actions here...
                 ProcState::NeedAction(self.available_actions(game_state))
             }
+            ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown))
+                if [game_state.info.active_player.unwrap(), self.defender]
+                    .iter()
+                    .any(|&id| game_state.get_player_unsafe(id).has_skill(Skill::Wrestle)) =>
+            {
+                ProcState::DoneNew(Wrestle::new(self.defender))
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::SelectBothDown)) => both_down(game_state, self.defender),
             ProcInput::Action(Action::Simple(dice_action_type)) => {
                 let attacker_id = game_state.info.active_player.unwrap();
                 let mut push = false;
@@ -524,14 +532,6 @@ impl Procedure for Block {
                 };
 
                 match dice_action_type {
-                    SimpleAT::SelectBothDown => {
-                        if !game_state.get_active_player().unwrap().has_skill(Skill::Block) {
-                            knockdown_proc.second_id = Some(attacker_id);
-                        }
-                        if !game_state.get_player_unsafe(self.defender).has_skill(Skill::Block) {
-                            knockdown_proc.id = Some(self.defender);
-                        }
-                    }
                     SimpleAT::SelectPow => {
                         knockdown_proc.id = Some(self.defender);
                         push = true;
@@ -579,6 +579,103 @@ impl Procedure for Block {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+/// A Both Down, played as normal: whoever lacks Block is knocked down, and the blocker going
+/// down is a turnover.
+fn both_down(game_state: &mut GameState, defender: PlayerID) -> ProcState {
+    let attacker = game_state.get_active_player().unwrap();
+    let attacker_id = attacker.id;
+    let mut knockdown_proc = KnockDown {
+        id: None,
+        second_id: None,
+        mighty_blow: attacker.has_skill(Skill::MightyBlow),
+    };
+    if !attacker.has_skill(Skill::Block) {
+        knockdown_proc.second_id = Some(attacker_id);
+        game_state.info.turnover = true;
+    }
+    if !game_state.get_player_unsafe(defender).has_skill(Skill::Block) {
+        knockdown_proc.id = Some(defender);
+    }
+    if knockdown_proc.id.is_some() || knockdown_proc.second_id.is_some() {
+        ProcState::DoneNew(AnyProc::KnockDown(knockdown_proc))
+    } else {
+        ProcState::Done
+    }
+}
+
+/// Wrestle on a Both Down: the blocker's coach is asked first if the blocker has it, then the
+/// defender's. If either uses it, both players are placed prone — no armour rolls, the blocker's
+/// activation ends, never a turnover; a carried ball bounces. If neither does, the Both Down
+/// plays as normal.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Wrestle {
+    defender: PlayerID,
+    stage: WrestleStage,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+enum WrestleStage {
+    Start,
+    AttackerAsked,
+    DefenderAsked,
+}
+impl Wrestle {
+    pub fn new(defender: PlayerID) -> AnyProc {
+        AnyProc::Wrestle(Wrestle {
+            defender,
+            stage: WrestleStage::Start,
+        })
+    }
+    fn ask(team: TeamType) -> ProcState {
+        let mut aa = AvailableActions::new(team);
+        aa.insert_simple(SimpleAT::UseSkill);
+        aa.insert_simple(SimpleAT::DontUseSkill);
+        ProcState::NeedAction(aa)
+    }
+    fn place_both_prone(&self, game_state: &mut GameState) -> ProcState {
+        let attacker_id = game_state.info.active_player.unwrap();
+        let mut bounce = false;
+        for id in [attacker_id, self.defender] {
+            let player = game_state.get_mut_player_unsafe(id);
+            player.status = PlayerStatus::Down;
+            player.used = true;
+            let position = player.position;
+            if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
+                game_state.set_ball(BallState::InAir(position));
+                bounce = true;
+            }
+        }
+        if bounce {
+            ProcState::DoneNew(ball_procs::Bounce::new())
+        } else {
+            ProcState::Done
+        }
+    }
+}
+impl Procedure for Wrestle {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) => return self.place_both_prone(game_state),
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill)) | ProcInput::Nothing => (),
+            _ => panic!("Unexpected input {:?}", input),
+        }
+        if self.stage == WrestleStage::Start {
+            self.stage = WrestleStage::AttackerAsked;
+            let attacker = game_state.get_active_player().unwrap();
+            if attacker.has_skill(Skill::Wrestle) {
+                return Wrestle::ask(attacker.stats.team);
+            }
+        }
+        if self.stage == WrestleStage::AttackerAsked {
+            self.stage = WrestleStage::DefenderAsked;
+            let defender = game_state.get_player_unsafe(self.defender);
+            if defender.has_skill(Skill::Wrestle) {
+                return Wrestle::ask(defender.stats.team);
+            }
+        }
+        both_down(game_state, self.defender)
     }
 }
 
@@ -1055,6 +1152,125 @@ mod tests {
         };
         assert_eq!(stumble_with(false), PlayerStatus::Up);
         assert_eq!(stumble_with(true), PlayerStatus::Down);
+    }
+
+    /// A Both Down between a home blocker and an away defender, either of them with Wrestle.
+    fn both_down_with(
+        attacker_wrestle: bool,
+        defender_wrestle: bool,
+    ) -> (crate::core::gamestate::GameState, PlayerID, PlayerID) {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        if attacker_wrestle {
+            state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Wrestle);
+        }
+        if defender_wrestle {
+            state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Wrestle);
+        }
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectBothDown);
+        (state, attacker, defender)
+    }
+
+    /// Wrestle: instead of the Both Down, both players are placed prone — no armour rolls, and
+    /// the blocker going prone is not a turnover.
+    #[test]
+    fn wrestle_places_both_players_prone_without_a_turnover() {
+        let (mut state, attacker, defender) = both_down_with(true, false);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Home));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::DontUseSkill)));
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+        assert_eq!(state.get_player_unsafe(defender).status, PlayerStatus::Down);
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "still Home's turn"
+        );
+    }
+
+    /// Declining Wrestle plays the Both Down as normal: the blocker (no Block) falls, turnover.
+    #[test]
+    fn declining_wrestle_plays_the_both_down() {
+        let (mut state, attacker, defender) = both_down_with(true, false);
+        state.fix_d6(1); //attacker armour
+        state.fix_d6(1);
+        state.fix_d6(1); //defender armour
+        state.fix_d6(1);
+        state.step_simple(SimpleAT::DontUseSkill);
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+        assert_eq!(state.get_player_unsafe(defender).status, PlayerStatus::Down);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away), "a turnover");
+    }
+
+    /// In a Blitz, going prone ends the blocker's activation: no more movement.
+    #[test]
+    fn wrestle_ends_a_blitz() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Wrestle);
+        state.step_positional(PosAT::StartBlitz, attacker_pos);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectBothDown);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.get_player_unsafe(attacker).used);
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "back at the turn"
+        );
+    }
+
+    /// The defender may use it too: their coach is asked.
+    #[test]
+    fn the_defender_may_wrestle() {
+        let (mut state, attacker, defender) = both_down_with(false, true);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.get_player_unsafe(attacker).status, PlayerStatus::Down);
+        assert_eq!(state.get_player_unsafe(defender).status, PlayerStatus::Down);
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "still Home's turn"
+        );
+    }
+
+    /// A ball carrier placed prone drops the ball, and still no turnover.
+    #[test]
+    fn a_wrestled_ball_carrier_drops_the_ball_without_a_turnover() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_ball_pos(attacker_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        state.get_mut_player_unsafe(attacker).stats.give_skill(Skill::Wrestle);
+        assert_eq!(state.ball, BallState::Carried(attacker));
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::BothDown);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectBothDown);
+        state.fix_d8(1); //bounce
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(matches!(state.ball, BallState::OnGround(_)));
+        assert!(
+            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
+            "still Home's turn"
+        );
     }
 
     #[test]

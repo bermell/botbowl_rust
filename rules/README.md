@@ -64,7 +64,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Sure Hands | General | Re-roll a failed pick-up; immune to Strip Ball | Yes (`ball_procs.rs::PickupProc::reroll_skill`) | Yes (`pickup_success`) | Simple |
 | Tackle | General | Opponent can't use Dodge Skill leaving your TZ, or vs. a Stumble result | Yes (`pathing.rs` dodge events, `block_procs.rs::dodge_saves_from_stumble`) | Yes (`tackle_*`) | Simple |
 | Taunt | General | Force an opponent to Follow-up when they push you back | No | — | Simple |
-| Wrestle | General | Both Down becomes both players placed prone, regardless of other skills | No | — | Simple |
+| Wrestle | General | Both Down becomes both players placed prone, regardless of other skills | Yes (`block_procs.rs::Wrestle`; a `UseSkill`/`DontUseSkill` decision, never a turnover) | Yes (`wrestle_*`) | Simple |
 | Big Hand | Mutation | Ignore all negative modifiers when picking up the ball | No | — | Simple |
 | Claws | Mutation | Natural 8+ on an Armour Roll you inflict always breaks armour | No | — | Simple |
 | Disturbing Presence* | Mutation | -1 to opposition Pass/Throw/Catch/Intercept tests within 3 squares | No | — | Simple |
