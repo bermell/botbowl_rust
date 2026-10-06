@@ -19,10 +19,26 @@ enum PushSquares {
     Crowd(Position),
     ChainPush(Vec<Position>),
     FreeSquares(Vec<Position>),
-    /// The pushed player has Sidestep: their own coach picks among these, every free square
-    /// adjacent to them.
-    Sidestep(Vec<Position>),
 }
+
+/// An optional skill of the player being pushed, asked about before the push square is picked.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+enum PushSkill {
+    StandFirm,
+    SideStep,
+}
+
+/// What the player currently being pushed (`Push::on`) has been asked. Starts over for each
+/// player a chain push reaches.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+struct PushQuestions {
+    stand_firm_asked: bool,
+    /// `Some(used)` once Sidestep has been asked about.
+    sidestep: Option<bool>,
+    /// The question waiting for an answer.
+    pending: Option<PushSkill>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Push {
     from: Position,
@@ -30,9 +46,8 @@ pub struct Push {
     knockdown_proc: Option<KnockDown>,
     moves_to_make: Vec<(Position, Position)>,
     follow_up_pos: Position,
-    /// The blocked player's Stand Firm has been asked about.
     #[serde(default)]
-    stand_firm_asked: bool,
+    questions: PushQuestions,
 }
 
 impl Push {
@@ -43,7 +58,7 @@ impl Push {
             moves_to_make: Vec::with_capacity(1),
             knockdown_proc: None,
             follow_up_pos: on,
-            stand_firm_asked: false,
+            questions: PushQuestions::default(),
         })
     }
     pub fn new_pure(from: Position, on: Position) -> Push {
@@ -53,33 +68,38 @@ impl Push {
             moves_to_make: Vec::with_capacity(1),
             knockdown_proc: None,
             follow_up_pos: on,
-            stand_firm_asked: false,
+            questions: PushQuestions::default(),
         }
     }
 
     /// Would pushing the player standing `on` away from `from` send them
     /// into the crowd? True exactly when no push square is free and at
     /// least one is out of bounds — the case `calculate_next_state`
-    /// resolves without asking for a square. Read-only; used by the
-    /// MCTS block-outcome model to fold "push into the crowd" into the
-    /// defender-removed outcome.
+    /// resolves without asking for a square. A Sidestep player with a free
+    /// square next to them is assumed to use it: nobody picks the crowd over
+    /// a free square. Read-only; used by the MCTS block-outcome model to fold
+    /// "push into the crowd" into the defender-removed outcome.
     pub fn is_crowd_push(from: Position, on: Position, game_state: &GameState) -> bool {
+        if Push::sidestep_squares(on, game_state).is_some() {
+            return false;
+        }
         matches!(Push::get_push_squares(on, from, game_state), PushSquares::Crowd(_))
     }
 
-    fn get_push_squares(on: Position, from: Position, game_state: &GameState) -> PushSquares {
-        if game_state
-            .get_player_at(on)
-            .is_some_and(|p| p.has_skill(Skill::SideStep))
-        {
-            let free: Vec<Position> = game_state
-                .get_adj_positions(on)
-                .filter(|&pos| !game_state.is_out(pos) && game_state.get_player_at(pos).is_none())
-                .collect();
-            if !free.is_empty() {
-                return PushSquares::Sidestep(free);
-            }
+    /// The free squares a Sidestep player standing `on` may step into, if they have the skill
+    /// and any square next to them is free.
+    fn sidestep_squares(on: Position, game_state: &GameState) -> Option<Vec<Position>> {
+        if !game_state.get_player_at(on)?.has_skill(Skill::SideStep) {
+            return None;
         }
+        let free: Vec<Position> = game_state
+            .get_adj_positions(on)
+            .filter(|&pos| !game_state.is_out(pos) && game_state.get_player_at(pos).is_none())
+            .collect();
+        (!free.is_empty()).then_some(free)
+    }
+
+    fn get_push_squares(on: Position, from: Position, game_state: &GameState) -> PushSquares {
         let direction = on - from;
         let opposite_pos = on + direction;
         let mut push_squares = match direction {
@@ -145,7 +165,34 @@ impl Push {
         ProcState::from(procs)
     }
 
+    /// Ask the pushed player's coach about `skill`.
+    fn ask(&mut self, skill: PushSkill, game_state: &GameState) -> ProcState {
+        self.questions.pending = Some(skill);
+        let mut aa = AvailableActions::new(game_state.get_player_at(self.on).unwrap().stats.team);
+        aa.insert_simple(SimpleAT::UseSkill);
+        aa.insert_simple(SimpleAT::DontUseSkill);
+        ProcState::NeedAction(aa)
+    }
+
     fn calculate_next_state(&mut self, game_state: &mut GameState) -> ProcState {
+        let pushed = game_state.get_player_at(self.on).unwrap();
+        // Stand Firm: the blocked player's coach may refuse the push. Nobody moves, so there is
+        // no follow-up; a knockdown (queued under this proc) still happens, in place.
+        if !self.questions.stand_firm_asked && self.moves_to_make.is_empty() {
+            self.questions.stand_firm_asked = true;
+            if pushed.has_skill(Skill::StandFirm) {
+                return self.ask(PushSkill::StandFirm, game_state);
+            }
+        }
+        // Sidestep: the pushed player's coach may pick any free adjacent square instead.
+        let sidestep = Push::sidestep_squares(self.on, game_state);
+        if let Some(squares) = sidestep {
+            match self.questions.sidestep {
+                None => return self.ask(PushSkill::SideStep, game_state),
+                Some(true) => return Push::pick(game_state.get_player_at(self.on).unwrap().stats.team, squares),
+                Some(false) => (),
+            }
+        }
         let mut aa = AvailableActions::new(game_state.info.team_turn);
         match Push::get_push_squares(self.on, self.from, game_state) {
             PushSquares::Crowd(position_in_crowd) => {
@@ -157,34 +204,31 @@ impl Push {
                 aa.insert_positional(PosAT::Push, positions);
                 ProcState::NeedAction(aa)
             }
-            PushSquares::Sidestep(positions) => {
-                let mut aa = AvailableActions::new(game_state.get_player_at(self.on).unwrap().stats.team);
-                aa.insert_positional(PosAT::Push, positions);
-                ProcState::NeedAction(aa)
-            }
         }
+    }
+
+    fn pick(team: TeamType, squares: Vec<Position>) -> ProcState {
+        let mut aa = AvailableActions::new(team);
+        aa.insert_positional(PosAT::Push, squares);
+        ProcState::NeedAction(aa)
     }
 }
 
 impl Procedure for Push {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
         match input {
-            // Stand Firm: the blocked player's coach may refuse the push. Nobody moves, so there
-            // is no follow-up; a knockdown (queued under this proc) still happens, in place.
-            ProcInput::Nothing if self.moves_to_make.is_empty() && !self.stand_firm_asked => {
-                self.stand_firm_asked = true;
-                match game_state.get_player_at(self.on) {
-                    Some(p) if p.has_skill(Skill::StandFirm) => {
-                        let mut aa = AvailableActions::new(p.stats.team);
-                        aa.insert_simple(SimpleAT::UseSkill);
-                        aa.insert_simple(SimpleAT::DontUseSkill);
-                        ProcState::NeedAction(aa)
+            ProcInput::Action(Action::Simple(answer @ (SimpleAT::UseSkill | SimpleAT::DontUseSkill))) => {
+                let used = answer == SimpleAT::UseSkill;
+                match self.questions.pending.take() {
+                    Some(PushSkill::StandFirm) if used => ProcState::Done,
+                    Some(PushSkill::StandFirm) => self.calculate_next_state(game_state),
+                    Some(PushSkill::SideStep) => {
+                        self.questions.sidestep = Some(used);
+                        self.calculate_next_state(game_state)
                     }
-                    _ => self.calculate_next_state(game_state),
+                    None => panic!("{answer:?} with no skill question pending"),
                 }
             }
-            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) => ProcState::Done,
-            ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill)) => self.calculate_next_state(game_state),
             ProcInput::Nothing if self.moves_to_make.is_empty() => self.calculate_next_state(game_state),
             ProcInput::Nothing => self.handle_aftermath(game_state),
             ProcInput::Action(Action::Positional(PosAT::Push, position_to))
@@ -193,6 +237,7 @@ impl Procedure for Push {
                 self.moves_to_make.push((self.on, position_to));
                 self.from = self.on;
                 self.on = position_to;
+                self.questions = PushQuestions::default();
                 self.calculate_next_state(game_state)
             }
             ProcInput::Action(Action::Positional(PosAT::Push, position)) => {
@@ -862,6 +907,7 @@ mod tests {
         state.step_simple(SimpleAT::SelectPush);
 
         assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        state.step_simple(SimpleAT::UseSkill);
         let sideways = Position::new((6, 2));
         assert!(state.is_legal_action(&Action::Positional(PosAT::Push, sideways)));
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, home_pos)));
@@ -893,8 +939,32 @@ mod tests {
         state.step_simple(SimpleAT::SelectPush);
 
         assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        state.step_simple(SimpleAT::UseSkill);
         state.step_positional(PosAT::Push, Position::new((5, 1)));
         assert_eq!(state.get_player_unsafe(defender).position, Position::new((5, 1)));
+    }
+
+    /// Sidestep is the pushed player's to use: declined, the blocker picks the square as usual.
+    #[test]
+    fn declining_sidestep_is_a_normal_push() {
+        let home_pos = Position::new((5, 3));
+        let away_pos = Position::new((6, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(away_pos)
+            .build();
+        let defender = state.get_player_id_at(away_pos).unwrap();
+        state.get_mut_player_unsafe(defender).stats.give_skill(Skill::SideStep);
+
+        state.step_positional(PosAT::StartBlock, home_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, away_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_simple(SimpleAT::DontUseSkill);
+
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Home));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Push, Position::new((6, 2)))));
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Push, away_pos + (1, 0))));
     }
 
     /// Guard: a marked player still assists a block. The home assister next to the defender is
