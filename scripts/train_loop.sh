@@ -325,8 +325,9 @@ ABSORB_PROBE="${ABSORB_PROBE:-on}"
 # Plan 056: Monte Carlo value labels. After each generation, `botbowl-ui mc-label` rewrites its
 # train shards into $GEN_DIR/mc/ with every sample's outcome replaced by the mean of this many
 # policy-only drive playouts under the generator's net (arm F: value RMS -15%, its search beat the
-# blend-0.5 control's 0.533 head to head). The window then trains on mc/shard*.jsonl; val shards
-# stay raw. Pair with VALUE_BLEND=1.0 (the label is used as is). 0 = off, the raw outcome as before.
+# blend-0.5 control's 0.533 head to head). The window then trains and validates on mc/shard*.jsonl
+# (the absorption probe keeps the raw val shards). Pair with VALUE_BLEND=1.0 (the label is used as
+# is) and SELECT_ON=combined. 0 = off, the raw outcome as before.
 MC_LABEL_PLAYOUTS="${MC_LABEL_PLAYOUTS:-0}"
 MC_LABEL_PARALLEL="${MC_LABEL_PARALLEL:-16}"
 # Plan 056 §2: score every new net's value head on a frozen MC benchmark (scripts/value_bench.sh,
@@ -537,8 +538,9 @@ window_shards() {
         d="$RUN_DIR/$(printf 'gen%02d' "$i")"
         [ -e "$d/.generated" ] || continue
         for k in $shards; do
-            # Plan 056: a generation's MC-labelled copy of a train shard replaces the raw one.
-            if [ "$kind" = train ] && [ "$MC_LABEL_PLAYOUTS" -gt 0 ] && [ -s "$d/mc/shard$k.jsonl" ]; then
+            # Plan 056: a generation's MC-labelled copy of a shard replaces the raw one, train and val
+            # alike, so val_value measures progress toward the label being trained.
+            if [ "$MC_LABEL_PLAYOUTS" -gt 0 ] && [ -s "$d/mc/shard$k.jsonl" ]; then
                 out="$out $d/mc/shard$k.jsonl"
             elif [ -s "$d/shard$k.jsonl" ]; then
                 out="$out $d/shard$k.jsonl"
@@ -1145,8 +1147,11 @@ while [ "$G" -le "$MAX_GENS" ]; do
         SECONDS=0
         MC_NET="$(champion)"
         nn_server_start "$MC_NET"
-        MC_IN=""; for K in $TRAIN_SHARDS; do MC_IN="$MC_IN $GEN_DIR/shard$K.jsonl"; done
-        status "$GG mc-label: $(echo $TRAIN_SHARDS | wc -w) train shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}"
+        # Train and val shards: val_value then scores the same label the net trains toward, which
+        # is what lets restore-on-combined see the value head improve (gen02 restored its init on a
+        # flat val_policy and discarded the value progress).
+        MC_IN=""; for K in $TRAIN_SHARDS $VAL_SHARDS; do MC_IN="$MC_IN $GEN_DIR/shard$K.jsonl"; done
+        status "$GG mc-label: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}"
         # shellcheck disable=SC2086
         "$UI" mc-label --corpus $MC_IN --model "$MC_NET" ${NN_SERVER_PID:+--nn-server "$NN_SOCKET"} \
             --playouts "$MC_LABEL_PLAYOUTS" --parallel "$MC_LABEL_PARALLEL" --seed "$((56000 + G))" \
@@ -1154,7 +1159,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         MC_RC=$?
         nn_server_stop
         [ "$MC_RC" -eq 0 ] || die "$GG mc-label failed — see $GEN_DIR/mc_label.log"
-        for K in $TRAIN_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || die "$GG mc/shard$K.jsonl missing"; done
+        for K in $TRAIN_SHARDS $VAL_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || die "$GG mc/shard$K.jsonl missing"; done
         touch "$GEN_DIR/.mc_labelled"
         status "$GG mc-label done ($((SECONDS / 60)) min): $(grep -o '([0-9]* left unlabelled)' "$GEN_DIR/mc_label.log" | tr -dc '0-9\n' | awk '{s+=$1} END {print s+0}') trajectories left unlabelled"
     fi
