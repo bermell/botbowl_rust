@@ -1156,7 +1156,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         [ "$MC_RC" -eq 0 ] || die "$GG mc-label failed — see $GEN_DIR/mc_label.log"
         for K in $TRAIN_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || die "$GG mc/shard$K.jsonl missing"; done
         touch "$GEN_DIR/.mc_labelled"
-        status "$GG mc-label done ($((SECONDS / 60)) min): $(grep -c 'left unlabelled' "$GEN_DIR/mc_label.log") trajectories left unlabelled"
+        status "$GG mc-label done ($((SECONDS / 60)) min): $(grep -o '([0-9]* left unlabelled)' "$GEN_DIR/mc_label.log" | tr -dc '0-9\n' | awk '{s+=$1} END {print s+0}') trajectories left unlabelled"
     fi
 
     # -- 2. prepare -----------------------------------------------------------
