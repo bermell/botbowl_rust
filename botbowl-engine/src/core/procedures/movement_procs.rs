@@ -968,6 +968,80 @@ mod tests {
 
         assert_eq!(state.get_player_unsafe(id).position, foul_from_pos);
     }
+    /// Guard assists a foul too: the assister next to the prone victim is marked by another away
+    /// player, so only Guard lets it count. AV 8 needs a 9 to break; the assist makes an 8 do.
+    #[test]
+    fn guard_assists_a_foul_while_marked() {
+        let fouler_pos = Position::new((5, 3));
+        let victim_pos = Position::new((6, 3));
+        let assister_pos = Position::new((7, 2));
+        let foul_with = |guard: bool| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(fouler_pos)
+                .add_home_player(assister_pos)
+                .add_away_player(victim_pos)
+                .add_away_player(Position::new((8, 1)))
+                .build();
+            let victim = state.get_player_id_at(victim_pos).unwrap();
+            state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+            state.get_mut_player_unsafe(victim).stats.av = 8;
+            if guard {
+                let assister = state.get_player_id_at(assister_pos).unwrap();
+                state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+            }
+            state.step_positional(PosAT::StartFoul, fouler_pos);
+            state.fix_d6(5); //armor
+            state.fix_d6(3); //armor
+            if guard {
+                state.fix_d6(1); //injury: stunned
+                state.fix_d6(2); //injury
+            }
+            state.step_positional(PosAT::Foul, victim_pos);
+            state.get_player_unsafe(victim).status
+        };
+        assert_eq!(
+            foul_with(false),
+            PlayerStatus::Down,
+            "an 8 does not break AV 8 unassisted"
+        );
+        assert_eq!(foul_with(true), PlayerStatus::Stunned);
+    }
+
+    /// And a defensive foul assist: the victim's team-mate next to the fouler is marked by
+    /// another home player. AV 8 breaks on a 9 unless the Guard assist makes it need a 10.
+    #[test]
+    fn guard_defends_a_foul_while_marked() {
+        let fouler_pos = Position::new((5, 3));
+        let victim_pos = Position::new((6, 3));
+        let assister_pos = Position::new((4, 2));
+        let foul_with = |guard: bool| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(fouler_pos)
+                .add_home_player(Position::new((3, 1)))
+                .add_away_player(victim_pos)
+                .add_away_player(assister_pos)
+                .build();
+            let victim = state.get_player_id_at(victim_pos).unwrap();
+            state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+            state.get_mut_player_unsafe(victim).stats.av = 8;
+            if guard {
+                let assister = state.get_player_id_at(assister_pos).unwrap();
+                state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+            }
+            state.step_positional(PosAT::StartFoul, fouler_pos);
+            state.fix_d6(5); //armor
+            state.fix_d6(4); //armor
+            if !guard {
+                state.fix_d6(1); //injury: stunned
+                state.fix_d6(2); //injury
+            }
+            state.step_positional(PosAT::Foul, victim_pos);
+            state.get_player_unsafe(victim).status
+        };
+        assert_eq!(foul_with(false), PlayerStatus::Stunned, "a 9 breaks AV 8 unassisted");
+        assert_eq!(foul_with(true), PlayerStatus::Down);
+    }
+
     #[test]
     fn standup_pathing() {
         // Needs a (3,3) diagonal plus a push square — requires at least 7 rows.

@@ -683,6 +683,48 @@ mod tests {
         assert_eq!(state.get_player_unsafe(defender).position, Position::new((5, 1)));
     }
 
+    /// Guard: a marked player still assists a block. The home assister next to the defender is
+    /// also marked by a second away player, so without Guard it does not count.
+    #[test]
+    fn guard_gives_an_offensive_assist_while_marked() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let assister_pos = Position::new((7, 2));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_home_player(assister_pos)
+            .add_away_player(defender_pos)
+            .add_away_player(Position::new((8, 1)))
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        assert_eq!(state.get_blockdices(attacker, defender), NumBlockDices::One);
+
+        let assister = state.get_player_id_at(assister_pos).unwrap();
+        state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+        assert_eq!(state.get_blockdices(attacker, defender), NumBlockDices::Two);
+    }
+
+    #[test]
+    fn guard_gives_a_defensive_assist_while_marked() {
+        let attacker_pos = Position::new((5, 3));
+        let defender_pos = Position::new((6, 3));
+        let assister_pos = Position::new((4, 2));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_home_player(Position::new((3, 1)))
+            .add_away_player(defender_pos)
+            .add_away_player(assister_pos)
+            .build();
+        let attacker = state.get_player_id_at(attacker_pos).unwrap();
+        let defender = state.get_player_id_at(defender_pos).unwrap();
+        assert_eq!(state.get_blockdices(attacker, defender), NumBlockDices::One);
+
+        let assister = state.get_player_id_at(assister_pos).unwrap();
+        state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+        assert_eq!(state.get_blockdices(attacker, defender), NumBlockDices::TwoUphill);
+    }
+
     #[test]
     fn crowd_chain_push() {
         let mut field = "".to_string();

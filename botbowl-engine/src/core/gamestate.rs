@@ -21,7 +21,7 @@ use super::{
         RollResult, RollTarget,
     },
     procedures::{auto_setup, AnyProc, Formation, GameOver, Half},
-    table::{NumBlockDices, PosAT, SimpleAT},
+    table::{NumBlockDices, PosAT, SimpleAT, Skill},
 };
 
 pub enum BuilderState {
@@ -1055,8 +1055,9 @@ impl GameState {
                 attr_assister.id != attr.id
                     && attr_assister.stats.team == attr.stats.team
                     && attr_assister.has_tackle_zone()
-                    && self.get_tz_on_except_from_id(attr_assister.id, defr.id) == 0
-                //what is guard anyway?
+                    // Guard assists however many opponents mark the assister.
+                    && (attr_assister.has_skill(Skill::Guard)
+                        || self.get_tz_on_except_from_id(attr_assister.id, defr.id) == 0)
             })
             .count() as u8;
 
@@ -1066,8 +1067,8 @@ impl GameState {
                 defr_assister.id != defr.id
                     && defr_assister.stats.team == defr.stats.team
                     && defr_assister.has_tackle_zone()
-                    && self.get_tz_on_except_from_id(defr_assister.id, attr.id) == 0
-                //what is guard anyway?
+                    && (defr_assister.has_skill(Skill::Guard)
+                        || self.get_tz_on_except_from_id(defr_assister.id, attr.id) == 0)
             })
             .count() as u8;
 

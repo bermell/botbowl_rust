@@ -94,7 +94,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 | Break Tackle | Strength | Once per turn, +1 to +3 Agility Test bonus when dodging, based on your Strength | No | — | Simple |
 | Bullseye | Strength | A Superb Throw Team-mate result lands exactly, no scatter | No | — | Simple\* |
 | Grab | Strength | Choose the push-back square; opponent can't use Sidestep | No | — | Simple |
-| Guard | Strength | Provide Offensive/Defensive Assist regardless of how many are marking you | No | — | Simple |
+| Guard | Strength | Provide Offensive/Defensive Assist regardless of how many are marking you | Yes (`gamestate.rs::get_blockdices_from`, `pathing.rs` foul assists) | Yes (`guard_*`) | Simple |
 | Juggernaut | Strength | Both Down treated as Pushed Back during a Blitz; opponent can't Fend/Stand Firm/Wrestle | No | — | Simple |
 | Mighty Blow | Strength | +1 Armour/Injury Roll whenever you knock an opponent down in a Block | No | — | Simple |
 | Multiple Block | Strength | Block two adjacent opponents at once, at -2 Strength | No | — | Bigger (Block Action gains a second targeted square) |

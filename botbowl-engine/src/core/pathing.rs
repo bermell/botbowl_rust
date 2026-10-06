@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::dices::{D6Target, RollTarget, Sum2D6Target};
 use super::gamestate::GameState;
-use super::table::{NumBlockDices, PosAT};
+use super::table::{NumBlockDices, PosAT, Skill};
 
 type OptRcNode = Option<Arc<Node>>;
 
@@ -604,7 +604,8 @@ impl<'a> GameInfo<'a> {
                 .filter(|adj_player| {
                     adj_player.id != self.id
                         && adj_player.stats.team == self.team
-                        && self.game_state.get_tz_on(adj_player.id) == 0
+                        // Guard assists however many opponents mark the assister.
+                        && (adj_player.has_skill(Skill::Guard) || self.game_state.get_tz_on(adj_player.id) == 0)
                 })
                 .count() as i8,
         );
@@ -615,7 +616,8 @@ impl<'a> GameInfo<'a> {
                 .filter(|adj_player| {
                     adj_player.stats.team != self.team
                         && adj_player.has_tackle_zone()
-                        && self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0
+                        && (adj_player.has_skill(Skill::Guard)
+                            || self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0)
                 })
                 .count() as i8),
         );
