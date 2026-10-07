@@ -143,10 +143,15 @@ pub struct Sample {
     #[serde(default)]
     pub outcome_value: Option<f32>,
     /// Plan 047: the action was not searched — a formation plan answered a setup
-    /// placement (the gen-0 teacher shard), or the rules left one legal action.
-    /// `children` then holds every legal action with one visit on the chosen one,
-    /// so the policy target is one-hot on it; `root_visits` is 1 and `prepare`
-    /// must not drop it as an under-searched root.
+    /// placement (the gen-0 teacher shard), or one action was left after pruning
+    /// (a forced decision; `MctsBot` plays it without a search). `children` then
+    /// holds one visit on the chosen action and no `Q`, so the policy target is
+    /// one-hot on it; `root_visits` is 1, `root_value` is `None`, and `prepare`
+    /// must not drop it as an under-searched root. A formation sample lists every
+    /// legal action as a child; a forced one lists only the one post-pruning
+    /// action, which is how `prepare` recognises it and leaves it out of training
+    /// (fewer than two children). Forced samples stay in the trajectory: replay
+    /// rebuilds every state from the recorded `chosen_action`s.
     #[serde(default)]
     pub scripted: bool,
 }

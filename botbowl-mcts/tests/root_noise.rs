@@ -134,7 +134,15 @@ fn noise_takes_effect_on_fresh_roots_only() {
             break;
         }
         let (action, _, outcome) = bot.get_action_explore(&state, noise(100 + i));
-        let reuse = bot.last_search().unwrap().reuse.outcome;
+        // A forced decision (one action after pruning) is played without a search: no root to
+        // noise.
+        let Some(summary) = bot.last_search() else {
+            assert!(!outcome.noised, "decision {i}: an unsearched decision took noise");
+            state.step(action).unwrap();
+            bot.release_stale_tree(&state);
+            continue;
+        };
+        let reuse = summary.reuse.outcome;
         if reuse == ReuseOutcome::Reused {
             reused += 1;
             assert!(

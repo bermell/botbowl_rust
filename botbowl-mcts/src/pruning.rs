@@ -22,6 +22,21 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{other_team, Action as EngineAction, BallState, PlayerStatus, Position};
 use botbowl_engine::core::table::{PosAT, SimpleAT};
 
+/// The actions the search offers at a player decision: the engine's legal actions minus
+/// [`should_prune`], in engine order — or **all** of them when pruning would leave none (pruning
+/// removes wasteful options; it must never turn a live decision into a dead end). This is the set
+/// `BloodBowlDynamics::available_actions` expands, so a search root's children, a training
+/// sample's `children` and `MctsBot`'s forced-move shortcut all read it from here.
+pub fn search_actions(state: &GameState) -> Vec<EngineAction> {
+    let raw = state.get_all_actions();
+    let filtered: Vec<EngineAction> = raw.iter().copied().filter(|a| !should_prune(state, a)).collect();
+    if filtered.is_empty() {
+        raw
+    } else {
+        filtered
+    }
+}
+
 /// Returns true when the engine-legal `action` should be hidden from MCTS.
 pub fn should_prune(state: &GameState, action: &EngineAction) -> bool {
     match action {

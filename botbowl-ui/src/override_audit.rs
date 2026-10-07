@@ -56,7 +56,7 @@ use botbowl_data::{BoardCapacity, Team, Trajectory, TrajectoryMeta};
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{DiceMode, GameState};
 use botbowl_engine::core::model::{Action as EngineAction, BoardDims, TeamType};
-use botbowl_mcts::pruning::should_prune;
+use botbowl_mcts::pruning::search_actions;
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::board_sizes::board_label;
@@ -72,16 +72,10 @@ use crate::cli::OverrideAuditArgs;
 // ---------------------------------------------------------------------------------------------
 
 /// The legal set a search root offers: the engine's actions minus `should_prune`, or all of them
-/// when pruning would leave none (`BloodBowlDynamics::available_actions`'s fallback), in the
-/// engine's sorted order.
+/// when pruning would leave none, in the engine's sorted order. The search's own definition
+/// (`botbowl_mcts::pruning::search_actions`), not a copy of it.
 pub fn search_legal(state: &GameState) -> Vec<EngineAction> {
-    let raw = state.get_all_actions();
-    let filtered: Vec<EngineAction> = raw.iter().copied().filter(|a| !should_prune(state, a)).collect();
-    if filtered.is_empty() {
-        raw
-    } else {
-        filtered
-    }
+    search_actions(state)
 }
 
 /// Index of the first maximum. The Gumbel root sorts its candidates stably by `ln prior`, so on a
@@ -954,7 +948,15 @@ mod tests {
         let original = play_trajectory(&cfg, None, 4242).unwrap().remove(0);
         let traj: Trajectory = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
         let mut with_paths = 0;
+        let mut forced = 0;
         for (k, s) in original.samples.iter().enumerate() {
+            // A forced decision (one action after pruning) is played unsearched but still recorded,
+            // with that action as its only child: replay needs every `chosen_action`.
+            if s.children.len() == 1 {
+                assert!(s.scripted && s.root_value.is_none(), "sample {k}: forced record");
+                assert_eq!(search_legal(&s.state), vec![s.chosen_action], "sample {k}");
+                forced += 1;
+            }
             let rebuilt = replay_to(&traj, k).expect("replay");
             assert!(rebuilt == s.state);
             assert_eq!(rebuilt.get_all_actions(), s.state.get_all_actions(), "sample {k}");
@@ -967,6 +969,10 @@ mod tests {
             with_paths > 0,
             "no decision lost its path offerings to serde: either the test trajectory has no move fan, or the \
              buffer is serialised now and replay is not needed"
+        );
+        assert!(
+            forced > 0,
+            "the trajectory should hold a forced decision for replay to step through"
         );
     }
 }

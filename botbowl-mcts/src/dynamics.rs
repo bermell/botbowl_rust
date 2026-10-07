@@ -789,6 +789,39 @@ fn sole_legal_action(state: &GameState) -> Option<EngineAction> {
     Some(first)
 }
 
+/// The action a decision is forced to, if any: the state is a player decision and exactly one
+/// action is left in the set a search root would expand ([`pruning::search_actions`], with its
+/// empty-set fallback — so a lone engine action that pruning rejects still counts). `MctsBot`
+/// plays it without searching.
+///
+/// Unlike [`sole_legal_action`] (the in-tree quiescent walk, deliberately left as it was so the
+/// search stays byte-identical), this one includes the fallback, because it must agree with the
+/// root `available_actions` would build.
+pub fn forced_action(state: &GameState) -> Option<EngineAction> {
+    state.available_actions.team?;
+    match pruning::search_actions(state).as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+/// A decision `MctsBot` answers without a search (see `MctsBot::unsearched_pick`).
+#[derive(Clone, Copy, Debug)]
+enum Unsearched {
+    /// One action survives pruning.
+    Forced(EngineAction),
+    /// A setup placement from the formation plan (`SetupPolicy::Formation`).
+    Formation(EngineAction),
+}
+
+impl Unsearched {
+    fn action(self) -> EngineAction {
+        match self {
+            Unsearched::Forced(a) | Unsearched::Formation(a) => a,
+        }
+    }
+}
+
 /// Which of `score_leaf`'s four documented leaf cases a state falls into.
 /// Recorded so [`LeafStats`] can answer plan 031 D8 — "how often is a
 /// mid-procedure state (case 4) handed to the NN, which never saw one in
@@ -1043,27 +1076,22 @@ impl GameDynamics for BloodBowlDynamics {
         // which `scripted_pick` deliberately leaves to the search
         // (down-in-place vs down-and-pushed is a positional choice).
 
-        // Safety net: if the pruning rules narrow the list to *zero*
-        // legal actions while the engine still offers something, fall
-        // back to the unfiltered set. Pruning is supposed to remove
-        // wasteful options, not deadlock the search — better to spend
-        // budget evaluating bad moves than to mark the node terminal
-        // and corrupt the search. In debug builds we log the fallback
-        // once per call site so a real bug doesn't go silent.
-        let raw_actions = state.get_all_actions();
-        let mut filtered: Vec<EngineAction> = raw_actions
-            .iter()
-            .copied()
-            .filter(|a| !should_prune(state, a))
-            .collect();
-        if filtered.is_empty() && !raw_actions.is_empty() {
-            #[cfg(debug_assertions)]
+        // Safety net (inside `search_actions`): if the pruning rules narrow
+        // the list to *zero* legal actions while the engine still offers
+        // something, fall back to the unfiltered set. Pruning is supposed to
+        // remove wasteful options, not deadlock the search — better to spend
+        // budget evaluating bad moves than to mark the node terminal and
+        // corrupt the search. In debug builds we log the fallback so a real
+        // bug doesn't go silent.
+        let filtered = pruning::search_actions(state);
+        // Every action pruned means `search_actions` fell back to the raw list.
+        #[cfg(debug_assertions)]
+        if filtered.first().is_some_and(|a| should_prune(state, a)) {
             eprintln!(
                 "pruning emptied the action list at player_action_type={:?}; falling back to {} unfiltered actions",
                 state.info.player_action_type,
-                raw_actions.len()
+                filtered.len()
             );
-            filtered = raw_actions;
         }
         // Priors: the heuristic computes one per action; the NN does a
         // single forward over the whole (already-pruned) legal set and
@@ -2266,34 +2294,52 @@ impl MctsBot {
         }
     }
 
-    /// A setup decision the bot answers **without searching**: the formation plan when the
-    /// policy says so, or the only legal action when the rules leave no choice (the three-
-    /// player boards put everyone on the line). `None` when the state is not a setup, or the
-    /// setup is one to search.
-    fn unsearched_setup_pick(&mut self, state: &GameState) -> Option<EngineAction> {
-        let team = state.setup_team()?;
-        if self.own_setup_policy() == SetupPolicy::Formation {
-            let key = HorizonAnchor::capture(state, team);
-            let formation = match self.setup_choice {
-                Some((k, f)) if k == key => f,
-                _ => {
-                    let f = self.config.setup_formation.pick(&state.board_dims, &mut self.rng);
-                    self.setup_choice = Some((key, f));
-                    f
-                }
-            };
-            return formation.next_action(state, team);
+    /// A decision the bot answers **without searching**, or `None` for one to search:
+    ///
+    /// - [`Unsearched::Forced`]: exactly one action survives pruning (`pruning::search_actions`,
+    ///   the set a search root would expand). A search could only ever play it, so it is played
+    ///   at once: no tree, no descent, no network forward, on every entry point and under either
+    ///   root (PUCT or Gumbel). Checked first, so it also covers a formation-policy setup with no
+    ///   choice left (the three-player boards put everyone on the line).
+    /// - [`Unsearched::Formation`]: a setup placement under `SetupPolicy::Formation`, answered
+    ///   from the formation plan.
+    fn unsearched_pick(&mut self, state: &GameState) -> Option<Unsearched> {
+        if let Some(action) = forced_action(state) {
+            return Some(Unsearched::Forced(action));
         }
-        sole_legal_action(state)
+        let team = state.setup_team()?;
+        if self.own_setup_policy() != SetupPolicy::Formation {
+            return None;
+        }
+        let key = HorizonAnchor::capture(state, team);
+        let formation = match self.setup_choice {
+            Some((k, f)) if k == key => f,
+            _ => {
+                let f = self.config.setup_formation.pick(&state.board_dims, &mut self.rng);
+                self.setup_choice = Some((key, f));
+                f
+            }
+        };
+        formation.next_action(state, team).map(Unsearched::Formation)
     }
 
-    /// The record of an unsearched decision: every legal action as a child, one visit on the
-    /// one taken, so the policy target is one-hot on it. Marked `scripted` so `prepare` does
-    /// not drop it as an under-searched root.
-    fn scripted_sample(state: &GameState, action: EngineAction) -> Sample {
+    /// The record of an unsearched decision, one-hot on the action taken (`scripted`, one visit
+    /// on it, `root_visits = 1`, no `Q` or root value — the shape plan 047's teacher samples
+    /// already had):
+    ///
+    /// - **formation:** every legal action is a child, so the policy target teaches the plan
+    ///   against the whole fan, and `prepare` keeps it despite `root_visits = 1`;
+    /// - **forced:** the one post-pruning action is the only child, exactly the root a search
+    ///   would have had. `prepare` skips any sample with fewer than two children (nothing to
+    ///   learn), but the trajectory keeps it: replay rebuilds every state from the recorded
+    ///   `chosen_action`s.
+    fn unsearched_sample(state: &GameState, pick: Unsearched) -> Sample {
+        let (action, offered) = match pick {
+            Unsearched::Forced(a) => (a, vec![a]),
+            Unsearched::Formation(a) => (a, state.get_all_actions()),
+        };
         let team = state.available_actions.team.unwrap_or(state.info.team_turn);
-        let children = state
-            .get_all_actions()
+        let children = offered
             .into_iter()
             .map(|a| ChildStat {
                 action: a,
@@ -3389,9 +3435,13 @@ impl MctsBot {
         state: &GameState,
         step: ExploreStep,
     ) -> (EngineAction, Sample, ExploreOutcome) {
-        if let Some(action) = self.unsearched_setup_pick(state) {
+        if let Some(pick) = self.unsearched_pick(state) {
             self.last_search = None;
-            return (action, Self::scripted_sample(state, action), ExploreOutcome::default());
+            return (
+                pick.action(),
+                Self::unsearched_sample(state, pick),
+                ExploreOutcome::default(),
+            );
         }
         let step = if self.config.gumbel_m > 0 {
             ExploreStep::default()
@@ -3495,9 +3545,9 @@ pub struct ExploreOutcome {
 
 impl Bot for MctsBot {
     fn get_action(&mut self, state: &GameState) -> EngineAction {
-        if let Some(action) = self.unsearched_setup_pick(state) {
+        if let Some(pick) = self.unsearched_pick(state) {
             self.last_search = None;
-            return action;
+            return pick.action();
         }
         let result = self.run_search(state, None);
         let action = result.gumbel_pick.unwrap_or_else(|| {
