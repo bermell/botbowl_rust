@@ -192,7 +192,7 @@ sizing above, this section wins.
   ~1 GPU-hour per generation (Q7 51 min, D7 ~75) instead of 35 min, well under what the
   gate saves, and it dissolves the `WARM_FROM=champion|latest` question — which is what made
   the gate load-bearing (a bad warm-start parent poisoning the lineage, gen04→gen05).
-- **Decided by plan 032 #12**, already scripted (`scripts/exp032_s12_scratch_vs_loop.sh`):
+- **Decided by plan 032 #12**, already scripted (`scripts/archive/exp032_s12_scratch_vs_loop.sh`):
   q9 = Q7's recipe on gen01-09 vs the loop's warm-started gen09, 120 games. Pre-registered:
   q9 ≥ 0.60 → from-scratch becomes the train step. **Amendment:** a result in [0.50, 0.60)
   also switches, on the grounds above (removing the warm-from question is worth a wash);

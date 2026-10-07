@@ -26,7 +26,6 @@ session.
 
 | # | Item | Effort | Payoff |
 |---|------|--------|--------|
-| 5 | **`scripts/` is 108 flat files, 50 of them `exp0NN_*.sh` that cannot run on master** (none uses a v9 net; two use the removed `BLOOD_MCTS_BACKUP` / `--vs-backup`). Move to `scripts/archive/` with a `# Status: archived <date>, last runnable at <commit>` header; add `scripts/README.md` listing the ~15 standing tools. | S | high |
 | 6 | **Four ways to configure a search, and their defaults drift:** `BLOOD_MCTS_*` env vars (25 of them), per-knob CLI flags, `cfgs/*.toml`, and the web `MctsSpec`. `eval` passes `puct: Some(raw)` so env PUCT is silently ignored there but honoured by `dataset`; the web cannot express gumbel/budget/chance/setup knobs so it cannot play the loop's bot; `impl Default for MctsConfig` reads the environment; ~20 mcts test files build bots via `from_env` so an exported `BLOOD_MCTS_BUDGET` changes test results. Target: presets are the one source of truth, env/CLI become `--set key=value` overrides on a preset, web loads a preset by name, `Default` = `new()`. | M | high |
 | 7 | **No cargo profiles.** Debug MCTS tests run unoptimised (`hash_quality` 17 s, ui unittests 21 s, mcts suite ~190 s). Add `[profile.dev.package.{botbowl-engine,botbowl-mcts,recon_mcts}] opt-level = 2`, a `[profile.profiling]` that inherits release with `debug = 2` (so profiling stops invalidating the release cache via `RUSTFLAGS`), and `[workspace.dependencies]` / `[workspace.package]` to stop version drift. | S | high |
 | 8 | **ui `dataset`/`eval` and hub `job generate`/`job eval` are copy-pasted flag structs (23+10+8 vs ~55 fields; 34 vs 36) that have already drifted into a bug:** the hub fixed the one-sided-preset `vs:` label panic (`botbowl-hub/src/main.rs:806`), the ui copy at `botbowl-ui/src/eval.rs:499` still panics. `CliEvaluator`/`CliCandidateBot`/`CliDifficulty`/`DatasetMode` are re-declared; `size_dist_of` is a line copy of `SizeArgs::to_dist`; hub parses and ignores `--parallel-games`, `--nn-server`, `--skip-lectures`, `--trials`. Move the arg structs into `botbowl-play` (or a `botbowl-cli-args` crate) and `#[command(flatten)]` them from both binaries. | M | high |
@@ -127,7 +126,7 @@ session.
 
 ### F. Scripts and Python
 
-- F1 `exp*.sh` archive + `scripts/README.md` → top-20 #5. F2 `train_loop.sh` → #12. F3 launchers → #13.
+- F2 `train_loop.sh` → #12. F3 launchers → #13.
 - F4 Boilerplate copy-pasted across `exp0[4-6]x_*.sh`: `BOARD_SIZE`/`CARGO_TARGET_DIR` exports (51 files), `train/.venv/bin/python` (49, instead of `uv run`), sidecar launch + socket wait loop (38), `cargo build --release` (25), `job eval --wait` (27), `status/die/down` traps (39), the inline Python heredoc summarising `report.json["ladder"]` with mean ± SE (12 files, 6 byte-identical). `exp032_lib.sh` is the only shared lib and is frozen at 14x7/cuda/`runs/loop14x7`. Extend to `scripts/lib/hub.sh` (`start_hub`, `start_sidecar`, `start_worker`, `match`) + `summary.py ladder`. M / high
 - F5 `/tmp/bbnn-*.sock` hardcoded in 48 scripts; `--device cuda` in 43; `nn_server.py:1350` accepts only `cpu|cuda` (no `auto`/`mps`, unlike `bbnn.train`), so nothing runs on the macOS box. S / low
 - F6 `nn_server.py` (1476 lines) is production infra living in `scripts/`, imported via `sys.path.insert` (`:79`, and `train/tests/test_nn_server.py:25`). Move to `bbnn/server/{protocol,runners,server}.py` (clean seams at `Registry`, `GraphRunner`/`EagerRunner`/`RunnerPool`, `Connection`/`Server`; bench/loadgen tools at `:1188-1336`) with a `[project.scripts]` entry. M / med
@@ -161,7 +160,7 @@ session.
 
 ## Part 3 — Suggested sequencing
 
-1. **One afternoon of S items that remove daily friction:** #5 (archive exp scripts), #7 (profiles + workspace deps), B6 (token), A11 (`git gc`, `.ignore`), #14 (`check_all.sh`), #15 (fmt hook, clippy fix). None touches game logic; do it between generations.
+1. **One afternoon of S items that remove daily friction:** #7 (profiles + workspace deps), B6 (token), A11 (`git gc`, `.ignore`), #14 (`check_all.sh`), #15 (fmt hook, clippy fix). None touches game logic; do it between generations.
 2. **Config consolidation (#6, B1, B3, B4, G1):** presets as the one source of truth, env/CLI as overrides, generated knob table, web loads presets. This is the item most likely to prevent the next "why do these two runs differ" hunt.
 3. **Test honesty (#9, #10, D10, C2, C3):** ignore reasons, no silent skips, cheaper builder, shared test helpers. Makes green mean green and the suite faster.
 4. **Mechanical splits (#17, D1, D2, D5, D6, C4):** tests out of god files first, then module seams. Zero behaviour change, big win for agents' context budgets.

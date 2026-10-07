@@ -1,7 +1,7 @@
 # Plan 047 — is data volume the bottleneck? Train on the whole plateau corpus
 
 **Status:** Done 2026-09-29 — **both arms ≤ 0.53: data volume is not the lever.** Run 12:24 → 16:32 at `bc5de61`
-(`scripts/exp047_wide_window.sh`, out `runs/exp047/`). Results at the bottom.
+(`scripts/archive/exp047_wide_window.sh`, out `runs/exp047/`). Results at the bottom.
 
 ## Why
 

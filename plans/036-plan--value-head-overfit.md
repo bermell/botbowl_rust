@@ -29,7 +29,7 @@ which corpus a net was fitted to.
 
 ### Runner
 
-`scripts/exp036_value_overfit.sh` (E1-E3) and `scripts/exp036_report.py` (the table). Every arm is
+`scripts/archive/exp036_value_overfit.sh` (E1-E3) and `scripts/archive/exp036_report.py` (the table). Every arm is
 resumable and niced, since it shares the box with a generation run. The report prints
 `(restore_step, val_policy@restore, val_value@restore, val_value@end)` plus `drift`
 (val_value@end - @restore, E2's signal) and `pgap` (policy optimum - restore, the selection-rule

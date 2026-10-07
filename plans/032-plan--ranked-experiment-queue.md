@@ -284,7 +284,7 @@ Consequences:
 
 #### exp037: the re-baseline, launched 2026-09-14 21:14 on 9153250
 
-`scripts/exp037_rebaseline.sh`. Two 400-game matches on one shared seed base (`--seed 0`, so the
+`scripts/archive/exp037_rebaseline.sh`. Two 400-game matches on one shared seed base (`--seed 0`, so the
 first 20 pairs are the same situations the 40-game curve points used), both against the frozen
 anchor `bbnet_14x7_gen03.onnx`, at HEAD:
 
@@ -550,7 +550,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   been shipping past-peak weights for lack of checkpoint resolution. **Done 2026-09-07:**
   `EVAL_EVERY` (default 2500 steps) is passed to the warm-start `bbnn.train` call; the gen00
   bootstrap call is unchanged.
-- **Run (launched 2026-09-07 21:51, `scripts/exp032_s1_d7_vs_gen03.sh`, out `runs/exp032/`).**
+- **Run (launched 2026-09-07 21:51, `scripts/archive/exp032_s1_d7_vs_gen03.sh`, out `runs/exp032/`).**
   `runs/exp-data/d7.onnx` vs `models/bbnet_14x7_gen03.onnx`, 120 games, seed base 32000000,
   6 parallel, GPU sidecar (`nn_server.py --device cuda`), `--per-game-out`. Pace: 12 games in
   32 min → ~5.3 h (actual 284 min; the wide-fan probe shared the cores for 90 of them).
@@ -580,7 +580,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   same steps). Match `d8h vs gen03` on seed base 32000000. If d8h ≥ 0.50 where D7 was 0.40, the
   heuristic data is worth ≥ +0.10 and the loop's window must always include it; if d8h ≈ D7,
   the gap is the recipe/distillation and the from-scratch route is closed. Queue position: after
-  #7's match, before #3's screens (`scripts/exp032_s1b_d8h.sh`, launched 2026-09-08 02:38; it
+  #7's match, before #3's screens (`scripts/archive/exp032_s1b_d8h.sh`, launched 2026-09-08 02:38; it
   holds `runs/exp032/s1b.pending`, which stage 3 blocks on). d8h validates on the loop's
   `gen07/prepared_val` like D7, so this is the one arm pair whose `val_*` are comparable.
 - **Result (2026-09-08 12:45, 188 min): d8h = 0.425 ± 0.041 vs gen03** (W36 D30 L54, TD
@@ -595,7 +595,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   gen03** — if the cq label closes the 0.10 gap to the champion, a full retrain becomes viable
   again as the plan-030 rebuild's periodic step; it costs one 120-game match and no training,
   so it slots in after the τ decision (#7b).
-- **#7c result (2026-09-09 16:31, 186 min, `scripts/exp032_s7c_q7_vs_champ.sh`): Q7 = 0.625 ±
+- **#7c result (2026-09-09 16:31, 186 min, `scripts/archive/exp032_s7c_q7_vs_champ.sh`): Q7 = 0.625 ±
   0.041 vs champion gen03** (W63 D24 L33, TD 503:425; Home 33-15, Away 30-18; z = +3.0). The
   same recipe that lost to gen03 at 0.396 with the visit label (D7) **beats it by the same margin
   with the completed-Q label** — a 0.23-point swing from the label alone, on the same 120 seeds.
@@ -661,7 +661,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   it stays deterministic and **mirror-exact**: `tests/mirror_search_exact.rs` gained mean-backup
   arms at budget 20 (default suite) and 200 (heuristic + NN, `#[ignore]`), all green. Unit tests
   pin order-independence and the ±negation symmetry.
-- **Run (queued behind stage 1, `scripts/exp032_s2_mean_backup.sh`).** Part A: two 150-game
+- **Run (queued behind stage 1, `scripts/archive/exp032_s2_mean_backup.sh`).** Part A: two 150-game
   random-start corpora on seed 32100000, `BLOOD_MCTS_BACKUP=minimax|mean`, each through
   `audit_value_head_bias.py` — the pre-committed check that mean backup pulls the search-added
   optimism from +0.10 toward the bare leaf's +0.03. Part B: `gen03 --backup mean` vs `gen03`
@@ -756,7 +756,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   --fpu-reduction/--vs-fpu-reduction`); `k = 0` is byte-identical to the shipped plain FPU. The
   prior share is accumulated in `f64` in a fixed child order, so it is mirror-exact too (verified
   at k=300 via `BLOOD_NN_MIRROR_FPU_K`). `--puct-c/--vs-puct-c` already existed.
-- **Run (queued behind stage 2, `scripts/exp032_s3_puct_fpu.sh`).** Four 120-game screens, gen03
+- **Run (queued behind stage 2, `scripts/archive/exp032_s3_puct_fpu.sh`).** Four 120-game screens, gen03
   both sides, seed base 32000000, backup rule for all arms chosen from stage 2 (mean if ≥ 0.55,
   else minimax): `c=3 vs c=10`, `c=30 vs c=10`, `k=100 vs k=0`, `k=300 vs k=0`. Screens only —
   a winner gets a sized match. Stage 2 gave mean 0.454, so all arms run **minimax**.
@@ -854,7 +854,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   two independent from-scratch fits sit at rel-L2 **1.26-1.94** while every warm-start fine-tune
   sits at 0.19-0.41. That does not give strength variance, but it does say the two seeds will be
   genuinely different nets, not near-copies.
-- **Run (launched 2026-09-08 05:54, `scripts/exp032_s59_seed_capacity.sh`).** Moved from the D1
+- **Run (launched 2026-09-08 05:54, `scripts/archive/exp032_s59_seed_capacity.sh`).** Moved from the D1
   pool to the **D7 pool** (gen01-07, visit target) so the floor is measured on the recipe every
   from-scratch arm now shares, and one of the two nets is D7 itself (no new control to train).
   `d7s2` = D7's recipe from a second materialised init (`arm_init_s2.pt`, `--seed 20260907` for
@@ -866,7 +866,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   the same 0.004 as the run-to-run wobble of a single curve. Both peak at step 90-92.5k of 110k
   and drift up after. So whatever strength gap the 300 games find is *not* visible in `val_*` —
   which is the point: it bounds how much strength variance hides behind identical losses.
-  The match moved to `scripts/exp032_s7b_tau50.sh` (order after stage 3: #9, #7b, then this).
+  The match moved to `scripts/archive/exp032_s7b_tau50.sh` (order after stage 3: #9, #7b, then this).
 - **Result (2026-09-09 13:23, 412 min, 300 games): d7s2 = 0.530 ± 0.028 vs D7** (W130 D58 L112,
   TD 1072:1019; Home 70-57, Away 60-55; paired SE 0.028 over 150 pairs, 25% split 1-1). So two
   nets that are **identical on val to 0.004** differ in strength by **+0.03 ± 0.03** — the seed
@@ -964,7 +964,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   side, so it is suggestive, not a pass — and more importantly **every root in this dump has
   4-21 legal actions** (the convergence probe samples turn-start activation roots), i.e. none of
   it is in the >30-fan regime where D2 put the defect. The gate cannot be decided on this file.
-- **Gate, part 2 — wide-fan probe (launched 2026-09-07 22:30, `scripts/exp032_s7_widefan_probe.sh`).**
+- **Gate, part 2 — wide-fan probe (launched 2026-09-07 22:30, `scripts/archive/exp032_s7_widefan_probe.sh`).**
   `botbowl-ui convergence` gained `--advance N` (play N production decisions from the random
   start so the probed root is mid-turn) and `--min-legal M` (skip roots whose *pruned* fan —
   measured with a 2-iteration root expansion, i.e. what the search sees — is below M). Run:
@@ -1011,7 +1011,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   played); if Q7 beats D7, the follow-up is τ=50 as a second one-variable arm, and if that also
   wins, a fan-dependent τ. Both probe files stay under `runs/exp032/` for re-scoring new target
   ideas offline (`scripts/audit_q_target.py <jsonl>`) — no search needed.
-- **Run (launched 2026-09-08 00:06, `scripts/exp032_s7_cq_target.sh`, commit 030745b).** D7 is
+- **Run (launched 2026-09-08 00:06, `scripts/archive/exp032_s7_cq_target.sh`, commit 030745b).** D7 is
   the control (plan 029: from scratch on gen01-07, `arm_init.pt`, lr 1e-3, 110k steps, visit
   target). Q7 = the identical recipe with the pool *and* the held-out set re-prepared under
   `prepare --policy-target cq --tau 100` (so `--select-on combined` selects against the label
@@ -1042,7 +1042,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
      confirmed strength lever, which raises the value of the fan-dependent τ idea and of #4's
      class-balancing (which acts on the same label) and lowers the priority of the search-side
      items (#3, #2b) that were trying to fix the same symptom from the other end.
-  3. **Follow-up launched (pre-registered): `q50` at τ=50**, `scripts/exp032_s7b_tau50.sh`,
+  3. **Follow-up launched (pre-registered): `q50` at τ=50**, `scripts/archive/exp032_s7b_tau50.sh`,
      identical recipe, head-to-head **vs Q7** 120 games (the question is which target to ship,
      so the direct match is the cheapest discriminator; both arms' val sets are prepared under
      their own τ so again only the match counts). Queued after stage 3 and #9's match, ahead
@@ -1270,7 +1270,7 @@ reference is cheap (no MCTS, no NN — E1 was ~20 min for 480 games).
   only net to beat a champion clearly. Same data as the loop's gen09 net, one arm.
 - **Arm.** `q9` = Q7's exact recipe (`arm_init.pt`, lr 1e-3, 110k steps, cq τ=100) on
   gen01-09, shards 0-3,5,6; held-out gen09 shards 4,7. Match `q9 vs bbnet_14x7_gen09`,
-  120 games, seed base 32000000, production settings. `scripts/exp032_s12_scratch_vs_loop.sh`
+  120 games, seed base 32000000, production settings. `scripts/archive/exp032_s12_scratch_vs_loop.sh`
   (launched 2026-09-10 05:16; it waits for "gen09 train done", trains during gen09's eval,
   plays after the loop exits).
 - **Decide (pre-registered; amended in plan 030 §Decisions 2026-09-10).** q9 ≥ 0.60 → the
