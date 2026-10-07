@@ -2219,7 +2219,17 @@ where
                     // illegal (the old `make_branch` flow silently
                     // dropped such children), prune the placeholder
                     // here and retry selection.
-                    match GD::apply_action(&*next_node.game_dynamics, node_state.clone(), &action) {
+                    // A registered child already holds its state (`StoreState`): read it instead of
+                    // re-deriving it, which replayed the game along every edge of every descent
+                    // (half the search's CPU in Blood Bowl, most of it path-finding). Equal states
+                    // are interchangeable — that is what recombination already relies on. Only a
+                    // placeholder, or a node whose memory mode dropped its state, is derived.
+                    let stored = next_node.state.read().unwrap().clone();
+                    let child_state = match stored {
+                        Some(state) => Some(state),
+                        None => GD::apply_action(&*next_node.game_dynamics, node_state.clone(), &action),
+                    };
+                    match child_state {
                         Some(new_state) => {
                             node = next_node;
                             node_state = new_state;
