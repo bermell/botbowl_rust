@@ -1,19 +1,19 @@
 [package]
 name = "botbowl-engine"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 ansi_term = "0.12"
-rand = "0.8"
-rand_chacha = "0.3"
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 itertools = "0.14"
 arraystring = "0.3"
 smallvec = { version = "1.13", features = ["serde"] }
 color-backtrace = "0.6"
-serde = { version = "1.0", features = ["derive", "rc"] }
+serde = { workspace = true, features = ["rc"] }
 json-patch = "1.4"
-serde_json = "1.0"
+serde_json = { workspace = true }
 derivative = "2.2"

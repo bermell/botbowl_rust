@@ -21,7 +21,7 @@ start states (`score_td_easy` — single-player lecture, and `full_teams` — 11
 legal actions):
 
 ```
-cargo test --release -p botbowl-mcts --test expand_bench \
+cargo test --release -p botbowl-mcts --features expand_bench --test expand_bench \
     -- --ignored --nocapture
 ```
 
@@ -32,16 +32,19 @@ Each run emits stable-format `EXPAND_BENCH …=…` lines so you can diff runs m
 Install once: `cargo install --locked samply`.
 
 **Build with full debug info.** `line-tables-only` is _not_ enough on macOS — samply emits hex
-addresses instead of function names if the binary has no symbols. Build the test binary with
-`RUSTFLAGS`:
+addresses instead of function names if the binary has no symbols. Build the test binary with the
+workspace's `profiling` profile (release + `debug = 2`, in its own `target/profiling/`, so it never
+invalidates the release build the way `RUSTFLAGS` did):
 
 ```sh
-cd botbowl_rust
-RUSTFLAGS="-C debuginfo=2" cargo test --release \
+cargo test --profile profiling --features expand_bench \
     -p botbowl-mcts --test expand_bench --no-run
 ```
 
-The `--no-run` step prints the test binary path (`target/release/deps/expand_bench-XXXXXX`).
+Any binary works the same way, e.g. `cargo build --profile profiling -p botbowl-ui`
+→ `target/profiling/botbowl-ui`.
+
+The `--no-run` step prints the test binary path (`target/profiling/deps/expand_bench-XXXXXX`).
 Copy that path.
 
 **Profile the single-threaded test, not the parallel one.** The main `expand_bench_main` uses
@@ -51,7 +54,7 @@ wrapper and produces clean attribution:
 
 ```sh
 samply record --save-only -o /tmp/expand_bench_profile.json --rate 4000 \
-    -- target/release/deps/expand_bench-XXXXXX \
+    -- target/profiling/deps/expand_bench-XXXXXX \
        expand_bench_for_samply --ignored --nocapture
 ```
 
@@ -62,7 +65,7 @@ samply record --save-only -o /tmp/expand_bench_profile.json --rate 4000 \
 
 ```sh
 python3 tools/samply_flatten.py /tmp/expand_bench_profile.json \
-    target/release/deps/expand_bench-XXXXXX
+    target/profiling/deps/expand_bench-XXXXXX
 ```
 
 Output: top-30 self-time + top-30 inclusive-time tables, plus a "grouped" section that bins

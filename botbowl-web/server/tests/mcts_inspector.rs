@@ -55,7 +55,7 @@ async fn serve() -> SocketAddr {
 
 async fn send(socket: &mut Socket, msg: ClientMsg) {
     socket
-        .send(Message::Text(serde_json::to_string(&msg).unwrap()))
+        .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
         .await
         .unwrap();
 }

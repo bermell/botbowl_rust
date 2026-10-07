@@ -1,31 +1,31 @@
 [package]
 name = "botbowl-hub"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Job queue and result sink for distributed generation/eval (plan 041)"
 
 [dependencies]
-botbowl-hub-proto = { version = "0.1.0", path = "../botbowl-hub-proto/" }
-botbowl-play = { version = "0.1.0", path = "../botbowl-play/" }
-botbowl-engine = { version = "0.1.0", path = "../botbowl-engine/" }
-botbowl-mcts = { version = "0.1.0", path = "../botbowl-mcts/" }
-botbowl-data = { version = "0.1.0", path = "../botbowl-data/" }
-botbowl-curriculum = { version = "0.1.0", path = "../botbowl-curriculum/" }
+botbowl-hub-proto = { workspace = true }
+botbowl-play = { workspace = true }
+botbowl-engine = { workspace = true }
+botbowl-mcts = { workspace = true }
+botbowl-data = { workspace = true }
+botbowl-curriculum = { workspace = true }
 # The web play app, served under /play/.
-botbowl-web-server = { version = "0.1.0", path = "../botbowl-web/server/" }
-axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
-futures-util = "0.3"
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-rand = "0.8"
-zstd = "0.13"
+botbowl-web-server = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+futures-util = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+rand = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
-botbowl-worker = { version = "0.1.0", path = "../botbowl-worker/" }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+botbowl-worker = { workspace = true }
+tokio-tungstenite = { workspace = true }
 # `ServiceExt::oneshot`, to drive the router with a chosen peer address (the allow-from gate's test).
 tower = { version = "0.5", features = ["util"] }
 
