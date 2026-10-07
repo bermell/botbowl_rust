@@ -68,10 +68,7 @@ nodes.
 
 ## 4. Candidate speedups, not yet done
 
-- **Search CPU per descent** (generation is CPU-bound): profile the hot paths without root
-  perf, e.g. sampling with gdb on a launched child, but with care: gdb distorts timing.
-  Candidates seen in samples: `descend`, state `clone`, `expand_to`, path filling, `HashMap`
-  churn.
+- **Search CPU per descent:** done, see §7 (−76% instructions per search, identical games).
 - **Bigger:**
   - client-side batching (one framed multi-sample request per process, not one socket message
     per leaf);
@@ -148,3 +145,59 @@ H0, both within ~1.5 SE of 0.5).
   against the anchor under the new rules. So "the loop regressed" and "the loop has not yet
   caught up to where it started" can't be told apart.
 - The cheap fix is one drive match, the init net vs the anchor, under the same settings.
+
+## 7. Search CPU: profiled and cut by 76% (2026-10-07)
+
+The user enabled `perf` (`kernel.perf_event_paranoid=1`) and installed heaptrack/valgrind
+(plan 046 item 5).
+
+**Live profile.** 45 s flat profile plus a 40 s LBR call-graph profile (`perf record --call-graph
+lbr`; the release binary has no frame pointers) of the running `botbowl-worker` during gen05
+generate (28 streams, sidecar):
+
+| inclusive share of worker CPU | what |
+|---|---|
+| 41% | `BloodBowlDynamics::apply_action` inside `Tree::descend`, 33% of it `MoveAction::step` → `fill_player_paths` |
+| 19% | node teardown: `Node::on_drop` → `detach` → `parents`/registry `remove` → `Node::eq` → **two `GameState` clones per comparison** |
+| 11% | NN forward client side (`forward_memo`), 4% of it `encode` (3% path-finding again) |
+| 13% / 9% | malloc+free / memmove, spread over the above |
+
+**Benchmark that the load cannot distort** (`scripts/perf_search_bench.sh`, `3e49097`; run it on two commits). `instructions:u` (perf stat) of a fixed workload:
+`dataset --mode random-start --board-sizes 16x9/6 --games 3 --seed 4242 --mcts-iters 1000
+--bot-config cfgs/gumbel16_f1000_gen.toml --evaluator heuristic`. It needs two things to be
+reproducible:
+- `getrandom` pinned by an `LD_PRELOAD` shim. std's `RandomState` keys feed the children-map
+  iteration order, which breaks search ties;
+- `recon_mcts`'s `deterministic_hash` on in the build (test-only in the repo). Without it, any
+  change that creates fewer `HashMap`s shifts every later map's keys, because std advances the
+  per-thread key on each `RandomState::new`, and the games diverge.
+With both, the search is exactly reproducible, and two runs agree to 0.002% in instructions. The
+only remaining run-to-run difference was the JSON order of `HashSet` fields (`skills`, `simple`),
+so the output check sorts those. That is probably what plan 032 saw when `deterministic_hash`
+alone "did not restore reproducibility".
+Every change below keeps the trajectories byte-identical (same hash), also with the real gen04
+net on CPU (tract).
+
+| commit | change | instructions | cumulative |
+|---|---|---|---|
+| base `1ec7517` | | 126.8G | |
+| A `3d3ba5e` | `recon_mcts`: node equality compares the stored states in place and short-circuits on pointer identity; it used to clone both `GameState`s. Teardown no longer re-materialises a state the child already holds. | 83.6G | −34% |
+| B `a71770c` | engine: `SkillSet` (a `u64` bitset) replaces `HashSet<Skill>` for `skills` and `used_skills`: clones without allocating, compares by integer. Hash value-for-value and serde unchanged (tests pin both). | 77.8G | −39% |
+| C `9d6ecdf` | `recon_mcts::Tree::descend` reads a registered child's stored state instead of re-deriving it with `apply_action`. The descent replayed the engine along every edge of every descent, path-finding at each `MoveAction`. Placeholders (and `GetState`) still derive. | 30.5G | **−76%** |
+
+On the NN path (tract, 1 game, 300 descents), the non-network instructions fall about as much
+(≈35G → ≈8G). `eq_checks`/`eq_rejects` move by ~2%: they count hash-bucket false candidates,
+which depend on the registry's `RandomState` keys. `recomb_hits`/`recomb_probes` are identical.
+
+**What it means for the loop.** Generation was CPU-bound from ~36 streams (§2) at ~0.6 ms of
+worker CPU per forward. With about a quarter of that left, the GPU sidecar should bind instead
+(60-68% busy at 48 streams before), and the stream count is capped by memory, not CPU. Expected:
+more games/min per stream at the same stream count, until the GPU saturates. To measure on the
+next relaunch: worker CPU% and sidecar `mean_batch`/samples/s at 28 streams against gen05's.
+Eval (drive benchmark) and the net check gain the same per search. mc-label does no search and
+gains only from B.
+
+**Next candidates (after the relaunch measurement):**
+- path-finding is still the top engine cost wherever a state *is* derived (new leaves);
+- `encode` recomputes the paths `MoveAction` already put in `path_buffer`.
+
