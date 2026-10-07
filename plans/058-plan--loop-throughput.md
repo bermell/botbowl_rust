@@ -246,3 +246,35 @@ over 5 KB a descent, so the next measurement is nodes per descent and bytes per 
 A node cap in `recon_mcts` would then make the per-game bound exact and the worker's
 `mem_governor` arithmetic instead of an EWMA; an index-based arena only if a profile shows the
 allocator and pointer chasing as the residual.
+
+## 9. Stream count after §7-§8: the GPU sidecar binds (2026-10-07 night)
+
+**Tool:** `scripts/perf_gen_steady.sh` (steady state: the loop's generation with `--next-drive`, a
+warm-up skipped, decisions counted in a fixed window; `SIDECARS=N` splits the streams over N sidecars
+and N processes). Net: gen05. Window 10 min (`5076090`) or 8 min (`96fb083`), so ±5% is noise.
+
+| commit | streams | sidecars | decisions/min | records/min | generator CPU (of 800%) | peak RSS | GPU busy | mean batch | sidecar samples/s |
+|---|---|---|---|---|---|---|---|---|---|
+| live gen05 (`407b335`) | 28 | 1 | | 21-23 | | | | | |
+| `5076090` (§7) | 28 | 1 | 970 | 28.7 | 354% | 4.2 GB | 87% | 12.8 | 7750 |
+| `5076090` | 48 | 1 | 1047 | 29.8 | 400% | 6.5 GB | 82% | 22.7 | 8051 |
+| `96fb083` (§8) | 48 | 1 | 981 | 27.3 | 334% | 4.4 GB | 79% | 23.1 | 7819 |
+| `96fb083` | 48 | 2 | 1047 | 30.2 | 320% | 4.4 GB | 100% | 11.5 + 11.6 | 8551 |
+| `96fb083` | 64 | 2 | 982 | 31.9 | 343% | 6.0 GB | 98% | 15.5 + 15.6 | 8675 |
+
+- **The search is no longer the wall.** At 28 streams the generator uses under half the box, and the
+  rate is ~1.35x live gen05's at the same stream count.
+- **One Python sidecar tops out near 8k samples/s** with the GPU at ~80%: more streams only grow
+  its batches. A second sidecar fills the GPU (100%) and adds ~9%; 64 streams add nothing over 48.
+  The binding resource is now the GPU itself (~115 µs per sample at these batches).
+- §8's smaller `GameState` shows as memory: 48 streams 6.5 → 4.4 GB.
+- CPU inference (tract) for the idle cores: not pursued (the user).
+
+**Loop settings from gen06** (`launch_plan058.sh`): 48 local streams over two sidecars
+(`GEN_SIDECARS=2`, a second local worker `local2` on its own sidecar), and the speedup spent on data:
+**400 games per shard** (300 before, +33%), so a generate phase stays near gen05's ~3.3 h. MC labels
+and training grow with it (~105 and ~37 min expected).
+
+**Next levers, all on the GPU side:** the forward itself (precision, fused kernels, TensorRT-style
+export), fewer forwards per decision (the memo hit rate), and two sidecars for mc-label, which is
+GPU-bound too.

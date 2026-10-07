@@ -8,7 +8,7 @@
 #     sample), lr 5e-5, --freeze-bn, restore on val_policy + val_value, no init candidate;
 #   - plan 047: --next-drive (the user): a drive that scores is followed through both kickoff setups
 #     into the next drive, so per-player setup decisions reach the corpus (mc-label replays them);
-#   - plan 058 throughput: 36 local generation streams (12 before; +40% measured, memory-capped),
+#   - plan 058 throughput: 48 local generation streams over two GPU sidecars (§9; 12 at first),
 #     mc-label at 96 threads (sample-level work, GPU-bound), drives vs the anchor every 3 generations;
 #     value bench and net check every generation.
 # The value benchmark is re-frozen under the new rules from gen01's held-out shards (VALUE_BENCH points
@@ -46,8 +46,11 @@ export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=o
 export TRAIN_EXTRA_ARGS="--freeze-bn --eval-at 250,500"
 export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=96 NEXT_DRIVE=1 DRIVE_EVAL_EVERY=3
 export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
-# 28 local streams, not 36 (the user, 2026-10-07): leave CPU for people playing the bots on /play/.
-export GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=28 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
+# Plan 058 §9 (2026-10-07, after the search CPU cuts and the 4x smaller GameState): generation is
+# GPU-bound. One sidecar tops out near 8k samples/s with the GPU ~80% busy; two sidecars at 48
+# streams fill it (8.6k/s, +9%), and 64 streams add nothing more. The speedup goes into data: 400
+# games per shard (300 before, +33%), so a generate phase still takes about gen05's ~3.3 h.
+export GAMES_PER_SHARD=400 GEN_PARALLEL_GAMES=48 GEN_SIDECARS=2 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
 # The hub's pages and /play/ are open to every client: the user filters at the NAT firewall
 # instead (2026-10-07). `HUB_ALLOW_FROM="157.250.168.190,192.168.0.0/16"` would do it in the hub.
 export HUB_ALLOW_FROM=""

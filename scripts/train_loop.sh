@@ -362,6 +362,10 @@ INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
 # i.e. 3.8x, using 4.3 cores against 5.3.
 NN_SERVER="${NN_SERVER:-on}"                # on|off
 NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
+# Plan 058 §9: sidecars during generate (only). One Python sidecar tops out near 8k samples/s with
+# the GPU ~80% busy; two keep the GPU full (+9% at 48 streams). Each extra sidecar gets its own
+# local worker with an equal share of GEN_PARALLEL_GAMES (named local2, local3, ...).
+GEN_SIDECARS="${GEN_SIDECARS:-1}"
 # Plan 047 item 1: pad every board onto one tensor canvas (the build capacity, border included) and
 # run the masked forward, so all board sizes share one GPU batch queue. The size curriculum spread
 # 10 streams over 12 board shapes, and the sidecar batches per shape, so mean_batch was 1.55 with
@@ -604,8 +608,30 @@ nn_server_start() {
         sleep 1
     done
     status "nn_server up (pid $NN_SERVER_PID, $(basename "$model"), socket $NN_SOCKET)"
+    # $2 (generate only): the number of sidecars; the extra ones serve the extra local workers.
+    local n="${2:-1}" k sock pid
+    for k in $(seq 2 "$n"); do
+        sock="${NN_SOCKET%.sock}-$k.sock"; rm -f "$sock"
+        "$PY" "$REPO/scripts/nn_server.py" --socket "$sock" --device cuda \
+            --model "$model" --stats-every 300 \
+            $([ "$NN_CANVAS" = off ] || echo "--canvas $NN_CANVAS") >> "$RUN_DIR/nn_server.$k.log" 2>&1 &
+        pid=$!
+        i=0
+        while [ ! -S "$sock" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -le 120 ]; do i=$((i + 1)); sleep 1; done
+        if [ -S "$sock" ]; then
+            NN_EXTRA+=("$pid:$sock")
+            status "nn_server $k up (pid $pid, socket $sock)"
+        else
+            kill "$pid" 2>/dev/null
+            status "WARN: nn_server $k did not come up — see nn_server.$k.log; one sidecar fewer"
+        fi
+    done
 }
+NN_EXTRA=()
 nn_server_stop() {
+    local e
+    for e in "${NN_EXTRA[@]}"; do kill "${e%%:*}" 2>/dev/null; wait "${e%%:*}" 2>/dev/null; rm -f "${e#*:}"; done
+    NN_EXTRA=()
     [ -n "$NN_SERVER_PID" ] || return 0
     kill "$NN_SERVER_PID" 2>/dev/null
     wait "$NN_SERVER_PID" 2>/dev/null
@@ -689,17 +715,32 @@ generate_jobs() {
     return $rc
 }
 worker_start() {
-    local extra=""
+    local extra="" mem="" share="$1" k=2 e
     [ -n "$NN_SERVER_PID" ] && extra="--nn-server $NN_SOCKET"
-    [ -n "$WORKER_MEM_FLOOR_MB" ] && extra="$extra --mem-floor-mb $WORKER_MEM_FLOOR_MB"
+    [ -n "$WORKER_MEM_FLOOR_MB" ] && mem="--mem-floor-mb $WORKER_MEM_FLOOR_MB"
+    # One worker per sidecar, the streams split evenly (the first takes the remainder).
+    [ "${#NN_EXTRA[@]}" -gt 0 ] && share=$(($1 / (${#NN_EXTRA[@]} + 1)))
     # shellcheck disable=SC2086
     "$WORKER" --hub "ws://127.0.0.1:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
-        --name "local" --parallel-games "$1" --cache-dir "$WORKER_CACHE" $extra \
+        --name "local" --parallel-games $(($1 - share * ${#NN_EXTRA[@]})) --cache-dir "$WORKER_CACHE" $extra $mem \
         >> "$2" 2>&1 &
     WORKER_PID=$!
-    log "local worker started (pid $WORKER_PID, x$1${extra:+ via sidecar})"
+    log "local worker started (pid $WORKER_PID, x$(($1 - share * ${#NN_EXTRA[@]}))${extra:+ via sidecar})"
+    for e in "${NN_EXTRA[@]}"; do
+        # shellcheck disable=SC2086
+        "$WORKER" --hub "ws://127.0.0.1:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
+            --name "local$k" --parallel-games "$share" --cache-dir "$WORKER_CACHE-$k" --nn-server "${e#*:}" $mem \
+            >> "$2" 2>&1 &
+        WORKER_EXTRA+=($!)
+        log "local worker $k started (pid $!, x$share via sidecar $k)"
+        k=$((k + 1))
+    done
 }
+WORKER_EXTRA=()
 worker_stop() {
+    local w
+    for w in "${WORKER_EXTRA[@]}"; do kill "$w" 2>/dev/null; wait "$w" 2>/dev/null; done
+    WORKER_EXTRA=()
     [ -n "$WORKER_PID" ] || return 0
     kill "$WORKER_PID" 2>/dev/null
     wait "$WORKER_PID" 2>/dev/null
@@ -1074,7 +1115,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ ! -e "$GEN_DIR/.generated" ]; then
         SECONDS=0
         CHAMP="$(champion)"
-        nn_server_start "$CHAMP"
+        nn_server_start "$CHAMP" "$GEN_SIDECARS"
         # Plan 041: the games run on whatever workers are connected to the
         # hub — this box's local worker (started here, inside the sidecar's
         # lifetime, with GEN_PARALLEL_GAMES streams) plus any remote ones,
@@ -1086,7 +1127,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # tract and warns once, in generate.worker.log).
         worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
         SIZE_ARGS=$(size_gen_args)
-        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
+        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES$([ "${#NN_EXTRA[@]}" -gt 0 ] && echo " over $((${#NN_EXTRA[@]} + 1)) sidecars") + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
         if ! generate_jobs "$GEN_DIR" "$CHAMP" "$SIZE_ARGS"; then
             worker_stop
             nn_server_stop
