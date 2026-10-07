@@ -49,9 +49,13 @@ export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
 export GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=36 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
 
 # A remote worker is admitted on any commit since the last change to the code its games run. The
-# laptop must rebuild on this master (protocol v14, new rules).
+# laptop must rebuild on this master (protocol v14, new rules). EXTRA_ALLOW (space-separated
+# commits) admits a worker on an older commit whose games are known to be the same, e.g. ae721b7
+# across 3dc4902: forced moves are found by search there instead of played directly — the same move,
+# and prepare drops the record either way.
 LAST_GAME=$(git log -1 --format=%h -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-worker botbowl-hub-proto recon_mcts)
 printf 'hub_commit = "%s"\nallow = [%s]\n' "$(git rev-parse --short HEAD)" \
-    "$(git rev-list --abbrev-commit "$LAST_GAME"^..HEAD | sed 's/.*/"&"/' | paste -sd,)" > hub-allowed-commits.toml
+    "$( (git rev-list --abbrev-commit "$LAST_GAME"^..HEAD; for c in ${EXTRA_ALLOW:-}; do echo "$c"; done) \
+        | sed 's/.*/"&"/' | paste -sd,)" > hub-allowed-commits.toml
 say "allowlist: commits since $LAST_GAME; launching train_loop.sh into $RUN"
 exec systemd-inhibit --what=sleep:idle --who=train_loop.sh --why="botbowl plan-058 loop" --mode=block scripts/train_loop.sh
