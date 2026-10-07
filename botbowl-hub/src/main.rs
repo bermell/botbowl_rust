@@ -80,6 +80,11 @@ struct PlayArgs {
     /// Do not serve `/play/`.
     #[arg(long, default_value_t = false)]
     no_play: bool,
+    /// Only these client addresses (comma-separated, an address or a CIDR network) get the
+    /// browser-facing pages and the web play app; others get 403. Loopback always does, and the
+    /// workers' `/ws` never checks (token-authenticated). Unset = everyone, as before.
+    #[arg(long = "allow-from", value_delimiter = ',')]
+    allow_from: Vec<botbowl_hub::AllowNet>,
     /// `trunk build --release` output of `botbowl-web/client`. Without one, `/play/` is off.
     /// This and the other `--play-*-dir`s override `~/.config/botbowl/web.toml`.
     #[arg(long)]
@@ -171,10 +176,18 @@ fn play_router(a: &PlayArgs) -> Option<axum::Router> {
         capacity.height,
         capacity.team_size,
         app.list_models().len(),
-        paths.teams_dir.as_deref().map(|d| d.display().to_string()).unwrap_or_else(|| "-".into()),
+        paths
+            .teams_dir
+            .as_deref()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "-".into()),
         a.play_max_workers.max(1),
     );
-    Some(botbowl_web_server::router(app, paths.assets_dir.as_deref(), Some(&paths.dist_dir)))
+    Some(botbowl_web_server::router(
+        app,
+        paths.assets_dir.as_deref(),
+        Some(&paths.dist_dir),
+    ))
 }
 
 #[derive(Args, Debug, Clone)]
@@ -989,6 +1002,7 @@ fn main() {
                         allowed_commits: a.allowed_commits.clone(),
                         worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
                         run_dir: a.run_dir.clone(),
+                        allow_from: a.play.allow_from.clone(),
                     },
                     play,
                 )
@@ -1013,7 +1027,11 @@ fn main() {
                     if let Ok(n) = indexing.join() {
                         eprintln!(
                             "[hub] {n} net(s) indexed under {}; workers' caches are named from them",
-                            index_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(", ")
+                            index_dirs
+                                .iter()
+                                .map(|d| d.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         );
                     }
                 });

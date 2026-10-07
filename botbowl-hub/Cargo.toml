@@ -26,6 +26,8 @@ zstd = "0.13"
 [dev-dependencies]
 botbowl-worker = { version = "0.1.0", path = "../botbowl-worker/" }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+# `ServiceExt::oneshot`, to drive the router with a chosen peer address (the allow-from gate's test).
+tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
 name = "botbowl-hub"

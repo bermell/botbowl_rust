@@ -46,7 +46,11 @@ export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=o
 export TRAIN_EXTRA_ARGS="--freeze-bn --eval-at 250,500"
 export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=96 NEXT_DRIVE=1 DRIVE_EVAL_EVERY=3
 export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
-export GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=36 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
+# 28 local streams, not 36 (the user, 2026-10-07): leave CPU for people playing the bots on /play/.
+export GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=28 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
+# The hub's pages and /play/ answer only the office VPN's address (157.250.168.190, which the user
+# and invited players come from) and this LAN; loopback always. Workers' /ws is token-only.
+export HUB_ALLOW_FROM="157.250.168.190,192.168.0.0/16"
 
 # A remote worker is admitted on any commit since the last change to the code its games run. The
 # laptop must rebuild on this master (protocol v14, new rules). EXTRA_ALLOW (space-separated

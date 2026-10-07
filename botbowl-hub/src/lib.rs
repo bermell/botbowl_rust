@@ -53,6 +53,77 @@ pub struct HubConfig {
     pub worker_timeout: Duration,
     /// The training loop's run directory, for the status page's loop and training lines.
     pub run_dir: Option<PathBuf>,
+    /// Client addresses the browser-facing routes answer (`/`, `/status`, `/api/*`, `/play/`).
+    /// Empty = everyone (the default). Loopback is always allowed (the loop's own job client), and
+    /// `/ws` never checks: workers dial in from anywhere and authenticate with the token. Binding
+    /// to an address does not do this — a server can only bind to its own interfaces — so a
+    /// tool that should be seen only from, say, an office VPN filters on the peer address here.
+    pub allow_from: Vec<AllowNet>,
+}
+
+/// One entry of [`HubConfig::allow_from`]: an address, or a network in CIDR form (`10.0.0.0/8`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AllowNet {
+    addr: std::net::IpAddr,
+    prefix: u8,
+}
+
+impl std::str::FromStr for AllowNet {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        let (a, p) = s.split_once('/').map_or((s, None), |(a, p)| (a, Some(p)));
+        let addr: std::net::IpAddr = a.parse().map_err(|e| format!("{s}: {e}"))?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match p {
+            Some(p) => p.parse::<u8>().map_err(|e| format!("{s}: prefix: {e}"))?,
+            None => max,
+        };
+        if prefix > max {
+            return Err(format!("{s}: prefix {prefix} > {max}"));
+        }
+        Ok(AllowNet { addr, prefix })
+    }
+}
+
+impl AllowNet {
+    /// Whether `ip` is in this network. An IPv4 peer reaching an IPv6 socket arrives as an
+    /// IPv4-mapped address and is compared as the IPv4 address it is.
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+        let bits = |n: u128, width: u32| {
+            if self.prefix == 0 {
+                0
+            } else {
+                n >> (width - self.prefix as u32)
+            }
+        };
+        match (self.addr, ip.to_canonical()) {
+            (IpAddr::V4(a), IpAddr::V4(b)) => bits(u32::from(a) as u128, 32) == bits(u32::from(b) as u128, 32),
+            (IpAddr::V6(a), IpAddr::V6(b)) => bits(u128::from(a), 128) == bits(u128::from(b), 128),
+            _ => false,
+        }
+    }
+}
+
+/// The [`HubConfig::allow_from`] gate, in front of every route.
+async fn allow_from_gate(
+    State(hub): State<Hub>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let allow = &hub.cfg.allow_from;
+    if allow.is_empty() || req.uri().path() == "/ws" {
+        return next.run(req).await;
+    }
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip());
+    match peer {
+        Some(ip) if ip.to_canonical().is_loopback() || allow.iter().any(|n| n.contains(ip)) => next.run(req).await,
+        _ => (StatusCode::FORBIDDEN, "not available from this address\n").into_response(),
+    }
 }
 
 #[derive(Clone)]
@@ -95,7 +166,9 @@ impl Hub {
                 .route("/play", get(|| async { axum::response::Redirect::permanent("/play/") }))
                 .nest_service("/play/", play);
         }
-        router.with_state(self.clone())
+        router
+            .layer(axum::middleware::from_fn_with_state(self.clone(), allow_from_gate))
+            .with_state(self.clone())
     }
 
     /// Bind and serve in the background. Returns the bound address (useful
@@ -118,7 +191,7 @@ impl Hub {
             // The reaper never returns, so the select ends with the server
             // and the loop is dropped with it — no task outlives its hub.
             tokio::select! {
-                r = axum::serve(listener, router) => {
+                r = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()) => {
                     if let Err(e) = r {
                         eprintln!("[hub] server error: {e}");
                     }
@@ -255,7 +328,10 @@ async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
     let run_dir = hub.cfg.run_dir.clone();
     // File reads and an `nvidia-smi` call: off the async workers.
     let html = tokio::task::spawn_blocking(move || {
-        page::render_html(&page::gather(status, port, run_dir.as_deref()), std::time::SystemTime::now())
+        page::render_html(
+            &page::gather(status, port, run_dir.as_deref()),
+            std::time::SystemTime::now(),
+        )
     })
     .await
     .unwrap_or_else(|e| format!("status page failed: {e}"));

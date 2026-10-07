@@ -47,6 +47,14 @@ the defaults from the crate's source path — the same file and resolver (`confi
 `botbowl-web-server`. Browser games run in
 the hub process: they cost CPU on the training box, nothing else — they never touch the job queue.
 
+**`--allow-from` (who may see it).** `serve --allow-from 157.250.168.190,192.168.0.0/16` (or
+`HUB_ALLOW_FROM` in `train_loop.sh`) answers `/`, `/status`, `/api/*` and `/play/` only to those
+client addresses (addresses or CIDR networks) and to loopback; everyone else gets 403. `/ws` is
+never gated, since workers dial in from anywhere and authenticate with the token. Unset means
+everyone, as before. It filters on the *peer* address (`ConnectInfo`, `allow_from_gate` in
+`lib.rs`). Binding cannot do this: a server can only bind to its own interfaces, and an office VPN
+address is the clients', not the box's.
+
 ## Invariants
 
 - **Compatibility is exact commit + clean tree + board capacity + active board**

@@ -62,6 +62,7 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         allowed_commits: allowlist_path(),
         worker_timeout,
         run_dir: None,
+        allow_from: Vec::new(),
     })
     .await
     .unwrap();

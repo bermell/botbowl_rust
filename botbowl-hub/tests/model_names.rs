@@ -109,6 +109,7 @@ async fn a_model_arrives_with_its_name_cached_or_not() {
         allowed_commits: std::env::temp_dir().join("botbowl-hub-test-no-such-allowlist.toml"),
         worker_timeout: Duration::from_secs(300),
         run_dir: None,
+        allow_from: Vec::new(),
     })
     .await
     .unwrap();
@@ -198,6 +199,7 @@ async fn the_startup_index_names_a_cache_without_any_job() {
         allowed_commits: std::env::temp_dir().join("botbowl-hub-test-no-such-allowlist.toml"),
         worker_timeout: Duration::from_secs(300),
         run_dir: None,
+        allow_from: Vec::new(),
     })
     .await
     .unwrap();

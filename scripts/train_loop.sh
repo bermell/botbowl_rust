@@ -624,7 +624,10 @@ hub_start() {
         log "hub already running on $HUB_URL; reusing"
         return 0
     fi
-    "$HUB" serve --bind "0.0.0.0:$HUB_PORT" --token-file "$HUB_TOKEN_FILE" --run-dir "$RUN_DIR" >> "$RUN_DIR/hub.log" 2>&1 &
+    # HUB_ALLOW_FROM (comma-separated addresses / CIDR networks): only these clients, plus loopback,
+    # get the hub's pages and the web play app; workers' /ws stays open (token-authenticated).
+    "$HUB" serve --bind "0.0.0.0:$HUB_PORT" --token-file "$HUB_TOKEN_FILE" --run-dir "$RUN_DIR" \
+        ${HUB_ALLOW_FROM:+--allow-from "$HUB_ALLOW_FROM"} >> "$RUN_DIR/hub.log" 2>&1 &
     HUB_PID=$!
     local i=0
     until "$HUB" status --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" > /dev/null 2>&1; do
