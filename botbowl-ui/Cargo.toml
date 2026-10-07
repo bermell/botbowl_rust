@@ -11,7 +11,7 @@ botbowl-data = { workspace = true }
 botbowl-engine = { workspace = true }
 botbowl-mcts = { workspace = true }
 botbowl-nn = { workspace = true }
-botbowl-play = { workspace = true }
+botbowl-play = { workspace = true, features = ["cli"] }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

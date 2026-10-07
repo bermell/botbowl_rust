@@ -6,7 +6,7 @@ description = "Job queue and result sink for distributed generation/eval (plan 0
 
 [dependencies]
 botbowl-hub-proto = { workspace = true }
-botbowl-play = { workspace = true }
+botbowl-play = { workspace = true, features = ["cli"] }
 botbowl-engine = { workspace = true }
 botbowl-mcts = { workspace = true }
 botbowl-data = { workspace = true }

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 description = "Play one game and return its record: the shared core under `botbowl-ui dataset`/`eval` and the plan-041 worker"
 
+[features]
+# `cli_args`: the `dataset`/`eval` clap structs `botbowl-ui` and `botbowl-hub` share (plan 059).
+# Off by default so the library, the worker and the web server stay clap-free.
+cli = ["dep:clap"]
+
 [dependencies]
 botbowl-curriculum = { workspace = true }
 botbowl-data = { workspace = true }
@@ -16,6 +21,9 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+clap = { workspace = true, optional = true }
 
 [dev-dependencies]
 postcard = { workspace = true }
+# So `cargo test -p botbowl-play` runs the `cli_args` tests too.
+botbowl-play = { path = ".", features = ["cli"] }

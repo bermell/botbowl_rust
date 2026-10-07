@@ -1,6 +1,6 @@
 # 059 — Technical-debt inventory
 
-**Status:** inventory, 2026-10-07. Nothing here is started.
+**Status:** inventory, 2026-10-07 — a backlog of what is left. Top-20 #1–#5, #7 and #8 were done and removed the same day (commits `400b66b`..); #6 is partly done and its row says what remains.
 
 Six parallel review passes (engine; mcts + recon_mcts; ui/play/hub/worker/nn/data;
 scripts + train; web + docs/plans; cross-cutting build/test/env) over the whole repo,
@@ -21,13 +21,11 @@ daily loop, not for bot strength.
 
 ## Part 1 — The top 20, by payoff over effort
 
-Start at the top. Items 1–8 are each under a day and remove something that bites every
-session.
+Start at the top (numbers are the original ranks; done items are deleted, not renumbered).
 
 | # | Item | Effort | Payoff |
 |---|------|--------|--------|
 | 6 | **Four ways to configure a search, and their defaults drift:** `BLOOD_MCTS_*` env vars (25 of them), per-knob CLI flags, `cfgs/*.toml`, and the web `MctsSpec`. The web cannot express gumbel/budget/chance/setup knobs so it cannot play the loop's bot (G1); `eval` still pins `horizon_turns`/`fpu_reduction` from CLI defaults (env ignored) while `dataset` leaves them to the env. (Done 2026-10-07: `Default` = `new()`, `MctsBot::new` env-free with an explicit `MctsBot::from_env`, `eval --puct-mode` optional like `dataset`.) Target: presets are the one source of truth, env/CLI become `--set key=value` overrides on a preset, web loads a preset by name. | M | high |
-| 8 | **ui `dataset`/`eval` and hub `job generate`/`job eval` are copy-pasted flag structs (23+10+8 vs ~55 fields; 34 vs 36) that have already drifted into a bug:** the hub fixed the one-sided-preset `vs:` label panic (`botbowl-hub/src/main.rs:806`), the ui copy at `botbowl-ui/src/eval.rs:499` still panics. `CliEvaluator`/`CliCandidateBot`/`CliDifficulty`/`DatasetMode` are re-declared; `size_dist_of` is a line copy of `SizeArgs::to_dist`; hub parses and ignores `--parallel-games`, `--nn-server`, `--skip-lectures`, `--trials`. Move the arg structs into `botbowl-play` (or a `botbowl-cli-args` crate) and `#[command(flatten)]` them from both binaries. | M | high |
 | 9 | **The "ignored = benchmark suite, ~2 min" claim is false.** 64 `#[ignore]`s, none with a reason string; ~50 in botbowl-mcts are manual probes (`tree_shape` ×9, `mirror_search_exact` ×9, `expand_bench` ×9, `root_visit_anomaly` ×6), two need gitignored models, one needs a 14x7 build. Add `#[ignore = "..."]` reasons, move probes/benches to `examples/` or `benches/`, and fix the root doc. | M | high |
 | 10 | **Tests that silently pass by skipping.** `skip_if_board_smaller_than!` (10 uses), `open_state() -> None` returning empty Vecs, and `parallel_rungs`, `sprt_stop`, `eval_job` ×2, `capacity_parity`, `remote.rs` ×4 all print "skipped" and pass under the default 26x15 build. Green means less than it looks. Either build the small board at runtime via `with_board_dims` (engine supports it) or make them `#[ignore = "needs 16x9 build"]`. | S–M | high |
 | 11 | **`BOARD_SIZE_*` does two jobs:** build-time capacity (`build.rs`) and runtime active board (`BoardDims::from_env`, called from every `GameStateBuilder::build()`). Changing the env rebuilds the world and both variants overwrite each other in the same `target/`; scripts work around it with `CARGO_TARGET_DIR=target/${W}x${H}` by convention, and root `CLAUDE.md`'s hub/worker commands don't mention it. 11 of 230 engine tests fail at 14x7/5 (engine doc says 1). Decouple the runtime board from the process env (explicit parameter, default = capacity); encode the board into the target dir automatically (xtask/wrapper). | M | high |
@@ -109,16 +107,15 @@ session.
 
 ### E. Play, UI, hub, worker, nn, data
 
-- E1 Flag-struct duplication ui↔hub → top-20 #8.
 - E2 `botbowl-play` violates its "process-agnostic" contract: reads files (`bots.rs:119`, `drives.rs:70`), writes a file (`trace.rs:84`), reads env (`MctsConfig::from_env` at `bots.rs:73`, `BudgetMode::from_env` at `:254` and `generate.rs:284`). Hidden env reads are exactly what made workers diverge; `SearchConfig::pinned_to_env` exists only to paper over it. M / med
 - E3 `generate.rs:448-458` duplicates `drives::position_state` including the odd-seed `temperature2` rule; `random_start_trajectory` should call it (corpus/benchmark equivalence). S / med
 - E4 `EvalGameLine::serialize` is hand-written because one impl serves pinned JSON and positional postcard; its doc says "update the field count by hand". Separate wire DTO. M / med
 - E5 NN schema version defined 3× with nothing tying them: `botbowl-nn/src/bin/prepare.rs:85` (in the bin, not the lib), `model.py:23`, shape consts `model.py:15-17` (`SPATIAL_CHANNELS=61` etc. vs Rust consts). A v9 bump touched ~8-10 files. The ONNX carries no schema version and `NnEvaluator::from_path` checks nothing (v8→v9 policy-width change can load silently). `botbowl-data::FORMAT_VERSION = 1` has never moved while `meta.extra` absorbs every change. Export the Rust consts to a generated Python/JSON fixture and assert in pytest; embed schema in ONNX metadata and check on load. M / med–high
 - E6 `nn_server.py` wire constants (`MAGIC`, `PROTOCOL_VERSION`, status codes, struct formats) duplicated against `botbowl-nn/src/remote.rs`; caught only by the launch handshake. Same fix as E5. S / med
 - E7 `botbowl-ui` has 12 subcommands mixing TUI, pipeline stages (`mc-label` is a loop stage) and research probes, all in binary-private modules so hub/worker can't reuse them and integration tests can't reach them. Move pipeline stages into `botbowl-play`. M / med
-- E8 Zero tests on CLI→request glue (`botbowl-hub/src/main.rs` 1144 lines, no `#[cfg(test)]`; `eval.rs`, `cli.rs`, `dataset.rs`). The #8 panic lives exactly there. S–M / med
+- E8 Few tests on CLI→request glue: `botbowl-hub/src/main.rs` now parses the loop's `job generate`/`job eval` lines and the refused flags in tests, but the ui `eval.rs`/`dataset.rs` run functions (rung assembly, report building) are still untested. S–M / med
 - E9 Errors are `Result<_, String>` in 26 signatures across ui/play/hub, no anyhow/thiserror; `process::exit` ×11 in hub main. Logging is ad-hoc `eprintln!("[hub] …")` (hub 39, ui 31, worker 12) and scripts grep exact stdout markers (`NN_PROFILE`, `NN_SERVER_FALLBACK`), so log text is an API. M / med
-- E10 Duplicates: progress line in `dataset.rs:132` and `worker/src/lib.rs:500`; free-RAM probing in `page.rs:120` (Linux-only) and `worker/src/lib.rs:810`; `RandomStartBias` defaults written out in ui `default_value_t`, play `Default`, and hub `Option` (three conventions); hub `PathBuf` absolutised vs ui `Option<String>` relative, so the same run gets a different rung label depending on which binary played it. S / med
+- E10 Duplicates: progress line in `dataset.rs:132` and `worker/src/lib.rs:500`; free-RAM probing in `page.rs:120` (Linux-only) and `worker/src/lib.rs:810`; hub `PathBuf` absolutised vs ui `Option<String>` relative, so the same run gets a different rung label depending on which binary played it. S / med
 - E11 Hub status page parses bash-written `status.md` prose and trainer progress files (`page.rs:82, 304`): a cross-language contract with no schema. M / low–med
 - E13 `#[allow(clippy::too_many_arguments)]` ×6 in ui/play signal missing config structs. S / low
 
@@ -162,5 +159,5 @@ session.
 2. **Config consolidation (#6, B1, B3, B4, G1):** presets as the one source of truth, env/CLI as overrides, generated knob table, web loads presets. This is the item most likely to prevent the next "why do these two runs differ" hunt.
 3. **Test honesty (#9, #10, D10, C2, C3):** ignore reasons, no silent skips, cheaper builder, shared test helpers. Makes green mean green and the suite faster.
 4. **Mechanical splits (#17, D1, D2, D5, D6, C4):** tests out of god files first, then module seams. Zero behaviour change, big win for agents' context budgets.
-5. **Typed boundaries (#8, #16, #18, #19, E4, E5):** shared CLI arg structs, typed `meta.extra`, derived `GameState` Hash/Eq, wire DTOs, schema consts exported to Python.
+5. **Typed boundaries (#16, #18, #19, E4, E5):** typed `meta.extra`, derived `GameState` Hash/Eq, wire DTOs, schema consts exported to Python.
 6. **Long tail:** `train_loop.sh` rewrite (#12 L), launcher config files (#13), engine API cleanups (C5–C11), Python `bbtools`/`bbnn.server` (F6, F9).

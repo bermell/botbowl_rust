@@ -463,6 +463,8 @@ dependencies = [
  "botbowl-engine",
  "botbowl-mcts",
  "botbowl-nn",
+ "botbowl-play",
+ "clap",
  "postcard",
  "rand 0.8.6",
  "rand_chacha 0.3.1",

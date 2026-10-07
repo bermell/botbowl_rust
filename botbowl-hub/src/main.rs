@@ -2,21 +2,21 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use botbowl_curriculum::lecture::Difficulty;
 use botbowl_hub::api::{
     BotReq, EvalJobRequest, GenerateJobRequest, HubStatus, JobKind, JobRequest, JobState, JobStatus, RungReq, ShardReq,
     Submitted,
 };
 use botbowl_hub::http::request;
 use botbowl_hub::{Hub, HubConfig};
-use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, SizeDist};
-use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
-use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, resolve_puct, CandidateBot};
+use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig};
+use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, CandidateBot};
+use botbowl_play::cli_args::{vs_rung_label, DatasetArgs, EvalArgs};
 use botbowl_play::drives::{drive_rung_name, DriveRung, PositionSet};
 use botbowl_play::eval::rung_name;
-use botbowl_play::generate::{Exploration, GenMode, RandomStartBias};
+use botbowl_play::generate::Exploration;
 
 #[derive(Parser, Debug)]
 #[command(name = "botbowl-hub", about = "Job queue for distributed generation/eval (plan 041)")]
@@ -223,198 +223,53 @@ enum JobCommand {
     Generate(GenerateJobArgs),
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum, Default)]
-enum CliGenMode {
-    #[default]
-    SelfPlay,
-    Curriculum,
-    RandomStart,
-}
-
-impl From<CliGenMode> for GenMode {
-    fn from(m: CliGenMode) -> Self {
-        match m {
-            CliGenMode::SelfPlay => GenMode::SelfPlay,
-            CliGenMode::Curriculum => GenMode::Curriculum,
-            CliGenMode::RandomStart => GenMode::RandomStart,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum, Default)]
-enum CliDifficulty {
-    #[default]
-    Easy,
-    Medium,
-    Hard,
-}
-
-impl From<CliDifficulty> for Difficulty {
-    fn from(d: CliDifficulty) -> Self {
-        match d {
-            CliDifficulty::Easy => Difficulty::Easy,
-            CliDifficulty::Medium => Difficulty::Medium,
-            CliDifficulty::Hard => Difficulty::Hard,
-        }
-    }
-}
-
-/// `botbowl-ui dataset` flag-for-flag, except that one job writes several
-/// shards: `--out-dir D --shards "0 1 2"` writes `D/shard0.jsonl` .. with
-/// shard `K` seeded at `seed_base + K * shard_seed_stride`, which is the
-/// `SEED_BASE + G*1e6 + K*1e5` layout `train_loop.sh` has always used.
-/// `--heuristic-shards` names shards that ignore `--evaluator/--model`
-/// (the loop's heuristic hedge). `--out FILE` is the single-shard form.
+/// `botbowl-ui dataset` flag-for-flag (the same [`DatasetArgs`], flattened), except that one job
+/// writes several shards: `--out-dir D --shards "0 1 2"` writes `D/shard0.jsonl` .. with shard `K`
+/// seeded at `--seed-base + K * --shard-seed-stride` (`--seed-base` is `--seed`'s hub spelling),
+/// which is the `SEED_BASE + G*1e6 + K*1e5` layout `train_loop.sh` has always used.
+/// `--heuristic-shards` names shards that ignore `--evaluator/--model` (the loop's heuristic
+/// hedge). `--out FILE` is the single-shard form. `--parallel-games` and `--nn-server` are refused:
+/// workers size themselves and own their sidecar.
 #[derive(Args, Debug)]
 struct GenerateJobArgs {
     #[command(flatten)]
     client: ClientArgs,
-    #[arg(long, value_enum, default_value_t = CliGenMode::SelfPlay)]
-    mode: CliGenMode,
     /// Directory for `shard<K>.jsonl`; required unless --out is given.
     #[arg(long, conflicts_with = "out")]
     out_dir: Option<PathBuf>,
-    /// One shard, this file (as `botbowl-ui dataset --out`).
-    #[arg(long)]
-    out: Option<PathBuf>,
     /// Shard indices, space- or comma-separated.
     #[arg(long, default_value = "0")]
     shards: String,
     /// Shards played with the heuristic evaluator regardless of --evaluator.
     #[arg(long, default_value = "")]
     heuristic_shards: String,
-    /// Truncate shard files at submit instead of appending.
-    #[arg(long, default_value_t = false)]
-    truncate: bool,
-    /// Games per shard.
-    #[arg(long, default_value_t = 1)]
-    games: u32,
-    /// Shard K's first seed is `seed_base + K * shard_seed_stride`; game g adds g.
-    #[arg(long, default_value_t = 0, alias = "seed")]
-    seed_base: u64,
+    /// Shard K's first seed is `--seed-base + K * shard_seed_stride`; game g adds g.
     #[arg(long, default_value_t = 100_000)]
     shard_seed_stride: u64,
-    #[arg(long, default_value_t = 1000)]
-    mcts_iters: usize,
-    #[arg(long)]
-    mcts_time_ms: Option<u64>,
-    #[arg(long, default_value_t = 1)]
-    mcts_workers: usize,
-    /// Bot preset: a TOML `MctsConfig` (plan 043). Flag-for-flag with `botbowl-ui dataset`.
-    /// Resolved **here**, on the submitter, so every worker plays the identical configuration and
-    /// the name is stamped into the corpus provenance.
-    #[arg(long)]
-    bot_config: Option<PathBuf>,
-    /// Plan 048: root Dirichlet noise weight ε in self-play, flag-for-flag with
-    /// `botbowl-ui dataset` (0.25 is the AlphaZero value). Unset
-    /// keeps the greedy generator. Generation only; eval has no such flag.
-    #[arg(long)]
-    explore_noise: Option<f32>,
-    /// Plan 048: total Dirichlet concentration α; each root action gets α / n_legal.
-    #[arg(long, default_value_t = 10.0)]
-    explore_alpha: f32,
-    /// Plan 048: each side plays its first K moves of a trajectory ∝ visits^(1/T), not best-Q.
-    #[arg(long, default_value_t = 0)]
-    explore_sample_moves: u32,
-    /// Plan 048: the sampling temperature T for `--explore-sample-moves`.
-    #[arg(long, default_value_t = 1.0)]
-    explore_temperature: f32,
-    #[arg(long, default_value_t = 100_000)]
-    max_steps: u32,
-    /// (curriculum mode) Lecture name.
-    #[arg(long)]
-    lecture: Option<String>,
-    #[arg(long, value_enum, default_value_t = CliDifficulty::Easy)]
-    difficulty: CliDifficulty,
-    // Random-start placement biases; unset = `RandomStartBias::default()`,
-    // the same numbers `botbowl-ui dataset` defaults to.
-    #[arg(long)]
-    ball_distance: Option<f32>,
-    #[arg(long)]
-    front_line: Option<f32>,
-    #[arg(long)]
-    mark_teammate: Option<f32>,
-    #[arg(long)]
-    mark_opponent: Option<f32>,
-    #[arg(long)]
-    own_side: Option<f32>,
-    #[arg(long)]
-    temperature: Option<f32>,
-    #[arg(long)]
-    temperature2: Option<f32>,
-    #[arg(long)]
-    carried_prob: Option<f32>,
-    #[arg(long)]
-    line_fraction: Option<f32>,
-    #[arg(long)]
-    pocket_fraction: Option<f32>,
-    #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
-    evaluator: CliEvaluator,
-    /// ONNX path; stamped into the corpus provenance exactly as written.
-    #[arg(long)]
-    model: Option<String>,
-    /// (random-start) Play the drive after a score too, as a second record (plan 047).
-    #[arg(long, default_value_t = false)]
-    next_drive: bool,
-    // Plan 042 board-size distribution, flag-for-flag `botbowl-ui dataset`.
-    /// `12x5,14x7:3,16x9/6` — playable boards (optional `/T`, `:weight`).
-    #[arg(long)]
-    board_sizes: Option<String>,
-    #[arg(long, default_value_t = DEFAULT_CELLS_PER_PLAYER)]
-    cells_per_player: f64,
-    /// Centred distribution: the playable area to centre on.
-    #[arg(long, conflicts_with = "board_sizes")]
-    size_centre: Option<f64>,
-    #[arg(long, default_value_t = 0.3)]
-    size_temperature: f64,
-    #[arg(long, default_value_t = 0.2)]
-    size_floor: f64,
-    #[arg(long, default_value = "1.5-2.8")]
-    size_aspect: String,
-    #[arg(long)]
-    size_max_area: Option<f64>,
-    /// Smallest playable area the centred grid enumerates (plan 042 E0).
-    #[arg(long)]
-    size_min_area: Option<f64>,
+    #[command(flatten)]
+    ds: DatasetArgs,
     /// Games per task handed to a worker.
     #[arg(long, default_value_t = 4)]
     batch: u16,
     /// Block until the job finishes; exit nonzero if it failed.
     #[arg(long, default_value_t = false)]
     wait: bool,
-    /// Accepted and ignored (the hub sizes workers, not jobs).
-    #[arg(long, hide = true)]
-    parallel_games: Option<u32>,
-    /// Accepted and ignored (workers own their sidecar).
-    #[arg(long, hide = true)]
-    nn_server: Option<String>,
 }
 
-/// Same resolution as `botbowl-ui`'s `SizeArgs::to_dist`.
-fn size_dist_of(a: &GenerateJobArgs) -> Result<Option<SizeDist>, String> {
-    if let Some(list) = &a.board_sizes {
-        return SizeDist::parse_list(list, a.cells_per_player)
-            .map(Some)
-            .map_err(|e| format!("--board-sizes: {e}"));
+/// Whether `id` was typed on the command line (not a default). How the hub tells a process-local
+/// `botbowl-ui` flag it cannot honour, or `--out` given vs defaulted, from the shared struct.
+fn given(m: &ArgMatches, id: &str) -> bool {
+    matches!(m.value_source(id), Some(ValueSource::CommandLine))
+}
+
+/// Refuse the shared flags a hub job cannot honour, naming where they belong.
+fn refuse_local_flags(m: &ArgMatches, ids: &[(&str, &str)]) -> Result<(), String> {
+    for (id, why) in ids {
+        if given(m, id) {
+            return Err(format!("--{} is not a hub job flag: {why}", id.replace('_', "-")));
+        }
     }
-    let Some(centre) = a.size_centre else { return Ok(None) };
-    let (lo, hi) = a
-        .size_aspect
-        .split_once('-')
-        .and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)))
-        .ok_or_else(|| format!("--size-aspect: expected `min-max`, got {:?}", a.size_aspect))?;
-    SizeDist::centred(&CentredSpec {
-        centre_area: centre,
-        temperature: a.size_temperature,
-        floor: a.size_floor,
-        aspect_min: lo,
-        aspect_max: hi,
-        cells_per_player: a.cells_per_player,
-        min_area: a.size_min_area,
-        max_area: a.size_max_area,
-    })
-    .map(Some)
-    .map_err(|e| format!("--size-centre: {e}"))
+    Ok(())
 }
 
 fn parse_shards(s: &str) -> Result<Vec<u32>, String> {
@@ -424,41 +279,40 @@ fn parse_shards(s: &str) -> Result<Vec<u32>, String> {
         .collect()
 }
 
-fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, String> {
-    let budget = match a.mcts_time_ms {
+fn build_generate_request(a: &GenerateJobArgs, m: &ArgMatches) -> Result<GenerateJobRequest, String> {
+    refuse_local_flags(
+        m,
+        &[
+            (
+                "parallel_games",
+                "workers size themselves (botbowl-worker --parallel-games)",
+            ),
+            ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
+        ],
+    )?;
+    let ds = &a.ds;
+    let budget = match ds.mcts_time_ms {
         Some(ms) => botbowl_mcts::SearchBudget::Time(Duration::from_millis(ms)),
-        None => botbowl_mcts::SearchBudget::Iterations(a.mcts_iters),
+        None => botbowl_mcts::SearchBudget::Iterations(ds.mcts_iters),
     };
-    let d = RandomStartBias::default();
-    let bias = RandomStartBias {
-        ball_distance: a.ball_distance.unwrap_or(d.ball_distance),
-        front_line: a.front_line.unwrap_or(d.front_line),
-        mark_teammate: a.mark_teammate.unwrap_or(d.mark_teammate),
-        mark_opponent: a.mark_opponent.unwrap_or(d.mark_opponent),
-        own_side: a.own_side.unwrap_or(d.own_side),
-        temperature: a.temperature.unwrap_or(d.temperature),
-        temperature2: a.temperature2.unwrap_or(d.temperature2),
-        carried_prob: a.carried_prob.unwrap_or(d.carried_prob),
-        line_fraction: a.line_fraction.unwrap_or(d.line_fraction),
-        pocket_fraction: a.pocket_fraction.unwrap_or(d.pocket_fraction),
-    };
-    let evaluator = Evaluator::from(a.evaluator);
-    if evaluator.needs_model() && a.model.is_none() {
+    let bias = ds.bias.to_bias();
+    let evaluator = Evaluator::from(ds.evaluator);
+    if evaluator.needs_model() && ds.model.is_none() {
         return Err("--evaluator nn/nn-value requires --model PATH".into());
     }
     // Resolved on the submitter: a preset must describe the games, not the machine that happened
     // to play them.
-    let preset = a
+    let preset = ds
         .bot_config
         .as_deref()
         .map(load_mcts_config)
         .transpose()
         .map_err(|e| e.to_string())?;
     let base = GenerateConfig {
-        mode: a.mode.into(),
+        mode: ds.mode.into(),
         search: SearchConfig {
             budget,
-            workers: a.mcts_workers,
+            workers: ds.mcts_workers,
             // `dataset` leaves these `None`, meaning "the bot's env-driven default"; keep that,
             // because `candidate_label`/the provenance label read these fields and a `Some` here
             // would change every corpus label.
@@ -474,19 +328,19 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         .pinned_to_env(),
         config_name: preset.as_ref().map(|p| p.name.clone()),
         exploration: Exploration::from_flags(
-            a.explore_noise,
-            a.explore_alpha,
-            a.explore_sample_moves,
-            a.explore_temperature,
+            ds.explore_noise,
+            ds.explore_alpha,
+            ds.explore_sample_moves,
+            ds.explore_temperature,
         ),
         evaluator,
-        model: a.model.clone(),
-        max_steps: a.max_steps,
-        lecture: a.lecture.clone(),
-        difficulty: a.difficulty.into(),
+        model: ds.model.clone(),
+        max_steps: ds.max_steps,
+        lecture: ds.lecture.clone(),
+        difficulty: ds.difficulty.into(),
         bias,
-        board_sizes: size_dist_of(a)?,
-        next_drive: a.next_drive,
+        board_sizes: ds.sizes.to_dist()?,
+        next_drive: ds.next_drive,
     };
     if let Some(d) = &base.board_sizes {
         eprintln!(
@@ -504,17 +358,21 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
         model: None,
         ..base.clone()
     };
-    let model_path = a.model.as_ref().map(|m| abs(&PathBuf::from(m)));
+    let model_path = ds.model.as_ref().map(|m| abs(&PathBuf::from(m)));
     let mut shards = Vec::new();
-    if let Some(out) = &a.out {
+    // `--out` has `dataset`'s default (`dataset.jsonl`) in the shared struct; a job writes it only
+    // when it was typed, as before.
+    if a.out_dir.is_none() && given(m, "out") {
+        let out = PathBuf::from(&ds.out);
+        let out = &out;
         shards.push(ShardReq {
             name: out
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "out".into()),
             out: abs(out),
-            seed: a.seed_base,
-            games: a.games,
+            seed: ds.seed,
+            games: ds.games,
             cfg: base.clone(),
             model_path: model_path.clone(),
         });
@@ -535,8 +393,8 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
             shards.push(ShardReq {
                 name: format!("shard{k}"),
                 out: abs(&dir.join(format!("shard{k}.jsonl"))),
-                seed: a.seed_base + k as u64 * a.shard_seed_stride,
-                games: a.games,
+                seed: ds.seed + k as u64 * a.shard_seed_stride,
+                games: ds.games,
                 cfg: if is_heur { heuristic.clone() } else { base.clone() },
                 model_path: if is_heur { None } else { model_path.clone() },
             });
@@ -544,152 +402,29 @@ fn build_generate_request(a: &GenerateJobArgs) -> Result<GenerateJobRequest, Str
     }
     Ok(GenerateJobRequest {
         shards,
-        truncate: a.truncate,
+        truncate: ds.truncate,
         batch: a.batch,
         label: a.client.label.clone(),
     })
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum, Default)]
-enum CliEvaluator {
-    #[default]
-    Heuristic,
-    PureTd,
-    Nn,
-    NnValue,
-}
-
-impl From<CliEvaluator> for Evaluator {
-    fn from(e: CliEvaluator) -> Self {
-        match e {
-            CliEvaluator::Heuristic => Evaluator::Heuristic,
-            CliEvaluator::PureTd => Evaluator::PureTd,
-            CliEvaluator::Nn => Evaluator::Nn,
-            CliEvaluator::NnValue => Evaluator::NnValue,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum, Default)]
-enum CliCandidateBot {
-    #[default]
-    Mcts,
-    Scripted,
-    Random,
-}
-
-impl From<CliCandidateBot> for CandidateBot {
-    fn from(c: CliCandidateBot) -> Self {
-        match c {
-            CliCandidateBot::Mcts => CandidateBot::Mcts,
-            CliCandidateBot::Scripted => CandidateBot::Scripted,
-            CliCandidateBot::Random => CandidateBot::Random,
-        }
-    }
-}
-
-/// Flag-for-flag the ladder half of `botbowl-ui eval`, so `train_loop.sh`
-/// swaps the binary name and nothing else. Lecture flags are accepted and
-/// ignored: the battery does not run on the hub.
+/// The ladder half of `botbowl-ui eval`, flag for flag (the same [`EvalArgs`], flattened), so
+/// `train_loop.sh` swaps the binary name and nothing else. `--out` and `--per-game-out` are
+/// required. The process-local flags (`--parallel-games`, `--nn-server`, `--trials`,
+/// `--skip-ladder`, `--trace-reuse`) are refused; `--skip-lectures` is accepted, since the hub
+/// never runs the lecture battery.
 #[derive(Args, Debug)]
 struct EvalJobArgs {
     #[command(flatten)]
     client: ClientArgs,
-    #[arg(long, value_enum, default_value_t = CliEvaluator::Heuristic)]
-    evaluator: CliEvaluator,
-    #[arg(long)]
-    model: Option<PathBuf>,
-    #[arg(long, default_value_t = 1000)]
-    mcts_iters: usize,
-    #[arg(long, default_value_t = 1)]
-    mcts_workers: usize,
-    #[arg(long, default_value_t = 50)]
-    games: u32,
-    #[arg(long)]
-    vs_games: Option<u32>,
-    #[arg(long, default_value_t = 0)]
-    seed: u64,
-    #[arg(long, default_value_t = 100_000)]
-    max_steps: u32,
-    #[arg(long)]
-    opponent_iters: Option<usize>,
-    /// Plan 051: stop a rung once a sequential test on its mirrored pairs decides,
-    /// `S0:S1[:ALPHA:BETA]`. Flag-for-flag with `botbowl-ui eval --sprt`.
-    #[arg(long, value_parser = botbowl_play::stats::Sprt::parse)]
-    sprt: Option<botbowl_play::stats::Sprt>,
-    /// Plan 051: play every rung as paired drives from these position sets (comma-separated),
-    /// one rung per set on its own board. `--board-sizes` is ignored. Flag-for-flag with
-    /// `botbowl-ui eval --positions`.
-    #[arg(long)]
-    positions: Option<String>,
-    /// Accepted for CLI compatibility; the hub never runs lectures.
-    #[arg(long, default_value_t = true, hide = true)]
-    skip_lectures: bool,
-    #[arg(long, default_value_t = 100, hide = true)]
-    trials: u32,
-    #[arg(long, value_enum)]
-    vs_evaluator: Option<CliEvaluator>,
-    #[arg(long)]
-    vs_model: Option<PathBuf>,
-    /// Candidate bot preset (plan 043). Flag-for-flag with `botbowl-ui eval`.
-    #[arg(
-        long,
-        conflicts_with_all = ["puct_mode", "puct_c", "horizon_turns", "fpu_reduction"]
-    )]
-    bot_config: Option<PathBuf>,
-    /// Opponent bot preset; defaults to the candidate's.
-    #[arg(
-        long,
-        conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_fpu_reduction"]
-    )]
-    vs_config: Option<PathBuf>,
-    /// Unset (and no `--puct-c`): the hub's `BLOOD_MCTS_PUCT_*`, else raw, as for `botbowl-ui eval`.
-    #[arg(long)]
-    puct_mode: Option<String>,
-    #[arg(long)]
-    puct_c: Option<f32>,
-    #[arg(long)]
-    vs_puct_mode: Option<String>,
-    #[arg(long)]
-    vs_puct_c: Option<f32>,
-    #[arg(long, default_value_t = 1)]
-    horizon_turns: u8,
-    #[arg(long)]
-    vs_horizon_turns: Option<u8>,
-    #[arg(long, default_value_t = 0.0)]
-    fpu_reduction: f32,
-    #[arg(long)]
-    vs_fpu_reduction: Option<f32>,
-    #[arg(long, default_value_t = false)]
-    skip_fixed_rungs: bool,
-    #[arg(long, default_value = "random,scripted,mcts-heuristic")]
-    rungs: String,
-    #[arg(long, value_enum, default_value_t = CliCandidateBot::Mcts)]
-    candidate_bot: CliCandidateBot,
-    /// `report.json`.
-    #[arg(long)]
-    out: PathBuf,
-    /// One JSON line per game.
-    #[arg(long)]
-    per_game_out: PathBuf,
-    /// Plan 042: playable boards to run every rung on (`12x5,14x7,16x9`);
-    /// each rung becomes `<opponent>@<board>`. Unset = the env board.
-    #[arg(long)]
-    board_sizes: Option<String>,
-    #[arg(long, default_value_t = DEFAULT_CELLS_PER_PLAYER)]
-    cells_per_player: f64,
+    #[command(flatten)]
+    ev: EvalArgs,
     /// Games per task handed to a worker.
     #[arg(long, default_value_t = 4)]
     batch: u16,
     /// Block until the job finishes; exit nonzero if it failed.
     #[arg(long, default_value_t = false)]
     wait: bool,
-    /// Accepted and ignored (the hub sizes workers, not jobs).
-    #[arg(long, hide = true)]
-    parallel_games: Option<u32>,
-    /// Accepted and ignored (workers own their sidecar).
-    #[arg(long, hide = true)]
-    nn_server: Option<String>,
 }
 
 fn abs(p: &PathBuf) -> PathBuf {
@@ -700,7 +435,26 @@ fn abs(p: &PathBuf) -> PathBuf {
     }
 }
 
-fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
+fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, String> {
+    refuse_local_flags(
+        m,
+        &[
+            (
+                "parallel_games",
+                "workers size themselves (botbowl-worker --parallel-games)",
+            ),
+            ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
+            ("trials", "the hub never runs the lecture battery"),
+            ("skip_ladder", "a hub eval job is the ladder"),
+            (
+                "trace_reuse",
+                "not collected from workers; run `botbowl-ui eval --trace-reuse`",
+            ),
+        ],
+    )?;
+    let a = &job.ev;
+    let report_out = a.out.as_deref().ok_or("--out PATH (report.json) is required")?;
+    let per_game_out = a.per_game_out.as_deref().ok_or("--per-game-out PATH is required")?;
     let evaluator = Evaluator::from(a.evaluator);
     // Same rule as `botbowl-ui eval`: a preset replaces every per-knob field, and clap keeps the
     // two from being mixed. Unset `--vs-config` inherits the candidate's.
@@ -714,63 +468,22 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         Some(p) => Some(load_mcts_config(p).map_err(|e| e.to_string())?),
         None => cand_preset.clone(),
     };
-    let cand = SearchConfig {
-        budget: botbowl_mcts_budget(a.mcts_iters),
-        workers: a.mcts_workers,
-        puct: cand_preset
-            .is_none()
-            .then(|| resolve_puct(a.puct_mode.as_deref(), a.puct_c).map_err(|e| format!("--puct-mode: {e}")))
-            .transpose()?
-            .flatten(),
-        horizon_turns: cand_preset.is_none().then_some(a.horizon_turns),
-        fpu_reduction: cand_preset.is_none().then_some(a.fpu_reduction),
-        config: cand_preset.as_ref().map(|p| p.config),
-    }
     // Everything a search depends on is resolved here, from the hub's environment, and shipped.
     // A helper box's `BLOOD_MCTS_*` never reaches a job.
-    .pinned_to_env();
-    let opp = SearchConfig {
-        budget: botbowl_mcts_budget(a.opponent_iters.unwrap_or(a.mcts_iters)),
-        workers: a.mcts_workers,
-        puct: opp_preset
-            .is_none()
-            .then(|| {
-                resolve_puct(
-                    a.vs_puct_mode.as_deref().or(a.puct_mode.as_deref()),
-                    a.vs_puct_c.or(a.puct_c),
-                )
-                .map_err(|e| format!("--vs-puct-mode: {e}"))
-            })
-            .transpose()?
-            .flatten(),
-        horizon_turns: opp_preset
-            .is_none()
-            .then(|| a.vs_horizon_turns.unwrap_or(a.horizon_turns)),
-        fpu_reduction: opp_preset
-            .is_none()
-            .then(|| a.vs_fpu_reduction.unwrap_or(a.fpu_reduction)),
-        config: opp_preset.as_ref().map(|p| p.config),
-    }
-    .pinned_to_env();
-    let model_str = a.model.as_ref().map(|p| p.to_string_lossy().into_owned());
+    let cand = a.candidate_search(cand_preset.as_ref())?.pinned_to_env();
+    let opp = a.opponent_search(opp_preset.as_ref())?.pinned_to_env();
+    let model_str = a.model.clone();
     let candidate = match CandidateBot::from(a.candidate_bot) {
         CandidateBot::Mcts => BotReq::Mcts {
             search: cand,
             evaluator,
-            model: a.model.as_ref().map(abs),
+            model: a.model.as_ref().map(|p| abs(&PathBuf::from(p))),
         },
         CandidateBot::Scripted => BotReq::Scripted,
         CandidateBot::Random => BotReq::Random,
     };
     // Plan 042: one rung set per board; `[None]` is the env board.
-    let boards: Vec<Option<BoardDims>> = match &a.board_sizes {
-        None => vec![None],
-        Some(list) => SizeDist::parse_list(list, a.cells_per_player)
-            .map_err(|e| format!("--board-sizes: {e}"))?
-            .boards()
-            .map(Some)
-            .collect(),
-    };
+    let boards: Vec<Option<BoardDims>> = a.sizes.boards()?;
     // Plan 051: `--positions` replaces the boards with one drive rung per position set.
     let venues: Vec<(Option<BoardDims>, Option<DriveRung>)> = match a.positions.as_deref() {
         Some(list) => list
@@ -819,41 +532,8 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         // including the preset branch, where the per-knob fields are deliberately `None` and the
         // configuration *name* is the difference worth printing. Unwrapping them here used to
         // panic the submitter for every `--bot-config` + `--vs-evaluator` job.
-        let vs_model = a.vs_model.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let base = evaluator_label(vs, vs_model.as_deref());
-        // Four cases, none of them a panic. `--vs-config` alone (the opponent named, the
-        // candidate on flags) is reachable and used to be the same unwrap.
-        let label = match (&opp_preset, &cand_preset) {
-            (Some(o), Some(c)) if o.name == c.name => format!("vs:{base} [{}]", o.name),
-            (Some(o), Some(c)) => format!("vs:{base} [{} v {}]", o.name, c.name),
-            (Some(o), None) => format!("vs:{base} [{o_name} v flags]", o_name = o.name),
-            (None, Some(c)) => format!("vs:{base} [flags v {c_name}]", c_name = c.name),
-            (None, None) => {
-                let (opp_puct, opp_h, opp_f) = (
-                    opp.effective_puct(),
-                    opp.horizon_turns.expect("set when no preset is named"),
-                    opp.fpu_reduction.expect("set when no preset is named"),
-                );
-                let (cand_h, cand_f) = (
-                    cand.horizon_turns.expect("set when no preset is named"),
-                    cand.fpu_reduction.expect("set when no preset is named"),
-                );
-                format!(
-                    "vs:{base} [{}{}{}]",
-                    opp_puct.label(),
-                    if opp_h != cand_h {
-                        format!(" horizon={opp_h}v{cand_h}")
-                    } else {
-                        String::new()
-                    },
-                    if opp_f != cand_f {
-                        format!(" fpu_k={opp_f}v{cand_f}")
-                    } else {
-                        String::new()
-                    },
-                )
-            }
-        };
+        let base = evaluator_label(vs, a.vs_model.as_deref());
+        let label = vs_rung_label(&base, cand_preset.as_ref(), opp_preset.as_ref(), &cand, &opp);
         for (board, drives) in &venues {
             rungs.push(RungReq {
                 name: venue_name(&label, *board, drives.as_ref()),
@@ -861,7 +541,7 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
                 opponent: BotReq::Mcts {
                     search: opp,
                     evaluator: vs,
-                    model: a.vs_model.as_ref().map(abs),
+                    model: a.vs_model.as_ref().map(|p| abs(&PathBuf::from(p))),
                 },
                 board: *board,
                 drives: drives.clone(),
@@ -886,11 +566,11 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         rungs,
         seed: a.seed,
         max_steps: a.max_steps,
-        per_game_out: abs(&a.per_game_out),
-        report_out: abs(&a.out),
-        batch: a.batch,
+        per_game_out: abs(&PathBuf::from(per_game_out)),
+        report_out: abs(&PathBuf::from(report_out)),
+        batch: job.batch,
         sprt: a.sprt,
-        label: a.client.label.clone(),
+        label: job.client.label.clone(),
     })
 }
 
@@ -919,10 +599,6 @@ fn print_generate_lines(s: &JobStatus) {
         botbowl_data::git_commit(),
         if botbowl_data::git_dirty() { "-dirty" } else { "" },
     );
-}
-
-fn botbowl_mcts_budget(iters: usize) -> botbowl_mcts::SearchBudget {
-    botbowl_mcts::SearchBudget::Iterations(iters)
 }
 
 fn token_path(p: &Option<PathBuf>) -> PathBuf {
@@ -982,7 +658,13 @@ fn print_report_lines(s: &JobStatus) {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    // Parsed via `ArgMatches` so a job can tell a typed flag from a shared struct's default.
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let job_matches = matches
+        .subcommand_matches("job")
+        .and_then(|j| j.subcommand())
+        .map(|(_, m)| m.clone());
     match cli.command {
         Command::Serve(a) => {
             let token = or_create_token(&token_path(&a.token_file));
@@ -1071,7 +753,7 @@ fn main() {
         Command::Job { job } => {
             let (client, wait, req, what) = match &job {
                 JobCommand::Eval(a) => {
-                    let req = build_request(a).unwrap_or_else(|e| {
+                    let req = build_request(a, job_matches.as_ref().expect("job matches")).unwrap_or_else(|e| {
                         eprintln!("{e}");
                         std::process::exit(2)
                     });
@@ -1083,10 +765,11 @@ fn main() {
                     (a.client.clone(), a.wait, JobRequest::Eval(req), what)
                 }
                 JobCommand::Generate(a) => {
-                    let req = build_generate_request(a).unwrap_or_else(|e| {
-                        eprintln!("{e}");
-                        std::process::exit(2)
-                    });
+                    let req =
+                        build_generate_request(a, job_matches.as_ref().expect("job matches")).unwrap_or_else(|e| {
+                            eprintln!("{e}");
+                            std::process::exit(2)
+                        });
                     let what = format!(
                         "generate job: {} shard(s), {} games",
                         req.shards.len(),
@@ -1161,5 +844,194 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(name: &str) -> String {
+        format!("{}/../cfgs/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    /// Parse a `job …` command line the way `main` does, keeping the sub-matches.
+    fn job(args: &[&str]) -> Result<(JobCommand, ArgMatches), String> {
+        let argv: Vec<&str> = ["botbowl-hub", "job"].iter().chain(args).copied().collect();
+        let matches = Cli::command().try_get_matches_from(argv).map_err(|e| e.to_string())?;
+        let cli = Cli::from_arg_matches(&matches).map_err(|e| e.to_string())?;
+        let sub = matches
+            .subcommand_matches("job")
+            .unwrap()
+            .subcommand()
+            .unwrap()
+            .1
+            .clone();
+        match cli.command {
+            Command::Job { job } => Ok((job, sub)),
+            _ => unreachable!(),
+        }
+    }
+
+    fn generate(args: &[&str]) -> Result<GenerateJobRequest, String> {
+        match job(args)? {
+            (JobCommand::Generate(a), m) => build_generate_request(&a, &m),
+            _ => unreachable!(),
+        }
+    }
+
+    fn eval(args: &[&str]) -> Result<EvalJobRequest, String> {
+        match job(args)? {
+            (JobCommand::Eval(a), m) => build_request(&a, &m),
+            _ => unreachable!(),
+        }
+    }
+
+    /// `train_loop.sh`'s `generate_jobs`, flag for flag (plan 058 values).
+    #[test]
+    fn the_loops_generate_command_still_parses() {
+        let gen_cfg = cfg("gumbel16_f1000_gen.toml");
+        let req = generate(&[
+            "generate",
+            "--hub",
+            "http://127.0.0.1:13337",
+            "--token-file",
+            "/tmp/t",
+            "--mode",
+            "random-start",
+            "--games",
+            "300",
+            "--seed-base",
+            "5000000",
+            "--shard-seed-stride",
+            "100000",
+            "--mcts-iters",
+            "1000",
+            "--evaluator",
+            "nn",
+            "--model",
+            "m.onnx",
+            "--size-centre",
+            "144",
+            "--size-temperature",
+            "0.3",
+            "--size-floor",
+            "0.2",
+            "--size-max-area",
+            "144",
+            "--size-min-area",
+            "70",
+            "--next-drive",
+            "--bot-config",
+            &gen_cfg,
+            "--shards",
+            "0 1 2 3 4 5 6 7",
+            "--heuristic-shards",
+            "",
+            "--label",
+            "gen01 generate",
+            "--truncate",
+            "--out-dir",
+            "/tmp/gen01",
+            "--wait",
+        ])
+        .unwrap();
+        assert_eq!(req.shards.len(), 8);
+        assert_eq!(req.shards[3].seed, 5_000_000 + 3 * 100_000);
+        assert_eq!(req.shards[0].games, 300);
+        assert!(req.truncate);
+        assert_eq!(
+            req.shards[0].cfg.bias,
+            botbowl_play::generate::RandomStartBias::default()
+        );
+        assert!(req.shards[0].cfg.next_drive);
+        assert_eq!(req.shards[0].cfg.config_name.as_deref(), Some("gumbel16_f1000_gen"));
+    }
+
+    #[test]
+    fn a_generate_job_needs_an_out_dir_or_a_typed_out() {
+        assert!(generate(&["generate"]).unwrap_err().contains("--out-dir"));
+        let req = generate(&["generate", "--out", "/tmp/one.jsonl", "--seed", "7"]).unwrap();
+        assert_eq!(req.shards.len(), 1);
+        assert_eq!(req.shards[0].seed, 7);
+    }
+
+    #[test]
+    fn process_local_flags_are_refused_not_ignored() {
+        let e = generate(&["generate", "--out-dir", "/tmp/x", "--parallel-games", "8"]).unwrap_err();
+        assert!(e.contains("--parallel-games"), "{e}");
+        let e = generate(&["generate", "--out-dir", "/tmp/x", "--nn-server", "/tmp/s"]).unwrap_err();
+        assert!(e.contains("--nn-server"), "{e}");
+        for flag in [
+            &["--trials", "5"][..],
+            &["--parallel-games", "2"],
+            &["--nn-server", "/s"],
+            &["--skip-ladder"],
+        ] {
+            let mut args = vec!["eval", "--out", "/tmp/r.json", "--per-game-out", "/tmp/g.jsonl"];
+            args.extend_from_slice(flag);
+            let e = eval(&args).unwrap_err();
+            assert!(e.contains(flag[0]), "{e}");
+        }
+        // The hub never runs lectures, so saying so is fine.
+        eval(&[
+            "eval",
+            "--out",
+            "/tmp/r.json",
+            "--per-game-out",
+            "/tmp/g.jsonl",
+            "--skip-lectures",
+        ])
+        .unwrap();
+    }
+
+    /// `train_loop.sh`'s `eval_job` for the drives rung, minus `--positions` (it loads files).
+    #[test]
+    fn the_loops_eval_command_still_parses() {
+        let eval_cfg = cfg("gumbel16_f1000.toml");
+        let req = eval(&[
+            "eval",
+            "--hub",
+            "http://127.0.0.1:13337",
+            "--token-file",
+            "/tmp/t",
+            "--label",
+            "gen01 drives",
+            "--evaluator",
+            "nn",
+            "--mcts-iters",
+            "1000",
+            "--games",
+            "30",
+            "--bot-config",
+            &eval_cfg,
+            "--vs-config",
+            &eval_cfg,
+            "--model",
+            "m.onnx",
+            "--seed",
+            "0",
+            "--skip-fixed-rungs",
+            "--sprt",
+            "0.5:0.55",
+            "--vs-games",
+            "800",
+            "--vs-evaluator",
+            "nn",
+            "--vs-model",
+            "ref.onnx",
+            "--per-game-out",
+            "/tmp/g.jsonl",
+            "--out",
+            "/tmp/r.json",
+            "--wait",
+        ])
+        .unwrap();
+        assert_eq!(req.rungs.len(), 1);
+        assert_eq!(req.rungs[0].name, "vs:mcts(nn:ref.onnx) [gumbel16_f1000]");
+        assert_eq!(req.rungs[0].games, 800);
+        assert!(eval(&["eval", "--per-game-out", "/tmp/g.jsonl"])
+            .unwrap_err()
+            .contains("--out"));
     }
 }
