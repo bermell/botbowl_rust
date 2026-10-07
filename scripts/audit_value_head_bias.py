@@ -75,7 +75,9 @@ def kept_by_prepare(s):
     """Mirror `prepare`'s drop rule exactly, so `.npy` row i lines up with the
     i-th surviving sample of the shard.
 
-    `bin/prepare.rs` keeps a sample only when both targets exist:
+    `bin/prepare.rs` keeps a sample only when its root offered at least two
+    actions (a forced decision is skipped unless `--keep-forced`) and both
+    targets exist:
       - `targets.rs::value_target` → `None` iff `outcome_value` is null;
       - `targets.rs::policy_target(.., OneHot)` → `None` iff the root has no
         children, or (for an unsolved root) every child has zero visits. A
@@ -89,7 +91,7 @@ def kept_by_prepare(s):
     if s.get("outcome_value") is None:
         return False
     children = s["children"]
-    if not children:
+    if len(children) < 2:
         return False
     if s.get("root_solved"):
         return True

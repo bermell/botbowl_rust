@@ -169,3 +169,105 @@ fn prepare_round_trips_shapes_offsets_and_policy_sums() {
 
     std::fs::remove_dir_all(&tmp).ok();
 }
+
+/// Run `prepare` on one trajectory in a fresh temp dir; returns the dims subdir and the summary line.
+fn run_prepare(tag: &str, traj: &Trajectory, extra: &[&str]) -> (std::path::PathBuf, String) {
+    let tmp = std::env::temp_dir().join(format!("botbowl_nn_prepare_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let jsonl = tmp.join("data.jsonl");
+    let out = tmp.join("prepared");
+    {
+        let mut w = DatasetWriter::create(&jsonl).unwrap();
+        w.write(traj).unwrap();
+        w.flush().unwrap();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_prepare"))
+        .args(["--in", jsonl.to_str().unwrap(), "--out", out.to_str().unwrap()])
+        .args(extra)
+        .output()
+        .expect("run prepare");
+    assert!(output.status.success(), "prepare exited with failure");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let summary = stdout
+        .lines()
+        .find(|l| l.starts_with("prepare done"))
+        .expect("summary line")
+        .to_string();
+    let dims = traj.meta.board_dims;
+    (out.join(format!("dims_{}x{}", dims.width, dims.height)), summary)
+}
+
+fn read_manifest(subdir: &std::path::Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(subdir.join("manifest.json")).unwrap()).unwrap()
+}
+
+/// A decision with one action left after pruning teaches nothing: `prepare` skips any sample whose
+/// root had fewer than two children — the unsearched forced record `MctsBot` writes (scripted, one
+/// child) and an older searched one alike — counts them in its summary, and computes the per-drive
+/// value weight over the rows it kept. `--keep-forced` keeps them.
+#[test]
+fn prepare_skips_samples_with_fewer_than_two_children() {
+    let dims = GameStateBuilder::new_start_of_game().board_dims;
+    let end_player_turn = Action::Simple(SimpleAT::EndPlayerTurn);
+    // `MctsBot`'s forced record: unsearched, the one post-pruning action as the only child.
+    let mut forced = make_sample(
+        vec![ChildStat {
+            action: end_player_turn,
+            visits: 1,
+            q: None,
+            prior: None,
+            solved: false,
+            terminal: false,
+        }],
+        false,
+    );
+    forced.scripted = true;
+    forced.root_visits = 1;
+    forced.root_value = None;
+    // A forced decision from before the shortcut: searched, one child.
+    let searched_forced = make_sample(vec![child(end_player_turn, 50, 10, false)], false);
+    let choice = make_sample(
+        vec![
+            child(Action::Positional(PosAT::Block, Position::new((3, 3))), 40, 200, false),
+            child(Action::Simple(SimpleAT::EndTurn), 5, 0, false),
+        ],
+        false,
+    );
+    let traj = Trajectory::new(
+        TrajectoryMeta::new("test", dims).with_bots("mcts", "mcts"),
+        vec![forced, choice, searched_forced],
+        Outcome {
+            home_score: 1,
+            away_score: 0,
+            winner: Some(Team::Home),
+            game_over: true,
+            z_home: 1.0,
+            lecture_status: None,
+        },
+    );
+
+    let (subdir, summary) = run_prepare("forced", &traj, &[]);
+    assert!(summary.contains("kept 1 "), "{summary}");
+    assert!(summary.contains("2 with fewer than two actions"), "{summary}");
+    let offsets = npy::read(subdir.join("action_offsets.npy")).unwrap().as_i64();
+    assert_eq!(offsets, vec![0, 2], "only the two-action decision is kept");
+    // The drive's one kept row carries the drive's whole value weight.
+    assert_eq!(npy::read(subdir.join("weight.npy")).unwrap().as_f32(), vec![1.0]);
+    let manifest = read_manifest(&subdir);
+    assert_eq!(manifest["num_samples"], 1);
+    assert_eq!(manifest["skip_forced"], true);
+    std::fs::remove_dir_all(subdir.parent().unwrap().parent().unwrap()).ok();
+
+    let (subdir, summary) = run_prepare("keep_forced", &traj, &["--keep-forced"]);
+    assert!(summary.contains("kept 3 "), "{summary}");
+    assert!(summary.contains("0 with fewer than two actions"), "{summary}");
+    let offsets = npy::read(subdir.join("action_offsets.npy")).unwrap().as_i64();
+    assert_eq!(offsets, vec![0, 1, 3, 4]);
+    assert_eq!(
+        npy::read(subdir.join("weight.npy")).unwrap().as_f32(),
+        vec![1.0 / 3.0; 3]
+    );
+    assert_eq!(read_manifest(&subdir)["skip_forced"], false);
+    std::fs::remove_dir_all(subdir.parent().unwrap().parent().unwrap()).ok();
+}

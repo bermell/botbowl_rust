@@ -160,6 +160,12 @@ struct Args {
     /// everything the rest do.
     #[arg(long)]
     dedup: bool,
+    /// Keep samples whose recorded root offered fewer than two actions. By default they are
+    /// dropped: a forced decision (one action left after pruning, which `MctsBot` plays without
+    /// searching) has nothing for the policy to learn, and it is not trained on at all. The
+    /// corpus still records it, because replay rebuilds a trajectory from every played action.
+    #[arg(long = "keep-forced")]
+    keep_forced: bool,
 }
 
 /// One board shape's open output files, plus the little that must stay in RAM.
@@ -274,6 +280,7 @@ fn main() {
     let mut total_skipped_policy = 0usize;
     let mut total_skipped_value = 0usize;
     let mut total_below_min = 0usize;
+    let mut total_forced = 0usize;
     let mut total_dupes = 0usize;
     // Plan 036 W5. A 128-bit digest of the `(spatial, global)` bytes, not the
     // bytes themselves: a 3-generation window is ~350k rows x ~6 KB, which is
@@ -298,6 +305,12 @@ fn main() {
             let td_values = args.value_td_lambda.map(|l| value_targets_td_lambda(&traj.samples, l));
             for (si, sample) in traj.samples.iter().enumerate() {
                 total_read += 1;
+                // `children` is the root's post-pruning action set (searched or forced alike), so
+                // fewer than two means the decision had no choice to learn.
+                if !args.keep_forced && sample.children.len() < 2 {
+                    total_forced += 1;
+                    continue;
+                }
                 if sample.root_visits < args.min_root_visits && !sample.scripted {
                     total_below_min += 1;
                     continue;
@@ -448,6 +461,9 @@ fn main() {
             "solved_root_policy": format!("{solved_root:?}"),
             "policy_target": format!("{kind:?}"),
             "min_root_visits": args.min_root_visits,
+            // Samples whose root offered fewer than two actions were dropped (`--keep-forced`
+            // keeps them).
+            "skip_forced": !args.keep_forced,
             "num_samples": n,
             "num_actions": m,
         });
@@ -465,7 +481,8 @@ fn main() {
 
     println!(
         "prepare done: read {total_read} samples, kept {total_kept} \
-         (dropped {total_below_min} below min-root-visits, {total_skipped_policy} without a policy target, \
+         (dropped {total_forced} with fewer than two actions, {total_below_min} below min-root-visits, \
+         {total_skipped_policy} without a policy target, \
          {total_skipped_value} without a value target, {total_dupes} exact duplicates) \
          across {group_count} board-dims group(s)"
     );
