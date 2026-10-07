@@ -9,13 +9,14 @@
 use std::collections::HashMap;
 
 use botbowl_web_proto::dice::{BlockDice, RollResult};
+use botbowl_web_proto::log::{LogEntry, LogKind};
 use botbowl_web_proto::msg::{ClientMsg, StartFrom, StepMode};
 use botbowl_web_proto::search::SearchEdge;
-use botbowl_web_proto::view::{BallView, SquareKind, SquareView, ViewState};
+use botbowl_web_proto::view::{BallView, BlockView, SquareKind, SquareView, ViewState};
 use botbowl_web_proto::{Action, Position, TeamType};
 use leptos::prelude::*;
 
-use crate::state::{click_target, App, Click, Menu, Overlay};
+use crate::state::{click_target, App, Click, Menu, Overlay, TzMode};
 use crate::ws;
 
 #[component]
@@ -56,9 +57,10 @@ fn Scoreboard() -> impl IntoView {
             };
             let drive = app.spec.get().is_some_and(|g| g.start.is_drive());
             let (home_human, away_human) = (v.is_human(TeamType::Home), v.is_human(TeamType::Away));
+            let acting = v.to_act;
             view! {
                 <div class="scoreboard">
-                    <div class="team home" class:you=home_human>
+                    <div class="team home" class:you=home_human class:acting=acting == Some(TeamType::Home)>
                         <span class="name">{format!("Home · {}", team(TeamType::Home))}</span>
                         <span class="seat">{seat(TeamType::Home)}</span>
                         <span class="score">{s.home_score}</span>
@@ -84,7 +86,7 @@ fn Scoreboard() -> impl IntoView {
                             {format!("turn {} of the half{}", turn(s.team_turn), if drive { " · random drive" } else { "" })}
                         </span>
                     </div>
-                    <div class="team away" class:you=away_human>
+                    <div class="team away" class:you=away_human class:acting=acting == Some(TeamType::Away)>
                         <span class="name">{format!("Away · {}", team(TeamType::Away))}</span>
                         <span class="seat">{seat(TeamType::Away)}</span>
                         <span class="score">{s.away_score}</span>
@@ -191,9 +193,17 @@ fn Board() -> impl IntoView {
                 // Whose tackle zones to paint, resolved once for the whole
                 // board: `threat_team` scans every square, so asking it per
                 // square would make drawing quadratic.
-                let threat = view
-                    .threat_team()
-                    .or_else(|| (overlay == Overlay::TackleZones).then(|| view.mover().other()));
+                let threat = match app.tz.get() {
+                    TzMode::Auto => view.threat_team(),
+                    TzMode::Always => Some(view.mover().other()),
+                    TzMode::Off => None,
+                };
+                let marks = Marks {
+                    route: &route,
+                    trail: &view.trail,
+                    pending: view.pending_action.and_then(|a| a.position()),
+                };
+                let rows = view.dims.height as usize;
                 Some(
                     view! {
                         <div class="pitch" style=format!("--cols: {cols}; --sq: {sq}px")>
@@ -201,9 +211,10 @@ fn Board() -> impl IntoView {
                                 .squares
                                 .iter()
                                 .map(|square_view| {
-                                    square(&view, square_view, &route, &heat, overlay, my_turn, threat)
+                                    square(&view, square_view, &marks, &heat, overlay, my_turn, threat)
                                 })
                                 .collect_view()}
+                            {view.block.map(|b| block_arrow(b, sq, cols, rows))}
                         </div>
                     },
                 )
@@ -214,10 +225,54 @@ fn Board() -> impl IntoView {
     }
 }
 
+/// Per-square marks that come from outside the square itself.
+struct Marks<'a> {
+    /// The hovered move's route.
+    route: &'a [Position],
+    /// Where the active player has been this activation.
+    trail: &'a [Position],
+    /// The square a held bot move targets.
+    pending: Option<Position>,
+}
+
+/// The attacker → defender arrow of a block in progress, as an SVG laid over
+/// the grid. Drawn from square centre to square centre and stopped short of
+/// the defender's centre so the head sits on the edge of their square rather
+/// than on their face.
+fn block_arrow(block: BlockView, sq: usize, cols: usize, rows: usize) -> AnyView {
+    let centre = |p: Position| ((p.x as f32 + 0.5) * sq as f32, (p.y as f32 + 0.5) * sq as f32);
+    let (x1, y1) = centre(block.attacker);
+    let (x2, y2) = centre(block.defender);
+    let (dx, dy) = (x2 - x1, y2 - y1);
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let pull = sq as f32 * 0.42;
+    let (ex, ey) = (x2 - dx / len * pull, y2 - dy / len * pull);
+    let (sx, sy) = (x1 + dx / len * pull * 0.6, y1 + dy / len * pull * 0.6);
+    let title = format!("block, {} dice", block.dice.signed());
+    view! {
+        <svg
+            class="arrows"
+            width=(cols * sq).to_string()
+            height=(rows * sq).to_string()
+            viewBox=format!("0 0 {} {}", cols * sq, rows * sq)
+        >
+            <title>{title}</title>
+            <defs>
+                <marker id="blockhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" class="head"></path>
+                </marker>
+            </defs>
+            <line class="shadow" x1=sx y1=sy x2=ex y2=ey></line>
+            <line class="shaft" x1=sx y1=sy x2=ex y2=ey marker-end="url(#blockhead)"></line>
+        </svg>
+    }
+    .into_any()
+}
+
 fn square(
     view: &ViewState,
     sq: &SquareView,
-    route: &[Position],
+    marks: &Marks<'_>,
     heat: &HashMap<Position, f32>,
     overlay: Overlay,
     my_turn: bool,
@@ -226,7 +281,9 @@ fn square(
     let app = expect_context::<App>();
     let pos = sq.pos;
     let actionable = my_turn && !sq.actions.is_empty();
-    let on_route = route.contains(&pos);
+    let on_route = marks.route.contains(&pos);
+    let on_trail = marks.trail.contains(&pos);
+    let pending_target = marks.pending == Some(pos);
     // Tackle zones of whoever is *not* moving, banded 1/2/3+ rather than
     // shaded continuously: the number changes the dodge target, so reading it
     // off at a glance matters more than a smooth gradient.
@@ -249,8 +306,6 @@ fn square(
             "risk",
             sq.move_prob.map(|p| 1.0 - p).filter(|_| actionable).unwrap_or(0.0),
         ),
-        // Not a tint: it only forces the banded tackle-zone layer on.
-        Overlay::TackleZones => ("none", 0.0),
         Overlay::BotVisits | Overlay::NetPriors => ("bot", heat.get(&pos).copied().unwrap_or(0.0)),
         Overlay::None => ("none", 0.0),
     };
@@ -262,6 +317,7 @@ fn square(
             class=format!("sq {kind_class} tint-{tint}")
             class:actionable=actionable
             class:on-route=on_route
+            class:pending-target=pending_target
             class:has-ball=sq.ball.is_some()
             style=format!("--tint: {tint_alpha:.3}")
             title=title
@@ -280,6 +336,7 @@ fn square(
         >
             {threat_tz
                 .map(|n| view! { <span class=format!("tz tz-{}", n.min(3))></span> })}
+            {on_trail.then(|| view! { <span class="trail-dot"></span> })}
             {sq
                 .player
                 .as_ref()
@@ -289,7 +346,9 @@ fn square(
                             class="player"
                             class:active=p.active
                             class:down=p.status != botbowl_web_proto::view::PlayerStatus::Up
-                            class:used=p.used
+                            // The engine marks a player `used` as soon as they are
+                            // activated; grey them out only once they have *finished*.
+                            class:used=p.used && !p.active
                             src=format!("img/{}", p.sprite)
                             alt=p.role.label()
                         />
@@ -471,11 +530,18 @@ fn StepControls() -> impl IntoView {
                 disabled=move || !app.paused()
                 on:click=move |_| ws::send(&ClientMsg::StepOnce)
             >
-                "Step ▶"
+                {move || {
+                    // While held, the button says what it will play: the move
+                    // the search beside the board just chose.
+                    match app.view.get().and_then(|v| v.pending_action) {
+                        Some(a) => format!("Play ▶ {}", a.describe()),
+                        None => "Step ▶".to_string(),
+                    }
+                }}
                 <span class="key">"→"</span>
             </button>
             {move || {
-                app.paused().then(|| view! { <span class="held">"held"</span> })
+                app.paused().then(|| view! { <span class="held">"held after the search"</span> })
             }}
         </div>
     }
@@ -501,6 +567,15 @@ fn OverlayPicker() -> impl IntoView {
                     }
                 })
                 .collect_view()}
+            <button
+                class="overlay tzmode"
+                class:on=move || app.tz.get() != TzMode::Off
+                title="tackle zones of the side not moving: auto = while a move is being chosen, always, or off"
+                on:click=move |_| app.tz.update(|t| *t = t.next())
+            >
+                <span class="key">"T"</span>
+                {move || format!("Tackle zones: {}", app.tz.get().label())}
+            </button>
         </div>
     }
 }
@@ -511,6 +586,9 @@ fn Dugout(side: usize) -> impl IntoView {
     move || {
         app.view.get().and_then(|v| {
             let dugout = v.dugouts.get(side)?.clone();
+            // The side whose decision is next: the dugout lights up in its
+            // colour so a bot-vs-bot game reads at a glance.
+            let acting = v.to_act == Some(dugout.team);
             let boxes = [
                 botbowl_web_proto::view::DugoutPlace::Reserves,
                 botbowl_web_proto::view::DugoutPlace::KnockOut,
@@ -518,8 +596,11 @@ fn Dugout(side: usize) -> impl IntoView {
                 botbowl_web_proto::view::DugoutPlace::Ejected,
             ];
             Some(view! {
-                <div class="dugout">
-                    <h3>{format!("{:?}", dugout.team)}</h3>
+                <div class=format!("dugout team-{:?}", dugout.team) class:acting=acting>
+                    <h3>
+                        {format!("{:?}", dugout.team)}
+                        {acting.then(|| view! { <span class="to-act">"to act"</span> })}
+                    </h3>
                     {boxes
                         .into_iter()
                         .map(|place| {
@@ -561,56 +642,75 @@ fn Dugout(side: usize) -> impl IntoView {
 
 #[component]
 fn Panel() -> impl IntoView {
-    let app = expect_context::<App>();
     view! {
         <div class="panel">
             <SimpleActions />
             <GameOver />
-            <div class="ticker">
-                <h3>"Dice"</h3>
-                {move || {
-                    app.dice
-                        .get()
-                        .into_iter()
-                        .map(|e| {
-                            view! {
-                                <div class="roll" class:fixed=e.fixed>
-                                    <span class="faces">
-                                        {e
-                                            .faces
-                                            .iter()
-                                            .map(|f| {
-                                                view! {
-                                                    <img
-                                                        src=format!("img/{}", f.img)
-                                                        title=f.label.clone()
-                                                        alt=f.label.clone()
-                                                    />
-                                                }
-                                            })
-                                            .collect_view()}
-                                    </span>
-                                    <span class="text">{e.text}</span>
-                                </div>
-                            }
-                        })
-                        .collect_view()
-                }}
-            </div>
+            <GameLog />
             <Debug />
-            <div class="log">
-                <h3>"Log"</h3>
-                {move || {
-                    app.view
-                        .get()
-                        .map(|v| {
-                            v.log_tail
-                                .into_iter()
-                                .rev()
-                                .map(|line| view! { <div class="line">{line}</div> })
-                                .collect_view()
-                        })
-                }}
+        </div>
+    }
+}
+
+/// The game log: dice, decisions and notes in one stream, newest first. Every
+/// line is a point in the game — click it and the server rewinds there
+/// (`RewindTo`), so a position that has gone by can be put back, searched
+/// again and inspected. The decision log below the board does the same from
+/// the search's side.
+#[component]
+fn GameLog() -> impl IntoView {
+    let app = expect_context::<App>();
+    view! {
+        <div class="log">
+            <h3>"Log" <span class="hint">"click a line to rewind to it"</span></h3>
+            <div class="log-lines">
+                <For
+                    each=move || app.log.get().into_iter().rev()
+                    key=|e| (e.index, e.step)
+                    children=move |e: LogEntry| {
+                        let step = e.step;
+                        let decision = e.decision;
+                        let kind = match e.kind {
+                            LogKind::Note => "note",
+                            LogKind::Roll => "roll",
+                            LogKind::Action => "action",
+                            LogKind::Score => "score",
+                        };
+                        let team = match e.team {
+                            Some(TeamType::Home) => "team-H",
+                            Some(TeamType::Away) => "team-A",
+                            None => "",
+                        };
+                        let fixed = e.roll.as_ref().is_some_and(|r| r.fixed);
+                        let faces = e.roll.as_ref().map(|r| r.faces.clone()).unwrap_or_default();
+                        view! {
+                            <div
+                                class=format!("line {kind} {team}")
+                                class:fixed=fixed
+                                title=format!("rewind to step {step}")
+                                on:click=move |_| {
+                                    if let Some(index) = decision {
+                                        app.selected.set(Some(index));
+                                    }
+                                    ws::send(&ClientMsg::RewindTo { step });
+                                }
+                            >
+                                <span class="step">{step}</span>
+                                <span class="faces">
+                                    {faces
+                                        .into_iter()
+                                        .map(|f| {
+                                            view! {
+                                                <img src=format!("img/{}", f.img) title=f.label.clone() alt=f.label />
+                                            }
+                                        })
+                                        .collect_view()}
+                                </span>
+                                <span class="text">{e.text}</span>
+                            </div>
+                        }
+                    }
+                />
             </div>
         </div>
     }
@@ -768,8 +868,8 @@ fn GameOver() -> impl IntoView {
     }
 }
 
-/// `1`-`6` pick an overlay, `Z` undoes, `E`/`Enter` ends the turn, `Esc`
-/// closes a menu, `→` steps the bot.
+/// `1`-`5` pick an overlay, `T` cycles the tackle-zone layer, `Z` undoes,
+/// `E`/`Enter` ends the turn, `Esc` closes a menu, `→` steps the bot.
 fn keyboard_shortcuts(app: App) {
     let handle = window_event_listener(leptos::ev::keydown, move |ev| {
         // Never steal a key from a text field in the lobby.
@@ -795,6 +895,7 @@ fn keyboard_shortcuts(app: App) {
                     ws::send(&ClientMsg::Undo);
                 }
             }
+            "t" | "T" => app.tz.update(|t| *t = t.next()),
             "e" | "E" | "Enter" => {
                 if app.my_turn() {
                     let has_end_turn = app.view.get().is_some_and(|v| {

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use botbowl_web_proto::action::{Action, TeamType};
 use botbowl_web_proto::decision::Decider;
+use botbowl_web_proto::log::LogKind;
 use botbowl_web_proto::msg::{BoardSpec, BotSpec, ClientMsg, GameSpec, Seat, ServerMsg, StartFrom, StepMode};
 use botbowl_web_proto::view::ViewState;
 use botbowl_web_server::{compiled_capacity, router, AppState};
@@ -163,7 +164,13 @@ async fn play_a_whole_game(addr: SocketAddr, board: BoardSpec, seed: u64) -> Out
                 let action = actions[rng.gen_range(0..actions.len())];
                 send(&mut socket, ClientMsg::Act(action)).await;
             }
-            ServerMsg::Dice(_) => outcome.dice += 1,
+            ServerMsg::Log(entry) => {
+                if entry.kind == LogKind::Roll {
+                    assert!(entry.roll.is_some(), "a roll line carries its die");
+                    outcome.dice += 1;
+                }
+            }
+            ServerMsg::LogTruncated { .. } => {}
             ServerMsg::Decision(record) => {
                 assert!(record.search.is_none(), "only the MCTS bot reports a search");
                 assert!(record.net.is_none(), "no seat has a net to read out");
@@ -411,12 +418,12 @@ fn new_game(board: BoardSpec, seed: u64) -> ClientMsg {
     })
 }
 
-/// `Manual` pacing: the session holds *before* each step it could take, so the
-/// board on screen is always the finished result of the previous one, and
-/// nothing moves until the client asks. This is what makes the search report
-/// next to the board readable — it belongs to the move about to be played.
+/// `Manual` pacing: the session holds *after* each bot decision and before the
+/// move is played, so the board on screen is the position the decision was
+/// about, the record beside it is that decision, and nothing moves until the
+/// client asks. Dice are never held — they roll through to the next decision.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn manual_pacing_holds_before_every_step() {
+async fn manual_pacing_holds_on_every_bot_decision() {
     let addr = serve().await;
     let mut socket = connect(addr).await;
     let _lobby = recv(&mut socket).await;
@@ -427,17 +434,14 @@ async fn manual_pacing_holds_before_every_step() {
     send(&mut socket, new_game(test_board(), 7)).await;
 
     let mut rng = StdRng::seed_from_u64(7);
-    let mut steps = 0usize;
     let mut holds = 0usize;
-    // Units of engine work seen since the last hold was released. A hold
-    // reached by `StepOnce` must have exactly one behind it; the hold that
-    // opens a sequence (right after our own move) has none, because the hold
-    // sits in front of the step rather than behind it.
-    let mut work_since_step = 0usize;
-    let mut expect_work = false;
+    // Bot decisions since the last hold was released: a hold is reached by
+    // exactly one, the one it holds in front of.
+    let mut decisions_since_release = 0usize;
+    let mut last_bot_action = None;
     let mut checked_quiet = false;
 
-    while steps < 40 {
+    while holds < 40 {
         match recv(&mut socket).await {
             ServerMsg::View(view) => {
                 assert_eq!(view.step_mode, StepMode::Manual, "the view reports the pacing");
@@ -446,10 +450,11 @@ async fn manual_pacing_holds_before_every_step() {
                 }
                 if view.paused {
                     holds += 1;
-                    let expected = usize::from(expect_work);
+                    assert!(!view.bot_thinking, "a hold comes after the search, not during it");
+                    assert_eq!(decisions_since_release, 1, "one bot decision per hold");
                     assert_eq!(
-                        work_since_step, expected,
-                        "a stepped hold must have exactly one unit of work behind it"
+                        view.pending_action, last_bot_action,
+                        "the view names the move the next step will play"
                     );
                     // The first hold: prove nothing moves on its own.
                     if !checked_quiet {
@@ -457,31 +462,29 @@ async fn manual_pacing_holds_before_every_step() {
                         let quiet = tokio::time::timeout(Duration::from_millis(300), socket.next()).await;
                         assert!(quiet.is_err(), "a held session must not step itself: {quiet:?}");
                     }
-                    work_since_step = 0;
-                    expect_work = true;
-                    steps += 1;
+                    decisions_since_release = 0;
                     send(&mut socket, ClientMsg::StepOnce).await;
                     continue;
                 }
+                assert!(view.pending_action.is_none(), "a pending move means a hold");
                 if view.bot_thinking || view.to_act != Some(TeamType::Home) {
                     continue;
                 }
-                // Our own decision points are never held: a hold sits in front
-                // of the steps we do *not* answer.
+                // Our own decision points are never held.
                 let actions = legal_actions(&view);
                 assert!(
                     !actions.is_empty(),
                     "asked to act at {:?} with nothing on offer",
                     view.proc
                 );
-                work_since_step = 0;
-                expect_work = false;
+                decisions_since_release = 0;
                 send(&mut socket, ClientMsg::Act(actions[rng.gen_range(0..actions.len())])).await;
             }
-            ServerMsg::Dice(_) => work_since_step += 1,
-            ServerMsg::Decision(d) if matches!(d.by, Decider::Bot { .. }) => work_since_step += 1,
-            ServerMsg::Decision(_) => {}
-            ServerMsg::BotThinking { .. } => {}
+            ServerMsg::Decision(d) if matches!(d.by, Decider::Bot { .. }) => {
+                decisions_since_release += 1;
+                last_bot_action = Some(d.action);
+            }
+            ServerMsg::Decision(_) | ServerMsg::Log(_) | ServerMsg::BotThinking { .. } => {}
             ServerMsg::GameOver { .. } => break,
             ServerMsg::Error(e) => panic!("server error while stepping: {e}"),
             other => panic!("unexpected message {other:?}"),
@@ -489,6 +492,97 @@ async fn manual_pacing_holds_before_every_step() {
     }
 
     assert!(holds >= 20, "only {holds} holds — the session was not stepping");
+}
+
+/// A rewind puts an earlier micro-step back on the board and continues from
+/// it: the log and the decision log are cut to what led there, the bot's
+/// decision taken at that position is searched again, and under `Run` the
+/// session switches itself to `Manual` so the rewound position stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rewind_restores_an_earlier_step_and_holds_there() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    let _lobby = recv(&mut socket).await;
+    send(
+        &mut socket,
+        ClientMsg::NewGame(GameSpec {
+            board: test_board(),
+            home: Seat::Bot(BotSpec::Random),
+            away: Seat::Bot(BotSpec::Random),
+            seed: Some(31),
+            start: StartFrom::CoinToss,
+            home_team: "Human".into(),
+            away_team: "Human".into(),
+        }),
+    )
+    .await;
+
+    // Let the bots play a while, then pick a bot decision from the middle.
+    let mut decisions = Vec::new();
+    let mut log_len = 0u64;
+    while decisions.len() < 30 {
+        match recv(&mut socket).await {
+            ServerMsg::Decision(d) => decisions.push(*d),
+            ServerMsg::Log(e) => {
+                assert_eq!(e.index, log_len, "log lines arrive in order");
+                log_len += 1;
+            }
+            ServerMsg::Error(e) => panic!("server error: {e}"),
+            ServerMsg::GameOver { .. } => panic!("the game ended before 30 decisions"),
+            _ => {}
+        }
+    }
+    let target = decisions[12].clone();
+    send(&mut socket, ClientMsg::RewindTo { step: target.step }).await;
+
+    let mut log_keep = None;
+    let mut decisions_keep = None;
+    let mut redone = None;
+    let held = loop {
+        match recv(&mut socket).await {
+            ServerMsg::LogTruncated { keep } => log_keep = Some(keep),
+            ServerMsg::DecisionsTruncated { keep } => decisions_keep = Some(keep),
+            // The first decision after the cut is the rewound one, taken afresh.
+            ServerMsg::Decision(d) if decisions_keep.is_some() && redone.is_none() => redone = Some(*d),
+            ServerMsg::View(view) if view.paused => break view,
+            ServerMsg::Error(e) => panic!("server error: {e}"),
+            _ => {}
+        }
+    };
+    assert_eq!(
+        decisions_keep,
+        Some(12),
+        "decisions taken at or after the step are gone"
+    );
+    let log_keep = log_keep.expect("the log was cut");
+    assert!(log_keep < log_len, "the log was cut back ({log_keep} of {log_len})");
+    let redone = redone.expect("the bot decided again at the rewound position");
+    assert_eq!(redone.index, 12, "the redone decision takes the freed index");
+    assert_eq!(redone.step, target.step, "it is taken at the rewound step");
+    assert_eq!(redone.team, target.team);
+    assert_eq!(
+        held.step_mode,
+        StepMode::Manual,
+        "a rewind under Run switches to Manual so the position stays"
+    );
+    assert_eq!(held.pending_action, Some(redone.action));
+
+    // Held means held.
+    let quiet = tokio::time::timeout(Duration::from_millis(300), socket.next()).await;
+    assert!(quiet.is_err(), "a rewound session must not move on its own: {quiet:?}");
+
+    // And it plays on from there when stepped.
+    send(&mut socket, ClientMsg::StepOnce).await;
+    loop {
+        match recv(&mut socket).await {
+            ServerMsg::Decision(d) => {
+                assert_eq!(d.index, 13, "play continues from the rewound position");
+                break;
+            }
+            ServerMsg::Error(e) => panic!("server error: {e}"),
+            _ => {}
+        }
+    }
 }
 
 /// Switching back to `Run` while the session is holding releases it, and the
@@ -558,7 +652,7 @@ async fn auto_pacing_steps_itself() {
                 human_decisions += 1;
                 send(&mut socket, ClientMsg::Act(actions[rng.gen_range(0..actions.len())])).await;
             }
-            ServerMsg::Dice(_) => work += 1,
+            ServerMsg::Log(e) if e.kind == LogKind::Roll => work += 1,
             ServerMsg::Decision(d) if matches!(d.by, Decider::Bot { .. }) => work += 1,
             ServerMsg::Error(e) => panic!("server error under auto pacing: {e}"),
             _ => {}

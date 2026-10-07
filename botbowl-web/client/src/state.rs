@@ -6,7 +6,8 @@
 //! view preferences (which overlay is on, which square's menu is open).
 
 use botbowl_web_proto::decision::{DecisionRecord, NetReadout};
-use botbowl_web_proto::dice::{DiceEvent, RollResult};
+use botbowl_web_proto::dice::RollResult;
+use botbowl_web_proto::log::LogEntry;
 use botbowl_web_proto::msg::{GameSpec, LobbyInfo, StepMode};
 use botbowl_web_proto::search::{NodeExpansion, SearchReport};
 use botbowl_web_proto::team::TeamDef;
@@ -38,11 +39,6 @@ pub enum Overlay {
     Moves,
     /// Path success probability, green → red.
     Risk,
-    /// Force the tackle-zone layer on. The layer paints itself whenever
-    /// somebody is choosing a move (see `ViewState::threat_team`); this shows
-    /// it the rest of the time too — during a kickoff, a dice prompt, or the
-    /// bot's think — when you want to read the board rather than play it.
-    TackleZones,
     /// Where the inspected search spent its visits.
     BotVisits,
     /// What the net's policy wanted: for the position on screen while
@@ -53,10 +49,9 @@ pub enum Overlay {
 }
 
 impl Overlay {
-    pub const ALL: [Overlay; 6] = [
+    pub const ALL: [Overlay; 5] = [
         Overlay::Moves,
         Overlay::Risk,
-        Overlay::TackleZones,
         Overlay::BotVisits,
         Overlay::NetPriors,
         Overlay::None,
@@ -66,22 +61,52 @@ impl Overlay {
         match self {
             Overlay::Moves => "Moves",
             Overlay::Risk => "Risk",
-            Overlay::TackleZones => "Tackle zones (always)",
             Overlay::BotVisits => "Search visits",
             Overlay::NetPriors => "Net priors",
             Overlay::None => "Plain",
         }
     }
 
-    /// `1`..`6`, the keyboard shortcut that selects it.
+    /// `1`..`5`, the keyboard shortcut that selects it.
     pub fn key(self) -> char {
         match self {
             Overlay::Moves => '1',
             Overlay::Risk => '2',
-            Overlay::TackleZones => '3',
-            Overlay::BotVisits => '4',
-            Overlay::NetPriors => '5',
-            Overlay::None => '6',
+            Overlay::BotVisits => '3',
+            Overlay::NetPriors => '4',
+            Overlay::None => '5',
+        }
+    }
+}
+
+/// The tackle-zone layer, separate from the tints above because it coexists
+/// with any of them. `Auto` paints the mover's opponent's zones whenever a
+/// move is being chosen (`ViewState::threat_team`) and nothing otherwise;
+/// `Always` paints them through kickoffs, dice prompts and the bot's think
+/// too; `Off` never does — with two bots playing, the layer flips sides every
+/// turn and some people would rather read the board bare.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TzMode {
+    #[default]
+    Auto,
+    Always,
+    Off,
+}
+
+impl TzMode {
+    pub fn next(self) -> Self {
+        match self {
+            TzMode::Auto => TzMode::Always,
+            TzMode::Always => TzMode::Off,
+            TzMode::Off => TzMode::Auto,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TzMode::Auto => "auto",
+            TzMode::Always => "always",
+            TzMode::Off => "off",
         }
     }
 }
@@ -103,8 +128,9 @@ pub struct App {
     /// The game spec being assembled in the lobby.
     pub spec: RwSignal<Option<GameSpec>>,
     pub view: RwSignal<Option<ViewState>>,
-    /// Newest first, capped.
-    pub dice: RwSignal<Vec<DiceEvent>>,
+    /// The game log, oldest first, as the server streamed it: text, dice and
+    /// decisions in one. Clicking a line rewinds the game to its step.
+    pub log: RwSignal<Vec<LogEntry>>,
     /// Every decision of this game, human and bot, in order.
     pub decisions: RwSignal<Vec<DecisionRecord>>,
     /// The decision the inspector is open on. `None` follows the game: the
@@ -143,6 +169,7 @@ pub struct App {
 
     // ---- local view state, never sent anywhere
     pub overlay: RwSignal<Overlay>,
+    pub tz: RwSignal<TzMode>,
     pub menu: RwSignal<Option<Menu>>,
     /// Square the pointer is over, for the route preview.
     pub hover: RwSignal<Option<Position>>,
@@ -154,8 +181,10 @@ pub struct App {
     pub inspector_open: RwSignal<bool>,
 }
 
-/// Keep the ticker bounded — it is a running commentary, not a transcript.
-pub const DICE_TICKER: usize = 40;
+/// The log is a transcript, but a bot-vs-bot game left running overnight must
+/// not grow the DOM without bound. The server keeps the whole thing, so a
+/// rewind to anything older is still a `RewindTo` away via the decision log.
+pub const LOG_CAP: usize = 3000;
 
 impl Default for App {
     fn default() -> Self {
@@ -170,7 +199,7 @@ impl App {
             lobby: RwSignal::new(None),
             spec: RwSignal::new(None),
             view: RwSignal::new(None),
-            dice: RwSignal::new(Vec::new()),
+            log: RwSignal::new(Vec::new()),
             decisions: RwSignal::new(Vec::new()),
             selected: RwSignal::new(None),
             node: RwSignal::new(None),
@@ -191,6 +220,7 @@ impl App {
             step_mode: RwSignal::new(StepMode::Auto { ms: 600 }),
             step_ms: RwSignal::new(600),
             overlay: RwSignal::new(Overlay::default()),
+            tz: RwSignal::new(TzMode::default()),
             menu: RwSignal::new(None),
             hover: RwSignal::new(None),
             hypothetical: RwSignal::new(None),
@@ -277,7 +307,7 @@ impl App {
     /// Clear everything that belongs to one game, keeping the connection.
     pub fn reset_game(&self) {
         self.view.set(None);
-        self.dice.set(Vec::new());
+        self.log.set(Vec::new());
         self.decisions.set(Vec::new());
         self.selected.set(None);
         self.net_now.set(None);

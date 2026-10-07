@@ -10,7 +10,7 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model as em;
 use botbowl_engine::core::model::{BallState, Position};
 use botbowl_engine::core::pathing::{CustomIntoIter, PathingEvent, PositionOrEvent};
-use botbowl_engine::core::procedures::Formation;
+use botbowl_engine::core::procedures::{AnyProc, Formation};
 use botbowl_engine::core::table as et;
 use botbowl_web_proto::view as pv;
 
@@ -18,20 +18,22 @@ use crate::mirror;
 
 /// Session facts that are not in the `GameState` but belong on the view.
 ///
-/// `log_tail` comes from the *session's* own event log, not
-/// `GameState::get_log()`: engine logging both pushes to a Vec and `println!`s
-/// every micro-step (`STEPPING: <proc> action=...`), which would flood the
-/// server's stdout and is a rules-engine trace rather than anything a player
-/// wants to read. The session keeps a short human-facing log instead.
+/// `trail` is the one piece of *history* on the view, and it comes from the
+/// session's step snapshots ([`trail`]), never from the state: a `GameState`
+/// that remembered where its players had been would stop recombining with
+/// one that reached the same position another way.
 pub struct DeriveCtx {
     /// The sides played from the browser.
     pub humans: Vec<botbowl_web_proto::TeamType>,
     pub seq: u64,
     pub can_undo: bool,
     pub bot_thinking: bool,
-    pub log_tail: Vec<String>,
     pub step_mode: botbowl_web_proto::msg::StepMode,
     pub paused: bool,
+    /// A bot's chosen, not yet played move (set only while `paused`).
+    pub pending_action: Option<botbowl_web_proto::Action>,
+    /// Where the active player has been this activation — see [`trail`].
+    pub trail: Vec<botbowl_web_proto::Position>,
     /// Each side's team, for the players' pictures.
     pub looks: std::sync::Arc<crate::teams::Looks>,
 }
@@ -43,9 +45,10 @@ impl Default for DeriveCtx {
             seq: 0,
             can_undo: false,
             bot_thinking: false,
-            log_tail: Vec::new(),
             step_mode: botbowl_web_proto::msg::StepMode::default(),
             paused: false,
+            pending_action: None,
+            trail: Vec::new(),
             looks: Default::default(),
         }
     }
@@ -105,13 +108,18 @@ fn player_view(state: &GameState, ctx: &DeriveCtx, p: &em::FieldedPlayer, has_ba
         .collect();
     skills.sort();
 
+    let active = state.info.active_player == Some(p.id);
     pv::PlayerView {
         id: p.id,
         team: mirror::team_to_proto(team),
         role,
         status: mirror::status_to_proto(p.status),
         used: p.used,
-        sprite: ctx.looks.sprite(&p.stats, p.used),
+        // The engine flags a player `used` the moment they are activated. The
+        // one still acting keeps the "has not acted" picture: greying them out
+        // mid-move reads as "this player is done", which is the opposite of
+        // what is happening.
+        sprite: ctx.looks.sprite(&p.stats, p.used && !active),
         st: p.stats.str_,
         ma: p.stats.ma,
         ag: p.stats.ag,
@@ -119,8 +127,93 @@ fn player_view(state: &GameState, ctx: &DeriveCtx, p: &em::FieldedPlayer, has_ba
         movement_left: p.total_movement_left(),
         has_ball,
         skills,
-        active: state.info.active_player == Some(p.id),
+        active,
     }
+}
+
+/// The block being resolved, if one is: the `Block` procedure anywhere on the
+/// stack (a `Push`, an `Armor` or a pending die may sit on top of it), its
+/// attacker being the active player.
+fn block_view(state: &GameState) -> Option<pv::BlockView> {
+    let block = state.proc_stack_iter().find_map(|p| match p {
+        AnyProc::Block(b) => Some(b),
+        _ => None,
+    })?;
+    let attacker = state.get_active_player()?;
+    // The defender may already be in the crowd (and about to be unfielded).
+    let defender = state.get_player(block.defender()).ok()?;
+    Some(pv::BlockView {
+        attacker: mirror::position_to_proto(attacker.position),
+        defender: mirror::position_to_proto(defender.position),
+        dice: mirror::num_block_dices_to_proto(block.num_dices()),
+    })
+}
+
+/// The squares the active player has walked this activation, oldest first,
+/// excluding where they now stand — read off the session's step snapshots.
+///
+/// `MoveAction::continue_along_path` walks every roll-free square of a path
+/// in one micro-step, so consecutive snapshots can be several squares apart;
+/// the squares in between come from the pathfinder route to the arrival
+/// square in the last snapshot that still had a path buffer (the pathfinder
+/// builds a tree, so that route is the one walked).
+pub fn trail(steps: &[GameState]) -> Vec<botbowl_web_proto::Position> {
+    let Some(current) = steps.last() else { return Vec::new() };
+    let Some(id) = current.info.active_player else {
+        return Vec::new();
+    };
+    let Ok(player) = current.get_player(id) else {
+        return Vec::new();
+    };
+    let team = player.stats.team;
+    let turn = (current.info.half, current.info.home_turn, current.info.away_turn);
+
+    // Newest first: this player's position at each snapshot of the activation.
+    let mut visited: Vec<(usize, Position)> = vec![(steps.len() - 1, player.position)];
+    for (i, s) in steps.iter().enumerate().rev().skip(1) {
+        if s.info.active_player != Some(id) || (s.info.half, s.info.home_turn, s.info.away_turn) != turn {
+            break;
+        }
+        let Ok(p) = s.get_player(id) else { break };
+        if p.stats.team != team {
+            break;
+        }
+        if visited.last().is_some_and(|(_, last)| *last != p.position) {
+            visited.push((i, p.position));
+        }
+    }
+    visited.reverse();
+
+    let mut out = Vec::new();
+    for pair in visited.windows(2) {
+        let ((i, from), (_, to)) = (pair[0], pair[1]);
+        out.push(from);
+        if from.distance_to(&to) > 1 {
+            out.extend(route_between(&steps[..=i], from, to));
+        }
+    }
+    out.into_iter().map(mirror::position_to_proto).collect()
+}
+
+/// The squares strictly between `from` and `to` on the pathfinder route to
+/// `to`, from the newest of `steps` that offers one. Empty when none does.
+fn route_between(steps: &[GameState], from: Position, to: Position) -> Vec<Position> {
+    for s in steps.iter().rev() {
+        let Some(paths) = s.get_paths() else { continue };
+        let Some(node) = paths.get_pos(to) else { continue };
+        let squares: Vec<Position> = node
+            .iter()
+            .filter_map(|e| match e {
+                PositionOrEvent::Position(p) => Some(p),
+                PositionOrEvent::Event(_) => None,
+            })
+            .collect();
+        // The route excludes its origin; `from` is either that origin or a
+        // square along the way.
+        let start = squares.iter().position(|p| *p == from).map_or(0, |i| i + 1);
+        return squares[start..].iter().copied().take_while(|p| *p != to).collect();
+    }
+    Vec::new()
 }
 
 /// Tackle zones exerted on every square by each team. Computed square-first
@@ -378,12 +471,14 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         proc: state.proc_stack_top().unwrap_or("-").to_string(),
         active_player: state.info.active_player,
         pending_roll: state.pending_roll.map(mirror::requested_roll_to_proto),
-        log_tail: ctx.log_tail.clone(),
         can_undo: ctx.can_undo,
         setup,
         bot_thinking: ctx.bot_thinking,
         step_mode: ctx.step_mode,
         paused: ctx.paused,
+        pending_action: ctx.pending_action,
+        trail: ctx.trail.clone(),
+        block: block_view(state),
     }
 }
 
@@ -637,6 +732,78 @@ mod tests {
         );
         let dice = target.block_dice.expect("a block target carries its dice count");
         assert!(dice.count() >= 1 && dice.count() <= 3);
+    }
+
+    /// From the moment a defender is named until the block is resolved, the
+    /// view carries the pair, so the client can draw the arrow — here with a
+    /// die pending on top of the `Block` procedure.
+    #[test]
+    fn a_block_in_progress_names_attacker_and_defender() {
+        use botbowl_engine::core::gamestate::DiceMode;
+        use botbowl_engine::core::model::SomeProcInput;
+        let mut state = a_position();
+        assert_eq!(view_of(&state).block, None, "no block at a turn start");
+        state.set_dice_mode(DiceMode::RegisterRolls);
+        state.step_with_roll_or_action(SomeProcInput::Action(em::Action::Positional(
+            et::PosAT::StartBlock,
+            em::Position::new((8, 4)),
+        )));
+        assert_eq!(view_of(&state).block, None, "picking a defender is not yet a block");
+        state.step_with_roll_or_action(SomeProcInput::Action(em::Action::Positional(
+            et::PosAT::Block,
+            em::Position::new((7, 4)),
+        )));
+        assert!(state.pending_roll.is_some(), "the block dice are pending");
+        let block = view_of(&state).block.expect("a block in progress");
+        assert_eq!(block.attacker, pa::Position::new(8, 4));
+        assert_eq!(block.defender, pa::Position::new(7, 4));
+        assert!(block.dice.count() >= 1);
+    }
+
+    /// The active player's trail is read off the step history, with the
+    /// roll-free squares the engine walked in one micro-step filled in from
+    /// the pathfinder route — and the player's current square left out.
+    #[test]
+    fn the_trail_is_reconstructed_from_the_steps() {
+        let mut state = a_position();
+        let mut steps = vec![state.clone()];
+        fn go(state: &mut GameState, action: em::Action, steps: &mut Vec<GameState>) {
+            state.step(action).unwrap();
+            steps.push(state.clone());
+        }
+        assert!(trail(&steps).is_empty(), "nobody is active");
+        go(
+            &mut state,
+            em::Action::Positional(et::PosAT::StartMove, em::Position::new((10, 2))),
+            &mut steps,
+        );
+        assert!(trail(&steps).is_empty(), "activated, not yet moved");
+        // Three squares in one action: (10,2) -> (11,3) -> (12,4) -> (13,5),
+        // none of them marked, so the engine walks them in one micro-step.
+        go(
+            &mut state,
+            em::Action::Positional(et::PosAT::Move, em::Position::new((13, 5))),
+            &mut steps,
+        );
+        assert_eq!(
+            trail(&steps),
+            vec![
+                pa::Position::new(10, 2),
+                pa::Position::new(11, 3),
+                pa::Position::new(12, 4)
+            ]
+        );
+        go(
+            &mut state,
+            em::Action::Positional(et::PosAT::Move, em::Position::new((13, 6))),
+            &mut steps,
+        );
+        assert_eq!(trail(&steps).len(), 4, "one more square, {:?}", trail(&steps));
+        assert_eq!(trail(&steps).last(), Some(&pa::Position::new(13, 5)));
+        // Ending the activation ends the trail.
+        go(&mut state, em::Action::Simple(SimpleAT::EndPlayerTurn), &mut steps);
+        assert!(trail(&steps).is_empty(), "{:?}", trail(&steps));
+        assert!(derive(&state, &DeriveCtx::default()).trail.is_empty());
     }
 
     #[test]

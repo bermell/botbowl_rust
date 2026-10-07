@@ -70,6 +70,10 @@ pub struct DecisionRecord {
     /// log ([`crate::msg::ServerMsg::DecisionsTruncated`]), so indices are
     /// reused after one.
     pub index: u64,
+    /// The micro-step the decision was taken at — the position it was about,
+    /// which [`crate::msg::ClientMsg::RewindTo`] restores.
+    #[serde(default)]
+    pub step: usize,
     pub team: TeamType,
     pub by: Decider,
     pub action: Action,

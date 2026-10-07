@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::action::{PosAT, Position, SimpleAT, TeamType};
+use crate::action::{Action, PosAT, Position, SimpleAT, TeamType};
 use crate::dice::{NumBlockDices, RequestedRoll};
 use crate::msg::StepMode;
 
@@ -319,6 +319,15 @@ pub struct SetupView {
     pub formations: Vec<String>,
 }
 
+/// A block in progress: from the moment the attacker has named a defender
+/// until the block procedure is done (dice, push, follow-up included).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockView {
+    pub attacker: Position,
+    pub defender: Position,
+    pub dice: NumBlockDices,
+}
+
 /// Everything the client needs to draw one moment of the game.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewState {
@@ -344,18 +353,27 @@ pub struct ViewState {
     /// Set while the engine is paused on a roll the server has not yet made
     /// (only observable with a pinned roll queued).
     pub pending_roll: Option<RequestedRoll>,
-    pub log_tail: Vec<String>,
     pub can_undo: bool,
     /// The open setup, while a team is placing players for a kickoff.
     pub setup: Option<SetupView>,
     /// True while a bot search is running.
     pub bot_thinking: bool,
-    /// How the session is pacing the steps the human does not answer.
+    /// How the session is pacing the bots' moves.
     pub step_mode: StepMode,
-    /// True while the session is holding *before* a step it could take —
-    /// so this board is the result of the previous one, and the step control
-    /// is live.
+    /// True while the session is holding — after a bot's search, before its
+    /// move — so this board is the position that search was about, and the
+    /// step control is live.
     pub paused: bool,
+    /// The move a bot has chosen but not yet played: what the next step
+    /// plays. Set only while `paused`.
+    pub pending_action: Option<Action>,
+    /// The squares the active player has walked this activation, oldest
+    /// first, not including where they stand. Reconstructed by the server from
+    /// its step history — the `GameState` carries no history of its own, and
+    /// must not (it would split the search's recombined states).
+    pub trail: Vec<Position>,
+    /// A block being resolved, for the attacker → defender arrow.
+    pub block: Option<BlockView>,
 }
 
 impl ViewState {

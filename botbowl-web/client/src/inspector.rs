@@ -294,6 +294,7 @@ fn Detail() -> impl IntoView {
             .into_any();
         };
         let index = record.index;
+        let step = record.step;
         let header = format!(
             "#{index} · {:?} ({}) · half {} turn {} · {} · {} legal",
             record.team,
@@ -324,6 +325,12 @@ fn Detail() -> impl IntoView {
                     <span class="played">{format!("played {played}")}</span>
                     <span class="meta">{header}</span>
                     <button on:click=move |_| ws::send(&ClientMsg::ShowDecision { index })>"show its board"</button>
+                    <button
+                        title="put this position back on the board for real: everything after it is dropped and play continues from here"
+                        on:click=move |_| ws::send(&ClientMsg::RewindTo { step })
+                    >
+                        "rewind to here"
+                    </button>
                     {move || {
                         (app.board_of.get() == Some(index))
                             .then(|| view! { <button class="warn" on:click=move |_| app.back_to_live()>"back to live"</button> })

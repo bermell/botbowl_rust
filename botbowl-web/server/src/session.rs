@@ -30,6 +30,8 @@ use botbowl_engine::core::procedures::Formation;
 use botbowl_play::drives::{self, DriveStart};
 use botbowl_play::generate::RandomStartBias;
 use botbowl_web_proto::decision::{Decider, DecisionRecord, NetReadout};
+use botbowl_web_proto::dice::DiceEvent;
+use botbowl_web_proto::log::{LogEntry, LogKind};
 use botbowl_web_proto::msg::{BotSpec, ClientMsg, GameSpec, LobbyInfo, Seat, ServerMsg, StartFrom, StepMode};
 use botbowl_web_proto::search as ps;
 use botbowl_web_proto::team::TeamDef;
@@ -46,8 +48,6 @@ use crate::{dice, AppState};
 
 /// How deep a principal variation to report.
 const PV_DEPTH: usize = 8;
-/// How many session log lines to keep and ship.
-const LOG_TAIL: usize = 60;
 /// How long the run loop sleeps between polls while it is waiting out an
 /// `Auto` step delay. Short enough that a mode change or an undo does not feel
 /// stuck behind the delay, long enough not to spin.
@@ -58,16 +58,24 @@ const POLL: Duration = Duration::from_millis(5);
 /// since the last one — two random bots make thousands of moves a second.
 const RUN_VIEW_EVERY: Duration = Duration::from_millis(100);
 
-/// One undo point: the board, the dice stream, and where the recording and the
-/// decision log were. The bots are deliberately *not* snapshotted — `MctsBot`'s
-/// cached tree keys on a horizon anchor and discards itself on a mismatch, so
-/// an undo just costs a wasted reuse.
+/// One undo point: the board, the dice stream, and where the recording, the
+/// log and the decision log were. The bots are deliberately *not* snapshotted
+/// — `MctsBot`'s cached tree keys on a horizon anchor and discards itself on a
+/// mismatch, so an undo just costs a wasted reuse.
 struct Snapshot {
     state: GameState,
     rng: ChaCha8Rng,
     steps: usize,
     log: usize,
     decisions: u64,
+}
+
+/// A bot's chosen move, logged and reported but not yet played: what the
+/// session holds in front of under `Manual`/`Auto`, so the board on screen is
+/// the position the search was about.
+#[derive(Clone, Copy)]
+struct Pending {
+    action: EngineAction,
 }
 
 /// `[home, away]` indexing.
@@ -88,11 +96,16 @@ pub struct GameSession {
     /// A roll the debug control pinned for the next request.
     pinned_roll: Option<ed::RollResult>,
     seq: u64,
-    /// Micro-step snapshots, so a web game opens in `botbowl-ui replay`.
+    /// Micro-step snapshots, so a web game opens in `botbowl-ui replay` — and
+    /// so [`ClientMsg::RewindTo`] can put any of them back on the board.
     steps: Vec<GameState>,
-    /// Player-facing event log. The engine's own logging is left off: it
-    /// `println!`s a rules trace on every micro-step.
-    log: Vec<String>,
+    /// The dice RNG as it stood at each of `steps`, so a rewind resumes the
+    /// same dice stream the game would have had from there.
+    rngs: Vec<ChaCha8Rng>,
+    /// Player-facing event log, streamed line by line ([`ServerMsg::Log`]).
+    /// The engine's own logging is left off: it `println!`s a rules trace on
+    /// every micro-step.
+    log: Vec<LogEntry>,
     /// Bumped on every search by either bot, so a search id names one search.
     search_id: u64,
     /// `[home, away]`: each bot's latest search id. A bot keeps exactly one
@@ -104,19 +117,22 @@ pub struct GameSession {
     /// For each logged decision, the index into `steps` of the state it was
     /// taken in — what [`ClientMsg::ShowDecision`] renders.
     decision_steps: Vec<usize>,
-    /// How fast the session may run through steps the human does not answer.
+    /// How fast the session may run through the bots' moves.
     step_mode: StepMode,
-    /// True while `advance` has stopped *before* a step it could take. The
-    /// board the client last saw is the result of the previous step, and the
-    /// session is back in the run loop, so undo, mode changes and tree
-    /// inspection all still work while it holds.
+    /// A bot's move chosen but not yet played. The hold sits here: the search
+    /// has run and been reported, the board still shows the position it was
+    /// about, and the next step plays it.
+    pending: Option<Pending>,
+    /// True while `advance` has stopped on a `pending` move. The session is
+    /// back in the run loop, so undo, rewind, mode changes and tree inspection
+    /// all still work while it holds.
     paused: bool,
     /// When an `Auto` hold expires. `None` under `Manual`, which waits for
     /// [`ClientMsg::StepOnce`] instead of a clock.
     resume_at: Option<Instant>,
-    /// `Run` handed control back to the run loop between two bot moves and
-    /// wants to carry on as soon as the socket has been drained. Not a hold:
-    /// the client is not told, and nothing waits.
+    /// `advance` handed control back to the run loop between two bot moves
+    /// and wants to carry on as soon as the socket has been drained. Not a
+    /// hold: the client is not told, and nothing waits.
     yielded: bool,
     /// When a board was last sent, for [`RUN_VIEW_EVERY`].
     last_view: Option<Instant>,
@@ -127,9 +143,9 @@ pub struct GameSession {
     looks: Arc<Looks>,
 }
 
-/// Whether the session may take the step it is standing in front of.
+/// Whether the session may play the move it is holding.
 enum Hold {
-    /// Take it now.
+    /// Play it now.
     Go,
     /// Stop and hand control back to the run loop; resume at this instant, or
     /// on an explicit `StepOnce` when there is none.
@@ -139,6 +155,9 @@ enum Hold {
 /// What [`GameSession::take_one`] did.
 enum Took {
     Roll,
+    /// A bot chose a move; it is now `pending`.
+    Chose,
+    /// The pending move was played.
     Move,
     /// The session must stop rather than loop on (a bot proposed an illegal
     /// action).
@@ -194,25 +213,9 @@ impl GameSession {
         }
 
         let steps = vec![state.clone()];
-        let mut log = vec![
-            format!("new game, seed {seed}"),
-            format!(
-                "home: {} ({}) · away: {} ({})",
-                spec.home.label(),
-                sides[0].name,
-                spec.away.label(),
-                sides[1].name
-            ),
-        ];
-        log.extend(start_note);
-        if let Some((_, attacker)) = drive {
-            log.push(format!("{attacker:?} attacks"));
-        }
+        let rngs = vec![rng.clone()];
         let [home_def, away_def] = sides;
-        let looks = Arc::new(Looks {
-            teams: [Some(home_def), Some(away_def)],
-        });
-        Ok(GameSession {
+        let mut session = GameSession {
             spec,
             state,
             rng,
@@ -221,30 +224,86 @@ impl GameSession {
             pinned_roll: None,
             seq: 0,
             steps,
-            log,
+            rngs,
+            log: Vec::new(),
             search_id: 0,
             latest_search: [0; 2],
             decisions: 0,
             decision_steps: Vec::new(),
             step_mode,
+            pending: None,
             paused: false,
             resume_at: None,
             yielded: false,
             last_view: None,
             drive,
-            looks,
-        })
-    }
-
-    fn note(&mut self, line: String) {
-        self.log.push(line);
-        if self.log.len() > 4 * LOG_TAIL {
-            self.log.drain(..self.log.len() - LOG_TAIL);
+            looks: Arc::new(Looks {
+                teams: [Some(home_def.clone()), Some(away_def.clone())],
+            }),
+        };
+        // No socket yet: these lines are sent by `send_log_so_far` once there is one.
+        session.push_log(LogKind::Note, None, format!("new game, seed {seed}"), None, None);
+        session.push_log(
+            LogKind::Note,
+            None,
+            format!(
+                "home: {} ({}) · away: {} ({})",
+                session.spec.home.label(),
+                home_def.name,
+                session.spec.away.label(),
+                away_def.name
+            ),
+            None,
+            None,
+        );
+        if let Some(line) = start_note {
+            session.push_log(LogKind::Note, None, line, None, None);
         }
+        if let Some((_, attacker)) = session.drive {
+            session.push_log(
+                LogKind::Note,
+                Some(mirror::team_to_proto(attacker)),
+                format!("{attacker:?} attacks"),
+                None,
+                None,
+            );
+        }
+        Ok(session)
     }
 
-    fn log_tail(&self) -> Vec<String> {
-        self.log[self.log.len().saturating_sub(LOG_TAIL)..].to_vec()
+    /// Append one log line, stamped with the current micro-step. Returns the entry.
+    fn push_log(
+        &mut self,
+        kind: LogKind,
+        team: Option<botbowl_web_proto::TeamType>,
+        text: String,
+        roll: Option<DiceEvent>,
+        decision: Option<u64>,
+    ) -> LogEntry {
+        let entry = LogEntry {
+            index: self.log.len() as u64,
+            step: self.steps.len() - 1,
+            kind,
+            team,
+            text,
+            roll,
+            decision,
+        };
+        self.log.push(entry.clone());
+        entry
+    }
+
+    /// Append one log line and send it.
+    fn note(&mut self, out: &Out, kind: LogKind, team: Option<em::TeamType>, text: String) {
+        let entry = self.push_log(kind, team.map(mirror::team_to_proto), text, None, None);
+        out.send(ServerMsg::Log(entry));
+    }
+
+    /// Everything logged before the socket could be told (the opening lines).
+    fn send_log_so_far(&self, out: &Out) {
+        for entry in &self.log {
+            out.send(ServerMsg::Log(entry.clone()));
+        }
     }
 
     /// Who must supply the next action. `available_actions.team` is the
@@ -281,9 +340,10 @@ impl GameSession {
             seq: self.seq,
             can_undo: !self.history.is_empty(),
             bot_thinking,
-            log_tail: self.log_tail(),
             step_mode: self.step_mode,
             paused: self.paused,
+            pending_action: self.pending.map(|p| mirror::action_to_proto(p.action)),
+            trail: view::trail(&self.steps),
             looks: self.looks.clone(),
         };
         out.send(ServerMsg::View(Box::new(view::derive(&self.state, &ctx))));
@@ -296,7 +356,21 @@ impl GameSession {
         }
     }
 
-    /// Log one decision about to be applied to the current state, and send it.
+    /// A board that is not the live one: a past step, drawn with its own
+    /// trail and none of the session flags.
+    fn past_view(&self, step: usize) -> Option<botbowl_web_proto::ViewState> {
+        let state = self.steps.get(step)?;
+        let ctx = DeriveCtx {
+            humans: self.spec.humans(),
+            looks: self.looks.clone(),
+            trail: view::trail(&self.steps[..=step]),
+            ..DeriveCtx::default()
+        };
+        Some(view::derive(state, &ctx))
+    }
+
+    /// Log one decision about to be applied to the current state — a line in
+    /// the game log and a record in the decision log — and send both.
     fn record(
         &mut self,
         team: em::TeamType,
@@ -305,14 +379,27 @@ impl GameSession {
         search: Option<ps::SearchReport>,
         out: &Out,
     ) {
-        let by = match &self.bots[side(team)] {
-            None => Decider::Human,
-            Some(_) => Decider::Bot {
-                label: self.spec.seat(mirror::team_to_proto(team)).label(),
-            },
+        let (by, who) = match &self.bots[side(team)] {
+            None => (Decider::Human, "you"),
+            Some(_) => (
+                Decider::Bot {
+                    label: self.spec.seat(mirror::team_to_proto(team)).label(),
+                },
+                "bot",
+            ),
         };
+        let index = self.decisions;
+        let line = self.push_log(
+            LogKind::Action,
+            Some(mirror::team_to_proto(team)),
+            format!("{team:?} {who}: {}", mirror::action_to_proto(action).describe()),
+            None,
+            Some(index),
+        );
+        out.send(ServerMsg::Log(line));
         let record = DecisionRecord {
-            index: self.decisions,
+            index,
+            step: self.steps.len() - 1,
             team: mirror::team_to_proto(team),
             by,
             action: mirror::action_to_proto(action),
@@ -333,22 +420,16 @@ impl GameSession {
     }
 
     fn show_decision(&self, index: u64, out: &Out) {
-        let Some(state) = self
+        let Some(view) = self
             .decision_steps
             .get(index as usize)
-            .and_then(|&step| self.steps.get(step))
+            .and_then(|&step| self.past_view(step))
         else {
             return out.send(ServerMsg::Error(format!("no decision {index} in this game")));
         };
-        // A past board is hypothetical: none of the session flags apply.
-        let ctx = DeriveCtx {
-            humans: self.spec.humans(),
-            looks: self.looks.clone(),
-            ..DeriveCtx::default()
-        };
         out.send(ServerMsg::DecisionBoard {
             index,
-            view: Box::new(view::derive(state, &ctx)),
+            view: Box::new(view),
         });
     }
 
@@ -372,14 +453,16 @@ impl GameSession {
     fn step(&mut self, input: SomeProcInput) {
         self.state.step_with_roll_or_action(input);
         self.steps.push(self.state.clone());
+        self.rngs.push(self.rng.clone());
     }
 
-    /// Whether the step the session is standing in front of may be taken now.
+    /// Whether the move the session is holding may be played now.
     ///
-    /// Asked *before* the step rather than after it, so that the board the
-    /// client sees while the session holds is the finished result of the
-    /// previous step — never a half-applied one — and so the hold never
-    /// stands between the human and their own next decision.
+    /// Asked *after* the search and before the move, so that the board the
+    /// client sees while the session holds is the position the search was
+    /// about, the report beside it is that search, and the next step plays
+    /// what it chose. Dice are never held: they are the engine's work, not a
+    /// decision anyone can inspect.
     fn hold(&self) -> Hold {
         match self.step_mode {
             StepMode::Run => Hold::Go,
@@ -400,18 +483,18 @@ impl GameSession {
             // ended, and the corpus scores it as one.
             if let Some((start, attacker)) = self.drive {
                 if start.over(&self.state) {
-                    self.paused = false;
-                    self.resume_at = None;
+                    self.settle();
                     let (home, away) = start.scored(&self.state);
                     let scored = match (home > 0, away > 0) {
                         (true, _) => Some(em::TeamType::Home),
                         (_, true) => Some(em::TeamType::Away),
                         _ => None,
                     };
-                    self.note(match scored {
+                    let line = match scored {
                         Some(t) => format!("drive over: {t:?} scored"),
                         None => "drive over: no score".into(),
-                    });
+                    };
+                    self.note(out, LogKind::Score, scored, line);
                     self.view(out, false);
                     out.send(ServerMsg::DriveOver {
                         attacker: mirror::team_to_proto(attacker),
@@ -424,12 +507,9 @@ impl GameSession {
             }
 
             if self.state.info.game_over {
-                self.paused = false;
-                self.resume_at = None;
-                self.note(format!(
-                    "game over: {} - {}",
-                    self.state.home.score, self.state.away.score
-                ));
+                self.settle();
+                let line = format!("game over: {} - {}", self.state.home.score, self.state.away.score);
+                self.note(out, LogKind::Score, None, line);
                 self.view(out, false);
                 out.send(ServerMsg::GameOver {
                     winner: self.state.info.winner.map(mirror::team_to_proto),
@@ -439,27 +519,26 @@ impl GameSession {
                 return;
             }
 
-            if self.state.pending_roll.is_none() && self.is_human(self.actor()) {
-                self.paused = false;
-                self.resume_at = None;
+            if self.state.pending_roll.is_none() && self.pending.is_none() && self.is_human(self.actor()) {
+                self.settle();
                 self.view(out, false);
                 return;
             }
 
-            // From here there is a step to take that no human answers — a die
-            // or a bot move — so this is where a hold belongs.
-            if let Hold::Wait(resume_at) = self.hold() {
-                self.paused = true;
-                self.resume_at = resume_at;
-                self.view(out, false);
-                return;
-            }
-
-            // `Run` lets the run loop drain the socket between two bot moves,
-            // so "Step" or "New game" land mid-reply — and mid-game, when two
-            // bots play. In front of the *next* move rather than behind the
-            // last, so a yield never lands on a human's decision.
-            if moved && self.state.pending_roll.is_none() {
+            // A bot has chosen; this is where a hold belongs — after the
+            // search the client can now inspect, before the move it chose.
+            if self.pending.is_some() {
+                if let Hold::Wait(resume_at) = self.hold() {
+                    self.paused = true;
+                    self.resume_at = resume_at;
+                    self.view(out, false);
+                    return;
+                }
+            } else if moved && self.state.pending_roll.is_none() {
+                // Let the run loop drain the socket between two bot moves, so
+                // "Step" or "New game" land mid-reply — and mid-game, when two
+                // bots play. In front of the *next* search rather than behind
+                // the last move, so a yield never lands on a human's decision.
                 self.yielded = true;
                 if self.last_view.is_none_or(|t| t.elapsed() >= RUN_VIEW_EVERY) {
                     self.view(out, false);
@@ -469,23 +548,38 @@ impl GameSession {
 
             match self.take_one(out, &mut before) {
                 Took::Stop => return,
-                Took::Roll => {}
+                Took::Roll | Took::Chose => {}
                 Took::Move => moved = true,
             }
         }
     }
 
-    /// One engine step: resolve the pending roll, or let the side to act's
-    /// bot move.
+    /// Nothing is held any more: the session reached a stop of its own.
+    fn settle(&mut self) {
+        self.paused = false;
+        self.resume_at = None;
+        self.pending = None;
+    }
+
+    /// One engine step: resolve the pending roll, play the pending move, or
+    /// let the side to act's bot choose one.
     fn take_one(&mut self, out: &Out, before: &mut (u8, u8)) -> Took {
         if let Some(requested) = self.state.pending_roll {
             let (result, fixed) = self.resolve(requested, out);
             let event = dice::event(requested, result, fixed);
-            self.note(event.text.clone());
-            out.send(ServerMsg::Dice(event));
+            let purpose = dice::purpose(self.state.proc_stack_top().unwrap_or("-"));
+            let text = format!("{purpose} · {}", event.text);
+            let line = self.push_log(LogKind::Roll, None, text, Some(event), None);
+            out.send(ServerMsg::Log(line));
             self.step(SomeProcInput::Roll(result));
-            self.note_score(before);
+            self.note_score(before, out);
             return Took::Roll;
+        }
+
+        if let Some(Pending { action }) = self.pending.take() {
+            self.step(SomeProcInput::Action(action));
+            self.note_score(before, out);
+            return Took::Move;
         }
 
         let team = self.actor();
@@ -512,7 +606,6 @@ impl GameSession {
         } else {
             None
         };
-        self.note(format!("{team:?} bot: {}", mirror::action_to_proto(action).describe()));
         self.record(team, action, net, search, out);
 
         if !self.state.is_legal_action(&action) {
@@ -523,20 +616,28 @@ impl GameSession {
                 "{team:?} bot proposed an illegal action {action:?} at {:?}",
                 self.state.proc_stack_top()
             )));
-            self.paused = false;
-            self.resume_at = None;
+            self.settle();
             self.view(out, false);
             return Took::Stop;
         }
-        self.step(SomeProcInput::Action(action));
-        self.note_score(before);
-        Took::Move
+        self.pending = Some(Pending { action });
+        Took::Chose
     }
 
-    fn note_score(&mut self, before: &mut (u8, u8)) {
+    fn note_score(&mut self, before: &mut (u8, u8), out: &Out) {
         let after = (self.state.home.score, self.state.away.score);
         if after != *before {
-            self.note(format!("TOUCHDOWN — {} - {}", after.0, after.1));
+            let scorer = if after.0 != before.0 {
+                em::TeamType::Home
+            } else {
+                em::TeamType::Away
+            };
+            self.note(
+                out,
+                LogKind::Score,
+                Some(scorer),
+                format!("TOUCHDOWN {scorer:?} — {} - {}", after.0, after.1),
+            );
             *before = after;
         }
     }
@@ -560,7 +661,8 @@ impl GameSession {
         }
     }
 
-    /// Take the held step, then carry on under the current mode.
+    /// Play the held move, then carry on under the current mode — through
+    /// the dice it causes and up to the next bot search, which holds again.
     fn step_once(&mut self, out: &Out) {
         if !self.paused {
             // Not an error: the human can hit Step on a board that is already
@@ -573,16 +675,16 @@ impl GameSession {
         let mut before = (self.state.home.score, self.state.away.score);
         match self.take_one(out, &mut before) {
             Took::Stop => {}
-            Took::Roll | Took::Move => self.advance(out),
+            Took::Roll | Took::Chose | Took::Move => self.advance(out),
         }
     }
 
     /// Re-pace the session. Switching to `Run` while it holds releases it;
     /// switching between the holding modes just re-arms the hold, without
-    /// taking a step, so changing the speed never skips anything.
+    /// playing the held move, so changing the speed never skips anything.
     fn set_step_mode(&mut self, mode: StepMode, out: &Out) {
         self.step_mode = mode;
-        self.note(format!("step mode: {}", mode.label()));
+        self.note(out, LogKind::Note, None, format!("step mode: {}", mode.label()));
         if self.paused || self.yielded {
             self.paused = false;
             self.resume_at = None;
@@ -608,7 +710,7 @@ impl GameSession {
             return;
         }
         let team = self.actor();
-        if !self.is_human(team) {
+        if !self.is_human(team) || self.pending.is_some() {
             out.send(ServerMsg::Error("not your decision".into()));
             return;
         }
@@ -625,10 +727,6 @@ impl GameSession {
             log: self.log.len(),
             decisions: self.decisions,
         });
-        self.note(format!(
-            "{team:?} (you): {}",
-            mirror::action_to_proto(action).describe()
-        ));
         let net = self.readout(team);
         self.record(team, action, net, None, out);
         self.step(SomeProcInput::Action(action));
@@ -642,7 +740,7 @@ impl GameSession {
     /// recording keeps every placement rather than jumping from an empty half
     /// to a finished one.
     fn auto_setup(&mut self, name: &str, out: &Out) {
-        if self.state.info.game_over || self.state.pending_roll.is_some() {
+        if self.state.info.game_over || self.state.pending_roll.is_some() || self.pending.is_some() {
             return;
         }
         let Some(team) = self.state.setup_team().filter(|&t| self.is_human(t)) else {
@@ -660,7 +758,12 @@ impl GameSession {
             log: self.log.len(),
             decisions: self.decisions,
         });
-        self.note(format!("{team:?} (you): {formation:?} setup"));
+        self.note(
+            out,
+            LogKind::Note,
+            Some(team),
+            format!("{team:?} (you): {formation:?} setup"),
+        );
         // Each placement is still a decision of its own in the log.
         while let Some(action) = formation.next_action(&self.state, team) {
             let net = self.readout(team);
@@ -677,18 +780,70 @@ impl GameSession {
                 self.state = snapshot.state;
                 self.rng = snapshot.rng;
                 self.steps.truncate(snapshot.steps);
+                self.rngs.truncate(snapshot.steps);
                 self.log.truncate(snapshot.log);
                 self.decisions = snapshot.decisions;
                 self.decision_steps.truncate(snapshot.decisions as usize);
+                out.send(ServerMsg::LogTruncated {
+                    keep: snapshot.log as u64,
+                });
                 out.send(ServerMsg::DecisionsTruncated { keep: self.decisions });
                 self.pinned_roll = None;
-                self.note("undo".into());
+                self.settle();
+                self.note(out, LogKind::Note, None, "undo".into());
                 // Rewinding lands on a human decision point by construction,
                 // so there is nothing to advance through — but going through
                 // `advance` keeps the "who acts next" logic in one place.
                 self.advance(out);
             }
         }
+    }
+
+    /// Put micro-step `step` back on the board and continue from there.
+    ///
+    /// Everything after it is dropped — the later steps, their dice stream,
+    /// the log lines and decisions that left that position — so the game is
+    /// exactly as it was when that position was current, and play resumes
+    /// from it: under `Manual` the next bot search runs and holds, so the
+    /// decision taken there can be re-read (or taken differently, by a human).
+    /// A bot's cached tree no longer matches and discards itself. Under `Run`
+    /// the session switches to `Manual` first, or the rewind would be gone
+    /// before anyone saw it.
+    fn rewind(&mut self, step: usize, out: &Out) {
+        if step >= self.steps.len() {
+            return out.send(ServerMsg::Error(format!(
+                "no step {step} in this game ({} so far)",
+                self.steps.len()
+            )));
+        }
+        if self.step_mode == StepMode::Run {
+            self.step_mode = StepMode::Manual;
+        }
+        self.state = self.steps[step].clone();
+        self.rng = self.rngs[step].clone();
+        self.steps.truncate(step + 1);
+        self.rngs.truncate(step + 1);
+        // A decision at step `s` left position `s`; rewinding *to* `s` undoes it.
+        let keep_decisions = self.decision_steps.partition_point(|&s| s < step);
+        self.decision_steps.truncate(keep_decisions);
+        self.decisions = keep_decisions as u64;
+        // A roll or an action logged at `s` is an event leaving `s`; a note
+        // or a score written *at* `s` describes it and stays.
+        let keep_log = self
+            .log
+            .iter()
+            .position(|e| e.step > step || (e.step == step && matches!(e.kind, LogKind::Roll | LogKind::Action)))
+            .unwrap_or(self.log.len());
+        self.log.truncate(keep_log);
+        // Human undo points past the rewind are gone with the steps.
+        self.history.retain(|s| s.steps <= step + 1);
+        out.send(ServerMsg::LogTruncated { keep: keep_log as u64 });
+        out.send(ServerMsg::DecisionsTruncated { keep: self.decisions });
+        self.pinned_roll = None;
+        self.yielded = false;
+        self.settle();
+        self.note(out, LogKind::Note, None, format!("rewound to step {step}"));
+        self.advance(out);
     }
 
     fn expand(&mut self, search_id: u64, path: Vec<ps::SearchEdge>, with_view: bool, out: &Out) {
@@ -901,6 +1056,7 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
                     Ok(bots) => match GameSession::new(spec, bots, step_mode, sides) {
                         Err(e) => out.send(ServerMsg::Error(e)),
                         Ok(mut new_session) => {
+                            new_session.send_log_so_far(&out);
                             new_session.advance(&out);
                             session = Some(new_session);
                         }
@@ -927,6 +1083,7 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
                     ClientMsg::FixNextRoll(roll) => s.pin(roll, &out),
                     ClientMsg::SaveRecording { path } => s.save(&path, &app.recordings_dir, &out),
                     ClientMsg::ShowDecision { index } => s.show_decision(index, &out),
+                    ClientMsg::RewindTo { step } => s.rewind(step, &out),
                 },
             },
         }

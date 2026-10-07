@@ -128,6 +128,8 @@ button:disabled { opacity: .4; cursor: default; }
 .scoreboard .team.away .name { color: var(--away); }
 .scoreboard .seat { color: var(--ink-dim); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .scoreboard .team.you .seat { color: var(--ink); }
+/* The side whose decision is next. */
+.scoreboard .team.acting .name { text-decoration: underline; text-underline-offset: 4px; }
 .scoreboard .score { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .scoreboard .meta { color: var(--ink-dim); font-size: 11px; }
 .scoreboard .middle { display: flex; flex-direction: column; align-items: center; gap: 1px; }
@@ -148,6 +150,7 @@ button:disabled { opacity: .4; cursor: default; }
 .board-wrap { position: relative; }
 
 .pitch {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(var(--cols), var(--sq));
   background: var(--oob);
@@ -156,6 +159,14 @@ button:disabled { opacity: .4; cursor: default; }
   width: max-content;
   user-select: none;
 }
+
+/* The block arrow: an SVG the size of the grid, laid over it (out of the grid
+   flow, so it takes no cell), with a dark halo under a bright shaft so it
+   reads on both pitch greens and over a sprite. */
+.pitch svg.arrows { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.arrows .shaft { stroke: #fff; stroke-width: 3; stroke-linecap: round; }
+.arrows .shadow { stroke: rgba(0, 0, 0, .6); stroke-width: 6; stroke-linecap: round; }
+.arrows .head { fill: #fff; }
 
 .sq {
   position: relative;
@@ -198,11 +209,27 @@ button:disabled { opacity: .4; cursor: default; }
 }
 .sq.actionable:hover::after { border-color: #fff; background: rgba(255, 255, 255, .12); }
 .sq.on-route { box-shadow: inset 0 0 0 2px var(--accent); }
+/* The square a held bot move targets: what the next step plays. */
+.sq.pending-target { box-shadow: inset 0 0 0 2px var(--warn); }
+.sq.pending-target::after {
+  content: ""; position: absolute; inset: 2px; pointer-events: none;
+  border: 1px dashed var(--warn); border-radius: 3px;
+}
+
+/* Where the active player has been this activation: a small dot per square,
+   under the sprites. */
+.sq .trail-dot {
+  position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
+  margin: -3px 0 0 -3px; border-radius: 50%; pointer-events: none;
+  background: rgba(255, 255, 255, .85); box-shadow: 0 0 0 1.5px rgba(0, 0, 0, .45);
+}
 
 .sq img { position: absolute; image-rendering: pixelated; pointer-events: none; }
 .sq img.player { left: 1px; top: 1px; width: calc(var(--sq) - 2px); height: calc(var(--sq) - 2px); }
 .sq img.player.active { filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 6px var(--accent)); }
 .sq img.player.down { opacity: .75; }
+/* `used` is only set on a player who has finished acting; the active one keeps
+   full colour however the engine flags them. */
 .sq img.player.used { opacity: .55; filter: grayscale(70%); }
 .sq img.status { left: 1px; top: 1px; width: calc(var(--sq) - 2px); height: calc(var(--sq) - 2px); }
 .sq img.ball { right: 0; bottom: 0; width: calc(var(--sq) * 0.5); height: calc(var(--sq) * 0.5); }
@@ -254,6 +281,9 @@ button:disabled { opacity: .4; cursor: default; }
 .overlays { display: flex; gap: 6px; flex-wrap: wrap; }
 .overlay { display: flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; }
 .overlay.on { border-color: var(--accent); color: var(--accent); }
+/* The tackle-zone layer is its own toggle, not one of the exclusive tints. */
+.overlay.tzmode { margin-left: auto; }
+.overlay.tzmode.on { border-color: var(--good); color: var(--good); }
 .overlay .key {
   display: inline-block; min-width: 14px; text-align: center;
   background: var(--line); border-radius: 3px; font-size: 10px; padding: 0 3px;
@@ -265,7 +295,13 @@ button:disabled { opacity: .4; cursor: default; }
   width: 118px; padding: 8px;
   background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px;
 }
-.dugout h3 { margin: 0 0 8px; font-size: 12px; }
+/* The dugout of the side whose decision is next lights up in its colour. */
+.dugout.team-Home.acting { border-color: var(--home); box-shadow: 0 0 0 1px var(--home), 0 0 14px rgba(111,179,255,.35); }
+.dugout.team-Away.acting { border-color: var(--away); box-shadow: 0 0 0 1px var(--away), 0 0 14px rgba(255,157,111,.35); }
+.dugout h3 { margin: 0 0 8px; font-size: 12px; display: flex; justify-content: space-between; align-items: baseline; }
+.dugout .to-act { font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .8px; }
+.dugout.team-Home .to-act { color: var(--home); }
+.dugout.team-Away .to-act { color: var(--away); }
 .dugout .box { margin-bottom: 8px; }
 .dugout .box.empty { opacity: .35; }
 .box-label { display: block; font-size: 10px; color: var(--ink-dim); margin-bottom: 2px; }
@@ -275,7 +311,7 @@ button:disabled { opacity: .4; cursor: default; }
 /* ----------------------------------------------------------------- panel */
 
 .panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.actions, .ticker, .log {
+.actions, .log {
   padding: 10px; background: var(--bg-raised);
   border: 1px solid var(--line); border-radius: 8px;
 }
@@ -297,18 +333,32 @@ button.act img { width: 20px; height: 20px; image-rendering: pixelated; }
 .gameover .result { font-size: 17px; font-weight: 700; }
 .gameover .score { font-size: 15px; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
 
-.ticker { max-height: 260px; overflow-y: auto; }
-.roll { display: flex; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
-.roll.fixed { color: var(--warn); }
-.roll .faces { display: flex; gap: 2px; min-width: 54px; }
-.roll .faces img { width: 18px; height: 18px; image-rendering: pixelated; }
-.roll .text { font-size: 12px; }
-
-.log { max-height: 220px; overflow-y: auto; }
+/* One log for dice, decisions and notes. Every line is a point in the game
+   and rewinds to it on click; the step number is the handle. */
+.log h3 .hint { text-transform: none; letter-spacing: 0; margin-left: 8px; font-weight: 400; }
+.log-lines { max-height: 480px; overflow-y: auto; }
 .log .line {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px; color: var(--ink-dim); padding: 1px 0;
+  display: grid; grid-template-columns: 34px auto 1fr; gap: 6px; align-items: center;
+  padding: 2px 4px 2px 0; border-bottom: 1px solid rgba(255,255,255,.04);
+  border-left: 3px solid transparent; padding-left: 5px;
+  font-size: 12px; color: var(--ink-dim); cursor: pointer;
 }
+.log .line:hover { background: rgba(255,255,255,.06); color: var(--ink); }
+.log .line .step {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px;
+  color: var(--ink-dim); opacity: .7; font-variant-numeric: tabular-nums; text-align: right;
+}
+.log .line .faces { display: flex; gap: 2px; }
+.log .line .faces:empty { display: none; }
+.log .line .faces img { width: 18px; height: 18px; image-rendering: pixelated; }
+.log .line .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log .line.action { color: var(--ink); }
+.log .line.action.team-H { border-left-color: var(--home); }
+.log .line.action.team-A { border-left-color: var(--away); }
+.log .line.roll .text { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.log .line.score { color: var(--good); font-weight: 600; }
+.log .line.note { font-style: italic; font-size: 11px; }
+.log .line.fixed { color: var(--warn); }
 
 /* ------------------------------------------------------------- inspector */
 

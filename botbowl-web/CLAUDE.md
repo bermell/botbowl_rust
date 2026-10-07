@@ -46,7 +46,15 @@ and are unit-tested in `server/src/view.rs` against real positions. The layer pa
 the mover's **opponent**, so it flips sides on its own when the bot is the one choosing; `mover()`
 reads `to_act` before `team_turn` because the two disagree (an uphill block's dice are picked by
 the defender). `threat_team` is `None` outside a move phase, so a kickoff or a dice prompt is not
-covered in colour. Resolve it **once per board**, not once per square: it scans every square.
+covered in colour. Resolve it **once per board**, not once per square: it scans every square. The
+layer is its own three-way toggle in the client (`TzMode`: auto / always / off, key `T`), separate
+from the exclusive tint overlays, because it has to coexist with any of them and because with two
+bots playing it flips sides every turn — some people want it off.
+
+Two things the view says that a `GameState` never does: `PlayerView.used` is the engine's flag,
+but the *active* player is drawn in full colour and with the "not acted" sprite however it is set
+(the engine marks a player used the moment they activate, and greying them mid-move reads as
+"done"); and `to_act` lights up that side's dugout and scoreboard entry.
 
 The price is that `proto` hand-mirrors the engine's action and dice enums. `server/src/mirror.rs`
 pays it: every conversion is an **exhaustive match with no wildcard arm**, so adding an engine
@@ -72,16 +80,42 @@ inside the call, so it must not run on the async runtime. Channels in, channels 
   cached tree stops matching its anchor after an undo and discards itself, which costs a wasted
   reuse and nothing else. The snapshot also carries the decision-log length, and an undo sends
   `DecisionsTruncated { keep }` so the client's log rewinds with the board.
-- **The hold sits in front of a step, never behind it** (`StepMode`). `advance` used to loop until
-  the human had something to decide, which made the bot's whole reply arrive as one jump. It now
-  asks `hold()` before each step it takes on the human's behalf — a die or a bot move — and under
-  `Manual`/`Auto` returns to the run loop instead. In front, because that way the board on screen
-  is always the *finished* result of the previous step, the search report beside it belongs to the
-  move about to be played, and a hold never stands between the human and their own next decision.
-  Releasing is `StepOnce`, or the `Auto` deadline, or switching to `Run`; changing speed re-arms
-  the hold without taking a step. Because the hold returns to the run loop rather than sleeping
-  inside `advance`, undo, roll pinning and `ExpandNode` all keep working while it holds — which is
-  the whole point, since inspecting the tree mid-turn is why the pacing exists.
+- **The hold sits between a bot's search and its move** (`StepMode`, `GameSession::pending`).
+  `advance` rolls every die straight through to the next decision; when that decision is a bot's,
+  it searches, logs and reports the decision (`ServerMsg::Decision`) and *then* asks `hold()`.
+  Under `Manual`/`Auto` it returns to the run loop with the move unplayed: the board on screen is
+  the position the search was about, the report beside it is that search, and
+  `ViewState::pending_action` names what the next `StepOnce` plays (the Step button reads
+  "Play ▶ Move (12,3)"). One click = play the held move, roll through, search the next decision,
+  hold again. Dice are never held — they are the engine's work, not something anyone can inspect.
+  (It used to hold *before* every step, dice included, which made a bot's turn forty clicks and
+  showed the search report only after its move had already landed.) Releasing is `StepOnce`, the
+  `Auto` deadline, or switching to `Run`; changing speed re-arms the hold without playing the move.
+  Because the hold returns to the run loop rather than sleeping inside `advance`, undo, rewind,
+  roll pinning and `ExpandNode` all keep working while it holds — which is the whole point, since
+  inspecting the tree mid-turn is why the pacing exists. Pinned by
+  `manual_pacing_holds_on_every_bot_decision`.
+- **Rewind is a real rewind, from the log** (`ClientMsg::RewindTo { step }`). The session keeps
+  every micro-step (`steps`) *and* the dice RNG at each (`rngs`), so clicking a line of the game
+  log or "rewind to here" on a decision puts that position back as the live game: later steps,
+  log lines and decisions are dropped (`LogTruncated`, `DecisionsTruncated`, the human undo stack
+  pruned), the dice stream resumes where it was, and `advance` runs — under `Manual` the bot
+  searches that position again and holds, so a decision that went by can be re-read. Under `Run`
+  the session switches itself to `Manual` first, or the rewind would be gone before anyone saw it.
+  Bot-vs-bot has no human undo point, so this is its only way back. Pinned by
+  `a_rewind_restores_an_earlier_step_and_holds_there`.
+- **One game log, streamed** (`ServerMsg::Log(LogEntry)`). Dice and text used to be two panels fed
+  two ways (a `Dice` message and a `log_tail` re-sent inside every view). Every line now carries
+  its kind, side, micro-step, the die faces for a roll and the decision index for an action, and a
+  roll line is prefixed with what it was *for* — `dice::purpose(proc_stack_top())` at the moment
+  the engine paused on the request ("Dodge · D6 3+ — success", "Armour · 2D6 9+ — failure").
+- **The trail and the block arrow are derived, never stored.** `ViewState::trail` is the active
+  player's squares this activation, read by `view::trail` off the step snapshots — with the
+  roll-free squares `MoveAction::continue_along_path` walks in one micro-step filled in from the
+  pathfinder route in the last snapshot that had a path buffer. **No history goes into
+  `GameState`**: a state that remembered its past would stop recombining with one that reached the
+  same position another way. `ViewState::block` is the `Block` procedure found anywhere on the
+  stack (`GameState::proc_stack_iter`), attacker = active player, drawn as an SVG over the grid.
   - The pacing lives on the **connection**, not the session: it is set from the game screen, must
     survive "New game", and a `SetStepMode` can arrive before the first `NewGame`.
   - `Auto` polls with `try_recv` on a 5 ms tick rather than `tokio::time::timeout`, because this
