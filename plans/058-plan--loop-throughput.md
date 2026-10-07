@@ -102,6 +102,7 @@ records are skipped there (the audit's replay is random-start only).
 | 03 | 141 min | 2400 (0.87) / 1924 (0.81) | Push 1460 → 69%, Wrestle 180 → 56%, Dodge 37 → 84%, Block 17 → 88% | 1924 (6.9; 2.8) | 75 min, 0 unlabelled | 42 min (3-gen window), step 32000; absorb dP(played) +0.001, dtop1 −0.000, dvalMSE −0.006 | 0.212 → 0.214 (paired +0.9%, ~1.6 SE: flat) | gen02 on gen03: +0.003/+0.003/+0.006/**+0.010** MONOTONE; slope 0.76 | 14x7 0.449 ± 0.035 (H0, 68 pairs); 16x9 0.481 ± 0.025 (H0, 101 pairs) |
 | 04 | 292 min (36 local; shared 112 min with gen03's drive benchmark; laptop 5 streams only near the end) | 2400 (0.87) / 1910 (0.80) | Push 1560 → 68%, Wrestle 181 → 46%, Dodge 38 → 89%, Block 28 → 96% | 1910 (6.9; 2.8) | 75 min, 0 unlabelled; prepare drops 20% as forced | 28 min, step 25000; combined val 0.924 (not comparable: forced samples, zero policy loss, left val too); absorb dP(played) +0.004, dtop1 +0.002, dvalMSE −0.005 | 0.214 → **0.209 (paired −2.3%, ~4 SE)**, bias −0.015 → −0.006 | gen03 on gen04: +0.002/+0.004/+0.007/+0.009 MONOTONE; slope 0.74 | |
 | 05 | 196 min (28 local; laptop ~1 h of it); first corpus from the forced-move bot | 2400 (0.89) / 1955 (0.80) | Push 1447 → 69%, Wrestle 163 → 41%, Dodge 41 → 88%, Block 25 → 84% | 1955 (6.9; 2.8) | 79 min, 0 unlabelled | 28 min, step 25000; absorb dP(played) +0.001, dtop1 −0.000, dvalMSE −0.005 | 0.209 → **0.206 (paired −1.2%, ~3 SE)**, bias +0.004 | gen04 on gen05: +0.002/+0.003/+0.003/+0.007 MONOTONE; slope 0.43 (gen04 corpus: 0.74) | (gen06) |
+| 06 | **114 min** for 3200 drives (400/shard; 48 local over 2 sidecars + laptop 5): 201k samples, 1766 decisions/min (gen05: 775) | 3200 (0.88) / 2597 (0.81) | Push 1977 → 72%, Wrestle 242 → 46%, Dodge 64 → 97%, Block 51 → 90% | 2597 (6.9; 2.8) | | | | | |
 
 **gen01, the first fine-tune on the new rules.** It learned steadily (every validation metric moved
 at almost every checkpoint, unlike g056's flat curves), and the absorption probe is strong (dtop1
@@ -274,6 +275,13 @@ and N processes). Net: gen05. Window 10 min (`5076090`) or 8 min (`96fb083`), so
 (`GEN_SIDECARS=2`, a second local worker `local2` on its own sidecar), and the speedup spent on data:
 **400 games per shard** (300 before, +33%), so a generate phase stays near gen05's ~3.3 h. MC labels
 and training grow with it (~105 and ~37 min expected).
+
+**In the loop (gen06): faster than the benchmark.** 201k samples in 114 min = 1766 decisions/min,
+2.3x live gen05 (775), while the two sidecars served the same ~8.9k samples/s as in the benchmark.
+So the loop spends ~300 forwards per decision where the benchmark's `dataset` spent ~490. Likely
+reason (unverified): the worker shares one evaluator, and its memo, across its 24 games, so
+repeated states (kickoff setups, early drive positions) hit the cache. MC labels (~1.75 h, one
+sidecar) are now the longest phase.
 
 **Next levers, all on the GPU side:** the forward itself (precision, fused kernels, TensorRT-style
 export), fewer forwards per decision (the memo hit rate), and two sidecars for mc-label, which is
