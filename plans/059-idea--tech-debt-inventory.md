@@ -26,7 +26,6 @@ session.
 
 | # | Item | Effort | Payoff |
 |---|------|--------|--------|
-| 1 | **`botbowl-data/build.rs` reruns on `.git/index`, so every `git status`, `add`, `commit` or `checkout` rebuilds 9 crates** (measured: 15.6 s `cargo check`, minutes in release). Its `BOTBOWL_GIT_DIRTY` is also wrong in the other direction: an unstaged edit doesn't rerun the script, so a corpus can be stamped clean while running dirty code. Stamp at runtime (`git` subprocess at startup) or use `vergen`/`built` with a proper dirty check. | S–M | high |
 | 2 | **One checkout, one `target/`, one live worker binary.** Parallel agents block on the cargo lock (5 min for a 2 s check), a branch was switched under a running test, and `target/release/botbowl-worker` is the binary the live worker runs, so any `cargo build --release` replaces it. Rule: agents work in worktrees with their own `CARGO_TARGET_DIR`; the long-lived worker and the loop run from a dedicated target dir, never `target/release`. Write this into root `CLAUDE.md`. | S | high |
 | 3 | **Three definitions of "dirty tree", and the worker allowlist omits crates the game depends on.** `build.rs` uses `git status --porcelain`; 14 scripts use `git diff --quiet`, which ignores staged and untracked changes; the launch guard therefore passes with staged edits. The allowlist pathspec (`launch_plan058.sh:52` and 6 others) lists engine/mcts/nn/play/worker/hub-proto/recon_mcts but not `botbowl-curriculum`, `botbowl-data`, `Cargo.toml`, `Cargo.lock`. One `scripts/lib/git.sh` with `require_clean` and `game_crates`, or let the hub compute both. | S | high |
 | 4 | **Stale docs that agents load first.** Root `CLAUDE.md` names two different live runs (`:31` loopmix16x9g056, `:33` loopmix16x9v9), says "protocol v14" while code is at 16, cites `cfgs/aggressive.toml` which doesn't exist, says 031/032 are the live programme (031 is finished), and `:28`/`:29` contradict each other on full games. `README.md` says "four member crates" (there are 13). `REVIEW.md` says the root isn't a git repo. `PROFILING.md` says perf is deprioritised. `rules/README.md` says 6 skill variants. Memory index lists three "unmerged" branches that are merged and deleted. Fix all in one pass. | S | high |
@@ -53,7 +52,6 @@ session.
 
 ### A. Build, workspace, dev loop
 
-- A1 `botbowl-data/build.rs:26-30` reruns on `.git/index` → top-20 #1. S / high
 - A2 No `[profile.*]` in root `Cargo.toml` → top-20 #7. S / high
 - A3 No `[workspace.dependencies]`/`[workspace.package]`; 23 crates at multiple versions: itertools ×4, syn ×3, hashbrown ×3, getrandom ×3, rand 0.8/0.9, **tokio-tungstenite 0.24 (worker) + 0.29 (axum)**, toml 0.8/1.1, thiserror 1/2, mio 0.8 via stale crossterm 0.27/ratatui 0.25. Bumping the worker's tungstenite drops a whole websocket stack. S–M / med
 - A4 `botbowl-web/client` (leptos, wasm) is a workspace member with no `default-members`, so every host `cargo check/test --workspace` compiles leptos. Add `default-members` or cfg-gate. S / med
@@ -171,7 +169,7 @@ session.
 
 ## Part 3 — Suggested sequencing
 
-1. **One afternoon of S items that remove daily friction:** #1 (build.rs), #2 (worktree/target rule in CLAUDE.md), #3 (dirty check + allowlist lib), #4 (doc sweep), #5 (archive exp scripts), #7 (profiles + workspace deps), B6 (token), A11 (`git gc`, `.ignore`), #14 (`check_all.sh`), #15 (fmt hook, clippy fix). None touches game logic; do it between generations.
+1. **One afternoon of S items that remove daily friction:** #2 (worktree/target rule in CLAUDE.md), #3 (dirty check + allowlist lib), #4 (doc sweep), #5 (archive exp scripts), #7 (profiles + workspace deps), B6 (token), A11 (`git gc`, `.ignore`), #14 (`check_all.sh`), #15 (fmt hook, clippy fix). None touches game logic; do it between generations.
 2. **Config consolidation (#6, B1, B3, B4, G1):** presets as the one source of truth, env/CLI as overrides, generated knob table, web loads presets. This is the item most likely to prevent the next "why do these two runs differ" hunt.
 3. **Test honesty (#9, #10, D10, C2, C3):** ignore reasons, no silent skips, cheaper builder, shared test helpers. Makes green mean green and the suite faster.
 4. **Mechanical splits (#17, D1, D2, D5, D6, C4):** tests out of god files first, then module seams. Zero behaviour change, big win for agents' context budgets.
