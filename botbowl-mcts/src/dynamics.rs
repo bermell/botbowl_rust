@@ -2010,14 +2010,14 @@ impl SearchBudget {
 /// differently-configured bots (the web server of plan 034) could not
 /// configure `workers` / `horizon` / `memory_mode` independently at all.
 ///
-/// [`MctsConfig::from_env`] is the default, so every existing CLI path behaves
-/// exactly as before; `run_search` now reads only `self.config`. Env vars are
-/// therefore resolved **once, at construction** — setting one between building
-/// a bot and calling it no longer has any effect.
+/// `Default` is [`MctsConfig::new`], the shipped configuration; the environment
+/// is read only by [`MctsConfig::from_env`] / [`MctsBot::from_env`], which the
+/// CLI entry points call explicitly. `run_search` reads only `self.config`, so
+/// env vars are resolved **once, at construction** — setting one between
+/// building a bot and calling it has no effect.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-// `MctsConfig::new`, not `Default` — `Default` is `from_env()`, and a preset that silently
-// absorbed a stray `BLOOD_MCTS_*` would not be reproducible, which is the whole point of
-// naming a configuration. `deny_unknown_fields` turns a typo into an error instead of a knob
+// `MctsConfig::new` (which `Default` also is): a preset that silently absorbed a stray
+// `BLOOD_MCTS_*` would not be reproducible, which is the whole point of naming a configuration. `deny_unknown_fields` turns a typo into an error instead of a knob
 // that quietly stays at its default.
 #[serde(default = "MctsConfig::new", deny_unknown_fields)]
 pub struct MctsConfig {
@@ -2130,7 +2130,7 @@ impl MctsConfig {
     }
 
     /// [`MctsConfig::new`] with every `BLOOD_MCTS_*` override applied. This is
-    /// what `MctsBot::new` uses, which is what keeps the CLI's A/B knobs
+    /// what `MctsBot::from_env` uses, which is what keeps the CLI's A/B knobs
     /// working.
     pub fn from_env() -> Self {
         let mut cfg = MctsConfig::new();
@@ -2191,16 +2191,19 @@ impl MctsConfig {
     }
 }
 
+/// The shipped configuration, [`MctsConfig::new`]. Never the environment: a `..Default::default()`
+/// must not pick up a stray `BLOOD_MCTS_*` (that is what made exported env vars change test
+/// results). Use [`MctsConfig::from_env`] where the environment is meant to apply.
 impl Default for MctsConfig {
     fn default() -> Self {
-        MctsConfig::from_env()
+        MctsConfig::new()
     }
 }
 
 pub struct MctsBot {
     pub budget: SearchBudget,
-    /// Everything that shapes the search. Defaults to
-    /// [`MctsConfig::from_env`]; override wholesale with
+    /// Everything that shapes the search: [`MctsConfig::new`] from [`MctsBot::new`],
+    /// [`MctsConfig::from_env`] from [`MctsBot::from_env`]; override wholesale with
     /// [`MctsBot::with_config`] or piecemeal with the `with_*` builders.
     pub config: MctsConfig,
     /// Value/prior source threaded into `BloodBowlDynamics` each
@@ -2239,7 +2242,15 @@ pub struct MctsBot {
 }
 
 impl MctsBot {
+    /// The shipped configuration ([`MctsConfig::new`]), ignoring the environment — so tests and
+    /// library callers get the same bot whatever `BLOOD_MCTS_*` is exported.
     pub fn new(budget: SearchBudget) -> Self {
+        MctsBot::with_budget_and_config(budget, MctsConfig::new())
+    }
+
+    /// [`MctsConfig::from_env`]: the shipped configuration with every `BLOOD_MCTS_*` override
+    /// applied. The CLI entry points that honour the environment call this explicitly.
+    pub fn from_env(budget: SearchBudget) -> Self {
         MctsBot::with_budget_and_config(budget, MctsConfig::from_env())
     }
 

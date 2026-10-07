@@ -111,7 +111,7 @@ fn make_bot(args: &ConvergenceArgs, nn: Option<&Arc<NnEvaluator>>, budget: usize
             MctsBot::with_budget_and_config(SearchBudget::Iterations(budget), preset.config)
                 .with_workers(args.mcts_workers)
         }
-        None => MctsBot::new(SearchBudget::Iterations(budget))
+        None => MctsBot::from_env(SearchBudget::Iterations(budget))
             .with_workers(args.mcts_workers)
             .with_puct(puct_from_args(args)),
     };

@@ -81,6 +81,14 @@ impl SearchConfig {
         self
     }
 
+    /// The PUCT rule a bot built from this config searches with: the per-knob override, else the
+    /// preset's, else the environment's (what [`make_mcts`] does). For labels.
+    pub fn effective_puct(&self) -> PuctMode {
+        self.puct
+            .or(self.config.map(|c| c.puct))
+            .unwrap_or_else(|| MctsConfig::from_env().puct)
+    }
+
     /// A plain iteration budget with every other knob at its default.
     pub fn iterations(iters: usize) -> Self {
         SearchConfig {
@@ -142,7 +150,7 @@ pub fn make_mcts(search: &SearchConfig, evaluator: Evaluator, nn: Option<&Arc<Nn
     // it is a property of the machine, not of the bot being compared.
     let mut bot = match search.config {
         Some(config) => MctsBot::with_budget_and_config(search.budget, config).with_workers(search.workers),
-        None => MctsBot::new(search.budget).with_workers(search.workers),
+        None => MctsBot::from_env(search.budget).with_workers(search.workers),
     };
     if let Some(p) = search.puct {
         bot = bot.with_puct(p);
@@ -189,6 +197,15 @@ pub fn evaluator_label(evaluator: Evaluator, model: Option<&str>) -> String {
         Evaluator::PureTd => "mcts(pure-td)".to_string(),
         Evaluator::Nn => format!("mcts(nn:{})", model.unwrap_or("?")),
         Evaluator::NnValue => format!("mcts(nn-value:{})", model.unwrap_or("?")),
+    }
+}
+
+/// The `--puct-mode`/`--puct-c` pair as an optional override: neither flag given is `None` (the
+/// bot's own rule — a preset's, else `BLOOD_MCTS_PUCT_*`, else raw), a constant alone means `raw`.
+pub fn resolve_puct(mode: Option<&str>, c: Option<f32>) -> Result<Option<PuctMode>, String> {
+    match (mode, c) {
+        (None, None) => Ok(None),
+        (mode, c) => parse_puct(mode.unwrap_or("raw"), c).map(Some),
     }
 }
 

@@ -12,6 +12,6 @@ pub fn make_bot(kind: BotKind, mcts_iters: usize) -> Box<dyn Bot> {
     match kind {
         BotKind::Random => Box::new(RandomBot::new()),
         BotKind::Scripted => Box::new(ScriptedBot::new()),
-        BotKind::Mcts => Box::new(MctsBot::new(SearchBudget::Iterations(mcts_iters))),
+        BotKind::Mcts => Box::new(MctsBot::from_env(SearchBudget::Iterations(mcts_iters))),
     }
 }

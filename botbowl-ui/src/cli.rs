@@ -641,9 +641,10 @@ pub struct EvalArgs {
         conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_fpu_reduction"]
     )]
     pub vs_config: Option<PathBuf>,
-    /// Candidate PUCT selection rule: `raw` or `normalised` (plan 026).
-    #[arg(long, default_value = "raw")]
-    pub puct_mode: String,
+    /// Candidate PUCT selection rule: `raw` or `normalised` (plan 026). Unset (and no
+    /// `--puct-c`): the bot's own rule, i.e. `BLOOD_MCTS_PUCT_*` else raw — as in `dataset`.
+    #[arg(long)]
+    pub puct_mode: Option<String>,
     /// Candidate PUCT exploration constant (default: 10 raw / 1 normalised).
     #[arg(long)]
     pub puct_c: Option<f32>,

@@ -13,7 +13,7 @@ use botbowl_hub::http::request;
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig, SizeDist};
 use botbowl_play::board_sizes::{CentredSpec, DEFAULT_CELLS_PER_PLAYER};
-use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, parse_puct, CandidateBot};
+use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, resolve_puct, CandidateBot};
 use botbowl_play::drives::{drive_rung_name, DriveRung, PositionSet};
 use botbowl_play::eval::rung_name;
 use botbowl_play::generate::{Exploration, GenMode, RandomStartBias};
@@ -643,8 +643,9 @@ struct EvalJobArgs {
         conflicts_with_all = ["vs_puct_mode", "vs_puct_c", "vs_horizon_turns", "vs_fpu_reduction"]
     )]
     vs_config: Option<PathBuf>,
-    #[arg(long, default_value = "raw")]
-    puct_mode: String,
+    /// Unset (and no `--puct-c`): the hub's `BLOOD_MCTS_PUCT_*`, else raw, as for `botbowl-ui eval`.
+    #[arg(long)]
+    puct_mode: Option<String>,
     #[arg(long)]
     puct_c: Option<f32>,
     #[arg(long)]
@@ -718,8 +719,9 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         workers: a.mcts_workers,
         puct: cand_preset
             .is_none()
-            .then(|| parse_puct(&a.puct_mode, a.puct_c).map_err(|e| format!("--puct-mode: {e}")))
-            .transpose()?,
+            .then(|| resolve_puct(a.puct_mode.as_deref(), a.puct_c).map_err(|e| format!("--puct-mode: {e}")))
+            .transpose()?
+            .flatten(),
         horizon_turns: cand_preset.is_none().then_some(a.horizon_turns),
         fpu_reduction: cand_preset.is_none().then_some(a.fpu_reduction),
         config: cand_preset.as_ref().map(|p| p.config),
@@ -733,13 +735,14 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
         puct: opp_preset
             .is_none()
             .then(|| {
-                parse_puct(
-                    a.vs_puct_mode.as_deref().unwrap_or(&a.puct_mode),
+                resolve_puct(
+                    a.vs_puct_mode.as_deref().or(a.puct_mode.as_deref()),
                     a.vs_puct_c.or(a.puct_c),
                 )
                 .map_err(|e| format!("--vs-puct-mode: {e}"))
             })
-            .transpose()?,
+            .transpose()?
+            .flatten(),
         horizon_turns: opp_preset
             .is_none()
             .then(|| a.vs_horizon_turns.unwrap_or(a.horizon_turns)),
@@ -827,7 +830,7 @@ fn build_request(a: &EvalJobArgs) -> Result<EvalJobRequest, String> {
             (None, Some(c)) => format!("vs:{base} [flags v {c_name}]", c_name = c.name),
             (None, None) => {
                 let (opp_puct, opp_h, opp_f) = (
-                    opp.puct.expect("set when no preset is named"),
+                    opp.effective_puct(),
                     opp.horizon_turns.expect("set when no preset is named"),
                     opp.fpu_reduction.expect("set when no preset is named"),
                 );

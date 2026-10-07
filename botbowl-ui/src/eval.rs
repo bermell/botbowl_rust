@@ -32,7 +32,7 @@ use botbowl_mcts::PuctMode;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::board_sizes::board_label;
 use botbowl_play::bots::{
-    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_puct,
+    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, resolve_puct,
     CandidateBot, Evaluator, NamedConfig, SearchConfig,
 };
 use botbowl_play::drives::{
@@ -49,13 +49,13 @@ use crate::cli::EvalArgs;
 const LECTURE_MAX_STEPS: u32 = 2000;
 
 /// Refuse to start rather than run the wrong arm of a multi-hour head-to-head.
-fn puct_of(mode: &str, c: Option<f32>) -> PuctMode {
-    parse_puct(mode, c).unwrap_or_else(|e| panic!("--puct-mode: {e}"))
+fn puct_of(mode: Option<&str>, c: Option<f32>) -> Option<PuctMode> {
+    resolve_puct(mode, c).unwrap_or_else(|e| panic!("--puct-mode: {e}"))
 }
 
-/// The candidate's search knobs. Every one is `Some`: `eval` has always
-/// set them explicitly (the CLI defaults stand in for the bot's), so the
-/// environment never reaches the candidate here.
+/// The candidate's search knobs. `horizon_turns` and `fpu_reduction` are always `Some` (the CLI
+/// defaults stand in for the bot's); `puct` is `None` unless `--puct-mode`/`--puct-c` is given,
+/// so `BLOOD_MCTS_PUCT_*` applies here exactly as it does in `dataset`.
 ///
 /// Plan 043: `--bot-config` replaces all of them with a named preset. The per-knob flags are
 /// `conflicts_with` it in clap, so the two can never be mixed — a run is described entirely by a
@@ -64,7 +64,10 @@ fn candidate_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConf
     SearchConfig {
         budget: botbowl_mcts::SearchBudget::Iterations(args.mcts_iters),
         workers: args.mcts_workers,
-        puct: preset.is_none().then(|| puct_of(&args.puct_mode, args.puct_c)),
+        puct: preset
+            .is_none()
+            .then(|| puct_of(args.puct_mode.as_deref(), args.puct_c))
+            .flatten(),
         horizon_turns: preset.is_none().then_some(args.horizon_turns),
         fpu_reduction: preset.is_none().then_some(args.fpu_reduction),
         config: preset.map(|p| p.config),
@@ -82,12 +85,15 @@ fn opponent_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConfi
     SearchConfig {
         budget: botbowl_mcts::SearchBudget::Iterations(args.opponent_iters.unwrap_or(args.mcts_iters)),
         workers: args.mcts_workers,
-        puct: preset.is_none().then(|| {
-            puct_of(
-                args.vs_puct_mode.as_deref().unwrap_or(&args.puct_mode),
-                args.vs_puct_c.or(args.puct_c),
-            )
-        }),
+        puct: preset
+            .is_none()
+            .then(|| {
+                puct_of(
+                    args.vs_puct_mode.as_deref().or(args.puct_mode.as_deref()),
+                    args.vs_puct_c.or(args.puct_c),
+                )
+            })
+            .flatten(),
         horizon_turns: preset
             .is_none()
             .then(|| args.vs_horizon_turns.unwrap_or(args.horizon_turns)),
@@ -505,7 +511,7 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
                 }
             } else {
                 let (opp_puct, opp_horizon, opp_fpu) = (
-                    opp.puct.expect("set when no preset is named"),
+                    opp.effective_puct(),
                     opp.horizon_turns.expect("set when no preset is named"),
                     opp.fpu_reduction.expect("set when no preset is named"),
                 );

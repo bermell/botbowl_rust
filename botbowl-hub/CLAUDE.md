@@ -198,6 +198,9 @@ address is the clients', not the box's.
   laptop was given it, and when the training hub came back on the same port it rejected the laptop.
   `BadToken` is the worker's one fatal rejection, so the laptop sat idle overnight. Change the token
   by replacing the file deliberately, then hand the new one to every worker.
+  The worker resolves its token as `--token`, then `--token-file`, then the `BOTBOWL_HUB_TOKEN`
+  environment variable, then the default file (`botbowl-worker/src/main.rs`); the hub's
+  `serve`/`job`/`status` take only `--token-file` or the default file.
   No TLS, and none is planned as plan 041 phase 5 designed it (a pinned self-signed cert existed
   mostly to protect the served worker binary of phase 4, which does not exist). Put the hub behind
   WireGuard/Tailscale or an SSH reverse tunnel and let workers dial `ws://127.0.0.1:…`; that is
