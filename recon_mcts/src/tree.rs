@@ -429,7 +429,7 @@ pub mod state_memory {
         type State = S;
 
         fn eq(&self, rhs: &Self) -> bool {
-            self.player() == rhs.player() && self.get_state() == rhs.get_state()
+            self.player() == rhs.player() && self.state_eq(rhs)
         }
 
         fn modify_state(_: &RwLock<Option<Self::State>>) {}
@@ -448,7 +448,7 @@ pub mod state_memory {
         type State = S;
 
         fn eq(&self, rhs: &Self) -> bool {
-            self.player() == rhs.player() && self.get_state() == rhs.get_state()
+            self.player() == rhs.player() && self.state_eq(rhs)
         }
 
         fn modify_state(state: &RwLock<Option<Self::State>>) {
@@ -878,6 +878,30 @@ where
     /// [`Node::get_node_info`], which reports `Option<P>`.
     pub(crate) fn player(&self) -> &P {
         self.player.get().expect("player read before materialisation")
+    }
+
+    /// `self`'s state equals `rhs`'s. Compares the stored states in place when both nodes hold
+    /// one, and only derives (clones) them otherwise: a `GameState` clone per side made every
+    /// `parents`/registry removal on node drop cost two full clones.
+    fn state_eq(&self, rhs: &Self) -> bool {
+        if std::ptr::eq(self, rhs) {
+            return true;
+        }
+        // Both read locks are held at once, so take them in address order: two threads comparing
+        // the same pair the other way round could otherwise deadlock behind queued writers.
+        let (first, second) = if (self as *const Self) < (rhs as *const Self) {
+            (self, rhs)
+        } else {
+            (rhs, self)
+        };
+        {
+            let a = first.state.read().unwrap();
+            let b = second.state.read().unwrap();
+            if let (Some(a), Some(b)) = (&*a, &*b) {
+                return a == b;
+            }
+        }
+        self.get_state() == rhs.get_state()
     }
 
     pub(crate) fn get_state(&self) -> S {
@@ -1439,7 +1463,10 @@ where
                 // even be valid (an over-permissive `available_actions`
                 // would have apply_action return None), so we have no
                 // reason to derive their state on drop.
-                if Arc::strong_count(&c.inner) == 1 && c.registered.load(Ordering::Relaxed) {
+                if Arc::strong_count(&c.inner) == 1
+                    && c.registered.load(Ordering::Relaxed)
+                    && c.state.read().unwrap().is_none()
+                {
                     *c.state.write().unwrap() = Some(c.inner.get_state());
                 }
 
@@ -1525,7 +1552,9 @@ where
     P: Hash + PartialEq<P>,
 {
     fn eq(&self, rhs: &Self) -> bool {
-        let matched = <Self as StateMemory>::eq(self, rhs);
+        // A node is equal to itself: `parents` and registry removals look up the very node being
+        // removed, and comparing its state with itself is the whole cost of the lookup.
+        let matched = std::ptr::eq(self, rhs) || <Self as StateMemory>::eq(self, rhs);
         // Counted here rather than around the probe because `HashSet::get` hides the bucket stage
         // entirely — a `None` return cannot be told apart from "a candidate was compared and
         // rejected", which is exactly the number we are after. `ProbeGuard` scopes the tally to a
