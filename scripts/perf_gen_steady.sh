@@ -11,6 +11,7 @@
 # the box's lowest MemAvailable, mean GPU utilisation and the sidecar's mean batch. A run whose
 # MemAvailable falls under MEM_FLOOR_MB (default 1200) is stopped early and marked so.
 set -uo pipefail
+export LC_ALL=C
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO"
 OUT="${1:?out dir}"; NET="${2:?net.onnx}"; LIST="${3:-28 48 64}"; WLIST="${4:-1}"
 CONFIG="${CONFIG:-cfgs/gumbel16_f1000_gen.toml}"; ITERS="${ITERS:-1000}"; SEED="${SEED:-58100}"
