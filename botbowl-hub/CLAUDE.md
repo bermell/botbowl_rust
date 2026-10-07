@@ -97,7 +97,7 @@ address is the clients', not the box's.
      the hub's commit. That is the claim being made — "these commits are the same game" — and the
      only thing that makes it checkable afterwards is the `[hub] ... admitted by ...` line, so
      keep it. Justify an entry with an empty
-     `git diff --stat <theirs>..<hub> -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play`.
+     `git diff --stat <theirs>..<hub> -- $(game_crates)` (`source scripts/lib/git.sh`; the launchers build their allowlist from the same pathspec).
 - **The worker retries; it does not give up.** Backoff starts at 5 s, doubles to
   `--reconnect-max-secs` (30 s), and **resets after any connection that worked** — the old code
   crept to a 5-minute cap and stayed there for the rest of the week. A `Reject` is retried too,

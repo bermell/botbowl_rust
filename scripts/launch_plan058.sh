@@ -26,7 +26,8 @@ POS="$REPO/runs/loopmix16x9g/positions"
 GUMBEL_EVAL="$REPO/cfgs/gumbel16_f1000.toml"; GUMBEL_GEN="$REPO/cfgs/gumbel16_f1000_gen.toml"
 export BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR="$REPO/target/16x9"
 unset BLOOD_MCTS_BUDGET
-git diff --quiet || { say "FATAL: dirty tree"; exit 1; }
+source "$REPO/scripts/lib/git.sh"
+require_clean_tree 2>>"$LOG" || { say "FATAL: dirty tree"; exit 1; }
 say "start: commit $(git rev-parse --short HEAD), init $(basename "$INIT")"
 [ -e "$RUN"/.mirror.done ] || echo "skipped: drives only" > "$RUN"/.mirror.done
 
@@ -57,7 +58,7 @@ export HUB_ALLOW_FROM=""
 # commits) admits a worker on an older commit whose games are known to be the same, e.g. ae721b7
 # across 3dc4902: forced moves are found by search there instead of played directly — the same move,
 # and prepare drops the record either way.
-LAST_GAME=$(git log -1 --format=%h -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-worker botbowl-hub-proto recon_mcts)
+LAST_GAME=$(git log -1 --format=%h -- $(game_crates))
 printf 'hub_commit = "%s"\nallow = [%s]\n' "$(git rev-parse --short HEAD)" \
     "$( (git rev-list --abbrev-commit "$LAST_GAME"^..HEAD; for c in ${EXTRA_ALLOW:-}; do echo "$c"; done) \
         | sed 's/.*/"&"/' | paste -sd,)" > hub-allowed-commits.toml

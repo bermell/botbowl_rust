@@ -12,6 +12,7 @@
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
+source "$REPO/scripts/lib/git.sh"
 export BOARD_SIZE_W=14 BOARD_SIZE_H=7 BOARD_PLAYERS=4
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="$REPO/target/14x7"
@@ -68,7 +69,7 @@ play() {
     local rep="$OUT/$tag.json"
     [ -e "$rep" ] && { log "$tag already played"; return 0; }
     log "$tag: $(basename "$cand") vs $(basename "$opp"), $GAMES games x$PARALLEL, seed $SEED, extra: $*"
-    log "$tag: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty) env: $(env | grep '^BLOOD_' | tr '\n' ' ')"
+    log "$tag: commit $(git rev-parse --short HEAD)$(dirty_suffix) env: $(env | grep '^BLOOD_' | tr '\n' ' ')"
     local t0=$SECONDS
     # shellcheck disable=SC2086
     if ! "$UI" eval --evaluator nn --model "$cand" \
