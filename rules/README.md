@@ -2,9 +2,10 @@
 
 Full BB2025 skill/trait list from `Skills & Traits - Blood Bowl Base.html` in this
 directory, cross-referenced against `botbowl-engine`'s `Skill` enum
-(`botbowl-engine/src/core/table.rs:59`). That enum currently has **6 variants**:
-`Dodge`, `Throw`, `Block`, `Catch`, `SureHands`, `SureFeet` — everything else in the
-rulebook (~100 skills/traits) has no representation in the engine at all.
+(`botbowl-engine/src/core/table.rs`). That enum currently has **40 variants**
+(`Skill::COUNT`; 2026-10-07) — the **Implemented** column below says which of them the
+engine actually applies. The rest of the rulebook (~70 skills/traits) has no
+representation in the engine at all.
 
 - **Implemented** — engine code actually checks/grants this skill's effect (not just
   an enum variant name).
@@ -12,7 +13,7 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
   effect by name. "—" means implementation status makes this moot.
 - **Effort to add** — how it would land in the codebase if implemented today:
   - **Simple** — a dice/roll modifier, threshold change, or restriction on an
-    *existing* action. Same shape as the 6 already implemented: add a `Skill`
+    *existing* action. Same shape as most already implemented: add a `Skill`
     variant, check `has_skill()` in the relevant procedure, add a `SKILL_PLANES`
     entry in `botbowl-nn/src/encode.rs` (see prior discussion in this
     conversation — old training data stays valid, it just reads 0 on the new
@@ -140,13 +141,14 @@ rulebook (~100 skills/traits) has no representation in the engine at all.
 
 ## Summary
 
-- **Implemented:** Dodge, Block, Catch, Sure Hands, Sure Feet (5 of ~107 skills/traits).
-- **Tested by name:** Dodge (`dodge_reroll`), Sure Hands (`pickup_success`). Block, Catch
-  and Sure Feet are implemented but no test grants/asserts them by name — coverage is
-  incidental (e.g. `test_block_2d_bothdown_casualty` only exercises the no-skill branch).
-- Everything else in the rulebook — all of Devious, Mutation, Strength, and Traits, plus
-  most of Agility/General/Passing — has no engine representation at all.
-- **Effort to add:** the large majority (~95) are "Simple" — same shape as the 6 already
+- **Implemented (per the table, 21 of ~107):** Catch, Dodge, Jump Up, Sidestep, Sure Feet,
+  Block, Dauntless, Fend, Frenzy, Strip Ball, Sure Hands, Tackle, Wrestle, Claws, Arm Bar,
+  Brawler, Grab, Guard, Juggernaut, Mighty Blow, Stand Firm. The `Skill` enum has 40
+  variants; the ones not listed here are named (rosters carry them) but not applied, or the
+  table lags the code — `has_skill(Skill::X)` call sites are the ground truth.
+- **Tested by name:** see the Tested column (18 rows).
+- Everything else in the rulebook has no engine representation at all.
+- **Effort to add:** the large majority (~95) are "Simple" — same shape as most already
   implemented, and safe to layer onto existing training data (old samples just read 0 on
   the new skill plane). A smaller set (~12: Monstrous Mouth, Punt, Multiple Block,
   Ball & Chain, Bombardier, Breathe Fire, Chainsaw, Hypnotic Gaze, Kick Team-mate,

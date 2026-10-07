@@ -4,8 +4,8 @@
 //! ```sh
 //! # once, to build the client:
 //! (cd botbowl-web/client && trunk build --release)
-//! cargo run -p botbowl-web-server -- \
-//!     --assets-dir /Users/mattias/repos/blood/botbowl/botbowl/web/static/img
+//! cargo run --release -p botbowl-web-server   # sprites: auto-detected sibling ../botbowl checkout,
+//!                                             # else --assets-dir <botbowl>/botbowl/web/static/img
 //! ```
 //!
 //! Binds `127.0.0.1` only. This is a local single-player POC with no auth,

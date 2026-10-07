@@ -1,7 +1,7 @@
 //! The web-play server: owns the `GameState` and the bots, streams a fully
 //! derived view to the browser over one websocket per game.
 //!
-//! See `plans/034-plan--web-play-ui.md`. The shape in one paragraph: axum
+//! See `plans/completed/034-plan--web-play-ui.md`. The shape in one paragraph: axum
 //! serves the trunk-built wasm client and the sprite directory from a sibling
 //! checkout; each websocket gets a `spawn_blocking` thread that owns one
 //! [`session::GameSession`]; the session drives the engine in

@@ -109,7 +109,7 @@ pub struct NamedConfig {
 ///
 /// The file names only the knobs it overrides; everything else comes from [`MctsConfig::new`], the
 /// shipped defaults, **not** from the environment. The config's name is the file stem, so
-/// `cfgs/aggressive.toml` plays as `aggressive`.
+/// `cfgs/gumbel16_f1000.toml` plays as `gumbel16_f1000`.
 ///
 /// ```toml
 /// fpu_reduction = 0.25

@@ -1,7 +1,7 @@
 //! Wire types shared by `botbowl-web-server` and the wasm client.
 //!
 //! This crate deliberately has **no engine dependency** (decision 1/3 of
-//! `plans/034-plan--web-play-ui.md`): it must compile for `wasm32-unknown-unknown`,
+//! `plans/completed/034-plan--web-play-ui.md`): it must compile for `wasm32-unknown-unknown`,
 //! and the client is a pure renderer of a server-derived view. The engine
 //! enums are therefore hand-mirrored here, with exhaustive conversions and a
 //! round-trip test living in `botbowl-web-server/src/mirror.rs` — adding an
