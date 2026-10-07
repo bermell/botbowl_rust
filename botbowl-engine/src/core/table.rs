@@ -243,6 +243,125 @@ impl Skill {
     }
 }
 
+/// A set of [`Skill`]s as a bitmask over [`Skill::index`].
+///
+/// Replaces a `HashSet<Skill>` per player (two per fielded player, counting `used_skills`): the
+/// sets were cloned with every `GameState` clone and compared element-wise by hashing, which the
+/// search does for every node it creates or recombines. Serializes as a sequence, exactly like
+/// the `HashSet` it replaces, so stored corpora and positions read back unchanged.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct SkillSet(u64);
+
+const _: () = assert!(Skill::COUNT <= 64, "SkillSet holds one bit per skill");
+
+impl SkillSet {
+    pub const fn new() -> SkillSet {
+        SkillSet(0)
+    }
+
+    const fn bit(skill: Skill) -> u64 {
+        1 << skill.index()
+    }
+
+    /// Adds `skill`; returns whether it was absent (as `HashSet::insert`).
+    pub fn insert(&mut self, skill: Skill) -> bool {
+        let absent = !self.contains(&skill);
+        self.0 |= Self::bit(skill);
+        absent
+    }
+
+    /// Removes `skill`; returns whether it was present (as `HashSet::remove`).
+    pub fn remove(&mut self, skill: &Skill) -> bool {
+        let present = self.contains(skill);
+        self.0 &= !Self::bit(*skill);
+        present
+    }
+
+    pub fn contains(&self, skill: &Skill) -> bool {
+        self.0 & Self::bit(*skill) != 0
+    }
+
+    pub fn clear(&mut self) {
+        self.0 = 0;
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.count_ones() as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// The skills in [`Skill::ALL`] order.
+    pub fn iter(&self) -> impl Iterator<Item = Skill> + '_ {
+        Skill::ALL.into_iter().filter(|s| self.contains(s))
+    }
+
+    /// The order-independent set hash `GameState` has always used for skill sets: the length,
+    /// then the wrapping sum of each skill's own `DefaultHasher` hash. Kept value-for-value so a
+    /// state hashes exactly as it did when these were `HashSet`s; the per-skill hashes are fixed
+    /// (`DefaultHasher::new` is unkeyed), so they are computed once.
+    pub fn hash_unordered<H: std::hash::Hasher>(&self, h: &mut H) {
+        use std::hash::Hash as _;
+        static SKILL_HASH: std::sync::LazyLock<[u64; Skill::COUNT]> = std::sync::LazyLock::new(|| {
+            Skill::ALL.map(|s| {
+                let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
+                s.hash(&mut item_hasher);
+                std::hash::Hasher::finish(&item_hasher)
+            })
+        });
+        let mut acc: u64 = 0;
+        let mut bits = self.0;
+        while bits != 0 {
+            acc = acc.wrapping_add(SKILL_HASH[bits.trailing_zeros() as usize]);
+            bits &= bits - 1;
+        }
+        self.len().hash(h);
+        acc.hash(h);
+    }
+}
+
+impl std::fmt::Debug for SkillSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
+    }
+}
+
+impl FromIterator<Skill> for SkillSet {
+    fn from_iter<I: IntoIterator<Item = Skill>>(iter: I) -> Self {
+        let mut set = SkillSet::new();
+        set.extend(iter);
+        set
+    }
+}
+
+impl Extend<Skill> for SkillSet {
+    fn extend<I: IntoIterator<Item = Skill>>(&mut self, iter: I) {
+        for s in iter {
+            self.insert(s);
+        }
+    }
+}
+
+impl<const N: usize> From<[Skill; N]> for SkillSet {
+    fn from(skills: [Skill; N]) -> Self {
+        skills.into_iter().collect()
+    }
+}
+
+impl Serialize for SkillSet {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillSet {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Vec::<Skill>::deserialize(deserializer)?.into_iter().collect())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub enum NumBlockDices {
     ThreeUphill,
@@ -290,6 +409,79 @@ pub enum PlayerRole {
     Blitzer,
     Thrower,
     Catcher,
+}
+
+#[cfg(test)]
+mod skill_set_tests {
+    use super::{Skill, SkillSet};
+    use std::collections::HashSet;
+    use std::hash::Hasher;
+
+    /// The pre-`SkillSet` hash of a `HashSet<Skill>` (`model::hash_set_unordered`), verbatim.
+    fn legacy_hash(set: &HashSet<Skill>) -> u64 {
+        use std::hash::Hash as _;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let mut acc: u64 = 0;
+        for item in set {
+            let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
+            item.hash(&mut item_hasher);
+            acc = acc.wrapping_add(item_hasher.finish());
+        }
+        set.len().hash(&mut h);
+        acc.hash(&mut h);
+        h.finish()
+    }
+
+    fn sets() -> Vec<Vec<Skill>> {
+        vec![
+            vec![],
+            vec![Skill::Block],
+            vec![Skill::Catch, Skill::StripBall],
+            vec![Skill::Dodge, Skill::Block, Skill::Guard, Skill::MightyBlow],
+            Skill::ALL.to_vec(),
+        ]
+    }
+
+    /// A state must hash exactly as it did with `HashSet`s, or the search would take different
+    /// registry paths (and the corpus-identity check of a pure refactor would fail).
+    #[test]
+    fn hash_matches_the_hash_set_it_replaced() {
+        for skills in sets() {
+            let set: SkillSet = skills.iter().copied().collect();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            set.hash_unordered(&mut h);
+            assert_eq!(h.finish(), legacy_hash(&skills.iter().copied().collect()), "{skills:?}");
+        }
+    }
+
+    /// Serializes as a sequence, so JSON written from a `HashSet<Skill>` reads back.
+    #[test]
+    fn serde_is_compatible_with_hash_set() {
+        for skills in sets() {
+            let hs: HashSet<Skill> = skills.iter().copied().collect();
+            let from_hs: SkillSet = serde_json::from_str(&serde_json::to_string(&hs).unwrap()).unwrap();
+            let set: SkillSet = skills.iter().copied().collect();
+            assert_eq!(from_hs, set);
+            let back: HashSet<Skill> = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
+            assert_eq!(back, hs);
+        }
+    }
+
+    #[test]
+    fn set_operations_behave_like_hash_set() {
+        let mut set = SkillSet::new();
+        assert!(set.is_empty());
+        assert!(set.insert(Skill::Dodge));
+        assert!(!set.insert(Skill::Dodge));
+        assert!(set.insert(Skill::StripBall));
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&Skill::Dodge) && !set.contains(&Skill::Block));
+        assert_eq!(set.iter().collect::<Vec<_>>(), vec![Skill::Dodge, Skill::StripBall]);
+        assert!(set.remove(&Skill::Dodge));
+        assert!(!set.remove(&Skill::Dodge));
+        set.clear();
+        assert!(set.is_empty());
+    }
 }
 
 #[cfg(test)]

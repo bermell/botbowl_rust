@@ -9,7 +9,7 @@ use std::ops::{Add, AddAssign, Index, IndexMut, Mul, RangeInclusive, Sub, SubAss
 use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
 use super::procedures::AnyProc;
-use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill};
+use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill, SkillSet};
 use crate::core::table;
 
 pub type PlayerID = usize;
@@ -625,7 +625,7 @@ pub struct PlayerStats {
     pub pass: D6Target,
     pub av: u8,
     pub team: TeamType,
-    pub skills: HashSet<Skill>,
+    pub skills: SkillSet,
     pub role: PlayerRole,
     //skills: [Option<table::Skill>; 3],
     //injuries
@@ -653,7 +653,7 @@ impl PlayerStats {
             ag: 3,
             av: 8,
             team,
-            skills: HashSet::new(),
+            skills: SkillSet::new(),
             role: PlayerRole::Lineman,
             pass: D6Target::FourPlus,
         }
@@ -665,7 +665,7 @@ impl PlayerStats {
             ag: 3,
             av: 9,
             team,
-            skills: HashSet::from_iter([Skill::Block]),
+            skills: SkillSet::from([Skill::Block]),
             role: PlayerRole::Blitzer,
             pass: D6Target::FourPlus,
         }
@@ -677,7 +677,7 @@ impl PlayerStats {
             ag: 3,
             av: 8,
             team,
-            skills: HashSet::from_iter([Skill::Dodge, Skill::Catch]),
+            skills: SkillSet::from([Skill::Dodge, Skill::Catch]),
             role: PlayerRole::Catcher,
             pass: D6Target::FivePlus,
         }
@@ -689,7 +689,7 @@ impl PlayerStats {
             ag: 3,
             av: 8,
             team,
-            skills: HashSet::from_iter([Skill::SureHands, Skill::Throw]),
+            skills: SkillSet::from([Skill::SureHands, Skill::Throw]),
             role: PlayerRole::Thrower,
             pass: D6Target::TwoPlus,
         }
@@ -723,7 +723,7 @@ pub struct FieldedPlayer {
     pub status: PlayerStatus,
     pub used: bool,
     pub moves: u8,
-    pub used_skills: HashSet<Skill>,
+    pub used_skills: SkillSet,
 }
 
 /// Order-independent hash of a set.
@@ -752,7 +752,7 @@ impl std::hash::Hash for PlayerStats {
         self.pass.hash(h);
         self.av.hash(h);
         self.team.hash(h);
-        hash_set_unordered(&self.skills, h);
+        self.skills.hash_unordered(h);
         self.role.hash(h);
     }
 }
@@ -767,7 +767,7 @@ impl std::hash::Hash for FieldedPlayer {
         self.moves.hash(h);
         // A Dodge or Block skill already spent this activation is a different situation from one
         // still in hand, and `PartialEq` agrees — so it has to move the hash.
-        hash_set_unordered(&self.used_skills, h);
+        self.used_skills.hash_unordered(h);
     }
 }
 

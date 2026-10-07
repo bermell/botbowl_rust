@@ -504,8 +504,8 @@ mod tests {
         let cfg = RandomStartConfig::default();
         for seed in 0..40 {
             for p in generate(&cfg, seed).get_players_on_pitch() {
-                for skill in &p.stats.skills {
-                    assert!(good.contains(skill), "seed {seed}: {skill:?} is not a good skill");
+                for skill in p.stats.skills.iter() {
+                    assert!(good.contains(&skill), "seed {seed}: {skill:?} is not a good skill");
                 }
                 assert!(p.stats.skills.len() <= good.len());
             }

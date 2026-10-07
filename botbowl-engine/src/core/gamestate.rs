@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::{
     cmp::{max, min},
-    collections::HashSet,
 };
 
 use crate::core::{model, procedures::CoinToss};
@@ -21,7 +20,7 @@ use super::{
         RollResult, RollTarget,
     },
     procedures::{auto_setup, AnyProc, Formation, GameOver, Half},
-    table::{NumBlockDices, PosAT, SimpleAT, Skill},
+    table::{NumBlockDices, PosAT, SimpleAT, Skill, SkillSet},
 };
 
 pub enum BuilderState {
@@ -596,7 +595,7 @@ impl std::hash::Hash for GameState {
                     p.status.hash(h);
                     p.used.hash(h);
                     p.moves.hash(h);
-                    hash_set_unordered(&p.used_skills, h);
+                    p.used_skills.hash_unordered(h);
                 }
             }
         }
@@ -1179,7 +1178,7 @@ impl GameState {
             status: PlayerStatus::Up,
             used: false,
             moves: 0,
-            used_skills: HashSet::new(),
+            used_skills: SkillSet::new(),
         });
         Ok(id)
     }
