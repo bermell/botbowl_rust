@@ -15,6 +15,31 @@ use botbowl_web_proto::dice as pd;
 
 use crate::mirror;
 
+/// What a roll was *for*, from the procedure asking for it (`proc_stack_top`
+/// at the moment the engine paused on the request). The engine's roll request
+/// says only "D6 3+"; the procedure says "Dodge". Names the engine's
+/// `AnyProc::name()` does not spell nicely are rewritten, the rest pass
+/// through — a new procedure is never silent, just unpolished.
+pub fn purpose(proc: &str) -> String {
+    match proc {
+        "Armor" => "Armour".into(),
+        "DodgeProc" => "Dodge".into(),
+        "GfiProc" => "GFI".into(),
+        "PickupProc" => "Pick-up".into(),
+        "ThrowIn" => "Throw-in".into(),
+        "CoinToss" => "Coin toss".into(),
+        "KickoffTable" => "Kickoff table".into(),
+        "LandKickoff" => "Kickoff landing".into(),
+        "KOWakeUp" => "KO wake-up".into(),
+        "ChangingWeather" => "Weather".into(),
+        "JumpUp" => "Jump up".into(),
+        "StandUp" => "Stand up".into(),
+        "FrenzyBlock" => "Frenzy block".into(),
+        "DeflectOrResolve" => "Deflect".into(),
+        other => other.to_string(),
+    }
+}
+
 fn d6_face(v: u8) -> pd::DieFace {
     pd::DieFace {
         img: format!("dice/{v}.png"),
@@ -147,6 +172,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn every_procedure_has_a_purpose_label() {
+        assert_eq!(purpose("DodgeProc"), "Dodge");
+        assert_eq!(purpose("Armor"), "Armour");
+        assert_eq!(purpose("Injury"), "Injury", "an unlisted name passes through");
+        assert!(!purpose("Block").is_empty());
     }
 
     #[test]

@@ -774,6 +774,13 @@ impl GameState {
         self.proc_stack.last()
     }
 
+    /// Read-only walk of the whole stack, top first — for a viewer that
+    /// needs a procedure below the one currently asking (the `Block` under a
+    /// `Push`, say).
+    pub fn proc_stack_iter(&self) -> impl Iterator<Item = &AnyProc> {
+        self.proc_stack.iter().rev()
+    }
+
     pub fn dice_mode(&self) -> &DiceMode {
         &self.dice_mode
     }

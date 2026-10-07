@@ -13,7 +13,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CloseEvent, MessageEvent, WebSocket};
 
-use crate::state::{App, Connection, DICE_TICKER};
+use crate::state::{App, Connection, LOG_CAP};
 
 thread_local! {
     static SOCKET: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
@@ -132,9 +132,23 @@ fn handle(app: App, msg: ServerMsg) {
                 app.view.set(Some(*view));
             }
         }
-        ServerMsg::Dice(event) => app.dice.update(|d| {
-            d.insert(0, event);
-            d.truncate(DICE_TICKER);
+        ServerMsg::Log(entry) => app.log.update(|log| {
+            // Indices are reused after a rewind; the truncation message has
+            // already cut the log back, this is belt and braces — unless the
+            // cap below has dropped the oldest lines, in which case the index
+            // is simply ahead of the length.
+            if let Some(at) = log.iter().position(|e| e.index >= entry.index) {
+                log.truncate(at);
+            }
+            log.push(entry);
+            if log.len() > LOG_CAP {
+                log.drain(..log.len() - LOG_CAP);
+            }
+        }),
+        ServerMsg::LogTruncated { keep } => app.log.update(|log| {
+            if let Some(at) = log.iter().position(|e| e.index >= keep) {
+                log.truncate(at);
+            }
         }),
         ServerMsg::BotThinking { team, budget } => {
             app.thinking.set(Some(format!("{team:?} thinking — {budget}")));

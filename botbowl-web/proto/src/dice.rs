@@ -196,12 +196,14 @@ pub enum RollResult {
     },
 }
 
-/// One resolved roll, as streamed to the client.
+/// One resolved roll, rendered — carried by a `Roll` line of the game log
+/// ([`crate::log::LogEntry`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiceEvent {
     pub requested: RequestedRoll,
     pub result: RollResult,
-    /// One line for the dice ticker, e.g. `"Dodge 3+: 5 — success"`.
+    /// The roll alone, e.g. `"D6 3+: 5 — success"`; the log line in front of
+    /// it says what the roll was for.
     pub text: String,
     /// Faces to draw, in roll order.
     pub faces: Vec<DieFace>,

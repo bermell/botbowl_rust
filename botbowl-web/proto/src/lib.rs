@@ -9,8 +9,9 @@
 //!
 //! Module map:
 //! - [`action`] — `Action`/`PosAT`/`SimpleAT`/`Position`/`TeamType` mirrors.
-//! - [`dice`] — `RequestedRoll`/`RollResult` mirrors plus the streamed
+//! - [`dice`] — `RequestedRoll`/`RollResult` mirrors plus a rendered
 //!   [`dice::DiceEvent`].
+//! - [`log`] — the streamed game log, [`log::LogEntry`] (text and dice in one).
 //! - [`view`] — [`view::ViewState`], the fully derived board.
 //! - [`search`] — [`search::SearchReport`] and the tree explorer's
 //!   [`search::NodeExpansion`].
@@ -23,6 +24,7 @@
 pub mod action;
 pub mod decision;
 pub mod dice;
+pub mod log;
 pub mod msg;
 pub mod search;
 pub mod team;
@@ -31,10 +33,11 @@ pub mod view;
 pub use action::{Action, PosAT, Position, SimpleAT, TeamType};
 pub use decision::{ActionPrior, Decider, DecisionRecord, NetReadout};
 pub use dice::{DiceEvent, DieFace, RequestedRoll, RollResult};
+pub use log::{LogEntry, LogKind};
 pub use msg::{BoardSpec, BotSpec, Budget, ClientMsg, GameSpec, LobbyInfo, MctsSpec, Seat, ServerMsg};
 pub use search::{ChildReport, NodeExpansion, SearchEdge, SearchReport};
 pub use view::{Dims, PlayerView, SetupView, SquareView, ViewState};
 
 /// Bumped whenever a wire type changes shape. The client refuses to render a
 /// view from a server it does not match.
-pub const WIRE_VERSION: u32 = 6;
+pub const WIRE_VERSION: u32 = 7;

@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, TeamType};
 use crate::decision::{DecisionRecord, NetReadout};
-use crate::dice::{DiceEvent, RollResult};
+use crate::dice::RollResult;
+use crate::log::LogEntry;
 use crate::search::{NodeExpansion, SearchEdge};
 use crate::team::{SkillInfo, TeamDef, DEFAULT_TEAM};
 use crate::view::ViewState;
@@ -349,21 +350,24 @@ pub struct LobbyInfo {
     pub can_resume: bool,
 }
 
-/// How fast the session is allowed to run through the steps the human does
-/// not answer — the bot's moves and the engine's own dice.
+/// How fast the session is allowed to run through the bots' moves.
 ///
 /// `Run` is the original behaviour: one click plays the bot's whole reply.
 /// The other two exist because that is unwatchable — the board jumps from
 /// your move to the bot's finished turn with no way to see the order things
 /// happened in, or to open the inspector on the search that produced them.
+/// The hold sits *between* a bot's search and its move: the board on screen
+/// is the position the search was about, the report beside it is that
+/// search, and the next step plays the move it chose
+/// ([`crate::view::ViewState::pending_action`]). Dice are never held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum StepMode {
     /// Play on until the human has something to decide.
     #[default]
     Run,
-    /// Hold before every step and wait for [`ClientMsg::StepOnce`].
+    /// Hold after every bot search and wait for [`ClientMsg::StepOnce`].
     Manual,
-    /// Hold `ms` before every step, then take it.
+    /// Hold `ms` after every bot search, then play the move.
     Auto { ms: u64 },
 }
 
@@ -419,6 +423,16 @@ pub enum ClientMsg {
     ShowDecision {
         index: u64,
     },
+    /// Rewind the game to micro-step `step` — the one a [`LogEntry`] or a
+    /// [`crate::decision::DecisionRecord`] names — and hold there. Everything
+    /// after it is dropped: the log and the decision log are truncated
+    /// ([`ServerMsg::LogTruncated`], [`ServerMsg::DecisionsTruncated`]) and
+    /// play continues from that position when stepped. Under `Run` the
+    /// session switches to `Manual` first, or the rewind would be undone by
+    /// the next tick.
+    RewindTo {
+        step: usize,
+    },
     /// Create or overwrite a saved team (by name). Answered with [`ServerMsg::Teams`].
     SaveTeam(TeamDef),
     DeleteTeam {
@@ -436,7 +450,12 @@ pub enum ServerMsg {
     Lobby(Box<LobbyInfo>),
     /// The authoritative board. Sent on every change.
     View(Box<ViewState>),
-    Dice(DiceEvent),
+    /// One line of the game log — text, a die, a decision, a score.
+    Log(LogEntry),
+    /// A rewind or an undo cut the log: keep only the first `keep` lines.
+    LogTruncated {
+        keep: u64,
+    },
     BotThinking {
         team: TeamType,
         budget: String,
