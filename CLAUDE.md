@@ -33,6 +33,13 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 - **Loop throughput:** `plans/058-plan--loop-throughput.md` — generation is CPU-bound from ~36 streams (`scripts/perf_gen_bench.sh`); mc-label works per sample and is GPU-bound; drives every 3 generations. The live loop is `runs/loopmix16x9v9` (`scripts/launch_plan058.sh`, new master: 16 more skills, per-player setup with `--next-drive`, schema v9; init = g056 gen04 migrated with `bbnn.migrate`).
 - **Current focus: the training loop's throughput and strength.** Significant speedups to generation, MC labelling and evaluation are wanted (the user, 2026-10-06): measure before and after, and propose them. Bot capability (priors, leaf score, pruning, new skills) continues alongside.
 
+## Working alongside the live loop
+
+- **The training loop and `runs/` live on the training box** (Linux, its own checkout). A macOS checkout has no `runs/`; never create one or touch `runs/`, `data/`, `models/` unless asked.
+- **A long-lived worker runs from a checkout's build dir.** Rebuilding into the directory it runs from (`target/release`, or the loop's `target/16x9`) swaps its binary underneath it. The loop and any long-lived worker should run from a dedicated `CARGO_TARGET_DIR` (the launchers use `target/${W}x${H}`), not `target/release`; assume a worker may be running from the main checkout's `target/release` and don't build there.
+- **Agents and parallel sessions work in a git worktree** (`.claude/worktrees/…`, own `target/`), or at least with their own `CARGO_TARGET_DIR`. Never switch branches in a checkout a loop or worker runs from, and don't `cd` from a worktree into the main checkout to build.
+- `Blocking waiting for file lock on build directory` means another cargo process shares the target dir — wait or use your own `CARGO_TARGET_DIR`; it is not a hang.
+
 ## Commands
 
 Botbowl workspace (from repo root or any member crate — shared `target/` and `Cargo.lock` either way):
