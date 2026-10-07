@@ -101,7 +101,7 @@ records are skipped there (the audit's replay is random-start only).
 | gen | generate | drives / next-drive records (TD rate) | optional skills asked during, offered → used | setups (decisions each; players on the LoS) | MC label | train | value bench | net check | drives vs d1k gen04 v9 |
 |---|---|---|---|---|---|---|---|---|---|
 | 01 | 149 min (36 local + laptop 10) | 2400 (0.87) / 1944 (0.80) | Push 1508 → 64%, Wrestle 189 → 50%, Dodge 32 → 84%, Block 27 → 93% | 1944 (6.8; 2.8) | 90 min (shared GPU with two audits), 0 unlabelled | 9 min, final step 10965; val_value 0.116 → 0.092, val_policy 0.681 → 0.674, top1 0.715 → 0.720 | 0.209 → 0.218 (paired +4.3%, ~5 SE) | init net on gen01: +0.002/+0.004/+0.008/+0.007 MONOTONE (4000 within 1 SE of 1000); slope 0.72 | (gen03) |
-| 02 | 143 min | 2400 (0.88) / 1949 (0.81) | Push 1475 → 66%, Wrestle 154 → 48%, Dodge 40 → 85%, Block 27 → 93% | 1949 (6.9; 2.8) | | | | | |
+| 02 | 143 min | 2400 (0.88) / 1949 (0.81) | Push 1475 → 66%, Wrestle 154 → 48%, Dodge 40 → 85%, Block 27 → 93% | 1949 (6.9; 2.8) | 78 min, 0 unlabelled | 25 min, final step 21636; val_value 0.095 → 0.091, val_policy 0.679 → 0.676; absorb dP(played) +0.004, dtop1 +0.003 | 0.218 → **0.212 (paired −2.9%, ~7 SE)**, bias −0.005 | | |
 
 **gen01, the first fine-tune on the new rules.** It learned steadily (every validation metric moved
 at almost every checkpoint, unlike g056's flat curves), and the absorption probe is strong (dtop1
@@ -109,3 +109,6 @@ at almost every checkpoint, unlike g056's flat curves), and the absorption probe
 states only, reads 4.3% worse than its generator. A plausible reading: the gains are in the setup
 and kickoff states (the next-drive records, in val but not in the bench). The user expected odd
 early numbers; watch the trend.
+
+**gen02 recovers the value bench:** 0.218 → 0.212 (paired −2.9%), about back to the init net's
+0.209, with bias near zero. Training still moves every metric, more slowly than gen01.
