@@ -4,7 +4,7 @@ use itertools::Itertools;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
 use std::{
     cmp::{max, min},
 };
@@ -103,7 +103,7 @@ impl GameStateBuilder {
             }
         }
 
-        state.proc_stack = vec![GameOver::new(), Half::new(2), Half::new(1), CoinToss::new()];
+        state.proc_stack = smallvec![GameOver::new(), Half::new(2), Half::new(1), CoinToss::new()];
         state.step_simple(SimpleAT::EndTurn);
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::Heads)));
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::Tails)));
@@ -221,7 +221,7 @@ impl GameStateBuilder {
             ball: BallState::OffPitch,
             bounce_squares: SmallVec::new(),
             dugout_players: Default::default(),
-            proc_stack: Vec::new(),
+            proc_stack: SmallVec::new(),
             //new_procs: VecDeque::new(),
             available_actions: AvailableActions::new_empty(),
             path_buffer: None,
@@ -432,6 +432,11 @@ impl Default for DiceMode {
         DiceMode::FixedDice(FixedDice::default())
     }
 }
+/// Procedure-stack frames held inline in a `GameState`. A game runs about ten deep at its
+/// deepest (block inside a blitz inside a turn, with the dice procedures on top), so this is
+/// headroom, not a limit: a deeper stack spills to the heap.
+pub const PROC_STACK_INLINE: usize = 16;
+
 #[derive(Derivative)]
 #[derivative(PartialEq)]
 #[derive(Serialize, Deserialize, Debug)]
@@ -451,7 +456,7 @@ pub struct GameState {
     // formation template, so fielded must hold the full roster, not 2*TEAM_SIZE.)
     fielded_players: [Option<FieldedPlayer>; 2 * ROSTER_PER_TEAM],
     dugout_players: [Option<DugoutPlayer>; 2 * ROSTER_PER_TEAM],
-    board: FullPitch<Option<PlayerID>>,
+    board: FullPitch<BoardCell>,
     pub ball: BallState,
     /// Squares the ball has already occupied during the current in-air
     /// bounce / throw-in sequence. Maintained exclusively through
@@ -462,7 +467,10 @@ pub struct GameState {
     /// lead back to a square the ball has already bounced from.
     #[serde(default)]
     pub bounce_squares: SmallVec<[Position; 8]>,
-    proc_stack: Vec<AnyProc>,
+    /// Inline up to `PROC_STACK_INLINE` frames: a game sits well inside that, so cloning a state
+    /// (every search expansion) copies the stack instead of allocating it. Deeper stacks spill to
+    /// the heap and keep working.
+    proc_stack: SmallVec<[AnyProc; PROC_STACK_INLINE]>,
     pub available_actions: Box<AvailableActions>,
     /// Reusable backing storage for `MoveAction`/`BlockAction`'s path
     /// offerings. `available_actions.has_paths` is the gate — when false,
@@ -932,8 +940,7 @@ impl GameState {
         //unwrap is OK here because if you're requesting negative indicies, you want the program to crash!
         // let xx = usize::try_from(x).unwrap();
         // let yy = usize::try_from(y).unwrap();
-        // self.board[xx][yy]
-        self.board[Position::new((x, y))]
+        self.board[Position::new((x, y))].get()
     }
     pub fn get_player_at_coord(&self, x: Coord, y: Coord) -> Option<&FieldedPlayer> {
         match self.get_player_id_at_coord(x, y) {
@@ -1112,16 +1119,16 @@ impl GameState {
     }
     pub fn move_player(&mut self, id: PlayerID, new_pos: Position) -> Result<()> {
         let old_pos = self.get_player(id)?.position;
-        if let Some(occupied_id) = self.board[new_pos] {
+        if let Some(occupied_id) = self.board[new_pos].get() {
             panic!(
                 "Tried to move {}, to {:?} but it was already occupied by {}",
                 id, new_pos, occupied_id
             );
             //return Err(Box::new(IllegalMovePosition{position: new_pos} ))
         }
-        self.board[old_pos] = None;
+        self.board[old_pos] = BoardCell::EMPTY;
         self.get_mut_player(id)?.position = new_pos;
-        self.board[new_pos] = Some(id);
+        self.board[new_pos].set(Some(id));
         Ok(())
     }
     /// Exchange two fielded players' squares. Used by `Setup` when a player is
@@ -1132,8 +1139,8 @@ impl GameState {
         }
         let pos_a = self.get_player(a)?.position;
         let pos_b = self.get_player(b)?.position;
-        self.board[pos_a] = Some(b);
-        self.board[pos_b] = Some(a);
+        self.board[pos_a].set(Some(b));
+        self.board[pos_b].set(Some(a));
         self.get_mut_player(a)?.position = pos_b;
         self.get_mut_player(b)?.position = pos_a;
         Ok(())
@@ -1170,7 +1177,7 @@ impl GameState {
             None => panic!("Not room in gamestate of another fielded player!"),
         };
 
-        self.board[position] = Some(id);
+        self.board[position].set(Some(id));
         self.fielded_players[id] = Some(FieldedPlayer {
             id,
             stats: player_stats,
@@ -1195,7 +1202,7 @@ impl GameState {
 
         self.dugout_add_new_player(stats, place);
 
-        self.board[position] = None;
+        self.board[position] = BoardCell::EMPTY;
         Ok(())
     }
 
@@ -1505,7 +1512,7 @@ impl GameState {
         // reflecting the array: the two must not be able to disagree.
         out.board = Default::default();
         for player in out.fielded_players.iter().flatten() {
-            out.board[player.position] = Some(player.id);
+            out.board[player.position].set(Some(player.id));
         }
 
         // Dugout players carry a team but no position.

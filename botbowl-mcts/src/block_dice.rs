@@ -41,7 +41,7 @@
 
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, FieldedPlayer, PlayerStatus};
-use botbowl_engine::core::table::{SimpleAT, Skill};
+use botbowl_engine::core::table::{SimpleAT, SimpleATSet, Skill};
 
 /// Returns the scripted-best block-die action if the state currently
 /// offers a block-die choice, otherwise `None`. Pure function of state.
@@ -85,7 +85,7 @@ pub fn scripted_pick(state: &GameState) -> Option<EngineAction> {
 /// `roll_outcomes::block_outcomes` emits exactly that roll as its
 /// `[Pow, BothDown, ..]` child so the search can decide (plan 036).
 fn pick_for_attacker(
-    simple: &std::collections::HashSet<SimpleAT>,
+    simple: &SimpleATSet,
     attacker: Option<&FieldedPlayer>,
     defender: Option<&FieldedPlayer>,
 ) -> Option<SimpleAT> {
@@ -133,7 +133,7 @@ fn pick_for_attacker(
 /// defender has Block and attacker doesn't) > PowPush > BothDown (any) >
 /// Pow. The defender picks the outcome that's least bad for them.
 fn pick_for_defender(
-    simple: &std::collections::HashSet<SimpleAT>,
+    simple: &SimpleATSet,
     attacker: Option<&FieldedPlayer>,
     defender: Option<&FieldedPlayer>,
 ) -> Option<SimpleAT> {

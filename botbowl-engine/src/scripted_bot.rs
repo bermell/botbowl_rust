@@ -13,7 +13,7 @@ use crate::core::gamestate::GameState;
 use crate::core::model::{other_team, Action, BallState, FieldedPlayer, PlayerID, PlayerStatus, Position, TeamType};
 use crate::core::pathing::{Node, PathFinder};
 use crate::core::procedures::Formation;
-use crate::core::table::{NumBlockDices, PosAT, SimpleAT, Skill};
+use crate::core::table::{NumBlockDices, PosAT, SimpleAT, SimpleATSet, Skill};
 
 /// Minimum success probability for the bot to attempt a path that ends in a
 /// touchdown. Set low enough that we still take a 2-GFI run from MA-7 away
@@ -313,7 +313,7 @@ fn first_positional_for(state: &GameState, at: PosAT) -> Option<Action> {
     None
 }
 
-fn pick_block_die(state: &GameState, simple: &std::collections::HashSet<SimpleAT>) -> Option<Action> {
+fn pick_block_die(state: &GameState, simple: &SimpleATSet) -> Option<Action> {
     let is_block_choice = simple.contains(&SimpleAT::SelectPow)
         || simple.contains(&SimpleAT::SelectPowPush)
         || simple.contains(&SimpleAT::SelectPush)

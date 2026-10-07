@@ -362,6 +362,212 @@ impl<'de> Deserialize<'de> for SkillSet {
     }
 }
 
+impl PosAT {
+    pub const COUNT: usize = 15;
+    /// Every variant, in `index` order. `index` is an exhaustive match, so a new variant fails to
+    /// compile until it is numbered, and `pos_at_all_matches_index` checks it was added here too.
+    pub const ALL: [PosAT; PosAT::COUNT] = [
+        PosAT::StartMove,
+        PosAT::StartBlitz,
+        PosAT::StartPass,
+        PosAT::StartFoul,
+        PosAT::SelectPosition,
+        PosAT::Push,
+        PosAT::FollowUp,
+        PosAT::StartHandoff,
+        PosAT::Handoff,
+        PosAT::Pass,
+        PosAT::Move,
+        PosAT::Foul,
+        PosAT::StartBlock,
+        PosAT::Block,
+        PosAT::PlacePlayer,
+    ];
+    pub const fn index(self) -> usize {
+        match self {
+            PosAT::StartMove => 0,
+            PosAT::StartBlitz => 1,
+            PosAT::StartPass => 2,
+            PosAT::StartFoul => 3,
+            PosAT::SelectPosition => 4,
+            PosAT::Push => 5,
+            PosAT::FollowUp => 6,
+            PosAT::StartHandoff => 7,
+            PosAT::Handoff => 8,
+            PosAT::Pass => 9,
+            PosAT::Move => 10,
+            PosAT::Foul => 11,
+            PosAT::StartBlock => 12,
+            PosAT::Block => 13,
+            PosAT::PlacePlayer => 14,
+        }
+    }
+}
+
+impl SimpleAT {
+    pub const COUNT: usize = 17;
+    /// Every variant, in `index` order; see `PosAT::ALL`.
+    pub const ALL: [SimpleAT; SimpleAT::COUNT] = [
+        SimpleAT::SelectBothDown,
+        SimpleAT::SelectPow,
+        SimpleAT::SelectPush,
+        SimpleAT::SelectPowPush,
+        SimpleAT::SelectSkull,
+        SimpleAT::UseReroll,
+        SimpleAT::DontUseReroll,
+        SimpleAT::EndPlayerTurn,
+        SimpleAT::EndTurn,
+        SimpleAT::Heads,
+        SimpleAT::Tails,
+        SimpleAT::Kick,
+        SimpleAT::Receive,
+        SimpleAT::KickoffAimMiddle,
+        SimpleAT::BenchPlayer,
+        SimpleAT::UseSkill,
+        SimpleAT::DontUseSkill,
+    ];
+    pub const fn index(self) -> usize {
+        match self {
+            SimpleAT::SelectBothDown => 0,
+            SimpleAT::SelectPow => 1,
+            SimpleAT::SelectPush => 2,
+            SimpleAT::SelectPowPush => 3,
+            SimpleAT::SelectSkull => 4,
+            SimpleAT::UseReroll => 5,
+            SimpleAT::DontUseReroll => 6,
+            SimpleAT::EndPlayerTurn => 7,
+            SimpleAT::EndTurn => 8,
+            SimpleAT::Heads => 9,
+            SimpleAT::Tails => 10,
+            SimpleAT::Kick => 11,
+            SimpleAT::Receive => 12,
+            SimpleAT::KickoffAimMiddle => 13,
+            SimpleAT::BenchPlayer => 14,
+            SimpleAT::UseSkill => 15,
+            SimpleAT::DontUseSkill => 16,
+        }
+    }
+}
+
+/// A set of a small fieldless enum as a bitmask over its `index`, in the mould of [`SkillSet`]:
+/// `Copy`, compared and hashed as one integer, iterated in `ALL` order, and serialised as the
+/// sequence of variants so stored corpora read back unchanged.
+macro_rules! enum_bitset {
+    ($(#[$attr:meta])* $set:ident, $enum:ident, $bits:ty) => {
+        $(#[$attr])*
+        #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+        pub struct $set($bits);
+
+        const _: () = assert!(
+            $enum::COUNT <= <$bits>::BITS as usize,
+            concat!(stringify!($set), " holds one bit per variant")
+        );
+
+        impl $set {
+            pub const fn new() -> Self {
+                Self(0)
+            }
+
+            const fn bit(v: $enum) -> $bits {
+                1 << v.index()
+            }
+
+            /// Adds `v`; returns whether it was absent (as `HashSet::insert`).
+            pub fn insert(&mut self, v: $enum) -> bool {
+                let absent = !self.contains(&v);
+                self.0 |= Self::bit(v);
+                absent
+            }
+
+            /// Removes `v`; returns whether it was present (as `HashSet::remove`).
+            pub fn remove(&mut self, v: &$enum) -> bool {
+                let present = self.contains(v);
+                self.0 &= !Self::bit(*v);
+                present
+            }
+
+            pub fn contains(&self, v: &$enum) -> bool {
+                self.0 & Self::bit(*v) != 0
+            }
+
+            pub fn clear(&mut self) {
+                self.0 = 0;
+            }
+
+            pub fn len(&self) -> usize {
+                self.0.count_ones() as usize
+            }
+
+            pub fn is_empty(&self) -> bool {
+                self.0 == 0
+            }
+
+            /// The members in `ALL` order.
+            pub fn iter(&self) -> impl Iterator<Item = $enum> + '_ {
+                $enum::ALL.into_iter().filter(|v| self.contains(v))
+            }
+        }
+
+        impl std::fmt::Debug for $set {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_set().entries(self.iter()).finish()
+            }
+        }
+
+        impl FromIterator<$enum> for $set {
+            fn from_iter<I: IntoIterator<Item = $enum>>(iter: I) -> Self {
+                let mut set = Self::new();
+                set.extend(iter);
+                set
+            }
+        }
+
+        impl Extend<$enum> for $set {
+            fn extend<I: IntoIterator<Item = $enum>>(&mut self, iter: I) {
+                for v in iter {
+                    self.insert(v);
+                }
+            }
+        }
+
+        impl<const N: usize> From<[$enum; N]> for $set {
+            fn from(items: [$enum; N]) -> Self {
+                items.into_iter().collect()
+            }
+        }
+
+        impl Serialize for $set {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.collect_seq(self.iter())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $set {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                Ok(Vec::<$enum>::deserialize(deserializer)?.into_iter().collect())
+            }
+        }
+    };
+}
+
+enum_bitset!(
+    /// The positional action types offered on one square: the per-square entry of
+    /// `AvailableActions::positional`. Two bytes in place of a 24-byte `SmallVec<[PosAT; 4]>`
+    /// (which also spilled to the heap past four), so a whole pitch of offerings is one small
+    /// `Copy` array and an `AvailableActions` clone is a memcpy.
+    PosATSet,
+    PosAT,
+    u16
+);
+
+enum_bitset!(
+    /// The simple (position-free) actions offered at a decision: `AvailableActions::simple`.
+    /// Replaces a `HashSet<SimpleAT>` that was allocated and rehashed with every state clone.
+    SimpleATSet,
+    SimpleAT,
+    u32
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub enum NumBlockDices {
     ThreeUphill,
