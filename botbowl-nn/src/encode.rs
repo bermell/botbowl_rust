@@ -560,7 +560,10 @@ mod tests {
         let enc = encode(&home);
         let plane = enc.h * enc.w;
         for c in [C_DIST_US_ENDZONE, C_DIST_SIDELINE] {
-            let max = enc.spatial[c * plane..(c + 1) * plane].iter().copied().fold(0.0f32, f32::max);
+            let max = enc.spatial[c * plane..(c + 1) * plane]
+                .iter()
+                .copied()
+                .fold(0.0f32, f32::max);
             assert!(max <= 1.0, "channel {c} reached {max}");
         }
     }

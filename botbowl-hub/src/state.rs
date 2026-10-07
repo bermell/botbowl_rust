@@ -183,7 +183,11 @@ impl Job {
             workers_connected,
             state: self.state.clone(),
             units: self.units(),
-            elapsed_secs: self.ended.unwrap_or_else(Instant::now).duration_since(self.started).as_secs(),
+            elapsed_secs: self
+                .ended
+                .unwrap_or_else(Instant::now)
+                .duration_since(self.started)
+                .as_secs(),
             report: match &self.kind {
                 Kind::Eval { report, .. } => report.clone(),
                 Kind::Generate { .. } => None,

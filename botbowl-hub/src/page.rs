@@ -114,7 +114,9 @@ fn read_run(dir: &Path) -> Option<RunInfo> {
 }
 
 fn age_of(p: &Path) -> Option<Duration> {
-    SystemTime::now().duration_since(std::fs::metadata(p).ok()?.modified().ok()?).ok()
+    SystemTime::now()
+        .duration_since(std::fs::metadata(p).ok()?.modified().ok()?)
+        .ok()
 }
 
 fn read_box() -> Option<BoxInfo> {
@@ -128,13 +130,21 @@ fn read_box() -> Option<BoxInfo> {
             .ok()
     };
     let gpu = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=utilization.gpu,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout);
-            let v: Vec<u64> = s.lines().next()?.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            let v: Vec<u64> = s
+                .lines()
+                .next()?
+                .split(',')
+                .filter_map(|x| x.trim().parse().ok())
+                .collect();
             (v.len() == 3).then(|| (v[0] as u32, v[1], v[2]))
         });
     Some(BoxInfo {
@@ -240,7 +250,11 @@ pub fn render(input: &PageInput, now: SystemTime) -> String {
     let running: Vec<&JobStatus> = s.jobs.iter().filter(|j| j.state == JobState::Running).collect();
     let mut finished: Vec<&JobStatus> = s.jobs.iter().filter(|j| j.state != JobState::Running).collect();
     finished.sort_by_key(|j| std::cmp::Reverse(j.id));
-    out.push_str(&format!("\njobs ({} running, {} finished)\n", running.len(), finished.len()));
+    out.push_str(&format!(
+        "\njobs ({} running, {} finished)\n",
+        running.len(),
+        finished.len()
+    ));
     for j in running.iter().copied().chain(finished.iter().take(DONE_JOBS).copied()) {
         job_lines(&mut out, j);
     }
@@ -290,7 +304,11 @@ fn training_line(t: &Training, now: SystemTime) -> Option<String> {
     }
     s.push('\n');
     let f = |v: Option<f64>| v.map_or("–".to_string(), |v| format!("{v:.4}"));
-    s.push_str(&format!("    value loss: train {}  val {}", f(p.train_value), f(p.val_value)));
+    s.push_str(&format!(
+        "    value loss: train {}  val {}",
+        f(p.train_value),
+        f(p.val_value)
+    ));
     if let (Some(b), Some(at)) = (p.best_val_value, p.best_step) {
         s.push_str(&format!("  (best val {b:.4} at step {at})"));
     }
@@ -317,23 +335,36 @@ fn status_line(l: &str) -> String {
 
 fn job_lines(out: &mut String, j: &JobStatus) {
     let label = j.label.clone().unwrap_or_else(|| {
-        format!("job {} {}", j.id, if j.kind == JobKind::Eval { "eval" } else { "generate" })
+        format!(
+            "job {} {}",
+            j.id,
+            if j.kind == JobKind::Eval { "eval" } else { "generate" }
+        )
     });
     // A rung with an SPRT verdict takes no more games, so it counts as complete.
-    let decided = |u: &crate::api::UnitProgress| {
-        matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some_and(|s| s.verdict != botbowl_play::stats::Verdict::Undecided))
-    };
+    let decided = |u: &crate::api::UnitProgress| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some_and(|s| s.verdict != botbowl_play::stats::Verdict::Undecided));
     let total: u32 = j.units.iter().map(|u| u.total).sum();
-    let done: u32 = j.units.iter().map(|u| if decided(u) { u.total } else { u.done.min(u.total) }).sum();
+    let done: u32 = j
+        .units
+        .iter()
+        .map(|u| if decided(u) { u.total } else { u.done.min(u.total) })
+        .sum();
     let played: u32 = j.units.iter().map(|u| u.done).sum();
-    let what = if j.units.iter().any(|u| u.name.contains(" drives(")) { "drives" } else { "games" };
+    let what = if j.units.iter().any(|u| u.name.contains(" drives(")) {
+        "drives"
+    } else {
+        "games"
+    };
     let elapsed = Duration::from_secs(j.elapsed_secs);
     let head = match &j.state {
         JobState::Running => {
             let mut h = format!("▶ {label}  {played}/{total} {what} · {}", dur(elapsed));
             if done > 0 && done < total {
                 let left = elapsed.mul_f64((total - done) as f64 / done as f64);
-                let sprt = j.kind == JobKind::Eval && j.units.iter().any(|u| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some()));
+                let sprt = j.kind == JobKind::Eval
+                    && j.units
+                        .iter()
+                        .any(|u| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some()));
                 // An SPRT may stop early, so its estimate is an upper bound.
                 h.push_str(&format!(" · {}{} left", if sprt { "at most " } else { "~" }, dur(left)));
             }
@@ -345,7 +376,12 @@ fn job_lines(out: &mut String, j: &JobStatus) {
     out.push_str(&format!("  {head}\n"));
     match j.kind {
         JobKind::Eval => {
-            let w = j.units.iter().map(|u| short_label(&u.name).chars().count()).max().unwrap_or(0);
+            let w = j
+                .units
+                .iter()
+                .map(|u| short_label(&u.name).chars().count())
+                .max()
+                .unwrap_or(0);
             for u in &j.units {
                 let name = short_label(&u.name);
                 let pad = w.saturating_sub(name.chars().count());
@@ -581,7 +617,10 @@ mod tests {
         assert!(l.contains("~30m left"), "{l}");
         assert!(l.contains("train 0.0927  val 0.1152"), "{l}");
         let done = Training {
-            progress: TrainProgress { done: true, ..t.progress.clone() },
+            progress: TrainProgress {
+                done: true,
+                ..t.progress.clone()
+            },
             ..t
         };
         assert!(training_line(&done, SystemTime::now()).is_none());

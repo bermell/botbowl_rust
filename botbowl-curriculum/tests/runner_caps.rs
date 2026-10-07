@@ -9,8 +9,7 @@ use botbowl_engine::bots::RandomBot;
 fn session_stops_at_max_agent_actions() {
     let lecture = GetTheBallEasy::new();
     let mut agent = RandomBot::new();
-    let mut session =
-        LectureSession::new(&lecture, 0xABCD, 400, &mut agent).with_max_agent_actions(Some(3));
+    let mut session = LectureSession::new(&lecture, 0xABCD, 400, &mut agent).with_max_agent_actions(Some(3));
 
     while !session.is_finished() {
         session.step(&mut agent);

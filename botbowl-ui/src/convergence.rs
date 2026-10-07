@@ -274,7 +274,10 @@ fn probe_state(
         if state.info.game_over || state.available_actions.team.is_none() {
             break;
         }
-        let plain = ConvergenceArgs { bot_config: None, ..args.clone() };
+        let plain = ConvergenceArgs {
+            bot_config: None,
+            ..args.clone()
+        };
         let mut bot = make_bot(&plain, nn, 1000);
         let action = bot.get_action(&state);
         state

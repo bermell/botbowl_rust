@@ -38,7 +38,10 @@ fn main() {
     assert!(ph >= 3, "BOARD_SIZE_H must be >= 3, got {ph}");
     assert!(team_size >= 1, "BOARD_PLAYERS must be >= 1, got {team_size}");
     // `Coord` is i8, so the engine dims (playable + 2) must fit in it.
-    assert!(pw + 2 <= 127 && ph + 2 <= 127, "board {pw}x{ph} exceeds the i8 Coord range");
+    assert!(
+        pw + 2 <= 127 && ph + 2 <= 127,
+        "board {pw}x{ph} exceeds the i8 Coord range"
+    );
 
     let width = pw + 2; // engine consts (with OOB border)
     let height = ph + 2;
