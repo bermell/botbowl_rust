@@ -23,5 +23,9 @@ ratatui = "0.25.0"
 # glibc malloc keeps the freed trees in per-thread arenas.
 mimalloc = "0.1"
 
+[features]
+# Reproducible search for benchmarks only (`scripts/perf_search_bench.sh`).
+deterministic_hash = ["botbowl-mcts/deterministic_hash"]
+
 [dev-dependencies]
 insta = "1"
