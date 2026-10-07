@@ -201,3 +201,47 @@ gains only from B.
 - path-finding is still the top engine cost wherever a state *is* derived (new leaves);
 - `encode` recomputes the paths `MoveAction` already put in `path_buffer`.
 
+
+## 8. `GameState` shrunk 4x: search memory −35%, CPU −23% (2026-10-07)
+
+The question behind it: could the search pre-allocate a fixed arena of nodes with their states,
+so a game's memory is known up front and a box's stream count follows from its RAM? Sizing the
+pieces first said the arena is secondary: a stored state was ~22 KB (`GameState` 10.0 KB, of
+which the board 7.6 KB at 16 bytes a square as `Option<usize>`; plus a boxed `AvailableActions`
+of 11.5 KB, a 24-byte `SmallVec<PosAT>` a square), and the worker's governor was calibrated at
+~450 KB per descent, i.e. tens of states a descent. The node itself is a few hundred bytes. So
+the state was shrunk before anything is done about allocation:
+
+- `board: FullPitch<BoardCell>`, one byte a square (id + 1, `0` empty); serde unchanged.
+- `AvailableActions`: `SimpleATSet` (`u32`) for the simple set, `FullPitch<PosATSet>` (`u16` a
+  square) for the positional offerings, `enum_bitset!` in `table.rs` in `SkillSet`'s mould;
+  `Copy` contents, derived `Hash`; serde unchanged except that a square's list now reads in
+  variant order (sets, not sequences; the benchmark hash sorts them).
+- `proc_stack: SmallVec<[AnyProc; 16]>`: a random game peaks 9 deep, so a clone copies the stack
+  instead of allocating it; deeper spills.
+- `botbowl-engine/tests/state_size.rs` pins all three and the stack depth.
+
+| | `GameState` | `AvailableActions` (boxed) | per stored state |
+|---|---|---|---|
+| before | 10,024 B | 11,488 B | ~21.5 KB |
+| after | 4,416 B | 960 B | ~5.4 KB |
+
+Of the 4.4 KB left: rosters 1.7 KB (`[Option<FieldedPlayer>; 24]` at 40 B and dugout at 32 B),
+the inline stack 1.5 KB, the board 0.5 KB, the rng ~0.3 KB. The one allocation a clone still
+makes is the `Box<AvailableActions>`.
+
+Benchmark (plan 058 §7's workload on macOS: 3 games, seed 4242, 1000 descents, heuristic,
+`cfgs/gumbel16_f1000_gen.toml`, 16x9/6, `deterministic_hash`; two runs each, `/usr/bin/time -l`):
+
+| | user CPU | peak RSS | trajectories |
+|---|---|---|---|
+| `5076090` | 3.64 s / 3.60 s | 330 MB | `a6d6c2d1d4bf` |
+| this | 2.79 s / 2.77 s | 214 MB | `a6d6c2d1d4bf` |
+
+Same trajectories, so the search is unchanged; −23% CPU, −35% peak memory. The remaining
+footprint is not the state: 214 MB over 3 games × ~28 searches × 1000 descents is still well
+over 5 KB a descent, so the next measurement is nodes per descent and bytes per node in
+`recon_mcts` (`Node` holds four `RwLock`s, a `HashSet` of parents and a `HashMap` of children).
+A node cap in `recon_mcts` would then make the per-game bound exact and the worker's
+`mem_governor` arithmetic instead of an EWMA; an index-based arena only if a profile shows the
+allocator and pointer chasing as the residual.

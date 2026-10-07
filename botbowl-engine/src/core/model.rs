@@ -3,18 +3,81 @@ use serde::{Deserialize, Serialize};
 use std::{error, fmt};
 
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, RangeInclusive, Sub, SubAssign};
 
 use super::dices::{D6Target, RequestedRoll, RollResult, Sum2D6Target};
 use super::gamestate::GameState;
 use super::procedures::AnyProc;
-use super::table::{NumBlockDices, PlayerRole, PosAT, SimpleAT, Skill, SkillSet};
+use super::table::{NumBlockDices, PlayerRole, PosAT, PosATSet, SimpleAT, SimpleATSet, Skill, SkillSet};
 use crate::core::table;
 
 pub type PlayerID = usize;
 pub type DugoutPlayerID = usize;
 pub type Coord = i8;
+
+/// One square of `GameState::board`: the fielded player on it, packed into a byte (`0` is empty,
+/// otherwise id + 1). `Option<PlayerID>` was 16 bytes a square, which made the board three
+/// quarters of a `GameState` and the bulk of every clone the search makes; this is one byte.
+/// Serialises as the `Option<PlayerID>` it replaces, so stored positions read back unchanged.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct BoardCell(u8);
+
+const _: () = assert!(2 * ROSTER_PER_TEAM < u8::MAX as usize, "BoardCell packs a player id into a byte");
+
+impl BoardCell {
+    pub const EMPTY: BoardCell = BoardCell(0);
+
+    #[inline]
+    pub fn get(self) -> Option<PlayerID> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some(self.0 as usize - 1)
+        }
+    }
+
+    #[inline]
+    pub fn set(&mut self, id: Option<PlayerID>) {
+        self.0 = match id {
+            None => 0,
+            Some(id) => {
+                debug_assert!(id < 2 * ROSTER_PER_TEAM, "player id {id} does not fit a BoardCell");
+                id as u8 + 1
+            }
+        };
+    }
+
+    #[inline]
+    pub fn is_some(self) -> bool {
+        self.0 != 0
+    }
+
+    #[inline]
+    pub fn is_none(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl std::fmt::Debug for BoardCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
+impl Serialize for BoardCell {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.get().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BoardCell {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let mut cell = BoardCell::EMPTY;
+        cell.set(Option::<PlayerID>::deserialize(deserializer)?);
+        Ok(cell)
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FullPitch<T> {
@@ -726,23 +789,6 @@ pub struct FieldedPlayer {
     pub used_skills: SkillSet,
 }
 
-/// Order-independent hash of a set.
-///
-/// `HashSet` has no `Hash` impl because its iteration order is not stable, but set *equality* is
-/// order-independent — so the hash has to be too, or two equal states could hash differently and
-/// split the MCTS DAG. Summing per-element hashes is commutative, which is exactly the property
-/// needed; the length is mixed in so `{}` and a set of hash-zero elements stay distinguishable.
-pub(crate) fn hash_set_unordered<T: std::hash::Hash, H: std::hash::Hasher>(set: &HashSet<T>, h: &mut H) {
-    use std::hash::Hash as _;
-    let mut acc: u64 = 0;
-    for item in set {
-        let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
-        item.hash(&mut item_hasher);
-        acc = acc.wrapping_add(std::hash::Hasher::finish(&item_hasher));
-    }
-    set.len().hash(h);
-    acc.hash(h);
-}
 
 impl std::hash::Hash for PlayerStats {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
@@ -980,15 +1026,13 @@ pub enum MicroStepState {
 pub trait Procedure: std::fmt::Debug {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState;
 }
-use smallvec::SmallVec;
-
-pub type SmallVecPosAT = SmallVec<[PosAT; 4]>;
-
-#[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct AvailableActions {
     pub team: Option<TeamType>,
-    simple: HashSet<SimpleAT>,
-    positional: Option<FullPitch<SmallVecPosAT>>,
+    simple: SimpleATSet,
+    /// One `PosATSet` per square. `None` until the first positional offering is inserted, which
+    /// keeps the common "simple actions only" decision at a few bytes.
+    positional: Option<FullPitch<PosATSet>>,
     // Whether `GameState::path_buffer` currently holds a valid set of path
     // offerings for this decision point. The actual `FullPitch` lives on
     // `GameState` so we can reuse the 4KB buffer across MoveAction frames
@@ -1012,7 +1056,7 @@ impl std::fmt::Debug for AvailableActions {
         if let Some(positional) = &self.positional {
             for pos_at in positional.iter().flat_map(|pos_ats| pos_ats.iter()) {
                 pos_at_count
-                    .entry(*pos_at)
+                    .entry(pos_at)
                     .and_modify(|counter| *counter += 1)
                     .or_insert(1);
             }
@@ -1028,20 +1072,11 @@ impl std::fmt::Debug for AvailableActions {
         info.finish()
     }
 }
-impl std::hash::Hash for AvailableActions {
-    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
-        self.team.hash(h);
-        hash_set_unordered(&self.simple, h);
-        self.positional.hash(h);
-        self.has_paths.hash(h);
-    }
-}
-
 impl AvailableActions {
-    pub fn get_simple(&self) -> &HashSet<SimpleAT> {
+    pub fn get_simple(&self) -> &SimpleATSet {
         &self.simple
     }
-    pub fn get_positional(&self) -> &Option<FullPitch<SmallVecPosAT>> {
+    pub fn get_positional(&self) -> &Option<FullPitch<PosATSet>> {
         &self.positional
     }
     pub fn has_paths(&self) -> bool {
@@ -1069,12 +1104,12 @@ impl AvailableActions {
         if let Some(positional) = self.positional.as_ref() {
             for (pos, sv) in positional.iter_position() {
                 for at in sv.iter() {
-                    out.push(Action::Positional(*at, pos));
+                    out.push(Action::Positional(at, pos));
                 }
             }
         }
         for at in self.simple.iter() {
-            out.push(Action::Simple(*at));
+            out.push(Action::Simple(at));
         }
     }
     /// Companion to [`crate::core::gamestate::GameState::mirrored`]:
@@ -1087,18 +1122,18 @@ impl AvailableActions {
     /// scope note on `GameState::mirrored`.
     pub fn mirrored(&self, width: Coord) -> AvailableActions {
         let positional = self.positional.as_ref().map(|src| {
-            let mut dst: FullPitch<SmallVecPosAT> = Default::default();
+            let mut dst: FullPitch<PosATSet> = Default::default();
             for (pos, sv) in src.iter_position() {
                 if sv.is_empty() {
                     continue;
                 }
-                dst[Position::new((width - 1 - pos.x, pos.y))] = sv.clone();
+                dst[Position::new((width - 1 - pos.x, pos.y))] = *sv;
             }
             dst
         });
         AvailableActions {
             team: self.team.map(other_team),
-            simple: self.simple.clone(),
+            simple: self.simple,
             positional,
             has_paths: false,
         }
@@ -1119,7 +1154,7 @@ impl AvailableActions {
 
         let self_positional = self.positional.as_mut().unwrap();
         positions.into_iter().for_each(|pos| {
-            self_positional[pos].push(action_type);
+            self_positional[pos].insert(action_type);
         })
     }
 

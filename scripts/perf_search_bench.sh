@@ -8,7 +8,8 @@
 #
 # Reproducibility: `deterministic_hash` (fixed children-map hasher) is built in, and
 # `fixed_getrandom.c` is preloaded so std's RandomState keys are fixed too. The hash sorts the
-# JSON of HashSet fields (`skills`, `used_skills`, `simple`), whose order is not part of the game.
+# JSON of set fields (`skills`, `used_skills`, `simple`, and the per-square lists under `data`),
+# whose order is not part of the game.
 # Builds into target/perf-16x9, never the loop's target/16x9.
 #
 # Env: GAMES (3), SEED (4242), ITERS (1000), EVALUATOR (heuristic; or nn with MODEL=…onnx, tract),
@@ -33,9 +34,14 @@ INS=$(grep instructions "$OUT/$TAG.stat" | cut -d, -f1)
 HASH=$(python3 - "$OUT/$TAG.jsonl" <<'PY'
 import hashlib, json, sys
 SETS = ("skills", "used_skills", "simple")
+def leaves_sorted(x):
+    if isinstance(x, list):
+        return sorted(x) if all(isinstance(v, str) for v in x) else [leaves_sorted(v) for v in x]
+    return x
 def canon(x):
     if isinstance(x, dict):
-        return {k: sorted(v) if k in SETS and isinstance(v, list) else canon(v) for k, v in x.items()}
+        return {k: sorted(v) if k in SETS and isinstance(v, list) else leaves_sorted(v) if k == "data" else canon(v)
+                for k, v in x.items()}
     return [canon(v) for v in x] if isinstance(x, list) else x
 h = hashlib.md5()
 for line in open(sys.argv[1]):
