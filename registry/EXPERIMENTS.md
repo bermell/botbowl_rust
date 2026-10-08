@@ -68,8 +68,8 @@ ends (see the root CLAUDE.md).
   decisions counted in a 10 min (5076090) or 8 min (96fb083) window.
 - **Result:** one sidecar saturates near 8k samples/s (GPU ~80%); two sidecars at 48 streams fill
   the GPU (8.55k/s, +9%); 64 streams add nothing; 48 streams use 4.4 GB on 96fb083 (6.5 GB before).
-  In the loop (gen06) the rate was 1766 decisions/min, 2.3x gen05, above the benchmark's
-  (~300 forwards per decision against ~490 in `dataset`).
+  In the loop gen06 made 1766 decisions/min, but ~40% of that was the laptop (10 streams on its
+  own CPU): without it (gen08-09) the box makes ~1080/min, the benchmark's rate (plan 058 §9).
 - **Conclusion:** generation is GPU-bound; the loop runs 48 streams over two sidecars and spends
   the speedup on data (400 games per shard).
 

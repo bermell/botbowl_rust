@@ -313,12 +313,25 @@ and N processes). Net: gen05. Window 10 min (`5076090`) or 8 min (`96fb083`), so
 **400 games per shard** (300 before, +33%), so a generate phase stays near gen05's ~3.3 h. MC labels
 and training grow with it (~105 and ~37 min expected).
 
-**In the loop (gen06): faster than the benchmark.** 201k samples in 114 min = 1766 decisions/min,
-2.3x live gen05 (775), while the two sidecars served the same ~8.9k samples/s as in the benchmark.
-So the loop spends ~300 forwards per decision where the benchmark's `dataset` spent ~490. Likely
-reason (unverified): the worker shares one evaluator, and its memo, across its 24 games, so
-repeated states (kickoff setups, early drive positions) hit the cache. MC labels (~1.75 h, one
-sidecar) are now the longest phase.
+**In the loop (gen06-07): faster than the benchmark — because of the laptop (corrected
+2026-10-08).** gen06 wrote 201k samples in 114 min = 1766 decisions/min, while the two sidecars
+served the same ~8.9k samples/s as in the benchmark (~300 sidecar forwards per decision, against
+the benchmark's ~490). The first guess, a memo shared across a worker's games, is wrong: the memo
+(`NnEvaluator::forward_memo`) is per thread and holds one state. The sidecars' cumulative
+counters settle it:
+
+| gen | build | laptop | sidecar forwards | decisions | forwards per decision |
+|---|---|---|---|---|---|
+| 06 | 43a45c6 | 10 streams | 59.5M | 201,364 | 295 |
+| 07 | 43a45c6 | 10 streams (+ gen06's drives on the sidecars) | 65.2M | 204,956 | 318 |
+| 08 | 43a45c6 | gone | 39.8M | 82,522 | 483 |
+| 09 (first 50 min) | 3c25109 | gone (protocol v17) | | 1080 per min | ~487 |
+
+Same build, same searches per sample (0.80) and descents per search (~950) in every generation;
+only the laptop changed. Its decisions use its own CPU (tract), not the sidecars, so the box alone
+makes ~1080 decisions/min (the benchmark's 1047), and **the laptop's 10 streams added ~450-700
+decisions/min, 40-65% on top.** Rebuilding it on protocol v17 is worth that much generation.
+MC labels (~1.75 h, one sidecar) are the longest phase on the box.
 
 **Next levers, all on the GPU side:** the forward itself (precision, fused kernels, TensorRT-style
 export), fewer forwards per decision (the memo hit rate), and two sidecars for mc-label, which is
