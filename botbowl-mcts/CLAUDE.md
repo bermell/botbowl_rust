@@ -163,6 +163,33 @@ a commutative counter, so `merge` folds games, threads and worker machines in an
   question it exposed (the bot overrules its own block-die script half the time). See the
   block-die note under "Search shape".
 
+## Tree statistics (`tree_stats.rs`, plan 060)
+
+Every search records how deep its descents went and where they ended, **per descent** (not per
+node). `recon_mcts`'s `GameDynamics::observe_descent` hands each finished descent's edges (with
+the player of the node each leaves), its leaf state and a `DescentEnd` to
+`BloodBowlDynamics::observe_descent`, which folds them into the bot's `DescentLog` (one mutex per
+descent; shared with every tree the bot builds, like `ForcedRoot`, because a reused tree keeps the
+dynamics it was built with). After the search `run_search` adds the main line (most-visited child
+from the root down, read with `Node::get_children`/`with_score`, no state clones) and
+`opp_turn_follows` (the `Half` procedure's turn order: is the next turn start before the horizon
+the opponent's, with `TURNS_PER_HALF` per team). The result, `botbowl_data::TreeStats`, goes on the
+sample (`Sample.tree`) and into `SearchTelemetry.tree` (`TreeTelemetry`, summed counters; the
+`MCTS_TELEMETRY` line prints the means), from there into `report.json`, `eval.games.jsonl` and the
+corpus `meta.extra` (`tree_*` keys).
+
+- **Phases** (`leaf_phase`) are relative to the root's `HorizonAnchor`, captured even with the
+  horizon off: game over, score, half end, then the turn counters — the mover's counter advanced
+  `turn_depth` times is the horizon, the opponent's counter ahead of the mover's is `opp_turn`.
+- **Valuation**: `solved` (the descent hit an all-solved node), `horizon`, `terminal` (a known
+  outcome, or an in-window dead end), `chance` (a fresh in-window chance node) or `new_leaf`.
+- **Observational**: the search plays byte-identical games (`scripts/perf_search_bench.sh` strips
+  the `tree` block before hashing) at the same instruction count (27.041e9 → 27.040e9).
+- `scripts/tree_stats.py CORPUS...` prints plan 060 §3's tables. `tests/tree_stats.rs` pins the
+  totals (one phase and one valuation per descent), a turn-end search whose main line enters the
+  opponent's turn, the last turn of a half (no opponent turn), and `opp_turn_follows` against
+  random games.
+
 ## Reading a finished search (`report.rs`)
 
 `MctsBot` keeps the tree it just searched (it already did, for reuse) and exposes it read-only:
