@@ -94,5 +94,15 @@ invisible after one step at 600 pairs. Remedies: compare across several generati
 lineage check below), or score policy-only play at a sampled policy (temperature 1), which
 exposes the whole distribution, at the cost of noise.
 
-**Lineage check (running):** gen07 vs gen04 and vs the init net (g056 gen04 v9), policy-only,
-600 pairs per board: does the loop's policy improve over three to seven generations at all?
+**Lineage check:** does the loop's policy improve over several generations at all? Policy-only,
+600 pairs per board (`runs/exp069/po_lineage/`):
+
+| gen07 vs | 14x7 | 16x9 | mean | per generation |
+|---|---|---|---|---|
+| gen04 (3 generations back) | 0.511 ± 0.008 | 0.512 ± 0.009 | 0.512 ± 0.006 | ~+0.004 |
+| the init net, g056 gen04 v9 (7 back) | 0.507 ± 0.009 | 0.528 ± 0.010 | 0.518 ± 0.007 | ~+0.0025 |
+
+So the loop's bare policy does improve under τ=100, but at ~0.003-0.004 per generation: too
+little to see in one step, and the first generations on the new rules (gen01-03) apparently gave
+some of it back. τ=50's one-step reading (+0.009 ± 0.005) would be two to three times that rate,
+if it holds.
