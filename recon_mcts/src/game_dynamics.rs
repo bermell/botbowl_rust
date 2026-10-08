@@ -15,6 +15,20 @@ pub enum SelectNodeState {
     Exploit,
 }
 
+/// Why a descent stopped, as handed to [`GameDynamics::observe_descent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DescentEnd {
+    /// It reached an unexpanded node and expanded it: a fresh leaf was materialised (scored by
+    /// [`GameDynamics::score_leaf`], unless it recombined into an existing twin) and its children
+    /// enumerated. The leaf may turn out to have no actions; a later descent then ends there as
+    /// [`DescentEnd::Terminal`].
+    Expanded,
+    /// It reached a node with no children (terminal): nothing to expand.
+    Terminal,
+    /// Every child of the node it stopped at is solved, so there was nothing left to select.
+    Solved,
+}
+
 // It's currently not possible to turn `GameDynamics` into a trait object because `select_node` and
 // `backprop_scores` use generic parameters.  In particular, the underlying generic type has an
 // iterator over `Node<GD, State, Player, Action, Score, I, M>` where `M` is a true generic
@@ -182,6 +196,24 @@ pub trait GameDynamics {
     /// (`backprop_scores` returning `None`) never replaces the scores above the cut, so their
     /// adjustment would outlive the descent and accumulate. Default: nothing to undo.
     fn release_descent(&self, _parent_player: &Self::Player, _child_score: &Self::Score) {}
+
+    /// Called once per descent, when it stops: `edges` are the edges it took, root first, each as
+    /// `(player of the node the edge leaves, action)`; `leaf` is the state it stopped at, and `end`
+    /// says why it stopped. A swap of a fresh placeholder for an existing twin (recombination) is
+    /// not an edge — the twin takes the placeholder's place on the path — so `edges` has exactly
+    /// one entry per ply from the root.
+    ///
+    /// Purely observational: the tree has already done its work (the leaf is scored, the backprop
+    /// has run) and nothing returned here can reach it. For tree statistics — how deep a search
+    /// sees, where its lines end. Default: nothing.
+    fn observe_descent<'a, E>(&self, _edges: E, _leaf: &Self::State, _end: DescentEnd)
+    where
+        Self: Sized,
+        E: Iterator<Item = (&'a Self::Player, &'a Self::Action)>,
+        Self::Player: 'a,
+        Self::Action: 'a,
+    {
+    }
 
     /// Take a leaf node's state and assign the node a score, whether via simulation or otherwise.
     ///
