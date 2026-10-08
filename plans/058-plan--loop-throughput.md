@@ -102,7 +102,7 @@ records are skipped there (the audit's replay is random-start only).
 | 03 | 141 min | 2400 (0.87) / 1924 (0.81) | Push 1460 → 69%, Wrestle 180 → 56%, Dodge 37 → 84%, Block 17 → 88% | 1924 (6.9; 2.8) | 75 min, 0 unlabelled | 42 min (3-gen window), step 32000; absorb dP(played) +0.001, dtop1 −0.000, dvalMSE −0.006 | 0.212 → 0.214 (paired +0.9%, ~1.6 SE: flat) | gen02 on gen03: +0.003/+0.003/+0.006/**+0.010** MONOTONE; slope 0.76 | 14x7 0.449 ± 0.035 (H0, 68 pairs); 16x9 0.481 ± 0.025 (H0, 101 pairs) |
 | 04 | 292 min (36 local; shared 112 min with gen03's drive benchmark; laptop 5 streams only near the end) | 2400 (0.87) / 1910 (0.80) | Push 1560 → 68%, Wrestle 181 → 46%, Dodge 38 → 89%, Block 28 → 96% | 1910 (6.9; 2.8) | 75 min, 0 unlabelled; prepare drops 20% as forced | 28 min, step 25000; combined val 0.924 (not comparable: forced samples, zero policy loss, left val too); absorb dP(played) +0.004, dtop1 +0.002, dvalMSE −0.005 | 0.214 → **0.209 (paired −2.3%, ~4 SE)**, bias −0.015 → −0.006 | gen03 on gen04: +0.002/+0.004/+0.007/+0.009 MONOTONE; slope 0.74 | |
 | 05 | 196 min (28 local; laptop ~1 h of it); first corpus from the forced-move bot | 2400 (0.89) / 1955 (0.80) | Push 1447 → 69%, Wrestle 163 → 41%, Dodge 41 → 88%, Block 25 → 84% | 1955 (6.9; 2.8) | 79 min, 0 unlabelled | 28 min, step 25000; absorb dP(played) +0.001, dtop1 −0.000, dvalMSE −0.005 | 0.209 → **0.206 (paired −1.2%, ~3 SE)**, bias +0.004 | gen04 on gen05: +0.002/+0.003/+0.003/+0.007 MONOTONE; slope 0.43 (gen04 corpus: 0.74) | (gen06) |
-| 06 | **114 min** for 3200 drives (400/shard; 48 local over 2 sidecars + laptop 5): 201k samples, 1766 decisions/min (gen05: 775) | 3200 (0.88) / 2597 (0.81) | Push 1977 → 72%, Wrestle 242 → 46%, Dodge 64 → 97%, Block 51 → 90% | 2597 (6.9; 2.8) | 100 min (one sidecar), 0 unlabelled | 30 min, step 18000 (epoch 1); absorb dP(played) +0.002, dtop1 +0.003, dvalMSE −0.005 | 0.206 → 0.208 (paired +0.7%, ~2 SE), **bias +0.004 → +0.016** | gen05 on gen06: +0.002/+0.004/+0.004/**+0.010** MONOTONE; slope 0.75 | (running with gen07) |
+| 06 | **114 min** for 3200 drives (400/shard; 48 local over 2 sidecars + laptop 5): 201k samples, 1766 decisions/min (gen05: 775) | 3200 (0.88) / 2597 (0.81) | Push 1977 → 72%, Wrestle 242 → 46%, Dodge 64 → 97%, Block 51 → 90% | 2597 (6.9; 2.8) | 100 min (one sidecar), 0 unlabelled | 30 min, step 18000 (epoch 1); absorb dP(played) +0.002, dtop1 +0.003, dvalMSE −0.005 | 0.206 → 0.208 (paired +0.7%, ~2 SE), **bias +0.004 → +0.016** | gen05 on gen06: +0.002/+0.004/+0.004/**+0.010** MONOTONE; slope 0.75 | 14x7 0.483 ± 0.023 (H0, 116 pairs); 16x9 0.505 ± 0.021 (H0, 158 pairs) |
 
 **gen01, the first fine-tune on the new rules.** It learned steadily (every validation metric moved
 at almost every checkpoint, unlike g056's flat curves), and the absorption probe is strong (dtop1
@@ -138,6 +138,9 @@ early numbers; watch the trend.
 - **Known, not caused by it:** `botbowl-mcts/tests/solved_early_stop.rs` fails its 3 s debug-build
   limit under load (also on the base commit), and one `botbowl-ui` unit test failed once under load
   and passed on two reruns.
+
+**gen06 vs the anchor: even** (14x7 0.483 ± 0.023, 16x9 0.505 ± 0.021; gen03 was 0.449 / 0.481).
+Both up ~0.03, within ~1 SE each; no clear gain over d1k gen04 v9 yet.
 
 **Value-bench bias drifts up, ~+0.01 per generation:** −0.015 (gen03), −0.006, +0.004, +0.016
 (gen06). Scatter keeps falling (0.213 → 0.207), so RMS holds, but a steady drift is the thing to
