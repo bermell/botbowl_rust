@@ -37,6 +37,7 @@ Defaults unless a row says otherwise:
 
 | A | vs B | 14x7 | 16x9 | commit | date |
 |---|---|---|---|---|---|
+| **v9 gen09** (first τ=50 net) | d1k gen04 v9 | 0.507 ± 0.020 (H0, 140 pairs) | **0.540 ± 0.017 (H1, 239 pairs)** | f75eda5 | 2026-10-08 |
 | v9 gen06 | d1k gen04 v9 | 0.483 ± 0.023 (H0, 116 pairs) | 0.505 ± 0.021 (H0, 158 pairs) | 43a45c6 | 2026-10-08 |
 | v9 gen03 | d1k gen04 v9 | 0.449 ± 0.035 (H0, 68 pairs) | 0.481 ± 0.025 (H0, 101 pairs) | ae721b7 | 2026-10-07 |
 
