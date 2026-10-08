@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use botbowl_data::{ChildStat, Sample};
+use botbowl_data::{ChildStat, Sample, TreeStats};
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::dices::RollResult;
 use botbowl_engine::core::gamestate::GameState;
@@ -28,7 +28,9 @@ use botbowl_engine::core::table::{PosAT, SimpleAT};
 use botbowl_nn::eval::NnEvaluator;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use recon_mcts::{GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, Status, StoreState, Tree, TreeAlias};
+use recon_mcts::{
+    DescentEnd, GameDynamics, GetState, NodeInfo, SearchTree, SelectNodeState, Status, StoreState, Tree, TreeAlias,
+};
 
 use crate::action::{BbAction, BbPlayer};
 use crate::exploration::{sample_index, ExploreStep, RootNoise, RootNoiseSpec};
@@ -40,6 +42,7 @@ use crate::roll_outcomes;
 use crate::score::leaf_score;
 use crate::scripted;
 use crate::telemetry::{RecombinationCounts, ReuseDecision, ReuseOutcome, RootDescents, SearchTelemetry};
+use crate::tree_stats::{self, DescentLog};
 
 /// PUCT exploration constant. Sized so that the `c · P · √N(parent) /
 /// (1 + N(a))` term is comparable to leaf-score magnitudes (game score
@@ -716,6 +719,9 @@ pub struct BloodBowlDynamics {
     /// Plan 053: the root move the next descent must take, set by the Gumbel search loop.
     /// `None` (default) is the shipped PUCT root.
     pub forced_root: Option<Arc<ForcedRoot>>,
+    /// Plan 060: where each descent ended, for the tree statistics. Observational only; `None`
+    /// (default) records nothing.
+    pub descent_log: Option<Arc<DescentLog>>,
 }
 
 impl BloodBowlDynamics {
@@ -763,6 +769,7 @@ impl Default for BloodBowlDynamics {
             root_trace: None,
             chance_model: ChanceModel::Exact,
             forced_root: None,
+            descent_log: None,
         }
     }
 }
@@ -1130,6 +1137,18 @@ impl GameDynamics for BloodBowlDynamics {
         let _ = child_score
             .virtual_loss
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some((v - vl).max(0)));
+    }
+
+    /// Plan 060: tally where the descent ended (`tree_stats::DescentLog`). Observational only.
+    fn observe_descent<'a, E>(&self, edges: E, leaf: &Self::State, end: DescentEnd)
+    where
+        E: Iterator<Item = (&'a Self::Player, &'a Self::Action)>,
+        Self::Player: 'a,
+        Self::Action: 'a,
+    {
+        if let Some(log) = &self.descent_log {
+            log.record(edges, leaf, end);
+        }
     }
 
     /// The mover at the child reached by `action`.
@@ -2236,6 +2255,9 @@ pub struct MctsBot {
     setup_choice: Option<(HorizonAnchor, Formation)>,
     /// The bot's own randomness (`Bot::set_seed`): only the per-drive formation draw uses it.
     rng: ChaCha8Rng,
+    /// Plan 060: the per-descent tally behind each search's [`TreeStats`], shared with every tree
+    /// this bot builds (a reused tree keeps the dynamics it was built with).
+    descent_log: Arc<DescentLog>,
 }
 
 impl MctsBot {
@@ -2260,6 +2282,7 @@ impl MctsBot {
             forced_root: None,
             setup_choice: None,
             rng: ChaCha8Rng::from_entropy(),
+            descent_log: Arc::default(),
         }
     }
 
@@ -2360,6 +2383,7 @@ impl MctsBot {
             root_solved: false,
             outcome_value: None,
             scripted: true,
+            tree: None,
         }
     }
 
@@ -2513,6 +2537,8 @@ struct SearchResult {
     /// Plan 053: the move a Gumbel search chose (its best survivor), which replaces the best-Q
     /// child. `None` for a PUCT search.
     gumbel_pick: Option<EngineAction>,
+    /// Plan 060: how deep this search's descents went and where they ended.
+    tree: TreeStats,
 }
 
 impl MctsBot {
@@ -2601,7 +2627,13 @@ impl MctsBot {
             root_trace: self.root_trace.clone(),
             chance_model: self.config.chance_model,
             forced_root: None,
+            descent_log: Some(Arc::clone(&self.descent_log)),
         };
+        // Plan 060: the tree statistics read every leaf against this search's anchor (captured even
+        // when the horizon is off, so the phases still mean something).
+        let stats_anchor = self.capture_anchor(&root_state, agent_team);
+        self.descent_log.reset(stats_anchor);
+        let opp_follows = tree_stats::opp_turn_follows(&root_state, agent_team, stats_anchor.turn_depth);
         let n_workers = self.config.workers.max(1);
         // Plan 053: Gumbel root search, with its schedule seeded by the root state so a search is
         // reproducible (only when it draws noise at all).
@@ -2916,20 +2948,22 @@ impl MctsBot {
                 // tree is handed to the cache — the record needs it and
                 // the tree is moved out below.
                 let root_info = tree.get_root_info();
-                (move_info, root_info, tree)
+                let main_line = tree_stats::main_line(&tree.get_root_node(), &stats_anchor);
+                (move_info, root_info, main_line, tree)
             }};
         }
 
-        let (move_info, root_info, cache_after) = match memory_mode {
+        let (move_info, root_info, main_line, cache_after) = match memory_mode {
             MemoryMode::GetState => {
-                let (mi, ri, t) = run_with_marker!(GetState, "get", GetState);
-                (mi, ri, CachedTree::GetState(t))
+                let (mi, ri, ml, t) = run_with_marker!(GetState, "get", GetState);
+                (mi, ri, ml, CachedTree::GetState(t))
             }
             MemoryMode::StoreState => {
-                let (mi, ri, t) = run_with_marker!(StoreState, "store", StoreState);
-                (mi, ri, CachedTree::StoreState(t))
+                let (mi, ri, ml, t) = run_with_marker!(StoreState, "store", StoreState);
+                (mi, ri, ml, CachedTree::StoreState(t))
             }
         };
+        let tree = self.descent_log.finish(main_line, opp_follows, reuse_proc.clone());
         // Stash the tree for the next `get_action`. Reuse-disabled bots
         // (BLOOD_MCTS_TREE_REUSE=off) still get here; the next call
         // takes the `anchor_matches` branch as false and rebuilds, but
@@ -2953,6 +2987,7 @@ impl MctsBot {
         };
         self.telemetry
             .record(&reuse, recomb_delta, steps_run.load(Ordering::Relaxed));
+        self.telemetry.tree.record(&tree);
         if dump_stats {
             eprintln!("MCTS_TELEMETRY {}", self.telemetry.summary());
         }
@@ -2966,6 +3001,7 @@ impl MctsBot {
             recombination: recomb_delta,
             root_noise,
             gumbel_pick,
+            tree,
         }
     }
 
@@ -3527,6 +3563,7 @@ impl MctsBot {
             root_solved: result.root_info.solved,
             outcome_value: None,
             scripted: false,
+            tree: Some(result.tree),
         };
         (action, sample, outcome)
     }

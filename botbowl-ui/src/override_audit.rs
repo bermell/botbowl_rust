@@ -914,6 +914,7 @@ mod tests {
             root_solved: false,
             outcome_value: None,
             scripted: false,
+            tree: None,
         };
         let traj = Trajectory::new(
             TrajectoryMeta::new("random-start", state.board_dims),

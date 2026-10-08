@@ -154,6 +154,132 @@ pub struct Sample {
     /// rebuilds every state from the recorded `chosen_action`s.
     #[serde(default)]
     pub scripted: bool,
+    /// Plan 060: the shape of the search behind this decision — how deep its descents went and
+    /// where they ended relative to the horizon. `None` for an unsearched decision and in every
+    /// corpus written before plan 060; never read by `prepare` or the trainer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeStats>,
+}
+
+/// Plan 060: where one search's descents went. Counted **per descent** (each of the `descents`
+/// counts once), not per node: a per-node count is dominated by thousands of one-visit leaves, a
+/// per-descent count is where the budget went.
+///
+/// "Own" means the root's mover (the team the search plays for); a "ply" is any tree edge — a
+/// decision by either side or a chance outcome. Phases are relative to the root's horizon anchor
+/// (`botbowl_mcts::HorizonAnchor`): at the default `horizon_turns = 1` a line runs through the
+/// rest of the mover's turn and the opponent's next turn, and stops when the mover's next turn
+/// begins.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct TreeStats {
+    /// Descents this search ran (a reused tree's earlier descents are not counted).
+    pub descents: u32,
+    /// Leaf depth in plies from the root (decision and chance edges).
+    pub plies: DepthStats,
+    /// Leaf depth in the root mover's own decisions only.
+    pub own: DepthStats,
+    /// Chance edges per descent, mean. `chance_plies_mean / plies.mean` is the share of the depth
+    /// that is dice, not decisions.
+    pub chance_plies_mean: f32,
+    /// Where each descent stopped.
+    pub ends: PhaseCounts,
+    /// Descents whose leaf lies in the opponent's following turn or later (the opponent's turn
+    /// counter moved past the root's), however the descent then ended.
+    pub reached_opp_turn: u32,
+    /// How each descent's leaf got its value.
+    pub valued: LeafValueCounts,
+    /// The line the search settled on: most-visited child from the root down.
+    pub main_line: MainLine,
+    /// The opponent has a turn inside this search's horizon. `false` at the end of a half (the
+    /// opponent has played its last turn) — analyses filter those decisions out.
+    pub opp_turn_follows: bool,
+    /// `proc_stack_top()` at the root: what kind of decision this was.
+    pub proc: Option<String>,
+}
+
+/// Mean / nearest-rank p90 / max of a per-descent depth.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct DepthStats {
+    pub mean: f32,
+    pub p90: u32,
+    pub max: u32,
+}
+
+/// Where a line stopped, relative to the root's horizon anchor.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Still in the root mover's current turn (or, for a root in a setup, before the next turn).
+    OwnTurn,
+    /// In the opponent's following turn.
+    OppTurn,
+    /// Past the horizon: the mover's next turn began (the horizon leaf).
+    Horizon,
+    /// Someone scored (terminal).
+    Score,
+    /// The half ended.
+    HalfEnd,
+    /// The game ended.
+    GameOver,
+}
+
+/// Descents per [`Phase`] they stopped in.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhaseCounts {
+    pub own_turn: u32,
+    pub opp_turn: u32,
+    pub horizon: u32,
+    pub score: u32,
+    pub half_end: u32,
+    pub game_over: u32,
+}
+
+impl PhaseCounts {
+    pub fn record(&mut self, phase: Phase) {
+        *self.slot(phase) += 1;
+    }
+
+    pub fn slot(&mut self, phase: Phase) -> &mut u32 {
+        match phase {
+            Phase::OwnTurn => &mut self.own_turn,
+            Phase::OppTurn => &mut self.opp_turn,
+            Phase::Horizon => &mut self.horizon,
+            Phase::Score => &mut self.score,
+            Phase::HalfEnd => &mut self.half_end,
+            Phase::GameOver => &mut self.game_over,
+        }
+    }
+
+    pub fn total(&self) -> u32 {
+        self.own_turn + self.opp_turn + self.horizon + self.score + self.half_end + self.game_over
+    }
+}
+
+/// How each descent's leaf was valued.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeafValueCounts {
+    /// A fresh decision leaf inside the horizon, scored by the evaluator (net or heuristic).
+    pub new_leaf: u32,
+    /// A fresh chance node inside the horizon: expanded, its value waits for its outcomes.
+    pub chance: u32,
+    /// A known outcome (a score, the half or the game over), or an in-horizon dead end.
+    pub terminal: u32,
+    /// Every child of the node the descent reached was solved.
+    pub solved: u32,
+    /// The horizon leaf: the mover's next turn began, valued by the evaluator.
+    pub horizon: u32,
+}
+
+/// The search's main line: from the root, the most-visited child at every node (the most-visited
+/// outcome at chance nodes), until a node with no visited child.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+pub struct MainLine {
+    pub plies: u32,
+    /// The root mover's own decisions on it.
+    pub own: u32,
+    pub chance: u32,
+    /// The phase its last node is in. `None` when the node keeps no state (`MemoryMode::GetState`).
+    pub phase: Option<Phase>,
 }
 
 /// How a trajectory ended — the value-target ground truth.
@@ -441,7 +567,64 @@ mod tests {
             root_solved: false,
             outcome_value: None,
             scripted: false,
+            tree: None,
         }
+    }
+
+    /// Plan 060: `tree` is optional both ways. A corpus written before it existed still parses
+    /// (no key → `None`), and a sample without one writes no key, so readers that predate it see
+    /// exactly the old line.
+    #[test]
+    fn tree_stats_are_an_optional_trailing_key() {
+        let plain = dummy_sample();
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("\"tree\""), "no tree key without stats: {json}");
+        let back: Sample = serde_json::from_str(&json).unwrap();
+        assert!(back.tree.is_none());
+
+        let mut with = dummy_sample();
+        with.tree = Some(TreeStats {
+            descents: 1000,
+            plies: DepthStats {
+                mean: 7.5,
+                p90: 12,
+                max: 19,
+            },
+            own: DepthStats {
+                mean: 3.0,
+                p90: 5,
+                max: 8,
+            },
+            chance_plies_mean: 2.5,
+            ends: PhaseCounts {
+                own_turn: 600,
+                opp_turn: 300,
+                horizon: 50,
+                score: 40,
+                half_end: 10,
+                game_over: 0,
+            },
+            reached_opp_turn: 380,
+            valued: LeafValueCounts {
+                new_leaf: 700,
+                chance: 100,
+                terminal: 60,
+                solved: 90,
+                horizon: 50,
+            },
+            main_line: MainLine {
+                plies: 9,
+                own: 4,
+                chance: 3,
+                phase: Some(Phase::OppTurn),
+            },
+            opp_turn_follows: true,
+            proc: Some("Turn".to_string()),
+        });
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains("\"phase\":\"opp_turn\""), "phases are snake_case: {json}");
+        let back: Sample = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tree, with.tree);
     }
 
     #[test]

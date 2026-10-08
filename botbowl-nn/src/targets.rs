@@ -383,6 +383,7 @@ mod tests {
             root_solved,
             outcome_value: outcome,
             scripted: false,
+            tree: None,
         }
     }
 
