@@ -1,6 +1,6 @@
 # Plan 059 — policy targets again, judged by policy-only drives
 
-**Status:** Started 2026-10-08 morning (exp069, `scripts/exp069_targets_policy_only.sh`).
+**Status:** exp069 done 2026-10-08 12:30 (§4). No target clearly beats τ=100 after one step; τ=50 is the only candidate (value intact, log P(played) 5x, policy-only +0.009 ± 0.005). One-step policy-only drives are too blunt to settle it (§5).
 
 ## 1. Why
 
@@ -54,6 +54,45 @@ Per arm, against the parent:
 Policy-only drives see only the policy. The value bench covers the value head and the net check
 (not run here) whether a sharper policy still serves the search.
 
-## 4. Results
+## 4. Results (exp069, 2026-10-08; parent gen06, the gen05-07 window)
 
-(pending)
+Training on the free GPU: 32 min per arm (the first, cq100r, took 101 min sharing it with gen08's
+generation). Best-val checkpoints: cq100r step 25000, cq50 24000, cq30 31188 (the last), gumbel
+31000.
+
+| arm | Δ log P(played) | Δ P(played) | Δ top-1 = played | value bench dRMS (paired) | value bias | policy-only 14x7 | policy-only 16x9 | policy-only mean |
+|---|---|---|---|---|---|---|---|---|
+| loop07 (τ=100) | +0.003 | +0.002 | +0.002 | −1.4% | +0.001 | 0.498 ± 0.007 | 0.502 ± 0.008 | 0.500 ± 0.005 |
+| cq100r (τ=100 re-run) | +0.002 | +0.001 | +0.001 | −1.7% | −0.002 | 0.503 ± 0.007 | 0.501 ± 0.008 | 0.502 ± 0.005 |
+| **cq50** | **+0.016** | −0.001 | +0.002 | **−1.4%** | −0.007 | 0.500 ± 0.007 | **0.517 ± 0.008** | **0.509 ± 0.005** |
+| cq30 | +0.028 | −0.010 | +0.001 | ±0.0% | +0.012 | 0.503 ± 0.009 | 0.489 ± 0.010 | 0.496 ± 0.007 |
+| gumbel σ | −0.050 | −0.090 | −0.012 | +1.7% (worse) | +0.013 | 0.495 ± 0.010 | 0.509 ± 0.010 | 0.502 ± 0.007 |
+
+(Absorption on gen07's held-out shards, every arm scored on the same cq-100 prepared set; the
+gen06 parent's raw numbers: log P(played) −0.946, P(played) 0.614, top-1 0.680. Value bench: the
+v9 MC benchmark, paired vs gen06 (RMS 0.2078). Policy-only: 600 pairs per board vs gen06,
+`cfgs/policy_only.toml` both sides, contested positions.)
+
+- **The τ=100 control reproduces** (loop07 vs cq100r): ±0.001 on the probe columns, 0.3% on the
+  value bench, 0.002 in policy-only play. The quick numbers carry little training noise.
+- **Sharper τ trades mean P(played) for log P(played)**, as in plan 054: the net stops giving the
+  played move near-zero probability (log up 5-10x) but moves mass off the argmax (τ=30: −0.010).
+- **The shared trunk pays for it:** τ=30 loses the whole value-bench gain (0.0% vs −1.4%), and
+  Gumbel σ makes the value head worse than its parent (+1.7%). τ=50 keeps it (−1.4%).
+- **Gumbel σ (c_scale 0.1, min_range 50) is too sharp** for this data: a near one-hot target,
+  every probe column down, KL to the cq-100 target 0.24 (others 0.08).
+- **Policy-only play:** the loop's own step moves the bare policy by 0.000. Only τ=50 is above
+  (16x9 0.517, +2 SE; mean 0.509, +1.7 SE). With five arms and two boards one 2-SE reading is
+  expected by chance, so this is a lead, not a result.
+
+## 5. What one-step policy-only drives can and cannot see
+
+A one-generation fine-tune changes the argmax in ~0.1-0.2% of decisions (Δ top-1). Policy-only
+play is the argmax, so two adjacent nets play the same move almost everywhere and their drives
+can only differ where the argmax moved. A real but small policy improvement is therefore nearly
+invisible after one step at 600 pairs. Remedies: compare across several generations (the
+lineage check below), or score policy-only play at a sampled policy (temperature 1), which
+exposes the whole distribution, at the cost of noise.
+
+**Lineage check (running):** gen07 vs gen04 and vs the init net (g056 gen04 v9), policy-only,
+600 pairs per board: does the loop's policy improve over three to seven generations at all?
