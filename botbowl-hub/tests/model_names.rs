@@ -110,6 +110,8 @@ async fn a_model_arrives_with_its_name_cached_or_not() {
         worker_timeout: Duration::from_secs(300),
         run_dir: None,
         allow_from: Vec::new(),
+        rate_interval: Duration::from_secs(300),
+        registry_dir: None,
     })
     .await
     .unwrap();
@@ -200,6 +202,8 @@ async fn the_startup_index_names_a_cache_without_any_job() {
         worker_timeout: Duration::from_secs(300),
         run_dir: None,
         allow_from: Vec::new(),
+        rate_interval: Duration::from_secs(300),
+        registry_dir: None,
     })
     .await
     .unwrap();

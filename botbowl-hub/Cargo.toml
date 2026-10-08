@@ -22,6 +22,10 @@ serde_json = "1"
 toml = "0.8"
 rand = "0.8"
 zstd = "0.13"
+# The registry pages (`/registry`): GitHub-flavoured markdown, tables included.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# Local wall-clock times on the status page and in the hub.log rate lines.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 botbowl-worker = { version = "0.1.0", path = "../botbowl-worker/" }

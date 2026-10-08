@@ -230,6 +230,12 @@ pub struct JobStatus {
     /// running job has none.
     pub workers_connected: usize,
     pub report: Option<Report>,
+    /// What each worker (by name) contributed to this job: the share the status page shows.
+    #[serde(default)]
+    pub by_worker: BTreeMap<String, Counts>,
+    /// This job's results over the last few minutes (the status page's rate and ETA).
+    #[serde(default)]
+    pub recent: Option<Rate>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -254,6 +260,101 @@ pub struct HubStatus {
     pub capacity: Capacity,
     pub workers: Vec<WorkerStatus>,
     pub jobs: Vec<JobStatus>,
+    /// Games and decisions per minute, per worker and in total ([`crate::rates`]). Defaulted so
+    /// a `status` client and a hub one commit apart still read each other.
+    #[serde(default)]
+    pub throughput: Throughput,
+}
+
+/// Results counted by the hub from what workers already send (no protocol change): a generate
+/// result is one game, the records it wrote (two when `--next-drive` followed a score) and its
+/// samples; an eval result is one game and the candidate's searches. Additive.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Counts {
+    /// Generate games (one `TrajectoryDone` each).
+    pub games: u64,
+    /// Corpus records (lines) those games wrote.
+    pub records: u64,
+    /// Samples written: recorded decisions, both sides.
+    pub samples: u64,
+    /// Eval games (full games or drives).
+    #[serde(default)]
+    pub eval_games: u64,
+    /// The eval candidate's decisions (MCTS searches); the opponent's are not reported.
+    #[serde(default)]
+    pub eval_decisions: u64,
+}
+
+impl Counts {
+    pub fn add(&mut self, o: &Counts) {
+        self.games += o.games;
+        self.records += o.records;
+        self.samples += o.samples;
+        self.eval_games += o.eval_games;
+        self.eval_decisions += o.eval_decisions;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Counts::default()
+    }
+
+    /// Games of either kind.
+    pub fn all_games(&self) -> u64 {
+        self.games + self.eval_games
+    }
+}
+
+/// [`Counts`] over `secs` seconds of wall time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Rate {
+    pub counts: Counts,
+    pub secs: f64,
+}
+
+impl Rate {
+    /// `n` events per minute over this span; 0 for an empty span.
+    pub fn per_min(&self, n: u64) -> f64 {
+        if self.secs <= 0.0 {
+            0.0
+        } else {
+            n as f64 * 60.0 / self.secs
+        }
+    }
+}
+
+/// One worker *name* (a reconnect is a new connection under the same name), or the total.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WorkerRates {
+    pub name: String,
+    /// Connections under this name right now; 0 = gone (listed while it has results in the
+    /// history).
+    pub connected: u32,
+    pub streams: u32,
+    /// Streams holding a task.
+    pub busy: u32,
+    /// One per [`Throughput::windows`]: the last N seconds, or since it joined if that is later
+    /// (so a worker that joined two minutes ago is not reported at 2/5 of its speed).
+    pub windows: Vec<Rate>,
+    /// Since the worker first joined this hub (the total: since the first worker did).
+    pub since_start: Rate,
+    /// Complete intervals of [`Throughput::bucket_secs`], oldest first, the last one ending at
+    /// [`Throughput::history_end`].
+    pub history: Vec<Counts>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Throughput {
+    pub uptime_secs: u64,
+    /// The window lengths of [`WorkerRates::windows`], in seconds (5 and 30 minutes).
+    pub windows: Vec<u64>,
+    /// The history's interval, in seconds; intervals are aligned to the wall clock.
+    pub bucket_secs: u64,
+    /// Unix seconds at which the newest complete interval ends.
+    pub history_end: u64,
+    /// How much of each interval the hub was up for (the first one after a start is partial).
+    pub history_secs: Vec<u64>,
+    pub workers: Vec<WorkerRates>,
+    pub total: WorkerRates,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

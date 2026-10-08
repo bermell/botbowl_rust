@@ -24,9 +24,10 @@ use botbowl_play::board_sizes::board_label;
 use botbowl_play::eval::{LadderRow, Report};
 
 use crate::api::{
-    BotReq, EvalJobRequest, EvalStats, GenStats, GenerateJobRequest, HubStatus, JobId, JobKind, JobRequest, JobState,
-    JobStatus, UnitProgress, UnitStats, WorkerStatus,
+    BotReq, Counts, EvalJobRequest, EvalStats, GenStats, GenerateJobRequest, HubStatus, JobId, JobKind, JobRequest,
+    JobState, JobStatus, UnitProgress, UnitStats, WorkerStatus,
 };
+use crate::rates::{Ledger, Live};
 
 pub type WorkerId = u64;
 
@@ -110,6 +111,8 @@ pub struct Job {
     started: Instant,
     /// When it left `Running`, so a finished job's elapsed time stops.
     ended: Option<Instant>,
+    /// Accepted results per worker name: each worker's share of the job.
+    by_worker: BTreeMap<String, Counts>,
 }
 
 impl Job {
@@ -183,11 +186,17 @@ impl Job {
             workers_connected,
             state: self.state.clone(),
             units: self.units(),
-            elapsed_secs: self.ended.unwrap_or_else(Instant::now).duration_since(self.started).as_secs(),
+            elapsed_secs: self
+                .ended
+                .unwrap_or_else(Instant::now)
+                .duration_since(self.started)
+                .as_secs(),
             report: match &self.kind {
                 Kind::Eval { report, .. } => report.clone(),
                 Kind::Generate { .. } => None,
             },
+            by_worker: self.by_worker.clone(),
+            recent: None,
         }
     }
 
@@ -328,6 +337,8 @@ pub struct Inner {
     next_task: TaskId,
     /// Where `dispatch` resumes its round-robin over running jobs.
     next_share: usize,
+    /// Every accepted result, for the status page's rates and the hub.log rate line.
+    pub ledger: Ledger,
 }
 
 impl Inner {
@@ -496,6 +507,7 @@ impl Inner {
             state: JobState::Running,
             started: Instant::now(),
             ended: None,
+            by_worker: BTreeMap::new(),
         };
         eprintln!(
             "[hub] job {id} submitted: {}",
@@ -511,11 +523,51 @@ impl Inner {
     }
 
     pub fn job_status(&self, id: JobId) -> Option<JobStatus> {
-        self.jobs.get(&id).map(|j| j.status(self.workers.len()))
+        self.jobs.get(&id).map(|j| self.job_status_of(j, Instant::now()))
+    }
+
+    /// A job's status with its recent rate: its own results over the last 5 minutes (or since
+    /// it started), for the page's rate and ETA.
+    fn job_status_of(&self, j: &Job, now: Instant) -> JobStatus {
+        let mut s = j.status(self.workers.len());
+        if j.state == JobState::Running {
+            s.recent = Some(
+                self.ledger
+                    .window(now, crate::rates::WINDOWS[0], j.started, |_, job| job == j.id),
+            );
+        }
+        s
+    }
+
+    /// The fleet's throughput, per worker name and in total.
+    pub fn throughput(&self, now: Instant) -> crate::api::Throughput {
+        let live: Vec<Live> = self
+            .workers
+            .values()
+            .map(|w| Live {
+                name: &w.name,
+                streams: w.parallel_games as u32,
+                busy: w.tasks.len() as u32,
+            })
+            .collect();
+        self.ledger.throughput(now, &live)
+    }
+
+    /// The `[hub] rate ...` line for the interval that just completed, if anything finished in it.
+    pub fn rate_log_line(&self, now: Instant) -> Option<String> {
+        crate::rates::log_line(&self.throughput(now))
+    }
+
+    fn worker_name(&self, id: WorkerId) -> String {
+        self.workers
+            .get(&id)
+            .map_or_else(|| format!("worker {id}"), |w| w.name.clone())
     }
 
     pub fn status(&self) -> HubStatus {
+        let now = Instant::now();
         HubStatus {
+            throughput: self.throughput(now),
             commit: botbowl_data::git_commit().to_string(),
             dirty: botbowl_data::git_dirty(),
             capacity: botbowl_hub_proto::Capacity::compiled(),
@@ -533,7 +585,7 @@ impl Inner {
                     last_seen_secs: w.last_seen.elapsed().as_secs(),
                 })
                 .collect(),
-            jobs: self.jobs.values().map(|j| j.status(self.workers.len())).collect(),
+            jobs: self.jobs.values().map(|j| self.job_status_of(j, now)).collect(),
         }
     }
 
@@ -546,6 +598,7 @@ impl Inner {
             "[hub] worker {id} {:?} joined ({} streams, {} cores, {} MB, {})",
             conn.name, conn.parallel_games, conn.cores, conn.ram_mb, conn.triple
         );
+        self.ledger.joined(&conn.name, Instant::now());
         self.workers.insert(id, conn);
         self.dispatch();
         id
@@ -755,6 +808,7 @@ impl Inner {
     }
 
     pub fn eval_game_done(&mut self, worker: WorkerId, task: TaskId, line: EvalGameLine) {
+        let name = self.worker_name(worker);
         let Some((job_id, unit)) = self.game_arrived(worker, task, line.game) else {
             return;
         };
@@ -773,6 +827,13 @@ impl Inner {
         };
         let r = &mut rungs[unit];
         if r.name == line.rung && r.done.insert(line.game) {
+            let c = Counts {
+                eval_games: 1,
+                eval_decisions: line.telemetry.as_ref().map_or(0, |t| t.searches),
+                ..Default::default()
+            };
+            job.by_worker.entry(name.clone()).or_default().add(&c);
+            self.ledger.record(Instant::now(), &name, job_id, c);
             let was_decided = r.row.decided();
             r.row.record(&line);
             if !was_decided && r.row.decided() {
@@ -800,6 +861,7 @@ impl Inner {
     }
 
     pub fn trajectory_done(&mut self, worker: WorkerId, task: TaskId, game: u32, samples: u32, zstd_json: Vec<u8>) {
+        let name = self.worker_name(worker);
         let Some((job_id, unit)) = self.game_arrived(worker, task, game) else {
             return;
         };
@@ -808,7 +870,9 @@ impl Inner {
             return;
         };
         let s = &mut shards[unit];
-        if s.done.insert(game) && !zstd_json.is_empty() {
+        let fresh = s.done.insert(game);
+        let mut records = 0u64;
+        if fresh && !zstd_json.is_empty() {
             // One JSON line per record; a game that played the drive after its
             // score sends two (plan 047). Each is written as its own line.
             let written = zstd::decode_all(&zstd_json[..])
@@ -837,6 +901,7 @@ impl Inner {
                     // figure, not a corpus one.
                     for (i, line) in json.split(|b| *b == b'\n').enumerate() {
                         s.written += 1;
+                        records += 1;
                         if let Some((board, tds)) = drive_summary(line) {
                             s.stats.add(board, tds, if i == 0 { samples as u64 } else { 0 });
                         }
@@ -848,6 +913,16 @@ impl Inner {
                     return;
                 }
             }
+        }
+        if fresh {
+            let c = Counts {
+                games: 1,
+                records,
+                samples: samples as u64,
+                ..Default::default()
+            };
+            job.by_worker.entry(name.clone()).or_default().add(&c);
+            self.ledger.record(Instant::now(), &name, job_id, c);
         }
         if job.all_done() {
             Self::finish(job);

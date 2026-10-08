@@ -28,6 +28,13 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 its row when it is produced, with the commit and every setting needed to reproduce it. Plans keep the
 narrative; the registry keeps the facts.
 
+**Browse it at `http://<hub>/registry/`** (`botbowl-hub serve`, `--registry-dir`, default
+`<repo>/registry`): every `.md` file in the directory, rendered with its tables, read from disk on each
+request, so an edit shows on the next reload. The markdown files are the source — edit them directly.
+Keep to GitHub-flavoured markdown: one `# ` title, an opening paragraph (the index shows it), `## `/`### `
+sections (they get ids and a contents list), pipe tables with a header row, and file-relative links
+(`[NETS.md](NETS.md)`, `NETS.md#exp069`). A new file in `registry/` shows up in the index by itself.
+
 
 - `plans/001-grand-plan.md` — strategic roadmap (AlphaZero-style MCTS via curriculum learning → scripted baseline → heuristic/rollout/NN-guided MCTS → self-play). Read it before proposing architecture changes that span the engine and `recon_mcts`.
 - `plans/NNN-idea--*.md` / `plans/NNN-plan--*.md` — designs not yet started or in-flight. `plans/completed/` — closed-out plans with **Status:** headers; historical context, not live work.
