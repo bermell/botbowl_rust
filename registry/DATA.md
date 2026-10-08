@@ -39,6 +39,11 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 | 02 | v9 gen01 | 8×300 (4349) | 152,111 | ae721b7 | 36 local + laptop | |
 | 01 | init (g056 gen04 v9) | 8×300 (4344) | 154,960 | ae721b7 | 36 local + laptop 10 | |
 
+**Known defect in gen01-09 (fixed in 13df1bb, live from the gen10 relaunch):** on 14x5/3 (~2.4%
+of drives) the search's scripted throw-in moved the ball 0 squares, so about a third of 14x5
+decisions spent their budget in an endless, never-valued edge-bounce chain (plan 060 §6). Their
+visit targets and root values are poor; every other board is unaffected (byte-identical games).
+
 Per-generation corpus statistics (TD rates, skill use, setups) are in plan 058 §6;
 `scripts/corpus_skills_setup.py runs/loopmix16x9v9 --gens N` recomputes them.
 

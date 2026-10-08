@@ -45,6 +45,24 @@ ends (see the root CLAUDE.md).
 - **Result:** gen07 vs gen04 0.512 ± 0.006; gen07 vs the init net 0.518 ± 0.007 (MATCHES.md).
 - **Conclusion:** yes, ~0.003-0.004 per generation at τ=100; invisible in a single step.
 
+### 14x5 edge-bounce chains (plan 060 §6), 2026-10-08
+
+- **Question:** why do 14x5 searches in gen09 average 63 plies (93% chance) when every other board
+  averages ~9?
+- **Setup:** `botbowl-ui/examples/deep_search_probe.rs` replays a corpus sample from its seed and
+  dumps the deepest line (e.g. seed 19000196 drive 1 sample 7); 5 corpus positions at 1000
+  descents, heuristic and gen08 (tract); a 24-drive 14x5 heuristic corpus (seed 777) before/after;
+  `scripts/perf_search_bench.sh` on 16x9.
+- **Result:** the search's scripted throw-in (`roll_outcomes::throw_in_outcome`, the shortest
+  throw, 2D6 = 2) is `2 / scatter_divisor 3 = 0` squares on a 5-wide axis: the ball lands where it
+  was thrown from, bounces out again, forever (not a DAG cycle: `bounce_squares` grows, so states
+  never repeat). Fix: the shortest throw that leaves the origin square (f8aa794). 14x5: depth 49.7
+  → 6.8 plies, chance 94% → 55%, turn-ending reach 51% → 83%, 98 → 37 ms per decision; the
+  searches chose the same moves on the 5 probes. 16x9 games byte-identical. Also fixed: the debug
+  teardown assertion, `Node::move_root` left a second root edge to the new root (526726a).
+- **Conclusion:** a real search-model bug, live from the gen10 relaunch; gen01-09's 14x5 samples
+  carry it (DATA.md). Only boards with a 3-5 square narrow axis play differently.
+
 ### Tree statistics, first live reading (plan 060), 2026-10-08
 
 - **Question:** how deep does the search see, and do its lines reach the opponent's turn?
