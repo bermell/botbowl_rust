@@ -16,6 +16,12 @@ which also documents the wire protocol.
     scripts/nn_server.py --socket /tmp/bbnn.sock --device cuda \\
         --model models/bbnet_14x7_gen01.onnx
 
+`--device mps` serves from an Apple GPU through the same eager path as
+`--device cpu`: no graph capture, no pinned buffers, no pipelining (those
+are CUDA-only), so a batch is staged, run and read back in series. It
+exists so a Mac worker can take inference off its cores; measure it with
+`examples/nn_bench.rs` before relying on it.
+
 Design notes worth keeping in mind before editing:
 
 * **One thread, one event loop, a two-deep GPU pipeline.** The first
@@ -1197,8 +1203,7 @@ def warm(registry: Registry, model: Model, sizes: list[tuple[int, int]], max_bat
                 s = torch.zeros(b, SPATIAL_CHANNELS, h, w, device=registry.device)
                 g = torch.zeros(b, GLOBAL_FEATURES, device=registry.device)
                 model.module(s, g)
-    if registry.device == "cuda":
-        torch.cuda.synchronize()
+    device_synchronize(registry.device)
     log(f"warmed {sizes} × {buckets} in {time.perf_counter() - t0:.1f}s")
 
 
@@ -1262,16 +1267,22 @@ def fake_batch(model: Model, n: int, h: int, w: int) -> list["Request"]:
     ]
 
 
+def device_synchronize(device: str) -> None:
+    """Wait for every queued kernel on `device`; a no-op on the CPU."""
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elif device == "mps":
+        torch.mps.synchronize()
+
+
 def time_runner(runner, reqs: list["Request"], device: str, iters: int) -> float:
     for _ in range(30):
         runner.run(reqs, False)
-    if device == "cuda":
-        torch.cuda.synchronize()
+    device_synchronize(device)
     t0 = time.perf_counter()
     for _ in range(iters):
         runner.run(reqs, False)
-    if device == "cuda":
-        torch.cuda.synchronize()
+    device_synchronize(device)
     return (time.perf_counter() - t0) / iters * 1e6
 
 
@@ -1347,7 +1358,7 @@ def parse_sizes(spec: str) -> list[tuple[int, int]]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--socket", default="/tmp/bbnn.sock", help="Unix socket path to listen on")
-    ap.add_argument("--device", default="cpu", choices=("cpu", "cuda"))
+    ap.add_argument("--device", default="cpu", choices=("cpu", "cuda", "mps"))
     ap.add_argument("--model", default=None, help="preload + warm this model (client paths still resolved on demand)")
     ap.add_argument("--max-batch", type=int, default=64)
     ap.add_argument(
@@ -1411,6 +1422,9 @@ def main() -> int:
 
     if args.device == "cuda" and not torch.cuda.is_available():
         log("FATAL --device cuda but torch.cuda.is_available() is False")
+        return 1
+    if args.device == "mps" and not torch.backends.mps.is_available():
+        log("FATAL --device mps but torch.backends.mps.is_available() is False")
         return 1
     if args.torch_threads:
         torch.set_num_threads(args.torch_threads)

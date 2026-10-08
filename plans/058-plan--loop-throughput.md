@@ -245,3 +245,31 @@ over 5 KB a descent, so the next measurement is nodes per descent and bytes per 
 A node cap in `recon_mcts` would then make the per-game bound exact and the worker's
 `mem_governor` arithmetic instead of an EWMA; an index-based arena only if a profile shows the
 allocator and pointer chasing as the residual.
+
+## 9. An Apple-GPU sidecar does not pay (M1 Pro, 2026-10-08)
+
+`scripts/nn_server.py --device mps` now runs the sidecar on an Apple GPU through the eager path
+(no graphs, no pinned buffers, no pipelining: all CUDA-only). It works (jit trace validated, canary
+ok) but loses to tract on this laptop, so a Mac worker should keep tract in-process.
+
+Server-side batch sweep (`--bench`, gen05 v9 net, 9x16): MPS `F = 2.2 ms` per batch, `g = 80 µs`
+per sample, i.e. batch 1 is 2.2 ms against the GTX 1060's 0.3 ms under CUDA graphs. The fixed
+cost is PyTorch's per-op dispatch on MPS, ~25 ops a forward, which no batching removes.
+
+Client sweep (`examples/nn_bench.rs`, value only, 10 cores, 16 GB):
+
+| clients | tract: median / forwards/s / client CPU per forward | MPS sidecar: median / forwards/s / client CPU |
+|---|---|---|
+| 1 | 0.9 ms / 1090 / 0.9 ms | 2.3 ms / 419 / ~0 |
+| 8 | 1.1 ms / 6713 / 1.1 ms | 11.4 ms / 696 / ~0 |
+| 32 | 1.1 ms / 7221 (saturated) / 1.1 ms | 13.3 ms / 2273 / ~0 (mean batch 7.4) |
+| 32, `--max-wait-us 3000` | | 9.7 ms / 3323 / ~0 (mean batch 31) |
+
+`--jit off` is slower still (1572 forwards/s at 32). Even with full batches the MPS forward takes
+5.5 ms per 31 samples under load (175 µs a sample), so the ceiling is ~3.3k forwards/s at 10 ms
+latency against tract's 7.2k at 1 ms. The CPU offload is real (the client's NN CPU goes to ~0,
+the server loop uses ~0.6 of a core), but a search needs ~0.5 ms of CPU per descent besides the
+forward, so with tract the laptop can do ~6k descents/s and GPU-bound through MPS ~3.3k. Not
+worth it unless the forward is served by something with lower per-op overhead than PyTorch MPS
+(MLX, or a CoreML-compiled net with batches in the hundreds) *and* the sidecar pipelines batches
+on MPS events. Neither is on the list while the Linux box is the generator.
