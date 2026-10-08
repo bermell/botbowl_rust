@@ -16,7 +16,18 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
   - `botbowl-web/{proto,server,client}/` — human-vs-bot or bot-vs-bot play in a browser (MCTS always on a net), full games or random-start drives, with custom teams, a decision log and the search behind every bot move shown next to the board (plan 034). Also served by the hub at `/play/`. `proto` is engine-free and compiles to wasm32; `server` owns the `GameState` and the bots; `client` is a Leptos CSR app built with `trunk`. Has its own `CLAUDE.md`.
 - `recon_mcts/` — generic **re**combining, **con**current MCTS library (safe std-only Rust). A **nested, separate Cargo workspace**, deliberately in the botbowl workspace's `exclude` list — don't merge it in (its `tests/nim/` member compiles with `--features test_internals` by default). Has its own `CLAUDE.md`. No dependency on the botbowl crates.
 
-## Plans
+## Registry: data, nets, experiments, matches
+
+`registry/` is the record of what exists and how it was made (the user, 2026-10-08):
+- `registry/DATA.md` — every corpus and frozen benchmark set: commit, generator net, settings, seeds, size, caveats;
+- `registry/NETS.md` — every trained net: parent, data window, recipe, commit, and **every single-net benchmark number** (value bench, absorption, net check, val);
+- `registry/EXPERIMENTS.md` — question, reproduction (commit, script, settings), result, conclusion;
+- `registry/MATCHES.md` — every head-to-head result between two bots (drives, policy-only, SPRT).
+
+**Update them as part of the work, not afterwards:** a new corpus, net, experiment or match result gets
+its row when it is produced, with the commit and every setting needed to reproduce it. Plans keep the
+narrative; the registry keeps the facts.
+
 
 - `plans/001-grand-plan.md` — strategic roadmap (AlphaZero-style MCTS via curriculum learning → scripted baseline → heuristic/rollout/NN-guided MCTS → self-play). Read it before proposing architecture changes that span the engine and `recon_mcts`.
 - `plans/NNN-idea--*.md` / `plans/NNN-plan--*.md` — designs not yet started or in-flight. `plans/completed/` — closed-out plans with **Status:** headers; historical context, not live work.
