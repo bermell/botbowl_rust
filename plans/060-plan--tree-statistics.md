@@ -299,3 +299,11 @@ old root to the new root. Release builds only ever skipped a no-op removal, so s
 unchanged. Which botbowl transition produced two root edges into one state was not caught (the
 probe printing it never fired in the reruns), so "this is the route botbowl hit" is the likely
 reading of the backtrace, not a confirmed one.
+
+### The fix in production: v9 gen10 (2026-10-08)
+
+gen10 is the first corpus generated after the fix (f75eda5). `tree_stats.py` on all of it
+(`runs/plan060/gen10_tree_stats.txt`): 14x5/3 now reads 9.2 plies mean, 48% chance, 68% of lines
+reaching the opponent's turn — like every other board (gen09: 63 plies, 93% chance). Over all
+boards the mean depth fell 9.8 → 8.7 plies and the chance share 52% → 46%: gen09's averages were
+inflated by the 14x5 chains.

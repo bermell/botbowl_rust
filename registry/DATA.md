@@ -29,6 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
+| 10 | v9 gen09 (first τ=50 net) | 8×400 (5801) | 197,976 | f75eda5 | 48 local, 2 sidecars; laptop 10 from 21:40; 235 min (shared ~3.5 h with gen09's drives) | first corpus with the 14x5 throw-in fix: 14x5 depth 9.2 plies, 48% chance (gen09: 63, 93%); `runs/plan060/gen10_tree_stats.txt` |
 | 09 | v9 gen08 | 8×400 (5785) | 199,544 | 3c25109 | 48 local, 2 sidecars, no laptop (protocol v17); 180 min | first corpus with plan 060's per-sample `tree` block (`runs/plan060/gen09_tree_stats.txt`) |
 | 08 | v9 gen07 | **1361 drives (2458 records), stopped at 42%** | 82,522 | 43a45c6 | 48 local, 2 sidecars | stopped for exp069's GPU (the user); the hub filled shards in order, so the records were **redistributed by seed over the 8 shards** (originals in `gen08/partial_original/`) |
 | 07 | v9 gen06 | 8×400 (5810) | 204,956 | 43a45c6 | 48 local, 2 sidecars, laptop part | generate shared with gen06's drive benchmark |
