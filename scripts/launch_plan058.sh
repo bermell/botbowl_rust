@@ -39,7 +39,10 @@ export MCTS_ITERS=1000 EVAL_MCTS_ITERS=1000 GEN_BOT_CONFIG="$GUMBEL_GEN" EVAL_BO
 export EVAL_VENUE=drives DRIVE_REF="$M/bbnet_mix16x9d1k_gen04_v9.onnx" DRIVE_SPRT=0.5:0.55 DRIVE_CAP=800
 export DRIVE_POSITIONS="$POS/contested_14x7_gen04g.json,$POS/contested_16x9_gen04g.json"
 export ORIGIN_EVERY=0
-export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=on
+# Plan 059 (the user, 2026-10-08): cq tau 50 from gen09's training on (100 before). exp069: tau 50 keeps
+# the value gain, lifts log P(played) 5x and led policy-only play (+0.009 ± 0.005 in one step, against
+# the loop's ~0.003-0.004 per generation at tau 100).
+export CQ_TAU=50 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=on
 # No --init-candidate (the user, 2026-10-06): at lr 5e-5 the fine-tune moves val by less than noise,
 # so the warm start won the restore on ties and gen02/gen04 never moved. Keep a trained checkpoint
 # every generation, as AlphaZero does; play (drives, net check) judges whether it helped.
