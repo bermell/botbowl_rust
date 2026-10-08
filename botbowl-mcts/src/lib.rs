@@ -10,6 +10,7 @@ pub mod roll_outcomes;
 pub mod score;
 pub mod scripted;
 pub mod telemetry;
+pub mod tree_stats;
 
 pub use action::{BbAction, BbPlayer};
 pub use dynamics::{
@@ -20,4 +21,5 @@ pub use exploration::{ExploreStep, RootNoiseSpec, SampleSpec};
 pub use report::{Edge, NodeStats, NodeView, SearchSummary};
 pub use telemetry::{
     ActionFanHistogram, RecombinationCounts, ReuseCounts, ReuseDecision, ReuseOutcome, SearchTelemetry, TreeReuseStats,
+    TreeTelemetry,
 };

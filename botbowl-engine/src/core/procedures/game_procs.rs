@@ -14,6 +14,9 @@ use crate::core::{dices::D6Target, gamestate::GameState};
 
 use super::AnyProc;
 
+/// Turns each team plays per half: the half is over once both turn counters reach it.
+pub const TURNS_PER_HALF: u8 = 8;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Half {
     pub half: u8,
@@ -82,7 +85,7 @@ impl Procedure for Half {
             self.kickoff = info.kickoff_by_team.take();
         }
 
-        if info.home_turn == 8 && info.away_turn == 8 {
+        if info.home_turn == TURNS_PER_HALF && info.away_turn == TURNS_PER_HALF {
             return ProcState::Done;
         }
 

@@ -398,6 +398,22 @@ fn with_telemetry(mut meta: TrajectoryMeta, t: &SearchTelemetry) -> TrajectoryMe
     if let Some(p) = t.fan.percentile(0.9) {
         meta = meta.with_extra("fan_p90", p.to_string());
     }
+    // Plan 060: the tree statistics as counters (they sum across trajectories) plus the two means
+    // worth reading at a glance. The per-decision detail is each sample's `tree` block.
+    let tr = &t.tree;
+    if tr.searches > 0 {
+        let per = |x: u64, d: u64| format!("{:.3}", x as f64 / d.max(1) as f64);
+        meta = meta
+            .with_extra("tree_searches", tr.searches.to_string())
+            .with_extra("tree_descents", tr.descents.to_string())
+            .with_extra("tree_plies", tr.plies.to_string())
+            .with_extra("tree_reached_opp_turn", tr.reached_opp_turn.to_string())
+            .with_extra("tree_end_horizon", tr.end_horizon.to_string())
+            .with_extra("tree_main_plies", tr.main_plies.to_string())
+            .with_extra("tree_main_reach_opp", (tr.main_opp_turn + tr.main_horizon).to_string())
+            .with_extra("tree_depth_mean", per(tr.plies, tr.descents))
+            .with_extra("tree_reach_opp_share", per(tr.reached_opp_turn, tr.descents));
+    }
     meta
 }
 

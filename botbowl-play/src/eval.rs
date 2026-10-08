@@ -627,6 +627,42 @@ mod tests {
                 },
                 250,
             );
+            // Plan 060: a search's tree statistics, so the round trips and the fold cover them.
+            t.tree.record(&botbowl_data::TreeStats {
+                descents: 250,
+                plies: botbowl_data::DepthStats {
+                    mean: 6.0,
+                    p90: 10,
+                    max: 14,
+                },
+                own: botbowl_data::DepthStats {
+                    mean: 3.0,
+                    p90: 5,
+                    max: 7,
+                },
+                chance_plies_mean: 2.0,
+                ends: botbowl_data::PhaseCounts {
+                    own_turn: 150,
+                    opp_turn: 80,
+                    horizon: 20,
+                    ..Default::default()
+                },
+                reached_opp_turn: 100,
+                valued: botbowl_data::LeafValueCounts {
+                    new_leaf: 180,
+                    chance: 50,
+                    horizon: 20,
+                    ..Default::default()
+                },
+                main_line: botbowl_data::MainLine {
+                    plies: 9,
+                    own: 4,
+                    chance: 3,
+                    phase: Some(botbowl_data::Phase::OppTurn),
+                },
+                opp_turn_follows: true,
+                proc: Some(proc.to_string()),
+            });
         }
         t
     }
@@ -684,6 +720,8 @@ mod tests {
         assert_eq!(t.reuse.total.reused, 2);
         assert_eq!(t.reuse.by_proc["Turn"].attempts(), 4, "two Turn decisions per game");
         assert_eq!(t.recombination.hits, 18);
+        assert_eq!((t.tree.searches, t.tree.descents, t.tree.plies), (6, 1500, 9000));
+        assert_eq!((t.tree.main_opp_turn, t.tree.plies_max), (6, 14));
 
         // A rung whose candidate does not search stays absent rather than reading as all-zero.
         let mut plain = LadderRow::new("random");

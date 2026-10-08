@@ -1,6 +1,6 @@
 #![allow(clippy::type_complexity)]
 
-use crate::game_dynamics::{GameDynamics, SelectNodeState};
+use crate::game_dynamics::{DescentEnd, GameDynamics, SelectNodeState};
 use crate::lockref;
 use crate::unique_heap::{self, UniqueHeap};
 
@@ -1367,6 +1367,35 @@ where
     pub fn get_child(&self, action: &A) -> Option<ArcNode<GD, S, P, A, Q, I, M>> {
         self.children.read().unwrap().as_map()?.get(action).map(ArcNode::clone)
     }
+
+    /// This node's children as `(action, node)` pairs, placeholders included, or `None` when it has
+    /// not been expanded. Clones the actions and bumps the `Arc`s, nothing else: unlike
+    /// [`Node::get_children_info`] no state is copied, so a walk that reads a few numbers per child
+    /// (with [`Node::with_score`]) stays cheap. Read-only, like the rest of the inspection API.
+    pub fn get_children(&self) -> Option<Vec<(A, ArcNode<GD, S, P, A, Q, I, M>)>>
+    where
+        A: Clone,
+    {
+        let children = self.children.read().unwrap();
+        Some(
+            children
+                .as_map()?
+                .iter()
+                .map(|(a, c)| (a.clone(), ArcNode::clone(c)))
+                .collect(),
+        )
+    }
+
+    /// The node's mover, or `None` for a placeholder that has not been materialised yet.
+    pub fn mover(&self) -> Option<&P> {
+        self.player.get()
+    }
+
+    /// Read the node's stored state in place (no clone). `None` when the memory mode keeps no
+    /// state for it, or for a placeholder.
+    pub fn with_state<R>(&self, f: impl FnOnce(Option<&S>) -> R) -> R {
+        f(self.state.read().unwrap().as_ref())
+    }
 }
 
 /// A trait used to remove nodes from the transposition table that are no longer reachable from the
@@ -2184,6 +2213,7 @@ where
                     }
                     self.enumerate_placeholders(&node_state, &node);
                     Node::backprop_scores(&node);
+                    self.observe_descent(path, &node_state, DescentEnd::Expanded);
                     return Some(node_state);
                 }
                 Children::BranchWip(_) => {
@@ -2204,6 +2234,7 @@ where
                         drop(children_rlk);
                         node.solved.store(true, Ordering::Release);
                         Node::backprop_scores(&node);
+                        self.observe_descent(path, &node_state, DescentEnd::Solved);
                         return None;
                     }
                     let action = Self::select_node(self, &node, &node_state, map, SelectNodeState::Explore);
@@ -2286,10 +2317,21 @@ where
                     drop(children_rlk);
                     node.solved.store(true, Ordering::Release);
                     Node::backprop_scores(&node);
+                    self.observe_descent(path, &node_state, DescentEnd::Terminal);
                     return None;
                 }
             }
         }
+    }
+
+    /// Hand the finished descent to [`GameDynamics::observe_descent`]: one `(parent player,
+    /// action)` per edge, skipping twin swaps (`None` actions), whose placeholder the previous
+    /// entry already covers — the same walk as the `release_descent` loop in `step_into`.
+    fn observe_descent(&self, path: &[(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)], leaf: &S, end: DescentEnd) {
+        let edges = path
+            .windows(2)
+            .filter_map(|w| w[1].1.as_ref().map(|action| (w[0].0.player(), action)));
+        GD::observe_descent(&*self.game_dynamics, edges, leaf, end);
     }
 
     fn select_node(
