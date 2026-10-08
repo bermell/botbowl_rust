@@ -325,6 +325,160 @@ pub struct SearchTelemetry {
     pub reuse: TreeReuseStats,
     pub recombination: RecombinationCounts,
     pub fan: ActionFanHistogram,
+    /// Plan 060: the searches' tree statistics, summed. Absent from reports written before it.
+    #[serde(default)]
+    pub tree: TreeTelemetry,
+}
+
+/// Plan 060: [`botbowl_data::TreeStats`] summed over searches, so it folds like every other
+/// counter here. Per-descent sums divide by `descents`, per-search ones by `searches`
+/// ([`TreeTelemetry::summary`] does both).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeTelemetry {
+    /// Searches folded in.
+    pub searches: u64,
+    /// Descents, summed over searches.
+    pub descents: u64,
+    /// Leaf depth in plies, summed over descents.
+    pub plies: u64,
+    /// Leaf depth in the mover's own decisions, summed over descents.
+    pub own_plies: u64,
+    /// Chance edges, summed over descents.
+    pub chance_plies: u64,
+    /// Per-search p90 leaf depth (plies), summed over searches.
+    pub plies_p90_sum: u64,
+    /// Per-search max leaf depth (plies), summed over searches.
+    pub plies_max_sum: u64,
+    /// The deepest leaf of any search.
+    pub plies_max: u64,
+    /// Descents per end phase (`botbowl_data::Phase`).
+    pub end_own_turn: u64,
+    pub end_opp_turn: u64,
+    pub end_horizon: u64,
+    pub end_score: u64,
+    pub end_half_end: u64,
+    pub end_game_over: u64,
+    /// Descents whose leaf lies in the opponent's following turn or later.
+    pub reached_opp_turn: u64,
+    /// Descents per leaf valuation (`botbowl_data::LeafValueCounts`).
+    pub valued_new_leaf: u64,
+    pub valued_chance: u64,
+    pub valued_terminal: u64,
+    pub valued_solved: u64,
+    pub valued_horizon: u64,
+    /// Main line plies / own decisions / chance edges, summed over searches.
+    pub main_plies: u64,
+    pub main_own: u64,
+    pub main_chance: u64,
+    /// Searches whose main line ends in the opponent's turn or past it (opp_turn, horizon, or a
+    /// score / half end reached after the opponent's turn began is not distinguished: those count
+    /// under `main_terminal`).
+    pub main_opp_turn: u64,
+    pub main_horizon: u64,
+    pub main_terminal: u64,
+    /// Searches with an opponent turn inside the horizon (`TreeStats::opp_turn_follows`).
+    pub opp_turn_follows: u64,
+}
+
+impl TreeTelemetry {
+    /// Fold one search in.
+    pub fn record(&mut self, t: &botbowl_data::TreeStats) {
+        use botbowl_data::Phase;
+        let n = u64::from(t.descents);
+        let total = |mean: f32| (f64::from(mean) * n as f64).round() as u64;
+        self.searches += 1;
+        self.descents += n;
+        self.plies += total(t.plies.mean);
+        self.own_plies += total(t.own.mean);
+        self.chance_plies += total(t.chance_plies_mean);
+        self.plies_p90_sum += u64::from(t.plies.p90);
+        self.plies_max_sum += u64::from(t.plies.max);
+        self.plies_max = self.plies_max.max(u64::from(t.plies.max));
+        self.end_own_turn += u64::from(t.ends.own_turn);
+        self.end_opp_turn += u64::from(t.ends.opp_turn);
+        self.end_horizon += u64::from(t.ends.horizon);
+        self.end_score += u64::from(t.ends.score);
+        self.end_half_end += u64::from(t.ends.half_end);
+        self.end_game_over += u64::from(t.ends.game_over);
+        self.reached_opp_turn += u64::from(t.reached_opp_turn);
+        self.valued_new_leaf += u64::from(t.valued.new_leaf);
+        self.valued_chance += u64::from(t.valued.chance);
+        self.valued_terminal += u64::from(t.valued.terminal);
+        self.valued_solved += u64::from(t.valued.solved);
+        self.valued_horizon += u64::from(t.valued.horizon);
+        self.main_plies += u64::from(t.main_line.plies);
+        self.main_own += u64::from(t.main_line.own);
+        self.main_chance += u64::from(t.main_line.chance);
+        match t.main_line.phase {
+            Some(Phase::OppTurn) => self.main_opp_turn += 1,
+            Some(Phase::Horizon) => self.main_horizon += 1,
+            Some(Phase::Score | Phase::HalfEnd | Phase::GameOver) => self.main_terminal += 1,
+            Some(Phase::OwnTurn) | None => {}
+        }
+        self.opp_turn_follows += u64::from(t.opp_turn_follows);
+    }
+
+    /// Commutative fold, like the rest of [`SearchTelemetry`].
+    pub fn merge(&mut self, r: &TreeTelemetry) {
+        self.searches += r.searches;
+        self.descents += r.descents;
+        self.plies += r.plies;
+        self.own_plies += r.own_plies;
+        self.chance_plies += r.chance_plies;
+        self.plies_p90_sum += r.plies_p90_sum;
+        self.plies_max_sum += r.plies_max_sum;
+        self.plies_max = self.plies_max.max(r.plies_max);
+        self.end_own_turn += r.end_own_turn;
+        self.end_opp_turn += r.end_opp_turn;
+        self.end_horizon += r.end_horizon;
+        self.end_score += r.end_score;
+        self.end_half_end += r.end_half_end;
+        self.end_game_over += r.end_game_over;
+        self.reached_opp_turn += r.reached_opp_turn;
+        self.valued_new_leaf += r.valued_new_leaf;
+        self.valued_chance += r.valued_chance;
+        self.valued_terminal += r.valued_terminal;
+        self.valued_solved += r.valued_solved;
+        self.valued_horizon += r.valued_horizon;
+        self.main_plies += r.main_plies;
+        self.main_own += r.main_own;
+        self.main_chance += r.main_chance;
+        self.main_opp_turn += r.main_opp_turn;
+        self.main_horizon += r.main_horizon;
+        self.main_terminal += r.main_terminal;
+        self.opp_turn_follows += r.opp_turn_follows;
+    }
+
+    /// The per-search means as `key=value` pairs (`n/a` before the first search).
+    pub fn summary(&self) -> String {
+        let per = |x: u64, d: u64| {
+            if d == 0 {
+                "n/a".to_string()
+            } else {
+                format!("{:.3}", x as f64 / d as f64)
+            }
+        };
+        let (s, d) = (self.searches, self.descents);
+        format!(
+            "tree_depth_mean={} tree_depth_p90={} tree_depth_max={} tree_own_depth_mean={} \
+             tree_chance_share={} tree_reach_opp={} tree_end_opp={} tree_end_horizon={} \
+             tree_end_terminal={} tree_main_plies={} tree_main_own={} tree_main_reach_opp={} \
+             tree_opp_follows={}",
+            per(self.plies, d),
+            per(self.plies_p90_sum, s),
+            per(self.plies_max_sum, s),
+            per(self.own_plies, d),
+            per(self.chance_plies, self.plies),
+            per(self.reached_opp_turn, d),
+            per(self.end_opp_turn, d),
+            per(self.end_horizon, d),
+            per(self.end_score + self.end_half_end + self.end_game_over, d),
+            per(self.main_plies, s),
+            per(self.main_own, s),
+            per(self.main_opp_turn + self.main_horizon, s),
+            per(self.opp_turn_follows, s),
+        )
+    }
 }
 
 impl SearchTelemetry {
@@ -344,6 +498,7 @@ impl SearchTelemetry {
         self.reuse.merge(&rhs.reuse);
         self.recombination.merge(&rhs.recombination);
         self.fan.merge(&rhs.fan);
+        self.tree.merge(&rhs.tree);
     }
 
     /// One grep-able line, as printed under `BLOOD_MCTS_STATS=1`.
@@ -369,7 +524,8 @@ impl SearchTelemetry {
             self.recombination.eq_checks,
             self.recombination.eq_rejects,
             pct(self.recombination.reject_rate()),
-        )
+        ) + " "
+            + &self.tree.summary()
     }
 }
 

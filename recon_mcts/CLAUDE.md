@@ -51,3 +51,14 @@ made in `select_node` (virtual loss) gets taken back. Default no-op, so nim and 
 unchanged. It exists because relying on a backprop to *replace* the child's score leaks: a descent
 whose backprop is cut off (`backprop_scores` returning `None`) never replaces the scores above the
 cut. `step_into` wraps `descend`, which is the old loop, so every exit path is covered.
+
+## `GameDynamics::observe_descent` (2026-10-08, botbowl plan 060)
+
+Called once per descent, from inside `descend` just before it returns (after the backprop), with
+the edges the descent took — `(player of the node the edge leaves, action)`, root first, twin
+swaps skipped exactly as the `release_descent` loop skips them — the state it stopped at, and a
+`DescentEnd`: `Expanded` (a fresh leaf was materialised and enumerated), `Terminal` (a node with no
+children) or `Solved` (every child solved). Observational only, default no-op. Botbowl's tree
+statistics (leaf depth, where lines end relative to the horizon) are built on it. The inspection
+API gained `Node::get_children` (actions + `Arc`s, no state clones), `Node::mover` and
+`Node::with_state` for cheap read-only walks. `tests/observe_descent.rs`.
