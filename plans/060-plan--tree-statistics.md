@@ -158,3 +158,26 @@ Release builds skip the check, so the loop is unaffected; reported as pre-existi
 this plan's hook), not yet reproduced or bisected. It may point at a parent-set bookkeeping slip in
 node teardown (`Node::on_drop` → `detach`). To do: reproduce in a debug `dataset` run, bisect
 against `observe_descent` (75a6801) and the state-shrink commit (7841ef2).
+
+### First full-corpus reading: v9 gen09 (2026-10-08)
+
+`python3 scripts/tree_stats.py runs/loopmix16x9v9/gen09/shard[0-7].jsonl` →
+`runs/plan060/gen09_tree_stats.txt`. 199,544 decisions: 139,780 searched and kept, 39,576
+unsearched (forced, setup placements), 19,888 filtered (no opponent turn ahead).
+
+| left in turn | n | reach_opp | horizon | depth mean / p90 | own per line | chance | ml_opp |
+|---|---|---|---|---|---|---|---|
+| all | 139,780 | 59% | 9% | 9.8 / 15.7 | 3.4 | 52% | 74% |
+| 0 (turn-ending) | 9,137 | 85% | 16% | 12.7 / 20.3 | 1.7 | 66% | 89% |
+| 10+ | 36,132 | 40% | 3% | 8.8 / 13.5 | 4.4 | 44% | 55% |
+
+The same picture as the 12-drive ladder at 1000 descents. Larger boards reach the opponent less
+(16x9/6 53%, 12x6/3 67%).
+
+**Anomaly: 14x5/3.** Every board sits at ~9 plies mean and ~45% chance, except 14x5/3: mean 63
+plies (p90 154, max 207 as per-search means), 93% chance. 931 of its 2,834 searched decisions have
+a per-search mean over 40 plies; the worst ~2,000 (max ~3,100), nearly all chance, ~1-3 own
+decisions, almost every descent ending inside the own turn (e.g. seed 19000196 drive 1 sample 7,
+root `Catch`). Suspects: an engine chance loop on a 5-high pitch (throw-ins / scatter out of
+bounds again and again) or a cycle in the search DAG through recombination. Under investigation
+(subagent, own worktree); findings go in the next section.

@@ -29,7 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
-| 09 | v9 gen08 | 8×400 (running) | | 3c25109 | 48 local, 2 sidecars | first corpus with plan 060's per-sample `tree` block |
+| 09 | v9 gen08 | 8×400 (5785) | 199,544 | 3c25109 | 48 local, 2 sidecars, no laptop (protocol v17); 180 min | first corpus with plan 060's per-sample `tree` block (`runs/plan060/gen09_tree_stats.txt`) |
 | 08 | v9 gen07 | **1361 drives (2458 records), stopped at 42%** | 82,522 | 43a45c6 | 48 local, 2 sidecars | stopped for exp069's GPU (the user); the hub filled shards in order, so the records were **redistributed by seed over the 8 shards** (originals in `gen08/partial_original/`) |
 | 07 | v9 gen06 | 8×400 (5810) | 204,956 | 43a45c6 | 48 local, 2 sidecars, laptop part | generate shared with gen06's drive benchmark |
 | 06 | v9 gen05 | 8×400 (5797) | 201,364 | 43a45c6 | 48 local, 2 sidecars, laptop 5 | first at 400/shard and two sidecars; 114 min |
