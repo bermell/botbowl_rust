@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Plan 054 E8: relaunch the Gumbel loop with the train step that absorbs the search's improvement.
-# Called by scripts/exp063_plan054.sh once E2's drives pick a recipe; can be run by hand:
+# Called by scripts/archive/exp063_plan054.sh once E2's drives pick a recipe; can be run by hand:
 #
 #   scripts/launch_plan054.sh <init net .onnx> <cq tau>
 #

@@ -1,8 +1,9 @@
 # CLAUDE.md — botbowl-ui
 
-The terminal frontend and the headless single-process shells: `dataset` / `eval` over
-`botbowl-play`, plus read-only probes (`convergence`, `positions`, `override-audit`, `value-bench`). Subcommands
-are declared in `src/cli.rs` and dispatched in `src/main.rs`; each lives in its own module.
+The terminal frontend (`live`, `replay`, `snapshot`, `curriculum`, `placement` — an interactive random-start bias tuner) and the headless single-process shells: `dataset` / `eval` over
+`botbowl-play`, the loop stage `mc-label` (MC-averaged value labels, plan 056), plus read-only probes (`convergence`, `positions`, `override-audit`, `value-bench`). Subcommands
+are declared in `src/cli.rs` and dispatched in `src/main.rs`; each lives in its own module. The `dataset`/`eval` flag structs
+live in `botbowl_play::cli_args` (feature `cli`), shared with `botbowl-hub job generate`/`job eval`; `cli.rs` re-exports them.
 
 ## `override-audit` (plan 055 §3 phase 2, `src/override_audit.rs`)
 

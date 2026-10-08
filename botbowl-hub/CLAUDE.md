@@ -66,7 +66,7 @@ address is the clients', not the box's.
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
   **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
   re-exported types. **v10** (plan 051) added `Task::Eval.drives` (a drive rung's position set)
-  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. Postcard is positional, so a new field anywhere in a type that crosses the
+  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
   wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
@@ -97,7 +97,7 @@ address is the clients', not the box's.
      the hub's commit. That is the claim being made — "these commits are the same game" — and the
      only thing that makes it checkable afterwards is the `[hub] ... admitted by ...` line, so
      keep it. Justify an entry with an empty
-     `git diff --stat <theirs>..<hub> -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play`.
+     `git diff --stat <theirs>..<hub> -- $(game_crates)` (`source scripts/lib/git.sh`; the launchers build their allowlist from the same pathspec).
 - **The worker retries; it does not give up.** Backoff starts at 5 s, doubles to
   `--reconnect-max-secs` (30 s), and **resets after any connection that worked** — the old code
   crept to a 5-minute cap and stayed there for the rest of the week. A `Reject` is retried too,
@@ -198,6 +198,9 @@ address is the clients', not the box's.
   laptop was given it, and when the training hub came back on the same port it rejected the laptop.
   `BadToken` is the worker's one fatal rejection, so the laptop sat idle overnight. Change the token
   by replacing the file deliberately, then hand the new one to every worker.
+  The worker resolves its token as `--token`, then `--token-file`, then the `BOTBOWL_HUB_TOKEN`
+  environment variable, then the default file (`botbowl-worker/src/main.rs`); the hub's
+  `serve`/`job`/`status` take only `--token-file` or the default file.
   No TLS, and none is planned as plan 041 phase 5 designed it (a pinned self-signed cert existed
   mostly to protect the served worker binary of phase 4, which does not exist). Put the hub behind
   WireGuard/Tailscale or an SSH reverse tunnel and let workers dial `ws://127.0.0.1:…`; that is

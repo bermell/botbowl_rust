@@ -14,7 +14,7 @@ step fixes here stand and apply once the loop resumes.
 the corpus (§2-3) and confirmed by a code audit (§7); nine one-generation fine-tunes probed (§3.1).
 **2026-10-04 evening, at the user's request:** the Gumbel loop was aborted during gen08's
 generation (gen07 trained), and the plan was implemented and launched as
-`scripts/exp063_plan054.sh` (out `runs/exp063/`): E2 drives D1/D2 plus the D4 reference and E5,
+`scripts/archive/exp063_plan054.sh` (out `runs/exp063/`): E2 drives D1/D2 plus the D4 reference and E5,
 E4's probes alongside, then the gate below into E8 (`scripts/launch_plan054.sh`, run dir
 `runs/loopmix16x9g054`) or E2b. Implemented: the trainer's restore fix (`--init-candidate`,
 `--eval-at`, `--select-on policy`), the per-generation absorption probe in `train_loop.sh`
@@ -373,7 +373,7 @@ probe is the early signal.
 | step | box time | needs code | state |
 |---|---|---|---|
 | E2 fine-tunes + probes (9 arms) | — | — | **done 2026-10-04 (§3.1)** |
-| E2 drives D1, D2, D4 + E5 (fixed 300 pairs) | ~5 h hub | `scripts/exp063_plan054.sh` | **running (exp063)** |
+| E2 drives D1, D2, D4 + E5 (fixed 300 pairs) | ~5 h hub | `scripts/archive/exp063_plan054.sh` | **running (exp063)** |
 | E5 ceiling match | in the line above | `cfgs/policy_only.toml` | **running (exp063)** |
 | E1 probe in the loop + restore fix | — | `ABSORB_PROBE`; `--init-candidate --eval-at --select-on policy` | **done** |
 | E2 D3 (cq30) | ~2 h hub | exp063 | automatic if D1 > 0.5 and the gate passed |

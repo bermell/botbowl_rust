@@ -21,6 +21,8 @@
 
 pub mod board_sizes;
 pub mod bots;
+#[cfg(feature = "cli")]
+pub mod cli_args;
 pub mod drives;
 pub mod eval;
 pub mod generate;

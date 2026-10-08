@@ -1,4 +1,4 @@
-//! Blood Bowl web play — the browser half of `plans/034-plan--web-play-ui.md`.
+//! Blood Bowl web play — the browser half of `plans/completed/034-plan--web-play-ui.md`.
 //!
 //! A Leptos CSR app that renders whatever the server derived and sends back
 //! clicks. It depends on `botbowl-web-proto` and nothing else from the

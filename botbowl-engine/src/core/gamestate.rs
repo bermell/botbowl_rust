@@ -5,9 +5,7 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use smallvec::{smallvec, SmallVec};
-use std::{
-    cmp::{max, min},
-};
+use std::cmp::{max, min};
 
 use crate::core::{model, procedures::CoinToss};
 

@@ -110,7 +110,9 @@ impl<'l> LectureSession<'l> {
     pub fn is_finished(&self) -> bool {
         self.status != LectureStatus::InProgress
             || self.steps_taken >= self.max_steps
-            || self.max_agent_actions.is_some_and(|cap| self.agent_actions_taken >= cap)
+            || self
+                .max_agent_actions
+                .is_some_and(|cap| self.agent_actions_taken >= cap)
     }
 
     /// Advance one micro-step. No-op once `is_finished()`. Caches the new

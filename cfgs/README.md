@@ -10,9 +10,9 @@ label and a trajectory's provenance — so a result can always be traced back to
 ```sh
 # Same net, two configurations, head to head.
 botbowl-ui eval --evaluator nn --model bbnet.onnx \
-    --bot-config cfgs/aggressive.toml --vs-config cfgs/baseline.toml \
+    --bot-config cfgs/gumbel16_f1000.toml --vs-config cfgs/policy_only.toml \
     --out report.json --per-game-out eval.games.jsonl
-# → rungs named `mcts(nn:bbnet.onnx)@aggressive` vs `…@baseline`
+# → rungs named `mcts(nn:bbnet.onnx)@gumbel16_f1000` vs `…@policy_only` (search vs its own policy)
 
 # Generation under a named configuration; the name lands in each trajectory's `meta.extra`.
 botbowl-ui dataset --mode random-start --bot-config cfgs/baseline.toml --out shard0.jsonl

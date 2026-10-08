@@ -8,14 +8,21 @@ Rust to improve the execution speed for tree searching and machine learning. But
 
 ## Workspace layout
 
-Four member crates sharing one `Cargo.lock` and one `target/`:
+Thirteen member crates sharing one `Cargo.lock` and one `target/`, plus the nested `recon_mcts/` library (its own
+workspace):
 
 - `botbowl-engine/` — pure rules library (procedure-stack state machine, `DiceMode`, pathing, scripted bot).
 - `botbowl-curriculum/` — training scenarios (`Lecture` trait, deterministic trial runner).
-- `botbowl-mcts/` — MCTS adapter (`BloodBowlDynamics` + `MctsBot`) on top of the nested `recon_mcts/` crate.
-- `botbowl-ui/` — `ratatui` terminal frontend: `live` / `replay` / `snapshot` / `curriculum` subcommands.
+- `botbowl-mcts/` — MCTS adapter (`BloodBowlDynamics` + `MctsBot`) on top of `recon_mcts/`.
+- `botbowl-nn/` — board encoding and ONNX inference (tract, or a remote Python sidecar); `train/` holds the PyTorch trainer.
+- `botbowl-data/` — trajectory schema, JSONL persistence and provenance stamps.
+- `botbowl-play/` — "play one game, return its record": generation, eval ladders, bot construction.
+- `botbowl-hub/`, `botbowl-worker/`, `botbowl-hub-proto/` — distributed generation and eval over websockets.
+- `botbowl-ui/` — `ratatui` terminal frontend plus the headless `dataset` / `eval` / `mc-label` pipeline commands.
+- `botbowl-web/{proto,server,client}/` — play against the bots in a browser.
 
-See `../CLAUDE.md` for the architectural overview and `plans/001-grand-plan.md` for the long-term roadmap.
+[`CLAUDE.md`](CLAUDE.md) has the architectural overview, commands and invariants (most crates have their own
+`CLAUDE.md`); `plans/001-grand-plan.md` has the long-term roadmap.
 
 ## TODO
 
@@ -56,5 +63,4 @@ see who added code without covering it with a test!
 
 ### Profiling
 
-`PROFILING.md` has the recipe for `samply`-based CPU profiles of `MctsBot`. Note that performance work is currently
-deprioritized — the focus is bot capability, not search throughput.
+`PROFILING.md` lists the throughput benchmarks and the recipe for `samply`-based CPU profiles of `MctsBot`.

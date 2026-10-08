@@ -2,7 +2,7 @@
 
 **Status:** A/B done 2026-09-29 22:28 — exploration helps relative to greedy (+0.068 ± 0.031), but
 **both arms regressed against their parent gen21**, so it is not adopted yet (see Results). Code
-landed at `1a1b7d3`; run `scripts/exp048_explore_ab.sh`, out `runs/exp048/`.
+landed at `1a1b7d3`; run `scripts/archive/exp048_explore_ab.sh`, out `runs/exp048/`.
 
 **Provenance note.** The exp048 binaries in `target/16x9` were built at 16:57:54 from the
 uncommitted plan-048 tree for the smoke test and not rebuilt before launch. So the hub, `gen22x`'s

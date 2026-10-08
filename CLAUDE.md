@@ -6,13 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/` library (folded in via history-preserving subtree merge).
 
-- Botbowl workspace (`Cargo.toml` at repo root) — Blood Bowl 2020 engine + tooling. Member crates sharing one `Cargo.lock` and one `target/` (`botbowl-data` and `botbowl-nn` are members too; both carry their own `CLAUDE.md`):
+- Botbowl workspace (`Cargo.toml` at repo root) — Blood Bowl 2020 engine + tooling. Member crates sharing one `Cargo.lock` and one `target/` (`botbowl-data` — trajectory schema + JSONL I/O + the git provenance stamp — and `botbowl-nn` are members too; `botbowl-nn` carries its own `CLAUDE.md`):
   - `botbowl-engine/` — pure rules library, procedure-stack state machine. No dependency on the other crates. Board/team size is build-time configurable via env vars (see its CLAUDE.md).
   - `botbowl-curriculum/` — training scenarios (`Lecture` trait, `run_trials`). Depends on `botbowl-engine`.
   - `botbowl-mcts/` — `BloodBowlDynamics` + `MctsBot`, the adapter onto `recon_mcts`. Depends on `botbowl-engine` + `recon_mcts`.
   - `botbowl-play/` — "play one game, return its record": the process-agnostic core under `botbowl-ui dataset`/`eval` (trajectory generation, ladder games, `EvalGameLine`/`LadderRow`/`Report`, bot construction). No files, threads or CLI in it; plan 041's hub/worker reuse it verbatim. Depends on engine, curriculum, mcts, nn, data.
   - `botbowl-hub/`, `botbowl-worker/`, `botbowl-hub-proto/` — distributed generation and eval (plan 041): the hub on the training box queues game batches, workers on any machine dial in over a websocket and stream results back (trajectories zstd-compressed); the hub writes the same files (`shard$K.jsonl`, `eval.games.jsonl`, `report.json`) the local phases wrote. Shared `CLAUDE.md` in `botbowl-hub/`. Depend on `botbowl-play`.
-  - `botbowl-ui/` — `ratatui` terminal frontend with `live` / `replay` / `snapshot` / `curriculum` subcommands, plus the headless `dataset` / `eval` shells over `botbowl-play`. Depends on the other four.
+  - `botbowl-ui/` — `ratatui` terminal frontend with `live` / `replay` / `snapshot` / `curriculum` / `placement` subcommands, the headless `dataset` / `eval` shells over `botbowl-play`, the loop stage `mc-label`, and research probes (`convergence`, `positions`, `override-audit`, `value-bench`). Depends on engine, curriculum, mcts, nn, data and play.
   - `botbowl-web/{proto,server,client}/` — human-vs-bot or bot-vs-bot play in a browser (MCTS always on a net), full games or random-start drives, with custom teams, a decision log and the search behind every bot move shown next to the board (plan 034). Also served by the hub at `/play/`. `proto` is engine-free and compiles to wasm32; `server` owns the `GameState` and the bots; `client` is a Leptos CSR app built with `trunk`. Has its own `CLAUDE.md`.
 - `recon_mcts/` — generic **re**combining, **con**current MCTS library (safe std-only Rust). A **nested, separate Cargo workspace**, deliberately in the botbowl workspace's `exclude` list — don't merge it in (its `tests/nim/` member compiles with `--features test_internals` by default). Has its own `CLAUDE.md`. No dependency on the botbowl crates.
 
@@ -20,19 +20,26 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 
 - `plans/001-grand-plan.md` — strategic roadmap (AlphaZero-style MCTS via curriculum learning → scripted baseline → heuristic/rollout/NN-guided MCTS → self-play). Read it before proposing architecture changes that span the engine and `recon_mcts`.
 - `plans/NNN-idea--*.md` / `plans/NNN-plan--*.md` — designs not yet started or in-flight. `plans/completed/` — closed-out plans with **Status:** headers; historical context, not live work.
-- **Live experimental programme:** `plans/031-plan--audit-diagnostics.md` (cheap diagnostics, run first) and `plans/032-plan--ranked-experiment-queue.md` (ranked longer experiments and open questions). New results go there, not into completed plans.
+- **Experiment log:** `plans/032-plan--ranked-experiment-queue.md` (ranked longer experiments and open questions) — new results go there, not into completed plans. `plans/031-plan--audit-diagnostics.md` (cheap diagnostics) is finished (all ten run 2026-09-07); read it for history only.
 - **Search instrumentation + bot presets:** `plans/043-plan--search-instrumentation-and-bot-configs.md` — tree-reuse and recombination counters that reach `report.json`, a trajectory's provenance and the web debug drawer, plus `cfgs/*.toml` bot presets (`--bot-config` / `--vs-config`) so the same net can play itself under two configurations.
 - **State-hash discrimination:** `plans/044-plan--state-hash-discrimination.md` — `GameState::hash` now walks the procedure stack and `GameInfo` whole, taking colliding states from 36.8% to 0% and wasted state comparisons from 4.07 to 0.12 per registry probe.
 - **Per-player kickoff setup:** `plans/047-plan--per-player-setup.md` — `Setup` asks one `PlacePlayer`/`BenchPlayer` decision per player (reserves staged in the own endzone, fixed queue, the mask guarantees legality); formations are planners (`auto_setup`); NN schema v8 (`bbnn.migrate` permutes a v7 policy head; v9 appends `UseSkill`/`DontUseSkill` for optional skills); MCTS `setup`/`opponent_setup`/`setup_formation` preset knobs, an in-tree opponent model, scripted one-hot teacher samples; `--next-drive` follows a scored drive into the setup it causes and writes it as a second record.
 - **Board-size curriculum:** `plans/042-plan--board-size-curriculum.md` — mixed-size generation (`--board-sizes` / `--size-centre …` on `dataset` and `job generate`, per-board eval rungs via `eval --board-sizes`), schema v7, the trainer's multi-dims loader and `train_loop.sh`'s `SIZE_MODE`. Experiments E0–E5 there are the next thing to run.
-- **Fast bot ranking:** `plans/051-plan--fast-bot-ranking.md` — SPRT with pentanomial pair scoring and a score margin on the eval ladder, a validation harness of net pairs with gold results, and a paired contested-drive rung kind; proxies are adopted only after the harness passes them against full-game ground truth.
-  **Current phase: drives are the metric, alone.** Judge experiments and the loop on paired contested drives (SPRT). Do not add, run or propose full-game confirmation, P1 checks or anchor matches; the user says when full games are needed.
+- **Fast bot ranking:** `plans/051-plan--fast-bot-ranking.md` — SPRT with pentanomial pair scoring and a score margin on the eval ladder, a validation harness of net pairs with gold results, and a paired contested-drive rung kind; the plan adopts proxies only after the harness passes them against full-game ground truth.
+  **Current phase: drives are the metric, alone — this rule overrides the plan's full-game validation step.** Judge experiments and the loop on paired contested drives (SPRT). Do not add, run or propose full-game confirmation, P1 checks or anchor matches; the user says when full games are needed.
 - **Gumbel root search:** `plans/053-plan--gumbel-root-search.md` — sequential halving over the top-m root moves (`MctsConfig.gumbel_m`, `cfgs/gumbel16_iters.toml`), PUCT below the root; the fix candidate for 16x9's wide fans, measured on drives.
-- **Search must beat policy:** `plans/055-plan--search-must-beat-policy.md` — DONE 2026-10-06. Under the mean backup at player nodes (hardcoded, ce4eda1), the search beats its bare policy and gains with budget: 0.525 / 0.542 / 0.590 at 250 / 1000 / 4000 descents. `scripts/net_check.sh` is the standing per-net check. The loop restarted 2026-10-06 as `runs/loopmix16x9g056` (`scripts/launch_plan056.sh`, plan 056 §7: plan 054's train step plus MC-averaged value labels, init arm F).
+- **Search must beat policy:** `plans/055-plan--search-must-beat-policy.md` — DONE 2026-10-06. Under the mean backup at player nodes (hardcoded, ce4eda1), the search beats its bare policy and gains with budget: 0.525 / 0.542 / 0.590 at 250 / 1000 / 4000 descents. `scripts/net_check.sh` is the standing per-net check.
 - **Value labels:** `plans/056-plan--value-labels.md` — **MC-averaged value labels win** (`botbowl-ui mc-label`, 8 policy-only playouts per sample): value RMS −15% on the frozen MC benchmark (`scripts/value_bench.sh`), and the search beats the control's 0.533 head to head and its own policy 0.582 at 1000 descents. TD(λ) only removes bias. Plan 055's budget gate holds under the mean backup (0.525 / 0.542 / 0.590 vs policy at 250 / 1000 / 4000); `scripts/net_check.sh` is the standing per-net check.
 - **Loop throughput:** `plans/058-plan--loop-throughput.md` — generation is CPU-bound from ~36 streams (`scripts/perf_gen_bench.sh`); mc-label works per sample and is GPU-bound; drives every 3 generations. The live loop is `runs/loopmix16x9v9` (`scripts/launch_plan058.sh`, new master: 16 more skills, per-player setup with `--next-drive`, schema v9; init = g056 gen04 migrated with `bbnn.migrate`).
 - **Tree statistics:** `plans/060-plan--tree-statistics.md` — every search records leaf depth (plies, own decisions, chance share), where each descent ended relative to the horizon (own turn / opponent's turn / horizon / score / half end), the main line and `opp_turn_follows`: a `tree` block on each corpus sample, means in the `telemetry` block, and `scripts/tree_stats.py` for the tables.
 - **Current focus: the training loop's throughput and strength.** Significant speedups to generation, MC labelling and evaluation are wanted (the user, 2026-10-06): measure before and after, and propose them. Bot capability (priors, leaf score, pruning, new skills) continues alongside.
+
+## Working alongside the live loop
+
+- **The training loop and `runs/` live on the training box** (Linux, its own checkout). A macOS checkout has no `runs/`; never create one or touch `runs/`, `data/`, `models/` unless asked.
+- **A long-lived worker runs from a checkout's build dir.** Rebuilding into the directory it runs from (`target/release`, or the loop's `target/16x9`) swaps its binary underneath it. The loop and any long-lived worker should run from a dedicated `CARGO_TARGET_DIR` (the launchers use `target/${W}x${H}`), not `target/release`; assume a worker may be running from the main checkout's `target/release` and don't build there.
+- **Agents and parallel sessions work in a git worktree** (`.claude/worktrees/…`, own `target/`), or at least with their own `CARGO_TARGET_DIR`. Never switch branches in a checkout a loop or worker runs from, and don't `cd` from a worktree into the main checkout to build.
+- `Blocking waiting for file lock on build directory` means another cargo process shares the target dir — wait or use your own `CARGO_TARGET_DIR`; it is not a hang.
 
 ## Commands
 
@@ -50,19 +57,18 @@ search reads as a hung UI):
 
 ```sh
 cd botbowl-web/client && trunk build --release      # needs: cargo install trunk; rustup target add wasm32-unknown-unknown
-cargo run --release -p botbowl-web-server -- \
-    --assets-dir /Users/mattias/repos/blood/botbowl/botbowl/web/static/img   # → http://127.0.0.1:8080
+cargo run --release -p botbowl-web-server   # → http://127.0.0.1:8080; sprites: --assets-dir, web.toml, or a sibling ../botbowl checkout (auto-detected)
 ```
 
 Both commands work from any directory — the server's `--dist-dir`/`--models-dir` defaults are
 resolved from its own crate path, not the cwd. `botbowl-hub serve` also serves the same app at
 `http://<hub>:7777/play/` (with `/` an index and `/status` the status page) once the client is
-built; teams saved from the editor land in `~/.config/botbowl/teams/`. Both read `~/.config/botbowl/web.toml` (sprites, model dirs; created on first run) and also offer the nets in a worker's `~/.cache/botbowl/models`, by the names the hub sends (protocol v14).
+built; teams saved from the editor land in `~/.config/botbowl/teams/`. Both read `~/.config/botbowl/web.toml` (sprites, model dirs; created on first run) and also offer the nets in a worker's `~/.cache/botbowl/models`, by the names the hub sends (since hub protocol v14).
 
 Bot presets and search telemetry (plan 043; every flag is optional — unset is exactly the old behaviour):
 
 ```sh
-botbowl-ui eval --bot-config cfgs/aggressive.toml --vs-config cfgs/baseline.toml ...   # same net, two configurations
+botbowl-ui eval --bot-config cfgs/gumbel16_f1000.toml --vs-config cfgs/baseline.toml ...   # same net, two configurations
 botbowl-ui dataset --bot-config cfgs/baseline.toml ...                                 # name stamped into the corpus
 botbowl-ui eval --trace-reuse /tmp/reuse.jsonl ...                                     # opt-in per-decision trace
 BLOOD_MCTS_STATS=1 ...                                                                 # MCTS_TELEMETRY line on stderr

@@ -16,8 +16,8 @@
 # Env: GAMES (3), SEED (4242), ITERS (1000), EVALUATOR (heuristic; or nn with MODEL=…onnx, tract),
 # CONFIG (cfgs/gumbel16_f1000_gen.toml), CORE (7: the core it is pinned to, niced).
 set -euo pipefail
-REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO"
-OUT="${1:?out dir}"; TAG="${2:-$(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty)}"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO"; source "$REPO/scripts/lib/git.sh"
+OUT="${1:?out dir}"; TAG="${2:-$(git rev-parse --short HEAD)$(dirty_suffix)}"
 GAMES="${GAMES:-3}"; SEED="${SEED:-4242}"; ITERS="${ITERS:-1000}"; EVALUATOR="${EVALUATOR:-heuristic}"
 CONFIG="${CONFIG:-cfgs/gumbel16_f1000_gen.toml}"; CORE="${CORE:-7}"
 mkdir -p "$OUT"

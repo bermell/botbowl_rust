@@ -63,6 +63,7 @@ fi
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO"
+source "$REPO/scripts/lib/git.sh"
 
 # ---- board size (plan 042) --------------------------------------------------
 # SIZE_MODE=fixed    one board, the historical 14x7/4 loop. BUILD_* is both the
@@ -786,7 +787,7 @@ if [ -f "$(champion)" ]; then
 else
     CHAMP_DESC="no champion yet — will bootstrap gen-0 from a heuristic corpus"
 fi
-status "loop start: commit $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gateless, anchor $(basename "$ANCHOR") x$ANCHOR_GAMES, max $MAX_GENS gens, board capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, sizes $SIZE_MODE$([ "$SIZE_MODE" = fixed ] || echo " ($(size_gen_args | tr -s ' \\\n' ' ')); eval on $EVAL_BOARD_SIZES")"
+status "loop start: commit $(git rev-parse --short HEAD)$(dirty_suffix), $CHAMP_DESC, ${GAMES_PER_SHARD}x8 games/gen, gateless, anchor $(basename "$ANCHOR") x$ANCHOR_GAMES, max $MAX_GENS gens, board capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, sizes $SIZE_MODE$([ "$SIZE_MODE" = fixed ] || echo " ($(size_gen_args | tr -s ' \\\n' ' ')); eval on $EVAL_BOARD_SIZES")"
 [ -f "$ANCHOR" ] || die "anchor model not found: $ANCHOR"
 for f in $GEN_BOT_CONFIG $EVAL_BOT_CONFIG; do [ -f "$f" ] || die "bot preset not found: $f"; done
 preset_name() { if [ -n "$1" ]; then basename "$1" .toml; else echo "env default"; fi; }

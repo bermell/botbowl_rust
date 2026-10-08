@@ -1,10 +1,18 @@
 # Profiling the MCTS hot path
 
-How to measure where `MctsBot` spends its time. The current project focus is bot capability
-(priors, leaf-score, lectures), not performance — so the benchmarks below are kept as a recipe
-for when perf work resumes, but no live baseline is being maintained. See
-`plans/completed/011-plan--profile-and-cut-expansion-cost--completed.md` for the historical
-context.
+How to measure where `MctsBot` spends its time. **Training-loop throughput is the current
+focus** (root `CLAUDE.md`, plan 058): measure before and after every speedup. Standing tools:
+
+| Tool | Measures |
+|------|----------|
+| `scripts/perf_search_bench.sh OUT [TAG]` | Search CPU as instructions retired for a fixed, reproducible workload, plus a trajectory hash (equal hash = search unchanged). Linux `perf`; builds into `target/perf-16x9`. |
+| `scripts/perf_gen_bench.sh OUT [NET] [PARALLEL_LIST] [GAMES]` | Generation games/min, process CPU and sidecar batch/GPU stats at each `--parallel-games`. |
+| `scripts/nn_throughput_probe.sh <arm>` | Which stream source (shards, games per process, MCTS workers) feeds the NN sidecar best. |
+| `BLOOD_NN_PROFILE=1` | Prints the process-wide NN forward counters (`NN_PROFILE` line: forwards, time per forward). |
+| `BLOOD_MCTS_STATS=1` | Prints the `MCTS_TELEMETRY` line (tree reuse, recombination). |
+
+The samply recipe below is for CPU flame profiles of a single search. Historical context:
+`plans/completed/011-plan--profile-and-cut-expansion-cost--completed.md`, plan 058 §7.
 
 ## Quick wall-clock numbers (no extra tooling)
 
@@ -13,7 +21,7 @@ start states (`score_td_easy` — single-player lecture, and `full_teams` — 11
 legal actions):
 
 ```
-cargo test --release -p botbowl-mcts --test expand_bench \
+cargo test --release -p botbowl-mcts --features expand_bench --test expand_bench \
     -- --ignored --nocapture
 ```
 
@@ -24,16 +32,19 @@ Each run emits stable-format `EXPAND_BENCH …=…` lines so you can diff runs m
 Install once: `cargo install --locked samply`.
 
 **Build with full debug info.** `line-tables-only` is _not_ enough on macOS — samply emits hex
-addresses instead of function names if the binary has no symbols. Build the test binary with
-`RUSTFLAGS`:
+addresses instead of function names if the binary has no symbols. Build the test binary with the
+workspace's `profiling` profile (release + `debug = 2`, in its own `target/profiling/`, so it never
+invalidates the release build the way `RUSTFLAGS` did):
 
 ```sh
-cd botbowl_rust
-RUSTFLAGS="-C debuginfo=2" cargo test --release \
+cargo test --profile profiling --features expand_bench \
     -p botbowl-mcts --test expand_bench --no-run
 ```
 
-The `--no-run` step prints the test binary path (`target/release/deps/expand_bench-XXXXXX`).
+Any binary works the same way, e.g. `cargo build --profile profiling -p botbowl-ui`
+→ `target/profiling/botbowl-ui`.
+
+The `--no-run` step prints the test binary path (`target/profiling/deps/expand_bench-XXXXXX`).
 Copy that path.
 
 **Profile the single-threaded test, not the parallel one.** The main `expand_bench_main` uses
@@ -43,7 +54,7 @@ wrapper and produces clean attribution:
 
 ```sh
 samply record --save-only -o /tmp/expand_bench_profile.json --rate 4000 \
-    -- target/release/deps/expand_bench-XXXXXX \
+    -- target/profiling/deps/expand_bench-XXXXXX \
        expand_bench_for_samply --ignored --nocapture
 ```
 
@@ -54,7 +65,7 @@ samply record --save-only -o /tmp/expand_bench_profile.json --rate 4000 \
 
 ```sh
 python3 tools/samply_flatten.py /tmp/expand_bench_profile.json \
-    target/release/deps/expand_bench-XXXXXX
+    target/profiling/deps/expand_bench-XXXXXX
 ```
 
 Output: top-30 self-time + top-30 inclusive-time tables, plus a "grouped" section that bins

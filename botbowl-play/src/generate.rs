@@ -159,20 +159,23 @@ pub struct RandomStartBias {
     pub pocket_fraction: f32,
 }
 
-/// The defaults `botbowl-ui dataset` and `botbowl-hub job generate` share.
+/// The defaults `botbowl-ui dataset` and `botbowl-hub job generate` share (their flags'
+/// `default_value_t` reads this): `RandomStartConfig::default()` plus the second temperature, so
+/// the placement numbers have one source.
 impl Default for RandomStartBias {
     fn default() -> Self {
+        let c = RandomStartConfig::default();
         RandomStartBias {
-            ball_distance: 1.30,
-            front_line: 2.20,
-            mark_teammate: 1.5,
-            mark_opponent: 1.5,
-            own_side: 1.5,
-            temperature: 0.60,
+            ball_distance: c.ball_distance,
+            front_line: c.front_line,
+            mark_teammate: c.mark_teammate,
+            mark_opponent: c.mark_opponent,
+            own_side: c.own_side,
+            temperature: c.temperature,
             temperature2: 1.5,
-            carried_prob: 0.75,
-            line_fraction: 0.80,
-            pocket_fraction: 0.25,
+            carried_prob: c.carried_prob,
+            line_fraction: c.line_fraction,
+            pocket_fraction: c.pocket_fraction,
         }
     }
 }

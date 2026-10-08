@@ -14,8 +14,9 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   provenance string stamped into every corpus. Both are pinned by tests — change them only with
   a schema bump.
 - **`SearchConfig` knobs are `Option`: `None` means "leave `MctsBot`'s (env-driven) default".**
-  `dataset` has always left them unset; `eval` has always set all four. Keep that split or the
-  two paths' bots silently diverge from their pre-extraction behaviour.
+  `dataset` leaves them unset; `eval` sets `horizon_turns`/`fpu_reduction` from its CLI defaults and
+  `puct` only when `--puct-mode`/`--puct-c` is given (plan 059). Keep that split or the two paths'
+  bots silently diverge.
 - **`SearchConfig.config` is the plan-043 sibling, and it is exclusive with those four.** A named
   preset (`load_mcts_config`, `cfgs/*.toml`) replaces the bot's configuration wholesale —
   environment included — so `make_mcts` routes through `with_budget_and_config` and every `Option`
@@ -46,7 +47,7 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   still works. **`DriveStart` is the one drive-end rule** (a score on either side, a half change,
   game over): `random_start_trajectory`, `play_drive_game` and `botbowl-ui override-audit`'s
   playouts all stop on it, and `outcome_for` scores it in the value target's units.
-- **Clap-free.** CLI enums live in `botbowl-ui/src/cli.rs` with `From` impls onto the types here.
+- **Clap-free by default.** The `cli` feature adds `cli_args`: the `dataset`/`eval` flag structs (`DatasetArgs`, `EvalArgs`, `BiasArgs`, `SizeArgs`, `EvalSizeArgs`, the CLI enums with `From` impls onto the types here, `EvalArgs::candidate_search`/`opponent_search`, `vs_rung_label`). `botbowl-ui` flattens them whole and `botbowl-hub job generate`/`job eval` flatten the same structs, so the two CLIs cannot drift; the hub refuses the process-local flags (`--parallel-games`, `--nn-server`, `--trials`, ...) by checking `ArgMatches::value_source`. Without the feature the library has no clap dependency.
 - **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
   weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform
   floor); `GenerateConfig.board_sizes: Option<SizeDist>` and `SizeDist::sample(seed)` pick the

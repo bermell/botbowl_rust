@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -46,19 +47,64 @@ use botbowl_engine::core::model::{Action, BoardDims, TeamType, HEIGHT, TEAM_SIZE
 /// reader can reject / migrate old files.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// The git commit the *currently running* binary was built at (full SHA,
-/// or `"unknown"` if git was unavailable at build time). Baked in by
-/// `build.rs`. This is the commit that should be recorded on every
-/// trajectory this binary produces.
-pub fn git_commit() -> &'static str {
-    env!("BOTBOWL_GIT_COMMIT")
+/// `(commit, dirty)` of the checkout this binary was built from, read **at
+/// process start** (first call) and cached for the life of the process.
+///
+/// Runs `git rev-parse HEAD` and `git status --porcelain
+/// --untracked-files=no` in the workspace root baked in at compile time
+/// (`CARGO_MANIFEST_DIR/..`), so the answer does not depend on the cwd.
+/// *Dirty* means staged or unstaged changes to tracked files; untracked
+/// files do not count (a new file only reaches the build through an edit
+/// to a tracked one). `scripts/lib/git.sh`'s `require_clean_tree` uses the
+/// same definition.
+///
+/// This replaced a build-time stamp whose `rerun-if-changed=.git/index`
+/// rebuilt 9 crates on every `git status`, yet missed unstaged edits. The
+/// trade-off: a binary that is *not* rebuilt after a commit stamps the new
+/// HEAD. Every launcher builds via `cargo build`/`cargo run` first, which
+/// recompiles on any source change, so stamp and code agree whenever the
+/// binary is current.
+///
+/// If `git` cannot run (no git, binary copied off its checkout) the stamp
+/// falls back to the commit `build.rs` saw when this crate was last
+/// compiled, reported **dirty** because nothing verifies it.
+pub fn git_provenance() -> (&'static str, bool) {
+    static STAMP: OnceLock<(String, bool)> = OnceLock::new();
+    let (commit, dirty) = STAMP.get_or_init(|| {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let git = |args: &[&str]| -> Option<String> {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        match (
+            git(&["rev-parse", "HEAD"]),
+            git(&["status", "--porcelain", "--untracked-files=no"]),
+        ) {
+            (Some(commit), Some(status)) => (commit, !status.is_empty()),
+            _ => (env!("BOTBOWL_BUILD_GIT_COMMIT").to_string(), true),
+        }
+    });
+    (commit.as_str(), *dirty)
 }
 
-/// Whether the working tree had uncommitted changes when this binary was
-/// built. A `true` here means the recorded [`git_commit`] does not fully
-/// describe the generating code — treat such datasets with suspicion.
+/// The commit half of [`git_provenance`] (full SHA, or `"unknown"`). This
+/// is the commit recorded on every trajectory this binary produces.
+pub fn git_commit() -> &'static str {
+    git_provenance().0
+}
+
+/// The dirty half of [`git_provenance`]. `true` means the recorded
+/// [`git_commit`] does not fully describe the generating code — treat such
+/// datasets with suspicion.
 pub fn git_dirty() -> bool {
-    env!("BOTBOWL_GIT_DIRTY") == "true"
+    git_provenance().1
 }
 
 /// Which team acts at a node. Mirrors [`TeamType`] but lives in this crate
@@ -632,6 +678,18 @@ mod tests {
         // Either a real 40-char sha or the "unknown" fallback.
         let c = git_commit();
         assert!(c == "unknown" || c.len() >= 7, "unexpected commit stamp: {c:?}");
+    }
+
+    #[test]
+    fn git_provenance_is_read_at_runtime_from_this_checkout() {
+        // Tests run from a checkout, so the runtime path (not the build.rs
+        // fallback) must answer: the stamp is the checkout's live HEAD.
+        let head = std::process::Command::new("git")
+            .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
+            .output()
+            .expect("git runs in the test checkout");
+        let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(git_commit(), head);
     }
 
     #[test]

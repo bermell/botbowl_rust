@@ -69,7 +69,7 @@ gives noisy targets, worst on the wider 16x9 fan. Measured support:
 - Each fine-tune barely moves validation loss (gen01: value 0.1151 → 0.1142, policy ≈ flat), so
   only games can separate the arms.
 
-**exp055** (`scripts/exp055_tau_and_budget.sh`, `a8c7f9a`). Aborted at 10:45 for plan 051, so
+**exp055** (`scripts/archive/exp055_tau_and_budget.sh`, `a8c7f9a`). Aborted at 10:45 for plan 051, so
 the numbers are partial:
 
 | 14x7 vs gen13 | points | n |
@@ -128,7 +128,7 @@ allows per-board-group budgets.
 Four generations at 1000 descents and the loop is level with gen21 at best. The loop is paused
 after gen04.
 
-**Target arms** (`scripts/exp059_targets_and_wdl.sh`):
+**Target arms** (`scripts/archive/exp059_targets_and_wdl.sh`):
 - **Recipe:** gen04's exactly, with one change each: the gen02-04 window, warm from gen03. gen04
   (cq tau 100) is the control.
 - **Scoring:** drives vs gen04 on positions re-screened with gen04 (156 kept on 14x7, 209 on

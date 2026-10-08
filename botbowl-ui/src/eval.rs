@@ -28,12 +28,12 @@ use botbowl_curriculum::{available_lectures, make_lecture, run_trials, TrialStat
 use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
-use botbowl_mcts::PuctMode;
+
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::board_sizes::board_label;
 use botbowl_play::bots::{
-    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, parse_puct,
-    CandidateBot, Evaluator, NamedConfig, SearchConfig,
+    candidate_label, evaluator_label, load_mcts_config, load_nn, make_candidate_bot, make_mcts, CandidateBot,
+    Evaluator, NamedConfig, SearchConfig,
 };
 use botbowl_play::drives::{
     drive_assignment, drive_rung_name, play_drive_game, position_state, DriveRung, PositionSet,
@@ -43,59 +43,24 @@ use botbowl_play::stats::Sprt;
 use botbowl_play::trace::ReuseTraceWriter;
 use botbowl_play::GAME_STACK_SIZE;
 
+use botbowl_play::cli_args::vs_rung_label;
+
 use crate::cli::EvalArgs;
 
 /// Max micro-steps per lecture trial (mirrors the curriculum CLI default).
 const LECTURE_MAX_STEPS: u32 = 2000;
 
-/// Refuse to start rather than run the wrong arm of a multi-hour head-to-head.
-fn puct_of(mode: &str, c: Option<f32>) -> PuctMode {
-    parse_puct(mode, c).unwrap_or_else(|e| panic!("--puct-mode: {e}"))
-}
-
-/// The candidate's search knobs. Every one is `Some`: `eval` has always
-/// set them explicitly (the CLI defaults stand in for the bot's), so the
-/// environment never reaches the candidate here.
-///
-/// Plan 043: `--bot-config` replaces all of them with a named preset. The per-knob flags are
-/// `conflicts_with` it in clap, so the two can never be mixed — a run is described entirely by a
-/// preset or entirely by flags.
+/// The candidate's search knobs: `EvalArgs::candidate_search` (shared with `botbowl-hub job
+/// eval`). A bad `--puct-mode` refuses to start rather than run the wrong arm of a multi-hour
+/// head-to-head.
 fn candidate_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConfig {
-    SearchConfig {
-        budget: botbowl_mcts::SearchBudget::Iterations(args.mcts_iters),
-        workers: args.mcts_workers,
-        puct: preset.is_none().then(|| puct_of(&args.puct_mode, args.puct_c)),
-        horizon_turns: preset.is_none().then_some(args.horizon_turns),
-        fpu_reduction: preset.is_none().then_some(args.fpu_reduction),
-        config: preset.map(|p| p.config),
-    }
+    args.candidate_search(preset).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// The opponent's search knobs. Unset `--vs-*` means "match the candidate",
-/// so existing invocations are unchanged and setting one flag alone makes
-/// it a head-to-head on that knob.
-///
-/// `--vs-config` follows the same rule: unset, the opponent inherits the candidate's preset, so
-/// `--bot-config` alone configures both sides and setting `--vs-config` alone is a
-/// configuration head-to-head — the same net under two configurations.
+/// The opponent's search knobs: `EvalArgs::opponent_search`; unset `--vs-*` matches the
+/// candidate.
 fn opponent_search(args: &EvalArgs, preset: Option<&NamedConfig>) -> SearchConfig {
-    SearchConfig {
-        budget: botbowl_mcts::SearchBudget::Iterations(args.opponent_iters.unwrap_or(args.mcts_iters)),
-        workers: args.mcts_workers,
-        puct: preset.is_none().then(|| {
-            puct_of(
-                args.vs_puct_mode.as_deref().unwrap_or(&args.puct_mode),
-                args.vs_puct_c.or(args.puct_c),
-            )
-        }),
-        horizon_turns: preset
-            .is_none()
-            .then(|| args.vs_horizon_turns.unwrap_or(args.horizon_turns)),
-        fpu_reduction: preset
-            .is_none()
-            .then(|| args.vs_fpu_reduction.unwrap_or(args.fpu_reduction)),
-        config: preset.map(|p| p.config),
-    }
+    args.opponent_search(preset).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Resolve `--bot-config` and `--vs-config` once, up front, so a bad path or a typo'd knob fails
@@ -493,42 +458,15 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             }
         }
         if let Some(vs) = vs_evaluator {
-            // The label says how the opponent differs from the candidate. Under a preset the
-            // per-knob fields are deliberately `None` — the configuration name is the difference,
-            // and it is the thing you can look up in `cfgs/`.
-            let label = if let (Some(o), Some(c)) = (&opp_preset, &cand_preset) {
-                let base = evaluator_label(vs, args.vs_model.as_deref());
-                if o.name == c.name {
-                    format!("vs:{base} [{}]", o.name)
-                } else {
-                    format!("vs:{base} [{} v {}]", o.name, c.name)
-                }
-            } else {
-                let (opp_puct, opp_horizon, opp_fpu) = (
-                    opp.puct.expect("set when no preset is named"),
-                    opp.horizon_turns.expect("set when no preset is named"),
-                    opp.fpu_reduction.expect("set when no preset is named"),
-                );
-                let (cand_horizon, cand_fpu) = (
-                    cand.horizon_turns.expect("set when no preset is named"),
-                    cand.fpu_reduction.expect("set when no preset is named"),
-                );
-                format!(
-                    "vs:{} [{}{}{}]",
-                    evaluator_label(vs, args.vs_model.as_deref()),
-                    opp_puct.label(),
-                    if opp_horizon != cand_horizon {
-                        format!(" horizon={opp_horizon}v{cand_horizon}")
-                    } else {
-                        String::new()
-                    },
-                    if opp_fpu != cand_fpu {
-                        format!(" fpu_k={opp_fpu}v{cand_fpu}")
-                    } else {
-                        String::new()
-                    }
-                )
-            };
+            // How the opponent differs from the candidate; the same text `botbowl-hub job eval`
+            // builds (`vs_rung_label`), including the one-sided-preset cases.
+            let label = vs_rung_label(
+                &evaluator_label(vs, args.vs_model.as_deref()),
+                cand_preset.as_ref(),
+                opp_preset.as_ref(),
+                &cand,
+                &opp,
+            );
             // The gating rung: `--vs-games` if given, else `--games`.
             let vs_games = args.vs_games.unwrap_or(args.games);
             for &venue in &venues {
@@ -595,4 +533,35 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
         println!("wrote {out}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct EvalCli {
+        #[command(flatten)]
+        args: EvalArgs,
+    }
+
+    /// `--vs-config` with no `--bot-config` (a one-sided preset) used to panic here on
+    /// `opp.puct.expect(..)`; the hub had the fix, the ui copy did not (plan 059 #8).
+    #[test]
+    fn a_vs_config_without_a_bot_config_labels_without_panicking() {
+        let preset = format!("{}/../cfgs/policy_only.toml", env!("CARGO_MANIFEST_DIR"));
+        let args = EvalCli::parse_from(["eval", "--vs-config", &preset, "--vs-evaluator", "heuristic"]).args;
+        let (cand_preset, opp_preset) = presets(&args).unwrap();
+        let cand = candidate_search(&args, cand_preset.as_ref());
+        let opp = opponent_search(&args, opp_preset.as_ref());
+        let label = vs_rung_label(
+            &evaluator_label(Evaluator::Heuristic, None),
+            cand_preset.as_ref(),
+            opp_preset.as_ref(),
+            &cand,
+            &opp,
+        );
+        assert!(label.ends_with("[policy_only v flags]"), "{label}");
+    }
 }

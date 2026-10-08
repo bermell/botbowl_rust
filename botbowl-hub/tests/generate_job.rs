@@ -364,7 +364,11 @@ async fn a_silent_worker_is_reaped_and_its_seeds_requeued() {
     }
     assert_eq!(tasks, 2, "sleeper should have been handed 2 tasks");
 
-    let live = spawn_worker(worker_cfg(&url, "real", 2));
+    // The live worker reconnects (`run`, not `run_once`): with a 2 s timeout and a 30 s
+    // heartbeat, a worker that finishes its own games fast sits silent and is reaped in the
+    // same sweep as the sleeper, right after being handed the sleeper's requeued tasks. A
+    // production worker redials; a one-shot one would strand the job.
+    let live = tokio::spawn(botbowl_worker::run(worker_cfg(&url, "real", 2)));
     let status = tokio::time::timeout(Duration::from_secs(300), hub.wait(id))
         .await
         .expect("job finished in time — the sleeper's games must be requeued")
@@ -376,5 +380,5 @@ async fn a_silent_worker_is_reaped_and_its_seeds_requeued() {
     // disconnect, is what freed the work.
     drop(sink);
     drop(stream);
-    drop(live);
+    live.abort();
 }

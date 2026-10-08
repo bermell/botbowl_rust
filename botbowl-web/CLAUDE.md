@@ -2,7 +2,7 @@
 
 Blood Bowl in a browser — you against a bot, or two bots against each other — with every decision
 logged and the net-guided search behind each bot move opened up next to the board
-(`plans/034-plan--web-play-ui.md`). Three crates:
+(`plans/completed/034-plan--web-play-ui.md`). Three crates:
 
 | crate | target | depends on |
 |---|---|---|
@@ -244,7 +244,7 @@ parse (`deny_unknown_fields`) stops the server — a typo'd key must not look li
 The lobby offers the configured directories' nets, then a remote worker's model cache
 (`~/.cache/botbowl/models` by default, `worker_cache = ""` turns it off) — so a box that has been
 a hub worker can play the nets the hub shipped it without copying anything. Cache entries are
-named by the hub's `<hex>.json` sidecar (`botbowl_hub_proto::ModelMeta`, protocol v14 —
+named by the hub's `<hex>.json` sidecar (`botbowl_hub_proto::ModelMeta`, since protocol v14 —
 `botbowl-hub/CLAUDE.md`) as `cache: <run>/models/<file>.onnx`, with the board tag from that file
 name; an entry not yet named is listed by its hash, untagged, after the named ones (the probe still
 refuses a net that does not fit the board). A cached net whose **bytes** match a local file is

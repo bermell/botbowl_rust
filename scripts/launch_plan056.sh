@@ -27,7 +27,8 @@ POS="$REPO/runs/loopmix16x9g/positions"
 GUMBEL_EVAL="$REPO/cfgs/gumbel16_f1000.toml"; GUMBEL_GEN="$REPO/cfgs/gumbel16_f1000_gen.toml"
 export BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR="$REPO/target/16x9"
 unset BLOOD_MCTS_BUDGET
-git diff --quiet || { say "FATAL: dirty tree"; exit 1; }
+source "$REPO/scripts/lib/git.sh"
+require_clean_tree 2>>"$LOG" || { say "FATAL: dirty tree"; exit 1; }
 say "start: commit $(git rev-parse --short HEAD), init $(basename "$INIT")"
 [ -e "$RUN"/.mirror.done ] || echo "skipped: drives only" > "$RUN"/.mirror.done
 
@@ -52,7 +53,7 @@ export GAMES_PER_SHARD=300 GEN_PARALLEL_GAMES=12 WORKER_MEM_FLOOR_MB=1536 HUB_PO
 # A remote worker is admitted on any commit since the last change to the code its games run, plus
 # the commits exp066's hub admitted (8cc6ce7 and earlier): the one game-code commit since, 99ae314,
 # only adds prepare's TD(lambda) labels, which no worker runs.
-LAST_GAME=$(git log -1 --format=%h -- botbowl-engine botbowl-mcts botbowl-nn botbowl-play botbowl-worker botbowl-hub-proto recon_mcts)
+LAST_GAME=$(git log -1 --format=%h -- $(game_crates))
 printf 'hub_commit = "%s"\nallow = [%s]\n' "$(git rev-parse --short HEAD)" \
     "$( (git rev-list --abbrev-commit "$LAST_GAME"^..HEAD; echo 8cc6ce7 2a8fe4e 14d915a e7d5c1e 381c245 e8c0144 d45e391 | tr ' ' '\n') \
         | sort -u | sed 's/.*/"&"/' | paste -sd,)" > hub-allowed-commits.toml

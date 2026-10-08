@@ -57,7 +57,7 @@ async fn connect(addr: SocketAddr) -> Socket {
 
 async fn send(socket: &mut Socket, msg: ClientMsg) {
     socket
-        .send(Message::Text(serde_json::to_string(&msg).unwrap()))
+        .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
         .await
         .expect("send");
 }
@@ -696,7 +696,9 @@ async fn two_bots_play_a_whole_game_and_can_be_paused() {
                 assert!(matches!(record.by, Decider::Bot { .. }), "nobody human is seated");
                 decisions += 1;
                 by_team[usize::from(record.team == TeamType::Away)] += 1;
-                if decisions == 50 {
+                // Early (was 50): with the engine optimised in dev builds (plan 059) the rest of
+                // a random game could finish before the server saw the mode change.
+                if decisions == 10 {
                     send(&mut socket, ClientMsg::SetStepMode(StepMode::Manual)).await;
                 }
             }
@@ -719,7 +721,7 @@ async fn two_bots_play_a_whole_game_and_can_be_paused() {
     }
     let paused_at = paused_at.expect("Manual never took hold of a running bot-vs-bot game");
     assert!(
-        paused_at >= 50,
+        paused_at >= 10,
         "paused at decision {paused_at}, before the mode was even sent"
     );
     assert!(by_team.iter().all(|&n| n > 20), "both bots played: {by_team:?}");

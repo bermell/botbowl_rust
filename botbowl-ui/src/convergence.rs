@@ -111,7 +111,7 @@ fn make_bot(args: &ConvergenceArgs, nn: Option<&Arc<NnEvaluator>>, budget: usize
             MctsBot::with_budget_and_config(SearchBudget::Iterations(budget), preset.config)
                 .with_workers(args.mcts_workers)
         }
-        None => MctsBot::new(SearchBudget::Iterations(budget))
+        None => MctsBot::from_env(SearchBudget::Iterations(budget))
             .with_workers(args.mcts_workers)
             .with_puct(puct_from_args(args)),
     };
@@ -274,7 +274,10 @@ fn probe_state(
         if state.info.game_over || state.available_actions.team.is_none() {
             break;
         }
-        let plain = ConvergenceArgs { bot_config: None, ..args.clone() };
+        let plain = ConvergenceArgs {
+            bot_config: None,
+            ..args.clone()
+        };
         let mut bot = make_bot(&plain, nn, 1000);
         let action = bot.get_action(&state);
         state

@@ -99,9 +99,9 @@ fn a_preset_naming_the_removed_backup_knob_is_refused() {
     assert!(load_mcts_config(&path).is_err());
 }
 
-/// The reproducibility guarantee. `MctsConfig`'s `Default` is `from_env()`, so serde pointed at
-/// `Default` would have quietly absorbed the environment into every unnamed field — which would
-/// make a named configuration mean different things on different machines.
+/// The reproducibility guarantee: a preset's unnamed fields come from `MctsConfig::new`, never the
+/// environment (`Default` read `from_env()` until plan 059; this pins that it cannot again) —
+/// otherwise a named configuration would mean different things on different machines.
 ///
 /// Single-threaded and restoring the variable, because the process environment is shared.
 #[test]

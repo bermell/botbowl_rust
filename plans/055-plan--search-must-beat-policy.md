@@ -12,7 +12,7 @@ the loop every generation.
 **History:** Written 2026-10-04 night. Phase 1 done 2026-10-05 05:13 (results below §3 phase 1):
 the search loses to its policy unless it is made to override less (q floor 4000) or to back up
 the mean; PUCT loses by 0.13. Phase 1 was launched as
-`scripts/exp064_search_vs_policy.sh` (out `runs/exp064/`), taking over from exp063 at its gate.
+`scripts/archive/exp064_search_vs_policy.sh` (out `runs/exp064/`), taking over from exp063 at its gate.
 **The user's decision (2026-10-04): no training loop until the search beats the policy.**
 `runs/loopmix16x9g054/HOLD` blocks plan 054's automatic relaunch; delete it to allow one. Drives
 only (plan 051). The laptop stays on 7a86e4d, so tonight's work changes no game code

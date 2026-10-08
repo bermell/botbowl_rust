@@ -420,12 +420,14 @@ mod tests {
         assert!(big.iter().all(|d| playable_area(*d) >= 70.0));
         assert!(big.len() < grid.len());
         // 70 is exactly the bound that clears every team-size-2 board.
-        assert!(big.iter().all(|d| d.team_size >= 3), "{:?}", big.iter().map(|d| board_label(*d)).collect::<Vec<_>>());
+        assert!(
+            big.iter().all(|d| d.team_size >= 3),
+            "{:?}",
+            big.iter().map(|d| board_label(*d)).collect::<Vec<_>>()
+        );
         // Both bounds compose.
         let band = legal_grid(DEFAULT_ASPECT, 26.0, Some(70.0), Some(112.0));
-        assert!(band
-            .iter()
-            .all(|d| (70.0..=112.0).contains(&playable_area(*d))));
+        assert!(band.iter().all(|d| (70.0..=112.0).contains(&playable_area(*d))));
     }
 
     #[test]
