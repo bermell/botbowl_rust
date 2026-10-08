@@ -122,3 +122,30 @@ filtered (no opponent turn).
 Over half of every line's depth is dice (chance share 53-61%), and a line holds only ~2 own
 decisions. Next: run `tree_stats.py` on a live-loop shard (net evaluator) and at 250 / 1000 / 4000
 descents for §3's depth-vs-budget row.
+
+### First live reading: gen06 net, 250 / 1000 / 4000 descents (2026-10-08)
+
+`runs/plan060/budget_ladder.sh`: the loop's generation preset (`gumbel16_f1000_gen`), the gen06 net
+on tract, 12 random-start drives with `--next-drive` on the same seeds at each budget; decisions
+without an opponent turn inside the horizon filtered out. `reach_opp` = share of descents whose
+line reached the opponent's turn (ending there or beyond); `horizon` = past the end of it;
+`ml_opp` = the main line reaches the opponent's turn.
+
+| budget | n | reach_opp (all / turn-ending / 10+ left) | horizon (all / turn-ending) | depth mean / p90 / max (plies) | own decisions per line | chance share | main line plies | ml_opp (all / 10+ left) |
+|---|---|---|---|---|---|---|---|---|
+| 250 | 299 | 52% / 77% / 26% | 5% / 5% | 6.5 / 9.9 / 12.5 | 2.7 | 45% | 8.2 | 58% / 31% |
+| 1000 (the loop) | 310 | 61% / 87% / 37% | 13% / 17% | 8.6 / 12.5 / 16.5 | 3.2 | 48% | 12.3 | 73% / 49% |
+| 4000 | 243 | 74% / 92% / 48% | 20% / 26% | 10.8 / 15.2 / 20.5 | 3.5 | 49% | 16.2 | 86% / 80% |
+
+- **Healthy on §3's terms.** Depth grows with budget (+2.1 plies per 4x), and so does the reach into
+  the opponent's turn. At the turn-ending decision the loop's search sends 87% of its lines into the
+  opponent's turn, and its main line gets there 92% of the time.
+- **Where the depth goes:** about half of every line is dice, and a line holds only ~3 of the
+  mover's own decisions at any budget; the extra depth from more budget is mostly the opponent's
+  turn and its dice.
+- **Past the opponent's turn** (`horizon`): 17% of lines at the turn-ending decision at 1000. Many
+  opponent turns end early on a turnover (a failed dodge, GFI or block), which is what this counts;
+  the reading does not separate a turnover from a played-out turn yet.
+- **Early in a turn** (10+ own decisions left) only 37% of lines reach the opponent at 1000, and
+  half of the main lines stop inside the own turn: those decisions are valued by the value head
+  about the end-of-turn position, as expected.
