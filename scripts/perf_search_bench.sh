@@ -9,7 +9,8 @@
 # Reproducibility: `deterministic_hash` (fixed children-map hasher) is built in, and
 # `fixed_getrandom.c` is preloaded so std's RandomState keys are fixed too. The hash sorts the
 # JSON of set fields (`skills`, `used_skills`, `simple`, and the per-square lists under `data`),
-# whose order is not part of the game.
+# whose order is not part of the game, and leaves out each sample's `tree` block (plan 060: it
+# describes the search, not the game).
 # Builds into target/perf-16x9, never the loop's target/16x9.
 #
 # Env: GAMES (3), SEED (4242), ITERS (1000), EVALUATOR (heuristic; or nn with MODEL=…onnx, tract),
@@ -46,6 +47,8 @@ def canon(x):
 h = hashlib.md5()
 for line in open(sys.argv[1]):
     d = json.loads(line); d.pop("meta", None)
+    for s in d.get("samples", []):
+        s.pop("tree", None)  # plan 060's tree statistics describe the search, they are not the game
     h.update(json.dumps(canon(d), sort_keys=True).encode())
 print(h.hexdigest()[:12])
 PY
