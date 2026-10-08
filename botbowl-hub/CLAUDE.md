@@ -27,8 +27,40 @@ botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is
 # http://hub:7777/ is an index; http://hub:7777/status the status page: jobs by --label
 # (`job ... --label "gen03 generate"`), rungs and status lines shortened to how we name things
 # (page.rs), and with `serve --run-dir` the loop's latest status lines plus the trainer's progress
-# (`bbnn.train --progress`). http://hub:7777/play/ is the web play app (below).
+# (`bbnn.train --progress`), and /run/status.md the whole file. http://hub:7777/play/ is the web
+# play app (below); http://hub:7777/registry/ the project registry (`--registry-dir`, below).
 ```
+
+## Throughput: games and decisions per minute (`rates.rs`)
+
+The status page lists every worker **name** (a reconnect is a new connection under the same
+name; a worker that left stays listed, as `gone`, while it has recent results) and the fleet:
+generate games, records (`--next-drive` games write two) and decisions (samples, both sides) per
+minute over the last 5 and 30 minutes and since it joined, eval games and the candidate's
+decisions when there are any, a sparkline of three hours of intervals, and a table of the last
+hour by interval (generate games/min · decisions/min per worker). Each job shows its rate over
+the last 5 minutes, an ETA from that rate, and each worker's share of its games. Every
+`--rate-interval-secs` (300, wall-clock aligned) in which something finished, hub.log gets
+```
+[hub] rate 14:05-14:10: local 6.2 games/min 210 decisions/min (24 streams) · local2 ... · laptop 1.1 games/min 40 decisions/min (gone) · total ...
+```
+so the loop's own logs say which worker a change of pace came from (plan 058: a generation that
+sped up and slowed down was the laptop joining and leaving). All of it is counted hub-side
+(`Ledger`, six hours of accepted results in memory, totals forever) from frames workers already
+send — `TrajectoryDone.samples`, the records in its payload, `EvalGameLine.telemetry.searches` —
+so **no protocol change**; a duplicate or late result that the hub drops is not counted. The same
+numbers are in `/api/status` (`HubStatus.throughput`, `JobStatus.by_worker` / `recent`, all
+`#[serde(default)]`). A rate is over the time since the worker joined when that is shorter than
+the window, so a newcomer is not reported at a fraction of its speed.
+
+## `/registry/`: the project registry
+
+`registry.rs` renders `registry/*.md` (`serve --registry-dir`, default `<repo>/registry`) with
+`pulldown-cmark` (tables, heading ids, a contents list, a row filter): `/registry/` an index of
+every file's title and opening paragraph, `/registry/<FILE>.md` one file (so the files' relative
+links work), `/registry/raw/<FILE>.md` the text. Files are read per request — an edit shows on
+reload — and only `.md` names directly in the directory are opened. The files are trusted repo
+content, so their inline HTML passes through. It sits behind `--allow-from` like every page.
 
 ## `/play/`: the web play app, nested
 
@@ -48,7 +80,7 @@ the defaults from the crate's source path — the same file and resolver (`confi
 the hub process: they cost CPU on the training box, nothing else — they never touch the job queue.
 
 **`--allow-from` (who may see it).** `serve --allow-from 157.250.168.190,192.168.0.0/16` (or
-`HUB_ALLOW_FROM` in `train_loop.sh`) answers `/`, `/status`, `/api/*` and `/play/` only to those
+`HUB_ALLOW_FROM` in `train_loop.sh`) answers `/`, `/status`, `/registry/`, `/api/*` and `/play/` only to those
 client addresses (addresses or CIDR networks) and to loopback; everyone else gets 403. `/ws` is
 never gated, since workers dial in from anywhere and authenticate with the token. Unset means
 everyone, as before. It filters on the *peer* address (`ConnectInfo`, `allow_from_gate` in
@@ -224,7 +256,11 @@ address is the clients', not the box's.
 exactly (search-free bots so it is exact on any tier); a generate job writes each shard's seed
 set exactly once with `dataset`'s provenance labels, truncates or appends as asked; a worker
 that vanishes mid-task loses nothing (eval and generate); each incompatibility is rejected with
-its reason; an allowlisted commit connects while an unlisted one and a stale file do not.
+its reason; an allowlisted commit connects while an unlisted one and a stale file do not; the
+rates count every game, record and sample once per worker (`rates.rs` unit tests for windows,
+late joiners, wall-clock intervals and the log line; `generate_job.rs` end to end); and
+`pages.rs` drives every page route, the registry (rendering, per-request reads, no path escape)
+and the throughput section against a ledger with a written past.
 For MCTS/NN paths, run real binaries at 14x7 against a current-schema net
 (`scripts/make_random_net.py` makes one) — search output is not reproducible across processes,
 so compare seed sets, labels and counts, not lines.

@@ -7,7 +7,9 @@
 //!   `GET /api/jobs/{id}`, `GET /api/status` — the control API the
 //!   `botbowl-hub job` CLI uses (bearer token);
 //! - `GET /` — an index linking the pages below ([`page::render_index`]);
-//! - `GET /status` — a status page for watching a run from a phone ([`page`]);
+//! - `GET /status` — a status page for watching a run from a phone ([`page`]), with games and
+//!   decisions per minute per worker ([`rates`]); `GET /run/status.md` the loop's status file;
+//! - `GET /registry/` — the project registry, rendered ([`registry`]);
 //! - `/play/` — the web play app (`botbowl-web-server`'s router, nested), when
 //!   [`Hub::start_with`] is given one.
 //!
@@ -18,6 +20,8 @@ pub mod allowlist;
 pub mod api;
 pub mod http;
 pub mod page;
+pub mod rates;
+pub mod registry;
 pub mod state;
 pub mod ws;
 
@@ -59,6 +63,11 @@ pub struct HubConfig {
     /// to an address does not do this — a server can only bind to its own interfaces — so a
     /// tool that should be seen only from, say, an office VPN filters on the peer address here.
     pub allow_from: Vec<AllowNet>,
+    /// The status page's rate history interval, and how often hub.log gets a `[hub] rate ...`
+    /// line (only for intervals in which something finished). Aligned to the wall clock.
+    pub rate_interval: Duration,
+    /// The project registry (`registry/*.md`), served at `/registry/`. Read per request.
+    pub registry_dir: Option<PathBuf>,
 }
 
 /// One entry of [`HubConfig::allow_from`]: an address, or a network in CIDR form (`10.0.0.0/8`).
@@ -135,9 +144,11 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(cfg: HubConfig) -> Self {
+        let mut inner = Inner::default();
+        inner.ledger.bucket = cfg.rate_interval.max(Duration::from_secs(60));
         Hub {
             cfg: Arc::new(cfg),
-            inner: Arc::new(Mutex::new(Inner::default())),
+            inner: Arc::new(Mutex::new(inner)),
             changed: Arc::new(Notify::new()),
         }
     }
@@ -157,6 +168,14 @@ impl Hub {
         let mut router = Router::new()
             .route("/", get(move || index_page(has_play)))
             .route("/status", get(status_page))
+            .route("/run/status.md", get(run_status))
+            .route(
+                "/registry",
+                get(|| async { axum::response::Redirect::permanent("/registry/") }),
+            )
+            .route("/registry/", get(registry_index))
+            .route("/registry/{file}", get(registry_doc))
+            .route("/registry/raw/{file}", get(registry_raw))
             .route("/ws", get(ws_upgrade))
             .route("/api/status", get(api_status))
             .route("/api/jobs", post(api_submit))
@@ -187,9 +206,10 @@ impl Hub {
         let addr = listener.local_addr()?;
         let router = hub.router_with(play);
         let reaper = hub.clone();
+        let rates = hub.clone();
         let task = tokio::spawn(async move {
-            // The reaper never returns, so the select ends with the server
-            // and the loop is dropped with it — no task outlives its hub.
+            // The loops never return, so the select ends with the server
+            // and they are dropped with it — no task outlives its hub.
             tokio::select! {
                 r = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()) => {
                     if let Err(e) = r {
@@ -197,6 +217,7 @@ impl Hub {
                     }
                 }
                 _ = reap_loop(reaper) => {}
+                _ = rate_log_loop(rates) => {}
             }
         });
         Ok((hub, addr, task))
@@ -281,6 +302,31 @@ async fn reap_loop(hub: Hub) -> ! {
     }
 }
 
+/// Write a `[hub] rate ...` line to stderr (the loop's hub.log) each time a wall-clock interval
+/// completes with results in it: per worker, games and decisions per minute. The loop's logs then
+/// record each worker's speed, so a change in a generation's pace can be attributed afterwards.
+async fn rate_log_loop(hub: Hub) -> ! {
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    let mut last: Option<u64> = None;
+    loop {
+        tick.tick().await;
+        let line = {
+            let inner = hub.inner.lock().unwrap();
+            let now = std::time::Instant::now();
+            let interval = inner.ledger.interval(now);
+            let previous = last.replace(interval);
+            // The first interval seen is the one the hub started in: nothing completed yet.
+            if previous.is_none() || previous == Some(interval) {
+                continue;
+            }
+            inner.rate_log_line(now)
+        };
+        if let Some(line) = line {
+            eprintln!("[hub] {line}");
+        }
+    }
+}
+
 async fn ws_upgrade(ws: WebSocketUpgrade, State(hub): State<Hub>) -> impl IntoResponse {
     // Model frames are ~2 MB; leave headroom.
     ws.max_message_size(64 << 20)
@@ -336,4 +382,65 @@ async fn status_page(State(hub): State<Hub>) -> impl IntoResponse {
     .await
     .unwrap_or_else(|e| format!("status page failed: {e}"));
     (StatusCode::OK, [("content-type", "text/html; charset=utf-8")], html)
+}
+
+const HTML: (&str, &str) = ("content-type", "text/html; charset=utf-8");
+const TEXT: (&str, &str) = ("content-type", "text/plain; charset=utf-8");
+
+/// The last lines of the loop's `status.md` this many; the page shows the newest few.
+const RUN_STATUS_LINES: usize = 2000;
+
+/// `GET /run/status.md`: the loop's own status lines, newest last (the tail, for a long run).
+async fn run_status(State(hub): State<Hub>) -> axum::response::Response {
+    let Some(dir) = hub.cfg.run_dir.clone() else {
+        return (StatusCode::NOT_FOUND, "this hub has no --run-dir\n").into_response();
+    };
+    let text = tokio::task::spawn_blocking(move || std::fs::read_to_string(dir.join("status.md")))
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+    match text {
+        Some(t) => {
+            let lines: Vec<&str> = t.lines().collect();
+            let tail = lines[lines.len().saturating_sub(RUN_STATUS_LINES)..].join("\n");
+            (StatusCode::OK, [TEXT], tail + "\n").into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "no status.md in the run directory\n").into_response(),
+    }
+}
+
+/// Run a registry renderer on the blocking pool, or 404 without a registry directory.
+async fn with_registry<T: Send + 'static>(
+    hub: &Hub,
+    f: impl FnOnce(&std::path::Path) -> Option<T> + Send + 'static,
+) -> Result<T, (StatusCode, &'static str)> {
+    let Some(dir) = hub.cfg.registry_dir.clone() else {
+        return Err((StatusCode::NOT_FOUND, "this hub serves no registry (--registry-dir)\n"));
+    };
+    tokio::task::spawn_blocking(move || f(&dir))
+        .await
+        .ok()
+        .flatten()
+        .ok_or((StatusCode::NOT_FOUND, "no such registry file\n"))
+}
+
+async fn registry_index(State(hub): State<Hub>) -> axum::response::Response {
+    match with_registry(&hub, |d| Some(registry::render_index(d))).await {
+        Ok(html) => (StatusCode::OK, [HTML], html).into_response(),
+        Err(r) => r.into_response(),
+    }
+}
+
+async fn registry_doc(State(hub): State<Hub>, Path(file): Path<String>) -> axum::response::Response {
+    match with_registry(&hub, move |d| registry::render_doc(d, &file)).await {
+        Ok(html) => (StatusCode::OK, [HTML], html).into_response(),
+        Err(r) => r.into_response(),
+    }
+}
+
+async fn registry_raw(State(hub): State<Hub>, Path(file): Path<String>) -> axum::response::Response {
+    match with_registry(&hub, move |d| registry::read(d, &file)).await {
+        Ok(text) => (StatusCode::OK, [TEXT], text).into_response(),
+        Err(r) => r.into_response(),
+    }
 }

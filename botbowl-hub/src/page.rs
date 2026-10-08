@@ -1,4 +1,4 @@
-//! The `GET /` status page: what the box and its workers are doing, readable from a phone.
+//! The `GET /status` page: what the box and its workers are doing, readable from a phone.
 //!
 //! It names things the way we talk about them — `gen03 drives vs gen21`, `vs gen13 @14x7/4` —
 //! not by the paths and descriptors in rung names, which the report scripts still need verbatim
@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::api::{GenStats, HubStatus, JobKind, JobState, JobStatus, UnitStats};
+use crate::api::{GenStats, HubStatus, JobKind, JobState, JobStatus, Rate, Throughput, UnitStats, WorkerRates};
 
 /// Everything the page shows, gathered first so [`render`] is a pure function.
 pub struct PageInput {
@@ -63,7 +63,7 @@ pub struct BoxInfo {
 }
 
 /// How many recent loop status lines and finished jobs the page keeps.
-const RECENT_LINES: usize = 6;
+const RECENT_LINES: usize = 8;
 const DONE_JOBS: usize = 6;
 /// A trainer that has not written progress for this long is shown as possibly stopped.
 const TRAIN_STALE: Duration = Duration::from_secs(15 * 60);
@@ -114,7 +114,9 @@ fn read_run(dir: &Path) -> Option<RunInfo> {
 }
 
 fn age_of(p: &Path) -> Option<Duration> {
-    SystemTime::now().duration_since(std::fs::metadata(p).ok()?.modified().ok()?).ok()
+    SystemTime::now()
+        .duration_since(std::fs::metadata(p).ok()?.modified().ok()?)
+        .ok()
 }
 
 fn read_box() -> Option<BoxInfo> {
@@ -128,13 +130,21 @@ fn read_box() -> Option<BoxInfo> {
             .ok()
     };
     let gpu = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=utilization.gpu,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| {
             let s = String::from_utf8_lossy(&o.stdout);
-            let v: Vec<u64> = s.lines().next()?.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            let v: Vec<u64> = s
+                .lines()
+                .next()?
+                .split(',')
+                .filter_map(|x| x.trim().parse().ok())
+                .collect();
             (v.len() == 3).then(|| (v[0] as u32, v[1], v[2]))
         });
     Some(BoxInfo {
@@ -145,21 +155,69 @@ fn read_box() -> Option<BoxInfo> {
     })
 }
 
-/// The page, as HTML: one `<pre>` that refreshes itself every 30 s.
-pub fn render_html(input: &PageInput, now: SystemTime) -> String {
-    let text = render(input, now)
-        .replace('&', "&amp;")
+/// HTML-escape text.
+pub fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
         .replace('<', "&lt;")
-        .replace('>', "&gt;");
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The style every hub page shares: monospace, light and dark, readable at phone width.
+pub const STYLE: &str = "body{margin:0;padding:12px;background:#fff;color:#111;\
+     font:14px/1.5 ui-monospace,Menlo,Consolas,monospace}\
+     pre{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;margin:0}\
+     a{color:inherit}nav{margin:0 0 10px;opacity:.85}nav b{font-weight:600}\
+     ul{padding-left:1.2em}code{background:rgba(128,128,128,.15);padding:0 .2em;border-radius:3px}\
+     @media (prefers-color-scheme:dark){body{background:#111;color:#ddd}}";
+
+/// The hub's pages, as a line of links; `current` is shown unlinked.
+pub fn nav(current: &str, extra: &[(&str, &str)]) -> String {
+    let mut links = vec![
+        ("hub", "/"),
+        ("status", "/status"),
+        ("registry", "/registry/"),
+        ("play", "/play/"),
+    ];
+    links.extend_from_slice(extra);
+    let items: Vec<String> = links
+        .iter()
+        .map(|(name, href)| {
+            if *name == current {
+                format!("<b>{name}</b>")
+            } else {
+                format!("<a href=\"{href}\">{name}</a>")
+            }
+        })
+        .collect();
+    format!("<nav>{}</nav>", items.join(" · "))
+}
+
+/// The page, as HTML: one `<pre>` that refreshes itself every 30 s, section heads in bold.
+pub fn render_html(input: &PageInput, now: SystemTime) -> String {
+    let text: Vec<String> = render(input, now)
+        .lines()
+        .map(|l| {
+            let l = esc(l);
+            if !l.is_empty() && !l.starts_with(' ') {
+                format!("<b>{l}</b>")
+            } else {
+                l
+            }
+        })
+        .collect();
+    let extra: &[(&str, &str)] = if input.run.is_some() {
+        &[("status.md", "/run/status.md")]
+    } else {
+        &[]
+    };
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <meta http-equiv=\"refresh\" content=\"30\"><title>botbowl hub</title>\
-         <style>body{{margin:0;padding:12px;background:#fff;color:#111}}\
-         pre{{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;margin:0}}\
-         a{{color:inherit}}\
-         @media (prefers-color-scheme:dark){{body{{background:#111;color:#ddd}}}}</style>\
-         </head><body><pre><a href=\"/\">hub</a> · status\n\n{text}</pre></body></html>"
+         <style>{STYLE}</style></head><body>{}<pre>{}</pre></body></html>",
+        nav("status", extra),
+        text.join("\n")
     )
 }
 
@@ -174,16 +232,16 @@ pub fn render_index(has_play: bool) -> String {
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>botbowl hub</title>\
-         <style>body{{margin:0;padding:16px;background:#fff;color:#111;\
-         font:14px/1.6 ui-monospace,Menlo,Consolas,monospace}}a{{color:inherit}}\
-         ul{{padding-left:1.2em}}code{{opacity:.7}}\
-         @media (prefers-color-scheme:dark){{body{{background:#111;color:#ddd}}}}</style>\
-         </head><body><h3 style=\"margin:0 0 8px\">botbowl hub</h3><ul>\
-         <li><a href=\"/status\">/status</a> — jobs, workers and the training loop</li>\
+         <title>botbowl hub</title><style>{STYLE}</style>\
+         </head><body>{}<h3 style=\"margin:0 0 8px\">botbowl hub</h3><ul>\
+         <li><a href=\"/status\">/status</a> — jobs, workers (games and decisions per minute, \
+         per worker and in total) and the training loop</li>\
+         <li><a href=\"/registry/\">/registry</a> — the project registry: corpora, nets, \
+         experiments and matches</li>\
          {play}\
          <li>/ws — where workers connect (<code>botbowl-worker --hub ws://&lt;host&gt;/ws</code>)</li>\
-         </ul></body></html>"
+         </ul></body></html>",
+        nav("hub", &[])
     )
 }
 
@@ -195,6 +253,9 @@ pub fn render(input: &PageInput, now: SystemTime) -> String {
         &s.commit[..s.commit.len().min(7)],
         if s.dirty { "-dirty" } else { "" }
     );
+    if !s.throughput.windows.is_empty() {
+        out.push_str(&format!(" · up {}", dur(Duration::from_secs(s.throughput.uptime_secs))));
+    }
     if let Some(m) = &input.machine {
         out.push_str(&format!(
             "\nbox: {:.1} of {:.1} GB free, swap {:.1} GB used",
@@ -228,19 +289,29 @@ pub fn render(input: &PageInput, now: SystemTime) -> String {
         }
     }
 
-    out.push_str(&format!("\nworkers ({})\n", s.workers.len()));
-    let name_w = s.workers.iter().map(|w| w.name.len()).max().unwrap_or(0);
-    for w in &s.workers {
-        out.push_str(&format!(
-            "  {:name_w$}  {:>2} streams  {:>2} tasks  {:>6} games  {}  seen {}s ago\n",
-            w.name, w.parallel_games, w.tasks_in_flight, w.games_done, w.triple, w.last_seen_secs
-        ));
+    if s.throughput.windows.is_empty() {
+        // A hub from before the rates: its connections, as they were listed then.
+        out.push_str(&format!("\nworkers ({})\n", s.workers.len()));
+        let name_w = s.workers.iter().map(|w| w.name.len()).max().unwrap_or(0);
+        for w in &s.workers {
+            out.push_str(&format!(
+                "  {:name_w$}  {:>2} streams  {:>2} tasks  {:>6} games  {}  seen {}s ago\n",
+                w.name, w.parallel_games, w.tasks_in_flight, w.games_done, w.triple, w.last_seen_secs
+            ));
+        }
+    } else {
+        throughput_lines(&mut out, s);
+        interval_lines(&mut out, &s.throughput);
     }
 
     let running: Vec<&JobStatus> = s.jobs.iter().filter(|j| j.state == JobState::Running).collect();
     let mut finished: Vec<&JobStatus> = s.jobs.iter().filter(|j| j.state != JobState::Running).collect();
     finished.sort_by_key(|j| std::cmp::Reverse(j.id));
-    out.push_str(&format!("\njobs ({} running, {} finished)\n", running.len(), finished.len()));
+    out.push_str(&format!(
+        "\njobs ({} running, {} finished)\n",
+        running.len(),
+        finished.len()
+    ));
     for j in running.iter().copied().chain(finished.iter().take(DONE_JOBS).copied()) {
         job_lines(&mut out, j);
     }
@@ -269,6 +340,185 @@ pub fn render(input: &PageInput, now: SystemTime) -> String {
     out
 }
 
+/// Rows of the per-worker blocks: a label, then one column per window and one since the start.
+const ROW_LABEL: usize = 18;
+const ROW_COL: usize = 7;
+/// Intervals in the table under the workers (an hour of 5-minute intervals).
+const TABLE_INTERVALS: usize = 12;
+
+/// `▁▂▃▄▅▆▇█`, scaled to the largest value; `·` for an interval with nothing in it.
+pub fn spark(values: &[f64]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = values.iter().copied().fold(0.0, f64::max);
+    values
+        .iter()
+        .map(|&x| {
+            if x <= 0.0 || max <= 0.0 {
+                '·'
+            } else {
+                BARS[((x / max) * 7.0).round().clamp(0.0, 7.0) as usize]
+            }
+        })
+        .collect()
+}
+
+/// The workers section: per worker name, then the fleet, games and decisions per minute over the
+/// last 5 and 30 minutes and since the start, with three hours of intervals as a sparkline.
+fn throughput_lines(out: &mut String, s: &HubStatus) {
+    use crate::rates::num;
+    let t = &s.throughput;
+    out.push_str(&format!("\nworkers ({} connected)\n", s.workers.len()));
+    let mut head = format!("{:<ROW_LABEL$}", "  per minute");
+    for w in &t.windows {
+        head.push_str(&format!("{:>ROW_COL$}", format!("{}m", w / 60)));
+    }
+    head.push_str(&format!("{:>ROW_COL$}", "all"));
+    out.push_str(&head);
+    out.push('\n');
+    let block = |out: &mut String, w: &WorkerRates, detail: String| {
+        out.push_str(&format!("  {}{detail}\n", w.name));
+        let all = w.since_start.counts;
+        let row = |out: &mut String, label: &str, pick: &dyn Fn(&crate::api::Counts) -> u64| {
+            let mut l = format!("{:<ROW_LABEL$}", format!("    {label}"));
+            for r in w.windows.iter().chain(std::iter::once(&w.since_start)) {
+                l.push_str(&format!("{:>ROW_COL$}", num(r.per_min(pick(&r.counts)))));
+            }
+            out.push_str(&l);
+            out.push('\n');
+        };
+        if all.games > 0 || all.eval_games == 0 {
+            row(out, "games", &|c| c.games);
+            // `--next-drive` games write two records when they score.
+            if all.records != all.games {
+                row(out, "records", &|c| c.records);
+            }
+            row(out, "decisions", &|c| c.samples);
+        }
+        if all.eval_games > 0 {
+            row(out, "eval games", &|c| c.eval_games);
+            row(out, "eval decisions", &|c| c.eval_decisions);
+        }
+        let per_min: Vec<f64> = w
+            .history
+            .iter()
+            .zip(&t.history_secs)
+            .map(|(c, secs)| {
+                Rate {
+                    counts: *c,
+                    secs: *secs as f64,
+                }
+                .per_min(c.all_games())
+            })
+            .collect();
+        if per_min.iter().any(|x| *x > 0.0) {
+            let peak = per_min.iter().copied().fold(0.0, f64::max);
+            out.push_str(&format!(
+                "    {} games/min, {} in {}-min steps to {}, peak {}\n",
+                spark(&per_min),
+                dur(Duration::from_secs(t.bucket_secs * per_min.len() as u64)),
+                t.bucket_secs / 60,
+                crate::rates::clock(t.history_end),
+                num(peak)
+            ));
+        }
+    };
+    for w in &t.workers {
+        let conns: Vec<&crate::api::WorkerStatus> = s.workers.iter().filter(|c| c.name == w.name).collect();
+        let detail = if w.connected == 0 {
+            " · gone".to_string()
+        } else {
+            let seen = conns.iter().map(|c| c.last_seen_secs).min().unwrap_or(0);
+            let cores: u32 = conns.iter().map(|c| c.cores as u32).sum();
+            let triple = conns.first().map_or("", |c| c.triple.as_str());
+            let mut d = format!(" · {}/{} streams busy · {cores} cores · {triple}", w.busy, w.streams);
+            if conns.len() > 1 {
+                d.push_str(&format!(" · {} connections", conns.len()));
+            }
+            d.push_str(&format!(" · seen {seen}s ago"));
+            d
+        };
+        block(out, w, detail);
+    }
+    if t.workers.len() != 1 {
+        let total = &t.total;
+        block(out, total, format!(" · {}/{} streams busy", total.busy, total.streams));
+    }
+}
+
+/// The last hour's intervals, newest first: generate games/min · decisions/min per worker. This is
+/// what tells a fleet that slowed from a worker that left, after the fact.
+fn interval_lines(out: &mut String, t: &Throughput) {
+    use crate::rates::num;
+    let n = t.history_secs.len();
+    if n == 0 {
+        return;
+    }
+    let shown = n.min(TABLE_INTERVALS);
+    let recent = |w: &WorkerRates| w.history[n - shown..].iter().any(|c| !c.is_empty());
+    if !recent(&t.total) {
+        return;
+    }
+    let mut cols: Vec<&WorkerRates> = t.workers.iter().filter(|w| recent(w)).collect();
+    if cols.len() != 1 {
+        cols.push(&t.total);
+    }
+    let evals = t.total.history[n - shown..].iter().any(|c| c.eval_games > 0);
+    let cell = |c: &crate::api::Counts, secs: u64| {
+        let r = Rate {
+            counts: *c,
+            secs: secs as f64,
+        };
+        if c.games == 0 && c.samples == 0 {
+            "–".to_string()
+        } else {
+            format!("{}·{}", num(r.per_min(c.games)), num(r.per_min(c.samples)))
+        }
+    };
+    let widths: Vec<usize> = cols
+        .iter()
+        .map(|w| {
+            (n - shown..n)
+                .map(|i| cell(&w.history[i], t.history_secs[i]).chars().count())
+                .chain([w.name.chars().count()])
+                .max()
+                .unwrap_or(0)
+                + 2
+        })
+        .collect();
+    out.push_str(&format!(
+        "\nlast {} by {}-min interval: generate games/min · decisions/min{}\n",
+        dur(Duration::from_secs(t.bucket_secs * shown as u64)),
+        t.bucket_secs / 60,
+        if evals { "; eval games/min" } else { "" }
+    ));
+    let mut head = "  ending".to_string();
+    for (w, width) in cols.iter().zip(&widths) {
+        head.push_str(&format!("{:>width$}", w.name));
+    }
+    if evals {
+        head.push_str("   eval");
+    }
+    out.push_str(&head);
+    out.push('\n');
+    for i in (n - shown..n).rev() {
+        let end = t.history_end - t.bucket_secs * (n - 1 - i) as u64;
+        let mut l = format!("  {:<6}", crate::rates::clock(end));
+        for (w, width) in cols.iter().zip(&widths) {
+            l.push_str(&format!("{:>width$}", cell(&w.history[i], t.history_secs[i])));
+        }
+        if evals {
+            let c = &t.total.history[i];
+            let r = Rate {
+                counts: *c,
+                secs: t.history_secs[i] as f64,
+            };
+            l.push_str(&format!("{:>7}", num(r.per_min(c.eval_games))));
+        }
+        out.push_str(&l);
+        out.push('\n');
+    }
+}
+
 fn training_line(t: &Training, now: SystemTime) -> Option<String> {
     let p = &t.progress;
     if p.done {
@@ -290,7 +540,11 @@ fn training_line(t: &Training, now: SystemTime) -> Option<String> {
     }
     s.push('\n');
     let f = |v: Option<f64>| v.map_or("–".to_string(), |v| format!("{v:.4}"));
-    s.push_str(&format!("    value loss: train {}  val {}", f(p.train_value), f(p.val_value)));
+    s.push_str(&format!(
+        "    value loss: train {}  val {}",
+        f(p.train_value),
+        f(p.val_value)
+    ));
     if let (Some(b), Some(at)) = (p.best_val_value, p.best_step) {
         s.push_str(&format!("  (best val {b:.4} at step {at})"));
     }
@@ -317,35 +571,92 @@ fn status_line(l: &str) -> String {
 
 fn job_lines(out: &mut String, j: &JobStatus) {
     let label = j.label.clone().unwrap_or_else(|| {
-        format!("job {} {}", j.id, if j.kind == JobKind::Eval { "eval" } else { "generate" })
+        format!(
+            "job {} {}",
+            j.id,
+            if j.kind == JobKind::Eval { "eval" } else { "generate" }
+        )
     });
     // A rung with an SPRT verdict takes no more games, so it counts as complete.
-    let decided = |u: &crate::api::UnitProgress| {
-        matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some_and(|s| s.verdict != botbowl_play::stats::Verdict::Undecided))
-    };
+    let decided = |u: &crate::api::UnitProgress| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some_and(|s| s.verdict != botbowl_play::stats::Verdict::Undecided));
     let total: u32 = j.units.iter().map(|u| u.total).sum();
-    let done: u32 = j.units.iter().map(|u| if decided(u) { u.total } else { u.done.min(u.total) }).sum();
+    let done: u32 = j
+        .units
+        .iter()
+        .map(|u| if decided(u) { u.total } else { u.done.min(u.total) })
+        .sum();
     let played: u32 = j.units.iter().map(|u| u.done).sum();
-    let what = if j.units.iter().any(|u| u.name.contains(" drives(")) { "drives" } else { "games" };
+    let what = if j.units.iter().any(|u| u.name.contains(" drives(")) {
+        "drives"
+    } else {
+        "games"
+    };
     let elapsed = Duration::from_secs(j.elapsed_secs);
+    let per_min = |n: u64, secs: f64| if secs > 0.0 { n as f64 * 60.0 / secs } else { 0.0 };
+    let num = crate::rates::num;
     let head = match &j.state {
         JobState::Running => {
             let mut h = format!("▶ {label}  {played}/{total} {what} · {}", dur(elapsed));
+            // The rate over the last 5 minutes when there is one, else the whole job's.
+            let recent = j.recent.filter(|r| r.counts.all_games() > 0 && r.secs > 0.0);
+            let (rate, over) = match recent {
+                Some(r) => (
+                    r.per_min(r.counts.all_games()),
+                    format!("last {}", dur(Duration::from_secs_f64(r.secs))),
+                ),
+                None => (per_min(played as u64, elapsed.as_secs_f64()), "so far".to_string()),
+            };
+            if rate > 0.0 {
+                h.push_str(&format!(" · {}/min {over}", num(rate)));
+                if let Some(r) = recent.filter(|r| r.counts.samples > 0) {
+                    h.push_str(&format!(", {} decisions/min", num(r.per_min(r.counts.samples))));
+                }
+            }
             if done > 0 && done < total {
-                let left = elapsed.mul_f64((total - done) as f64 / done as f64);
-                let sprt = j.kind == JobKind::Eval && j.units.iter().any(|u| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some()));
+                let left = if rate > 0.0 {
+                    Duration::from_secs_f64((total - done) as f64 * 60.0 / rate)
+                } else {
+                    elapsed.mul_f64((total - done) as f64 / done as f64)
+                };
+                let sprt = j.kind == JobKind::Eval
+                    && j.units
+                        .iter()
+                        .any(|u| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some()));
                 // An SPRT may stop early, so its estimate is an upper bound.
                 h.push_str(&format!(" · {}{} left", if sprt { "at most " } else { "~" }, dur(left)));
             }
             h
         }
-        JobState::Done => format!("✓ {label}  {played} {what} in {}", dur(elapsed)),
+        JobState::Done => {
+            let mut h = format!("✓ {label}  {played} {what} in {}", dur(elapsed));
+            let rate = per_min(played as u64, elapsed.as_secs_f64());
+            if rate > 0.0 {
+                h.push_str(&format!(" · {}/min", num(rate)));
+            }
+            h
+        }
         JobState::Failed { error } => format!("✗ {label}  failed after {}: {}", dur(elapsed), short_label(error)),
     };
     out.push_str(&format!("  {head}\n"));
+    // Who played it: each worker's share of the job's games.
+    let games: u64 = j.by_worker.values().map(|c| c.all_games()).sum();
+    if games > 0 {
+        let mut shares: Vec<(&String, u64)> = j.by_worker.iter().map(|(w, c)| (w, c.all_games())).collect();
+        shares.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let parts: Vec<String> = shares
+            .iter()
+            .map(|(w, n)| format!("{w} {:.0}% ({n})", 100.0 * *n as f64 / games as f64))
+            .collect();
+        out.push_str(&format!("      by worker: {}\n", parts.join(" · ")));
+    }
     match j.kind {
         JobKind::Eval => {
-            let w = j.units.iter().map(|u| short_label(&u.name).chars().count()).max().unwrap_or(0);
+            let w = j
+                .units
+                .iter()
+                .map(|u| short_label(&u.name).chars().count())
+                .max()
+                .unwrap_or(0);
             for u in &j.units {
                 let name = short_label(&u.name);
                 let pad = w.saturating_sub(name.chars().count());
@@ -581,7 +892,10 @@ mod tests {
         assert!(l.contains("~30m left"), "{l}");
         assert!(l.contains("train 0.0927  val 0.1152"), "{l}");
         let done = Training {
-            progress: TrainProgress { done: true, ..t.progress.clone() },
+            progress: TrainProgress {
+                done: true,
+                ..t.progress.clone()
+            },
             ..t
         };
         assert!(training_line(&done, SystemTime::now()).is_none());
