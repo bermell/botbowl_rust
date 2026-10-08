@@ -135,6 +135,10 @@ impl ThrowIn {
     pub fn new(from: Position) -> AnyProc {
         AnyProc::ThrowIn(ThrowIn { from })
     }
+    /// The on-pitch square the ball is thrown in from.
+    pub fn origin(&self) -> Position {
+        self.from
+    }
     /// The board direction a throw-in `D3` maps to, given which edge the
     /// ball left by. Public so MCTS's chance-outcome model can pick a
     /// *mirror-invariant* representative rather than one in `D3` order

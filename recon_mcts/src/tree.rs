@@ -924,14 +924,18 @@ where
     fn move_root(&self, action: &A) -> ArcNode<GD, S, P, A, Q, I, M> {
         debug_assert_eq!(self.parents.read().unwrap().len(), 0);
 
-        let new_root = self
-            .children
-            .write()
-            .unwrap()
-            .as_map_mut()
-            .expect("root's children not (yet) a `Branch`")
-            .remove(action)
-            .expect("missing child for action");
+        let new_root = {
+            let mut children_wlk = self.children.write().unwrap();
+            let map = children_wlk.as_map_mut().expect("root's children not (yet) a `Branch`");
+            let new_root = map.remove(action).expect("missing child for action");
+            // Recombination can reach the new root by more than one of the old root's actions.
+            // Its parent set is cleared below, so any other edge left in this map would make the
+            // old root's teardown look for a parent entry that no longer exists (the debug
+            // assertion "could not remove dropped node as child's parents"). The old root is
+            // being discarded: drop those edges with the one played.
+            map.retain(|_, c| c.as_ptr() != new_root.as_ptr());
+            new_root
+        };
 
         let r = new_root
             .parents

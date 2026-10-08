@@ -1,6 +1,8 @@
 # Plan 060 — tree statistics: how deep does the search see, and into whose turn?
 
-**Status:** Instrumentation built 2026-10-08 (§5); reading it on the live loop's corpora is next.
+**Status:** Instrumentation built 2026-10-08 (§5). Its first live reading found 14x5 searches running
+down endless edge-bounce chains (§6, fixed), and §5's debug teardown assertion is a separate
+recon_mcts re-rooting bug (§6, fixed).
 
 ## 1. Why
 
@@ -150,7 +152,7 @@ line reached the opponent's turn (ending there or beyond); `horizon` = past the 
   half of the main lines stop inside the own turn: those decisions are valued by the value head
   about the end-of-turn position, as expected.
 
-### Open: a debug-only assertion in node teardown (2026-10-08)
+### Open: a debug-only assertion in node teardown (2026-10-08) — resolved in §6
 
 A debug build of the hub's generate path (the status-page work's manual test) hit
 `recon_mcts/src/tree.rs`'s debug assertion "could not remove dropped node as child's parents".
@@ -179,5 +181,121 @@ plies (p90 154, max 207 as per-search means), 93% chance. 931 of its 2,834 searc
 a per-search mean over 40 plies; the worst ~2,000 (max ~3,100), nearly all chance, ~1-3 own
 decisions, almost every descent ending inside the own turn (e.g. seed 19000196 drive 1 sample 7,
 root `Catch`). Suspects: an engine chance loop on a 5-high pitch (throw-ins / scatter out of
-bounds again and again) or a cycle in the search DAG through recombination. Under investigation
-(subagent, own worktree); findings go in the next section.
+bounds again and again) or a cycle in the search DAG through recombination. Root cause and fix: §6
+(the search's scripted throw-in carried 0 squares on 14x5).
+
+## 6. Finding: 14x5 searches ran down endless edge-bounce chains (2026-10-08) — FIXED
+
+**The reading.** `tree_stats.py` on the live loop's gen09 corpus: on 14x5/3 (engine 16x7) the mean
+leaf depth was 63 plies (p90 154), 93% of them chance edges, against ~9 plies and ~45% dice on
+every other board; 931 of 2834 searched 14x5 decisions averaged over 40 plies, the worst ~2000
+(max ~3000) with 1-3 own decisions, nearly every descent ending `own_turn` on a fresh chance node.
+
+**Root cause: the search's scripted throw-in carried 0 squares on 14x5.** Not an engine loop and
+not a DAG cycle. The engine scales a throw-in's 2D6 by `BoardDims::scatter_divisor()`, which is 3
+when the narrow axis is 5 squares (4 on 8x3). `roll_outcomes::throw_in_outcome` models every
+throw-in as one scripted child, the *shortest* in-bounds throw, 2D6 = 2 — which is `2 / 3 = 0`
+squares. So the modelled ball landed back on the edge square it was thrown from, bounced
+(`bounce_outcomes` keeps one collapsed out-of-bounds child, p = 3/8 on an edge), went out again and
+was thrown in again from the same square, forever. Each lap appends the square to
+`state.bounce_squares`, so no state repeats: recon_mcts's cycle guard never fires and the
+recombination never closes the loop — it is an unbounded chain, not a cycle (hypothesis (b) is
+out). Chance selection takes unscored outcomes first and a chance node withholds its value until
+every outcome is scored, so each descent walked to the bottom of the chain, swept one more level
+and stopped on a fresh chance node; nothing above the chain was ever valued (the chain's nodes all
+read 0 visits). Any line in which the ball came loose on an edge square — a failed GFI into the
+end zone, a dropped catch on the sideline — became a budget sink whose root child stayed unvalued.
+In the real game the 0-square throw is a 1-in-36 detour that ends with probability 1; only the
+search's one-world model made it endless.
+
+Reproduced from the corpus (`botbowl-ui/examples/deep_search_probe.rs`: replays a trajectory from
+its seed to a sample, runs the configured search and walks the deepest materialised line; the
+heuristic evaluator reproduces it, the gen08 net too). Seed 19000196 drive 1 sample 7 (Away 2-0
+up, last turn, a reroll for a dropped hand-off), heuristic, `gumbel16_f1000_gen`, 1000 descents:
+
+```
+    1 Chance  ball InAir((7, 3))   roll D6PassFail(FourPlus)   -> Pass (catch)
+    2 Away    ball Carried(4)                                   -> StartMove (7,3)
+    3 Away    ball Carried(4)                                   -> Move (14,3)   (end zone, a GFI)
+    4 Chance  roll D6PassFail(TwoPlus)                          -> Fail (GFI)
+    5 Chance  ball InAir((14, 3)) roll Sum2D6PassFail(NinePlus) -> Fail (armour)
+    6 Chance  ball InAir((14, 3)) bounce 1   roll D8            -> D8(Four)  out of bounds, p 0.375
+    7 Chance  ball InAir((14, 3)) bounce 1   roll ThrowIn       -> ThrowIn { Two, Two }: 0 squares
+    8 Chance  ball InAir((14, 3)) bounce 2   roll D8            -> D8(Four)
+    9 Chance  ball InAir((14, 3)) bounce 2   roll ThrowIn       -> ThrowIn { Two, Two }
+  ...
+  798 Chance  ball InAir((14, 3)) bounce 397 roll D8
+  799 Chance  ball InAir((14, 3)) bounce 397 roll ThrowIn      (every node on the chain: 0 visits)
+```
+
+**Fix** (f8aa794): `throw_in_outcome` takes the shortest throw whose target is off the origin
+square (and in bounds), via a new read-only `ThrowIn::origin()`. On divisor 3-4 boards that is the
+1-square throw straight in, after which a bounce cannot leave the pitch again (only a corner throw
+needs a second lap). Boards with a narrow axis of 6+ (divisor ≤ 2, including 16x9) pick exactly as
+before. Tests, failing first: `the_scripted_throw_in_moves_the_ball_on_every_board` (six board
+sizes, six edges and corners), `an_edge_bounce_chain_on_a_narrow_board_ends` (14x5, follow the
+out-of-bounds and throw-in children: ended by lap 3, failed at lap 4 before), and
+`tests/tree_stats.rs::an_edge_bounce_on_a_narrow_board_does_not_run_away` (a 400-descent 14x5
+search: max 100 plies and 215/400 descents ending on a fresh chance node before; under 40 plies
+after). The engine's rules are untouched (the 0-square throw stays a real 1-in-36 outcome).
+
+**Before / after on the five corpus positions** (14x5/3, `gumbel16_f1000_gen`, 1000 descents, one
+thread; per-decision time on a busy box; same move chosen in all ten searches):
+
+| position (seed drive sample, root) | eval | time before → after | plies mean / max before | after | chance share before → after | descents ending on a fresh chance node |
+|---|---|---|---|---|---|---|
+| 19000196 1 7, Catch | heuristic | 0.28 → 0.03 s | 160 / 403 | 8.5 / 13 | 98% → 64% | 837 → 227 |
+| 19000143 2 32, MoveAction | heuristic | 0.87 → 0.03 s | 497 / 996 | 8.5 / 16 | 99.8% → 64% | 996 → 391 |
+| 19000196 1 8, Turn | heuristic | 0.40 → 0.02 s | 185 / 427 | 6.3 / 10 | 99% → 67% | 937 → 231 |
+| 19000056 2 25, GfiProc | heuristic | 0.42 → 0.00 s (solved) | 231 / 500 | 5.1 / 7 | 99.6% → 81% | 966 → 36 |
+| 19200247 1 33, PickupProc | heuristic | 0.70 → 0.06 s | 394 / 887 | 6.8 / 10 | 99.5% → 70% | 902 → 207 |
+| 19000196 1 7, Catch | gen08 net (tract) | 1.03 → 0.13 s | 484 / 983 | 8.6 / 13 | 99.4% → 63% | 983 → 219 |
+| 19000143 2 32, MoveAction | gen08 net | 0.84 → 0.44 s | 497 / 996 | 8.8 / 18 | 99.8% → 65% | 996 → 394 |
+| 19000196 1 8, Turn | gen08 net | 0.28 → 0.14 s | 105 / 436 | 6.5 / 10 | 98% → 65% | 650 → 229 |
+| 19000056 2 25, GfiProc | gen08 net | 0.58 → 0.24 s | 231 / 499 | 5.1 / 7 | 99.6% → 81% | 966 → 36 |
+| 19200247 1 33, PickupProc | gen08 net | 1.01 → 0.18 s | 467 / 966 | 6.9 / 10 | 99.6% → 70% | 967 → 201 |
+
+The chain's nodes are chance nodes (no net forward), so the time cost was moderate; the damage
+was the budget: up to 99% of descents went into a chain that never produced a value.
+
+**A 14x5 corpus**, 24 random-start drives, heuristic, same preset (seed 777; the games diverge, so
+the corpora differ): mean depth 49.7 → 6.8 plies (p90 125 → 9.9, max 179 → 13), chance share
+94% → 55%, reach into the opponent's turn 46% → 59% (turn-ending decisions 51% → 83%), main line
+reaching the opponent 59% → 71%; 39.8 s → 18.5 s wall (98 → 37 ms per decision). 14x5 now reads
+like the other boards.
+
+**`perf_search_bench.sh`** (3 random-start games on 16x9/6, heuristic, 1000 descents):
+
+| build | instructions:u | trajectories |
+|---|---|---|
+| base 7800ddb | 27,042,106,093 | a6a7edd89b18 |
+| throw-in fix (working tree) | 27,041,314,661 | a6a7edd89b18 |
+| both fixes, 526726a | 27,039,680,985 | a6a7edd89b18 |
+
+Identical games elsewhere, as expected: 16x9's divisor is 2, so its throw-in pick is unchanged.
+
+**Game behaviour.** The search plays differently on 14x5 (and on any board with a 3- to
+5-square narrow axis: 12x5, 8x3); every other board is byte-identical. No wire type changed, so no
+hub protocol bump, but f8aa794 is *not* game-identical to its parent: never allowlist a
+pre-fix worker against a post-fix hub (`hub-allowed-commits.toml`). Every corpus generated with
+14x5 in its size mix carries the chains on its 14x5 decisions (2.4% of the mix at area 144 in
+gen09; a third of those decisions affected): those samples' visit targets and root values came
+from searches that had spent most of their budget in an unvalued chain.
+
+### The debug teardown assertion (§5 "Open") — a separate recon_mcts bug, fixed
+
+Not caused by the chains (no cycle exists to cause it). Reproduced once in a debug `dataset` run
+on the loop's size mix with `--next-drive` (seed 19000007, *with* the throw-in fix), during tree
+reuse: the backtrace is `run_search` → `Tree::apply_action` (re-rooting along the reuse path) →
+the old root's drop → `detach` → "could not remove dropped node as child's parents". Not
+reproducible on demand (dataset runs are nondeterministic; six reruns of that seed passed).
+`Node::move_root` takes the new root out of the old root's children under the action played and
+clears the new root's parent set — but when recombination lets the old root reach the same child
+by a *second* action, that edge stays in the old root's map, and its teardown looks for a parent
+entry that no longer exists. `recon_mcts/tests/deep_drop.rs::re_rooting_into_a_child_reached_by_two_root_actions_drops_cleanly`
+reproduces exactly this assertion through exactly this route (a width-2 line game re-rooted by
+one of its two edges into state 1). Fix (526726a): `move_root` drops every edge from the discarded
+old root to the new root. Release builds only ever skipped a no-op removal, so search output is
+unchanged. Which botbowl transition produced two root edges into one state was not caught (the
+probe printing it never fired in the reruns), so "this is the route botbowl hit" is the likely
+reading of the backtrace, not a confirmed one.

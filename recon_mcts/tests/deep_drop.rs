@@ -18,6 +18,9 @@ use recon_mcts::prelude::*;
 struct LineGame {
     len: u32,
     width: u32,
+    /// Select an unscored child first, so every edge of a level gets materialised (and the
+    /// second one spliced onto its recombined twin) instead of only the first.
+    sweep: bool,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq)]
@@ -67,11 +70,13 @@ impl GameDynamics for LineGame {
         Q: Deref<Target = Option<Self::Score>>,
         A: Deref<Target = Self::Action>,
     {
-        *scores_and_actions
-            .into_iter()
-            .next()
-            .expect("selection must be offered at least one child")
-            .1
+        let all: Vec<(Q, A)> = scores_and_actions.into_iter().collect();
+        let pick = if self.sweep {
+            all.iter().position(|(q, _)| q.is_none()).unwrap_or(0)
+        } else {
+            0
+        };
+        *all.get(pick).expect("selection must be offered at least one child").1
     }
 
     fn backprop_scores<II, Q, A>(
@@ -102,7 +107,16 @@ impl GameDynamics for LineGame {
 fn deep_linear_tree_drops_without_stack_overflow() {
     const DEPTH: u32 = 2_000;
 
-    let tree = Tree::new(LineGame { len: DEPTH, width: 1 }, StoreState, P, 0u32);
+    let tree = Tree::new(
+        LineGame {
+            len: DEPTH,
+            width: 1,
+            sweep: false,
+        },
+        StoreState,
+        P,
+        0u32,
+    );
     // Each step materialises at most one node; stop early once solved.
     for _ in 0..=DEPTH + 1 {
         if tree.is_solved() {
@@ -136,7 +150,16 @@ fn recombined_diamond_chain_drops_cleanly() {
     // GetState memory: states are derived from parents on demand, so the
     // materialise-before-unlink ordering actually matters here (StoreState
     // would mask it — every node permanently holds its state).
-    let tree = Tree::new(LineGame { len: DEPTH, width: 2 }, GetState, P, 0u32);
+    let tree = Tree::new(
+        LineGame {
+            len: DEPTH,
+            width: 2,
+            sweep: false,
+        },
+        GetState,
+        P,
+        0u32,
+    );
     for _ in 0..3 * DEPTH {
         if tree.is_solved() {
             break;
@@ -150,4 +173,33 @@ fn recombined_diamond_chain_drops_cleanly() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+/// Re-rooting (tree reuse) into a child that the old root reaches by **two** actions. `move_root`
+/// takes the child out of the old root's map under the action played and clears the child's
+/// parent set, but the old root still holds it under the other action; tearing the old root down
+/// then failed to remove that edge from the (cleared) parent set and tripped the debug assertion
+/// "could not remove dropped node as child's parents" (botbowl plan 060 §6: two root moves that
+/// reach one state, seen in a debug `dataset` run).
+#[test]
+fn re_rooting_into_a_child_reached_by_two_root_actions_drops_cleanly() {
+    let tree = Tree::new(
+        LineGame {
+            len: 50,
+            width: 2,
+            sweep: true,
+        },
+        StoreState,
+        P,
+        0u32,
+    );
+    for _ in 0..40 {
+        tree.step();
+    }
+    // Both root actions (1 and 52) lead to state 1; play the first.
+    tree.apply_action(&1);
+    for _ in 0..10 {
+        tree.step();
+    }
+    drop(tree);
 }
