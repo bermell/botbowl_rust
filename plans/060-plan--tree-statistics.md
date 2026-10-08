@@ -149,3 +149,12 @@ line reached the opponent's turn (ending there or beyond); `horizon` = past the 
 - **Early in a turn** (10+ own decisions left) only 37% of lines reach the opponent at 1000, and
   half of the main lines stop inside the own turn: those decisions are valued by the value head
   about the end-of-turn position, as expected.
+
+### Open: a debug-only assertion in node teardown (2026-10-08)
+
+A debug build of the hub's generate path (the status-page work's manual test) hit
+`recon_mcts/src/tree.rs`'s debug assertion "could not remove dropped node as child's parents".
+Release builds skip the check, so the loop is unaffected; reported as pre-existing (not caused by
+this plan's hook), not yet reproduced or bisected. It may point at a parent-set bookkeeping slip in
+node teardown (`Node::on_drop` → `detach`). To do: reproduce in a debug `dataset` run, bisect
+against `observe_descent` (75a6801) and the state-shrink commit (7841ef2).
