@@ -370,7 +370,8 @@ fn has_face(ctx: &BlockContext, combo: u32, num_dice: usize, outcome: BlockOutco
 }
 
 /// The single scripted throw-in child, picked so the ball lands **in
-/// bounds** and so that the choice *mirrors with the board*.
+/// bounds, off the square it was thrown from** and so that the choice
+/// *mirrors with the board*.
 ///
 /// The in-bounds part is load-bearing for termination: a constant
 /// (direction, distance) can land straight back out on small boards; the
@@ -398,13 +399,23 @@ fn throw_in_outcome(state: &GameState) -> BbAction {
         // constant short throw.
         return scripted(D3::One, Sum2D6::Two);
     };
-    // Shortest distance first; some direction at distance 2 always lands
-    // in bounds on any legal board (straight-in exists in every direction
-    // triple and the playable cross-axis is ≥ 3).
-    for distance in [Sum2D6::Two, Sum2D6::Three, Sum2D6::Four] {
+    // Shortest distance that **moves the ball** first. On a board whose narrow axis is 5 squares
+    // or less the engine divides the 2D6 by `scatter_divisor() >= 3`, so 2D6 = 2 (and on 8x3,
+    // 2D6 = 3) carries 0 squares: the ball lands back on the square it was thrown from, on the
+    // edge, bounces out again and is thrown in again. In the real game that is a 1-in-36 detour;
+    // as the search's one modelled throw-in it is an endless chain of chance nodes
+    // (`bounce_squares` grows each lap, so no state repeats and the cycle guard never fires),
+    // one lap deeper per descent, whose chance nodes never get a value (plan 060 §6). A throw of
+    // one square straight in exists on every legal board (the divisor is at most 4, the playable
+    // cross-axis at least 3), so `Four` is always enough; the larger distances are a guard.
+    let origin = throw_in.origin();
+    for distance in [Sum2D6::Two, Sum2D6::Three, Sum2D6::Four, Sum2D6::Five, Sum2D6::Six] {
         let pick = [D3::One, D3::Two, D3::Three]
             .into_iter()
-            .filter(|&direction| !state.is_out(throw_in.target_square(direction, distance, state.board_dims)))
+            .filter(|&direction| {
+                let target = throw_in.target_square(direction, distance, state.board_dims);
+                target != origin && !state.is_out(target)
+            })
             .min_by_key(|&direction| axis_rank(throw_in.get_throw_in_direction(direction, state.board_dims)));
         if let Some(direction) = pick {
             return scripted(direction, distance);
@@ -1315,6 +1326,157 @@ mod tests {
             Some(RequestedRoll::ThrowIn),
             "scripted throw-in landed out of bounds and re-requested the roll — cycle risk"
         );
+    }
+
+    /// A home player at `start_pos` moves onto the loose ball at `ball_pos`, fails the pickup,
+    /// declines the reroll, and the bounce goes `out` (off the pitch): the state pauses on the
+    /// throw-in roll. On a board too large for this build's capacity, `None`.
+    fn paused_on_throw_in(
+        dims: (Coord, Coord, usize),
+        ball_pos: Position,
+        start_pos: Position,
+        out: Direction,
+    ) -> Option<GameState> {
+        use botbowl_engine::core::model::BoardDims;
+        let dims = BoardDims::try_new(dims.0, dims.1, dims.2).ok()?;
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(dims)
+            .add_home_player(start_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+        state.set_dice_mode(DiceMode::RegisterRolls);
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::StartMove, start_pos)));
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::Move, ball_pos)));
+        state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Fail));
+        state.step_with_roll_or_action(SomeProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)));
+        state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::D8(D8::from(out))));
+        assert_eq!(
+            state.pending_roll,
+            Some(RequestedRoll::ThrowIn),
+            "{dims:?} {ball_pos:?}"
+        );
+        Some(state)
+    }
+
+    /// The scripted throw-in must move the ball off the square it is thrown from. On a board whose
+    /// narrow axis is 5 squares or less the engine divides the 2D6 by `scatter_divisor() >= 3`, so
+    /// the shortest throw (2D6 = 2) carries **0 squares**: the ball lands where it left, bounces,
+    /// goes out again, and is thrown in from the same square — forever, in the search's one
+    /// modelled world. `bounce_squares` grows each lap, so the states never repeat and nothing
+    /// panics: the chain just deepens by one lap per descent and, since a chance node withholds its
+    /// value until every outcome is scored, never backs a value up (plan 060 §6: 14x5 searches
+    /// averaging 2000 plies, 93% of them dice).
+    #[test]
+    fn the_scripted_throw_in_moves_the_ball_on_every_board() {
+        // (engine width, height, team size): 8x3, 12x5, 14x5 (the loop's 14x5/3), 14x7, 16x9, full.
+        let boards = [
+            (10, 5, 2),
+            (14, 7, 3),
+            (16, 7, 3),
+            (16, 9, 4),
+            (18, 11, 6),
+            (28, 17, 11),
+        ];
+        let mut checked = 0;
+        for (w, h, t) in boards {
+            let (max_x, max_y) = (w - 2, h - 2);
+            let mid_y = h / 2;
+            let mid_x = w / 2;
+            // (ball square on the edge, the mover's square next to it, the way out)
+            let exits = [
+                (
+                    Position::new((max_x, mid_y)),
+                    Position::new((max_x - 1, mid_y)),
+                    Direction::from((1, 0)),
+                ),
+                (
+                    Position::new((1, mid_y)),
+                    Position::new((2, mid_y)),
+                    Direction::from((-1, 0)),
+                ),
+                (
+                    Position::new((mid_x, max_y)),
+                    Position::new((mid_x - 1, max_y)),
+                    Direction::from((0, 1)),
+                ),
+                (
+                    Position::new((mid_x, 1)),
+                    Position::new((mid_x - 1, 1)),
+                    Direction::from((0, -1)),
+                ),
+                (Position::new((1, 1)), Position::new((2, 1)), Direction::from((-1, -1))),
+                (
+                    Position::new((max_x, max_y)),
+                    Position::new((max_x - 1, max_y)),
+                    Direction::from((1, 1)),
+                ),
+            ];
+            for (ball, start, out) in exits {
+                let Some(mut state) = paused_on_throw_in((w, h, t), ball, start, out) else {
+                    continue;
+                };
+                let outcomes = enumerate(&state, &RequestedRoll::ThrowIn);
+                assert_eq!(outcomes.len(), 1);
+                state.step_with_roll_or_action(SomeProcInput::Roll(result_of(&outcomes[0])));
+                assert_ne!(
+                    state.get_ball_position(),
+                    Some(ball),
+                    "{w}x{h}: the scripted throw-in from {ball:?} lands back on {ball:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 12, "only {checked} exits fit this build's capacity");
+    }
+
+    /// The symptom, at the level of the chance model: from a ball bouncing on the edge of the
+    /// loop's 14x5 board, follow the one branch that keeps the ball live (the bounce out of
+    /// bounds, then the throw-in). The chain has to end — the ball settles or is caught — within
+    /// a couple of laps, not grow without bound.
+    #[test]
+    fn an_edge_bounce_chain_on_a_narrow_board_ends() {
+        let mut state = paused_on_throw_in(
+            (16, 7, 3),
+            Position::new((14, 3)),
+            Position::new((13, 3)),
+            Direction::from((1, 0)),
+        )
+        .expect("14x5 fits every build");
+        let mut laps = 0;
+        loop {
+            let outcome = match state.pending_roll {
+                Some(RequestedRoll::ThrowIn) => {
+                    laps += 1;
+                    assert!(
+                        laps <= 3,
+                        "throw-in lap {laps}: the bounce chain does not end ({:?})",
+                        state.bounce_squares
+                    );
+                    enumerate(&state, &RequestedRoll::ThrowIn).remove(0)
+                }
+                // A bounce: keep the ball live by taking the out-of-bounds child when there is one.
+                Some(RequestedRoll::D8) => {
+                    let ball = state.get_ball_position().unwrap();
+                    let outcomes = enumerate(&state, &RequestedRoll::D8);
+                    match outcomes.into_iter().find(|a| match result_of(a) {
+                        RollResult::D8(d8) => state.is_out(ball + Direction::from(d8)),
+                        _ => false,
+                    }) {
+                        Some(a) => a,
+                        None => break,
+                    }
+                }
+                // A catch (the thrown ball lands on the mover's square): it drops it.
+                Some(RequestedRoll::D6PassFail(_)) => BbAction::chance(RollResult::Fail, 1.0),
+                // ... and declines the reroll.
+                None if state.proc_stack_top() == Some("Catch") => {
+                    state.step_with_roll_or_action(SomeProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)));
+                    continue;
+                }
+                _ => break,
+            };
+            state.step_with_roll_or_action(SomeProcInput::Roll(result_of(&outcome)));
+        }
     }
 
     // The remaining tests pin the scripted-chance behaviour: foul armour
