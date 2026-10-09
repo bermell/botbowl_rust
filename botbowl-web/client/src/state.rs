@@ -366,10 +366,10 @@ pub fn click_target(app: &App, pos: Position) -> Click {
     let actions = app.actions_at(pos);
     if let Some(sel) = app.selection.get() {
         if let Some(t) = sel.target(pos) {
-            return Click::Chain(vec![
+            return Click::Chain(sel.chain([
                 Action::Positional(t.start, sel.player),
                 Action::Positional(t.action, t.pos),
-            ]);
+            ]));
         }
         if sel.player == pos {
             return Click::Nothing;
@@ -380,6 +380,9 @@ pub fn click_target(app: &App, pos: Position) -> Click {
         (1, _) => Click::Send(Action::Positional(others[0], pos)),
         (n, _) if n > 1 => Click::OpenMenu(Menu { pos, actions: others }),
         (_, false) => Click::Select(pos),
+        // A team-mate while another player is mid-activation: selecting them
+        // is how that activation gets ended.
+        _ if app.view.get().is_some_and(|v| v.reselect.contains(&pos)) => Click::Select(pos),
         _ => Click::Nothing,
     }
 }

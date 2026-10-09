@@ -108,13 +108,14 @@ fn ActionBar() -> impl IntoView {
                 .iter()
                 .copied()
                 .map(|at| {
+                    let chain = sel.chain([Action::Positional(at, player)]);
                     view! {
                         <button
                             class="act declare"
                             title=format!("{} ({}, {})", at.label(), player.x, player.y)
                             on:click=move |_| {
                                 app.selection.set(None);
-                                ws::send(&ClientMsg::Act(Action::Positional(at, player)));
+                                ws::send(&ClientMsg::ActChain(chain.clone()));
                             }
                         >
                             {at.icon().map(|icon| view! { <img src=format!("img/{icon}") alt="" /> })}
@@ -299,7 +300,7 @@ fn Board() -> impl IntoView {
                                     .squares
                                     .iter()
                                     .map(|square_view| {
-                                        square(square_view, &marks, &heat, overlay, my_turn, threat)
+                                        square(&view, square_view, &marks, &heat, overlay, my_turn, threat)
                                     })
                                     .collect_view()}
                                 {view.block.map(|b| block_arrow(b, sq, cols, rows))}
@@ -396,6 +397,20 @@ fn floating_tooltip(pos: Position, sq: usize, rows: usize, lines: Vec<String>) -
     .into_any()
 }
 
+/// A team's picture that does not load (an asset checkout without that file,
+/// a moved upload) shows the role's stock sprite instead of a broken image.
+/// Once only: if the stock one is missing too, the browser's icon it is.
+fn fall_back(ev: leptos::ev::ErrorEvent, fallback: &str) {
+    use wasm_bindgen::JsCast;
+    let Some(img) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlImageElement>().ok()) else {
+        return;
+    };
+    if !img.src().ends_with(fallback) {
+        web_sys::console::warn_1(&format!("missing sprite {}, using {fallback}", img.src()).into());
+        img.set_src(fallback);
+    }
+}
+
 /// A reroll, skill or block-dice question, asked over the player it is about.
 fn prompt_popup(view: &ViewState, sq: usize, rows: usize) -> Option<AnyView> {
     let prompt = view.prompt.clone()?;
@@ -450,6 +465,7 @@ fn prompt_popup(view: &ViewState, sq: usize, rows: usize) -> Option<AnyView> {
 }
 
 fn square(
+    view: &ViewState,
     sq: &SquareView,
     marks: &Marks<'_>,
     heat: &HashMap<Position, f32>,
@@ -459,7 +475,9 @@ fn square(
 ) -> AnyView {
     let app = expect_context::<App>();
     let pos = sq.pos;
-    let actionable = my_turn && !sq.actions.is_empty();
+    // A team-mate who can be selected once the active player's turn ends
+    // takes a click too.
+    let actionable = my_turn && (!sq.actions.is_empty() || view.reselect.contains(&sq.pos));
     let intent: Option<&IntentView> = marks.selection.and_then(|s| s.target(pos));
     let selected = marks.selection.is_some_and(|s| s.player == pos);
     let hovered = marks.hover == Some(pos);
@@ -553,6 +571,7 @@ fn square(
                 .player
                 .as_ref()
                 .map(|p| {
+                    let fallback = format!("img/{}", p.role.sprite(p.team, p.used && !p.active));
                     view! {
                         <img
                             class="player"
@@ -563,6 +582,7 @@ fn square(
                             class:used=p.used && !p.active
                             src=format!("img/{}", p.sprite)
                             alt=p.role.label()
+                            on:error=move |ev| fall_back(ev, &fallback)
                         />
                     }
                 })}
@@ -919,8 +939,10 @@ fn Dugout(team: TeamType) -> impl IntoView {
                                                     {players
                                                         .into_iter()
                                                         .map(|p| {
+                                                            let fallback = format!("img/{}", p.role.sprite(p.team, false));
                                                             view! {
                                                                 <img
+                                                                    on:error=move |ev| fall_back(ev, &fallback)
                                                                     src=format!("img/{}", p.sprite)
                                                                     title=p.role.label()
                                                                     alt=p.role.label()

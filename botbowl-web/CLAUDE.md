@@ -67,7 +67,13 @@ standing opponent and Blitz on one further away, Foul on a prone one, and for th
 likelier of Handoff and Pass to a standing team-mate. The rule set lives server-side so the client
 stays a renderer. The next click on a target sends `ClientMsg::ActChain([start, action])` — one
 undo point, dice in between rolled, the chain stops quietly at the first action that is no longer
-legal. A selection carries the view's `seq` and is dropped on every new board. The declarations
+legal. A selection carries the view's `seq` and is dropped on every new board.
+**Selecting a team-mate ends the active player.** Mid-activation the engine offers no
+declarations (only `Turn` does), so `ViewState::reselect` lists whoever could be declared once
+`EndPlayerTurn` is played (stepped on a clone, `view::after_end_player_turn`); `selection` falls back
+to previewing that position and sets `SelectionView::end_first`, and `SelectionView::chain` prepends
+`EndPlayerTurn` — three actions, one undo point. A player picture that fails to load falls back to
+the role's stock sprite (`fall_back` in `pitch.rs`, with a console warning naming the missing file). The declarations
 sit as buttons in the action bar above the board (with End turn and every other simple action);
 block dice and the odds show on the **hovered** target only. `ViewState::prompt` (`view::prompt`)
 anchors a reroll / optional-skill / block-dice question on the square it concerns — the rolling

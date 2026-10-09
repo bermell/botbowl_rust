@@ -318,6 +318,54 @@ const STARTS: [et::PosAT; 6] = [
 /// take (see [`pv::SelectionView`]). Pure: each declaration is stepped on a
 /// clone. `None` when `pos` is not a player who may be declared.
 pub fn selection(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) -> Option<pv::SelectionView> {
+    selection_now(state, pos, seq).or_else(|| {
+        // Mid-activation nobody else can be declared; preview the position
+        // after `EndPlayerTurn` instead, and say the chain must start with it.
+        let ended = after_end_player_turn(state)?;
+        let mut sel = selection_now(&ended, pos, seq)?;
+        sel.end_first = true;
+        Some(sel)
+    })
+}
+
+/// `state` with the active player's turn ended, when that is the side to
+/// act's own choice and lands straight on its next declaration. `None`
+/// otherwise — no `EndPlayerTurn` on offer, or ending it rolls a die or hands
+/// the decision to the other side.
+fn after_end_player_turn(state: &GameState) -> Option<GameState> {
+    let end = em::Action::Simple(et::SimpleAT::EndPlayerTurn);
+    if state.info.active_player.is_none() || state.pending_roll.is_some() || !state.is_legal_action(&end) {
+        return None;
+    }
+    let team = state.get_active_teamtype();
+    let mut ended = state.clone();
+    if !matches!(ended.dice_mode(), DiceMode::RegisterRolls) {
+        ended.set_dice_mode(DiceMode::RegisterRolls);
+    }
+    ended.step_with_roll_or_action(SomeProcInput::Action(end));
+    (ended.pending_roll.is_none() && ended.get_active_teamtype() == team && !ended.info.game_over).then_some(ended)
+}
+
+/// The team-mates a click could select while a player is mid-activation:
+/// whoever may be declared once that player's turn is ended.
+fn reselect(state: &GameState) -> Vec<botbowl_web_proto::Position> {
+    let Some(ended) = after_end_player_turn(state) else {
+        return Vec::new();
+    };
+    let mut out: Vec<_> = ended
+        .get_all_actions()
+        .into_iter()
+        .filter_map(|a| match a {
+            em::Action::Positional(at, pos) if STARTS.contains(&at) => Some(mirror::position_to_proto(pos)),
+            _ => None,
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) -> Option<pv::SelectionView> {
     let at = mirror::position_from_proto(pos);
     let player = state.get_player_at(at)?;
     let (team, id, carrier) = (player.stats.team, player.id, state.ball == BallState::Carried(player.id));
@@ -410,6 +458,7 @@ pub fn selection(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
     Some(pv::SelectionView {
         seq,
         player: pos,
+        end_first: false,
         starts: starts.into_iter().map(mirror::pos_at_to_proto).collect(),
         targets,
     })
@@ -656,6 +705,7 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         trail: ctx.trail.clone(),
         block: block_view(state),
         prompt: if game_over { None } else { prompt(state) },
+        reselect: if game_over { Vec::new() } else { reselect(state) },
     }
 }
 
@@ -1281,6 +1331,37 @@ mod tests {
         }
         // The adjacent team-mate: a handoff never needs a pass roll on top.
         assert_eq!(intent_at(&sel, 11, 4).unwrap().action, PosAT::Handoff);
+    }
+
+    #[test]
+    fn mid_activation_a_team_mate_is_selected_by_ending_the_active_player_first() {
+        let mut state = a_position();
+        let mover = em::Position::new((10, 2));
+        state.step_positional(et::PosAT::StartMove, mover);
+        state.step_positional(et::PosAT::Move, em::Position::new((11, 2)));
+        let v = view_of(&state);
+        assert!(v.simple_actions.iter().any(|a| a.at == PSimpleAT::EndPlayerTurn));
+        // Nobody else is declarable right now...
+        assert!(at(&v, 9, 5).actions.is_empty());
+        // ...but every other Home player is selectable, the active one is not.
+        for (x, y) in [(8, 3), (8, 4), (9, 5)] {
+            assert!(v.reselect.contains(&pa::Position::new(x, y)), "({x},{y}) in {:?}", v.reselect);
+        }
+        assert!(!v.reselect.contains(&pa::Position::new(11, 2)));
+
+        let sel = selection(&state, pa::Position::new(9, 5), 0).expect("selectable after ending the mover");
+        assert!(sel.end_first);
+        let walk = intent_at(&sel, 10, 5).expect("an empty square next to (9,5)");
+        assert_eq!(
+            sel.chain([
+                pa::Action::Positional(walk.start, sel.player),
+                pa::Action::Positional(walk.action, walk.pos),
+            ])[0],
+            pa::Action::Simple(PSimpleAT::EndPlayerTurn)
+        );
+        // At a turn start there is nothing to end.
+        assert!(!selection(&a_position(), pa::Position::new(9, 5), 0).unwrap().end_first);
+        assert!(view_of(&a_position()).reselect.is_empty());
     }
 
     #[test]

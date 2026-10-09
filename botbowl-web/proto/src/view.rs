@@ -367,6 +367,10 @@ pub struct SelectionView {
     /// The [`ViewState::seq`] it was computed for; stale once the board moves.
     pub seq: u64,
     pub player: Position,
+    /// Another player is mid-activation: every action here is preceded by
+    /// `EndPlayerTurn`, which ends them first.
+    #[serde(default)]
+    pub end_first: bool,
     /// Declarations offered on the player, in [`PosAT::ALL`] order.
     pub starts: Vec<PosAT>,
     pub targets: Vec<IntentView>,
@@ -375,6 +379,13 @@ pub struct SelectionView {
 impl SelectionView {
     pub fn target(&self, pos: Position) -> Option<&IntentView> {
         self.targets.iter().find(|t| t.pos == pos)
+    }
+
+    /// The actions that play `then` for this selection: `EndPlayerTurn`
+    /// first when another player is still active.
+    pub fn chain(&self, then: impl IntoIterator<Item = Action>) -> Vec<Action> {
+        let end = self.end_first.then_some(Action::Simple(SimpleAT::EndPlayerTurn));
+        end.into_iter().chain(then).collect()
     }
 }
 
@@ -427,6 +438,11 @@ pub struct ViewState {
     /// Where on the board the current reroll / skill / block-dice question
     /// belongs, when there is one.
     pub prompt: Option<PromptView>,
+    /// While a player is mid-activation: the team-mates who could be declared
+    /// once their turn is ended. Clicking one selects them, and the action
+    /// then chosen ends the active player first ([`SelectionView::end_first`]).
+    #[serde(default)]
+    pub reselect: Vec<Position>,
 }
 
 impl ViewState {
