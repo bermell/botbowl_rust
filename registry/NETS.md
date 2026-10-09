@@ -43,7 +43,7 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen08 | gen07 | gen06-08 (gen08 partial) | 3c25109 | cq 100 | step 25000, ep 2 (0.8881) | −0.0018 / −0.0019 / −0.0023 / +0.0023 / −0.0045 (probe set ~40% size) | **0.204**, +0.002 (−0.6%) | on gen09: +0.001/+0.002/+0.006/+0.007; 0.59; 0.201, +0.007 |
 | gen09 | gen08 | gen07-09 | f75eda5 | **cq 50** (first) | step 22000, ep 2 (0.8965; τ=50 target, not comparable) | **+0.0118** / +0.0007 / −0.0002 / −0.0032 (vs the τ=50 target) / +0.0004 | 0.204, +0.004 (+0.2%, flat) | on gen10: +0.001/+0.003/+0.004/+0.006; 0.58; 0.229, +0.019 |
 | gen10 | gen09 | gen08-10 | f75eda5 | cq 50 | step 27000, ep 2 (0.8943) | +0.0048 / −0.0002 / +0.0010 / −0.0009 / −0.0012 | **0.203**, +0.003 (−0.7%) | on gen11: +0.001/+0.003/+0.004/+0.005; 0.67; **0.184**, −0.002 |
-| gen11 | gen10 | gen09-11 | f75eda5 | cq 50 | step 32000, ep 2 (0.8938) | +0.0024 / −0.0006 / −0.0006 / −0.0001 / −0.0039 | 0.205, +0.012 (**+1.1%, worse**) | (on gen12: pending) |
+| gen11 | gen10 | gen09-11 | f75eda5 | cq 50 | step 32000, ep 2 (0.8938) | +0.0024 / −0.0006 / −0.0006 / −0.0001 / −0.0039 | 0.205, +0.012 (**+1.1%, worse**) | on gen12: +0.001/+0.002/+0.002/+0.004 (weakest yet); 0.76; 0.195, +0.012 |
 | gen12 | gen11 | gen10-12 | 71827c9 | **cq 100** (back) | | | | |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
