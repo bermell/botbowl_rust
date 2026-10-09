@@ -324,10 +324,12 @@ mod tests {
         BoardDims::try_new(16, 9, 6).unwrap_or_else(|_| BoardDims::from_env())
     }
 
-    /// "No natural one-turn": the cap is one short of the engine's own LOS-to-end-zone
-    /// distance on every board, and a capped player keeps their position's picture.
+    /// "No natural one-turn": the lobby's cap is the engine's own `BoardDims::ma_cap` (MA plus
+    /// two GFIs falls short of the end zone) on every board — 4 on 14x7 — and a capped player
+    /// keeps their position's picture.
     #[test]
-    fn the_one_turn_cap_falls_one_short_of_the_end_zone_and_keeps_the_pictures() {
+    fn the_one_turn_cap_is_the_engines_ma_cap_and_keeps_the_pictures() {
+        assert_eq!(botbowl_web_proto::msg::BoardSpec::new(14, 7, 4).no_one_turn_ma(), 4);
         use botbowl_web_proto::msg::BoardSpec;
         for (w, h) in [(8, 3), (12, 5), (14, 7), (16, 9), (20, 9), (26, 15)] {
             let spec = BoardSpec::new(w, h, 3);
@@ -335,7 +337,7 @@ mod tests {
             let Ok(dims) = BoardDims::try_new(ew, eh, n) else { continue };
             assert_eq!(
                 spec.no_one_turn_ma() as i16,
-                dims.los_to_endzone_distance() as i16 - 1,
+                dims.ma_cap() as i16,
                 "{w}x{h}"
             );
         }
@@ -345,8 +347,8 @@ mod tests {
         apply(&mut state, TeamType::Home, &human).unwrap();
         let looks = Looks { teams: [Some(human), None] };
         let before: Vec<String> = state.get_dugout().map(|p| looks.sprite(&p.stats, false)).collect();
-        cap_ma(&mut state, 5);
-        assert!(state.get_dugout().all(|p| p.stats.ma <= 5));
+        cap_ma(&mut state, 4);
+        assert!(state.get_dugout().all(|p| p.stats.ma <= 4));
         let after: Vec<String> = state.get_dugout().map(|p| looks.sprite(&p.stats, false)).collect();
         assert_eq!(before, after, "a capped Catcher is still drawn as a Catcher");
     }

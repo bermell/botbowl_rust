@@ -257,8 +257,8 @@ pub struct GameSpec {
     pub home_team: String,
     #[serde(default = "default_team")]
     pub away_team: String,
-    /// No natural one-turn: every player's MA is capped one short of the line-of-scrimmage
-    /// to end-zone distance, so nobody walks the ball in from the line on MA alone. On by
+    /// No natural one-turn: every player's MA is capped so that even MA plus two GFIs falls
+    /// short of the end zone from the line of scrimmage ([`BoardSpec::no_one_turn_ma`]). On by
     /// default — on the small boards the stock MA turns a handoff into a free touchdown.
     #[serde(default = "yes")]
     pub no_natural_one_turn: bool,
@@ -269,12 +269,14 @@ fn yes() -> bool {
 }
 
 impl BoardSpec {
-    /// The most MA a player may have under [`GameSpec::no_natural_one_turn`]: one less than
-    /// the squares from their own line of scrimmage to the opponent's end zone. The engine
-    /// board is this one plus a two-square border, and that distance is `engine_width / 2 - 1`.
+    /// The most MA a player may have under [`GameSpec::no_natural_one_turn`]: low enough that
+    /// even MA plus the two GFIs falls short of the opponent's end zone from the own line of
+    /// scrimmage — the engine's `BoardDims::ma_cap`, mirrored here for the lobby (the server
+    /// test pins the two together). The engine board is this one plus a two-square border, and
+    /// the LOS-to-end-zone distance is `engine_width / 2 - 1`.
     pub fn no_one_turn_ma(self) -> u8 {
         let engine_width = self.width as i16 + 2;
-        (engine_width / 2 - 2).max(1) as u8
+        (engine_width / 2 - 1 - 3).max(0) as u8
     }
 }
 

@@ -306,13 +306,14 @@ a machine-wide search. Keep it that way.
 
 ## No natural one-turn (lobby option, on by default)
 
-`GameSpec::no_natural_one_turn` caps every player's MA at `BoardSpec::no_one_turn_ma()` — one short
-of the LOS-to-end-zone distance — at game start (`teams::cap_ma`, dugout and fielded alike, coin
-toss and random drives; a resumed recording is left as recorded). A natural one-turn (hand the
-ball to a fast player on the line, walk it in) is otherwise free on the small boards. It is the
-user's definition, not eval's: `BoardDims::ma_cap` (botbowl-play's ladder) also rules out the two
-GFIs and is stricter (MA 4 on 14x7 vs 6 here). `Looks::sprite` matches a capped player to the same
-position with a higher MA so they keep their picture.
+`GameSpec::no_natural_one_turn` caps every player's MA at `BoardSpec::no_one_turn_ma()` at game
+start (`teams::cap_ma`, dugout and fielded alike, coin toss and random drives; a resumed recording
+is left as recorded). A natural one-turn — a player on the line reaching the end zone in one turn,
+**GFIs included** (the user, 2026-10-09) — is otherwise free on the small boards. The cap is the
+engine's `BoardDims::ma_cap` (MA + 2 GFIs short of the LOS-to-end-zone distance: 4 on 14x7), the
+same rule botbowl-play's eval ladder applies, mirrored in proto for the lobby hint and pinned to the
+engine by `the_one_turn_cap_is_the_engines_ma_cap_and_keeps_the_pictures`. `Looks::sprite` matches a
+capped player to the same position with a higher MA so they keep their picture.
 
 ## Random-start drives
 

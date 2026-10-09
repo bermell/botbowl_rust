@@ -109,7 +109,7 @@ pub fn Lobby() -> impl IntoView {
     let seed = RwSignal::new(String::new());
     let recording = RwSignal::new(String::new());
     let step = RwSignal::new(0usize);
-    // Cap MA one short of the line-to-end-zone distance. On by default.
+    // Cap MA so nobody reaches the end zone from the line in one turn, GFIs included. On by default.
     let no_one_turn = RwSignal::new(true);
 
     // The board the form is currently on, defaulting to the server's own
@@ -226,12 +226,12 @@ pub fn Lobby() -> impl IntoView {
                     <span class="hint">
                         {move || match board() {
                             Some(b) => format!(
-                                "MA capped at {} on {}x{}, so nobody walks the ball in from the line of scrimmage without GFIs",
+                                "MA capped at {} on {}x{}, so nobody reaches the end zone from the line of scrimmage in one turn, GFIs included",
                                 b.no_one_turn_ma(),
                                 b.width,
                                 b.height,
                             ),
-                            None => "MA capped one short of the line-to-end-zone distance".to_string(),
+                            None => "MA capped so nobody reaches the end zone from the line in one turn, GFIs included".to_string(),
                         }}
                     </span>
                 </label>
