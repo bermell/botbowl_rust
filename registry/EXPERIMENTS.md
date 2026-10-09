@@ -8,6 +8,33 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### Gradient balance: policy vs value at the shared trunk (plan 059 follow-up), 2026-10-09
+
+- **Question:** how do the policy and value losses split the gradient into the shared 64x6 trunk,
+  how does the cq τ change it, and does a decision's number of legal actions change its weight?
+- **Setup:** `scripts/grad_balance_probe.py models/az_v7/bbnet_mix16x9v9_gen12.pt <dirs>` (CPU,
+  BN in eval mode = `--freeze-bn`), the loop's loss exactly (policy CE mean over samples + 0.25 ×
+  per-drive-weighted value MSE). Data: gen13's held-out shard 4 (MC-labelled), prepared with
+  `target/16x9/release/prepare` (built at 71827c9) at `--policy-target cq --tau 100|50|20
+  --value-blend 1.0`: 20,285 samples.
+- **Result:**
+
+  | τ | KL(target‖net) | trunk grad norm, policy : 0.25·value | cosine |
+  |---|---|---|---|
+  | 100 | 0.070 | 0.455 : 0.155 = **2.9** | +0.02 |
+  | 50 | 0.144 | 0.646 : 0.155 = **4.2** | +0.03 |
+  | 20 | 0.367 | 1.023 : 0.155 = **6.6** | +0.03 |
+
+  Policy CE is per decision (one cross-entropy over the legal set, averaged over samples), so a
+  2-action decision weighs as much as a 100-action one; its gradient (|p − π| per sample) is
+  smallest on 2-action decisions (22% of samples, 0.049 at τ=100) and largest at 3-20 actions
+  (0.11). Optimiser: Adam (no weight decay, no clipping).
+- **Conclusion:** the policy already supplies ~3/4 of the trunk gradient at τ=100; sharpening τ
+  only grows it. The two gradients are near-orthogonal, so they do not cancel; they compete
+  through Adam's per-parameter normaliser (the value term's effective step in the trunk shrinks
+  ~28% at τ=50, ~54% at τ=20) and the trunk's capacity. Consistent with exp069 (τ 30 and Gumbel σ
+  lose the value gain) and the τ=50 loop (gen11 value bench +1.1%, net-check gain fell).
+
 ### <a id="exp069"></a>exp069 — policy targets under the mean backup (plan 059), 2026-10-08
 
 - **Question:** the loop's policy absorbs little per generation (Δ P(played) +0.001..+0.004). Does
