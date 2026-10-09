@@ -72,8 +72,12 @@ legal. A selection carries the view's `seq` and is dropped on every new board.
 declarations (only `Turn` does), so `ViewState::reselect` lists whoever could be declared once
 `EndPlayerTurn` is played (stepped on a clone, `view::after_end_player_turn`); `selection` falls back
 to previewing that position and sets `SelectionView::end_first`, and `SelectionView::chain` prepends
-`EndPlayerTurn` — three actions, one undo point. A player picture that fails to load falls back to
-the role's stock sprite (`fall_back` in `pitch.rs`, with a console warning naming the missing file). The declarations
+`EndPlayerTurn` — three actions, one undo point. A prone player's own square is a Move target
+too — the engine's stand-up-in-place path — so clicking a selected prone player again stands them
+up where they lie. A player picture that fails to load falls back to the role's stock sprite
+(`fall_back` in `pitch.rs`, with a console warning naming the missing file), and the server logs
+every 404 under `img/` to stderr and `~/.cache/botbowl/missing-assets.log` (`log_missing_sprite`,
+with the asset directory it looked in) — read that file first when someone reports a broken image. The declarations
 sit as buttons in the action bar above the board (with End turn and every other simple action);
 block dice and the odds show on the **hovered** target only. `ViewState::prompt` (`view::prompt`)
 anchors a reroll / optional-skill / block-dice question on the square it concerns — the rolling

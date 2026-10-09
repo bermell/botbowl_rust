@@ -432,6 +432,9 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
         let intent = match state.get_player_at(target) {
             // An empty square, or the loose ball: walk there.
             None => find(et::PosAT::StartMove, target),
+            // The player's own square — offered only to a prone player: stand up
+            // where they lie (a click on the selected player again).
+            Some(_) if target == at => find(et::PosAT::StartMove, target),
             Some(other) if other.stats.team != team => {
                 if other.status != em::PlayerStatus::Up {
                     find(et::PosAT::StartFoul, target)
@@ -1362,6 +1365,27 @@ mod tests {
         // At a turn start there is nothing to end.
         assert!(!selection(&a_position(), pa::Position::new(9, 5), 0).unwrap().end_first);
         assert!(view_of(&a_position()).reselect.is_empty());
+    }
+
+    #[test]
+    fn a_prone_player_clicked_again_stands_up_where_they_lie() {
+        let mut state = a_position();
+        let id = state.get_player_id_at(em::Position::new((10, 2))).unwrap();
+        state.get_mut_player(id).unwrap().status = em::PlayerStatus::Down;
+        let sel = selection(&state, pa::Position::new(10, 2), 0).unwrap();
+        let stand = intent_at(&sel, 10, 2).expect("the prone player's own square");
+        assert_eq!((stand.start, stand.action), (PosAT::StartMove, PosAT::Move));
+        assert!(stand.route.as_ref().unwrap().rolls.iter().any(|r| r == "Stand up"), "{stand:?}");
+
+        // Played, it leaves them standing on the same square, still active.
+        state.step_positional(et::PosAT::StartMove, em::Position::new((10, 2)));
+        state.step_positional(et::PosAT::Move, em::Position::new((10, 2)));
+        let p = state.get_player(id).unwrap();
+        assert_eq!((p.status, p.position), (em::PlayerStatus::Up, em::Position::new((10, 2))));
+        assert_eq!(state.info.active_player, Some(id));
+
+        // A standing player clicked again is just deselected: no target there.
+        assert!(intent_at(&selection(&a_position(), pa::Position::new(10, 2), 0).unwrap(), 10, 2).is_none());
     }
 
     #[test]

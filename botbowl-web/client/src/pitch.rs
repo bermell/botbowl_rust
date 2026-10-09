@@ -656,7 +656,11 @@ fn tooltip(sq: &SquareView, selection: Option<&SelectionView>, threat: TeamType)
     let intent = selection.and_then(|s| s.target(sq.pos));
     let (what, prob, dice, route) = match intent {
         Some(i) => (
-            Some(declaration_label(i.start).to_string()),
+            Some(if selection.is_some_and(|s| s.player == i.pos) {
+                "Stand up".to_string()
+            } else {
+                declaration_label(i.start).to_string()
+            }),
             i.prob,
             i.block_dice,
             i.route.as_ref(),
