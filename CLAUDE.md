@@ -16,7 +16,25 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
   - `botbowl-web/{proto,server,client}/` — human-vs-bot or bot-vs-bot play in a browser (MCTS always on a net), full games or random-start drives, with custom teams, a decision log and the search behind every bot move shown next to the board (plan 034). Also served by the hub at `/play/`. `proto` is engine-free and compiles to wasm32; `server` owns the `GameState` and the bots; `client` is a Leptos CSR app built with `trunk`. Has its own `CLAUDE.md`.
 - `recon_mcts/` — generic **re**combining, **con**current MCTS library (safe std-only Rust). A **nested, separate Cargo workspace**, deliberately in the botbowl workspace's `exclude` list — don't merge it in (its `tests/nim/` member compiles with `--features test_internals` by default). Has its own `CLAUDE.md`. No dependency on the botbowl crates.
 
-## Plans
+## Registry: data, nets, experiments, matches
+
+`registry/` is the record of what exists and how it was made (the user, 2026-10-08):
+- `registry/DATA.md` — every corpus and frozen benchmark set: commit, generator net, settings, seeds, size, caveats;
+- `registry/NETS.md` — every trained net: parent, data window, recipe, commit, and **every single-net benchmark number** (value bench, absorption, net check, val);
+- `registry/EXPERIMENTS.md` — question, reproduction (commit, script, settings), result, conclusion;
+- `registry/MATCHES.md` — every head-to-head result between two bots (drives, policy-only, SPRT).
+
+**Update them as part of the work, not afterwards:** a new corpus, net, experiment or match result gets
+its row when it is produced, with the commit and every setting needed to reproduce it. Plans keep the
+narrative; the registry keeps the facts.
+
+**Browse it at `http://<hub>/registry/`** (`botbowl-hub serve`, `--registry-dir`, default
+`<repo>/registry`): every `.md` file in the directory, rendered with its tables, read from disk on each
+request, so an edit shows on the next reload. The markdown files are the source — edit them directly.
+Keep to GitHub-flavoured markdown: one `# ` title, an opening paragraph (the index shows it), `## `/`### `
+sections (they get ids and a contents list), pipe tables with a header row, and file-relative links
+(`[NETS.md](NETS.md)`, `NETS.md#exp069`). A new file in `registry/` shows up in the index by itself.
+
 
 - `plans/001-grand-plan.md` — strategic roadmap (AlphaZero-style MCTS via curriculum learning → scripted baseline → heuristic/rollout/NN-guided MCTS → self-play). Read it before proposing architecture changes that span the engine and `recon_mcts`.
 - `plans/NNN-idea--*.md` / `plans/NNN-plan--*.md` — designs not yet started or in-flight. `plans/completed/` — closed-out plans with **Status:** headers; historical context, not live work.
@@ -30,7 +48,8 @@ One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/
 - **Gumbel root search:** `plans/053-plan--gumbel-root-search.md` — sequential halving over the top-m root moves (`MctsConfig.gumbel_m`, `cfgs/gumbel16_iters.toml`), PUCT below the root; the fix candidate for 16x9's wide fans, measured on drives.
 - **Search must beat policy:** `plans/055-plan--search-must-beat-policy.md` — DONE 2026-10-06. Under the mean backup at player nodes (hardcoded, ce4eda1), the search beats its bare policy and gains with budget: 0.525 / 0.542 / 0.590 at 250 / 1000 / 4000 descents. `scripts/net_check.sh` is the standing per-net check.
 - **Value labels:** `plans/056-plan--value-labels.md` — **MC-averaged value labels win** (`botbowl-ui mc-label`, 8 policy-only playouts per sample): value RMS −15% on the frozen MC benchmark (`scripts/value_bench.sh`), and the search beats the control's 0.533 head to head and its own policy 0.582 at 1000 descents. TD(λ) only removes bias. Plan 055's budget gate holds under the mean backup (0.525 / 0.542 / 0.590 vs policy at 250 / 1000 / 4000); `scripts/net_check.sh` is the standing per-net check.
-- **Loop throughput:** `plans/058-plan--loop-throughput.md` — generation is CPU-bound from ~36 streams (`scripts/perf_gen_bench.sh`); mc-label works per sample and is GPU-bound; drives every 3 generations. The live loop is `runs/loopmix16x9v9` (`scripts/launch_plan058.sh`, new master: 16 more skills, per-player setup with `--next-drive`, schema v9; init = g056 gen04 migrated with `bbnn.migrate`).
+- **Loop throughput:** `plans/058-plan--loop-throughput.md` — after the search CPU cuts and the 4x smaller `GameState`, generation is GPU-bound: 48 local streams over two sidecars (`GEN_SIDECARS=2`, `scripts/perf_gen_steady.sh`), 400 games per shard, ~2 h per generate phase; mc-label is GPU-bound too; drives every 3 generations. The live loop is `runs/loopmix16x9v9` (`scripts/launch_plan058.sh`, new master: 16 more skills, per-player setup with `--next-drive`, schema v9; init = g056 gen04 migrated with `bbnn.migrate`).
+- **Policy targets, policy-only drives:** `plans/059-plan--policy-targets-policy-only.md` — exp069 re-tested cq τ and Gumbel σ under the mean backup on one generation step, judged by the absorption probe, the value bench and policy-only paired drives (`cfgs/policy_only.toml`, tract, minutes per 600 pairs). τ=50 keeps the value gain and leads; τ=30 and Gumbel σ cost the value head. τ=50 ran gen09-11 and did not speed up the policy (gen11 vs gen08 policy-only 0.496 vs τ=100's 0.507); **back to τ=100 from gen12** (the user). One-step policy-only drives are blunt (argmax moves in ~0.2% of decisions): compare across generations.
 - **Tree statistics:** `plans/060-plan--tree-statistics.md` — every search records leaf depth (plies, own decisions, chance share), where each descent ended relative to the horizon (own turn / opponent's turn / horizon / score / half end), the main line and `opp_turn_follows`: a `tree` block on each corpus sample, means in the `telemetry` block, and `scripts/tree_stats.py` for the tables.
 - **Current focus: the training loop's throughput and strength.** Significant speedups to generation, MC labelling and evaluation are wanted (the user, 2026-10-06): measure before and after, and propose them. Bot capability (priors, leaf score, pruning, new skills) continues alongside.
 

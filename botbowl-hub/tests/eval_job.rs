@@ -62,6 +62,8 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         worker_timeout,
         run_dir: None,
         allow_from: Vec::new(),
+        rate_interval: Duration::from_secs(300),
+        registry_dir: None,
     })
     .await
     .unwrap();
@@ -608,6 +610,8 @@ async fn start_hub_with_allowlist(path: &std::path::Path) -> (Hub, String) {
         allowed_commits: path.to_path_buf(),
         run_dir: None,
         allow_from: Vec::new(),
+        rate_interval: Duration::from_secs(300),
+        registry_dir: None,
         worker_timeout: Duration::from_secs(300),
     })
     .await

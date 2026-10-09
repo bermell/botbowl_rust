@@ -104,6 +104,13 @@ records are skipped there (the audit's replay is random-start only).
 | 05 | 196 min (28 local; laptop ~1 h of it); first corpus from the forced-move bot | 2400 (0.89) / 1955 (0.80) | Push 1447 → 69%, Wrestle 163 → 41%, Dodge 41 → 88%, Block 25 → 84% | 1955 (6.9; 2.8) | 79 min, 0 unlabelled | 28 min, step 25000; absorb dP(played) +0.001, dtop1 −0.000, dvalMSE −0.005 | 0.209 → **0.206 (paired −1.2%, ~3 SE)**, bias +0.004 | gen04 on gen05: +0.002/+0.003/+0.003/+0.007 MONOTONE; slope 0.43 (gen04 corpus: 0.74) | (gen06) |
 | 06 | **114 min** for 3200 drives (400/shard; 48 local over 2 sidecars + laptop 5): 201k samples, 1766 decisions/min (gen05: 775) | 3200 (0.88) / 2597 (0.81) | Push 1977 → 72%, Wrestle 242 → 46%, Dodge 64 → 97%, Block 51 → 90% | 2597 (6.9; 2.8) | 100 min (one sidecar), 0 unlabelled | 30 min, step 18000 (epoch 1); absorb dP(played) +0.002, dtop1 +0.003, dvalMSE −0.005 | 0.206 → 0.208 (paired +0.7%, ~2 SE), **bias +0.004 → +0.016** | gen05 on gen06: +0.002/+0.004/+0.004/**+0.010** MONOTONE; slope 0.75 | 14x7 0.483 ± 0.023 (H0, 116 pairs); 16x9 0.505 ± 0.021 (H0, 158 pairs) |
 | 07 | 134 min (shared with gen06's drives) | 5810 records | | | 105 min, 0 unlabelled | 33 min, step 23000; absorb dP(played) +0.002, dtop1 +0.002, dKL +0.001, **dvalMSE +0.003** (first worse) | **0.208 → 0.205 (paired −1.4%, ~3 SE), bias +0.016 → +0.001** (the drift reversed) | gen06 on gen07: +0.001/+0.003/**+0.010/+0.017** MONOTONE (largest yet); slope 0.64; corpus value bias +0.044 | |
+| 08 | **stopped at 42%** (the user, for exp069's GPU): 2458 records / 1361 drives, redistributed by seed over 8 shards | | | | 41 min, 0 unlabelled | 42 min, step 25000; absorb dP(played) −0.002, dtop1 −0.002, dvalMSE −0.005 (probe set ~40% size) | 0.205 → **0.204 (paired −0.6%)**, bias +0.002 | gen07 on gen08: +0.001/+0.004/+0.004/+0.012 MONOTONE; **slope 0.94**; corpus value RMS 0.196, bias −0.002 | |
+| 09 | 180 min (48 local, 2 sidecars, **no laptop**: protocol v17) | 5785 records, 199,544 samples | | | 101 min, 0 unlabelled | **first at cq τ=50** (relaunch at f75eda5); 26 min, step 22000; absorb **dlogP(played) +0.012**, dP(played) +0.001, dtop1 −0.000, dvalMSE +0.000 | 0.204 → 0.204 (paired +0.2%, flat), bias +0.004 | gen08 on gen09: +0.001/+0.002/+0.006/+0.007 MONOTONE; slope 0.59; corpus value RMS 0.201, bias +0.007 | 14x7 0.507 ± 0.020 (H0, 140 pairs); **16x9 0.540 ± 0.017 (H1, 239 pairs)** — the first H1 of the v9 run |
+| 10 | 235 min (48 local; laptop 10 from 21:40; shared ~3.5 h with gen09's drives) | 5801 records, 197,976 samples; **first with the 14x5 throw-in fix** | | | 98 min, 0 unlabelled | cq τ=50; 27 min, step 27000; absorb dlogP(played) +0.005, dP(played) −0.000, dtop1 +0.001, dvalMSE −0.001 | 0.204 → **0.203 (paired −0.7%)**, bias +0.003 | gen09 on gen10: +0.001/+0.003/+0.004/+0.006 MONOTONE; slope 0.58; corpus value RMS 0.229, bias +0.019 | |
+| 11 | **108 min** (48 local + laptop 10 from the start) | 5820 records, 202,818 samples | | | 100 min, 0 unlabelled | cq τ=50; 37 min, step 32000; absorb dlogP(played) +0.002, dP(played) −0.001, dtop1 −0.001, dvalMSE −0.004 | 0.203 → 0.205 (**paired +1.1%, ~3 SE, worse**), bias +0.003 → +0.012 | gen10 on gen11: +0.001/+0.003/+0.004/+0.005 MONOTONE; slope 0.67; corpus value RMS **0.184**, bias −0.002 | |
+| 12 | 109 min (48 local + laptop 10) | 5816 records | | | 98 min, 0 unlabelled | **back to cq τ=100** (relaunch at 71827c9); 37 min, step 24000; absorb dlogP(played) −0.005, dP(played) +0.002, dtop1 −0.001, dvalMSE +0.001 (vs a τ=50 parent) | 0.205 → **0.201 (paired −1.9%, ~4 SE)**, bias +0.012 → −0.012 | gen11 on gen12: +0.001/+0.002/+0.002/+0.004 MONOTONE (weakest yet); slope 0.76; corpus value RMS 0.195, bias +0.012 | 14x7 0.524 ± 0.012 (undecided at the 400-pair cap, LLR −0.44); **16x9 0.538 ± 0.015 (H1, 306 pairs)** — flat on gen09 (0.507/0.540), 14x7 up 1.4 SE; 282 min overlapped with gen13's generate |
+| 13 | 282 min (48 local, shared the whole time with gen12's drive benchmark) | 5814 records, 198,002 samples, TD/drive 0.851 | | | 96 min, 0 unlabelled | cq τ=100; 38 min, step 27000; absorb dlogP(played) +0.0005, dP(played) +0.0008, dtop1 +0.0002, dvalMSE −0.002 | 0.201 → **0.199 (paired −0.9%, ~2 SE)**, bias −0.012 → +0.008 | gen12 on gen13: +0.001/+0.004/**+0.008**/**+0.012** MONOTONE; slope **1.08** (the run's best; overrides pay from Q gap 0.1-0.3); corpus value RMS 0.190, bias −0.012 | (next at gen15) |
+| 14 | 181 min (48 local) | 5795 records, 199,445 samples, TD/drive 0.851 | | | 98 min, 0 unlabelled | | | gen13 on gen14: +0.001/+0.001/+0.006/**+0.016** MONOTONE (the run's largest @4000); slope 0.45 (overrides pay from Q gap 0.03-0.1); corpus value RMS 0.198, bias −0.011 | |
 
 **gen01, the first fine-tune on the new rules.** It learned steadily (every validation metric moved
 at almost every checkpoint, unlike g056's flat curves), and the absorption probe is strong (dtop1
@@ -312,12 +319,25 @@ and N processes). Net: gen05. Window 10 min (`5076090`) or 8 min (`96fb083`), so
 **400 games per shard** (300 before, +33%), so a generate phase stays near gen05's ~3.3 h. MC labels
 and training grow with it (~105 and ~37 min expected).
 
-**In the loop (gen06): faster than the benchmark.** 201k samples in 114 min = 1766 decisions/min,
-2.3x live gen05 (775), while the two sidecars served the same ~8.9k samples/s as in the benchmark.
-So the loop spends ~300 forwards per decision where the benchmark's `dataset` spent ~490. Likely
-reason (unverified): the worker shares one evaluator, and its memo, across its 24 games, so
-repeated states (kickoff setups, early drive positions) hit the cache. MC labels (~1.75 h, one
-sidecar) are now the longest phase.
+**In the loop (gen06-07): faster than the benchmark — because of the laptop (corrected
+2026-10-08).** gen06 wrote 201k samples in 114 min = 1766 decisions/min, while the two sidecars
+served the same ~8.9k samples/s as in the benchmark (~300 sidecar forwards per decision, against
+the benchmark's ~490). The first guess, a memo shared across a worker's games, is wrong: the memo
+(`NnEvaluator::forward_memo`) is per thread and holds one state. The sidecars' cumulative
+counters settle it:
+
+| gen | build | laptop | sidecar forwards | decisions | forwards per decision |
+|---|---|---|---|---|---|
+| 06 | 43a45c6 | 10 streams | 59.5M | 201,364 | 295 |
+| 07 | 43a45c6 | 10 streams (+ gen06's drives on the sidecars) | 65.2M | 204,956 | 318 |
+| 08 | 43a45c6 | gone | 39.8M | 82,522 | 483 |
+| 09 (first 50 min) | 3c25109 | gone (protocol v17) | | 1080 per min | ~487 |
+
+Same build, same searches per sample (0.80) and descents per search (~950) in every generation;
+only the laptop changed. Its decisions use its own CPU (tract), not the sidecars, so the box alone
+makes ~1080 decisions/min (the benchmark's 1047), and **the laptop's 10 streams added ~450-700
+decisions/min, 40-65% on top.** Rebuilding it on protocol v17 is worth that much generation.
+MC labels (~1.75 h, one sidecar) are the longest phase on the box.
 
 **Next levers, all on the GPU side:** the forward itself (precision, fused kernels, TensorRT-style
 export), fewer forwards per decision (the memo hit rate), and two sidecars for mc-label, which is

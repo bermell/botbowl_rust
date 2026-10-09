@@ -22,6 +22,10 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 rand = { workspace = true }
 zstd = { workspace = true }
+# The registry pages (`/registry`): GitHub-flavoured markdown, tables included.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# Local wall-clock times on the status page and in the hub.log rate lines.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 botbowl-worker = { workspace = true }

@@ -63,6 +63,8 @@ async fn start_hub_with(worker_timeout: Duration) -> (Hub, String) {
         worker_timeout,
         run_dir: None,
         allow_from: Vec::new(),
+        rate_interval: Duration::from_secs(300),
+        registry_dir: None,
     })
     .await
     .unwrap();
@@ -235,6 +237,27 @@ async fn two_workers_write_each_shard_exactly_once() {
     let done: BTreeSet<(String, u64)> = st.workers.iter().map(|w| (w.name.clone(), w.games_done)).collect();
     assert_eq!(done.iter().map(|(_, n)| n).sum::<u64>(), 2 * GAMES as u64, "{done:?}");
     assert!(done.iter().all(|(_, n)| *n > 0), "a worker sat idle: {done:?}");
+
+    // The rates are counted from the same results: per worker name and in total, every game,
+    // record and sample once, and the job's per-worker shares add up to the job.
+    let t = &st.throughput;
+    let total = t.total.since_start.counts;
+    assert_eq!(total.games, 2 * GAMES as u64, "{t:?}");
+    assert_eq!(total.records, 2 * GAMES as u64, "{t:?}");
+    assert_eq!(total.samples, on_disk as u64, "{t:?}");
+    assert_eq!(t.total.windows[0].counts, total, "all within the last 5 minutes");
+    let names: BTreeSet<&str> = t.workers.iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(names, BTreeSet::from(["w1", "w2"]));
+    for w in &t.workers {
+        let games = done.iter().find(|(n, _)| *n == w.name).unwrap().1;
+        assert_eq!(w.since_start.counts.games, games, "{w:?}");
+        assert_eq!(w.connected, 1);
+    }
+    assert_eq!(t.total.streams, 3);
+    let job = st.jobs.iter().find(|j| j.id == id).unwrap();
+    let by: u64 = job.by_worker.values().map(|c| c.games).sum();
+    assert_eq!(by, 2 * GAMES as u64, "{:?}", job.by_worker);
+    assert_eq!(job.by_worker.values().map(|c| c.samples).sum::<u64>(), on_disk as u64);
 }
 
 /// Without `truncate` the job appends, as `botbowl-ui dataset` does.

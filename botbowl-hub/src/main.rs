@@ -65,6 +65,15 @@ struct ServeArgs {
     /// loop's latest status lines and, while the box trains a net, the trainer's progress.
     #[arg(long)]
     run_dir: Option<PathBuf>,
+    /// The project registry served at `/registry/` (read on every request, so edits show
+    /// without a restart). Default `<repo>/registry`.
+    #[arg(long)]
+    registry_dir: Option<PathBuf>,
+    /// Seconds per interval of the status page's rate history, and between the
+    /// `[hub] rate ...` lines in hub.log (written only for intervals in which something
+    /// finished; aligned to the wall clock).
+    #[arg(long, default_value_t = 300)]
+    rate_interval_secs: u64,
     #[command(flatten)]
     play: PlayArgs,
     /// Directories hashed at startup so a worker's cached nets can be named on connect (repeat
@@ -688,6 +697,8 @@ fn main() {
                         worker_timeout: std::time::Duration::from_secs(a.worker_timeout),
                         run_dir: a.run_dir.clone(),
                         allow_from: a.play.allow_from.clone(),
+                        rate_interval: std::time::Duration::from_secs(a.rate_interval_secs),
+                        registry_dir: Some(a.registry_dir.clone().unwrap_or_else(|| repo_path("registry"))),
                     },
                     play,
                 )

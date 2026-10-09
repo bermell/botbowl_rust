@@ -195,3 +195,29 @@ fn opp_turn_follows_matches_the_engine_turn_order() {
     assert!(checked > 50, "enough decisions resolved: {checked}");
     assert!(follows[0] > 0 && follows[1] > 0, "both answers occur: {follows:?}");
 }
+
+/// Plan 060 §6: on the loop's 14x5/3 board a ball loose on the edge sent the search down an
+/// unbounded chain of dice — the scripted throw-in carried 0 squares (`scatter_divisor() = 3`), so
+/// the ball landed where it left, bounced out again and was thrown in again, one lap deeper per
+/// descent, and the chance nodes above it never got a value. Home picks up a ball lying on the
+/// end-zone column; the pickup's failure branch is that chain.
+#[test]
+fn an_edge_bounce_on_a_narrow_board_does_not_run_away() {
+    use botbowl_engine::core::model::BoardDims;
+    let state = GameStateBuilder::new()
+        .with_board_dims(BoardDims::new(16, 7, 3))
+        .add_home_player(Position::new((12, 3)))
+        .add_ball_pos(Position::new((14, 3)))
+        .build();
+    let (_, t) = search(&state, 400, 0);
+    assert_per_descent_totals(&t, 400);
+    assert!(
+        t.plies.max < 40,
+        "a 400-descent search runs a {}-ply line: {t:?}",
+        t.plies.max
+    );
+    assert!(
+        t.valued.chance * 4 < t.descents,
+        "most descents end on a fresh chance node: {t:?}"
+    );
+}
