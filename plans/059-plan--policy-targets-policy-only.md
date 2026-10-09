@@ -1,6 +1,6 @@
 # Plan 059 — policy targets again, judged by policy-only drives
 
-**Status:** exp069 done 2026-10-08 12:30 (§4). **Adopted (the user, 2026-10-08): the loop trains on cq τ=50 from gen09's training on** (`launch_plan058.sh`); judge it by policy-only lineage matches over a few generations. No target clearly beats τ=100 after one step; τ=50 is the only candidate (value intact, log P(played) 5x, policy-only +0.009 ± 0.005). One-step policy-only drives are too blunt to settle it (§5).
+**Status:** exp069 done 2026-10-08 12:30 (§4). Adopted 2026-10-08 for gen09-11; **reverted 2026-10-09 (the user): back to cq τ=100 from gen12's training** after §7's read-out. No target clearly beats τ=100 after one step; τ=50 is the only candidate (value intact, log P(played) 5x, policy-only +0.009 ± 0.005). One-step policy-only drives are too blunt to settle it (§5).
 
 ## 1. Why
 
@@ -138,3 +138,5 @@ three-step spans did not see identical data. Neither explains a policy that does
 **Recommendation: return to cq τ=100** (the user decides). The improvement the search finds is
 not what the policy learns faster at τ=50; the next lever is elsewhere (more data per generation
 with the laptop, the value head, or the learning rate).
+
+**Reverted (the user, 2026-10-09):** cq τ=100 again from gen12's training (`8f1fbcd`); the loop stops between gen12's mc-label and prepare and relaunches.

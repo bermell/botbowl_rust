@@ -26,7 +26,7 @@ Benchmarks, defined once:
 Recipe, all generations (`scripts/launch_plan058.sh`): warm start from the previous generation's
 `.pt` at lr 5e-5, 3 epochs, `--freeze-bn --eval-at 250,500`, `--select-on combined
 --eval-every 1000`, `--value-weight 0.25 --per-drive-value-weight`; `prepare --policy-target cq
---tau 100` (**τ=50 from gen09**), `--value-blend 1.0` on the MC-labelled shards (8 policy-only
+--tau 100` (**τ=50 for gen09-11**, back to 100 from gen12), `--value-blend 1.0` on the MC-labelled shards (8 policy-only
 playouts per sample); window = the last 3 generations' train shards (0-3, 5, 6), val = their
 shards 4, 7; samples with fewer than two children dropped from gen04's training on.
 
