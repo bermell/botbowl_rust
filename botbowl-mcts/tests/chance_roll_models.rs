@@ -413,7 +413,6 @@ fn a_wildly_inaccurate_pass_deviates_at_its_exact_landing_odds() {
         (target, TeamType::Home, PlayerStatus::Up),
         (Position::new((6, 3)), TeamType::Home, PlayerStatus::Up),
         (Position::new((5, 4)), TeamType::Home, PlayerStatus::Up),
-        (Position::new((24, 14)), TeamType::Away, PlayerStatus::Up),
     ];
     let state = paused_on_pass_landing(None, thrower, target, &others, RequestedRoll::Deviate);
     assert_eq!(children(&state, RollModel::default()).len(), 1);
@@ -433,7 +432,6 @@ fn pass_landing_children_mirror_with_the_board() {
             (target, TeamType::Home, PlayerStatus::Up),
             (Position::new((14, 3)), TeamType::Home, PlayerStatus::Up),
             (Position::new((7, 6)), TeamType::Home, PlayerStatus::Up),
-            (Position::new((24, 14)), TeamType::Away, PlayerStatus::Up),
         ];
         let state = paused_on_pass_landing(None, thrower, target, &others, want);
         // The mirror: Away throws from the reflected square. Build it with Away as the passing
@@ -565,14 +563,14 @@ fn throw_in_landing(state: &GameState, r: RollResult) -> Result<(Position, bool)
 
 #[test]
 fn a_throw_in_lands_at_its_exact_odds_grouped_by_consequence() {
-    // Full pitch, ball out over the bottom sideline at x = 10; a standing receiver and a downed
+    // The 16x9 board (fits every build), ball out over the bottom sideline at x = 8; a standing receiver and a downed
     // player where throws land.
-    let ball = Position::new((10, 15));
+    let ball = Position::new((8, 9));
     let others = [
-        (Position::new((10, 10)), TeamType::Away, PlayerStatus::Up),
-        (Position::new((12, 12)), TeamType::Home, PlayerStatus::Down),
+        (Position::new((8, 6)), TeamType::Away, PlayerStatus::Up),
+        (Position::new((10, 7)), TeamType::Home, PlayerStatus::Down),
     ];
-    let state = paused_on_throw_in((28, 17, 11), ball, Direction::down(), &others).expect("full pitch");
+    let state = paused_on_throw_in((18, 11, 6), ball, Direction::down(), &others).expect("16x9 fits every build");
     assert_eq!(
         children(&state, RollModel::default()).len(),
         1,
@@ -593,7 +591,7 @@ fn a_throw_in_lands_at_its_exact_odds_grouped_by_consequence() {
             Ok(_) => {}
         }
     }
-    assert!(catch.contains_key(&(10, 10)), "the receiver is reachable: {catch:?}");
+    assert!(catch.contains_key(&(8, 6)), "the receiver is reachable: {catch:?}");
     for (r, p) in &outcomes {
         match throw_in_landing(&state, *r) {
             Err(()) => assert!((p - out).abs() < 1e-5, "out {p} vs {out}"),
@@ -605,16 +603,13 @@ fn a_throw_in_lands_at_its_exact_odds_grouped_by_consequence() {
 
 #[test]
 fn a_rethrow_falls_back_to_the_scripted_throw() {
-    let ball = Position::new((10, 15));
-    let state = paused_on_throw_in((28, 17, 11), ball, Direction::down(), &[]).expect("full pitch");
-    let out_child = children(&state, grouped_throw_ins())
+    // Two squares from the corner: the diagonal back toward it goes out after two squares.
+    let ball = Position::new((3, 9));
+    let state = paused_on_throw_in((18, 11, 6), ball, Direction::down(), &[]).expect("16x9 fits every build");
+    let (r, _) = children(&state, grouped_throw_ins())
         .into_iter()
-        .find(|(r, _)| throw_in_landing(&state, *r).is_err());
-    let Some((r, _)) = out_child else {
-        // A throw from mid-sideline on the full pitch can go out over the far side only with a
-        // long diagonal; if none does, there is nothing to re-throw.
-        return;
-    };
+        .find(|(r, _)| throw_in_landing(&state, *r).is_err())
+        .expect("a throw that goes out again");
     let rethrow = after(&state, r);
     assert_eq!(rethrow.pending_roll, Some(RequestedRoll::ThrowIn));
     let again = children(&rethrow, grouped_throw_ins());
