@@ -33,6 +33,7 @@ use recon_mcts::{
 };
 
 use crate::action::{BbAction, BbPlayer};
+use crate::chance_stats::{RollKind, CHANCE_STATS};
 use crate::exploration::{sample_index, ExploreStep, RootNoise, RootNoiseSpec};
 use crate::gumbel::{ForcedRoot, Halving, RootChild};
 use crate::priors::prior_for_engine_action;
@@ -1064,9 +1065,12 @@ impl GameDynamics for BloodBowlDynamics {
         // true pass/fail branches and turnover-causing failures change it.
         if let Some(req) = state.pending_roll.as_ref() {
             let outcomes = roll_outcomes::enumerate_with(state, req, self.chance_model);
-            if outcomes.len() > 1 && roll_outcomes::outcomes_may_coincide(req) {
-                return Some(self.merge_coinciding_outcomes(state, outcomes));
-            }
+            let outcomes = if outcomes.len() > 1 && roll_outcomes::outcomes_may_coincide(req) {
+                self.merge_coinciding_outcomes(state, outcomes)
+            } else {
+                outcomes
+            };
+            CHANCE_STATS.record_created(RollKind::of(state, req), outcomes.len());
             return Some(outcomes);
         }
 
@@ -1341,7 +1345,8 @@ impl GameDynamics for BloodBowlDynamics {
         // outcomes as fast as possible is what closes that window.
         // `BbAction::Chance` carries `prob_bits`; `Player` variants
         // never appear here (we're under `pending_roll.is_some()`).
-        if parent_node_state.pending_roll.is_some() {
+        if let Some(req) = parent_node_state.pending_roll.as_ref() {
+            CHANCE_STATS.record_visit(RollKind::of(parent_node_state, req));
             // No side is "to move" at a chance node; the acting team's frame
             // is the right one, since the roll is resolving its action.
             let tie_frame = MoverFrame::for_team(parent_node_state, parent_node_state.info.team_turn);
@@ -2886,6 +2891,7 @@ impl MctsBot {
                     // Cumulative over the process, not per search — plan 031
                     // D8 wants a rate over a whole run, so the last line wins.
                     eprintln!("{}", LEAF_STATS.summary());
+                    eprintln!("{}", CHANCE_STATS.summary());
                 }
                 if dump_stats {
                     let info = tree.get_registry_info();

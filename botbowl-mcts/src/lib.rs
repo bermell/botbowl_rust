@@ -1,5 +1,6 @@
 pub mod action;
 pub mod block_dice;
+pub mod chance_stats;
 pub mod dynamics;
 pub mod exploration;
 pub mod gumbel;

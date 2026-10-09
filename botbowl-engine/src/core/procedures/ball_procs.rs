@@ -68,6 +68,11 @@ impl Bounce {
     pub fn new_with_kick_arg(kick: bool) -> AnyProc {
         AnyProc::Bounce(Bounce { kick })
     }
+    /// A kickoff bounce: landing out of bounds or on the kicking team's half is a touchback.
+    /// Public so MCTS's chance model can tell the touchback squares apart (plan 061).
+    pub fn is_kick(&self) -> bool {
+        self.kick
+    }
 }
 impl Procedure for Bounce {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
