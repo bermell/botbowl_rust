@@ -121,8 +121,13 @@ fn handle(app: App, msg: ServerMsg) {
                 .view
                 .with(|current| current.as_ref().is_none_or(|c| view.seq >= c.seq));
             if fresh {
-                app.thinking.set(None);
+                // `bot_thinking` is the view of the board the search is
+                // about: the spinner stays up until the next one.
+                if !view.bot_thinking {
+                    app.thinking.set(None);
+                }
                 app.menu.set(None);
+                app.selection.set(None);
                 // The server is the authority on pacing — it may have clamped
                 // or carried a mode across a new game.
                 app.step_mode.set(view.step_mode);
@@ -150,8 +155,12 @@ fn handle(app: App, msg: ServerMsg) {
                 log.truncate(at);
             }
         }),
-        ServerMsg::BotThinking { team, budget } => {
-            app.thinking.set(Some(format!("{team:?} thinking — {budget}")));
+        ServerMsg::BotThinking { team, .. } => app.thinking.set(Some(team)),
+        // A preview of a board that has since moved on is no use.
+        ServerMsg::Selection(selection) => {
+            if app.view.with_untracked(|v| v.as_ref().is_some_and(|v| v.seq == selection.seq)) {
+                app.selection.set(Some(*selection));
+            }
         }
         ServerMsg::Decision(record) => {
             // Following the game: a new search replaces the tree the explorer

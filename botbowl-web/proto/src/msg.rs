@@ -395,6 +395,15 @@ impl StepMode {
 pub enum ClientMsg {
     NewGame(GameSpec),
     Act(Action),
+    /// Several actions as one decision — a declaration and its first target
+    /// ([`crate::view::IntentView`]). One undo point; dice in between are
+    /// rolled, and the chain stops at the first action no longer legal.
+    ActChain(Vec<Action>),
+    /// Preview a player of the side to act: answered with
+    /// [`ServerMsg::Selection`]. Changes nothing.
+    Select {
+        pos: crate::action::Position,
+    },
     /// Play out the rest of the human's setup with the named formation (one
     /// of `SetupView::formations`). Ignored outside the human's setup.
     AutoSetup(String),
@@ -460,6 +469,8 @@ pub enum ServerMsg {
         team: TeamType,
         budget: String,
     },
+    /// Answer to [`ClientMsg::Select`].
+    Selection(Box<crate::view::SelectionView>),
     /// One decision was taken — by a human or a bot. Every decision is
     /// logged, so the decision log can show the net's read of a human's move
     /// next to the search behind a bot's.

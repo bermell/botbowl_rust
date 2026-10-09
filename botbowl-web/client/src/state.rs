@@ -11,7 +11,7 @@ use botbowl_web_proto::log::LogEntry;
 use botbowl_web_proto::msg::{GameSpec, LobbyInfo, StepMode};
 use botbowl_web_proto::search::{NodeExpansion, SearchReport};
 use botbowl_web_proto::team::TeamDef;
-use botbowl_web_proto::view::ViewState;
+use botbowl_web_proto::view::{SelectionView, ViewState};
 use botbowl_web_proto::{Action, Position, TeamType};
 use leptos::prelude::*;
 
@@ -141,7 +141,12 @@ pub struct App {
     /// Where the explorer currently is, as an edge path from the root.
     pub node_path: RwSignal<Vec<botbowl_web_proto::search::SearchEdge>>,
     pub errors: RwSignal<Vec<String>>,
-    pub thinking: RwSignal<Option<String>>,
+    /// The side whose bot is searching right now — its dugout spins.
+    pub thinking: RwSignal<Option<TeamType>>,
+    /// The player the human has clicked, and what a click on each square
+    /// would now do — the server's answer to `ClientMsg::Select`. Dropped
+    /// whenever a new board arrives.
+    pub selection: RwSignal<Option<SelectionView>>,
     pub game_over: RwSignal<Option<(Option<TeamType>, u8, u8)>>,
     /// A random-start drive ended: attacker, who scored, the score.
     pub drive_over: RwSignal<Option<DriveOutcome>>,
@@ -206,6 +211,7 @@ impl App {
             node_path: RwSignal::new(Vec::new()),
             errors: RwSignal::new(Vec::new()),
             thinking: RwSignal::new(None),
+            selection: RwSignal::new(None),
             game_over: RwSignal::new(None),
             drive_over: RwSignal::new(None),
             teams: RwSignal::new(Vec::new()),
@@ -317,6 +323,7 @@ impl App {
         self.game_over.set(None);
         self.drive_over.set(None);
         self.thinking.set(None);
+        self.selection.set(None);
         self.menu.set(None);
         self.hypothetical.set(None);
         self.pinned.set(None);
@@ -337,16 +344,42 @@ impl App {
 
 /// Where a click on a square should go.
 pub enum Click {
+    /// Nothing to do here: drop any selection.
     Nothing,
     Send(Action),
+    /// A declaration and its target, as one decision.
+    Chain(Vec<Action>),
+    /// Ask the server what this player could do (`ClientMsg::Select`).
+    Select(Position),
     OpenMenu(Menu),
 }
 
+/// A click, resolved: a target of the selected player first; then the
+/// square's own action when it has exactly one that is not a declaration
+/// (the active player's next step, a placement, a push); then selecting a
+/// player who may be declared. No rules here — the server said what each
+/// square offers and what a selection's targets are.
 pub fn click_target(app: &App, pos: Position) -> Click {
+    if !app.my_turn() {
+        return Click::Nothing;
+    }
     let actions = app.actions_at(pos);
-    match actions.len() {
-        0 => Click::Nothing,
-        1 => Click::Send(Action::Positional(actions[0], pos)),
-        _ => Click::OpenMenu(Menu { pos, actions }),
+    if let Some(sel) = app.selection.get() {
+        if let Some(t) = sel.target(pos) {
+            return Click::Chain(vec![
+                Action::Positional(t.start, sel.player),
+                Action::Positional(t.action, t.pos),
+            ]);
+        }
+        if sel.player == pos {
+            return Click::Nothing;
+        }
+    }
+    let (starts, others): (Vec<_>, Vec<_>) = actions.into_iter().partition(|at| at.is_start());
+    match (others.len(), starts.is_empty()) {
+        (1, _) => Click::Send(Action::Positional(others[0], pos)),
+        (n, _) if n > 1 => Click::OpenMenu(Menu { pos, actions: others }),
+        (_, false) => Click::Select(pos),
+        _ => Click::Nothing,
     }
 }

@@ -63,6 +63,11 @@ pub struct Push {
 }
 
 impl Push {
+    /// The square of the player being pushed (the one a Stand Firm / Sidestep question is about).
+    pub fn on(&self) -> Position {
+        self.on
+    }
+
     pub fn new(from: Position, on: Position) -> AnyProc {
         AnyProc::Push(Push {
             from,

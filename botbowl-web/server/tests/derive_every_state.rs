@@ -75,6 +75,18 @@ fn check(state: &GameState) {
         state.proc_stack_top()
     );
 
+    // Every selection preview must be a real one: each target a legal
+    // declaration followed by an action the declaration then offers.
+    if state.pending_roll.is_none() {
+        for sq in view.squares.iter().filter(|s| s.actions.iter().any(|a| a.is_start())) {
+            let sel = botbowl_web_server::view::selection(state, sq.pos, 0).expect("a declarable player");
+            for t in &sel.targets {
+                assert!(sel.starts.contains(&t.start), "{t:?} from an undeclared start");
+                assert!(t.prob.is_none_or(|p| (0.0..=1.0).contains(&p)), "{t:?}");
+            }
+        }
+    }
+
     if state.pending_roll.is_none() {
         assert!(
             !offered.is_empty(),
