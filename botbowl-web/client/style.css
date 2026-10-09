@@ -629,3 +629,6 @@ button.picture:hover { border-color: var(--accent); }
 /* Player sprites: an uploaded picture can be any size, so fit it to the square. */
 .sq img.player, .dugout img { object-fit: contain; }
 .lobby h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.check-option { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; cursor: pointer; }
+.check-option input { accent-color: var(--accent); }
+.check-option .big { font-weight: 600; }

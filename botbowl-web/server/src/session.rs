@@ -193,6 +193,15 @@ impl GameSession {
                 drives::position_state(&RandomStartBias::default(), dims, seed)
             }
         };
+        // A resumed recording is played as it was recorded.
+        if spec.no_natural_one_turn && !matches!(spec.start, StartFrom::Recording { .. }) {
+            let cap = spec.board.no_one_turn_ma();
+            teams::cap_ma(&mut state, cap);
+            start_note = Some(match start_note {
+                Some(note) => format!("{note} · no natural one-turn (MA capped at {cap})"),
+                None => format!("no natural one-turn: MA capped at {cap}"),
+            });
+        }
         let drive = spec
             .start
             .is_drive()

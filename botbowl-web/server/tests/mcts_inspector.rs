@@ -140,6 +140,7 @@ async fn the_mcts_opponent_reports_the_search_behind_each_move() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -480,6 +481,7 @@ async fn two_mcts_bots_each_keep_a_walkable_tree() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;

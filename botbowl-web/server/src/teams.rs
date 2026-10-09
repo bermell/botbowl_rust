@@ -81,6 +81,20 @@ pub fn apply(state: &mut GameState, team: TeamType, def: &TeamDef) -> Result<(),
     Ok(())
 }
 
+/// Lower every player's MA to at most `cap`, benched and fielded alike — the lobby's "no natural
+/// one-turn" ([`botbowl_web_proto::msg::GameSpec::no_natural_one_turn`]).
+pub fn cap_ma(state: &mut GameState, cap: u8) {
+    for p in state.get_dugout_mut() {
+        p.stats.ma = p.stats.ma.min(cap);
+    }
+    let fielded: Vec<_> = state.get_players_on_pitch().map(|p| p.id).collect();
+    for id in fielded {
+        if let Ok(p) = state.get_mut_player(id) {
+            p.stats.ma = p.stats.ma.min(cap);
+        }
+    }
+}
+
 /// Which picture each player is drawn with: the two sides' teams, resolved per player by
 /// [`TeamDef::position_of`], falling back to the first position of the player's role.
 #[derive(Debug, Clone, Default)]
@@ -106,6 +120,16 @@ impl Looks {
             .map(|s| mirror::skill_label(s).to_string())
             .collect();
         def.position_of(role, stats.ma, stats.str_, stats.ag, stats.av, &skills)
+            // MA may have been capped ("no natural one-turn"): the same position with more.
+            .or_else(|| {
+                def.positions.iter().find(|p| {
+                    p.role == role
+                        && p.ma >= stats.ma
+                        && (p.st, p.ag, p.av) == (stats.str_, stats.ag, stats.av)
+                        && p.skills.iter().all(|s| skills.contains(s))
+                        && p.skills.len() == skills.len()
+                })
+            })
             .or_else(|| def.look_for_role(role))
             .map(|p| team::picture_sprite(&p.picture, team, used))
             .unwrap_or_else(|| role.sprite(team, used))
@@ -298,6 +322,33 @@ mod tests {
 
     fn dims() -> BoardDims {
         BoardDims::try_new(16, 9, 6).unwrap_or_else(|_| BoardDims::from_env())
+    }
+
+    /// "No natural one-turn": the cap is one short of the engine's own LOS-to-end-zone
+    /// distance on every board, and a capped player keeps their position's picture.
+    #[test]
+    fn the_one_turn_cap_falls_one_short_of_the_end_zone_and_keeps_the_pictures() {
+        use botbowl_web_proto::msg::BoardSpec;
+        for (w, h) in [(8, 3), (12, 5), (14, 7), (16, 9), (20, 9), (26, 15)] {
+            let spec = BoardSpec::new(w, h, 3);
+            let (ew, eh, n) = spec.engine_dims();
+            let Ok(dims) = BoardDims::try_new(ew, eh, n) else { continue };
+            assert_eq!(
+                spec.no_one_turn_ma() as i16,
+                dims.los_to_endzone_distance() as i16 - 1,
+                "{w}x{h}"
+            );
+        }
+
+        let mut state = GameStateBuilder::new_start_of_game_with(dims());
+        let human = botbowl_web_proto::team::builtin_teams().remove(0);
+        apply(&mut state, TeamType::Home, &human).unwrap();
+        let looks = Looks { teams: [Some(human), None] };
+        let before: Vec<String> = state.get_dugout().map(|p| looks.sprite(&p.stats, false)).collect();
+        cap_ma(&mut state, 5);
+        assert!(state.get_dugout().all(|p| p.stats.ma <= 5));
+        let after: Vec<String> = state.get_dugout().map(|p| looks.sprite(&p.stats, false)).collect();
+        assert_eq!(before, after, "a capped Catcher is still drawn as a Catcher");
     }
 
     #[test]

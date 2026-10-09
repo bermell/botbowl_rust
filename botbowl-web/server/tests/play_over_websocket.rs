@@ -123,6 +123,7 @@ async fn play_a_whole_game(addr: SocketAddr, board: BoardSpec, seed: u64) -> Out
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -256,6 +257,7 @@ async fn undo_rewinds_across_the_bots_reply() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -339,6 +341,7 @@ async fn bad_input_is_reported_not_fatal() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -359,6 +362,7 @@ async fn bad_input_is_reported_not_fatal() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -382,6 +386,7 @@ async fn bad_input_is_reported_not_fatal() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -415,6 +420,7 @@ fn new_game(board: BoardSpec, seed: u64) -> ClientMsg {
         start: StartFrom::CoinToss,
         home_team: "Human".into(),
         away_team: "Human".into(),
+        no_natural_one_turn: true,
     })
 }
 
@@ -513,6 +519,7 @@ async fn a_rewind_restores_an_earlier_step_and_holds_there() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -682,6 +689,7 @@ async fn two_bots_play_a_whole_game_and_can_be_paused() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -746,6 +754,7 @@ async fn a_random_drive_ends_when_the_drive_does() {
                 },
                 home_team: "Orc".into(),
                 away_team: "Skaven".into(),
+                no_natural_one_turn: true,
             }),
         )
         .await;
@@ -786,6 +795,11 @@ async fn a_random_drive_ends_when_the_drive_does() {
         // filler picture.
         assert!(pictures.iter().any(|s| s.contains("olineman1")), "{pictures:?}");
         assert!(pictures.iter().any(|s| s.contains("sklineman1")), "{pictures:?}");
+        // No natural one-turn: nobody on the pitch can walk the line-to-end-zone distance.
+        let cap = test_board().no_one_turn_ma();
+        for p in first.squares.iter().filter_map(|s| s.player.as_ref()) {
+            assert!(p.ma <= cap, "MA {} above the cap {cap}", p.ma);
+        }
     }
 }
 
@@ -809,6 +823,7 @@ async fn teams_are_chosen_by_name() {
         start: StartFrom::CoinToss,
         home_team: "Nobody".into(),
         away_team: "Dwarf".into(),
+        no_natural_one_turn: true,
     };
     send(&mut socket, ClientMsg::NewGame(spec.clone())).await;
     match recv(&mut socket).await {
@@ -931,6 +946,7 @@ async fn auto_setup_finishes_the_humans_setup_as_one_undoable_decision() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;

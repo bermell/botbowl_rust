@@ -304,6 +304,16 @@ search threads (`--max-workers` / the hub's `--play-max-workers`), the team dire
 defaults to `workers: Some(1)`. Opening the page shows a slow game on one thread per bot, not
 a machine-wide search. Keep it that way.
 
+## No natural one-turn (lobby option, on by default)
+
+`GameSpec::no_natural_one_turn` caps every player's MA at `BoardSpec::no_one_turn_ma()` — one short
+of the LOS-to-end-zone distance — at game start (`teams::cap_ma`, dugout and fielded alike, coin
+toss and random drives; a resumed recording is left as recorded). A natural one-turn (hand the
+ball to a fast player on the line, walk it in) is otherwise free on the small boards. It is the
+user's definition, not eval's: `BoardDims::ma_cap` (botbowl-play's ladder) also rules out the two
+GFIs and is stricter (MA 4 on 14x7 vs 6 here). `Looks::sprite` matches a capped player to the same
+position with a higher MA so they keep their picture.
+
 ## Random-start drives
 
 `StartFrom::RandomDrive { seed }` starts from `botbowl_play::drives::position_state` with the
