@@ -142,7 +142,11 @@ fn a_bounce_onto_a_standing_player_is_a_catch_attempt_and_onto_a_downed_one_boun
     assert!(outcomes.iter().all(|(_, p)| (*p - 0.125).abs() < 1e-6), "{outcomes:?}");
     let catch = after(&state, d8_to(ball, standing));
     assert!(outcomes.iter().any(|(r, _)| *r == d8_to(ball, standing)));
-    assert_eq!(catch.proc_stack_top(), Some("Catch"), "a standing player tries to catch");
+    assert_eq!(
+        catch.proc_stack_top(),
+        Some("Catch"),
+        "a standing player tries to catch"
+    );
     assert!(matches!(catch.pending_roll, Some(RequestedRoll::D6PassFail(_))));
     let on = after(&state, d8_to(ball, down));
     assert_eq!(on.proc_stack_top(), Some("Bounce"), "a downed player cannot catch");
@@ -181,7 +185,11 @@ fn a_bounce_against_the_edge_keeps_one_out_of_bounds_child() {
         .collect();
     assert_eq!(out.len(), 1);
     assert!((out[0].1 - 3.0 / 8.0).abs() < 1e-6);
-    assert_eq!(out[0].0, RollResult::D8(D8::from(Direction::up())), "the straight-out exit");
+    assert_eq!(
+        out[0].0,
+        RollResult::D8(D8::from(Direction::up())),
+        "the straight-out exit"
+    );
 }
 
 /// A kickoff bounce: every direction that ends in a touchback (out, or onto the kicking half)
@@ -297,7 +305,9 @@ fn engine_landings(state: &GameState) -> Vec<(RollResult, Option<Position>)> {
             v
         }
         Some(RequestedRoll::Deviate) => (1..=6u8)
-            .flat_map(|n| (1..=8u8).map(move |d| RollResult::Deviate(D6::try_from(n).unwrap(), D8::try_from(d).unwrap())))
+            .flat_map(|n| {
+                (1..=8u8).map(move |d| RollResult::Deviate(D6::try_from(n).unwrap(), D8::try_from(d).unwrap()))
+            })
             .collect(),
         other => panic!("not a pass landing: {other:?}"),
     };
@@ -313,7 +323,10 @@ fn landing_of(state: &GameState, r: RollResult) -> Option<Position> {
     }
     match s.ball {
         BallState::InAir(p) | BallState::OnGround(p) => Some(p),
-        other => panic!("unexpected ball after the pass: {other:?} (top {:?})", s.proc_stack_top()),
+        other => panic!(
+            "unexpected ball after the pass: {other:?} (top {:?})",
+            s.proc_stack_top()
+        ),
     }
 }
 
@@ -345,11 +358,18 @@ fn check_pass_landing(state: &GameState) {
         }
     }
     let mass = |pred: &dyn Fn(Option<Position>) -> bool| -> f32 {
-        outcomes.iter().filter(|(r, _)| pred(landing_of(state, *r))).map(|(_, p)| p).sum()
+        outcomes
+            .iter()
+            .filter(|(r, _)| pred(landing_of(state, *r)))
+            .map(|(_, p)| p)
+            .sum()
     };
     let empty = mass(&|l| l.is_some_and(|p| state.get_player_at(p).is_none()));
     let exact_empty = 1.0 - out_mass - catch_mass.values().sum::<f32>();
-    assert!((empty - exact_empty).abs() < 1e-5, "empty mass {empty} vs exact {exact_empty}");
+    assert!(
+        (empty - exact_empty).abs() < 1e-5,
+        "empty mass {empty} vs exact {exact_empty}"
+    );
 }
 
 #[test]
@@ -553,7 +573,11 @@ fn a_throw_in_lands_at_its_exact_odds_grouped_by_consequence() {
         (Position::new((12, 12)), TeamType::Home, PlayerStatus::Down),
     ];
     let state = paused_on_throw_in((28, 17, 11), ball, Direction::down(), &others).expect("full pitch");
-    assert_eq!(children(&state, RollModel::default()).len(), 1, "shipped: one scripted throw");
+    assert_eq!(
+        children(&state, RollModel::default()).len(),
+        1,
+        "shipped: one scripted throw"
+    );
     let outcomes = children(&state, grouped_throw_ins());
     assert_distribution(&outcomes);
     assert!(outcomes.len() <= 10, "{outcomes:?}");
@@ -648,13 +672,18 @@ fn chance_tree_size(state: &GameState, model: RollModel, depth: usize) -> (usize
         }
     }
     let Some(req) = s.pending_roll else { return (0, depth) };
-    if !matches!(req, RequestedRoll::ThrowIn | RequestedRoll::D8 | RequestedRoll::D6PassFail(_)) {
+    if !matches!(
+        req,
+        RequestedRoll::ThrowIn | RequestedRoll::D8 | RequestedRoll::D6PassFail(_)
+    ) {
         return (0, depth);
     }
     let mut nodes = 1;
     let mut max_depth = depth;
     for a in roll_outcomes::enumerate_full(&s, &req, ChanceModel::Exact, model) {
-        let BbAction::Chance { result, .. } = a else { unreachable!() };
+        let BbAction::Chance { result, .. } = a else {
+            unreachable!()
+        };
         if matches!(req, RequestedRoll::D6PassFail(_)) && result == RollResult::Pass {
             continue; // caught
         }

@@ -126,7 +126,10 @@ impl Census {
             "roll census: {} drives replayed ({} skipped, {} diverged), {} decisions",
             self.trajectories, self.skipped, self.diverged, self.decisions
         );
-        println!("{:<16} {:>9} {:>10} {:>14}", "kind", "rolls", "per drive", "per decision");
+        println!(
+            "{:<16} {:>9} {:>10} {:>14}",
+            "kind", "rolls", "per drive", "per decision"
+        );
         let mut rows: Vec<_> = self.rolls.iter().collect();
         rows.sort_by(|a, b| b.1.cmp(a.1));
         for (k, n) in rows {

@@ -55,3 +55,25 @@ budget counts descents, and the search runs on one thread. Its rival at equal co
 
 `policy_only.toml` (plan 054 E5) is `gumbel_m = 1` with no noise: it plays the prior's argmax.
 Against `gumbel16_f1000` on the same net it measures how much the search adds to the policy.
+
+Chance-model knobs (plan 061; every one off by default, so a preset that does not name them is
+the shipped search):
+
+```toml
+bounce_model = "settle"         # settle (shipped: drop player squares) | catch (a bounce onto a standing player is a catch)
+pass_scatter_model = "scripted" # scripted (scatter up x3, deviate 1 up) | grouped (exact landing odds, grouped by consequence)
+throw_in_model = "scripted"     # scripted (shortest in-bounds throw) | grouped (exact odds; re-throws stay scripted)
+chance_backup = "complete"      # complete | partial | mass | sampled | widen — when a chance node has a value
+chance_mass = 0.9               # mass: the scored probability a value needs
+chance_widen_c = 1.0            # widen: k = ceil(c (N+1)^alpha) outcomes open
+chance_widen_alpha = 0.5
+```
+
+The arms of plan 061, each a `gumbel16_f1000` with one change, played against `gumbel16_f1000` on
+the same net: `chance_bounce`, `chance_pass`, `chance_throw_in` (roll models, complete backup),
+`chance_partial`, `chance_mass90`, `chance_sampled`, `chance_widen` (backup modes, shipped roll
+models) and `chance_all_partial` (every roll model under a partial backup; re-point its
+`chance_backup` at the winning mode). Environment spellings: `BLOOD_MCTS_BOUNCE=catch`,
+`BLOOD_MCTS_PASS_SCATTER=grouped`, `BLOOD_MCTS_THROW_IN=grouped`,
+`BLOOD_MCTS_CHANCE_BACKUP=partial|mass|sampled|widen`, `BLOOD_MCTS_CHANCE_MASS`,
+`BLOOD_MCTS_CHANCE_WIDEN_C`, `BLOOD_MCTS_CHANCE_WIDEN_ALPHA`.

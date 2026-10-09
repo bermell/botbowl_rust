@@ -635,7 +635,10 @@ enum LandingClass {
 /// - `Land`: the `EMPTY_CHILDREN` likeliest squares, scaled up in proportion to carry all of it.
 ///
 /// Ties between squares go by [`Frame::square_key`], so the choice mirrors with the board.
-fn grouped_landing_children(items: impl IntoIterator<Item = (LandingClass, Position, RollResult, u32)>, f: Frame) -> Vec<BbAction> {
+fn grouped_landing_children(
+    items: impl IntoIterator<Item = (LandingClass, Position, RollResult, u32)>,
+    f: Frame,
+) -> Vec<BbAction> {
     // (class, square key) → (count, (rep key, rep result), square)
     let mut groups: std::collections::BTreeMap<(LandingClass, (i32, i32)), (u32, (u32, RollResult), Position)> =
         Default::default();
@@ -734,7 +737,12 @@ fn pass_landing_grouped(state: &GameState, req: &RequestedRoll) -> Vec<BbAction>
                     let landing = walk(from, &mut std::iter::repeat(d).take(n as usize));
                     let (class, sq) = classify(landing);
                     let key = n as u32 * 8 + f.dir_rank(d);
-                    items.push((class, sq, RollResult::Deviate(D6::try_from(n).unwrap(), D8::from(d)), key));
+                    items.push((
+                        class,
+                        sq,
+                        RollResult::Deviate(D6::try_from(n).unwrap(), D8::from(d)),
+                        key,
+                    ));
                 }
             }
         }
@@ -790,7 +798,15 @@ fn throw_in_grouped(state: &GameState) -> Vec<BbAction> {
                     (LandingClass::Land, target)
                 };
                 let key = f.dir_rank(dir) * 16 + (a + b) as u32;
-                items.push((class, sq, RollResult::ThrowIn { direction: d3, distance }, key));
+                items.push((
+                    class,
+                    sq,
+                    RollResult::ThrowIn {
+                        direction: d3,
+                        distance,
+                    },
+                    key,
+                ));
             }
         }
     }

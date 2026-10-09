@@ -157,3 +157,79 @@ fn search_config_carrying_a_preset_is_still_copy() {
     let back: SearchConfig = postcard::from_bytes(&bytes).expect("decode");
     assert_eq!(back.config, sc.config);
 }
+
+/// Every committed preset loads (a renamed or removed knob must not leave a broken file behind).
+#[test]
+fn every_committed_preset_loads() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("cfgs");
+    let mut n = 0;
+    for entry in std::fs::read_dir(&dir).expect("cfgs/") {
+        let path = entry.expect("entry").path();
+        // `validation_pairs.toml` is plan 051's harness list, not a bot preset.
+        let preset = path.extension().and_then(|e| e.to_str()) == Some("toml")
+            && path.file_name().and_then(|n| n.to_str()) != Some("validation_pairs.toml");
+        if preset {
+            load_mcts_config(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            n += 1;
+        }
+    }
+    assert!(n >= 10, "only {n} presets found in {}", dir.display());
+}
+
+/// Plan 061: each chance preset names its knobs, in the CLI's vocabulary, and differs from its
+/// control `gumbel16_f1000` in nothing else. A chance preset survives the hub's postcard trip.
+#[test]
+fn the_plan061_presets_differ_from_their_control_only_in_chance_knobs() {
+    use botbowl_mcts::dynamics::ChanceBackup;
+    use botbowl_mcts::roll_outcomes::{BounceModel, PassScatterModel, ThrowInModel};
+    let cfgs = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("cfgs");
+    let load = |name: &str| load_mcts_config(&cfgs.join(name)).expect(name).config;
+    let control = load("gumbel16_f1000.toml");
+    let strip = |mut c: MctsConfig| {
+        let d = MctsConfig::new();
+        c.bounce_model = d.bounce_model;
+        c.pass_scatter_model = d.pass_scatter_model;
+        c.throw_in_model = d.throw_in_model;
+        c.chance_backup = d.chance_backup;
+        c.chance_mass = d.chance_mass;
+        c.chance_widen_c = d.chance_widen_c;
+        c.chance_widen_alpha = d.chance_widen_alpha;
+        c
+    };
+    type Check = fn(&MctsConfig) -> bool;
+    let cases: [(&str, Check); 8] = [
+        ("chance_bounce.toml", |c| c.bounce_model == BounceModel::Catch),
+        ("chance_pass.toml", |c| {
+            c.pass_scatter_model == PassScatterModel::Grouped
+        }),
+        ("chance_throw_in.toml", |c| c.throw_in_model == ThrowInModel::Grouped),
+        ("chance_partial.toml", |c| c.chance_backup == ChanceBackup::Partial),
+        ("chance_mass90.toml", |c| {
+            c.chance_backup == ChanceBackup::Mass && c.chance_mass == 0.9
+        }),
+        ("chance_sampled.toml", |c| c.chance_backup == ChanceBackup::Sampled),
+        ("chance_widen.toml", |c| c.chance_backup == ChanceBackup::Widen),
+        ("chance_all_partial.toml", |c| {
+            c.bounce_model == BounceModel::Catch
+                && c.pass_scatter_model == PassScatterModel::Grouped
+                && c.throw_in_model == ThrowInModel::Grouped
+                && c.chance_backup == ChanceBackup::Partial
+        }),
+    ];
+    for (name, names_its_knob) in cases {
+        let c = load(name);
+        assert!(names_its_knob(&c), "{name}");
+        assert_eq!(strip(c), control, "{name} changes more than chance knobs");
+        let mut sc = SearchConfig::iterations(1000);
+        sc.config = Some(c);
+        let back: SearchConfig = postcard::from_bytes(&postcard::to_allocvec(&sc).unwrap()).unwrap();
+        assert_eq!(back.config, Some(c), "{name} over the wire");
+    }
+    assert_eq!(strip(control), control, "the control is on the shipped chance model");
+}

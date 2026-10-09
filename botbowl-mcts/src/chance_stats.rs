@@ -260,7 +260,10 @@ mod tests {
         assert_eq!(stats.get(RollKind::Bounce), (1, 7, 1));
         let line = stats.summary();
         assert!(line.starts_with("MCTS_CHANCE_STATS "), "{line}");
-        assert!(line.contains("throw_in=2/2/0") && line.contains("bounce=1/7/1"), "{line}");
+        assert!(
+            line.contains("throw_in=2/2/0") && line.contains("bounce=1/7/1"),
+            "{line}"
+        );
         assert!(!line.contains("block="), "unseen kinds stay out: {line}");
     }
 }

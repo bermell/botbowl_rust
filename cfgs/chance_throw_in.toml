@@ -1,0 +1,7 @@
+# Plan 061 arm A3: `gumbel16_f1000` with the first throw-in of a chain at its exact odds over 3
+# directions x 2D6, grouped by consequence; a re-throw or a late throw-in stays scripted so chains
+# end. Shipped: the shortest axis-aligned throw that leaves the origin. Chance backup unchanged.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+throw_in_model = "grouped"

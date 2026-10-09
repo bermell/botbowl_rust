@@ -1,0 +1,10 @@
+# Plan 061 arm C1: every new roll model (catch-aware bounce, grouped pass scatter/deviate, grouped
+# throw-in) under the partial chance backup — the width the roll models add is what the backup
+# modes exist to pay for. Re-point `chance_backup` at the winner of arms B1-B4 before running.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+bounce_model = "catch"
+pass_scatter_model = "grouped"
+throw_in_model = "grouped"
+chance_backup = "partial"

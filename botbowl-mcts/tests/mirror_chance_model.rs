@@ -171,5 +171,10 @@ fn catch_bounce_outcomes_are_mirror_invariant() {
         }
     }
     assert!(checked > 10, "only {checked} D8 states in the sweep");
-    assert!(failures.is_empty(), "{} not mirror-invariant:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} not mirror-invariant:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

@@ -1,0 +1,7 @@
+# Plan 061 arm A1: `gumbel16_f1000` with the catch-aware bounce model. A bounce onto a standing
+# player is the engine's catch attempt (then pass/fail), onto a downed player the ball bounces on;
+# the shipped `settle` model dropped both whenever the ball could land. Chance backup unchanged.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+bounce_model = "catch"
