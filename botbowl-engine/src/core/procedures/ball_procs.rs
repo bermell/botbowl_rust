@@ -373,6 +373,11 @@ impl Pass {
     pub fn new(pos: Position, pass: D6Target, modifier: i8) -> AnyProc {
         AnyProc::Pass(Pass { pos, pass, modifier })
     }
+    /// The square the pass is aimed at: an inaccurate pass scatters from here. Public so MCTS's
+    /// chance model can enumerate where the ball lands (plan 061).
+    pub fn target(&self) -> Position {
+        self.pos
+    }
 }
 impl Procedure for Pass {
     fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {

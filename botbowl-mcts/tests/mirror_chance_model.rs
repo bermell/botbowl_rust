@@ -141,3 +141,35 @@ fn the_sweep_reaches_direction_rolls() {
     );
     let _ = RollResult::Pass;
 }
+
+/// Plan 061 (a): the catch-aware bounce model mirrors too. Every D8 state of the sweep (live
+/// bounces, kick bounces, the weather's scripted D8) under `BounceModel::Catch`.
+#[test]
+fn catch_bounce_outcomes_are_mirror_invariant() {
+    use botbowl_mcts::dynamics::ChanceModel;
+    use botbowl_mcts::roll_outcomes::{BounceModel, RollModel};
+    let model = RollModel {
+        bounce: BounceModel::Catch,
+        ..RollModel::default()
+    };
+    let cases = pending_roll_states(150, 23_032);
+    let mut checked = 0usize;
+    let mut failures = Vec::new();
+    for (i, (s, req)) in cases.iter().enumerate() {
+        if *req != RequestedRoll::D8 {
+            continue;
+        }
+        let m = s.mirrored();
+        let direct = roll_outcomes::enumerate_full(s, req, ChanceModel::Exact, model);
+        let mirrored = roll_outcomes::enumerate_full(&m, req, ChanceModel::Exact, model);
+        let (Some(expected), Some(got)) = (distribution(&direct, true), distribution(&mirrored, false)) else {
+            continue;
+        };
+        checked += 1;
+        if expected != got {
+            failures.push(format!("case {i} ball {:?}\n  {expected:?}\n  {got:?}", s.ball));
+        }
+    }
+    assert!(checked > 10, "only {checked} D8 states in the sweep");
+    assert!(failures.is_empty(), "{} not mirror-invariant:\n{}", failures.len(), failures.join("\n"));
+}
