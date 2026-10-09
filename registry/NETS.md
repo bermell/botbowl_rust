@@ -45,7 +45,7 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen10 | gen09 | gen08-10 | f75eda5 | cq 50 | step 27000, ep 2 (0.8943) | +0.0048 / −0.0002 / +0.0010 / −0.0009 / −0.0012 | **0.203**, +0.003 (−0.7%) | on gen11: +0.001/+0.003/+0.004/+0.005; 0.67; **0.184**, −0.002 |
 | gen11 | gen10 | gen09-11 | f75eda5 | cq 50 | step 32000, ep 2 (0.8938) | +0.0024 / −0.0006 / −0.0006 / −0.0001 / −0.0039 | 0.205, +0.012 (**+1.1%, worse**) | on gen12: +0.001/+0.002/+0.002/+0.004 (weakest yet); 0.76; 0.195, +0.012 |
 | gen12 | gen11 | gen10-12 | 71827c9 | **cq 100** (back) | step 24000, ep 2 (0.8825) | −0.0053 / +0.0020 / −0.0013 / +0.0021 / +0.0012 (parent trained at τ=50) | **0.201**, −0.012 (**−1.9%**, best of the run) | on gen13: +0.001/+0.004/**+0.008**/**+0.012** MONOTONE; **1.08** (the run's best); 0.190, −0.012 |
-| gen13 | gen12 | gen11-13 | 71827c9 | cq 100 | step 27000, ep 2 (0.8749) | +0.0005 / +0.0008 / +0.0002 / +0.0018 / −0.0020 | **0.199**, +0.008 (−0.9%, best of the run) | (on gen14: pending) |
+| gen13 | gen12 | gen11-13 | 71827c9 | cq 100 | step 27000, ep 2 (0.8749) | +0.0005 / +0.0008 / +0.0002 / +0.0018 / −0.0020 | **0.199**, +0.008 (−0.9%, best of the run) | on gen14: +0.001/+0.001/+0.006/**+0.016** MONOTONE (largest @4000 of the run); 0.45; 0.198, −0.011 |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
