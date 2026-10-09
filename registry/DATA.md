@@ -29,6 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
+| 13 | v9 gen12 (back on τ=100) | 8×400 (5814) | 198,002 | 71827c9 | 48 local, 2 sidecars; 282 min, shared throughout with gen12's drive benchmark | TD/drive 0.851 |
 | 12 | v9 gen11 (last τ=50 net) | 8×400 (5816) | 198,405 | f75eda5 | 48 local, 2 sidecars, laptop 10; 109 min | |
 | 11 | v9 gen10 | 8×400 (5820) | 202,818 | f75eda5 | 48 local, 2 sidecars, laptop 10 (v17) from the start; **108 min** | laptop ~800 decisions/min at full speed, more than either local worker |
 | 10 | v9 gen09 (first τ=50 net) | 8×400 (5801) | 197,976 | f75eda5 | 48 local, 2 sidecars; laptop 10 from 21:40; 235 min (shared ~3.5 h with gen09's drives) | first corpus with the 14x5 throw-in fix: 14x5 depth 9.2 plies, 48% chance (gen09: 63, 93%); `runs/plan060/gen10_tree_stats.txt` |
