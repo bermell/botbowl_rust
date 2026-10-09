@@ -56,8 +56,9 @@ pub enum Command {
 /// `roll-census` (plan 061). See `roll_census.rs`.
 #[derive(clap::Args, Debug, Clone)]
 pub struct RollCensusArgs {
-    /// Trajectory shards (`dataset` output). Only random-start trajectories replay from their seed;
-    /// the rest (e.g. a `--next-drive` follow-on record) are counted as skipped.
+    /// Trajectory shards (`dataset` output). Random-start trajectories replay from their seed; a
+    /// `--next-drive` follow-on record (`drive` 2) continues from the record before it, so its
+    /// setup and kickoff rolls count too. Anything else is counted as skipped.
     #[arg(long, required = true, num_args = 1..)]
     pub corpus: Vec<String>,
     /// Stop after this many replayed trajectories (0 = all).

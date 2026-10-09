@@ -8,6 +8,44 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp070"></a>exp070: the chance model (plan 061), planned 2026-10-09
+
+- **Status:** planned, not run.
+- **Question:** the search still scripts three rolls.
+  - A bounce onto a player is dropped, although the engine makes a standing player try to catch
+    it.
+  - An inaccurate pass's scatter goes up x3, and a wildly inaccurate pass's deviate goes 1 up.
+  - The throw-in takes the shortest in-bounds throw.
+
+  Do exact (grouped) models of these help? And does any alternative to "a chance node has no value
+  until every outcome is scored" (`partial`, `mass` 0.9, `sampled`, `widen`) beat the shipped
+  `complete` backup?
+- **Setup:** `scripts/exp070_chance_model.sh`; code at the plan 061 branch (3bbcfc8..1364275,
+  hub protocol v18).
+  - **Bots:** v9 gen13 (`models/az_v7/bbnet_mix16x9v9_gen13.onnx`) on both sides, 1000 descents.
+    Each arm is a `cfgs/chance_*.toml` against `cfgs/gumbel16_f1000.toml`.
+  - **Drives:** paired contested drives on `runs/loopmix16x9g/positions/contested_{14x7,16x9}_gen04g.json`,
+    at most 800 per board.
+  - **SPRT:** A1-A3 (roll models) non-inferiority `0.47:0.5`; B1-B4 (backup modes) `0.5:0.55`.
+    C1 (every roll model under the B winner) runs `0.5:0.55` against the winner, then `0.47:0.5`
+    against the control.
+  - **CPU:** `scripts/perf_search_bench.sh` per arm.
+- **Result (arm 0, telemetry only):**
+  - **Real games.** `botbowl-ui roll-census` (16x9 build at the branch) over
+    `runs/loopmix16x9v9/gen13/shard{0,1}.jsonl`: 1449 drives, 0 diverged. Per drive: 1.30 live
+    bounces, 0.18 throw-ins, 0.45 kickoff deviates, **0.001 passes**. Live-bounce landing mass:
+    71.4% empty, 17.4% standing player, 3.2% downed player, 8.1% out. 21% of it is what the shipped
+    model drops.
+  - **In search.** gen13 on tract, 1000 descents, 6 drives per arm (seed 61000, 14x7/4 + 16x9/6,
+    one thread), per searched decision.
+    - Shipped: 36 bounce nodes (5.8 outcomes) and 7 throw-ins; 23% of chance backups withheld;
+      main line reaches the opponent's turn 73%.
+    - All roll models, complete backup: bounce passes ×3, 34% withheld, main line 43%.
+    - All roll models, partial backup: 0% withheld; own decisions per line 3.85 → 4.39, chance
+      share 45% → 38%, exact-outcome leaves 0.37% → 1.85%.
+    - Wall time ~2.6 s per decision in every arm (net-bound).
+- **Conclusion:** pending the drives. A2 (passes) is deferred: the loop's bots do not pass.
+
 ### Gradient balance: policy vs value at the shared trunk (plan 059 follow-up), 2026-10-09
 
 - **Question:** how do the policy and value losses split the gradient into the shared 64x6 trunk,

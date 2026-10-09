@@ -80,7 +80,7 @@ impl Census {
         }
     }
 
-    fn replay(&mut self, traj: &Trajectory) {
+    fn replay(&mut self, traj: &Trajectory, carried: Option<GameState>) -> Option<GameState> {
         let start = traj
             .meta
             .seed
@@ -88,14 +88,24 @@ impl Census {
             .and_then(|seed| bias_of(&traj.meta).map(|b| (b, seed)).map_err(|_| ()));
         let Ok((bias, seed)) = start else {
             self.skipped += 1;
-            return;
+            return None;
         };
-        let mut state = position_state(&bias, traj.meta.board_dims, seed);
+        // A `--next-drive` follow-on record (`drive` 2) starts where the previous record ended:
+        // the scoring step already stepped on to the next drive's first decision.
+        let follow_on = traj.meta.extra.get("drive").is_some_and(|d| d != "1");
+        let mut state = match (follow_on, carried) {
+            (false, _) => position_state(&bias, traj.meta.board_dims, seed),
+            (true, Some(s)) => s,
+            (true, None) => {
+                self.skipped += 1;
+                return None;
+            }
+        };
         let mut census = Census::default();
         for sample in &traj.samples {
             if state != sample.state {
                 self.diverged += 1;
-                return;
+                return None;
             }
             census.decisions += 1;
             if state
@@ -103,7 +113,7 @@ impl Census {
                 .is_err()
             {
                 self.diverged += 1;
-                return;
+                return None;
             }
         }
         self.trajectories += 1;
@@ -117,6 +127,7 @@ impl Census {
         for (k, v) in census.throw_in {
             *self.throw_in.entry(k).or_default() += v;
         }
+        Some(state)
     }
 
     fn print(&self) {
@@ -157,6 +168,7 @@ impl Census {
 
 pub fn run(args: RollCensusArgs) -> io::Result<()> {
     let mut census = Census::default();
+    let mut carried: Option<GameState> = None;
     'files: for path in &args.corpus {
         let reader = BufReader::new(File::open(path).map_err(|e| io::Error::new(e.kind(), format!("{path}: {e}")))?);
         for line in reader.lines() {
@@ -166,7 +178,7 @@ pub fn run(args: RollCensusArgs) -> io::Result<()> {
             }
             let traj: Trajectory = serde_json::from_str(&line)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{path}: {e}")))?;
-            census.replay(&traj);
+            carried = census.replay(&traj, carried.take());
             if args.max_trajectories > 0 && census.trajectories as usize >= args.max_trajectories {
                 break 'files;
             }
