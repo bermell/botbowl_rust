@@ -1,0 +1,7 @@
+# Plan 061 arm B3: `gumbel16_f1000` with Stochastic-MuZero-style chance nodes: no unscored-first
+# sweep, the visit-deficit rule p_i (N+1) - N_i from the first visit; value as `partial`. Roll
+# models shipped.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+chance_backup = "sampled"

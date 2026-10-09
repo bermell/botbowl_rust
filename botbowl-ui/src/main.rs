@@ -8,6 +8,7 @@ mod override_audit;
 mod placement;
 mod positions;
 mod replay;
+mod roll_census;
 mod value_bench;
 
 use clap::Parser;
@@ -35,5 +36,6 @@ fn main() -> io::Result<()> {
         cli::Command::OverrideAudit(args) => override_audit::run(args),
         cli::Command::ValueBench(args) => value_bench::run(args),
         cli::Command::McLabel(args) => mc_label::run(args),
+        cli::Command::RollCensus(args) => roll_census::run(args),
     }
 }

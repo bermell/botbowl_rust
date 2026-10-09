@@ -33,6 +33,7 @@ use recon_mcts::{
 };
 
 use crate::action::{BbAction, BbPlayer};
+use crate::chance_stats::{RollKind, CHANCE_STATS};
 use crate::exploration::{sample_index, ExploreStep, RootNoise, RootNoiseSpec};
 use crate::gumbel::{ForcedRoot, Halving, RootChild};
 use crate::priors::prior_for_engine_action;
@@ -298,6 +299,97 @@ impl ChanceModel {
     /// Does the horizon end the search at half time under this model?
     pub fn stops_at_half(self) -> bool {
         matches!(self, ChanceModel::Exact | ChanceModel::ExactScriptedPass)
+    }
+}
+
+/// Plan 061: when a chance node's value becomes available, and how its outcomes are selected.
+///
+/// `Complete` (default, the shipped search) withholds the expectation until *every* outcome is
+/// scored and sweeps unscored outcomes first to close that window: a chance node with k outcomes
+/// costs k descents before its parent sees any value, and nested chance nodes multiply — which
+/// is why the wide rolls were collapsed to one scripted child. The alternatives trade that
+/// guarantee for width (see plans/061 §4 for the literature):
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChanceBackup {
+    /// Shipped: unscored outcomes first, then the visit deficit `p_i (N+1) - N_i`; value only once
+    /// every outcome is scored.
+    #[default]
+    Complete,
+    /// Same selection; value from the first scored outcome: `Σ_scored p_i Q_i / Σ_scored p_i`
+    /// (the expectation conditioned on the outcomes seen so far, sparse-sampling style).
+    Partial,
+    /// Same selection; value once the scored outcomes cover `chance_mass` of the probability,
+    /// renormalised over them. `chance_mass = 1` is `Complete`.
+    Mass,
+    /// Stochastic-MuZero-style: no unscored-first sweep — the visit-deficit rule from the first
+    /// visit (it opens the likeliest outcome first and the rest as their share of visits comes
+    /// due); value as `Partial`.
+    Sampled,
+    /// Progressive widening (Couëtoux et al. 2011, over enumerated outcomes): only the
+    /// `k = ceil(chance_widen_c · (N+1)^chance_widen_alpha)` likeliest outcomes are open;
+    /// unscored-first and the deficit rule run over the open set, with its probabilities
+    /// renormalised; value as `Partial`.
+    Widen,
+}
+
+impl ChanceBackup {
+    /// `BLOOD_MCTS_CHANCE_BACKUP={complete|partial|mass|sampled|widen}`; anything else ⇒ `Complete`.
+    pub fn from_env() -> Self {
+        match std::env::var("BLOOD_MCTS_CHANCE_BACKUP").ok().as_deref().map(str::trim) {
+            Some("partial") => ChanceBackup::Partial,
+            Some("mass") => ChanceBackup::Mass,
+            Some("sampled") => ChanceBackup::Sampled,
+            Some("widen") => ChanceBackup::Widen,
+            _ => ChanceBackup::Complete,
+        }
+    }
+}
+
+/// The chance-node knobs `BloodBowlDynamics` reads, resolved from `MctsConfig` once per search.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChanceSearch {
+    pub backup: ChanceBackup,
+    /// `ChanceBackup::Mass`'s coverage threshold, in (0, 1].
+    pub mass: f32,
+    /// `ChanceBackup::Widen`'s `c` and `alpha`.
+    pub widen_c: f32,
+    pub widen_alpha: f32,
+}
+
+impl Default for ChanceSearch {
+    fn default() -> Self {
+        ChanceSearch {
+            backup: ChanceBackup::Complete,
+            mass: DEFAULT_CHANCE_MASS,
+            widen_c: DEFAULT_CHANCE_WIDEN_C,
+            widen_alpha: DEFAULT_CHANCE_WIDEN_ALPHA,
+        }
+    }
+}
+
+const DEFAULT_CHANCE_MASS: f32 = 0.9;
+const DEFAULT_CHANCE_WIDEN_C: f32 = 1.0;
+const DEFAULT_CHANCE_WIDEN_ALPHA: f32 = 0.5;
+
+impl ChanceSearch {
+    /// The scored probability mass the backup needs before it emits a value.
+    fn threshold(&self) -> f64 {
+        match self.backup {
+            ChanceBackup::Complete => 0.999,
+            ChanceBackup::Mass => (self.mass as f64).clamp(0.0, 0.999),
+            ChanceBackup::Partial | ChanceBackup::Sampled | ChanceBackup::Widen => 0.0,
+        }
+    }
+
+    /// `ChanceBackup::Widen`: how many outcomes are open at a chance node with `n` visits.
+    fn open_outcomes(&self, n: u32) -> usize {
+        let k = (self.widen_c as f64 * (n as f64 + 1.0).powf(self.widen_alpha as f64)).ceil();
+        if k.is_finite() {
+            (k as usize).max(1)
+        } else {
+            usize::MAX
+        }
     }
 }
 
@@ -608,6 +700,19 @@ fn chance_key(r: &RollResult, attacking_dx: i8) -> (i8, i8, u8) {
     }
 }
 
+/// Plan 061 `ChanceBackup::Widen`: which of two equally likely outcomes opens first. `Less` opens
+/// first. Mirror-covariant keys first (the acting side's forward direction, then the `|dx|`-folded
+/// canonical key), the raw result only as the last resort, so the order is total.
+fn widen_order(a: &BbAction, b: &BbAction, frame: MoverFrame) -> std::cmp::Ordering {
+    match (a, b) {
+        (BbAction::Chance { result: x, .. }, BbAction::Chance { result: y, .. }) => chance_key(y, frame.attacking_dx)
+            .cmp(&chance_key(x, frame.attacking_dx))
+            .then_with(|| canonical_chance_key(x).cmp(&canonical_chance_key(y)))
+            .then_with(|| format!("{x:?}").cmp(&format!("{y:?}"))),
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
 /// A total, deterministic ordering key for a chance node's `RollResult`
 /// children that is invariant under x-mirroring: every `Direction`-valued
 /// field is folded through `|dx|` (mirroring only negates `dx`; `dy` passes
@@ -716,6 +821,10 @@ pub struct BloodBowlDynamics {
     pub root_trace: Option<Arc<RootDescents>>,
     /// Which roll model the chance nodes use; see [`ChanceModel`].
     pub chance_model: ChanceModel,
+    /// Plan 061: bounce / pass scatter / throw-in models. Default = the shipped scripts.
+    pub roll_model: roll_outcomes::RollModel,
+    /// Plan 061: chance-node selection and backup. Default = `ChanceBackup::Complete`.
+    pub chance_search: ChanceSearch,
     /// Plan 053: the root move the next descent must take, set by the Gumbel search loop.
     /// `None` (default) is the shipped PUCT root.
     pub forced_root: Option<Arc<ForcedRoot>>,
@@ -768,6 +877,8 @@ impl Default for BloodBowlDynamics {
             root_noise: None,
             root_trace: None,
             chance_model: ChanceModel::Exact,
+            roll_model: roll_outcomes::RollModel::default(),
+            chance_search: ChanceSearch::default(),
             forced_root: None,
             descent_log: None,
         }
@@ -1063,10 +1174,13 @@ impl GameDynamics for BloodBowlDynamics {
         // the same team's next decision or a pending follow-up roll, but the
         // true pass/fail branches and turnover-causing failures change it.
         if let Some(req) = state.pending_roll.as_ref() {
-            let outcomes = roll_outcomes::enumerate_with(state, req, self.chance_model);
-            if outcomes.len() > 1 && roll_outcomes::outcomes_may_coincide(req) {
-                return Some(self.merge_coinciding_outcomes(state, outcomes));
-            }
+            let outcomes = roll_outcomes::enumerate_full(state, req, self.chance_model, self.roll_model);
+            let outcomes = if outcomes.len() > 1 && roll_outcomes::outcomes_may_coincide(req) {
+                self.merge_coinciding_outcomes(state, outcomes)
+            } else {
+                outcomes
+            };
+            CHANCE_STATS.record_created(RollKind::of(state, req), outcomes.len());
             return Some(outcomes);
         }
 
@@ -1341,12 +1455,16 @@ impl GameDynamics for BloodBowlDynamics {
         // outcomes as fast as possible is what closes that window.
         // `BbAction::Chance` carries `prob_bits`; `Player` variants
         // never appear here (we're under `pending_roll.is_some()`).
-        if parent_node_state.pending_roll.is_some() {
+        if let Some(req) = parent_node_state.pending_roll.as_ref() {
+            CHANCE_STATS.record_visit(RollKind::of(parent_node_state, req));
             // No side is "to move" at a chance node; the acting team's frame
             // is the right one, since the roll is resolving its action.
             let tie_frame = MoverFrame::for_team(parent_node_state, parent_node_state.info.team_turn);
             let total = parent_visits + 1.0;
-            let pick = scores_and_actions
+            let cs = self.chance_search;
+            // (unscored, visits, probability, action), in the children's own order. Plain data:
+            // each `Ref` drops at the end of its closure (see the note above).
+            let mut items: Vec<(bool, f32, f32, BbAction)> = scores_and_actions
                 .clone()
                 .into_iter()
                 .map(|(q, a)| {
@@ -1358,8 +1476,38 @@ impl GameDynamics for BloodBowlDynamics {
                         .unwrap_or(0) as f32;
                     let action = a.deref().clone();
                     let prob = action.prob_f32().unwrap_or(0.0);
+                    (unscored, v, prob, action)
+                })
+                .collect();
+            // Plan 061 `Widen`: only the k likeliest outcomes are open, their probabilities
+            // renormalised. The order is total and deterministic (probability, then the acting
+            // side's mirror-covariant key, then the folded canonical key, then the result itself),
+            // and a pure function of the offered set.
+            let mut p_scale = None;
+            if cs.backup == ChanceBackup::Widen {
+                let n = parent_score.map_or(0, |s| s.visits.load(Ordering::Relaxed));
+                let k = cs.open_outcomes(n);
+                if k < items.len() {
+                    items.sort_by(|a, b| {
+                        b.2.partial_cmp(&a.2)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then_with(|| widen_order(&a.3, &b.3, tie_frame))
+                    });
+                    items.truncate(k);
+                    let open: f32 = items.iter().map(|i| i.2).sum();
+                    if open > 0.0 {
+                        p_scale = Some(1.0 / open);
+                    }
+                }
+            }
+            // `Sampled` drops the unscored-first sweep: the deficit rule alone.
+            let sweep = cs.backup != ChanceBackup::Sampled;
+            let pick = items
+                .into_iter()
+                .map(|(unscored, v, prob, action)| {
+                    let prob = p_scale.map_or(prob, |s| prob * s);
                     let deficit = prob * total - v;
-                    ((unscored, deficit), action)
+                    ((unscored && sweep, deficit), action)
                 })
                 .max_by(|((ua, da), aa), ((ub, db), ab)| {
                     ua.cmp(ub)
@@ -1608,6 +1756,7 @@ impl GameDynamics for BloodBowlDynamics {
                 total_visits += v;
             }
             if total_visits == 0 {
+                CHANCE_STATS.backup_withheld.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
             // Completeness gate: emit the expectation only once every
@@ -1625,16 +1774,29 @@ impl GameDynamics for BloodBowlDynamics {
             // parent's FPU treats it as unexplored; the select branch
             // above sweeps unscored outcomes first to keep that window
             // short.
-            if total_prob < 0.999 {
+            //
+            // Plan 061: `ChanceBackup` other than `Complete` lowers that bar (`Mass` to its
+            // coverage, the rest to the first scored outcome) and emits the expectation
+            // renormalised over the scored mass. A partial value is never proven: `proven` is a
+            // claim about every outcome.
+            let complete = total_prob >= 0.999;
+            if total_prob < self.chance_search.threshold() {
+                CHANCE_STATS.backup_withheld.fetch_add(1, Ordering::Relaxed);
                 return None;
             }
+            let slot = if complete {
+                &CHANCE_STATS.backup_complete
+            } else {
+                &CHANCE_STATS.backup_partial
+            };
+            slot.fetch_add(1, Ordering::Relaxed);
             let avg = weighted_sum / total_prob;
             return Some(BbScore {
                 visits: AtomicU32::new(total_visits),
                 score: avg as i64,
                 node_kind: BbPlayer::Chance,
                 virtual_loss: AtomicI32::new(in_flight),
-                proven: proven.flatten(),
+                proven: if complete { proven.flatten() } else { None },
             });
         }
 
@@ -2112,6 +2274,20 @@ pub struct MctsConfig {
     /// Plan 053: the smallest Q range (Q points, ±1000 = a touchdown) the halving's min-max
     /// normalisation divides by. `0` is the paper's rule; see `gumbel::Halving::new`.
     pub gumbel_q_floor: f32,
+    /// Plan 061 (a): `settle` (shipped) | `catch` — a bounce onto a standing player is a catch.
+    pub bounce_model: roll_outcomes::BounceModel,
+    /// Plan 061 (b): `scripted` (shipped) | `grouped` — pass scatter/deviate at real odds.
+    pub pass_scatter_model: roll_outcomes::PassScatterModel,
+    /// Plan 061 (c): `scripted` (shipped) | `grouped` — throw-ins at real odds.
+    pub throw_in_model: roll_outcomes::ThrowInModel,
+    /// Plan 061: chance-node selection and value; see [`ChanceBackup`]. `complete` is shipped.
+    pub chance_backup: ChanceBackup,
+    /// Plan 061: `chance_backup = "mass"`'s coverage threshold in (0, 1].
+    pub chance_mass: f32,
+    /// Plan 061: `chance_backup = "widen"`'s `c` in `k = ceil(c · (N+1)^alpha)`.
+    pub chance_widen_c: f32,
+    /// Plan 061: `chance_backup = "widen"`'s `alpha`.
+    pub chance_widen_alpha: f32,
 }
 
 impl MctsConfig {
@@ -2141,6 +2317,32 @@ impl MctsConfig {
             gumbel_m: 0,
             gumbel_scale: 0.0,
             gumbel_q_floor: 0.0,
+            bounce_model: roll_outcomes::BounceModel::Settle,
+            pass_scatter_model: roll_outcomes::PassScatterModel::Scripted,
+            throw_in_model: roll_outcomes::ThrowInModel::Scripted,
+            chance_backup: ChanceBackup::Complete,
+            chance_mass: DEFAULT_CHANCE_MASS,
+            chance_widen_c: DEFAULT_CHANCE_WIDEN_C,
+            chance_widen_alpha: DEFAULT_CHANCE_WIDEN_ALPHA,
+        }
+    }
+
+    /// Plan 061: the roll models this configuration names.
+    pub fn roll_model(&self) -> roll_outcomes::RollModel {
+        roll_outcomes::RollModel {
+            bounce: self.bounce_model,
+            pass_scatter: self.pass_scatter_model,
+            throw_in: self.throw_in_model,
+        }
+    }
+
+    /// Plan 061: the chance-node knobs this configuration names.
+    pub fn chance_search(&self) -> ChanceSearch {
+        ChanceSearch {
+            backup: self.chance_backup,
+            mass: self.chance_mass,
+            widen_c: self.chance_widen_c,
+            widen_alpha: self.chance_widen_alpha,
         }
     }
 
@@ -2206,6 +2408,20 @@ impl MctsConfig {
             .unwrap_or(0);
         cfg.gumbel_scale = env_f32("BLOOD_MCTS_GUMBEL_SCALE").unwrap_or(0.0).max(0.0);
         cfg.gumbel_q_floor = env_f32("BLOOD_MCTS_GUMBEL_Q_FLOOR").unwrap_or(0.0).max(0.0);
+        let env_is = |k: &str, v: &str| std::env::var(k).ok().as_deref().map(str::trim) == Some(v);
+        if env_is("BLOOD_MCTS_BOUNCE", "catch") {
+            cfg.bounce_model = roll_outcomes::BounceModel::Catch;
+        }
+        if env_is("BLOOD_MCTS_PASS_SCATTER", "grouped") {
+            cfg.pass_scatter_model = roll_outcomes::PassScatterModel::Grouped;
+        }
+        if env_is("BLOOD_MCTS_THROW_IN", "grouped") {
+            cfg.throw_in_model = roll_outcomes::ThrowInModel::Grouped;
+        }
+        cfg.chance_backup = ChanceBackup::from_env();
+        cfg.chance_mass = env_f32("BLOOD_MCTS_CHANCE_MASS").unwrap_or(DEFAULT_CHANCE_MASS);
+        cfg.chance_widen_c = env_f32("BLOOD_MCTS_CHANCE_WIDEN_C").unwrap_or(DEFAULT_CHANCE_WIDEN_C);
+        cfg.chance_widen_alpha = env_f32("BLOOD_MCTS_CHANCE_WIDEN_ALPHA").unwrap_or(DEFAULT_CHANCE_WIDEN_ALPHA);
         cfg
     }
 }
@@ -2637,6 +2853,8 @@ impl MctsBot {
             root_noise: root_noise.clone(),
             root_trace: self.root_trace.clone(),
             chance_model: self.config.chance_model,
+            roll_model: self.config.roll_model(),
+            chance_search: self.config.chance_search(),
             forced_root: None,
             descent_log: Some(Arc::clone(&self.descent_log)),
         };
@@ -2897,6 +3115,7 @@ impl MctsBot {
                     // Cumulative over the process, not per search — plan 031
                     // D8 wants a rate over a whole run, so the last line wins.
                     eprintln!("{}", LEAF_STATS.summary());
+                    eprintln!("{}", CHANCE_STATS.summary());
                 }
                 if dump_stats {
                     let info = tree.get_registry_info();
@@ -3925,6 +4144,177 @@ mod tests {
             children,
         );
         assert_eq!(picked, fail, "the unscored outcome must be swept first");
+    }
+
+    // ---- plan 061: chance backup modes --------------------------------------------------------
+
+    fn with_chance(backup: ChanceBackup) -> BloodBowlDynamics {
+        BloodBowlDynamics {
+            chance_search: ChanceSearch {
+                backup,
+                ..ChanceSearch::default()
+            },
+            ..BloodBowlDynamics::default()
+        }
+    }
+
+    fn chance_state() -> GameState {
+        use botbowl_engine::core::dices::{D6Target, RequestedRoll};
+        use botbowl_engine::core::gamestate::GameStateBuilder;
+        use botbowl_engine::core::model::Position;
+        let mut state = GameStateBuilder::new().add_home_player(Position::new((5, 5))).build();
+        state.pending_roll = Some(RequestedRoll::D6PassFail(D6Target::TwoPlus));
+        state
+    }
+
+    #[test]
+    fn the_default_chance_search_is_the_complete_backup() {
+        assert_eq!(
+            BloodBowlDynamics::default().chance_search.backup,
+            ChanceBackup::Complete
+        );
+        assert_eq!(MctsConfig::new().chance_backup, ChanceBackup::Complete);
+    }
+
+    /// `Partial`: the expectation over the scored outcomes, renormalised, from the first one —
+    /// never proven while an outcome is missing, even if every scored one is proven.
+    #[test]
+    fn a_partial_backup_emits_the_renormalised_expectation_at_once() {
+        use botbowl_engine::core::dices::RollResult;
+        let d = with_chance(ChanceBackup::Partial);
+        let pass = BbAction::chance(RollResult::Pass, 5.0 / 6.0);
+        let fail = BbAction::chance(RollResult::Fail, 1.0 / 6.0);
+        let td = proven_child(1000, 3, 1);
+        let r = d
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&td, &pass)])
+            .expect("a partial value");
+        assert_eq!(
+            (r.score, r.proven),
+            (1000, None),
+            "unproven until the fail branch is in"
+        );
+        assert_eq!(r.visits.load(Ordering::Relaxed), 3);
+        // Complete, the same number as the shipped backup, and proven when both agree.
+        let td2 = proven_child(1000, 1, 1);
+        let r = d
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&td, &pass), (&td2, &fail)])
+            .expect("complete");
+        assert_eq!((r.score, r.proven), (1000, Some(1)));
+        let lose = child(-200, 1);
+        let full: Vec<(&BbScore, &BbAction)> = vec![(&td, &pass), (&lose, &fail)];
+        let shipped = BloodBowlDynamics::default()
+            .backprop_scores(&BbPlayer::Chance, None, full.clone())
+            .unwrap();
+        let partial = d.backprop_scores(&BbPlayer::Chance, None, full).unwrap();
+        assert_eq!(partial.score, shipped.score);
+    }
+
+    /// `Mass`: withheld until the scored outcomes cover the threshold, then renormalised.
+    #[test]
+    fn a_mass_backup_waits_for_its_coverage() {
+        use botbowl_engine::core::dices::RollResult;
+        let d = BloodBowlDynamics {
+            chance_search: ChanceSearch {
+                backup: ChanceBackup::Mass,
+                mass: 0.75,
+                ..ChanceSearch::default()
+            },
+            ..BloodBowlDynamics::default()
+        };
+        let (a, b) = (
+            BbAction::chance(RollResult::Pass, 0.5),
+            BbAction::chance(RollResult::MiddleOutcome, 0.3),
+        );
+        let (qa, qb) = (child(1000, 1), child(-600, 1));
+        assert!(d.backprop_scores(&BbPlayer::Chance, None, vec![(&qa, &a)]).is_none());
+        let r = d
+            .backprop_scores(&BbPlayer::Chance, None, vec![(&qa, &a), (&qb, &b)])
+            .expect("0.8 >= 0.75");
+        assert_eq!(
+            r.score,
+            ((0.5f32 as f64 * 1000.0 + 0.3f32 as f64 * -600.0) / (0.5f32 as f64 + 0.3f32 as f64)) as i64
+        );
+    }
+
+    /// `Sampled`: no unscored-first sweep — the deficit rule alone, so a 5/6 GFI keeps visiting
+    /// its pass branch until the fail branch's share comes due.
+    #[test]
+    fn a_sampled_chance_node_follows_the_deficit_rule_from_the_start() {
+        use botbowl_engine::core::dices::RollResult;
+        let state = chance_state();
+        let pass = BbAction::chance(RollResult::Pass, 5.0 / 6.0);
+        let fail = BbAction::chance(RollResult::Fail, 1.0 / 6.0);
+        let pass_score = Some(child(1000, 1));
+        let fail_score: Option<BbScore> = None;
+        let parent = child(1000, 1);
+        let pick = |d: &BloodBowlDynamics| {
+            let children: Vec<(&Option<BbScore>, &BbAction)> = vec![(&pass_score, &pass), (&fail_score, &fail)];
+            d.select_node(
+                Some(&parent),
+                &BbPlayer::Chance,
+                &state,
+                SelectNodeState::Explore,
+                children,
+            )
+        };
+        assert_eq!(pick(&with_chance(ChanceBackup::Sampled)), pass, "5/6·2 - 1 > 1/6·2");
+        assert_eq!(
+            pick(&with_chance(ChanceBackup::Partial)),
+            fail,
+            "partial keeps the sweep"
+        );
+    }
+
+    /// `Widen`: only the k = ceil(c·(N+1)^alpha) likeliest outcomes are open (c = 1, alpha = 0.5).
+    #[test]
+    fn a_widening_chance_node_opens_outcomes_in_probability_order() {
+        use botbowl_engine::core::dices::{RollResult, D6};
+        let state = chance_state();
+        let face = |f: u8, p: f32| BbAction::chance(RollResult::D6(D6::try_from(f).unwrap()), p);
+        let (a, b, c, e) = (face(1, 0.4), face(2, 0.3), face(3, 0.2), face(4, 0.1));
+        let d = with_chance(ChanceBackup::Widen);
+        let none: Option<BbScore> = None;
+        // A fresh node: k = 1, the likeliest.
+        let fresh: Vec<(&Option<BbScore>, &BbAction)> = vec![(&none, &e), (&none, &c), (&none, &b), (&none, &a)];
+        assert_eq!(
+            d.select_node(None, &BbPlayer::Chance, &state, SelectNodeState::Explore, fresh),
+            a
+        );
+        // N = 3: k = 2. Both open outcomes are scored, so the deficit over the open pair
+        // (renormalised to 4/7, 3/7) decides — the unscored third is not open yet, where the
+        // shipped sweep would take it.
+        let (sa, sb) = (Some(child(0, 1)), Some(child(0, 2)));
+        let parent = child(0, 3);
+        let kids = || -> Vec<(&Option<BbScore>, &BbAction)> { vec![(&sa, &a), (&sb, &b), (&none, &c), (&none, &e)] };
+        assert_eq!(
+            d.select_node(
+                Some(&parent),
+                &BbPlayer::Chance,
+                &state,
+                SelectNodeState::Explore,
+                kids()
+            ),
+            a
+        );
+        let shipped = BloodBowlDynamics::default();
+        assert_eq!(
+            shipped.select_node(
+                Some(&parent),
+                &BbPlayer::Chance,
+                &state,
+                SelectNodeState::Explore,
+                kids()
+            ),
+            c
+        );
+        // N = 8: k = 3, the third opens.
+        let (sa, sb) = (Some(child(0, 5)), Some(child(0, 3)));
+        let parent = child(0, 8);
+        let kids: Vec<(&Option<BbScore>, &BbAction)> = vec![(&sa, &a), (&sb, &b), (&none, &c), (&none, &e)];
+        assert_eq!(
+            d.select_node(Some(&parent), &BbPlayer::Chance, &state, SelectNodeState::Explore, kids),
+            c
+        );
     }
 
     /// Plan 018 leaves pending-roll (chance) states unscored because

@@ -46,7 +46,9 @@ pub use botbowl_play::generate::GenerateConfig;
 // `opponent_setup`, `setup_formation`, `GenerateConfig.next_drive`; a trajectory may carry two lines.
 // v16: `SimpleAT::UseSkill` / `DontUseSkill` (engine actions, inside trajectories and game states).
 // v17 (plan 060): `SearchTelemetry.tree` (tree statistics), riding inside `EvalGameLine.telemetry`.
-pub const PROTOCOL_VERSION: u32 = 17;
+// v18 (plan 061): `MctsConfig.bounce_model`, `pass_scatter_model`, `throw_in_model`, `chance_backup`,
+// `chance_mass`, `chance_widen_c`, `chance_widen_alpha`, inside `SearchConfig.config`.
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.

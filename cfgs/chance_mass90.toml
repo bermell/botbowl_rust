@@ -1,0 +1,8 @@
+# Plan 061 arm B2: `gumbel16_f1000` with the mass-threshold chance backup: a chance node's value is
+# withheld until its scored outcomes cover 90% of the probability, then renormalised over them.
+# Selection unchanged. Roll models shipped.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+chance_backup = "mass"
+chance_mass = 0.9

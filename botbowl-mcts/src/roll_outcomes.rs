@@ -49,9 +49,63 @@ pub fn enumerate(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
     enumerate_with(state, req, ChanceModel::Exact)
 }
 
+/// Plan 061 (a): how a live ball bounce (a D8 under `Bounce`) is modelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BounceModel {
+    /// Shipped ([`bounce_outcomes`]): when the ball can come to rest (an empty or out-of-bounds
+    /// neighbour) the directions onto players are dropped and the rest renormalised, so a bounce
+    /// never reaches a catch attempt.
+    #[default]
+    Settle,
+    /// [`bounce_catch_outcomes`]: every direction at its 1/8 — onto a standing player is the
+    /// engine's catch attempt, onto a downed player the ball bounces on; out of bounds collapses
+    /// to one throw-in child and a kickoff's touchbacks to one child.
+    Catch,
+}
+
+/// Plan 061 (b): how an inaccurate pass's scatter and a wildly inaccurate pass's deviate are
+/// modelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassScatterModel {
+    /// Shipped: one scripted child (scatter up, up, up; deviate one square up).
+    #[default]
+    Scripted,
+    /// [`pass_landing_grouped`]: the exact landing distribution, grouped by consequence.
+    Grouped,
+}
+
+/// Plan 061 (c): how a throw-in is modelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThrowInModel {
+    /// Shipped ([`throw_in_outcome`]): the shortest axis-aligned throw that lands in bounds off
+    /// the origin.
+    #[default]
+    Scripted,
+    /// [`throw_in_grouped`]: the exact landing distribution over 3 directions x 2D6, grouped by
+    /// consequence; scripted again for a re-throw or a throw-in late in a chain.
+    Grouped,
+}
+
+/// Plan 061: the roll models the exact model still scripted. The default is the shipped search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RollModel {
+    pub bounce: BounceModel,
+    pub pass_scatter: PassScatterModel,
+    pub throw_in: ThrowInModel,
+}
+
 /// [`enumerate`] under an explicit roll model. `ChanceModel::Legacy` reproduces the pre-fix
 /// search for the rolls the exact model enumerates: see [`legacy_result`].
 pub fn enumerate_with(state: &GameState, req: &RequestedRoll, model: ChanceModel) -> Vec<BbAction> {
+    enumerate_full(state, req, model, RollModel::default())
+}
+
+/// [`enumerate_with`] plus plan 061's [`RollModel`] for bounces, pass scatter/deviate and
+/// throw-ins.
+pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel, rolls: RollModel) -> Vec<BbAction> {
     let scripted = match model {
         ChanceModel::Exact | ChanceModel::ExactThroughHalf => false,
         ChanceModel::Legacy => true,
@@ -81,8 +135,17 @@ pub fn enumerate_with(state: &GameState, req: &RequestedRoll, model: ChanceModel
                 BbAction::chance(RollResult::Fail, 1.0 - p_pass),
             ]
         }
-        RequestedRoll::D8 => enumerate_d8(state),
-        RequestedRoll::ThrowIn => vec![throw_in_outcome(state)],
+        RequestedRoll::D8 => enumerate_d8(state, rolls.bounce),
+        RequestedRoll::ThrowIn => match rolls.throw_in {
+            ThrowInModel::Scripted => vec![throw_in_outcome(state)],
+            ThrowInModel::Grouped => throw_in_grouped(state),
+        },
+        RequestedRoll::Scatter | RequestedRoll::Deviate
+            if rolls.pass_scatter == PassScatterModel::Grouped
+                && matches!(state.proc_stack_peek(), Some(AnyProc::Pass(_))) =>
+        {
+            pass_landing_grouped(state, req)
+        }
         RequestedRoll::BlockDice(n) => block_outcomes(state, *n),
         RequestedRoll::D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
         RequestedRoll::Sum2D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
@@ -445,11 +508,309 @@ fn scripted_d8() -> BbAction {
 /// Dispatch a `D8` roll. Only when the proc-stack top is a `Bounce` do we
 /// reason about *where* the ball is going and prune the fan-out; any other
 /// D8 (e.g. kickoff scatter) collapses to the scripted single direction.
-fn enumerate_d8(state: &GameState) -> Vec<BbAction> {
+fn enumerate_d8(state: &GameState, model: BounceModel) -> Vec<BbAction> {
     if state.proc_stack_top() != Some("Bounce") {
         return vec![scripted_d8()];
     }
-    bounce_outcomes(state)
+    match model {
+        BounceModel::Settle => bounce_outcomes(state),
+        BounceModel::Catch => bounce_catch_outcomes(state),
+    }
+}
+
+/// Plan 061 (a): a live ball bounce as the engine plays it. `Bounce` hands a ball that comes down
+/// on a standing player to `Catch` (a catch attempt, enumerated next as pass/fail), lets it bounce
+/// on from a downed player's square, settles it on an empty square and throws it in from out of
+/// bounds; [`bounce_outcomes`] dropped the player squares whenever the ball could settle.
+///
+/// - every in-bounds direction is its own child at 1/8 — empty (settles), standing player
+///   (catch), downed player (bounces on);
+/// - a player square the ball has already been through this sequence (`bounce_squares`) is
+///   dropped and the rest renormalised, as the boxed-in rule always did: that is what bounds the
+///   catch-fail-bounce chain (every lap must reach a new square);
+/// - out of bounds collapses to one child (the throw-in, [`oob_representative`]);
+/// - on a kickoff bounce every direction that ends in a touchback (out of bounds, or onto the
+///   kicking half) reaches the same state, so they are one child too.
+///
+/// At most 8 children, each reaching a distinct state. Reads the board, the ball, the `Bounce`
+/// proc's kickoff flag and `bounce_squares`: a pure function of the state.
+fn bounce_catch_outcomes(state: &GameState) -> Vec<BbAction> {
+    let Some(ball) = state.get_ball_position() else {
+        return vec![scripted_d8()];
+    };
+    let kick = matches!(state.proc_stack_peek(), Some(AnyProc::Bounce(b)) if b.is_kick());
+    let kicking = state.info.kicking_this_drive;
+    const P_EACH: f32 = 1.0 / 8.0;
+    let mut out: Vec<BbAction> = Vec::with_capacity(8);
+    let mut oob: Vec<D8> = Vec::new();
+    let mut touchback: Vec<D8> = Vec::new();
+    for dir in Direction::all_directions_as_array() {
+        let target = ball + dir;
+        let d8 = D8::from(dir);
+        if kick && (state.is_out(target) || state.is_on_team_side(target, kicking)) {
+            touchback.push(d8);
+        } else if state.is_out(target) {
+            oob.push(d8);
+        } else if state.get_player_at(target).is_some() && state.bounce_squares.contains(&target) {
+            // Been here: dropped, so the chain must move on.
+        } else {
+            out.push(BbAction::chance(RollResult::D8(d8), P_EACH));
+        }
+    }
+    for group in [oob, touchback] {
+        if let Some(rep) = oob_representative(&group) {
+            out.push(BbAction::chance(RollResult::D8(rep), P_EACH * group.len() as f32));
+        }
+    }
+    if out.is_empty() {
+        return vec![scripted_d8()];
+    }
+    renormalize(&mut out);
+    out
+}
+
+/// The most catch children a grouped landing keeps (plan 061 (b)/(c)); a rarer one is dropped and
+/// the rest renormalised.
+const MAX_CATCH_CHILDREN: usize = 6;
+/// How many of the likeliest empty landing squares carry a grouped landing's whole empty mass.
+const EMPTY_CHILDREN: usize = 3;
+
+/// The acting team's frame, for tie-breaks that mirror with the board: `adx` is the sign of x the
+/// team attacks toward, `endzone_x` the endzone it attacks. Mirroring a state reflects x and swaps
+/// the teams, so a key built from it maps onto itself (plan 023 H-c, `TieBreak::Mover`).
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    endzone_x: i32,
+    adx: i32,
+}
+
+impl Frame {
+    fn of(state: &GameState) -> Self {
+        let team = state.info.team_turn;
+        let endzone_x = state.get_endzone_x(team) as i32;
+        let other = state.get_endzone_x(botbowl_engine::core::model::other_team(team)) as i32;
+        Frame {
+            endzone_x,
+            adx: if endzone_x < other { -1 } else { 1 },
+        }
+    }
+
+    /// A direction's rank 0..8, forward first, then by dy.
+    fn dir_rank(self, d: Direction) -> u32 {
+        let key = |d: Direction| (-(d.dx as i32) * self.adx, d.dy as i32);
+        let k = key(d);
+        Direction::all_directions_as_array()
+            .iter()
+            .filter(|o| key(**o) < k)
+            .count() as u32
+    }
+
+    /// A square's key: distance from the attacked endzone, then y.
+    fn square_key(self, p: Position) -> (i32, i32) {
+        ((p.x as i32 - self.endzone_x).abs(), p.y as i32)
+    }
+}
+
+/// What a landing does, for the grouping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LandingClass {
+    /// Someone there attempts a catch: one child each, at its exact probability.
+    Catch,
+    /// Comes down on an empty square (or, for a throw-in, a downed player): bounces. The few
+    /// likeliest squares carry the whole mass.
+    Land,
+    /// Goes out of bounds: a throw-in (for a throw-in, a re-throw). One child.
+    Out,
+}
+
+/// Group a landing distribution by consequence into at most `MAX_CATCH_CHILDREN + 1 +
+/// EMPTY_CHILDREN` chance children. Each item is one equally likely dice combination: its class,
+/// the square it decides (the landing square; for `Out` the square play continues from), the
+/// `RollResult` that produces it and a mirror-covariant key choosing the representative among
+/// the combinations of one group (the smallest).
+///
+/// - `Catch`: one child per square, exact probability; only the `MAX_CATCH_CHILDREN` likeliest
+///   are kept (the rest renormalised away).
+/// - `Out`: one child carrying all of it, represented by its likeliest square.
+/// - `Land`: the `EMPTY_CHILDREN` likeliest squares, scaled up in proportion to carry all of it.
+///
+/// Ties between squares go by [`Frame::square_key`], so the choice mirrors with the board.
+fn grouped_landing_children(
+    items: impl IntoIterator<Item = (LandingClass, Position, RollResult, u32)>,
+    f: Frame,
+) -> Vec<BbAction> {
+    // (class, square key) → (count, (rep key, rep result), square)
+    let mut groups: std::collections::BTreeMap<(LandingClass, (i32, i32)), (u32, (u32, RollResult), Position)> =
+        Default::default();
+    let mut total = 0u32;
+    for (class, square, result, key) in items {
+        total += 1;
+        let g = groups
+            .entry((class, f.square_key(square)))
+            .or_insert((0, (key, result), square));
+        g.0 += 1;
+        if key < g.1 .0 {
+            g.1 = (key, result);
+        }
+    }
+    if total == 0 {
+        return Vec::new();
+    }
+    let by_likeliest = |class: LandingClass| {
+        let mut v: Vec<(u32, (i32, i32), RollResult)> = groups
+            .iter()
+            .filter(|((c, _), _)| *c == class)
+            .map(|((_, sk), (n, (_, r), _))| (*n, *sk, *r))
+            .collect();
+        v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        v
+    };
+    let total = total as f64;
+    let mut out = Vec::new();
+    for (n, _, r) in by_likeliest(LandingClass::Catch).into_iter().take(MAX_CATCH_CHILDREN) {
+        out.push(BbAction::chance(r, (n as f64 / total) as f32));
+    }
+    let outs = by_likeliest(LandingClass::Out);
+    if let Some((_, _, r)) = outs.first() {
+        let n: u32 = outs.iter().map(|o| o.0).sum();
+        out.push(BbAction::chance(*r, (n as f64 / total) as f32));
+    }
+    let lands = by_likeliest(LandingClass::Land);
+    let land_mass: u32 = lands.iter().map(|o| o.0).sum();
+    let kept: Vec<_> = lands.into_iter().take(EMPTY_CHILDREN).collect();
+    let kept_mass: u32 = kept.iter().map(|o| o.0).sum();
+    for (n, _, r) in kept {
+        let p = n as f64 / total * (land_mass as f64 / kept_mass as f64);
+        out.push(BbAction::chance(r, p as f32));
+    }
+    renormalize(&mut out);
+    out
+}
+
+/// Plan 061 (b): an inaccurate pass's scatter (three D8 from the target square) or a wildly
+/// inaccurate pass's deviate (D8 direction x D6 squares from the passer), at the exact landing
+/// distribution the `Pass` proc produces — every one of the 512 (scatter) or 48 (deviate) dice
+/// combinations walked with the engine's rule that a step out of bounds stops the walk and the
+/// ball is thrown in from the last square on the pitch — then grouped by consequence
+/// ([`grouped_landing_children`]): a player on the landing square attempts the catch
+/// (`DeflectOrResolve` gives every player there a `Catch`), out of bounds is a throw-in, an empty
+/// square a bounce. Each child carries the dice of one combination producing it.
+///
+/// Off a `Pass` proc (a kickoff's deviate) the caller keeps the scripted result.
+fn pass_landing_grouped(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
+    let (Some(AnyProc::Pass(pass)), Some(from)) = (state.proc_stack_peek(), state.get_ball_position()) else {
+        return vec![BbAction::chance(scripted_result(req), 1.0)];
+    };
+    let f = Frame::of(state);
+    let dirs = Direction::all_directions_as_array();
+    // Walk `steps` from `start`; `Ok(square)` in bounds, `Err(last square on the pitch)` out.
+    let walk = |start: Position, steps: &mut dyn Iterator<Item = Direction>| -> Result<Position, Position> {
+        let mut at = start;
+        for d in steps {
+            let next = at + d;
+            if state.is_out(next) {
+                return Err(at);
+            }
+            at = next;
+        }
+        Ok(at)
+    };
+    let classify = |landing: Result<Position, Position>| match landing {
+        Err(last) => (LandingClass::Out, last),
+        Ok(sq) if state.get_player_at(sq).is_some() => (LandingClass::Catch, sq),
+        Ok(sq) => (LandingClass::Land, sq),
+    };
+    let mut items = Vec::with_capacity(512);
+    match req {
+        RequestedRoll::Scatter => {
+            for (a, b, c) in itertools_product3(&dirs) {
+                let landing = walk(pass.target(), &mut [a, b, c].into_iter());
+                let (class, sq) = classify(landing);
+                let key = f.dir_rank(a) * 64 + f.dir_rank(b) * 8 + f.dir_rank(c);
+                let r = RollResult::Scatter(D8::from(a), D8::from(b), D8::from(c));
+                items.push((class, sq, r, key));
+            }
+        }
+        RequestedRoll::Deviate => {
+            for n in 1..=6u8 {
+                for d in dirs {
+                    let landing = walk(from, &mut std::iter::repeat(d).take(n as usize));
+                    let (class, sq) = classify(landing);
+                    let key = n as u32 * 8 + f.dir_rank(d);
+                    items.push((
+                        class,
+                        sq,
+                        RollResult::Deviate(D6::try_from(n).unwrap(), D8::from(d)),
+                        key,
+                    ));
+                }
+            }
+        }
+        _ => return vec![BbAction::chance(scripted_result(req), 1.0)],
+    }
+    grouped_landing_children(items, f)
+}
+
+/// Every ordered triple of `dirs`.
+fn itertools_product3(dirs: &[Direction; 8]) -> impl Iterator<Item = (Direction, Direction, Direction)> + '_ {
+    dirs.iter()
+        .flat_map(move |a| dirs.iter().flat_map(move |b| dirs.iter().map(move |c| (*a, *b, *c))))
+}
+
+/// Plan 061 (c): a throw-in at the exact odds of its 3 directions x 2D6 distance (`ThrowIn`'s own
+/// `target_square`, which applies `scatter_divisor` and `max_scatter`), grouped by consequence
+/// ([`grouped_landing_children`]): a standing player on the landing square attempts the catch,
+/// an empty square or a downed player's square is a bounce, out of bounds is a re-throw from
+/// where it went out.
+///
+/// **Chains must end** (plan 060 §6, the 14x5 lesson). Only the first throw of a chain is
+/// enumerated: a re-throw (the proc's origin no longer the ball's square — the engine moves the
+/// origin and leaves the ball) or a throw-in whose ball has already been through more than one
+/// square this sequence (`bounce_squares`, i.e. after an earlier throw-in landed) gets
+/// [`throw_in_outcome`]'s single scripted throw, which lands in bounds off its origin. So at most
+/// two enumerated laps precede the scripted ones, and every chain is finite.
+fn throw_in_grouped(state: &GameState) -> Vec<BbAction> {
+    let Some(AnyProc::ThrowIn(throw_in)) = state.proc_stack_peek() else {
+        return vec![throw_in_outcome(state)];
+    };
+    let origin = throw_in.origin();
+    if state.get_ball_position() != Some(origin) || state.bounce_squares.len() > 1 {
+        return vec![throw_in_outcome(state)];
+    }
+    let f = Frame::of(state);
+    let dims = state.board_dims;
+    let mut items = Vec::with_capacity(108);
+    for d3 in [D3::One, D3::Two, D3::Three] {
+        let dir = throw_in.get_throw_in_direction(d3, dims);
+        for a in 1..=6u8 {
+            for b in 1..=6u8 {
+                let distance = Sum2D6::try_from(a + b).unwrap();
+                let target = throw_in.target_square(d3, distance, dims);
+                let (class, sq) = if state.is_out(target) {
+                    let mut from = target - dir;
+                    while state.is_out(from) {
+                        from -= dir;
+                    }
+                    (LandingClass::Out, from)
+                } else if state.get_player_at(target).is_some_and(|p| p.can_catch()) {
+                    (LandingClass::Catch, target)
+                } else {
+                    (LandingClass::Land, target)
+                };
+                let key = f.dir_rank(dir) * 16 + (a + b) as u32;
+                items.push((
+                    class,
+                    sq,
+                    RollResult::ThrowIn {
+                        direction: d3,
+                        distance,
+                    },
+                    key,
+                ));
+            }
+        }
+    }
+    grouped_landing_children(items, f)
 }
 
 /// Chance children for a live ball bounce, reduced to keep the tree small.

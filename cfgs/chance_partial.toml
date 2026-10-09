@@ -1,0 +1,7 @@
+# Plan 061 arm B1: `gumbel16_f1000` with the partial chance backup: a chance node's value is the
+# expectation over its scored outcomes, renormalised, from the first one (never proven until
+# complete). Selection unchanged (unscored outcomes first). Roll models shipped.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+chance_backup = "partial"

@@ -1352,6 +1352,18 @@ impl GameState {
     }
 
     pub fn step(&mut self, action: Action) -> Result<()> {
+        self.step_observing_rolls(action, |_, _| {})
+    }
+
+    /// [`step`](Self::step), calling `observe` with the state paused on each roll the engine
+    /// resolves on the way (and the request) just before it is resolved. Observing changes
+    /// nothing: the same dice are drawn in the same order. Plan 061 uses it to count the rolls
+    /// real games make by replaying a corpus (`botbowl-ui roll-census`).
+    pub fn step_observing_rolls(
+        &mut self,
+        action: Action,
+        mut observe: impl FnMut(&GameState, RequestedRoll),
+    ) -> Result<()> {
         // Match the legacy step() behavior of dropping the action when
         // nothing is asking for one — initial-state setups and a few
         // post-transition paths in GameStateBuilder pass a placeholder
@@ -1372,6 +1384,9 @@ impl GameState {
             if micro_step_state == MicroStepState::GameOver || micro_step_state == MicroStepState::NeedAction {
                 break;
             } else if micro_step_state == MicroStepState::NeedRoll {
+                if let Some(req) = self.pending_roll {
+                    observe(self, req);
+                }
                 let roll_result = self.get_roll_result();
                 micro_step_state = self.step_with_roll_or_action(SomeProcInput::Roll(roll_result));
             } else {
@@ -2257,6 +2272,39 @@ mod gamestate_tests {
 
         state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Pass));
         assert_eq!(state.home.score, 1, "successful pickup scores");
+    }
+
+    /// Plan 061 (d): `step_observing_rolls` is `step` plus a look at every roll the engine
+    /// resolves on the way — the request and the state paused on it — so a replay can count the
+    /// rolls real games make. It must play exactly like `step`.
+    #[test]
+    fn step_observing_rolls_sees_every_resolved_roll_and_plays_like_step() {
+        let start = Position::new((5, 5));
+        let ball = Position::new((6, 5));
+        let build = || {
+            let mut s = GameStateBuilder::new()
+                .add_home_player(start)
+                .add_ball_pos(ball)
+                .build();
+            s.fix_d6(6); // the pickup succeeds
+            s
+        };
+        let mut plain = build();
+        let mut observed = build();
+        let mut seen: Vec<(RequestedRoll, Option<&'static str>)> = Vec::new();
+        for a in [
+            Action::Positional(PosAT::StartMove, start),
+            Action::Positional(PosAT::Move, ball),
+        ] {
+            plain.step(a).unwrap();
+            observed
+                .step_observing_rolls(a, |s, req| seen.push((req, s.proc_stack_top())))
+                .unwrap();
+        }
+        assert_eq!(plain, observed, "observing must not change the game");
+        assert_eq!(seen.len(), 1, "one roll (the pickup): {seen:?}");
+        assert!(matches!(seen[0].0, RequestedRoll::D6PassFail(_)), "{seen:?}");
+        assert_eq!(seen[0].1, Some("PickupProc"));
     }
 }
 

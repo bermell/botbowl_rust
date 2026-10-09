@@ -1,0 +1,8 @@
+# Plan 061 arm A2: `gumbel16_f1000` with an inaccurate pass's scatter and a wildly inaccurate pass's
+# deviate at their exact landing odds, grouped by consequence (a catch child per occupied landing
+# square, one throw-in child, the empty mass on the 3 likeliest squares). Shipped: scatter up x3,
+# deviate one square up. Chance backup unchanged.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+pass_scatter_model = "grouped"

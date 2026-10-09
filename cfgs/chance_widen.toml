@@ -1,0 +1,9 @@
+# Plan 061 arm B4: `gumbel16_f1000` with progressive widening at chance nodes: only the
+# k = ceil(c (N+1)^alpha) likeliest outcomes are open (c 1, alpha 0.5: 1, 2, 3, 4 outcomes at
+# N = 0, 3, 8, 15), probabilities renormalised over them; value as `partial`. Roll models shipped.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+chance_backup = "widen"
+chance_widen_c = 1.0
+chance_widen_alpha = 0.5

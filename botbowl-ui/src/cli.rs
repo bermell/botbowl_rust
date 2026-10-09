@@ -50,6 +50,26 @@ pub enum Command {
     /// Plan 056 arm F: rewrite a corpus with Monte Carlo value labels, each sample's
     /// `outcome_value` the mean of `--playouts` policy-only drive playouts from its state.
     McLabel(McLabelArgs),
+    /// Plan 061 (d): replay random-start trajectories under their own dice and count every roll
+    /// the engine resolved, by kind (`botbowl_mcts::chance_stats::RollKind`), per drive and per
+    /// decision, plus where real ball bounces could go. Headless, read-only.
+    RollCensus(RollCensusArgs),
+}
+
+/// `roll-census` (plan 061). See `roll_census.rs`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct RollCensusArgs {
+    /// Trajectory shards (`dataset` output). Random-start trajectories replay from their seed; a
+    /// `--next-drive` follow-on record (`drive` 2) continues from the record before it, so its
+    /// setup and kickoff rolls count too. Anything else is counted as skipped.
+    #[arg(long, required = true, num_args = 1..)]
+    pub corpus: Vec<String>,
+    /// Stop after this many replayed trajectories (0 = all).
+    #[arg(long, default_value_t = 0)]
+    pub max_trajectories: usize,
+    /// Optional JSON summary.
+    #[arg(long)]
+    pub out: Option<String>,
 }
 
 /// `override-audit` (plan 055 §3 phase 2). See `override_audit.rs` for what each row holds.
