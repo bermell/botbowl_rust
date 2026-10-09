@@ -115,3 +115,26 @@ The user switched the loop to cq τ=50 (2026-10-08 afternoon). gen09's corpus is
 probe's KL column is against the τ=50 target; P(played), log P(played) and top-1 still compare
 across the switch. Read-out: policy-only lineage matches (gen N vs gen08, the last τ=100 net) at
 gen11-12, against the τ=100 rate of ~0.003-0.004 per generation.
+
+## 7. Read-out after three τ=50 generations (2026-10-09 05:10)
+
+Policy-only, 600 pairs per board, `runs/plan059_lineage/run.sh` (botbowl-ui at f75eda5):
+
+| three steps | target | 14x7 | 16x9 | mean |
+|---|---|---|---|---|
+| gen11 vs gen08 | τ=50 (gen09-11) | 0.485 ± 0.008 | 0.506 ± 0.009 | **0.496 ± 0.006** |
+| gen08 vs gen05 (control) | τ=100 (gen06-08) | 0.507 ± 0.008 | 0.506 ± 0.008 | **0.507 ± 0.006** |
+
+**τ=50 did not speed up the policy.** Over three generations its bare policy gained nothing
+(−0.004), against +0.007 for the last three τ=100 steps: a difference of −0.011 ± 0.008
+(~1.4 SE), so if anything the wrong way. exp069's one-step lead (+0.009 ± 0.005) did not replicate.
+Alongside: the value bench went 0.204 → 0.204 → 0.203 → **0.205** (gen11 +1.1%, worse) at τ=50.
+The drive benchmark's gen09 H1 on 16x9 (0.540) is one generation into τ=50 and fits the trend
+that was already rising at τ=100.
+
+Caveats: gen08's corpus was partial (42%), and gen10 on carry the 14x5 throw-in fix, so the two
+three-step spans did not see identical data. Neither explains a policy that does not move.
+
+**Recommendation: return to cq τ=100** (the user decides). The improvement the search finds is
+not what the policy learns faster at τ=50; the next lever is elsewhere (more data per generation
+with the laptop, the value head, or the learning rate).

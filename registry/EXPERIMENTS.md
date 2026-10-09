@@ -34,6 +34,9 @@ ends (see the root CLAUDE.md).
   head (τ 30 loses all of the value gain, Gumbel σ goes backwards). τ=50 keeps the value gain and
   is the only arm above its parent in policy-only play (+1.7 SE: a lead). **Adopted by the user:
   the loop trains on cq τ=50 from gen09.** Re-read via policy-only lineage at gen11-12.
+- **Read-out (2026-10-09, plan 059 §7):** three τ=50 generations moved the bare policy by −0.004
+  (gen11 vs gen08 0.496 ± 0.006) against +0.007 for the last three τ=100 steps (gen08 vs gen05
+  0.507 ± 0.006): the one-step lead did not replicate. Recommendation: back to τ=100.
 - **Side finding:** one-step policy-only drives are blunt (the argmax moves in ~0.2% of
   decisions); compare across several generations instead.
 

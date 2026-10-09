@@ -22,6 +22,13 @@ Defaults unless a row says otherwise:
 | v9 gen07 | init (g056 gen04 v9) | 0.507 ± 0.009 | 0.528 ± 0.010 | 0.518 ± 0.007 | 600 | 2026-10-08 |
 | v9 gen07 | v9 gen04 | 0.511 ± 0.008 | 0.512 ± 0.009 | 0.512 ± 0.006 | 600 | 2026-10-08 |
 
+### τ=50 read-out (plan 059 §7; `runs/plan059_lineage/run.sh`; botbowl-ui at f75eda5)
+
+| A | vs B | 14x7 | 16x9 | mean | pairs/board | date |
+|---|---|---|---|---|---|---|
+| v9 gen11 (τ=50 ×3) | v9 gen08 | 0.485 ± 0.008 | 0.506 ± 0.009 | 0.496 ± 0.006 | 600 | 2026-10-09 |
+| v9 gen08 (τ=100 ×3) | v9 gen05 | 0.507 ± 0.008 | 0.506 ± 0.008 | 0.507 ± 0.006 | 600 | 2026-10-09 |
+
 ### exp069: one-step arms vs their parent gen06, policy-only both sides (plan 059; botbowl-ui 3c25109)
 
 | A | vs B | 14x7 | 16x9 | mean | pairs/board |
