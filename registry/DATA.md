@@ -29,6 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
+| 14 | v9 gen13 | 8×400 (5795) | 199,445 | 71827c9 | 48 local, 2 sidecars; 181 min | TD/drive 0.851 |
 | 13 | v9 gen12 (back on τ=100) | 8×400 (5814) | 198,002 | 71827c9 | 48 local, 2 sidecars; 282 min, shared throughout with gen12's drive benchmark | TD/drive 0.851 |
 | 12 | v9 gen11 (last τ=50 net) | 8×400 (5816) | 198,405 | f75eda5 | 48 local, 2 sidecars, laptop 10; 109 min | |
 | 11 | v9 gen10 | 8×400 (5820) | 202,818 | f75eda5 | 48 local, 2 sidecars, laptop 10 (v17) from the start; **108 min** | laptop ~800 decisions/min at full speed, more than either local worker |
