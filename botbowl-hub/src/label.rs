@@ -6,7 +6,7 @@
 //!
 //! - **reading** ([`load_inputs`], off the hub's lock): a shard's lines exactly as the local tool
 //!   reads them (`BufRead::lines`, blank lines skipped), the capacity check, each line kept
-//!   zstd-compressed (a 180 MB shard is ~10 MB) for shipping and for the final write, the seed's
+//!   zstd-compressed (~2% of the JSON) for shipping and for the final write, the seed's
 //!   first drive of every `--next-drive` record ([`first_drives`], the local rule), and each
 //!   trajectory cut into work items of at most `chunk_samples` samples ([`split_items`]). A
 //!   trajectory with no samples is still one empty item, because whether it replays decides

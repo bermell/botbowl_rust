@@ -225,7 +225,7 @@ pub fn summary_line(
 pub fn split_items(samples: usize, chunk: usize) -> Vec<Range<usize>> {
     let chunk = chunk.max(1);
     if samples == 0 {
-        return vec![0..0];
+        return std::iter::once(0..0).collect();
     }
     // Even pieces rather than `chunk, chunk, .., remainder`: no straggler of one sample.
     let pieces = samples.div_ceil(chunk);

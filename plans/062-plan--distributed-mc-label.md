@@ -8,8 +8,8 @@ built (§7).
 
 ## 1. Why
 
-Plan 056's MC value labels won (value RMS −15%, search +0.033 head to head), and the loop has run
-them every generation since (`MC_LABEL_PLAYOUTS=8`). The phase is `botbowl-ui mc-label` on the
+Plan 056's MC value labels won (value RMS −15%, its search 0.533 head to head against the
+control), and the loop has run them every generation since (`MC_LABEL_PLAYOUTS=8`). The phase is `botbowl-ui mc-label` on the
 training box: 8 policy-only playouts per sample under the generator net, through the GPU sidecar,
 ~95 min a generation and GPU-bound (plan 058). It is the one game-playing phase the hub's workers
 could not share: a laptop on tract that helps generate sits idle while the box labels. Making the
@@ -43,7 +43,7 @@ next-drive pairs, an orphan follow-on and a divergent record).
 
 1. The hub reads every shard *before* taking its lock (`label::load_inputs`, one thread per shard):
    the local line rules (`BufRead::lines`, blank lines skipped), the capacity check, each line kept
-   zstd'd (a 180 MB shard is ~10 MB), each follow-on's first drive located, and every trajectory
+   zstd'd (a 180 MB shard is a few MB), each follow-on's first drive located, and every trajectory
    cut into **items** of at most `--chunk-samples` samples (even ranges; a trajectory with no
    samples is still one empty item, because whether it replays decides whether it is stamped). A
    shard whose output exists is skipped, as the local tool skips it.
