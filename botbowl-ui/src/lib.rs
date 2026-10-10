@@ -3,6 +3,7 @@
 
 pub mod bot_factory;
 pub mod cli;
+pub mod mc_label;
 pub mod player_drawings;
 pub mod render;
 pub mod snapshot;

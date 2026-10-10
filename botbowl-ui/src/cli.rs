@@ -1,9 +1,10 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-// The `dataset` / `eval` flags live in `botbowl-play` (feature `cli`) so `botbowl-hub job
-// generate` / `job eval` flatten the very same structs (plan 059 #8).
+// The `dataset` / `eval` / `mc-label` flags live in `botbowl-play` (feature `cli`) so `botbowl-hub
+// job generate` / `job eval` / `job label` flatten the very same structs (plan 059 #8, plan 062).
 pub use botbowl_play::cli_args::{
-    BiasArgs, CliCandidateBot, CliDifficulty, CliEvaluator, DatasetArgs, DatasetMode, EvalArgs, EvalSizeArgs, SizeArgs,
+    BiasArgs, CliCandidateBot, CliDifficulty, CliEvaluator, DatasetArgs, DatasetMode, EvalArgs, EvalSizeArgs,
+    McLabelArgs, SizeArgs,
 };
 
 #[derive(Parser, Debug)]
@@ -139,34 +140,6 @@ pub struct ValueBenchArgs {
     /// Output JSONL: every benchmark line with `v` (the net's V(s), mover's frame) and `model` added.
     #[arg(long)]
     pub out: String,
-}
-
-/// `mc-label` (plan 056 arm F). See `mc_label.rs`.
-#[derive(clap::Args, Debug, Clone)]
-pub struct McLabelArgs {
-    /// Random-start trajectory shards; each is written to `--out-dir` under its own name.
-    #[arg(long, required = true, num_args = 1..)]
-    pub corpus: Vec<String>,
-    /// The net whose policy plays both sides of every playout.
-    #[arg(long)]
-    pub model: String,
-    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
-    #[arg(long)]
-    pub nn_server: Option<String>,
-    /// Playouts averaged per sample.
-    #[arg(long, default_value_t = 8)]
-    pub playouts: u32,
-    /// Playout dice derive from it, the trajectory's seed and the sample index.
-    #[arg(long, default_value_t = 56_000)]
-    pub seed: u64,
-    /// Trajectories labelled at once, one thread each.
-    #[arg(long, default_value_t = 8)]
-    pub parallel: usize,
-    /// Safety cap on engine steps per playout.
-    #[arg(long, default_value_t = 100_000)]
-    pub max_steps: u32,
-    #[arg(long)]
-    pub out_dir: String,
 }
 
 /// `positions`: the candidate positions of a drive-rung set on one board.

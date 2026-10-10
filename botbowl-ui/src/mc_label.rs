@@ -14,6 +14,10 @@
 //! so `prepare --value-blend 1.0` trains on it with no other change. One output shard per input
 //! shard, written to `<name>.partial` and renamed when complete; a rerun skips finished shards.
 //!
+//! This is the single-box shell: files, threads (parallel over samples) and progress lines. Every
+//! piece that decides a label or the output bytes is `botbowl_play::mc_label`, which the hub's
+//! `job label` (plan 062) runs on its workers, so the two write the same file.
+//!
 //! ```text
 //! BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR=target/16x9 \
 //! cargo run --release -p botbowl-ui -- mc-label --corpus runs/loopmix16x9g/gen07/shard0.jsonl \
@@ -21,7 +25,6 @@
 //!     --playouts 8 --parallel 8 --out-dir runs/exp067/mc_gen07
 //! ```
 
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
@@ -29,91 +32,15 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use rand::{RngCore, SeedableRng};
-use rand_chacha::ChaCha8Rng;
-
-use botbowl_data::{BoardCapacity, Trajectory, TrajectoryMeta};
+use botbowl_data::{BoardCapacity, Trajectory};
 use botbowl_engine::core::gamestate::GameState;
-use botbowl_engine::core::model::TeamType;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::{load_nn, Evaluator};
-use botbowl_play::drives::position_state;
+use botbowl_play::mc_label::{apply_labels, first_drives, label_tag, replay_all, rng_for, sample_label, summary_line};
+use botbowl_play::policy::PolicyBot;
 use botbowl_play::GAME_STACK_SIZE;
 
 use crate::cli::McLabelArgs;
-use crate::override_audit::{bias_of, play_out, PolicyBot};
-
-/// Which drive of its seed a record is: 1 for the random-start drive, 2 for the `--next-drive`
-/// record that follows a score through the kickoff (plan 047, `meta.extra.drive`).
-pub fn drive_of(meta: &TrajectoryMeta) -> u32 {
-    meta.extra.get("drive").and_then(|d| d.parse().ok()).unwrap_or(1)
-}
-
-/// Every recorded state of `traj`, rebuilt by replay from its seed; `Err` at the first divergence.
-/// A next-drive record (`drive_of` 2) starts where its seed's first drive ended, so `first` (that
-/// record) is replayed through first, under the same engine and dice stream.
-pub fn replay_all(traj: &Trajectory, first: Option<&Trajectory>) -> Result<Vec<GameState>, String> {
-    let seed = traj.meta.seed.ok_or("trajectory has no seed")?;
-    let mut state = position_state(&bias_of(&traj.meta)?, traj.meta.board_dims, seed);
-    if drive_of(&traj.meta) > 1 {
-        let first = first.ok_or("a next-drive record without its first drive in the shard")?;
-        if first.meta.seed != traj.meta.seed || drive_of(&first.meta) != 1 {
-            return Err("the first drive given is not this record's".into());
-        }
-        for (k, sample) in first.samples.iter().enumerate() {
-            if state != sample.state {
-                return Err(format!("replay of the first drive diverged at sample {k}"));
-            }
-            state
-                .step(sample.chosen_action)
-                .map_err(|e| format!("replaying the first drive's sample {k}: {e:?}"))?;
-        }
-    }
-    let mut out = Vec::with_capacity(traj.samples.len());
-    for (k, sample) in traj.samples.iter().enumerate() {
-        if state != sample.state {
-            return Err(format!("replay diverged from the recorded state at sample {k}"));
-        }
-        out.push(state.clone());
-        state
-            .step(sample.chosen_action)
-            .map_err(|e| format!("replaying sample {k}: {e:?}"))?;
-    }
-    Ok(out)
-}
-
-/// The playouts' dice for sample `k` of drive `drive` of the trajectory with seed `traj_seed`.
-fn sample_rng(base: u64, traj_seed: u64, drive: u32, k: usize) -> ChaCha8Rng {
-    let k = k as u64 + (drive.saturating_sub(1) as u64) * 1_000_000;
-    let id = traj_seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ k.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
-    ChaCha8Rng::seed_from_u64(base ^ id)
-}
-
-/// One sample's label: the mean, in Home's frame (the frame `outcome_value` is backfilled in), of
-/// `--playouts` policy-only drive playouts from `state`, with dice from [`sample_rng`].
-fn sample_label(
-    home: &mut PolicyBot,
-    away: &mut PolicyBot,
-    state: &GameState,
-    mut rng: ChaCha8Rng,
-    args: &McLabelArgs,
-) -> f32 {
-    let mut sum = 0.0f64;
-    for _ in 0..args.playouts {
-        let (p, _) = play_out(
-            state,
-            None,
-            TeamType::Home,
-            home,
-            away,
-            None,
-            rng.next_u64(),
-            args.max_steps,
-        );
-        sum += p.outcome as f64;
-    }
-    (sum / args.playouts as f64) as f32
-}
 
 /// One shard. The work is spread over samples, not trajectories: a trajectory is replayed once
 /// (cheap), then every one of its samples is a separate work item, so one long drive does not leave
@@ -129,6 +56,7 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
     }
     let partial = done.with_extension("jsonl.partial");
     let started = Instant::now();
+    let cfg = args.config();
     let invalid = |e: serde_json::Error| io::Error::new(io::ErrorKind::InvalidData, e);
     let mut trajs: Vec<Trajectory> = Vec::new();
     for line in BufReader::new(File::open(input)?).lines() {
@@ -150,22 +78,12 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
         trajs.push(t);
     }
     // Next-drive records replay through their seed's first drive.
-    let first_drive: HashMap<u64, usize> = trajs
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| drive_of(&t.meta) == 1)
-        .filter_map(|(i, t)| t.meta.seed.map(|s| (s, i)))
-        .collect();
+    let firsts = first_drives(trajs.iter().map(|t| &t.meta));
     let replayed: Vec<Option<Vec<GameState>>> = trajs
         .iter()
-        .map(|t| {
-            let first = t
-                .meta
-                .seed
-                .filter(|_| drive_of(&t.meta) > 1)
-                .and_then(|s| first_drive.get(&s))
-                .map(|&j| &trajs[j]);
-            replay_all(t, first)
+        .zip(&firsts)
+        .map(|(t, first)| {
+            replay_all(t, first.map(|j| &trajs[j]))
                 .map_err(|why| eprintln!("left unlabelled (seed {:?}): {why}", t.meta.seed))
                 .ok()
         })
@@ -187,9 +105,8 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
             let Some(&(t, k)) = items.get(i) else { return };
             let traj = &trajs[t];
             let state = &replayed[t].as_ref().expect("items only cover replayed trajectories")[k];
-            let rng = sample_rng(args.seed, traj.meta.seed.unwrap_or(0), drive_of(&traj.meta), k);
             labels[i].store(
-                sample_label(&mut home, &mut away, state, rng, args).to_bits(),
+                sample_label(&mut home, &mut away, state, rng_for(&cfg, &traj.meta, k), &cfg).to_bits(),
                 Ordering::Relaxed,
             );
             if (i + 1).is_multiple_of(2000) {
@@ -216,14 +133,17 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
             h.join().expect("mc-label thread panicked");
         }
     });
-    for (i, &(t, k)) in items.iter().enumerate() {
-        trajs[t].samples[k].outcome_value = Some(f32::from_bits(labels[i].load(Ordering::Relaxed)));
+    // Items run trajectory by trajectory, each one's samples in order.
+    let mut by_traj: Vec<Option<Vec<f32>>> = replayed.iter().map(|r| r.as_ref().map(|_| Vec::new())).collect();
+    for (i, &(t, _)) in items.iter().enumerate() {
+        by_traj[t]
+            .as_mut()
+            .expect("items only cover replayed trajectories")
+            .push(f32::from_bits(labels[i].load(Ordering::Relaxed)));
     }
     let mut out = io::BufWriter::new(File::create(&partial)?);
-    for (t, traj) in trajs.iter_mut().enumerate() {
-        if replayed[t].is_some() {
-            traj.meta.extra.insert("value_label".into(), tag.to_string());
-        }
+    for (traj, labels) in trajs.iter_mut().zip(&by_traj) {
+        apply_labels(traj, labels.as_deref(), tag);
         out.write_all(serde_json::to_string(traj)?.as_bytes())?;
         out.write_all(b"\n")?;
     }
@@ -231,14 +151,16 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
     drop(out);
     fs::rename(&partial, &done)?;
     eprintln!(
-        "mc-label: {} -> {}: {} trajectories ({} left unlabelled), {} samples x {} playouts in {:.0}s",
-        input,
-        done.display(),
-        trajs.len(),
-        replayed.iter().filter(|r| r.is_none()).count(),
-        items.len(),
-        args.playouts,
-        started.elapsed().as_secs_f64()
+        "{}",
+        summary_line(
+            input,
+            &done.display().to_string(),
+            trajs.len(),
+            replayed.iter().filter(|r| r.is_none()).count(),
+            items.len(),
+            args.playouts,
+            started.elapsed().as_secs_f64()
+        )
     );
     Ok(())
 }
@@ -256,10 +178,7 @@ pub fn run(args: McLabelArgs) -> io::Result<()> {
         server.as_deref(),
     )?
     .expect("Evaluator::Nn always loads a net");
-    let tag = format!(
-        "mc_policy(playouts={},model={},seed={})",
-        args.playouts, args.model, args.seed
-    );
+    let tag = label_tag(&args.config(), &args.model);
     for input in &args.corpus {
         label_shard(&nn, &args, input, &tag)?;
     }
@@ -269,10 +188,13 @@ pub fn run(args: McLabelArgs) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use botbowl_engine::core::model::BoardDims;
+    use botbowl_engine::core::model::{BoardDims, TeamType};
     use botbowl_play::bots::SearchConfig;
     use botbowl_play::drives::DriveStart;
     use botbowl_play::generate::{play_trajectory, GenMode, GenerateConfig, RandomStartBias};
+    use botbowl_play::mc_label::{drive_of, sample_rng};
+    use botbowl_play::policy::play_out;
+    use rand::RngCore;
 
     const TINY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../botbowl-nn/tests/fixtures/tiny.onnx");
 

@@ -23,6 +23,9 @@ botbowl-hub job eval --evaluator nn --model X.onnx --vs-evaluator nn --vs-model 
 botbowl-hub job generate --mode random-start --games 600 --mcts-iters 1000 --evaluator nn --model X.onnx \
     --seed-base 22000000 --shard-seed-stride 100000 --shards "0 1 2 3 4 5 6 7" --heuristic-shards "" \
     --truncate --out-dir runs/<run>/gen12 --wait       # writes gen12/shard$K.jsonl, shard K seeded at base + K*stride
+# label (plan 062; flag-compatible with `botbowl-ui mc-label`; one job = every shard of a generation):
+botbowl-hub job label --in gen12/shard0.jsonl gen12/shard4.jsonl --model X.onnx --playouts 8 \
+    --seed 56012 --out-dir runs/<run>/gen12/mc --label "gen12 mc-label" --wait   # [--chunk-samples 32] [--batch 1]
 botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is the status page in a terminal
 # http://hub:7777/ is an index; http://hub:7777/status the status page: jobs by --label
 # (`job ... --label "gen03 generate"`), rungs and status lines shortened to how we name things
@@ -98,7 +101,7 @@ address is the clients', not the box's.
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
   **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
   re-exported types. **v10** (plan 051) added `Task::Eval.drives` (a drive rung's position set)
-  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
+  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. **v19** (plan 062) added `Task::Label` (`LabelItem`s: sample ranges of corpus trajectories, zstd) and `ToHub::LabelDone` (`LabelResult`), the distributed `mc-label`; both are appended variants, so older frames keep their tags. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
   wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
@@ -214,6 +217,25 @@ address is the clients', not the box's.
   `ModelId`. Search knobs are resolved from the hub's environment at submit, never from a
   worker's, via `pinned_to_env` (see the
   submitter-resolves-everything invariant above). A helper box's `BLOOD_MCTS_*` reaches nothing.
+- **Output equals `botbowl-ui mc-label`'s (plan 062, protocol v19).** `job label` flattens the
+  same `McLabelArgs` (`--in`/`--corpus`, `--model`, `--playouts`, `--seed`, `--max-steps`,
+  `--out-dir`; `--parallel` and `--nn-server` are refused). The hub reads each shard *before*
+  taking its lock (`label::load_inputs`: the local tool's line rules, its capacity check, each line
+  kept zstd'd, every trajectory cut into items of at most `--chunk-samples` samples, the first drive
+  of every `--next-drive` record found by `mc_label::first_drives`). A task is `--batch` items; an
+  item ships its trajectory's line (and its first drive's, for a follow-on record) and comes back
+  as `LabelDone`: the labels only, or `Unlabellable(why)`. The worker replays the whole trajectory
+  for every item, so all items of one trajectory agree on whether it replays — the local
+  per-trajectory verdict. When a shard's last item is in, a thread writes it (`label::ShardWrite`:
+  parse, `mc_label::apply_labels`, re-serialise, `.partial` then rename) and the job is done when
+  every shard is on disk. Every rule that decides a label or a byte lives in `botbowl_play::mc_label`
+  and both shells call it; `botbowl-ui/tests/mc_label_hub.rs` pins hub output == local output byte
+  for byte (next-drive pairs split across workers, an orphan follow-on, a divergent record, a worker
+  that vanishes mid-chunk). A shard whose output exists at submit is skipped, as locally. `job label
+  --wait` prints the local summary line per shard, so `train_loop.sh`'s unlabelled count works
+  unchanged. Labels are bitwise reproducible only on one backend: tract and the GPU sidecar differ in
+  the last bits of a forward, so a near-tie argmax can flip a playout — as two local runs on the GPU
+  already can.
 - **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
   task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries
   `RungReq.board` → `Task::Eval.board`, and a multi-size ladder names rungs `opponent@14x7/4`
@@ -255,6 +277,8 @@ address is the clients', not the box's.
 
 ## Tests
 
+`cargo test -p botbowl-ui --test mc_label_hub`: a label job through the hub writes `mc-label`'s
+exact bytes, and a worker that vanishes mid-chunk loses and doubles nothing (plan 062).
 `cargo test -p botbowl-hub`: hub + two in-process workers reproduce a single-process eval
 exactly (search-free bots so it is exact on any tier); a generate job writes each shard's seed
 set exactly once with `dataset`'s provenance labels, truncates or appends as asked; a worker

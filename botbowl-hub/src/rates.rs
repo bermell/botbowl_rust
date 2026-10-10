@@ -273,6 +273,9 @@ pub fn log_line(t: &Throughput) -> Option<String> {
         if c.eval_games > 0 {
             s.push_str(&format!(" + eval {} games/min", num(r(c).per_min(c.eval_games))));
         }
+        if c.label_items > 0 {
+            s.push_str(&format!(" + label {} samples/min", num(r(c).per_min(c.label_samples))));
+        }
         s
     };
     let mut parts: Vec<String> = t

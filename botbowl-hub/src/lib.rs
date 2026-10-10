@@ -3,7 +3,7 @@
 //! One axum server exposes
 //!
 //! - `GET /ws` — the worker websocket ([`ws`]);
-//! - `POST /api/jobs` (an [`api::JobRequest`]: eval or generate),
+//! - `POST /api/jobs` (an [`api::JobRequest`]: eval, generate or label),
 //!   `GET /api/jobs/{id}`, `GET /api/status` — the control API the
 //!   `botbowl-hub job` CLI uses (bearer token);
 //! - `GET /` — an index linking the pages below ([`page::render_index`]);
@@ -19,6 +19,7 @@
 pub mod allowlist;
 pub mod api;
 pub mod http;
+pub mod label;
 pub mod page;
 pub mod rates;
 pub mod registry;
@@ -38,7 +39,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use tokio::sync::Notify;
 
-use api::{EvalJobRequest, GenerateJobRequest, JobId, JobRequest, JobState, JobStatus, Submitted};
+use api::{EvalJobRequest, GenerateJobRequest, JobId, JobRequest, JobState, JobStatus, LabelJobRequest, Submitted};
+use botbowl_hub_proto::{LabelResult, TaskId};
 use state::Inner;
 
 #[derive(Clone, Debug)]
@@ -242,9 +244,46 @@ impl Hub {
     }
 
     pub fn submit(&self, req: JobRequest) -> std::io::Result<JobId> {
-        let id = self.inner.lock().unwrap().submit(req)?;
+        let id = match req {
+            // Plan 062: a generation's shards are ~1.5 GB of JSON. Read and compress them before
+            // taking the lock, so workers' results and the status page are not held up.
+            JobRequest::Label(r) => {
+                let inputs = label::load_inputs(&r)?;
+                let (id, writes) = self.inner.lock().unwrap().submit_label(r, inputs)?;
+                for w in writes {
+                    self.spawn_write(w);
+                }
+                id
+            }
+            other => self.inner.lock().unwrap().submit(other)?,
+        };
         self.changed.notify_waiters();
         Ok(id)
+    }
+
+    pub fn submit_label(&self, req: LabelJobRequest) -> std::io::Result<JobId> {
+        self.submit(JobRequest::Label(req))
+    }
+
+    /// Plan 062: one label item's result, from a worker. A shard whose last item this was is
+    /// written on its own thread (parse, label and re-serialise ~180 MB), off the lock.
+    pub fn label_done(&self, worker: state::WorkerId, task: TaskId, item: u32, result: LabelResult) {
+        let write = self.inner.lock().unwrap().label_done(worker, task, item, result);
+        if let Some(w) = write {
+            self.spawn_write(w);
+        }
+        self.changed.notify_waiters();
+    }
+
+    fn spawn_write(&self, w: label::ShardWrite) {
+        let hub = self.clone();
+        std::thread::spawn(move || {
+            // A panic must still end the shard (as a failed job), or `--wait` would wait forever.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w.run()))
+                .unwrap_or_else(|_| Err(std::io::Error::other("the shard writer panicked")));
+            hub.inner.lock().unwrap().label_written(w.job, w.unit, result);
+            hub.changed.notify_waiters();
+        });
     }
 
     pub fn submit_eval(&self, req: EvalJobRequest) -> std::io::Result<JobId> {
@@ -344,9 +383,12 @@ async fn api_submit(State(hub): State<Hub>, headers: HeaderMap, Json(req): Json<
     if !authed(&hub, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match hub.submit(req) {
-        Ok(id) => Json(Submitted { id }).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    // A label job reads its shards before it is queued (seconds): off the async workers.
+    let submitter = hub.clone();
+    match tokio::task::spawn_blocking(move || submitter.submit(req)).await {
+        Ok(Ok(id)) => Json(Submitted { id }).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

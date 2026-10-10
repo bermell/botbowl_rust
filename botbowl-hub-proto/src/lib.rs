@@ -23,6 +23,7 @@ pub use botbowl_play::bots::{Evaluator, SearchConfig};
 pub use botbowl_play::drives::DriveRung;
 pub use botbowl_play::eval::EvalGameLine;
 pub use botbowl_play::generate::GenerateConfig;
+pub use botbowl_play::mc_label::LabelConfig;
 
 /// Bump on any change to the frames below.
 // v3 (plan 042): `Task::Eval.board` and `GenerateConfig.board_sizes`.
@@ -48,7 +49,9 @@ pub use botbowl_play::generate::GenerateConfig;
 // v17 (plan 060): `SearchTelemetry.tree` (tree statistics), riding inside `EvalGameLine.telemetry`.
 // v18 (plan 061): `MctsConfig.bounce_model`, `pass_scatter_model`, `throw_in_model`, `chance_backup`,
 // `chance_mass`, `chance_widen_c`, `chance_widen_alpha`, inside `SearchConfig.config`.
-pub const PROTOCOL_VERSION: u32 = 18;
+// v19 (plan 062): `Task::Label` (sample ranges of corpus trajectories, shipped zstd) and
+// `ToHub::LabelDone` (their MC value labels) — distributed `mc-label`.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
@@ -234,12 +237,46 @@ pub enum Task {
         cfg: GenerateConfig,
         model: Option<ModelId>,
     },
+    /// Plan 062: label these work items of one corpus shard with Monte Carlo values
+    /// (`botbowl_play::mc_label::label_range` under `model`'s policy). Each item is a sample range
+    /// of one trajectory; the worker answers one [`ToHub::LabelDone`] per item.
+    Label {
+        id: TaskId,
+        shard: String,
+        items: Vec<LabelItem>,
+        cfg: LabelConfig,
+        model: ModelId,
+    },
+}
+
+/// One work item of a [`Task::Label`]: samples `start..end` of one trajectory. The whole
+/// trajectory travels (the worker replays it from its seed to rebuild the states), as its corpus
+/// JSON line, zstd-compressed like [`ToHub::TrajectoryDone`]'s payload; a `--next-drive` record
+/// (`meta.extra.drive` 2) also carries its seed's first drive, which the replay starts from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LabelItem {
+    /// The item's index in its shard: what the hub dedupes a result on.
+    pub item: u32,
+    pub start: u32,
+    pub end: u32,
+    pub zstd_json: Vec<u8>,
+    pub first_zstd_json: Option<Vec<u8>>,
+}
+
+/// What one label item came to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum LabelResult {
+    /// One label per sample of the item's range, in order: Home's frame, the playout mean.
+    Labels(Vec<f32>),
+    /// The trajectory does not replay (an engine that changed since the corpus was written, or a
+    /// next-drive record without its first drive): it is written back unlabelled, as locally.
+    Unlabellable(String),
 }
 
 impl Task {
     pub fn id(&self) -> TaskId {
         match self {
-            Task::Eval { id, .. } | Task::Generate { id, .. } => *id,
+            Task::Eval { id, .. } | Task::Generate { id, .. } | Task::Label { id, .. } => *id,
         }
     }
 
@@ -250,6 +287,7 @@ impl Task {
                 candidate, opponent, ..
             } => candidate.model().into_iter().chain(opponent.model()).collect(),
             Task::Generate { model, .. } => model.iter().copied().collect(),
+            Task::Label { model, .. } => vec![*model],
         }
     }
 }
@@ -296,6 +334,13 @@ pub enum ToHub {
     },
     Heartbeat {
         games_in_flight: u16,
+    },
+    /// Plan 062: one finished item of a [`Task::Label`]. Only the labels travel (4 bytes a
+    /// sample); the hub holds the trajectories and writes the shard.
+    LabelDone {
+        task: TaskId,
+        item: u32,
+        labels: LabelResult,
     },
 }
 
@@ -427,5 +472,91 @@ mod tests {
             parallel_games: None,
         };
         let _: ToHub = decode(&encode(&hello)).unwrap();
+    }
+
+    /// Plan 062: a label task and its results survive the wire exactly — labels bit for bit, since
+    /// the hub writes them into the corpus.
+    #[test]
+    fn label_frames_roundtrip() {
+        let items = vec![
+            LabelItem {
+                item: 3,
+                start: 0,
+                end: 32,
+                zstd_json: vec![1, 2, 3],
+                first_zstd_json: None,
+            },
+            LabelItem {
+                item: 4,
+                start: 32,
+                end: 40,
+                zstd_json: vec![4, 5],
+                first_zstd_json: Some(vec![6, 7, 8]),
+            },
+        ];
+        let cfg = LabelConfig {
+            playouts: 8,
+            seed: 56_016,
+            max_steps: 100_000,
+        };
+        let task = Task::Label {
+            id: 11,
+            shard: "shard0".into(),
+            items: items.clone(),
+            cfg,
+            model: ModelId::of(b"net"),
+        };
+        assert_eq!(task.id(), 11);
+        assert_eq!(task.models(), vec![ModelId::of(b"net")]);
+        match decode::<ToWorker>(&encode(&ToWorker::Task(task))).unwrap() {
+            ToWorker::Task(Task::Label {
+                id,
+                shard,
+                items: got,
+                cfg: c,
+                model,
+            }) => {
+                assert_eq!((id, shard.as_str(), c, model), (11, "shard0", cfg, ModelId::of(b"net")));
+                assert_eq!(got, items);
+            }
+            other => panic!("{other:?}"),
+        }
+        let labels = vec![0.125f32, -1.0, 0.0, -0.0, 1.0 / 3.0, f32::MIN_POSITIVE];
+        for result in [
+            LabelResult::Labels(labels.clone()),
+            LabelResult::Labels(vec![]),
+            LabelResult::Unlabellable("replay diverged at sample 0".into()),
+        ] {
+            let frame = ToHub::LabelDone {
+                task: 11,
+                item: 4,
+                labels: result.clone(),
+            };
+            match decode::<ToHub>(&encode(&frame)).unwrap() {
+                ToHub::LabelDone {
+                    task,
+                    item,
+                    labels: back,
+                } => {
+                    assert_eq!((task, item), (11, 4));
+                    assert_eq!(back, result);
+                    if let (LabelResult::Labels(a), LabelResult::Labels(b)) = (&back, &result) {
+                        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                        assert_eq!(bits(a), bits(b), "labels must cross bit for bit");
+                    }
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // The frames older workers know keep their tags: Label and LabelDone are appended.
+        assert_eq!(encode(&ToHub::Heartbeat { games_in_flight: 2 })[0], 4);
+        assert_eq!(
+            encode(&ToHub::LabelDone {
+                task: 0,
+                item: 0,
+                labels: LabelResult::Labels(vec![])
+            })[0],
+            5
+        );
     }
 }

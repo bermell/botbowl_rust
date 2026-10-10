@@ -331,6 +331,16 @@ ABSORB_PROBE="${ABSORB_PROBE:-on}"
 # is) and SELECT_ON=combined. 0 = off, the raw outcome as before.
 MC_LABEL_PLAYOUTS="${MC_LABEL_PLAYOUTS:-0}"
 MC_LABEL_PARALLEL="${MC_LABEL_PARALLEL:-16}"
+# Plan 062: run that phase as a hub job (`botbowl-hub job label`) instead of `botbowl-ui mc-label`,
+# so remote workers (a laptop on tract) share it. Same net, playouts, seed, output dir, markers and
+# summary lines; the files are byte-identical to the local tool's on the same backend. This box's
+# share is a local worker of LABEL_PARALLEL_GAMES streams over LABEL_SIDECARS sidecars (one worker
+# per sidecar, as in generate); work items are at most LABEL_CHUNK_SAMPLES samples of one
+# trajectory. 0 = the local tool, exactly as before.
+LABEL_VIA_HUB="${LABEL_VIA_HUB:-0}"
+LABEL_PARALLEL_GAMES="${LABEL_PARALLEL_GAMES:-$MC_LABEL_PARALLEL}"
+LABEL_SIDECARS="${LABEL_SIDECARS:-1}"
+LABEL_CHUNK_SAMPLES="${LABEL_CHUNK_SAMPLES:-32}"
 # Plan 056 §2: score every new net's value head on a frozen MC benchmark (scripts/value_bench.sh,
 # seconds) next to its generator; the benchmark .jsonl path, or empty = off.
 VALUE_BENCH="${VALUE_BENCH:-}"
@@ -1197,17 +1207,33 @@ while [ "$G" -le "$MAX_GENS" ]; do
         check_stop "before $GG mc-label"
         SECONDS=0
         MC_NET="$(champion)"
-        nn_server_start "$MC_NET"
         # Train and val shards: val_value then scores the same label the net trains toward, which
         # is what lets restore-on-combined see the value head improve (gen02 restored its init on a
         # flat val_policy and discarded the value progress).
         MC_IN=""; for K in $TRAIN_SHARDS $VAL_SHARDS; do MC_IN="$MC_IN $GEN_DIR/shard$K.jsonl"; done
-        status "$GG mc-label: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}"
-        # shellcheck disable=SC2086
-        "$UI" mc-label --corpus $MC_IN --model "$MC_NET" ${NN_SERVER_PID:+--nn-server "$NN_SOCKET"} \
-            --playouts "$MC_LABEL_PLAYOUTS" --parallel "$MC_LABEL_PARALLEL" --seed "$((56000 + G))" \
-            --out-dir "$GEN_DIR/mc" 2>> "$GEN_DIR/mc_label.log"
-        MC_RC=$?
+        if [ "$LABEL_VIA_HUB" = 1 ]; then
+            # Plan 062: the same labels as a hub job — this box's worker on the sidecar(s) plus any
+            # remote worker (tract). Same net, playouts, seed, output dir and summary lines.
+            nn_server_start "$MC_NET" "$LABEL_SIDECARS"
+            worker_start "$LABEL_PARALLEL_GAMES" "$GEN_DIR/mc_label.worker.log"
+            status "$GG mc-label via the hub: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}, local x$LABEL_PARALLEL_GAMES + hub workers, items of $LABEL_CHUNK_SAMPLES samples"
+            # shellcheck disable=SC2086
+            "$HUB" job label --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" --label "$GG mc-label" \
+                --corpus $MC_IN --model "$MC_NET" --playouts "$MC_LABEL_PLAYOUTS" --seed "$((56000 + G))" \
+                --chunk-samples "$LABEL_CHUNK_SAMPLES" --out-dir "$GEN_DIR/mc" --wait >> "$GEN_DIR/mc_label.log" 2>&1
+            MC_RC=$?
+            worker_stop
+            grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/mc_label.worker.log" 2>/dev/null \
+                && status "WARN: $GG mc-label had the local worker fall back to tract — see mc_label.worker.log and nn_server.log"
+        else
+            nn_server_start "$MC_NET"
+            status "$GG mc-label: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}"
+            # shellcheck disable=SC2086
+            "$UI" mc-label --corpus $MC_IN --model "$MC_NET" ${NN_SERVER_PID:+--nn-server "$NN_SOCKET"} \
+                --playouts "$MC_LABEL_PLAYOUTS" --parallel "$MC_LABEL_PARALLEL" --seed "$((56000 + G))" \
+                --out-dir "$GEN_DIR/mc" 2>> "$GEN_DIR/mc_label.log"
+            MC_RC=$?
+        fi
         nn_server_stop
         [ "$MC_RC" -eq 0 ] || die "$GG mc-label failed — see $GEN_DIR/mc_label.log"
         for K in $TRAIN_SHARDS $VAL_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || die "$GG mc/shard$K.jsonl missing"; done

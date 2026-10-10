@@ -8,6 +8,24 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### MC labels through the hub: equivalence and overhead (plan 062), 2026-10-10
+
+- **Question:** does `botbowl-hub job label` (plan 062, protocol v19) write what
+  `botbowl-ui mc-label` writes, and what does the hub cost?
+- **Setup:** branch head of plan 062, release build, default 28x17/11 board, fixture net
+  `botbowl-nn/tests/fixtures/tiny.onnx` on tract, 2 threads either way. The corpus is 30
+  trajectories, 2008 samples, two shards, one next-drive pair: the first 30 lines of `dataset
+  --mode random-start --games 300 --seed 6000 --mcts-iters 4 --evaluator heuristic --next-drive
+  --max-steps 2000`. 8 playouts, seed 7. The hub run is a test hub on :13339 with one
+  `botbowl-worker --parallel-games 2` and `--chunk-samples 32` (80 items). The box was running the
+  live loop (load 12–17).
+- **Result:** local 218 s, hub 225 s (+3%, within noise). Both shards byte-identical. An item ships
+  ~2% of its line's size on this board (616 KB → 14 KB zstd; ~7.5% on the loop's 16x9 corpus) and
+  returns 4 bytes a sample.
+- **Conclusion:** the hub adds no meaningful cost. Turning it on in the loop (`LABEL_VIA_HUB=1`)
+  is a throughput question for the GPU box plus the laptop, to be read off the first generation's
+  phase minutes against the local ~95.
+
 ### <a id="exp070"></a>exp070: the chance model (plan 061), planned 2026-10-09
 
 - **Status:** planned, not run.

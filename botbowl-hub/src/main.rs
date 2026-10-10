@@ -6,14 +6,14 @@ use clap::parser::ValueSource;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use botbowl_hub::api::{
-    BotReq, EvalJobRequest, GenerateJobRequest, HubStatus, JobKind, JobRequest, JobState, JobStatus, RungReq, ShardReq,
-    Submitted,
+    BotReq, EvalJobRequest, GenerateJobRequest, HubStatus, JobKind, JobRequest, JobState, JobStatus, LabelJobRequest,
+    LabelShardReq, RungReq, ShardReq, Submitted, UnitStats,
 };
-use botbowl_hub::http::request;
+use botbowl_hub::http::{request, request_with_timeout};
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig};
 use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, CandidateBot};
-use botbowl_play::cli_args::{vs_rung_label, DatasetArgs, EvalArgs};
+use botbowl_play::cli_args::{vs_rung_label, DatasetArgs, EvalArgs, McLabelArgs};
 use botbowl_play::drives::{drive_rung_name, DriveRung, PositionSet};
 use botbowl_play::eval::rung_name;
 use botbowl_play::generate::Exploration;
@@ -230,6 +230,108 @@ enum JobCommand {
     Eval(EvalJobArgs),
     /// Corpus shards; same flags as `botbowl-ui dataset`, plus which shards.
     Generate(GenerateJobArgs),
+    /// Monte Carlo value labels (plan 062); same flags as `botbowl-ui mc-label`.
+    Label(LabelJobArgs),
+}
+
+/// `botbowl-ui mc-label` flag for flag (the same [`McLabelArgs`], flattened): `--in` (or
+/// `--corpus`) shards, each written to `--out-dir` under its own name, byte for byte what the local
+/// tool writes on the same backend. The hub cuts every trajectory into work items of at most
+/// `--chunk-samples` samples, workers label them with the `--model` net (their sidecar if they have
+/// one, tract otherwise) and the hub writes each shard once its last item is in. A shard whose
+/// output exists is skipped, as locally. `--parallel` and `--nn-server` are refused: workers size
+/// themselves and own their sidecar.
+#[derive(Args, Debug)]
+struct LabelJobArgs {
+    #[command(flatten)]
+    client: ClientArgs,
+    #[command(flatten)]
+    ml: McLabelArgs,
+    /// Most samples per work item; a longer trajectory is split into even ranges. 32 samples x 8
+    /// playouts is ~15 s on a GPU-backed stream and a few minutes on a laptop's tract.
+    #[arg(long, default_value_t = 32)]
+    chunk_samples: u32,
+    /// Work items per task handed to a worker.
+    #[arg(long, default_value_t = 1)]
+    batch: u16,
+    /// Block until the job finishes; exit nonzero if it failed.
+    #[arg(long, default_value_t = false)]
+    wait: bool,
+}
+
+fn build_label_request(a: &LabelJobArgs, m: &ArgMatches) -> Result<LabelJobRequest, String> {
+    refuse_local_flags(
+        m,
+        &[
+            ("parallel", "workers size themselves (botbowl-worker --parallel-games)"),
+            ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
+        ],
+    )?;
+    let ml = &a.ml;
+    if ml.playouts == 0 {
+        return Err("--playouts must be > 0".into());
+    }
+    let out_dir = PathBuf::from(&ml.out_dir);
+    let shards = ml
+        .corpus
+        .iter()
+        .map(|input| {
+            let input = PathBuf::from(input);
+            let file = input
+                .file_name()
+                .ok_or_else(|| format!("{}: no file name", input.display()))?;
+            Ok(LabelShardReq {
+                name: input
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                input: abs(&input),
+                out: abs(&out_dir.join(file)),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(LabelJobRequest {
+        shards,
+        model_path: abs(&PathBuf::from(&ml.model)),
+        // As typed: the provenance tag must read as the local tool's would.
+        model: ml.model.clone(),
+        cfg: ml.config(),
+        chunk_samples: a.chunk_samples.max(1),
+        batch: a.batch.max(1),
+        label: a.client.label.clone(),
+    })
+}
+
+/// `botbowl-ui mc-label`'s summary line for every shard of a finished label job, on stderr where
+/// the local tool prints it (`train_loop.sh` sums the unlabelled counts from these lines).
+fn print_label_lines(s: &JobStatus, playouts: u32) {
+    for u in &s.units {
+        let Some(UnitStats::Label(l)) = &u.stats else { continue };
+        if l.skipped {
+            eprintln!("mc-label: {} exists, skipping", l.out);
+        } else {
+            eprintln!(
+                "{}",
+                botbowl_play::mc_label::summary_line(
+                    &l.input,
+                    &l.out,
+                    l.trajectories as usize,
+                    l.unlabelled as usize,
+                    l.samples as usize,
+                    playouts,
+                    l.secs
+                )
+            );
+        }
+    }
+    println!(
+        "labelled {} samples over {} shard(s) in {} s (commit {}{})",
+        s.units.iter().map(|u| u.samples).sum::<u64>(),
+        s.units.len(),
+        s.elapsed_secs,
+        botbowl_data::git_commit(),
+        if botbowl_data::git_dirty() { "-dirty" } else { "" },
+    );
 }
 
 /// `botbowl-ui dataset` flag-for-flag (the same [`DatasetArgs`], flattened), except that one job
@@ -788,10 +890,29 @@ fn main() {
                     );
                     (a.client.clone(), a.wait, JobRequest::Generate(req), what)
                 }
+                JobCommand::Label(a) => {
+                    let req = build_label_request(a, job_matches.as_ref().expect("job matches")).unwrap_or_else(|e| {
+                        eprintln!("{e}");
+                        std::process::exit(2)
+                    });
+                    let what = format!(
+                        "label job: {} shard(s) x {} playouts per sample",
+                        req.shards.len(),
+                        req.cfg.playouts
+                    );
+                    (a.client.clone(), a.wait, JobRequest::Label(req), what)
+                }
             };
             let token = read_token(&token_path(&client.token_file));
             let body = serde_json::to_string(&req).unwrap();
-            let id = match request("POST", &format!("{}/api/jobs", client.hub), &token, Some(&body)) {
+            // A label job reads its shards before it answers: give the submit time.
+            let id = match request_with_timeout(
+                "POST",
+                &format!("{}/api/jobs", client.hub),
+                &token,
+                Some(&body),
+                Duration::from_secs(600),
+            ) {
                 Ok((200, body)) => serde_json::from_str::<Submitted>(&body).expect("submit json").id,
                 Ok((code, body)) => {
                     eprintln!("hub refused the job ({code}): {body}");
@@ -844,6 +965,7 @@ fn main() {
                                 print_report_lines(&s);
                                 println!("wrote {}", r.report_out.display());
                             }
+                            (JobKind::Label, JobRequest::Label(r)) => print_label_lines(&s, r.cfg.playouts),
                             _ => print_generate_lines(&s),
                         }
                         return;
@@ -994,6 +1116,70 @@ mod tests {
             "--skip-lectures",
         ])
         .unwrap();
+    }
+
+    fn label(args: &[&str]) -> Result<LabelJobRequest, String> {
+        match job(args)? {
+            (JobCommand::Label(a), m) => build_label_request(&a, &m),
+            _ => unreachable!(),
+        }
+    }
+
+    /// `train_loop.sh`'s mc-label phase under `LABEL_VIA_HUB=1`, flag for flag.
+    #[test]
+    fn the_loops_label_command_parses() {
+        let req = label(&[
+            "label",
+            "--hub",
+            "http://127.0.0.1:13337",
+            "--token-file",
+            "/tmp/t",
+            "--label",
+            "gen16 mc-label",
+            "--corpus",
+            "/r/gen16/shard0.jsonl",
+            "/r/gen16/shard4.jsonl",
+            "--model",
+            "/r/models/bbnet_gen16.onnx",
+            "--playouts",
+            "8",
+            "--seed",
+            "56016",
+            "--out-dir",
+            "/r/gen16/mc",
+            "--wait",
+        ])
+        .unwrap();
+        assert_eq!(req.shards.len(), 2);
+        assert_eq!(req.shards[1].name, "shard4");
+        assert_eq!(req.shards[1].input, PathBuf::from("/r/gen16/shard4.jsonl"));
+        assert_eq!(req.shards[1].out, PathBuf::from("/r/gen16/mc/shard4.jsonl"));
+        assert_eq!(req.model, "/r/models/bbnet_gen16.onnx");
+        assert_eq!((req.cfg.playouts, req.cfg.seed, req.cfg.max_steps), (8, 56016, 100_000));
+        assert_eq!((req.chunk_samples, req.batch), (32, 1));
+        assert_eq!(req.label.as_deref(), Some("gen16 mc-label"));
+        // `--in` is `--corpus`'s other spelling; the process-local flags are refused.
+        let req = label(&["label", "--in", "a.jsonl", "--model", "m.onnx", "--out-dir", "o"]).unwrap();
+        assert_eq!(req.shards[0].name, "a");
+        for flag in [&["--parallel", "16"][..], &["--nn-server", "/tmp/s"]] {
+            let mut args = vec!["label", "--in", "a.jsonl", "--model", "m.onnx", "--out-dir", "o"];
+            args.extend_from_slice(flag);
+            let e = label(&args).unwrap_err();
+            assert!(e.contains(flag[0]), "{e}");
+        }
+        let e = label(&[
+            "label",
+            "--in",
+            "a.jsonl",
+            "--model",
+            "m",
+            "--out-dir",
+            "o",
+            "--playouts",
+            "0",
+        ])
+        .unwrap_err();
+        assert!(e.contains("--playouts"), "{e}");
     }
 
     /// `train_loop.sh`'s `eval_job` for the drives rung, minus `--positions` (it loads files).

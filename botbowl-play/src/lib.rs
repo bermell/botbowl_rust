@@ -14,6 +14,9 @@
 //! - [`bots`] — evaluator/search configuration and `MctsBot` construction.
 //! - [`drives`] — paired contested drives from frozen positions, a cheaper ladder rung (plan 051).
 //! - [`generate`] — self-play, random-start and curriculum trajectories.
+//! - [`mc_label`] — Monte Carlo value labels: replay a trajectory, average policy-only playouts
+//!   per sample (plan 056; shared by `botbowl-ui mc-label` and the hub's `job label`, plan 062).
+//! - [`policy`] — the bare policy as a bot, and policy-only drive playouts.
 //! - [`eval`] — one ladder game, its per-game record, and the report rows
 //!   the per-game records fold into.
 //! - [`stats`] — paired-game scoring and the SPRT that stops a decided rung (plan 051).
@@ -26,6 +29,8 @@ pub mod cli_args;
 pub mod drives;
 pub mod eval;
 pub mod generate;
+pub mod mc_label;
+pub mod policy;
 pub mod stats;
 pub mod trace;
 

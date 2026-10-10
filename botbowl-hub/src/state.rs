@@ -19,14 +19,18 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use botbowl_hub_proto::{BoardDims, BotSpec, BuildInfo, EvalGameLine, GenerateConfig, ModelId, Task, TaskId, ToWorker};
+use botbowl_hub_proto::{
+    BoardDims, BotSpec, BuildInfo, EvalGameLine, GenerateConfig, LabelConfig, LabelItem, LabelResult, ModelId, Task,
+    TaskId, ToWorker,
+};
 use botbowl_play::board_sizes::board_label;
 use botbowl_play::eval::{LadderRow, Report};
 
 use crate::api::{
     BotReq, Counts, EvalJobRequest, EvalStats, GenStats, GenerateJobRequest, HubStatus, JobId, JobKind, JobRequest,
-    JobState, JobStatus, UnitProgress, UnitStats, WorkerStatus,
+    JobState, JobStatus, LabelJobRequest, LabelStats, UnitProgress, UnitStats, WorkerStatus,
 };
+use crate::label::{LabelInput, ShardWrite};
 use crate::rates::{Ledger, Live};
 
 pub type WorkerId = u64;
@@ -79,6 +83,89 @@ struct Shard {
     writer: io::BufWriter<std::fs::File>,
 }
 
+/// Plan 062: one shard of a label job. Its "games" are work items ([`crate::label::Item`]).
+struct LabelShard {
+    input: LabelInput,
+    /// Per trajectory, one label per sample, filled in as items arrive.
+    labels: Vec<Vec<f32>>,
+    /// Per trajectory: some item found it does not replay.
+    unlabellable: Vec<bool>,
+    done: HashSet<u32>,
+    labelled: u64,
+    /// Handed to a [`ShardWrite`]; `written` once it is on disk.
+    writing: bool,
+    written: bool,
+    secs: f64,
+}
+
+impl LabelShard {
+    fn new(input: LabelInput) -> Self {
+        LabelShard {
+            labels: input.samples.iter().map(|&n| vec![0.0; n]).collect(),
+            unlabellable: vec![false; input.samples.len()],
+            input,
+            done: HashSet::new(),
+            labelled: 0,
+            writing: false,
+            written: false,
+            secs: 0.0,
+        }
+    }
+
+    /// Nothing left to do: written, or skipped at submit.
+    fn finished(&self) -> bool {
+        self.written || self.input.skipped
+    }
+
+    /// The write, once every item is in (at most once).
+    fn take_write(&mut self, job: JobId, unit: usize, tag: &str) -> Option<ShardWrite> {
+        if self.writing || self.input.skipped || self.done.len() < self.input.items.len() {
+            return None;
+        }
+        self.writing = true;
+        let labels = std::mem::take(&mut self.labels)
+            .into_iter()
+            .zip(&self.unlabellable)
+            .map(|(l, &bad)| (!bad).then_some(l))
+            .collect();
+        Some(ShardWrite {
+            job,
+            unit,
+            out: self.input.out.clone(),
+            lines: Arc::clone(&self.input.lines),
+            labels,
+            tag: tag.to_string(),
+        })
+    }
+
+    /// Drop the shard's compressed lines once nothing will ship or write them again. The hub keeps
+    /// finished jobs for its whole life, and a 16x9 generation's lines are ~100 MB zstd'd.
+    fn release(&mut self) {
+        self.input.lines = Arc::new(Vec::new());
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.input.lines.iter().map(Vec::len).sum()
+    }
+
+    fn unlabelled(&self) -> usize {
+        self.unlabellable.iter().filter(|b| **b).count()
+    }
+
+    fn stats(&self) -> LabelStats {
+        LabelStats {
+            input: self.input.input.display().to_string(),
+            out: self.input.out.display().to_string(),
+            trajectories: self.input.samples.len() as u32,
+            unlabelled: self.unlabelled() as u32,
+            samples: self.labelled,
+            skipped: self.input.skipped,
+            written: self.written,
+            secs: self.secs,
+        }
+    }
+}
+
 enum Kind {
     Eval {
         req: EvalJobRequest,
@@ -89,6 +176,13 @@ enum Kind {
     },
     Generate {
         shards: Vec<Shard>,
+    },
+    Label {
+        shards: Vec<LabelShard>,
+        cfg: LabelConfig,
+        model: ModelId,
+        /// `meta.extra.value_label` of every labelled trajectory.
+        tag: String,
     },
 }
 
@@ -148,6 +242,16 @@ impl Job {
                     stats: Some(UnitStats::Generate(s.stats.clone())),
                 })
                 .collect(),
+            Kind::Label { shards, .. } => shards
+                .iter()
+                .map(|s| UnitProgress {
+                    name: s.input.name.clone(),
+                    done: s.done.len() as u32,
+                    total: s.input.items.len() as u32,
+                    samples: s.labelled,
+                    stats: Some(UnitStats::Label(s.stats())),
+                })
+                .collect(),
         }
     }
 
@@ -155,12 +259,17 @@ impl Job {
         match &self.kind {
             Kind::Eval { rungs, .. } => &rungs[unit].name,
             Kind::Generate { shards } => &shards[unit].name,
+            Kind::Label { shards, .. } => &shards[unit].input.name,
         }
     }
 
     /// Every unit has all its games in, or (plan 051) its SPRT is decided. A decided rung's games
     /// still in flight are not waited for.
     fn all_done(&self) -> bool {
+        // Plan 062: a label shard is done when it is on disk, not when its last item arrives.
+        if let Kind::Label { shards, .. } = &self.kind {
+            return shards.iter().all(LabelShard::finished);
+        }
         self.units()
             .iter()
             .enumerate()
@@ -171,7 +280,7 @@ impl Job {
     fn unit_decided(&self, unit: usize) -> bool {
         match &self.kind {
             Kind::Eval { rungs, .. } => rungs[unit].row.decided(),
-            Kind::Generate { .. } => false,
+            Kind::Generate { .. } | Kind::Label { .. } => false,
         }
     }
 
@@ -181,6 +290,7 @@ impl Job {
             kind: match self.kind {
                 Kind::Eval { .. } => JobKind::Eval,
                 Kind::Generate { .. } => JobKind::Generate,
+                Kind::Label { .. } => JobKind::Label,
             },
             label: self.label.clone(),
             workers_connected,
@@ -193,7 +303,7 @@ impl Job {
                 .as_secs(),
             report: match &self.kind {
                 Kind::Eval { report, .. } => report.clone(),
-                Kind::Generate { .. } => None,
+                Kind::Generate { .. } | Kind::Label { .. } => None,
             },
             by_worker: self.by_worker.clone(),
             recent: None,
@@ -227,6 +337,28 @@ impl Job {
                     model: s.model,
                 }
             }
+            Kind::Label { shards, cfg, model, .. } => {
+                let s = &shards[unit].input;
+                Task::Label {
+                    id,
+                    shard: s.name.clone(),
+                    items: games
+                        .into_iter()
+                        .map(|g| {
+                            let (t, start, end) = s.items[g as usize];
+                            LabelItem {
+                                item: g,
+                                start,
+                                end,
+                                zstd_json: s.lines[t].clone(),
+                                first_zstd_json: s.firsts[t].map(|j| s.lines[j].clone()),
+                            }
+                        })
+                        .collect(),
+                    cfg: *cfg,
+                    model: *model,
+                }
+            }
         }
     }
 
@@ -235,6 +367,10 @@ impl Job {
         self.state = JobState::Failed { error };
         self.ended.get_or_insert_with(Instant::now);
         self.pending.clear();
+        // Nothing is shipped or written for a failed job (a write in progress holds its own Arc).
+        if let Kind::Label { shards, .. } = &mut self.kind {
+            shards.iter_mut().for_each(LabelShard::release);
+        }
     }
 }
 
@@ -412,7 +548,57 @@ impl Inner {
         match req {
             JobRequest::Eval(r) => self.submit_eval(r),
             JobRequest::Generate(r) => self.submit_generate(r),
+            // The synchronous path (a caller holding the lock): read and write inline.
+            // `Hub::submit` reads the shards before taking the lock and writes on threads.
+            JobRequest::Label(r) => {
+                let inputs = crate::label::load_inputs(&r)?;
+                let (id, writes) = self.submit_label(r, inputs)?;
+                for w in writes {
+                    let result = w.run();
+                    self.label_written(w.job, w.unit, result);
+                }
+                Ok(id)
+            }
         }
+    }
+
+    /// Plan 062: a label job over shards already read ([`crate::label::load_inputs`]). Returns
+    /// the writes due at once (a shard with no trajectories has nothing to wait for); the caller
+    /// runs them and reports each to [`Inner::label_written`].
+    pub fn submit_label(
+        &mut self,
+        req: LabelJobRequest,
+        inputs: Vec<LabelInput>,
+    ) -> io::Result<(JobId, Vec<ShardWrite>)> {
+        let model = self.load_model(&req.model_path)?;
+        let tag = botbowl_play::mc_label::label_tag(&req.cfg, &req.model);
+        let mut pending = VecDeque::new();
+        for (i, s) in inputs.iter().enumerate() {
+            if s.skipped {
+                eprintln!("[hub] mc-label: {} exists, skipping", s.out.display());
+            } else {
+                pending.extend((0..s.items.len() as u32).map(|g| (i, g)));
+            }
+        }
+        let shards = inputs.into_iter().map(LabelShard::new).collect();
+        let kind = Kind::Label {
+            shards,
+            cfg: req.cfg,
+            model,
+            tag: tag.clone(),
+        };
+        let id = self.insert_job(kind, req.label, req.batch, pending);
+        let job = self.jobs.get_mut(&id).expect("just inserted");
+        let mut writes = Vec::new();
+        if let Kind::Label { shards, .. } = &mut job.kind {
+            for (unit, s) in shards.iter_mut().enumerate() {
+                writes.extend(s.take_write(id, unit, &tag));
+            }
+        }
+        if job.all_done() {
+            Self::finish(job);
+        }
+        Ok((id, writes))
     }
 
     pub fn submit_eval(&mut self, req: EvalJobRequest) -> io::Result<JobId> {
@@ -701,8 +887,11 @@ impl Inner {
                 if w.tasks.len() >= w.parallel_games as usize {
                     break;
                 }
+                // Labelling (plan 062) is on the loop's critical path too.
                 let generate_waiting = self.jobs.values().any(|j| {
-                    j.state == JobState::Running && matches!(j.kind, Kind::Generate { .. }) && !j.pending.is_empty()
+                    j.state == JobState::Running
+                        && matches!(j.kind, Kind::Generate { .. } | Kind::Label { .. })
+                        && !j.pending.is_empty()
                 });
                 let evals_here = w
                     .tasks
@@ -930,6 +1119,112 @@ impl Inner {
         self.dispatch();
     }
 
+    /// Plan 062: one label item's result. Returns the shard's write when this was its last item;
+    /// the caller runs it off the lock and reports back to [`Inner::label_written`].
+    pub fn label_done(&mut self, worker: WorkerId, task: TaskId, item: u32, result: LabelResult) -> Option<ShardWrite> {
+        let name = self.worker_name(worker);
+        let (job_id, unit) = self.game_arrived(worker, task, item)?;
+        let write = self.record_label(&name, job_id, unit, item, result);
+        self.dispatch();
+        write
+    }
+
+    fn record_label(
+        &mut self,
+        name: &str,
+        job_id: JobId,
+        unit: usize,
+        item: u32,
+        result: LabelResult,
+    ) -> Option<ShardWrite> {
+        let job = self.jobs.get_mut(&job_id)?;
+        if job.state != JobState::Running {
+            return None;
+        }
+        let Kind::Label { shards, tag, .. } = &mut job.kind else {
+            return None;
+        };
+        let s = &mut shards[unit];
+        let Some(&(t, start, end)) = s.input.items.get(item as usize) else {
+            let msg = format!("{}: a result for item {item}, which does not exist", s.input.name);
+            job.fail(msg);
+            return None;
+        };
+        if !s.done.insert(item) {
+            return None;
+        }
+        let mut c = Counts {
+            label_items: 1,
+            ..Default::default()
+        };
+        match result {
+            LabelResult::Labels(v) => {
+                if v.len() != (end - start) as usize {
+                    let msg = format!(
+                        "{} item {item}: {} labels for samples {start}..{end}",
+                        s.input.name,
+                        v.len()
+                    );
+                    job.fail(msg);
+                    return None;
+                }
+                s.labels[t][start as usize..end as usize].copy_from_slice(&v);
+                s.labelled += v.len() as u64;
+                c.label_samples = v.len() as u64;
+            }
+            LabelResult::Unlabellable(why) => {
+                if !s.unlabellable[t] {
+                    eprintln!(
+                        "[hub] {}: left unlabelled (seed {:?}): {why}",
+                        s.input.name, s.input.seeds[t]
+                    );
+                }
+                s.unlabellable[t] = true;
+            }
+        }
+        let write = s.take_write(job_id, unit, tag);
+        job.by_worker.entry(name.to_string()).or_default().add(&c);
+        self.ledger.record(Instant::now(), name, job_id, c);
+        write
+    }
+
+    /// A label shard's write finished (plan 062): the shard is done, and with it maybe the job.
+    pub fn label_written(&mut self, job_id: JobId, unit: usize, result: io::Result<()>) {
+        let Some(job) = self.jobs.get_mut(&job_id) else { return };
+        if job.state != JobState::Running {
+            return;
+        }
+        let elapsed = job.started.elapsed().as_secs_f64();
+        let Kind::Label { shards, cfg, .. } = &mut job.kind else {
+            return;
+        };
+        let s = &mut shards[unit];
+        if let Err(e) = result {
+            let msg = format!("writing {}: {e}", s.input.out.display());
+            job.fail(msg);
+            return;
+        }
+        s.written = true;
+        s.release();
+        s.secs = elapsed;
+        let st = s.stats();
+        eprintln!(
+            "[hub] {}",
+            botbowl_play::mc_label::summary_line(
+                &st.input,
+                &st.out,
+                st.trajectories as usize,
+                st.unlabelled as usize,
+                st.samples as usize,
+                cfg.playouts,
+                st.secs
+            )
+        );
+        if job.all_done() {
+            Self::finish(job);
+        }
+    }
+
     pub fn task_failed(&mut self, worker: WorkerId, task: TaskId, error: String) {
         self.seen(worker);
         let Some(f) = self.in_flight.get(&task) else { return };
@@ -1022,7 +1317,29 @@ impl Inner {
                     }
                 }
             }
+            Kind::Label { shards, .. } => {
+                eprintln!(
+                    "[hub] job {} done in {elapsed} s: {} samples labelled over {} shard(s), {} trajectories left unlabelled",
+                    job.id,
+                    shards.iter().map(|s| s.labelled).sum::<u64>(),
+                    shards.len(),
+                    shards.iter().map(LabelShard::unlabelled).sum::<usize>()
+                );
+                job.state = JobState::Done;
+            }
         }
+    }
+
+    /// Plan 062: the compressed corpus lines label jobs still hold, in bytes. Only shards with
+    /// items yet to label or a write yet to finish should hold any.
+    pub fn label_bytes_held(&self) -> usize {
+        self.jobs
+            .values()
+            .filter_map(|j| match &j.kind {
+                Kind::Label { shards, .. } => Some(shards.iter().map(LabelShard::held_bytes).sum::<usize>()),
+                _ => None,
+            })
+            .sum()
     }
 
     /// Any job still running?
