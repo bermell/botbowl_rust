@@ -49,6 +49,8 @@ export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=o
 # every generation, as AlphaZero does; play (drives, net check) judges whether it helped.
 export TRAIN_EXTRA_ARGS="--freeze-bn --eval-at 250,500"
 export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=96 NEXT_DRIVE=1 DRIVE_EVAL_EVERY=3
+# Plan 062: the mc-label phase runs as a hub job (`botbowl-hub job label`), so helper workers share it.
+export LABEL_VIA_HUB=1
 export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
 # Plan 058 §9 (2026-10-07, after the search CPU cuts and the 4x smaller GameState): generation is
 # GPU-bound. One sidecar tops out near 8k samples/s with the GPU ~80% busy; two sidecars at 48

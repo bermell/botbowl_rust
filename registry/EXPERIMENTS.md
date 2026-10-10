@@ -12,7 +12,7 @@ ends (see the root CLAUDE.md).
 
 - **Question:** does `botbowl-hub job label` (plan 062, protocol v19) write what
   `botbowl-ui mc-label` writes, and what does the hub cost?
-- **Setup:** branch head of plan 062, release build, default 28x17/11 board, fixture net
+- **Setup:** plan 062 at cf4e08c (merged to master as 44ed2f0), release build, default 28x17/11 board, fixture net
   `botbowl-nn/tests/fixtures/tiny.onnx` on tract, 2 threads either way. The corpus is 30
   trajectories, 2008 samples, two shards, one next-drive pair: the first 30 lines of `dataset
   --mode random-start --games 300 --seed 6000 --mcts-iters 4 --evaluator heuristic --next-drive
