@@ -6,6 +6,7 @@
 //! generate` / `job eval` flatten the same structs and add their own hub flags (`--hub`,
 //! `--out-dir`, `--shards`, `--batch`, `--wait`, ...). The hub refuses the process-local flags it
 //! cannot honour (`--parallel-games`, `--nn-server`, `--trials`, ...) instead of ignoring them.
+//! `botbowl-ui mc-label` and `botbowl-hub job label` share [`McLabelArgs`] the same way (plan 062).
 //! One definition is the point: the two copies had drifted into a panic (the ui's `vs:` label on
 //! a one-sided preset) and three conventions for the random-start defaults.
 
@@ -304,6 +305,47 @@ pub struct DatasetArgs {
     /// fallback: BLOOD_NN_SERVER (the repo's BLOOD_* convention).
     #[arg(long)]
     pub nn_server: Option<String>,
+}
+
+/// `mc-label` (plan 056 arm F): Monte Carlo value labels, see [`crate::mc_label`]. `botbowl-hub
+/// job label` flattens it too and refuses `--parallel` and `--nn-server` (workers size themselves
+/// and own their sidecar).
+#[derive(Args, Debug, Clone)]
+pub struct McLabelArgs {
+    /// Random-start trajectory shards; each is written to `--out-dir` under its own name.
+    #[arg(long, alias = "in", required = true, num_args = 1..)]
+    pub corpus: Vec<String>,
+    /// The net whose policy plays both sides of every playout.
+    #[arg(long)]
+    pub model: String,
+    /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
+    #[arg(long)]
+    pub nn_server: Option<String>,
+    /// Playouts averaged per sample.
+    #[arg(long, default_value_t = 8)]
+    pub playouts: u32,
+    /// Playout dice derive from it, the trajectory's seed and the sample index.
+    #[arg(long, default_value_t = 56_000)]
+    pub seed: u64,
+    /// Trajectories labelled at once, one thread each.
+    #[arg(long, default_value_t = 8)]
+    pub parallel: usize,
+    /// Safety cap on engine steps per playout.
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    #[arg(long)]
+    pub out_dir: String,
+}
+
+impl McLabelArgs {
+    /// What every label is a function of, besides the net and the state.
+    pub fn config(&self) -> crate::mc_label::LabelConfig {
+        crate::mc_label::LabelConfig {
+            playouts: self.playouts,
+            seed: self.seed,
+            max_steps: self.max_steps,
+        }
+    }
 }
 
 /// Report-card evaluation of one candidate bot (plan 020).

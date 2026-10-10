@@ -53,157 +53,20 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 
 use botbowl_data::{BoardCapacity, Team, Trajectory, TrajectoryMeta};
-use botbowl_engine::bots::Bot;
-use botbowl_engine::core::gamestate::{DiceMode, GameState};
+use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{Action as EngineAction, BoardDims, TeamType};
-use botbowl_mcts::pruning::search_actions;
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::board_sizes::board_label;
 use botbowl_play::bots::{load_mcts_config, load_nn, make_mcts, Evaluator, SearchConfig};
-use botbowl_play::drives::{position_state, DriveStart};
-use botbowl_play::generate::RandomStartBias;
+use botbowl_play::drives::position_state;
 use botbowl_play::GAME_STACK_SIZE;
 
 use crate::cli::OverrideAuditArgs;
 
-// ---------------------------------------------------------------------------------------------
-// The policy bot
-// ---------------------------------------------------------------------------------------------
-
-/// The legal set a search root offers: the engine's actions minus `should_prune`, or all of them
-/// when pruning would leave none, in the engine's sorted order. The search's own definition
-/// (`botbowl_mcts::pruning::search_actions`), not a copy of it.
-pub fn search_legal(state: &GameState) -> Vec<EngineAction> {
-    search_actions(state)
-}
-
-/// Index of the first maximum. The Gumbel root sorts its candidates stably by `ln prior`, so on a
-/// tie the policy-only preset plays the earliest action too.
-fn first_argmax(priors: &[f32]) -> usize {
-    let mut best = 0;
-    for (i, p) in priors.iter().enumerate() {
-        if *p > priors[best] {
-            best = i;
-        }
-    }
-    best
-}
-
-/// The bare policy, without a search: what `cfgs/policy_only.toml` (`gumbel_m = 1`, no noise)
-/// plays, at one forward per decision instead of the preset's root expansion plus its descents.
-/// A decision with one legal move costs no forward at all.
-pub struct PolicyBot {
-    nn: Arc<NnEvaluator>,
-}
-
-impl PolicyBot {
-    pub fn new(nn: Arc<NnEvaluator>) -> Self {
-        PolicyBot { nn }
-    }
-
-    /// The legal set, its priors (softmax × len, as the search sees them) and the argmax's index.
-    pub fn priors(&self, state: &GameState) -> (Vec<EngineAction>, Vec<f32>, usize) {
-        let legal = search_legal(state);
-        let priors = if legal.len() > 1 {
-            self.nn.priors(state, &legal)
-        } else {
-            vec![1.0; legal.len()]
-        };
-        let best = first_argmax(&priors);
-        (legal, priors, best)
-    }
-}
-
-impl Bot for PolicyBot {
-    fn get_action(&mut self, state: &GameState) -> EngineAction {
-        let (legal, _, best) = self.priors(state);
-        legal[best]
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Playouts
-// ---------------------------------------------------------------------------------------------
-
-/// One playout of the rest of a drive.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Playout {
-    /// In `mover`'s frame: +1 it scored, -1 the opponent did, 0 neither (half, game end, cap).
-    pub outcome: f32,
-    /// The net's value at the first decision after `first`, in `mover`'s frame; the exact outcome
-    /// when `first` ended the drive. `None` without a net.
-    pub v_after: Option<f32>,
-    /// False only when `max_steps` ran out before the drive ended.
-    pub finished: bool,
-    pub steps: u32,
-}
-
-/// The net's value at `state` in `team`'s frame, in TD units.
-pub fn value_for(nn: &NnEvaluator, state: &GameState, team: TeamType) -> f32 {
-    in_frame(team, nn.value_home_i64(state) as f32 / 1000.0)
-}
-
-/// A Home-centric number in `team`'s frame (`0.0 - x`, so a draw never prints as `-0`).
-fn in_frame(team: TeamType, home_centric: f32) -> f32 {
-    match team {
-        TeamType::Home => home_centric,
-        TeamType::Away => 0.0 - home_centric,
-    }
-}
-
-/// Play `first` (if any) from `state`, then the rest of the drive with `home` / `away` choosing,
-/// under real dice from `dice_seed`. The state is cloned: the same `(state, first, dice_seed)`
-/// and deterministic bots always give the same playout, which is what pairs two moves' playouts.
-#[allow(clippy::too_many_arguments)]
-pub fn play_out(
-    state: &GameState,
-    first: Option<EngineAction>,
-    mover: TeamType,
-    home: &mut dyn Bot,
-    away: &mut dyn Bot,
-    nn: Option<&NnEvaluator>,
-    dice_seed: u64,
-    max_steps: u32,
-) -> (Playout, GameState) {
-    let mut st = state.clone();
-    st.set_seed(dice_seed);
-    st.set_dice_mode(DiceMode::RollDice);
-    st.set_logging_state(false);
-    let drive = DriveStart::of(&st);
-    let mut steps = 0u32;
-    if let Some(a) = first {
-        st.step(a).expect("engine step failed on the audited move");
-        steps += 1;
-    }
-    // The value after the move: read at the first decision, after the bot has asked for its
-    // priors, so on the policy bot it is the same forward (the evaluator's memo).
-    let mut v_after = match (first, nn) {
-        (Some(_), Some(_)) if drive.over(&st) => Some(drive.outcome_for(&st, mover)),
-        _ => None,
-    };
-    let mut want_v = first.is_some() && nn.is_some() && v_after.is_none();
-    while !drive.over(&st) && steps < max_steps {
-        let action = match st.available_actions.team {
-            Some(TeamType::Home) => home.get_action(&st),
-            Some(TeamType::Away) => away.get_action(&st),
-            None => break,
-        };
-        if want_v {
-            v_after = Some(value_for(nn.expect("want_v implies a net"), &st, mover));
-            want_v = false;
-        }
-        st.step(action).expect("engine step failed during an audit playout");
-        steps += 1;
-    }
-    let playout = Playout {
-        outcome: drive.outcome_for(&st, mover),
-        v_after,
-        finished: drive.over(&st),
-        steps,
-    };
-    (playout, st)
-}
+// The policy bot and its playouts live in `botbowl_play::policy` (plan 062), so a hub worker
+// labelling values plays the same code; the tests below still pin them.
+pub use botbowl_play::policy::{in_frame, play_out, value_for, PolicyBot};
 
 /// Mean and standard error of the mean.
 fn mean_se(xs: &[f32]) -> (f32, f32) {
@@ -301,33 +164,7 @@ fn action_kind(a: &EngineAction) -> (String, bool) {
 // The corpus
 // ---------------------------------------------------------------------------------------------
 
-/// The random-start placement a trajectory was drawn with, from its provenance. `extra.temperature`
-/// is the one this seed used (already alternated), so it stands in for both temperatures.
-pub fn bias_of(meta: &TrajectoryMeta) -> Result<RandomStartBias, String> {
-    if meta.extra.get("mode").map(String::as_str) != Some("random-start") {
-        return Err("not a random-start trajectory".into());
-    }
-    let f = |k: &str| -> Result<f32, String> {
-        meta.extra
-            .get(k)
-            .ok_or_else(|| format!("meta.extra has no {k}"))?
-            .parse::<f32>()
-            .map_err(|e| format!("meta.extra.{k}: {e}"))
-    };
-    let temperature = f("temperature")?;
-    Ok(RandomStartBias {
-        ball_distance: f("ball_distance")?,
-        front_line: f("front_line")?,
-        mark_teammate: f("mark_teammate")?,
-        mark_opponent: f("mark_opponent")?,
-        own_side: f("own_side")?,
-        temperature,
-        temperature2: temperature,
-        carried_prob: f("carried_prob")?,
-        line_fraction: f("line_fraction")?,
-        pocket_fraction: f("pocket_fraction")?,
-    })
-}
+pub use botbowl_play::mc_label::bias_of;
 
 /// Sample `upto` of `traj` as a playable state: the start regenerated from the trajectory's seed,
 /// then the recorded moves replayed under its own dice. `Err` names the first state that does not
@@ -753,13 +590,17 @@ pub fn run(args: OverrideAuditArgs) -> io::Result<()> {
 mod tests {
     use super::*;
     use botbowl_data::{Outcome, Sample};
+    use botbowl_engine::bots::Bot;
     use botbowl_engine::core::gamestate::GameStateBuilder;
     use botbowl_engine::core::model::Position;
     use botbowl_engine::core::table::PosAT;
     use botbowl_engine::scripted_bot::ScriptedBot;
     use botbowl_mcts::MctsBot;
+    use botbowl_play::drives::DriveStart;
     use botbowl_play::drives::{attacker_of, play_drive_game};
+    use botbowl_play::generate::RandomStartBias;
     use botbowl_play::generate::{play_trajectory, GenMode, GenerateConfig};
+    use botbowl_play::policy::search_legal;
 
     fn tiny_net() -> Arc<NnEvaluator> {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../botbowl-nn/tests/fixtures/tiny.onnx");
