@@ -251,6 +251,13 @@ async fn hub_labels_equal_local_mc_label_byte_for_byte() {
     let id = hub.submit_label(request(f, &out, 3, 2)).unwrap();
     let status = wait(&hub, id).await;
     assert_same_as_local(f, &out, &status);
+    // The hub keeps finished jobs for its whole life (one per generation in the loop): a written
+    // shard must not keep its compressed corpus (~7% of the JSON, ~100 MB a 16x9 generation).
+    assert_eq!(
+        hub.inner.lock().unwrap().label_bytes_held(),
+        0,
+        "a finished label job still holds its shards' lines"
+    );
     let st = hub.inner.lock().unwrap().status();
     let job = st.jobs.iter().find(|j| j.id == id).unwrap();
     let items: u32 = status.units.iter().map(|u| u.total).sum();

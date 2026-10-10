@@ -138,6 +138,16 @@ impl LabelShard {
         })
     }
 
+    /// Drop the shard's compressed lines once nothing will ship or write them again. The hub keeps
+    /// finished jobs for its whole life, and a 16x9 generation's lines are ~100 MB zstd'd.
+    fn release(&mut self) {
+        self.input.lines = Arc::new(Vec::new());
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.input.lines.iter().map(Vec::len).sum()
+    }
+
     fn unlabelled(&self) -> usize {
         self.unlabellable.iter().filter(|b| **b).count()
     }
@@ -357,6 +367,10 @@ impl Job {
         self.state = JobState::Failed { error };
         self.ended.get_or_insert_with(Instant::now);
         self.pending.clear();
+        // Nothing is shipped or written for a failed job (a write in progress holds its own Arc).
+        if let Kind::Label { shards, .. } = &mut self.kind {
+            shards.iter_mut().for_each(LabelShard::release);
+        }
     }
 }
 
@@ -1191,6 +1205,7 @@ impl Inner {
             return;
         }
         s.written = true;
+        s.release();
         s.secs = elapsed;
         let st = s.stats();
         eprintln!(
@@ -1313,6 +1328,18 @@ impl Inner {
                 job.state = JobState::Done;
             }
         }
+    }
+
+    /// Plan 062: the compressed corpus lines label jobs still hold, in bytes. Only shards with
+    /// items yet to label or a write yet to finish should hold any.
+    pub fn label_bytes_held(&self) -> usize {
+        self.jobs
+            .values()
+            .filter_map(|j| match &j.kind {
+                Kind::Label { shards, .. } => Some(shards.iter().map(LabelShard::held_bytes).sum::<usize>()),
+                _ => None,
+            })
+            .sum()
     }
 
     /// Any job still running?

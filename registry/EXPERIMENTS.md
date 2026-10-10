@@ -20,7 +20,8 @@ ends (see the root CLAUDE.md).
   `botbowl-worker --parallel-games 2` and `--chunk-samples 32` (80 items). The box was running the
   live loop (load 12–17).
 - **Result:** local 218 s, hub 225 s (+3%, within noise). Both shards byte-identical. An item ships
-  ~2% of its line's size (616 KB → 14 KB zstd) and returns 4 bytes a sample.
+  ~2% of its line's size on this board (616 KB → 14 KB zstd; ~7.5% on the loop's 16x9 corpus) and
+  returns 4 bytes a sample.
 - **Conclusion:** the hub adds no meaningful cost. Turning it on in the loop (`LABEL_VIA_HUB=1`)
   is a throughput question for the GPU box plus the laptop, to be read off the first generation's
   phase minutes against the local ~95.

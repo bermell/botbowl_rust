@@ -43,7 +43,7 @@ next-drive pairs, an orphan follow-on and a divergent record).
 
 1. The hub reads every shard *before* taking its lock (`label::load_inputs`, one thread per shard):
    the local line rules (`BufRead::lines`, blank lines skipped), the capacity check, each line kept
-   zstd'd (a 180 MB shard is a few MB), each follow-on's first drive located, and every trajectory
+   zstd'd (~7% on a 16x9 corpus: a 180 MB shard is ~13 MB, released once the shard is written), each follow-on's first drive located, and every trajectory
    cut into **items** of at most `--chunk-samples` samples (even ranges; a trajectory with no
    samples is still one empty item, because whether it replays decides whether it is stamped). A
    shard whose output exists is skipped, as the local tool skips it.
@@ -159,9 +159,12 @@ The hub's overhead is within the noise:
 - the tail of the last item on two streams.
 
 **On the wire.** An item carries its trajectory's line zstd'd: 616 KB → 14 KB on this board, about
-2%. A follow-on record carries its first drive's line too. The answer is 4 bytes a sample. A loop
-generation of ~200k samples is ~6k items, ~100–200 MB downstream in all, and a laptop taking a
-tenth of it pulls 10–20 MB. The hub holds each shard as zstd lines: a 180 MB shard is a few MB.
+2%, but ~7.5% on the loop's 16x9 corpus (40 lines of `loopmix16x9v9/gen15/shard0`: 5.3 MB →
+396 KB, line by line at level 3; 783 samples in 48 items of 32). A follow-on record carries its
+first drive's line too. The answer is 4 bytes a sample. A loop generation (8 shards, ~1.4 GB of
+JSON) is therefore ~100 MB the hub holds while the job runs (each shard's lines are dropped once
+it is written: the hub keeps finished jobs for its whole life) and ~120 MB downstream in all, of
+which a laptop taking a tenth pulls ~12 MB.
 
 ## 7. Next: pipelining with generation (not built)
 
