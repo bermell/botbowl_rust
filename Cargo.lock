@@ -554,6 +554,7 @@ dependencies = [
 name = "botbowl-worker"
 version = "0.1.0"
 dependencies = [
+ "botbowl-data",
  "botbowl-engine",
  "botbowl-hub-proto",
  "botbowl-mcts",

@@ -31,7 +31,8 @@ use botbowl_engine::bots::{Bot, RandomBot};
 use botbowl_engine::core::model::BoardDims;
 use botbowl_engine::scripted_bot::ScriptedBot;
 use botbowl_hub_proto::{
-    decode, encode, BotSpec, BuildInfo, ModelId, ModelMeta, RejectReason, Task, ToHub, ToWorker, PROTOCOL_VERSION,
+    decode, encode, BotSpec, BuildInfo, LabelResult, ModelId, ModelMeta, RejectReason, Task, ToHub, ToWorker,
+    PROTOCOL_VERSION,
 };
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
@@ -39,6 +40,7 @@ use botbowl_play::bots::make_mcts;
 use botbowl_play::drives::{drive_assignment, play_drive_game, position_state};
 use botbowl_play::eval::{ladder_assignment, play_ladder_game};
 use botbowl_play::generate::play_trajectory;
+use botbowl_play::mc_label::label_range;
 use botbowl_play::GAME_STACK_SIZE;
 use mem_governor::{GameSlot, MemGovernor};
 
@@ -527,6 +529,69 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
                         });
                     }
                 }
+            }
+        }
+        Task::Label {
+            id,
+            shard,
+            items,
+            cfg,
+            model,
+        } => {
+            let nn = match store.get(model) {
+                Ok(e) => e,
+                Err(e) => {
+                    let _ = out.send(ToHub::TaskFailed {
+                        task: *id,
+                        error: format!("model: {e}"),
+                    });
+                    return;
+                }
+            };
+            let read = |z: &[u8]| -> Result<botbowl_data::Trajectory, String> {
+                let json = zstd::decode_all(z).map_err(|e| format!("zstd: {e}"))?;
+                serde_json::from_slice(&json).map_err(|e| format!("trajectory json: {e}"))
+            };
+            for it in items {
+                let parsed = read(&it.zstd_json).and_then(|t| {
+                    let first = it.first_zstd_json.as_deref().map(read).transpose()?;
+                    Ok((t, first))
+                });
+                let (traj, first) = match parsed {
+                    Ok(p) => p,
+                    Err(error) => {
+                        // An unreadable line is a corpus error, which fails the local tool too.
+                        let _ = out.send(ToHub::TaskFailed { task: *id, error });
+                        return;
+                    }
+                };
+                // Policy-only playouts hold no search tree: the same footprint as a search-free
+                // bot's game. Admitted anyway, so a box running out of headroom stops taking them.
+                let area = mem_governor::cost_units(cell_area(traj.meta.board_dims), Some(0));
+                let _slot = admit_game(governor, area, shard);
+                let started = std::time::Instant::now();
+                let range = it.start as usize..it.end as usize;
+                let labels = match label_range(&nn, &traj, first.as_ref(), range, cfg) {
+                    Ok(v) => LabelResult::Labels(v),
+                    Err(why) => LabelResult::Unlabellable(why),
+                };
+                eprintln!(
+                    "[worker] {shard} item {} seed={} samples {}..{}: {} in {:.1}s",
+                    it.item,
+                    traj.meta.seed.map_or("-".to_string(), |s| s.to_string()),
+                    it.start,
+                    it.end,
+                    match &labels {
+                        LabelResult::Labels(_) => "labelled".to_string(),
+                        LabelResult::Unlabellable(why) => format!("unlabellable ({why})"),
+                    },
+                    started.elapsed().as_secs_f64()
+                );
+                let _ = out.send(ToHub::LabelDone {
+                    task: *id,
+                    item: it.item,
+                    labels,
+                });
             }
         }
     }
