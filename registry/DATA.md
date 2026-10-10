@@ -29,6 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
+| 17 | v9 gen16 | 8×400 (5792) | 201,135 | c98e13e (chance toggles off) | 48 local, 2 sidecars; 188 min | TD/drive 0.857 |
 | 16 | v9 gen15 | 8×400 (5762) | 194,699 | 71827c9 (relaunch e423b43) | 48 local, 2 sidecars; 223 min, shared with gen15's drive benchmark | TD/drive 0.854 |
 | 15 | v9 gen14 | 8×400 (5761) | 197,877 | 71827c9 | 48 local, 2 sidecars; 181 min | TD/drive 0.853 |
 | 14 | v9 gen13 | 8×400 (5795) | 199,445 | 71827c9 | 48 local, 2 sidecars; 181 min | TD/drive 0.851 |
