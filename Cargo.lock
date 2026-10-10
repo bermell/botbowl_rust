@@ -491,11 +491,15 @@ dependencies = [
  "botbowl-curriculum",
  "botbowl-data",
  "botbowl-engine",
+ "botbowl-hub",
+ "botbowl-hub-proto",
  "botbowl-mcts",
  "botbowl-nn",
  "botbowl-play",
+ "botbowl-worker",
  "clap",
  "crossterm",
+ "futures-util",
  "insta",
  "mimalloc",
  "rand 0.8.6",
@@ -503,6 +507,9 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "zstd",
 ]
 
 [[package]]

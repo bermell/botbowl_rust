@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use botbowl_hub_proto::{BoardDims, Capacity, Evaluator, GenerateConfig, SearchConfig};
+use botbowl_hub_proto::{BoardDims, Capacity, Evaluator, GenerateConfig, LabelConfig, SearchConfig};
 use botbowl_play::eval::Report;
 
 /// `POST /api/jobs` body.
@@ -15,6 +15,8 @@ use botbowl_play::eval::Report;
 pub enum JobRequest {
     Eval(EvalJobRequest),
     Generate(GenerateJobRequest),
+    /// Plan 062: Monte Carlo value labels (`botbowl-ui mc-label` on the workers).
+    Label(LabelJobRequest),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,6 +107,38 @@ pub struct GenerateJobRequest {
     pub label: Option<String>,
 }
 
+/// One input shard of a label job, labelled into `out` exactly as `botbowl-ui mc-label` would
+/// (`out.partial` while it is written, renamed when complete). A shard whose `out` already exists
+/// at submit is skipped, as the local tool skips it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LabelShardReq {
+    /// Progress label, e.g. `shard3`.
+    pub name: String,
+    /// The corpus shard, readable by the hub. Its path as given is what the summary line prints.
+    pub input: PathBuf,
+    pub out: PathBuf,
+}
+
+/// Plan 062: `botbowl-ui mc-label`, distributed. The hub reads and compresses the shards, splits
+/// each trajectory into work items of at most `chunk_samples` samples, workers return the labels,
+/// and the hub writes each shard in the local tool's format and order.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LabelJobRequest {
+    pub shards: Vec<LabelShardReq>,
+    /// The net whose policy plays every playout, readable by the hub.
+    pub model_path: PathBuf,
+    /// The model as the user typed it: stamped into `meta.extra.value_label`, as locally.
+    pub model: String,
+    pub cfg: LabelConfig,
+    /// Most samples per work item; a longer trajectory is split into even ranges.
+    pub chunk_samples: u32,
+    /// Work items per task handed to a worker.
+    pub batch: u16,
+    /// As [`EvalJobRequest::label`] (`gen03 mc-label`).
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 pub type JobId = u64;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,9 +152,10 @@ pub enum JobState {
 pub enum JobKind {
     Eval,
     Generate,
+    Label,
 }
 
-/// Progress of one rung (eval) or one shard (generate).
+/// Progress of one rung (eval) or one shard (generate, label: `done`/`total` count work items).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UnitProgress {
     pub name: String,
@@ -137,6 +172,25 @@ pub struct UnitProgress {
 pub enum UnitStats {
     Eval(EvalStats),
     Generate(GenStats),
+    Label(LabelStats),
+}
+
+/// A label job's shard so far: what `botbowl-ui mc-label`'s summary line says of it, so `job label
+/// --wait` can print the same line ([`botbowl_play::mc_label::summary_line`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LabelStats {
+    pub input: String,
+    pub out: String,
+    pub trajectories: u32,
+    /// Trajectories found not to replay so far: written back unlabelled.
+    pub unlabelled: u32,
+    /// Samples labelled so far (all of the labellable ones once written).
+    pub samples: u64,
+    /// `out` existed at submit, so the shard was left alone.
+    pub skipped: bool,
+    pub written: bool,
+    /// From the job's start to the shard written.
+    pub secs: f64,
 }
 
 /// A rung so far, from the candidate's side.
@@ -283,6 +337,11 @@ pub struct Counts {
     /// The eval candidate's decisions (MCTS searches); the opponent's are not reported.
     #[serde(default)]
     pub eval_decisions: u64,
+    /// Label work items (plan 062), and the samples they labelled.
+    #[serde(default)]
+    pub label_items: u64,
+    #[serde(default)]
+    pub label_samples: u64,
 }
 
 impl Counts {
@@ -292,15 +351,17 @@ impl Counts {
         self.samples += o.samples;
         self.eval_games += o.eval_games;
         self.eval_decisions += o.eval_decisions;
+        self.label_items += o.label_items;
+        self.label_samples += o.label_samples;
     }
 
     pub fn is_empty(&self) -> bool {
         *self == Counts::default()
     }
 
-    /// Games of either kind.
+    /// Units of work of any kind: generate and eval games, label items.
     pub fn all_games(&self) -> u64 {
-        self.games + self.eval_games
+        self.games + self.eval_games + self.label_items
     }
 }
 

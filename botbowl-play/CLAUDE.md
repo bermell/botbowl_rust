@@ -68,6 +68,15 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   `telemetry_survives_a_non_self_describing_encoding`. **Update the field count when you add
   another.**
 
+- **MC value labels live here (plan 062), the shells do not decide anything.** `mc_label` holds
+  every rule that decides a label or an output byte: `replay_all` (through the seed's first drive
+  for a `--next-drive` record, `first_drives` finds it), `sample_rng`/`rng_for` (dice keyed on
+  `(seed, trajectory seed, drive, sample)`), `sample_label` (one `u64` per playout, in order — so
+  a top-up from n to m playouts is exact), `label_range` (replays the whole trajectory, labels a
+  range), `apply_labels`, `label_tag`, `summary_line`. `policy` is `PolicyBot` and `play_out`,
+  moved from `botbowl-ui override-audit` (whose tests still pin them). `botbowl-ui mc-label` and
+  the hub's `job label` are the two shells; byte-identical output between them is a test.
+
 ## Verifying a change is behaviour-neutral
 
 `cargo test -p botbowl-play` for the record-format pins, then at the 14x7 tier

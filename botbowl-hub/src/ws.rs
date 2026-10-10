@@ -202,9 +202,8 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
                         hub.inner.lock().unwrap().task_failed(wid, task, error);
                         hub.changed.notify_waiters();
                     }
-                    Ok(ToHub::LabelDone { task, .. }) => {
-                        // This hub hands out no label tasks yet.
-                        eprintln!("[hub] worker {wid} sent a label result for task {task}; ignored");
+                    Ok(ToHub::LabelDone { task, item, labels }) => {
+                        hub.label_done(wid, task, item, labels);
                     }
                     Ok(ToHub::Heartbeat { .. }) => {}
                     Ok(ToHub::Hello { .. }) => {}

@@ -29,3 +29,11 @@ deterministic_hash = ["botbowl-mcts/deterministic_hash"]
 
 [dev-dependencies]
 insta = "1"
+# `tests/mc_label_hub.rs` (plan 062): the hub's `job label` against this crate's `mc-label`.
+botbowl-hub = { path = "../botbowl-hub" }
+botbowl-hub-proto = { workspace = true }
+botbowl-worker = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+zstd = { workspace = true }

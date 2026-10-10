@@ -386,7 +386,7 @@ fn throughput_lines(out: &mut String, s: &HubStatus) {
             out.push_str(&l);
             out.push('\n');
         };
-        if all.games > 0 || all.eval_games == 0 {
+        if all.games > 0 || (all.eval_games == 0 && all.label_items == 0) {
             row(out, "games", &|c| c.games);
             // `--next-drive` games write two records when they score.
             if all.records != all.games {
@@ -397,6 +397,10 @@ fn throughput_lines(out: &mut String, s: &HubStatus) {
         if all.eval_games > 0 {
             row(out, "eval games", &|c| c.eval_games);
             row(out, "eval decisions", &|c| c.eval_decisions);
+        }
+        if all.label_items > 0 {
+            row(out, "label items", &|c| c.label_items);
+            row(out, "labelled samples", &|c| c.label_samples);
         }
         let per_min: Vec<f64> = w
             .history
@@ -574,7 +578,11 @@ fn job_lines(out: &mut String, j: &JobStatus) {
         format!(
             "job {} {}",
             j.id,
-            if j.kind == JobKind::Eval { "eval" } else { "generate" }
+            match j.kind {
+                JobKind::Eval => "eval",
+                JobKind::Generate => "generate",
+                JobKind::Label => "label",
+            }
         )
     });
     // A rung with an SPRT verdict takes no more games, so it counts as complete.
@@ -586,7 +594,9 @@ fn job_lines(out: &mut String, j: &JobStatus) {
         .map(|u| if decided(u) { u.total } else { u.done.min(u.total) })
         .sum();
     let played: u32 = j.units.iter().map(|u| u.done).sum();
-    let what = if j.units.iter().any(|u| u.name.contains(" drives(")) {
+    let what = if j.kind == JobKind::Label {
+        "items"
+    } else if j.units.iter().any(|u| u.name.contains(" drives(")) {
         "drives"
     } else {
         "games"
@@ -610,6 +620,9 @@ fn job_lines(out: &mut String, j: &JobStatus) {
                 h.push_str(&format!(" · {}/min {over}", num(rate)));
                 if let Some(r) = recent.filter(|r| r.counts.samples > 0) {
                     h.push_str(&format!(", {} decisions/min", num(r.per_min(r.counts.samples))));
+                }
+                if let Some(r) = recent.filter(|r| r.counts.label_samples > 0) {
+                    h.push_str(&format!(", {} samples/min", num(r.per_min(r.counts.label_samples))));
                 }
             }
             if done > 0 && done < total {
@@ -732,6 +745,22 @@ fn job_lines(out: &mut String, j: &JobStatus) {
                     out.push_str(&format!("      TD rate by board: {}\n", boards.join(" · ")));
                 }
             }
+        }
+        JobKind::Label => {
+            let (mut labelled, mut unlabelled, mut written, mut skipped) = (0u64, 0u32, 0usize, 0usize);
+            for u in &j.units {
+                if let Some(UnitStats::Label(l)) = &u.stats {
+                    labelled += l.samples;
+                    unlabelled += l.unlabelled;
+                    written += l.written as usize;
+                    skipped += l.skipped as usize;
+                }
+            }
+            out.push_str(&format!(
+                "      {} shards ({written} written{}) · {labelled} samples labelled · {unlabelled} trajectories unlabelled\n",
+                j.units.len(),
+                if skipped > 0 { format!(", {skipped} skipped") } else { String::new() }
+            ));
         }
     }
 }
