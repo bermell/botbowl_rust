@@ -328,6 +328,67 @@ pub struct BlockView {
     pub dice: NumBlockDices,
 }
 
+/// A prompt that is about one player — a reroll, an optional skill, the block
+/// dice — anchored on the board square it concerns, so the answer can be
+/// given right there instead of from a side panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptView {
+    /// The square the prompt is drawn over: the rolling player, the pushed
+    /// player, or for the block dice the player whose coach picks.
+    pub pos: Position,
+    /// What is being asked about — `"Dodge"`, `"Block"`, `"Push"`.
+    pub title: String,
+}
+
+/// What a click on one square does once a player is selected
+/// ([`SelectionView`]): declare `start` on the selected player, then play
+/// `action` on this square. One undo point for the pair.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntentView {
+    pub pos: Position,
+    pub start: PosAT,
+    pub action: PosAT,
+    /// Probability the whole route (rolls, catch included) succeeds.
+    pub prob: Option<f32>,
+    pub block_dice: Option<NumBlockDices>,
+    pub route: Option<RouteView>,
+}
+
+/// The answer to `ClientMsg::Select`: a player of the side to act, every
+/// action they may declare (the buttons above the board), and for each square
+/// the one action a click there takes. The server previews every declaration
+/// on a clone of the game and picks, square by square: a Move onto an empty
+/// square (or the loose ball), a Block on an adjacent standing opponent and a
+/// Blitz on one further away, a Foul on a prone one, and for a ball carrier a
+/// Handoff or a Pass to a standing team-mate — whichever is likelier to
+/// succeed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectionView {
+    /// The [`ViewState::seq`] it was computed for; stale once the board moves.
+    pub seq: u64,
+    pub player: Position,
+    /// Another player is mid-activation: every action here is preceded by
+    /// `EndPlayerTurn`, which ends them first.
+    #[serde(default)]
+    pub end_first: bool,
+    /// Declarations offered on the player, in [`PosAT::ALL`] order.
+    pub starts: Vec<PosAT>,
+    pub targets: Vec<IntentView>,
+}
+
+impl SelectionView {
+    pub fn target(&self, pos: Position) -> Option<&IntentView> {
+        self.targets.iter().find(|t| t.pos == pos)
+    }
+
+    /// The actions that play `then` for this selection: `EndPlayerTurn`
+    /// first when another player is still active.
+    pub fn chain(&self, then: impl IntoIterator<Item = Action>) -> Vec<Action> {
+        let end = self.end_first.then_some(Action::Simple(SimpleAT::EndPlayerTurn));
+        end.into_iter().chain(then).collect()
+    }
+}
+
 /// Everything the client needs to draw one moment of the game.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewState {
@@ -374,6 +435,14 @@ pub struct ViewState {
     pub trail: Vec<Position>,
     /// A block being resolved, for the attacker → defender arrow.
     pub block: Option<BlockView>,
+    /// Where on the board the current reroll / skill / block-dice question
+    /// belongs, when there is one.
+    pub prompt: Option<PromptView>,
+    /// While a player is mid-activation: the team-mates who could be declared
+    /// once their turn is ended. Clicking one selects them, and the action
+    /// then chosen ends the active player first ([`SelectionView::end_first`]).
+    #[serde(default)]
+    pub reselect: Vec<Position>,
 }
 
 impl ViewState {

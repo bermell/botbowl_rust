@@ -257,6 +257,27 @@ pub struct GameSpec {
     pub home_team: String,
     #[serde(default = "default_team")]
     pub away_team: String,
+    /// No natural one-turn: every player's MA is capped so that even MA plus two GFIs falls
+    /// short of the end zone from the line of scrimmage ([`BoardSpec::no_one_turn_ma`]). On by
+    /// default — on the small boards the stock MA turns a handoff into a free touchdown.
+    #[serde(default = "yes")]
+    pub no_natural_one_turn: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl BoardSpec {
+    /// The most MA a player may have under [`GameSpec::no_natural_one_turn`]: low enough that
+    /// even MA plus the two GFIs falls short of the opponent's end zone from the own line of
+    /// scrimmage — the engine's `BoardDims::ma_cap`, mirrored here for the lobby (the server
+    /// test pins the two together). The engine board is this one plus a two-square border, and
+    /// the LOS-to-end-zone distance is `engine_width / 2 - 1`.
+    pub fn no_one_turn_ma(self) -> u8 {
+        let engine_width = self.width as i16 + 2;
+        (engine_width / 2 - 1 - 3).max(0) as u8
+    }
 }
 
 impl GameSpec {
@@ -284,6 +305,7 @@ impl GameSpec {
             start: StartFrom::CoinToss,
             home_team: default_team(),
             away_team: default_team(),
+            no_natural_one_turn: true,
         }
     }
 
@@ -395,6 +417,15 @@ impl StepMode {
 pub enum ClientMsg {
     NewGame(GameSpec),
     Act(Action),
+    /// Several actions as one decision — a declaration and its first target
+    /// ([`crate::view::IntentView`]). One undo point; dice in between are
+    /// rolled, and the chain stops at the first action no longer legal.
+    ActChain(Vec<Action>),
+    /// Preview a player of the side to act: answered with
+    /// [`ServerMsg::Selection`]. Changes nothing.
+    Select {
+        pos: crate::action::Position,
+    },
     /// Play out the rest of the human's setup with the named formation (one
     /// of `SetupView::formations`). Ignored outside the human's setup.
     AutoSetup(String),
@@ -460,6 +491,8 @@ pub enum ServerMsg {
         team: TeamType,
         budget: String,
     },
+    /// Answer to [`ClientMsg::Select`].
+    Selection(Box<crate::view::SelectionView>),
     /// One decision was taken — by a human or a bot. Every decision is
     /// logged, so the decision log can show the net's read of a human's move
     /// next to the search behind a bot's.

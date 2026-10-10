@@ -123,6 +123,7 @@ async fn play_a_whole_game(addr: SocketAddr, board: BoardSpec, seed: u64) -> Out
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -256,6 +257,7 @@ async fn undo_rewinds_across_the_bots_reply() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -339,6 +341,7 @@ async fn bad_input_is_reported_not_fatal() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -359,6 +362,7 @@ async fn bad_input_is_reported_not_fatal() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -382,6 +386,7 @@ async fn bad_input_is_reported_not_fatal() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -415,6 +420,7 @@ fn new_game(board: BoardSpec, seed: u64) -> ClientMsg {
         start: StartFrom::CoinToss,
         home_team: "Human".into(),
         away_team: "Human".into(),
+        no_natural_one_turn: true,
     })
 }
 
@@ -513,6 +519,7 @@ async fn a_rewind_restores_an_earlier_step_and_holds_there() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -682,6 +689,7 @@ async fn two_bots_play_a_whole_game_and_can_be_paused() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;
@@ -748,6 +756,7 @@ async fn a_random_drive_ends_when_the_drive_does() {
                 },
                 home_team: "Orc".into(),
                 away_team: "Skaven".into(),
+                no_natural_one_turn: true,
             }),
         )
         .await;
@@ -788,6 +797,11 @@ async fn a_random_drive_ends_when_the_drive_does() {
         // filler picture.
         assert!(pictures.iter().any(|s| s.contains("olineman1")), "{pictures:?}");
         assert!(pictures.iter().any(|s| s.contains("sklineman1")), "{pictures:?}");
+        // No natural one-turn: nobody on the pitch can walk the line-to-end-zone distance.
+        let cap = test_board().no_one_turn_ma();
+        for p in first.squares.iter().filter_map(|s| s.player.as_ref()) {
+            assert!(p.ma <= cap, "MA {} above the cap {cap}", p.ma);
+        }
     }
 }
 
@@ -811,6 +825,7 @@ async fn teams_are_chosen_by_name() {
         start: StartFrom::CoinToss,
         home_team: "Nobody".into(),
         away_team: "Dwarf".into(),
+        no_natural_one_turn: true,
     };
     send(&mut socket, ClientMsg::NewGame(spec.clone())).await;
     match recv(&mut socket).await {
@@ -835,6 +850,89 @@ async fn teams_are_chosen_by_name() {
 /// `AutoSetup` plays out the whole of the human's setup with one of the
 /// formations the view named, as one undoable decision — so a player who does
 /// not want to place eleven pieces by hand still gets the per-player undo.
+/// The click-to-act flow: `Select` previews a player without changing
+/// anything, and `ActChain` plays a declaration and its target as one human
+/// decision — two records in the decision log, one undo point.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_selected_player_declares_and_moves_in_one_undoable_decision() {
+    let addr = serve().await;
+    let mut socket = connect(addr).await;
+    let _lobby = recv(&mut socket).await;
+    send(&mut socket, new_game(test_board(), 11)).await;
+
+    // Play the first legal action until Home may declare a player.
+    let mut before: Option<ViewState> = None;
+    while before.is_none() {
+        if let ServerMsg::View(view) = recv(&mut socket).await {
+            if view.to_act != Some(TeamType::Home) || view.scoreboard.game_over || view.bot_thinking {
+                continue;
+            }
+            if view
+                .squares
+                .iter()
+                .any(|s| s.actions.contains(&botbowl_web_proto::PosAT::StartMove))
+            {
+                before = Some(*view);
+            } else {
+                send(&mut socket, ClientMsg::Act(legal_actions(&view)[0])).await;
+            }
+        }
+    }
+    let before = before.unwrap();
+    let player = before
+        .squares
+        .iter()
+        .find(|s| s.actions.contains(&botbowl_web_proto::PosAT::StartMove))
+        .unwrap()
+        .pos;
+
+    send(&mut socket, ClientMsg::Select { pos: player }).await;
+    let selection = loop {
+        if let ServerMsg::Selection(s) = recv(&mut socket).await {
+            break *s;
+        }
+    };
+    assert_eq!(selection.player, player);
+    assert_eq!(selection.seq, before.seq, "the preview is of the board on screen");
+    let walk = selection
+        .targets
+        .iter()
+        .filter(|t| t.action == botbowl_web_proto::PosAT::Move)
+        .max_by(|a, b| a.prob.partial_cmp(&b.prob).unwrap())
+        .expect("a player at turn start can walk somewhere")
+        .clone();
+
+    send(
+        &mut socket,
+        ClientMsg::ActChain(vec![
+            Action::Positional(walk.start, player),
+            Action::Positional(walk.action, walk.pos),
+        ]),
+    )
+    .await;
+    let mut decisions = Vec::new();
+    let after = loop {
+        match recv(&mut socket).await {
+            ServerMsg::Decision(d) => decisions.push(*d),
+            ServerMsg::View(view) if !view.bot_thinking && view.to_act.is_some() => break *view,
+            _ => {}
+        }
+    };
+    assert_eq!(decisions[0].action, Action::Positional(walk.start, player));
+    assert_eq!(decisions[1].action, Action::Positional(walk.action, walk.pos));
+    assert!(after.can_undo);
+
+    send(&mut socket, ClientMsg::Undo).await;
+    let rewound = loop {
+        if let ServerMsg::View(view) = recv(&mut socket).await {
+            if view.to_act == Some(TeamType::Home) && !view.bot_thinking {
+                break *view;
+            }
+        }
+    };
+    assert_eq!(rewound.squares, before.squares, "one undo takes back the whole chain");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn auto_setup_finishes_the_humans_setup_as_one_undoable_decision() {
     let addr = serve().await;
@@ -850,6 +948,7 @@ async fn auto_setup_finishes_the_humans_setup_as_one_undoable_decision() {
             start: StartFrom::CoinToss,
             home_team: "Human".into(),
             away_team: "Human".into(),
+            no_natural_one_turn: true,
         }),
     )
     .await;

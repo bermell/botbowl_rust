@@ -193,6 +193,15 @@ impl GameSession {
                 drives::position_state(&RandomStartBias::default(), dims, seed)
             }
         };
+        // A resumed recording is played as it was recorded.
+        if spec.no_natural_one_turn && !matches!(spec.start, StartFrom::Recording { .. }) {
+            let cap = spec.board.no_one_turn_ma();
+            teams::cap_ma(&mut state, cap);
+            start_note = Some(match start_note {
+                Some(note) => format!("{note} · no natural one-turn (MA capped at {cap})"),
+                None => format!("no natural one-turn: MA capped at {cap}"),
+            });
+        }
         let drive = spec
             .start
             .is_drive()
@@ -695,6 +704,32 @@ impl GameSession {
     }
 
     fn act(&mut self, action: EngineAction, out: &Out) {
+        self.act_chain(vec![action], out);
+    }
+
+    /// The selection preview for the player at `pos` — see [`view::selection`].
+    /// Only for the human to act; anything else gets no answer, since the
+    /// board the click was made on is already gone.
+    fn select(&self, pos: botbowl_web_proto::Position, out: &Out) {
+        let team = self.actor();
+        if self.state.info.game_over
+            || self.state.pending_roll.is_some()
+            || self.pending.is_some()
+            || !self.is_human(team)
+        {
+            return;
+        }
+        if let Some(selection) = view::selection(&self.state, pos, self.seq) {
+            out.send(ServerMsg::Selection(Box::new(selection)));
+        }
+    }
+
+    /// One human decision made of several actions — a declaration and its
+    /// target. One undo point; the dice between two actions are rolled as
+    /// usual, and the chain stops quietly at the first action that is no
+    /// longer legal (a Jump Up that failed, a turnover).
+    fn act_chain(&mut self, actions: Vec<EngineAction>, out: &Out) {
+        let Some(&first) = actions.first() else { return };
         if self.state.info.game_over {
             out.send(ServerMsg::Error("the game is over".into()));
             return;
@@ -714,8 +749,8 @@ impl GameSession {
             out.send(ServerMsg::Error("not your decision".into()));
             return;
         }
-        if !self.state.is_legal_action(&action) {
-            out.send(ServerMsg::Error(format!("{action:?} is not legal here")));
+        if !self.state.is_legal_action(&first) {
+            out.send(ServerMsg::Error(format!("{first:?} is not legal here")));
             self.view(out, false);
             return;
         }
@@ -727,9 +762,25 @@ impl GameSession {
             log: self.log.len(),
             decisions: self.decisions,
         });
-        let net = self.readout(team);
-        self.record(team, action, net, None, out);
-        self.step(SomeProcInput::Action(action));
+        let mut before = (self.state.home.score, self.state.away.score);
+        for (i, action) in actions.into_iter().enumerate() {
+            if i > 0 {
+                // Roll whatever the previous action asked for, then carry on
+                // only while it is still this human's legal decision.
+                while self.state.pending_roll.is_some() && !self.state.info.game_over {
+                    self.take_one(out, &mut before);
+                }
+                if self.state.info.game_over
+                    || self.actor() != team
+                    || !self.state.is_legal_action(&action)
+                {
+                    break;
+                }
+            }
+            let net = self.readout(team);
+            self.record(team, action, net, None, out);
+            self.step(SomeProcInput::Action(action));
+        }
         self.advance(out);
     }
 
@@ -1072,6 +1123,10 @@ pub fn run(app: Arc<AppState>, mut input: mpsc::Receiver<ClientMsg>, output: mps
                     | ClientMsg::DeleteTeam { .. }
                     | ClientMsg::UploadPicture { .. } => unreachable!("handled above"),
                     ClientMsg::Act(action) => s.act(mirror::action_from_proto(action), &out),
+                    ClientMsg::ActChain(actions) => {
+                        s.act_chain(actions.into_iter().map(mirror::action_from_proto).collect(), &out)
+                    }
+                    ClientMsg::Select { pos } => s.select(pos, &out),
                     ClientMsg::AutoSetup(name) => s.auto_setup(&name, &out),
                     ClientMsg::Undo => s.undo(&out),
                     ClientMsg::StepOnce => s.step_once(&out),

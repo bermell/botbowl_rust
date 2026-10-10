@@ -56,6 +56,41 @@ but the *active* player is drawn in full colour and with the "not acted" sprite 
 (the engine marks a player used the moment they activate, and greying them mid-move reads as
 "done"); and `to_act` lights up that side's dugout and scoreboard entry.
 
+## Click-to-act: select, then target (the mouse stays on the board)
+
+A click on a player who may be declared does not ask "Start move / Start blitz / ...". It sends
+`ClientMsg::Select { pos }`; the server answers `ServerMsg::Selection(SelectionView)` from
+`view::selection`, which steps **every** legal declaration on a clone (`RegisterRolls`, so a
+declaration that rolls at once — Jump Up — just offers nothing) and resolves each square to one
+`IntentView { start, action }`: Move onto an empty square or the loose ball, Block on an adjacent
+standing opponent and Blitz on one further away, Foul on a prone one, and for the ball carrier the
+likelier of Handoff and Pass to a standing team-mate. The rule set lives server-side so the client
+stays a renderer. The next click on a target sends `ClientMsg::ActChain([start, action])` — one
+undo point, dice in between rolled, the chain stops quietly at the first action that is no longer
+legal. A selection carries the view's `seq` and is dropped on every new board.
+**Selecting a team-mate ends the active player.** Mid-activation the engine offers no
+declarations (only `Turn` does), so `ViewState::reselect` lists whoever could be declared once
+`EndPlayerTurn` is played (stepped on a clone, `view::after_end_player_turn`); `selection` falls back
+to previewing that position and sets `SelectionView::end_first`, and `SelectionView::chain` prepends
+`EndPlayerTurn` — three actions, one undo point. A prone player's own square is a Move target
+too — the engine's stand-up-in-place path — so clicking a selected prone player again stands them
+up where they lie. A player picture that fails to load falls back to the role's stock sprite
+(`fall_back` in `pitch.rs`, with a console warning naming the missing file), and the server logs
+every 404 under `img/` to stderr and `~/.cache/botbowl/missing-assets.log` (`log_missing_sprite`,
+with the asset directory it looked in) — read that file first when someone reports a broken image. The declarations
+sit as buttons in the action bar above the board (with End turn and every other simple action);
+block dice and the odds show on the **hovered** target only. `ViewState::prompt` (`view::prompt`)
+anchors a reroll / optional-skill / block-dice question on the square it concerns — the rolling
+player (`SimpleProcContainer::id`), the pushed one (`Push::on`), the defender for block dice, or
+whichever of attacker/defender is being asked — and the client asks it there. Pinned by the
+`selection`/`prompt` tests in `view.rs`, the fuzz in `derive_every_state.rs` and
+`a_selected_player_declares_and_moves_in_one_undoable_decision`.
+
+Layout: the dugouts sit **below** the board, each on the side its team sets up on (Home's half is
+the high-x one, so Away left, Home right), carrying score, turn, rerolls and the bot's search
+spinner. Each end zone is painted in the colour of the team that defends it, so Home (blue)
+scores in the red one — `SquareKind::EndzoneHome` is the zone Home *attacks*, coloured away.
+
 The price is that `proto` hand-mirrors the engine's action and dice enums. `server/src/mirror.rs`
 pays it: every conversion is an **exhaustive match with no wildcard arm**, so adding an engine
 variant is a compile error there, and every variant round-trips in its tests.
@@ -268,6 +303,17 @@ search threads (`--max-workers` / the hub's `--play-max-workers`), the team dire
 `Auto { ms: 600 }`, the lobby proposes bot-vs-bot (`GameSpec::default_for`), and `MctsSpec`
 defaults to `workers: Some(1)`. Opening the page shows a slow game on one thread per bot, not
 a machine-wide search. Keep it that way.
+
+## No natural one-turn (lobby option, on by default)
+
+`GameSpec::no_natural_one_turn` caps every player's MA at `BoardSpec::no_one_turn_ma()` at game
+start (`teams::cap_ma`, dugout and fielded alike, coin toss and random drives; a resumed recording
+is left as recorded). A natural one-turn — a player on the line reaching the end zone in one turn,
+**GFIs included** (the user, 2026-10-09) — is otherwise free on the small boards. The cap is the
+engine's `BoardDims::ma_cap` (MA + 2 GFIs short of the LOS-to-end-zone distance: 4 on 14x7), the
+same rule botbowl-play's eval ladder applies, mirrored in proto for the lobby hint and pinned to the
+engine by `the_one_turn_cap_is_the_engines_ma_cap_and_keeps_the_pictures`. `Looks::sprite` matches a
+capped player to the same position with a higher MA so they keep their picture.
 
 ## Random-start drives
 

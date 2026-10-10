@@ -109,6 +109,8 @@ pub fn Lobby() -> impl IntoView {
     let seed = RwSignal::new(String::new());
     let recording = RwSignal::new(String::new());
     let step = RwSignal::new(0usize);
+    // Cap MA so nobody reaches the end zone from the line in one turn, GFIs included. On by default.
+    let no_one_turn = RwSignal::new(true);
 
     // The board the form is currently on, defaulting to the server's own
     // suggestion (14x7 where it fits).
@@ -134,6 +136,7 @@ pub fn Lobby() -> impl IntoView {
             home.load(&lobby.defaults.home, &lobby.defaults.home_team);
             away.load(&lobby.defaults.away, &lobby.defaults.away_team);
             drive.set(lobby.defaults.start.is_drive());
+            no_one_turn.set(lobby.defaults.no_natural_one_turn);
         }
     });
 
@@ -166,6 +169,7 @@ pub fn Lobby() -> impl IntoView {
             },
             home_team: home.team.get(),
             away_team: away.team.get(),
+            no_natural_one_turn: no_one_turn.get(),
         };
         app.reset_game();
         app.spec.set(Some(spec.clone()));
@@ -212,6 +216,25 @@ pub fn Lobby() -> impl IntoView {
                         </label>
                     </div>
                 </Show>
+                <label class="check-option">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || no_one_turn.get()
+                        on:change=move |ev| no_one_turn.set(event_target_checked(&ev))
+                    />
+                    <span class="big">"No natural one-turn"</span>
+                    <span class="hint">
+                        {move || match board() {
+                            Some(b) => format!(
+                                "MA capped at {} on {}x{}, so nobody reaches the end zone from the line of scrimmage in one turn, GFIs included",
+                                b.no_one_turn_ma(),
+                                b.width,
+                                b.height,
+                            ),
+                            None => "MA capped so nobody reaches the end zone from the line in one turn, GFIs included".to_string(),
+                        }}
+                    </span>
+                </label>
             </section>
 
             <section>

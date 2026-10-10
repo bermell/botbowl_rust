@@ -130,6 +130,44 @@ impl AppState {
     }
 }
 
+/// Where [`log_missing_sprite`] appends: `~/.cache/botbowl/missing-assets.log`.
+pub fn missing_assets_log() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/botbowl/missing-assets.log"))
+}
+
+/// Every 404 under `img/`, one line each on stderr and in [`missing_assets_log`]: the time, the
+/// path as the browser asked for it (`/play/img/...` under the hub) and the asset directory.
+async fn log_missing_sprite(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+    assets: Option<PathBuf>,
+) -> axum::response::Response {
+    let path = req
+        .extensions()
+        .get::<axum::extract::OriginalUri>()
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+    let response = next.run(req).await;
+    if response.status() == axum::http::StatusCode::NOT_FOUND && path.contains("/img/") {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let line = format!(
+            "{secs} missing sprite {path} (assets dir {})",
+            assets.as_deref().map_or("none".into(), |p| p.display().to_string())
+        );
+        eprintln!("{line}");
+        if let Some(file) = missing_assets_log() {
+            use std::io::Write;
+            let _ = file.parent().map(std::fs::create_dir_all);
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&file) {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+    response
+}
+
 /// The HTTP surface: the websocket, a health probe, the sprite mount and the
 /// trunk-built client.
 ///
@@ -149,6 +187,12 @@ pub fn router(app: Arc<AppState>, assets_dir: Option<&Path>, dist_dir: Option<&P
     if let Some(assets) = assets_dir {
         router = router.nest_service("/img", ServeDir::new(assets));
     }
+    // A sprite the browser asked for and did not get — a picture the asset checkout lacks, a
+    // moved upload — is logged with the directory it was looked up in.
+    let assets = assets_dir.map(Path::to_path_buf);
+    router = router.layer(axum::middleware::from_fn(move |req, next| {
+        log_missing_sprite(req, next, assets.clone())
+    }));
     if let Some(dist) = dist_dir {
         // Single-page app: unknown paths fall back to index.html.
         let index = dist.join("index.html");

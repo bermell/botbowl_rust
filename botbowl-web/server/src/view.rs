@@ -6,10 +6,10 @@
 //! `GameStateBuilder` positions. The client never computes geometry, legality
 //! or probability — it renders what arrives.
 
-use botbowl_engine::core::gamestate::GameState;
+use botbowl_engine::core::gamestate::{DiceMode, GameState};
 use botbowl_engine::core::model as em;
-use botbowl_engine::core::model::{BallState, Position};
-use botbowl_engine::core::pathing::{CustomIntoIter, PathingEvent, PositionOrEvent};
+use botbowl_engine::core::model::{BallState, Position, SomeProcInput};
+use botbowl_engine::core::pathing::{CustomIntoIter, Node, PathingEvent, PositionOrEvent};
 use botbowl_engine::core::procedures::{AnyProc, Formation};
 use botbowl_engine::core::table as et;
 use botbowl_web_proto::view as pv;
@@ -260,6 +260,23 @@ fn index_of(dims: em::BoardDims, pos: Position) -> Option<usize> {
     Some(pos.y as usize * dims.width as usize + pos.x as usize)
 }
 
+/// Success probability, block dice and route of one pathfinder node.
+fn node_info(node: &std::sync::Arc<Node>) -> (f32, Option<botbowl_web_proto::dice::NumBlockDices>, pv::RouteView) {
+    let mut steps = Vec::new();
+    let mut rolls = Vec::new();
+    for item in node.iter() {
+        match item {
+            PositionOrEvent::Position(p) => steps.push(mirror::position_to_proto(p)),
+            PositionOrEvent::Event(e) => rolls.push(event_label(&e)),
+        }
+    }
+    (
+        node.prob,
+        node.get_block_dice().map(mirror::num_block_dices_to_proto),
+        pv::RouteView { steps, rolls },
+    )
+}
+
 /// Annotate every square offered by the path buffer with its success
 /// probability, block dice and route. The path buffer only exists while a
 /// player action is active, and it holds one `Node` per reachable square.
@@ -278,20 +295,231 @@ fn annotate_paths(state: &GameState, squares: &mut [pv::SquareView]) {
             // construction — but go through the same checked path anyway.
             let Some(index) = index_of(dims, pos) else { continue };
             let sq = &mut squares[index];
-            sq.move_prob = Some(node.prob);
-            sq.block_dice = node.get_block_dice().map(mirror::num_block_dices_to_proto);
-
-            let mut steps = Vec::new();
-            let mut rolls = Vec::new();
-            for item in node.iter() {
-                match item {
-                    PositionOrEvent::Position(p) => steps.push(mirror::position_to_proto(p)),
-                    PositionOrEvent::Event(e) => rolls.push(event_label(&e)),
-                }
-            }
-            sq.route = Some(pv::RouteView { steps, rolls });
+            let (prob, dice, route) = node_info(node);
+            sq.move_prob = Some(prob);
+            sq.block_dice = dice;
+            sq.route = Some(route);
         }
     }
+}
+
+/// The six declarations, in policy-channel order.
+const STARTS: [et::PosAT; 6] = [
+    et::PosAT::StartMove,
+    et::PosAT::StartBlitz,
+    et::PosAT::StartPass,
+    et::PosAT::StartFoul,
+    et::PosAT::StartHandoff,
+    et::PosAT::StartBlock,
+];
+
+/// Preview every declaration the side to act may make on the player at
+/// `pos`, and resolve each square to the one action a click there should
+/// take (see [`pv::SelectionView`]). Pure: each declaration is stepped on a
+/// clone. `None` when `pos` is not a player who may be declared.
+pub fn selection(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) -> Option<pv::SelectionView> {
+    selection_now(state, pos, seq).or_else(|| {
+        // Mid-activation nobody else can be declared; preview the position
+        // after `EndPlayerTurn` instead, and say the chain must start with it.
+        let ended = after_end_player_turn(state)?;
+        let mut sel = selection_now(&ended, pos, seq)?;
+        sel.end_first = true;
+        Some(sel)
+    })
+}
+
+/// `state` with the active player's turn ended, when that is the side to
+/// act's own choice and lands straight on its next declaration. `None`
+/// otherwise — no `EndPlayerTurn` on offer, or ending it rolls a die or hands
+/// the decision to the other side.
+fn after_end_player_turn(state: &GameState) -> Option<GameState> {
+    let end = em::Action::Simple(et::SimpleAT::EndPlayerTurn);
+    if state.info.active_player.is_none() || state.pending_roll.is_some() || !state.is_legal_action(&end) {
+        return None;
+    }
+    let team = state.get_active_teamtype();
+    let mut ended = state.clone();
+    if !matches!(ended.dice_mode(), DiceMode::RegisterRolls) {
+        ended.set_dice_mode(DiceMode::RegisterRolls);
+    }
+    ended.step_with_roll_or_action(SomeProcInput::Action(end));
+    (ended.pending_roll.is_none() && ended.get_active_teamtype() == team && !ended.info.game_over).then_some(ended)
+}
+
+/// The team-mates a click could select while a player is mid-activation:
+/// whoever may be declared once that player's turn is ended.
+fn reselect(state: &GameState) -> Vec<botbowl_web_proto::Position> {
+    let Some(ended) = after_end_player_turn(state) else {
+        return Vec::new();
+    };
+    let mut out: Vec<_> = ended
+        .get_all_actions()
+        .into_iter()
+        .filter_map(|a| match a {
+            em::Action::Positional(at, pos) if STARTS.contains(&at) => Some(mirror::position_to_proto(pos)),
+            _ => None,
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) -> Option<pv::SelectionView> {
+    let at = mirror::position_from_proto(pos);
+    let player = state.get_player_at(at)?;
+    let (team, id, carrier) = (player.stats.team, player.id, state.ball == BallState::Carried(player.id));
+    let starts: Vec<et::PosAT> = STARTS
+        .into_iter()
+        .filter(|s| state.is_legal_action(&em::Action::Positional(*s, at)))
+        .collect();
+    if starts.is_empty() {
+        return None;
+    }
+
+    // Every (declaration, square, intent) the declarations would offer next.
+    let mut offered: Vec<(et::PosAT, Position, pv::IntentView)> = Vec::new();
+    for &start in &starts {
+        let mut preview = state.clone();
+        // A declaration that rolls at once (Jump Up) pauses on the roll here
+        // rather than drawing on anybody's dice: it then offers nothing.
+        if !matches!(preview.dice_mode(), DiceMode::RegisterRolls) {
+            preview.set_dice_mode(DiceMode::RegisterRolls);
+        }
+        preview.step_with_roll_or_action(SomeProcInput::Action(em::Action::Positional(start, at)));
+        if preview.pending_roll.is_some() || preview.info.active_player != Some(id) {
+            continue;
+        }
+        for action in preview.get_all_actions() {
+            let em::Action::Positional(next, target) = action else { continue };
+            if STARTS.contains(&next) {
+                continue;
+            }
+            let node = preview.get_paths().and_then(|p| p.get_pos(target).as_ref());
+            let (prob, block_dice, route) = match node {
+                Some(n) => {
+                    let (p, d, r) = node_info(n);
+                    (Some(p), d, Some(r))
+                }
+                None => (None, None, None),
+            };
+            offered.push((
+                start,
+                target,
+                pv::IntentView {
+                    pos: mirror::position_to_proto(target),
+                    start: mirror::pos_at_to_proto(start),
+                    action: mirror::pos_at_to_proto(next),
+                    prob,
+                    block_dice,
+                    route,
+                },
+            ));
+        }
+    }
+    let find = |start: et::PosAT, target: Position| {
+        offered
+            .iter()
+            .find(|(s, t, _)| *s == start && *t == target)
+            .map(|(_, _, i)| i.clone())
+    };
+
+    let mut squares: Vec<Position> = offered.iter().map(|(_, t, _)| *t).collect();
+    squares.sort_by_key(|p| (p.y, p.x));
+    squares.dedup();
+    let mut targets = Vec::new();
+    for target in squares {
+        let intent = match state.get_player_at(target) {
+            // An empty square, or the loose ball: walk there.
+            None => find(et::PosAT::StartMove, target),
+            // The player's own square — offered only to a prone player: stand up
+            // where they lie (a click on the selected player again).
+            Some(_) if target == at => find(et::PosAT::StartMove, target),
+            Some(other) if other.stats.team != team => {
+                if other.status != em::PlayerStatus::Up {
+                    find(et::PosAT::StartFoul, target)
+                } else if target.distance_to(&at) == 1 {
+                    find(et::PosAT::StartBlock, target).or_else(|| find(et::PosAT::StartBlitz, target))
+                } else {
+                    find(et::PosAT::StartBlitz, target)
+                }
+            }
+            // A team-mate, from the ball carrier: the likelier of a handoff
+            // and a pass. From anyone else a click on a team-mate selects them.
+            Some(_) if carrier => {
+                let handoff = find(et::PosAT::StartHandoff, target);
+                let pass = find(et::PosAT::StartPass, target);
+                match (handoff, pass) {
+                    (Some(h), Some(p)) => Some(if p.prob.unwrap_or(0.0) > h.prob.unwrap_or(0.0) { p } else { h }),
+                    (h, p) => h.or(p),
+                }
+            }
+            Some(_) => None,
+        };
+        targets.extend(intent);
+    }
+    Some(pv::SelectionView {
+        seq,
+        player: pos,
+        end_first: false,
+        starts: starts.into_iter().map(mirror::pos_at_to_proto).collect(),
+        targets,
+    })
+}
+
+/// The square the open reroll / skill / block-dice question is about.
+fn prompt(state: &GameState) -> Option<pv::PromptView> {
+    use et::SimpleAT as S;
+    let asks = state.get_all_actions().into_iter().any(|a| {
+        matches!(
+            a,
+            em::Action::Simple(
+                S::UseReroll
+                    | S::DontUseReroll
+                    | S::UseSkill
+                    | S::DontUseSkill
+                    | S::SelectBothDown
+                    | S::SelectPow
+                    | S::SelectPush
+                    | S::SelectPowPush
+                    | S::SelectSkull
+            )
+        )
+    });
+    if !asks {
+        return None;
+    }
+    let top = state.proc_stack_iter().next()?;
+    let player_pos = |id: em::PlayerID| state.get_player(id).ok().map(|p| p.position);
+    let pos = match top {
+        AnyProc::Catch(c) => player_pos(c.id()),
+        AnyProc::Deflect(c) => player_pos(c.id()),
+        AnyProc::DodgeProc(c) => player_pos(c.id()),
+        AnyProc::GfiProc(c) => player_pos(c.id()),
+        AnyProc::PickupProc(c) => player_pos(c.id()),
+        AnyProc::JumpUp(c) => player_pos(c.id()),
+        AnyProc::Push(p) => Some(p.on()),
+        // The dice go over the defender: that is what they are about.
+        AnyProc::Block(_) => block_view(state).map(|b| mirror::position_from_proto(b.defender)),
+        // Any other block question (Wrestle, Frenzy) belongs to whichever of
+        // the two players' coaches is being asked.
+        _ => match (block_view(state), state.get_active_player()) {
+            (Some(b), Some(attacker)) => {
+                let asked = state.get_active_teamtype();
+                Some(mirror::position_from_proto(if asked == Some(attacker.stats.team) {
+                    b.attacker
+                } else {
+                    b.defender
+                }))
+            }
+            (None, active) => active.map(|p| p.position),
+            _ => None,
+        },
+    }?;
+    (!state.is_out(pos)).then(|| pv::PromptView {
+        pos: mirror::position_to_proto(pos),
+        title: crate::dice::purpose(top.name()),
+    })
 }
 
 fn scoreboard(state: &GameState) -> pv::Scoreboard {
@@ -479,6 +707,8 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         pending_action: ctx.pending_action,
         trail: ctx.trail.clone(),
         block: block_view(state),
+        prompt: if game_over { None } else { prompt(state) },
+        reselect: if game_over { Vec::new() } else { reselect(state) },
     }
 }
 
@@ -1033,5 +1263,174 @@ mod tests {
         let a = view_of(&state);
         let b = view_of(&state);
         assert_eq!(a, b);
+    }
+
+    fn intent_at(sel: &pv::SelectionView, x: i8, y: i8) -> Option<&pv::IntentView> {
+        sel.target(pa::Position::new(x, y))
+    }
+
+    #[test]
+    fn a_selected_player_moves_onto_empty_squares_and_the_loose_ball() {
+        let state = a_position();
+        let sel = selection(&state, pa::Position::new(10, 2), 7).expect("a Home player at turn start");
+        assert_eq!(sel.seq, 7);
+        assert!(sel.starts.contains(&PosAT::StartMove) && sel.starts.contains(&PosAT::StartBlitz));
+        let walk = intent_at(&sel, 11, 2).expect("an empty neighbour square");
+        assert_eq!((walk.start, walk.action), (PosAT::StartMove, PosAT::Move));
+        assert!(walk.prob.is_some() && walk.route.is_some());
+        let ball = intent_at(&sel, 8, 5).expect("the loose ball's square");
+        assert_eq!((ball.start, ball.action), (PosAT::StartMove, PosAT::Move));
+        assert!(
+            ball.route.as_ref().unwrap().rolls.iter().any(|r| r.starts_with("Pickup")),
+            "{:?}",
+            ball.route
+        );
+        // Previewing changes nothing.
+        assert_eq!(view_of(&state), view_of(&a_position()));
+    }
+
+    #[test]
+    fn an_adjacent_opponent_is_a_block_and_a_distant_one_a_blitz() {
+        let state = a_position();
+        let sel = selection(&state, pa::Position::new(8, 3), 0).unwrap();
+        let block = intent_at(&sel, 7, 3).expect("adjacent Away (7,3)");
+        assert_eq!((block.start, block.action), (PosAT::StartBlock, PosAT::Block));
+        assert!(block.block_dice.is_some());
+        let blitz = intent_at(&sel, 6, 5).expect("Away (6,5) is two squares away");
+        assert_eq!((blitz.start, blitz.action), (PosAT::StartBlitz, PosAT::Block));
+        assert!(blitz.block_dice.is_some());
+        // A team-mate, from a player without the ball, is not a target.
+        assert!(intent_at(&sel, 8, 4).is_none());
+    }
+
+    #[test]
+    fn a_prone_opponent_is_a_foul() {
+        let mut state = a_position();
+        let id = state.get_player_id_at(em::Position::new((6, 5))).unwrap();
+        state.get_mut_player(id).unwrap().status = em::PlayerStatus::Down;
+        let sel = selection(&state, pa::Position::new(9, 5), 0).unwrap();
+        let foul = intent_at(&sel, 6, 5).expect("the prone Away player");
+        assert_eq!((foul.start, foul.action), (PosAT::StartFoul, PosAT::Foul));
+    }
+
+    #[test]
+    fn the_ball_carrier_hands_off_or_passes_to_a_team_mate_whichever_is_likelier() {
+        let state = GameStateBuilder::new()
+            .with_board_dims(dims())
+            .add_home_players(&[(10, 4), (11, 4), (12, 7)])
+            .add_away_players(&[(2, 1)])
+            .add_ball((10, 4))
+            .build();
+        let sel = selection(&state, pa::Position::new(10, 4), 0).unwrap();
+        for (x, y) in [(11, 4), (12, 7)] {
+            let i = intent_at(&sel, x, y).unwrap_or_else(|| panic!("team-mate ({x},{y})"));
+            assert!(
+                matches!(
+                    (i.start, i.action),
+                    (PosAT::StartHandoff, PosAT::Handoff) | (PosAT::StartPass, PosAT::Pass)
+                ),
+                "{i:?}"
+            );
+        }
+        // The adjacent team-mate: a handoff never needs a pass roll on top.
+        assert_eq!(intent_at(&sel, 11, 4).unwrap().action, PosAT::Handoff);
+    }
+
+    #[test]
+    fn mid_activation_a_team_mate_is_selected_by_ending_the_active_player_first() {
+        let mut state = a_position();
+        let mover = em::Position::new((10, 2));
+        state.step_positional(et::PosAT::StartMove, mover);
+        state.step_positional(et::PosAT::Move, em::Position::new((11, 2)));
+        let v = view_of(&state);
+        assert!(v.simple_actions.iter().any(|a| a.at == PSimpleAT::EndPlayerTurn));
+        // Nobody else is declarable right now...
+        assert!(at(&v, 9, 5).actions.is_empty());
+        // ...but every other Home player is selectable, the active one is not.
+        for (x, y) in [(8, 3), (8, 4), (9, 5)] {
+            assert!(v.reselect.contains(&pa::Position::new(x, y)), "({x},{y}) in {:?}", v.reselect);
+        }
+        assert!(!v.reselect.contains(&pa::Position::new(11, 2)));
+
+        let sel = selection(&state, pa::Position::new(9, 5), 0).expect("selectable after ending the mover");
+        assert!(sel.end_first);
+        let walk = intent_at(&sel, 10, 5).expect("an empty square next to (9,5)");
+        assert_eq!(
+            sel.chain([
+                pa::Action::Positional(walk.start, sel.player),
+                pa::Action::Positional(walk.action, walk.pos),
+            ])[0],
+            pa::Action::Simple(PSimpleAT::EndPlayerTurn)
+        );
+        // At a turn start there is nothing to end.
+        assert!(!selection(&a_position(), pa::Position::new(9, 5), 0).unwrap().end_first);
+        assert!(view_of(&a_position()).reselect.is_empty());
+    }
+
+    #[test]
+    fn a_prone_player_clicked_again_stands_up_where_they_lie() {
+        let mut state = a_position();
+        let id = state.get_player_id_at(em::Position::new((10, 2))).unwrap();
+        state.get_mut_player(id).unwrap().status = em::PlayerStatus::Down;
+        let sel = selection(&state, pa::Position::new(10, 2), 0).unwrap();
+        let stand = intent_at(&sel, 10, 2).expect("the prone player's own square");
+        assert_eq!((stand.start, stand.action), (PosAT::StartMove, PosAT::Move));
+        assert!(stand.route.as_ref().unwrap().rolls.iter().any(|r| r == "Stand up"), "{stand:?}");
+
+        // Played, it leaves them standing on the same square, still active.
+        state.step_positional(et::PosAT::StartMove, em::Position::new((10, 2)));
+        state.step_positional(et::PosAT::Move, em::Position::new((10, 2)));
+        let p = state.get_player(id).unwrap();
+        assert_eq!((p.status, p.position), (em::PlayerStatus::Up, em::Position::new((10, 2))));
+        assert_eq!(state.info.active_player, Some(id));
+
+        // A standing player clicked again is just deselected: no target there.
+        assert!(intent_at(&selection(&a_position(), pa::Position::new(10, 2), 0).unwrap(), 10, 2).is_none());
+    }
+
+    #[test]
+    fn only_the_side_to_act_can_be_selected() {
+        let state = a_position();
+        assert!(selection(&state, pa::Position::new(7, 3), 0).is_none(), "an Away player");
+        assert!(selection(&state, pa::Position::new(12, 6), 0).is_none(), "an empty square");
+    }
+
+    #[test]
+    fn a_reroll_prompt_sits_over_the_player_who_rolled() {
+        let start = em::Position::new((12, 4));
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(dims())
+            .add_home_player(start)
+            .add_away_player(em::Position::new((2, 7)))
+            .build();
+        state.get_mut_team(em::TeamType::Home).rerolls = 2;
+        assert!(view_of(&state).prompt.is_none());
+        state.step_positional(et::PosAT::StartMove, start);
+        state.fix_d6(1); // fail the GFI
+        state.step_positional(et::PosAT::Move, em::Position::new((5, 4)));
+        let v = view_of(&state);
+        assert!(v.simple_actions.iter().any(|a| a.at == PSimpleAT::UseReroll));
+        let prompt = v.prompt.expect("a reroll question");
+        assert_eq!(prompt.title, "GFI");
+        // The player stands on the square where the GFI was rolled.
+        let player = v.squares.iter().find(|s| s.player.is_some()).unwrap();
+        assert_eq!(prompt.pos, player.pos);
+    }
+
+    #[test]
+    fn block_dice_are_asked_over_the_defender() {
+        let mut state = a_position();
+        state.get_mut_team(em::TeamType::Home).rerolls = 1;
+        state.step_positional(et::PosAT::StartBlock, em::Position::new((8, 3)));
+        // ST 3 against ST 3 with one assist each side: one die.
+        state.fix_blockdice(botbowl_engine::core::dices::BlockDice::Push);
+        state.step_positional(et::PosAT::Block, em::Position::new((7, 3)));
+        let v = view_of(&state);
+        assert!(
+            v.simple_actions.iter().any(|a| a.at == PSimpleAT::SelectPush),
+            "{:?}",
+            v.simple_actions
+        );
+        assert_eq!(v.prompt.expect("a dice question").pos, pa::Position::new(7, 3));
     }
 }
