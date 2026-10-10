@@ -51,7 +51,8 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen16 | gen15 | gen14-16 | 188c6d4 (relaunch; chance toggles off, same games) | cq 100 | step 33453, ep 3, the last step (0.8549) | −0.0007 / +0.0014 / −0.0009 / +0.0017 / +0.0001 | 0.198, −0.001 (+0.3%, flat) | on gen17: +0.001/+0.004/+0.007/+0.007 MONOTONE; 0.54; 0.201, +0.007 |
 | gen17 | gen16 | gen15-17 | b13f105 (relaunch; plan 062 on, chance toggles off, same games) | cq 100 | step 31000, ep 2 (0.8457) | −0.0011 / +0.0009 / −0.0004 / +0.0022 / −0.0030 | **0.197**, −0.003 (−0.4%) | on gen18: +0.001/+0.003/+0.007/+0.007 MONOTONE; 0.85; 0.204, −0.008 |
 | gen18 | gen17 | gen16-18 | b13f105 | cq 100 | step 32000, ep 2 (0.8407) | −0.0013 / +0.0012 / +0.0003 / +0.0025 / +0.0014 | **0.196**, −0.003 (−0.7%, best of the run) | on gen19: +0.001/+0.002/+0.008/+0.011 MONOTONE; 0.80; 0.199, −0.021 |
-| gen19 | gen18 | gen17-19 | b13f105 | cq 100 | step 13000, ep 1 (0.8315) | −0.0024 / +0.0004 / +0.0007 / +0.0024 / −0.0015 | 0.197, −0.004 (+0.6%, slightly worse) | (on gen20: pending) |
+| gen19 | gen18 | gen17-19 | b13f105 | cq 100 | step 13000, ep 1 (0.8315) | −0.0024 / +0.0004 / +0.0007 / +0.0024 / −0.0015 | 0.197, −0.004 (+0.6%, slightly worse) | on gen20: +0.000/+0.000/+0.001/+0.007 MONOTONE (weak below 4000); 0.30, overrides pay from no Q gap; 0.198, −0.027 |
+| gen20 | gen19 | gen18-20 | b13f105 (stamped 44b1109) | cq 100 | step 31000, ep 2 (0.8226) | −0.0019 / +0.0006 / −0.0007 / +0.0027 / +0.0007 | **0.195**, −0.007 (−0.9%, best of the run) | (on gen21: pending) |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
