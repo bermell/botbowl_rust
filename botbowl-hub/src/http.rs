@@ -8,6 +8,18 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 pub fn request(method: &str, url: &str, token: &str, body: Option<&str>) -> io::Result<(u16, String)> {
+    request_with_timeout(method, url, token, body, Duration::from_secs(30))
+}
+
+/// [`request`] with a longer wait for the reply: a label job's submit reads its shards first
+/// (plan 062; seconds for a generation, more on a busy box).
+pub fn request_with_timeout(
+    method: &str,
+    url: &str,
+    token: &str,
+    body: Option<&str>,
+    timeout: Duration,
+) -> io::Result<(u16, String)> {
     let rest = url
         .strip_prefix("http://")
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("expected http://..., got {url}")))?;
@@ -16,7 +28,7 @@ pub fn request(method: &str, url: &str, token: &str, body: Option<&str>) -> io::
         None => (rest, "/"),
     };
     let mut stream = TcpStream::connect(host)?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(timeout))?;
     let body = body.unwrap_or("");
     write!(
         stream,

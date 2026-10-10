@@ -278,7 +278,9 @@ impl Hub {
     fn spawn_write(&self, w: label::ShardWrite) {
         let hub = self.clone();
         std::thread::spawn(move || {
-            let result = w.run();
+            // A panic must still end the shard (as a failed job), or `--wait` would wait forever.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w.run()))
+                .unwrap_or_else(|_| Err(std::io::Error::other("the shard writer panicked")));
             hub.inner.lock().unwrap().label_written(w.job, w.unit, result);
             hub.changed.notify_waiters();
         });

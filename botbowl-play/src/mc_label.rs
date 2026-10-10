@@ -273,6 +273,66 @@ mod tests {
         }
     }
 
+    /// Plan 062 §5: a top-up is exact. An `n`-playout label is the first `n` playouts of an
+    /// `m`-playout one (the rng is drawn in order, one `u64` per playout), every playout scores
+    /// -1, 0 or +1, so `n * label_n` recovers the integer sum and adding playouts `n+1..=m` (the
+    /// rng advanced past the first `n` draws) gives the `m`-playout label bit for bit.
+    #[test]
+    fn topping_up_n_playouts_to_m_gives_the_m_playout_label() {
+        let nn = Arc::new(
+            NnEvaluator::from_path(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../botbowl-nn/tests/fixtures/tiny.onnx"
+            ))
+            .unwrap(),
+        );
+        let board = botbowl_engine::core::model::BoardDims::try_new(16, 9, 4)
+            .unwrap_or_else(|_| botbowl_engine::core::model::BoardDims::from_env());
+        let (n, m) = (3u32, 7u32);
+        let cfg = |playouts| LabelConfig {
+            playouts,
+            seed: 5,
+            max_steps: 300,
+        };
+        let (mut home, mut away) = (PolicyBot::new(Arc::clone(&nn)), PolicyBot::new(Arc::clone(&nn)));
+        let mut nonzero = 0;
+        for seed in 0..4u64 {
+            let state = position_state(&RandomStartBias::default(), board, 900 + seed);
+            let rng = || sample_rng(5, seed, 1, 0);
+            let few = sample_label(&mut home, &mut away, &state, rng(), &cfg(n));
+            let many = sample_label(&mut home, &mut away, &state, rng(), &cfg(m));
+            let mut r = rng();
+            for _ in 0..n {
+                r.next_u64();
+            }
+            let extra: f64 = (n..m)
+                .map(|_| {
+                    let (p, _) = play_out(
+                        &state,
+                        None,
+                        TeamType::Home,
+                        &mut home,
+                        &mut away,
+                        None,
+                        r.next_u64(),
+                        300,
+                    );
+                    p.outcome as f64
+                })
+                .sum();
+            let sum = (few as f64 * n as f64).round() + extra;
+            let topped = (sum / m as f64) as f32;
+            assert_eq!(
+                topped.to_bits(),
+                many.to_bits(),
+                "seed {seed}: {few} -> {topped} vs {many}"
+            );
+            nonzero += (many != 0.0) as u32;
+        }
+        // Not vacuous: some states' playouts must score.
+        assert!(nonzero > 0, "every label was 0: the test checks nothing");
+    }
+
     #[test]
     fn a_next_drive_record_finds_its_first_drive_in_any_order() {
         let meta = |seed: Option<u64>, drive: Option<&str>| {

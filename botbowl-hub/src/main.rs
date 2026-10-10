@@ -9,7 +9,7 @@ use botbowl_hub::api::{
     BotReq, EvalJobRequest, GenerateJobRequest, HubStatus, JobKind, JobRequest, JobState, JobStatus, LabelJobRequest,
     LabelShardReq, RungReq, ShardReq, Submitted, UnitStats,
 };
-use botbowl_hub::http::request;
+use botbowl_hub::http::{request, request_with_timeout};
 use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{BoardDims, Evaluator, GenerateConfig, SearchConfig};
 use botbowl_play::bots::{candidate_label, evaluator_label, load_mcts_config, CandidateBot};
@@ -905,7 +905,14 @@ fn main() {
             };
             let token = read_token(&token_path(&client.token_file));
             let body = serde_json::to_string(&req).unwrap();
-            let id = match request("POST", &format!("{}/api/jobs", client.hub), &token, Some(&body)) {
+            // A label job reads its shards before it answers: give the submit time.
+            let id = match request_with_timeout(
+                "POST",
+                &format!("{}/api/jobs", client.hub),
+                &token,
+                Some(&body),
+                Duration::from_secs(600),
+            ) {
                 Ok((200, body)) => serde_json::from_str::<Submitted>(&body).expect("submit json").id,
                 Ok((code, body)) => {
                     eprintln!("hub refused the job ({code}): {body}");
