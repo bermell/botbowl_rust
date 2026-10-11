@@ -28,7 +28,7 @@ ends (see the root CLAUDE.md).
 
 ### <a id="exp070"></a>exp070: the chance model (plan 061), planned 2026-10-09
 
-- **Status:** planned, not run.
+- **Status:** A1 + B1 started 2026-10-11 06:40 at the loop's plateau (gen21 drives not above gen18 on either board, value bench flat over gen19-21): `EXTERNAL_HUB=http://127.0.0.1:13337 NET=models/az_v7/bbnet_mix16x9v9_gen21.onnx ARMS="A1 B1" scripts/exp070_chance_model.sh`, on the loop's hub alongside gen22-23 (helper workers share it); gen21 both sides, cap 800 drives per board.
 - **Question:** the search still scripts three rolls.
   - A bounce onto a player is dropped, although the engine makes a standing player try to catch
     it.

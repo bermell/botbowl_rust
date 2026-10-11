@@ -12,6 +12,8 @@
 # Starts its own hub on PORT (default 13338, so it never meets the loop's 13337), one local worker
 # and one GPU sidecar. Protocol v18: a remote worker must be rebuilt at this commit to help.
 # Env: NET (gen13 .onnx), OUT (runs/exp070), PORT, STREAMS (12), CAP (800).
+# EXTERNAL_HUB=http://127.0.0.1:13337 submits the arms to an already-running hub of the same commit
+# (e.g. the loop's, so its helper workers share them) and starts no hub, worker or sidecar of its own.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${OUT:-$REPO/runs/exp070}"; case "$OUT" in /*) ;; *) OUT="$REPO/$OUT" ;; esac; mkdir -p "$OUT"
@@ -23,7 +25,7 @@ ARMS="${ARMS:-A1 A3 B1 B2 B3 B4 C1}"; B_WINNER="${B_WINNER:-chance_partial}"
 export BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR="$REPO/target/16x9"
 unset BLOOD_MCTS_BUDGET
 HUB="$CARGO_TARGET_DIR/release/botbowl-hub"; WORKER="$CARGO_TARGET_DIR/release/botbowl-worker"
-HUB_URL="http://127.0.0.1:$PORT"; TOK="$HOME/.config/botbowl/hub.token"; SOCK=/tmp/bbnn-exp070.sock
+HUB_URL="${EXTERNAL_HUB:-http://127.0.0.1:$PORT}"; TOK="$HOME/.config/botbowl/hub.token"; SOCK=/tmp/bbnn-exp070.sock
 PY="$REPO/train/.venv/bin/python"
 STATUS="$OUT/status.md"; status() { echo "[$(date '+%F %T')] $*" >> "$STATUS"; }; die() { status "FATAL: $*"; exit 1; }
 HUB_PID="" NN_PID="" WORKER_PID=""
@@ -31,15 +33,19 @@ cleanup() { for p in $WORKER_PID $NN_PID $HUB_PID; do kill "$p" 2>/dev/null; wai
 trap cleanup EXIT INT TERM
 git -C "$REPO" diff --quiet || die "dirty tree"
 status "start: commit $(git -C "$REPO" rev-parse --short HEAD), net $(basename "$NET"), arms $ARMS"
-cargo build --release -p botbowl-ui -p botbowl-hub -p botbowl-worker >> "$OUT/build.log" 2>&1 || die "build"
-"$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 && die "a hub already serves $HUB_URL"
-"$HUB" serve --bind "127.0.0.1:$PORT" --token-file "$TOK" --run-dir "$OUT" >> "$OUT/hub.log" 2>&1 & HUB_PID=$!
-for _ in $(seq 30); do "$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 && break; sleep 1; done
-"$PY" "$REPO/scripts/nn_server.py" --socket "$SOCK" --device cuda --model "$NET" --max-models 2 \
-    --stats-every 300 --canvas 11x18 >> "$OUT/nn_server.log" 2>&1 & NN_PID=$!
-for _ in $(seq 120); do [ -S "$SOCK" ] && break; sleep 1; done; [ -S "$SOCK" ] || die "nn_server"
-"$WORKER" --hub "ws://127.0.0.1:$PORT/ws" --token-file "$TOK" --name local --parallel-games "$STREAMS" \
-    --mem-floor-mb 1536 --cache-dir "$OUT/worker-cache" --nn-server "$SOCK" >> "$OUT/worker.log" 2>&1 & WORKER_PID=$!
+if [ -n "${EXTERNAL_HUB:-}" ]; then
+    "$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 || die "no hub at $HUB_URL"
+else
+    cargo build --release -p botbowl-ui -p botbowl-hub -p botbowl-worker >> "$OUT/build.log" 2>&1 || die "build"
+    "$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 && die "a hub already serves $HUB_URL"
+    "$HUB" serve --bind "127.0.0.1:$PORT" --token-file "$TOK" --run-dir "$OUT" >> "$OUT/hub.log" 2>&1 & HUB_PID=$!
+    for _ in $(seq 30); do "$HUB" status --hub "$HUB_URL" --token-file "$TOK" >/dev/null 2>&1 && break; sleep 1; done
+    "$PY" "$REPO/scripts/nn_server.py" --socket "$SOCK" --device cuda --model "$NET" --max-models 2 \
+        --stats-every 300 --canvas 11x18 >> "$OUT/nn_server.log" 2>&1 & NN_PID=$!
+    for _ in $(seq 120); do [ -S "$SOCK" ] && break; sleep 1; done; [ -S "$SOCK" ] || die "nn_server"
+    "$WORKER" --hub "ws://127.0.0.1:$PORT/ws" --token-file "$TOK" --name local --parallel-games "$STREAMS" \
+        --mem-floor-mb 1536 --cache-dir "$OUT/worker-cache" --nn-server "$SOCK" >> "$OUT/worker.log" 2>&1 & WORKER_PID=$!
+fi
 
 # drives NAME CANDIDATE_PRESET OPPONENT_PRESET SPRT
 drives() {
