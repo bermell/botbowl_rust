@@ -526,3 +526,24 @@ once they are scored, so the bias is transient, but it sits exactly at the front
 fill each unscored outcome with the parent player node's current Q (the player-node FPU idea) instead
 of renormalising: `Q = Σ_scored p_i Q_i + Σ_unscored p_j Q(parent)`. No extra net calls. Test as one
 exp070-style arm against `chance_all_partial` (SPRT 0.5:0.55, both boards) and a paired net check.
+
+## C1 in the loop: tree shape (2026-10-11)
+
+`scripts/tree_stats.py` on held-out shard 4, gen24 (last `gumbel16_f1000_gen` corpus) vs gen25 (first
+C1 corpus), ~17k kept decisions each (`runs/plan060/gen24_vs_gen25_c1_tree_stats.txt`):
+
+| | gen24 (old) | gen25 (C1) |
+|---|---|---|
+| mean leaf depth (plies) | 8.79 | 9.09 |
+| own decisions per line | 3.42 | **3.84** |
+| chance share of a line | 46.1% | **39.4%** |
+| main line length (plies) | 12.7 | **16.0** |
+| main line reaches the opponent's turn | 75.7% | 76.1% |
+| descents reaching the opponent's turn | 60.6% | 52.4% |
+| — at the turn-ending decision | 86.6% | 82.8% |
+| — with 10+ own decisions left | 40.5% | 26.2% |
+
+The partial backup moves budget from dice into the mover's own plan: more own decisions per line,
+less chance, a main line a quarter longer. Fewer descents reach the opponent's turn early in a long
+turn (the opponent is far away there), but the turn-ending decision still sees the reply in 83% of
+descents and the main line reaches it as often as before: healthy on plan 060 §3's terms.
