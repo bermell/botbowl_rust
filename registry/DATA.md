@@ -29,7 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
-| 24 | v9 gen23 | 8×400 (5751) | 194,240 | b13f105 (runtime stamp 6b5899a) | 48 local, 2 sidecars + laptop part; 147 min | the **last corpus under `gumbel16_f1000_gen`** (the C1 switch came at its end); MC labels via the hub 94 min |
+| 24 | v9 gen23 | 8×400 (5818) | 194,240 | b13f105 (runtime stamp 6b5899a) | 48 local, 2 sidecars + laptop part; 147 min | the **last corpus under `gumbel16_f1000_gen`** (the C1 switch came at its end); MC labels via the hub 94 min |
 | 23 | v9 gen22 | 8×400 (5802) | 191,500 | b13f105 (runtime stamp e259aeb) | 48 local, 2 sidecars + laptop 10; 142 min, shared with exp070 A1/B1 | TD/drive 0.855; MC labels via the hub 71 min (shared with exp070) |
 | 22 | v9 gen21 | 8×400 (5795) | 197,046 | b13f105 (runtime stamp of a later docs commit) | 48 local, 2 sidecars + laptop 10; 137 min, shared with gen21's drives | TD/drive 0.848 |
 | 21 | v9 gen20 | 8×400 (5777) | 195,606 | 3bb2b12 (runtime stamp; game code b13f105) | 48 local, 2 sidecars + laptop 10; 104 min | TD/drive 0.848; MC labels via the hub 48 min |
