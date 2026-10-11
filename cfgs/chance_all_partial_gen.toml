@@ -1,0 +1,13 @@
+# Plan 061 / exp070 C1 for generation: `gumbel16_f1000_gen` (Gumbel root m=16, q floor 1000, scale-1
+# root noise) with every corrected roll model under the partial chance backup. The eval twin is
+# `chance_all_partial.toml` (no root noise). Adopted by the v9 loop from gen25 (2026-10-11): C1 beat
+# `gumbel16_f1000` 0.567 / 0.566 (14x7 / 16x9, H1) and its net check stayed monotone
+# (+0.006 / +0.011 at 1000 / 4000 vs +0.006 / +0.008).
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+gumbel_scale = 1.0
+bounce_model = "catch"
+pass_scatter_model = "grouped"
+throw_in_model = "grouped"
+chance_backup = "partial"

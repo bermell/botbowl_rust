@@ -23,7 +23,10 @@ M="$REPO/models/az_v7"; INIT="$M/bbnet_mix16x9g056_gen04_v9.onnx"
 RUN="$REPO/runs/loopmix16x9v9"; mkdir -p "$RUN"   # = runs/loop$TIER, where train_loop.sh puts it
 LOG="$RUN/launch.log"; say() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 POS="$REPO/runs/loopmix16x9g/positions"
-GUMBEL_EVAL="$REPO/cfgs/gumbel16_f1000.toml"; GUMBEL_GEN="$REPO/cfgs/gumbel16_f1000_gen.toml"
+# Plan 061 / exp070 C1 (2026-10-11): every corrected roll model under the partial chance backup, for
+# generation, the benchmark (both sides) and the net check. Before: gumbel16_f1000{,_gen}.toml.
+GUMBEL_EVAL="$REPO/cfgs/chance_all_partial.toml"; GUMBEL_GEN="$REPO/cfgs/chance_all_partial_gen.toml"
+export NET_CHECK_CONFIG="$GUMBEL_EVAL"
 export BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR="$REPO/target/16x9"
 unset BLOOD_MCTS_BUDGET
 source "$REPO/scripts/lib/git.sh"

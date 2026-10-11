@@ -73,7 +73,8 @@ The arms of plan 061, each a `gumbel16_f1000` with one change, played against `g
 the same net: `chance_bounce`, `chance_pass`, `chance_throw_in` (roll models, complete backup),
 `chance_partial`, `chance_mass90`, `chance_sampled`, `chance_widen` (backup modes, shipped roll
 models) and `chance_all_partial` (every roll model under a partial backup; re-point its
-`chance_backup` at the winning mode). Environment spellings: `BLOOD_MCTS_BOUNCE=catch`,
+`chance_backup` at the winning mode). `chance_all_partial_gen` is its generation twin (adds scale-1 root
+noise); the v9 loop generates with it and benchmarks with `chance_all_partial` from gen25 (exp070 C1). Environment spellings: `BLOOD_MCTS_BOUNCE=catch`,
 `BLOOD_MCTS_PASS_SCATTER=grouped`, `BLOOD_MCTS_THROW_IN=grouped`,
 `BLOOD_MCTS_CHANCE_BACKUP=partial|mass|sampled|widen`, `BLOOD_MCTS_CHANCE_MASS`,
 `BLOOD_MCTS_CHANCE_WIDEN_C`, `BLOOD_MCTS_CHANCE_WIDEN_ALPHA`.
