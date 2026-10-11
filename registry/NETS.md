@@ -55,7 +55,8 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen20 | gen19 | gen18-20 | b13f105 (stamped 44b1109) | cq 100 | step 31000, ep 2 (0.8226) | −0.0019 / +0.0006 / −0.0007 / +0.0027 / +0.0007 | **0.195**, −0.007 (−0.9%, best of the run) | on gen21: +0.001/+0.002/+0.006/+0.012 MONOTONE; 0.35; 0.201, +0.004 |
 | gen21 | gen20 | gen19-21 | b13f105 (stamped 3bb2b12) | cq 100 | step 20000, ep 1 (0.8082) | −0.0024 / +0.0013 / +0.0011 / +0.0029 / +0.0007 | 0.196, +0.012 (+0.4%, flat) | on gen22: +0.000/+0.002/+0.003/+0.010 MONOTONE; 0.69; 0.211, −0.008 |
 | gen22 | gen21 | gen20-22 | b13f105 | cq 100 | **step 500, ep 0** (0.8011): the first val check was the best, so ~the warm start | −0.0009 / +0.0003 / −0.0004 / +0.0018 / −0.0008 | 0.197, −0.009 (+0.5%, flat) | on gen23: +0.001/+0.002/+0.006/+0.008 MONOTONE; 0.61; 0.197, +0.007 |
-| gen23 | gen22 | gen21-23 | b13f105 | cq 100 | step 27000, ep 2 (0.7918); 68 min (GPU shared with exp070's net check) | −0.0020 / −0.0003 / −0.0013 / +0.0032 / −0.0016 | 0.200, −0.001 (**+1.3%, worse**, ~3 SE) | (on gen24: pending) |
+| gen23 | gen22 | gen21-23 | b13f105 | cq 100 | step 27000, ep 2 (0.7918); 68 min (GPU shared with exp070's net check) | −0.0020 / −0.0003 / −0.0013 / +0.0032 / −0.0016 | 0.200, −0.001 (**+1.3%, worse**, ~3 SE) | on gen24 (old `gumbel16_f1000` config): +0.000/+0.000/+0.003/+0.007 MONOTONE; 0.46; 0.206, +0.009 |
+| gen24 | gen23 | gen22-24 | 6b5899a (relaunch onto C1 presets; training unchanged) | cq 100 | step 21000, ep 1 (0.7949) | −0.0028 / +0.0005 / −0.0016 / +0.0038 / −0.0030 | **0.196**, +0.007 (**−1.7%**) | (on gen25, the first C1 corpus: pending) |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
