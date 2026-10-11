@@ -30,7 +30,7 @@ ends (see the root CLAUDE.md).
 
 - **Status:** A1 + B1 started 2026-10-11 06:23 at the loop's plateau (gen21 drives not above gen18 on either board, value bench flat over gen19-21): `EXTERNAL_HUB=http://127.0.0.1:13337 NET=models/az_v7/bbnet_mix16x9v9_gen21.onnx ARMS="A1 B1" scripts/exp070_chance_model.sh`, on the loop's hub alongside gen22-23 (helper workers share it); gen21 both sides, cap 800 drives per board.
 - **A1 result (2026-10-11 08:54):** catch-aware bounces under today's complete backup lose on both boards: 14x7 0.474 ± 0.012, 16x9 0.476 ± 0.012 (400 pairs each, ~2 SE below 0.5; the not-worse SPRT 0.47:0.5 stayed undecided at the cap). Not adopted alone. Consistent with the arm-0 telemetry: the wider bounce node eats budget in dice under `complete` (main line reaching the opponent's turn 73% → 43%). Revisit under the winning backup in C1.
-- **B1 result (2026-10-11 09:21):** the partial chance backup wins 14x7, 0.552 ± 0.016 (H1, 121 pairs); 16x9 stopped at H0 after only 18 pairs (0.430 ± 0.045), too few to read. Follow-up B1b: 16x9 alone, 300 fixed pairs, no SPRT.
+- **B1 result (2026-10-11 09:21):** the partial chance backup wins 14x7, 0.552 ± 0.016 (H1, 121 pairs); 16x9 stopped at H0 after only 18 pairs (0.430 ± 0.045), too few to read. Follow-up B1b: 16x9 alone, 300 fixed pairs, no SPRT, seed 1: **0.517 ± 0.014** (not worse, +1.2 SE). Verdict: partial wins 14x7 and holds 16x9; it is the B winner for C1 (B2-B4 not run yet).
 - **Question:** the search still scripts three rolls.
   - A bounce onto a player is dropped, although the engine makes a standing player try to catch
     it.

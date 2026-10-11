@@ -21,6 +21,7 @@ Defaults unless a row says otherwise:
 |---|---|---|---|---|---|---|
 | A1 `chance_bounce` (catch-aware bounces, complete backup) | `gumbel16_f1000` | 0.474 ± 0.012 (undecided, 400 pairs) | 0.476 ± 0.012 (undecided, 400 pairs) | 0.47:0.5 | cef999e (game code b13f105) | 2026-10-11 |
 | B1 `chance_partial` (partial chance backup) | `gumbel16_f1000` | **0.552 ± 0.016 (H1, 121 pairs)** | 0.430 ± 0.045 (H0 after only 18 pairs: an early stop, unresolved) | 0.5:0.55 | cef999e | 2026-10-11 |
+| B1b `chance_partial` (16x9 re-run, seed 1) | `gumbel16_f1000` | — | **0.517 ± 0.014 (300 fixed pairs)** | none | cef999e | 2026-10-11 |
 
 ### Policy-only lineage (plan 059; `runs/exp069/po_lineage/run.sh`; botbowl-ui at 3c25109, tract on the CPU)
 
