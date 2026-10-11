@@ -172,6 +172,26 @@ H0, both within ~1.5 SE of 0.5).
   caught up to where it started" can't be told apart.
 - The cheap fix is one drive match, the init net vs the anchor, under the same settings.
 
+
+**2026-10-11, the fine-tune barely moves its own validation loss (read at gen22).** Within one
+generation's training (lr 5e-5, 3 epochs, ~33k steps on the 3-gen window), val_policy / val_value
+change by about 0.1% from the first check (step 250) to the end, in every generation looked at:
+
+| gen | val_policy step 250 → final | val_value warm start → final | restored |
+|---|---|---|---|
+| 07 | 0.7992 → 0.7979 | 0.0941 → 0.0933 | step 23000 |
+| 13 | 0.7861 → 0.7863 | 0.0911 → 0.0909 | step 27000 |
+| 19 | 0.7449 → 0.7461 | 0.0872 → 0.0903 | step 13000 |
+| 21 | 0.7209 → 0.7208 | 0.0875 → 0.0878 | step 20000 |
+| 22 | 0.7138 → 0.7148 | 0.0878 → 0.0878 | **step 500** |
+
+Training loss is flat too (0.71-0.73 throughout gen22), so this is not overfitting: the step is too
+small to move the net, or the 64x6 net has no capacity left for these targets. The generation-to-
+generation fall in val_policy (0.80 → 0.71) is mostly the val set changing, not training. This fits
+plan 054 (the train step absorbs little) and the absorption probe (ΔP(played) ~+0.001/gen); the
+loop's gains come slowly through the value head. Levers: the rebalance / τ experiment (registry
+"Gradient balance"), a learning-rate or schedule change, a wider net.
+
 ## 7. Search CPU: profiled and cut by 76% (2026-10-07)
 
 The user enabled `perf` (`kernel.perf_event_paranoid=1`) and installed heaptrack/valgrind
