@@ -515,3 +515,14 @@ Also:
   IJCAI (2013).
 - I. Antonoglou, J. Schrittwieser, S. Ozair, T. Hubert, D. Silver, "Planning in stochastic
   environments with a learned model" (Stochastic MuZero), ICLR (2022).
+
+## Next idea: a parent-filled partial backup (not built)
+
+Under `partial` (adopted, exp070 C1) a chance node's value after its first visit is the likeliest
+outcome alone (`Q = Q(pass)` on a 60/40 dodge, renormalised over the scored outcomes), so a frontier
+chance node visited once reads as its likely case — optimistic for the rolls the mover chooses to
+take. The sweep visits the other outcomes next and the mean backup recomputes every ancestor exactly
+once they are scored, so the bias is transient, but it sits exactly at the frontier. Candidate mode:
+fill each unscored outcome with the parent player node's current Q (the player-node FPU idea) instead
+of renormalising: `Q = Σ_scored p_i Q_i + Σ_unscored p_j Q(parent)`. No extra net calls. Test as one
+exp070-style arm against `chance_all_partial` (SPRT 0.5:0.55, both boards) and a paired net check.
