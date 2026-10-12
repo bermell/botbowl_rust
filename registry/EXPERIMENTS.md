@@ -26,7 +26,7 @@ ends (see the root CLAUDE.md).
   is a throughput question for the GPU box plus the laptop, to be read off the first generation's
   phase minutes against the local ~95.
 
-### <a id="exp071"></a>exp071: the train step (rebalance, learning rate), planned 2026-10-12
+### <a id="exp071"></a>exp071: the train step (rebalance, learning rate), run 2026-10-12
 
 - **Question:** the loop's fine-tune barely moves its own validation loss (plan 058, gen07-22) and the
   policy absorbs ~+0.001 P(played) per generation. Does rebalancing the losses (the gradient probe:
@@ -38,7 +38,23 @@ ends (see the root CLAUDE.md).
   Control: the loop's own gen27. The loop pauses for the arms (~2-2.5 h of GPU) and the script
   relaunches it. Scored by: the trainer's val movement, absorption on gen27's held-out shards (cq-100
   target for all), the value bench paired vs gen26.
-- **Status:** planned; runs when gen27 has trained (2026-10-12 morning).
+- **Result (2026-10-12 08:52-10:47, commit 630c8d4):**
+
+  | arm | best step | value bench vs gen26 | Δ log P(played) | Δ P(played) | Δ top-1 | Δ val MSE (gen27 held-out) |
+  |---|---|---|---|---|---|---|
+  | loop gen27 (control: τ 100, vw 0.25, lr 5e-5) | 10000 (ep 0) | −0.3% | −0.0026 | −0.0002 | −0.0003 | −0.0006 |
+  | `tau50_vw36` | 7000 (ep 0) | **+1.2%** (worse) | +0.0022 | −0.0021 | −0.0001 | −0.0007 |
+  | **`tau100_vw36`** | 29000 (ep 2) | **−1.5%** | −0.0026 | **+0.0011** | −0.0013 | −0.0008 |
+  | `lr1e4` | 1000 (ep 0) | +0.6% | −0.0042 | −0.0016 | −0.0014 | +0.0011 |
+
+  Within-run val still barely moves in every arm (val_policy step 250 → final: +0.0005 to +0.0011).
+- **Conclusion:** **value weight 0.36 at τ=100 is better** (value bench −1.5% against the control's
+  −0.3% on the same step, ~3 SE apart; the only arm with P(played) up; it kept improving into epoch 2).
+  Adopted by the loop from gen28's training (`launch_plan058.sh`, `VALUE_WEIGHT=0.36`). **The rebalance
+  does not rescue τ=50:** its value head still loses 1.2%, so τ=50's cost is the sharper target itself
+  (it amplifies sub-0.1-TD Q noise), not gradient competition. **A larger step (lr 1e-4) is worse on
+  every number:** the bottleneck is not step size. Next levers: the target's noise (sharpen only where
+  the Q gap beats its uncertainty), net capacity.
 
 ### <a id="exp070"></a>exp070: the chance model (plan 061), run 2026-10-11, adopted
 

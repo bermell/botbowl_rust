@@ -52,6 +52,9 @@ export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=o
 # every generation, as AlphaZero does; play (drives, net check) judges whether it helped.
 export TRAIN_EXTRA_ARGS="--freeze-bn --eval-at 250,500"
 export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=96 NEXT_DRIVE=1 DRIVE_EVAL_EVERY=3
+# exp071 (2026-10-12): value weight 0.36 at cq tau 100 — value bench -1.5% vs the 0.25 control's -0.3%
+# on the same step, P(played) +0.0011 vs -0.0002. From gen28's training on.
+export VALUE_WEIGHT=0.36
 # Plan 062: the mc-label phase runs as a hub job (`botbowl-hub job label`), so helper workers share it.
 export LABEL_VIA_HUB=1
 export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
