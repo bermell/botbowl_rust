@@ -26,6 +26,20 @@ ends (see the root CLAUDE.md).
   is a throughput question for the GPU box plus the laptop, to be read off the first generation's
   phase minutes against the local ~95.
 
+### <a id="exp071"></a>exp071: the train step (rebalance, learning rate), planned 2026-10-12
+
+- **Question:** the loop's fine-tune barely moves its own validation loss (plan 058, gen07-22) and the
+  policy absorbs ~+0.001 P(played) per generation. Does rebalancing the losses (the gradient probe:
+  policy ~3x value at the trunk at τ=100, 4.2x at τ=50) or a larger step move the net more without
+  costing the value head?
+- **Setup:** `scripts/exp071_train_step.sh` (commit in the status file). Parent v9 gen26, the window the
+  loop's gen27 trains on (gen25-27, all C1 corpora, MC labels), the loop's recipe with one change per
+  arm: `tau50_vw36` (cq τ=50, value weight 0.36), `tau100_vw36` (value weight 0.36), `lr1e4` (lr 1e-4).
+  Control: the loop's own gen27. The loop pauses for the arms (~2-2.5 h of GPU) and the script
+  relaunches it. Scored by: the trainer's val movement, absorption on gen27's held-out shards (cq-100
+  target for all), the value bench paired vs gen26.
+- **Status:** planned; runs when gen27 has trained (2026-10-12 morning).
+
 ### <a id="exp070"></a>exp070: the chance model (plan 061), run 2026-10-11, adopted
 
 - **Status:** A1 + B1 started 2026-10-11 06:23 at the loop's plateau (gen21 drives not above gen18 on either board, value bench flat over gen19-21): `EXTERNAL_HUB=http://127.0.0.1:13337 NET=models/az_v7/bbnet_mix16x9v9_gen21.onnx ARMS="A1 B1" scripts/exp070_chance_model.sh`, on the loop's hub alongside gen22-23 (helper workers share it); gen21 both sides, cap 800 drives per board.
