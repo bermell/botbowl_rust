@@ -60,6 +60,7 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen25 | gen24 | gen23-25 (gen25 = first C1 corpus) | 6b5899a | cq 100 | step 15000, ep 1 (0.7824) | −0.0013 / +0.0004 / −0.0005 / +0.0026 / +0.0044 | **0.194**, +0.000 (**−1.2%**, best of the run) | on gen26 (C1): +0.002/+0.004/+0.008/+0.011 MONOTONE; 0.65; 0.201, −0.010 |
 | gen26 | gen25 | gen24-26 | 6b5899a | cq 100 | step 23000, ep 2 (0.7805) | −0.0024 / +0.0018 / −0.0001 / +0.0025 / −0.0026 | 0.195, +0.000 (+0.5%, flat) | on gen27 (C1): +0.002/+0.005/+0.004/+0.010 MONOTONE; 1.05; 0.193, −0.014 |
 | gen27 | gen26 | gen25-27 (all C1) | 630c8d4 | cq 100 | step 10000, ep 0 (0.7608) | −0.0026 / −0.0002 / −0.0003 / +0.0034 / −0.0016 | 0.194, +0.009 (−0.3%) | on gen28 (C1): +0.002/+0.005/+0.009/+0.012 MONOTONE; **1.21**; 0.194, +0.003 |
+| gen28 | gen27 | gen26-28 (C1) | 3599c01 | cq 100, **value weight 0.36** (first) | step 22000, ep 1 (0.7567) | −0.0010 / +0.0010 / −0.0008 / +0.0032 / +0.0011 | 0.194, −0.010 (±0.0%, flat) | (on gen29: pending) |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
