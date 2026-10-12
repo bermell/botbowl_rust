@@ -55,6 +55,9 @@ export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=96 NEXT_DRIVE=1 DRI
 # exp071 (2026-10-12): value weight 0.36 at cq tau 100 — value bench -1.5% vs the 0.25 control's -0.3%
 # on the same step, P(played) +0.0011 vs -0.0002. From gen28's training on.
 export VALUE_WEIGHT=0.36
+# Keep training while it improves (the user, 2026-10-12): the cap is a backstop, not a plan. When the
+# drive benchmark and value bench stall, the next step is a bigger net (see memory / plan 058).
+export MAX_GENS=60
 # Plan 062: the mc-label phase runs as a hub job (`botbowl-hub job label`), so helper workers share it.
 export LABEL_VIA_HUB=1
 export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
