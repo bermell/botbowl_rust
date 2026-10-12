@@ -54,6 +54,7 @@ Defaults unless a row says otherwise:
 
 | A | vs B | 14x7 | 16x9 | commit | date |
 |---|---|---|---|---|---|
+| v9 gen27 (C1 both sides) | d1k gen04 v9 | 0.531 ± 0.012 (H1, 358 pairs) | 0.576 ± 0.028 (H1, 85 pairs) | 630c8d4 | 2026-10-12 |
 | v9 gen24 (**C1 search on both sides** from here: `chance_all_partial`) | d1k gen04 v9 | 0.534 ± 0.026 (H1, 44 pairs) | 0.570 ± 0.029 (H1, 75 pairs) | 6b5899a | 2026-10-11 |
 | v9 gen21 | d1k gen04 v9 | 0.513 ± 0.014 (H0, 334 pairs) | 0.572 ± 0.025 (H1, 115 pairs) | b13f105 (stamped 3bb2b12) | 2026-10-11 |
 | v9 gen18 | d1k gen04 v9 | 0.521 ± 0.013 (undecided at 400 pairs, LLR −1.10) | 0.582 ± 0.038 (H1 after only 26 pairs: an early SPRT stop, wide) | b13f105 | 2026-10-10 |
