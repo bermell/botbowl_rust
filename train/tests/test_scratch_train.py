@@ -99,9 +99,12 @@ def test_training_runs_with_loader_workers(tmp_path, capsys):
 
 
 # sha256 over the weights of the two seeded runs below, as trained by the code before plan 063
-# (6f0bb7a, torch 2.13.0, CPU): the new options at their defaults must not move a single bit —
-# including the RNG draws the old per-board val passes made.
-OLD_RUNS = "8d81abc643efb1c4f4fab0eb7b574095dc534f0cb7156d090bfedb2490c6788b"
+# (6f0bb7a, torch 2.13.0, CPU, one intra-op thread): the new options at their defaults must not move
+# a single bit — including the RNG draws the old per-board val passes made. The CPU kernels' float
+# reductions depend on the thread count (the digest differs between 1, 2 and 8 threads, for the old
+# code exactly as for the new), so the test pins torch to one thread rather than inherit
+# OMP_NUM_THREADS / the core count.
+OLD_RUNS = "ecd03d1b46830e1a601bacfdbcdf4f2bbf6b62e1a2d9d3e16dbc56ba22773c84"
 
 
 @pytest.mark.skipif(not torch.__version__.startswith("2.13."), reason="digest pinned at torch 2.13")
@@ -109,6 +112,21 @@ def test_seeded_runs_train_the_same_weights_as_before_plan_063(tmp_path):
     import hashlib
 
     data, val = _corpus(tmp_path)
+    threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        m1, m2 = _two_seeded_runs(data, val, tmp_path)
+    finally:
+        torch.set_num_threads(threads)
+    h = hashlib.sha256()
+    for m in (m1, m2):
+        for k, v in m.state_dict().items():
+            h.update(k.encode())
+            h.update(v.contiguous().numpy().tobytes())
+    assert h.hexdigest() == OLD_RUNS
+
+
+def _two_seeded_runs(data, val, tmp_path):
     torch.manual_seed(5)
     init = tmp_path / "init.pt"
     torch.save(BBNet(width=8, blocks=2).state_dict(), init)
@@ -116,12 +134,7 @@ def test_seeded_runs_train_the_same_weights_as_before_plan_063(tmp_path):
                device="cpu", select_on="combined", batch_size=8, per_drive_value_weight=True, value_weight=0.36)
     m2 = train(data, val_dir=val, init=init, epochs=2, eval_every=7, lr=2e-4, seed=1, device="cpu",
                select_on="combined", batch_size=8, freeze_bn=True, per_drive_value_weight=True)
-    h = hashlib.sha256()
-    for m in (m1, m2):
-        for k, v in m.state_dict().items():
-            h.update(k.encode())
-            h.update(v.contiguous().numpy().tobytes())
-    assert h.hexdigest() == OLD_RUNS
+    return m1, m2
 
 
 def test_a_warm_start_keeps_the_init_shape_over_the_flags(tmp_path, capsys):

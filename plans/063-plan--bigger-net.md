@@ -77,8 +77,13 @@ net's heads; `--init` fixes the shape from its weights instead), `--lr-schedule 
 - **Validation is one pass now.** A mixed corpus was validated twice: once pooled, once per board.
   `evaluate_by_group` gets both from the pooled pass (each batch is one board; its shape names it),
   bit-identical numbers at half the cost. It draws the RNG the old per-board passes drew, so seeded
-  runs keep their trajectory. The loop gets this at its next relaunch: its 64x6 fine-tune spends
-  most of its ~39 min in 36 validations of 119k samples, twice each.
+  runs keep their trajectory. The loop gets this at its next train phase after the merge (each phase
+  starts a fresh `python -m bbnn.train` on the main checkout's `train/src`; no relaunch): its 64x6
+  fine-tune spends most of its ~39 min in 36 validations of 119k samples, twice each. Checked
+  2026-10-13 on real data: the loop's exact fine-tune flags (`--init` gen30, lr 5e-5, `--freeze-bn
+  --eval-at 250,500 --eval-every 1000 --select-on combined --value-weight 0.36
+  --per-drive-value-weight`, seeded, CPU) on one gen30 MC shard pair print the same log and save
+  byte-identical `.pt` and `.onnx` under the old and the new trainer.
 - **The loader was the bottleneck.** Measured on this box with the loop running: the single-process
   loader serves 2.4k samples/s at batch 32 and 2.9k at 256; 4 workers 9.8k/s. The loop's train phase
   (1.09 M train + 8.6 M val samples in 39 min) is consistent with being loader-bound.
@@ -161,7 +166,10 @@ an unfinished arm retrains from scratch):
 4. `bench`: sidecar forward cost per arm and gen31; `absorb`: `absorb_probe.py --summary` on the
    gen31 test set, every arm against gen31 (CE, KL, log P(played), top-1, value MSE vs the MC label);
    `vbench`: `value_bench.sh` on `runs/value_bench/v9_gen01_val.jsonl`, paired vs gen31;
-5. relaunches the loop only with `RELAUNCH=1` (then the drives share its hub);
+5. relaunches the loop only with `RELAUNCH=1` (then the drives share its hub); a manual relaunch
+   must `rm runs/loopmix16x9v9/STOP` first, or the loop exits at its first phase boundary. A rerun
+   whose GPU phases are all done (every arm trained, benched, with a row in `absorb.txt` and the
+   value bench summary) skips the GPU wait, so the drives can resume with the loop running;
 6. `drives`: each arm vs the loop's gen31, C1 (`cfgs/chance_all_partial.toml`) both sides, 1000
    descents, both contested position sets (`runs/loopmix16x9g/positions/contested_{14x7,16x9}_gen04g.json`),
    SPRT 0.5:0.55, at most 800 drives per board. On the loop's hub if one answers on :13337, else on a

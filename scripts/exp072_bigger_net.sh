@@ -115,8 +115,28 @@ fi
 # ---- 2. wait for the GPU ------------------------------------------------------------------------------
 loop_running() { ps -eo args= | grep -q '^bash scripts/train_loop\.s[h]'; }
 gpu_busy() { [ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null)" ]; }
-GPU_PHASES=0; for p in train bench absorb vbench; do has "$p" && GPU_PHASES=1; done
-if [ "$GPU_PHASES" = 1 ]; then
+trained_arms() { local a; for a in $ARMS; do [ -e "$OUT/$a/.trained" ] && echo "$a"; done; }
+# has_rows FILE PREFIX NAME...: FILE has a line starting with PREFIX NAME and a space for every NAME
+# (absorb_probe's table rows, value_bench's "== name" headers) — a failed or a smaller run does not.
+has_rows() {
+    local f="$1" pre="$2" n; shift 2
+    [ -s "$f" ] || return 1
+    for n in "$@"; do grep -q "^$pre$n " "$f" || return 1; done
+}
+absorb_done() { has_rows "$OUT/absorb.txt" "" loop31 $(trained_arms); }
+vbench_done() { has_rows "$OUT/value_bench/summary.txt" "== " loop31 $(trained_arms); }
+# Whether a requested GPU phase still has work. A resume whose GPU phases are all done (say, only the
+# drives are left after RELAUNCH=1 brought the loop back) must not wait for the loop to exit again.
+gpu_work_left() {
+    local a
+    if has train; then for a in $ARMS; do [ -e "$OUT/$a/.trained" ] || return 0; done; fi
+    if has bench; then for a in loop31 $(trained_arms); do [ -s "$OUT/bench.$a.txt" ] || return 0; done; fi
+    [ -n "$(trained_arms)" ] || return 1
+    if has absorb && ! absorb_done; then return 0; fi
+    if has vbench && ! vbench_done; then return 0; fi
+    return 1
+}
+if gpu_work_left; then
     n=0
     while loop_running || gpu_busy; do
         [ $((n % 30)) -eq 0 ] && status "waiting for the loop to exit and the GPU to be free (stop it: scripts/stop_after.sh or STOP_LOOP=1)"
@@ -157,17 +177,22 @@ if has bench; then
     for n in loop31 "${NETS[@]}"; do
         f="$OUT/bench.$n.txt"; [ -s "$f" ] && continue
         net="$OUT/$n/net.onnx"; [ "$n" = loop31 ] && net="$LOOP31.onnx"
-        "$PY" scripts/nn_server.py --bench --device cuda --model "$net" --warm-sizes 11x18 --max-batch 32 > "$f" 2>&1 \
-            || status "WARN: bench $n failed — see $f"
+        # Through a .tmp, so a failed bench is retried on a resume instead of passing for done.
+        if "$PY" scripts/nn_server.py --bench --device cuda --model "$net" --warm-sizes 11x18 --max-batch 32 > "$f.tmp" 2>&1; then
+            mv "$f.tmp" "$f"
+        else
+            status "WARN: bench $n failed — see $f.tmp"
+        fi
     done
     status "inference cost (sidecar --bench, 11x18, graph path):"
     for n in loop31 "${NETS[@]}"; do
+        [ -s "$OUT/bench.$n.txt" ] || continue
         status "  $n: $(grep -E 'fit 11x18 graph' "$OUT/bench.$n.txt" | sed 's/.*graph: //') | $(grep -E 'batch +(12|24):' "$OUT/bench.$n.txt" | sed -E 's/.*batch +([0-9]+):.*graph +([0-9]+) us\/batch \( *([0-9.]+) us\/sample\).*/b\1 \3 us\/sample/' | paste -sd' ')"
     done
 fi
 
 # ---- 5. absorption on the gen31 test set --------------------------------------------------------------
-if has absorb && [ ! -s "$OUT/absorb.txt" ] && [ "${#NETS[@]}" -gt 0 ]; then
+if has absorb && ! absorb_done && [ "${#NETS[@]}" -gt 0 ]; then
     ARGS=("loop31=$LOOP31.pt"); for n in "${NETS[@]}"; do ARGS+=("$n=$OUT/$n/net.pt"); done
     "$PY" scripts/absorb_probe.py --summary --device cuda --val "$OUT/prepared_test" "${ARGS[@]}" > "$OUT/absorb.txt" 2>&1 \
         || status "WARN: absorption probe failed — see $OUT/absorb.txt"
@@ -176,7 +201,7 @@ if has absorb && [ ! -s "$OUT/absorb.txt" ] && [ "${#NETS[@]}" -gt 0 ]; then
 fi
 
 # ---- 6. value bench -----------------------------------------------------------------------------------
-if has vbench && [ ! -s "$OUT/value_bench/summary.txt" ] && [ "${#NETS[@]}" -gt 0 ]; then
+if has vbench && ! vbench_done && [ "${#NETS[@]}" -gt 0 ]; then
     ARGS=("loop31=$LOOP31.onnx"); for n in "${NETS[@]}"; do ARGS+=("$n=$OUT/$n/net.onnx"); done
     scripts/value_bench.sh "$VBENCH" "$OUT/value_bench" "${ARGS[@]}" > "$OUT/value_bench.log" 2>&1 \
         || status "WARN: value bench failed — see $OUT/value_bench.log"
@@ -185,7 +210,8 @@ fi
 
 if [ "$KEEP_PREPARED" != 1 ] && [ -e "$OUT/.prepared" ] && has train && has absorb; then
     all=1; for a in $ARMS; do [ -e "$OUT/$a/.trained" ] || all=0; done
-    if [ "$all" = 1 ] && [ -s "$OUT/absorb.txt" ]; then
+    # Only once the probe has every arm's row: a failed probe leaves its traceback in absorb.txt.
+    if [ "$all" = 1 ] && absorb_done; then
         rm -rf "$OUT"/prepared_*; rm -f "$OUT/.prepared"; status "prepared dirs removed (KEEP_PREPARED=1 keeps them)"
     fi
 fi
