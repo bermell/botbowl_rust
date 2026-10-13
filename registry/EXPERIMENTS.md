@@ -8,10 +8,9 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
-### <a id="exp072"></a>exp072: a bigger net from scratch on the clean v9 corpora (plan 063), planned 2026-10-13
+### <a id="exp072"></a>exp072: a bigger net from scratch on the clean v9 corpora (plan 063), started 2026-10-13
 
-- **Status:** planned; code and script built 2026-10-13, not run (needs the loop stopped after gen31's
-  training, ~18 h of GPU for the three trainings plus the drives).
+- **Status:** started 2026-10-13 08:35 at e647d02 (`RELAUNCH=1 scripts/exp072_bigger_net.sh`, the loop stopped by `scripts/stop_after.sh "gen31 train done"`); the loop relaunches after the GPU phases and the drives share its hub. The user chose 96x8 and asked to test bigger heads (2026-10-13).
 - **Question:** is the 64x6 net the ceiling now? Does a 96x8 trunk, with or without bigger heads,
   trained from scratch on every clean v9 corpus beat the loop's gen31 in play — and does a 64x6
   trained the same way (the control) already do so?
