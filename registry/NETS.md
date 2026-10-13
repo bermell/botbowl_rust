@@ -62,7 +62,8 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen27 | gen26 | gen25-27 (all C1) | 630c8d4 | cq 100 | step 10000, ep 0 (0.7608) | −0.0026 / −0.0002 / −0.0003 / +0.0034 / −0.0016 | 0.194, +0.009 (−0.3%) | on gen28 (C1): +0.002/+0.005/+0.009/+0.012 MONOTONE; **1.21**; 0.194, +0.003 |
 | gen28 | gen27 | gen26-28 (C1) | 3599c01 | cq 100, **value weight 0.36** (first) | step 22000, ep 1 (0.7567) | −0.0010 / +0.0010 / −0.0008 / +0.0032 / +0.0011 | 0.194, −0.010 (±0.0%, flat) | on gen29 (C1): +0.002/+0.004/+0.007/+0.008 MONOTONE; 0.91; 0.190, −0.005 |
 | gen29 | gen28 | gen27-29 (C1) | 3599c01 | cq 100, vw 0.36 | step 9000, ep 0 (0.7432) | −0.0028 / +0.0002 / −0.0012 / +0.0025 / −0.0022 | 0.195, +0.009 (+0.6%) | on gen30 (C1): +0.003/+0.004/+0.006/+0.006 MONOTONE; 0.74; 0.203, +0.008 |
-| gen30 | gen29 | gen28-30 (C1) | 3599c01 | cq 100, vw 0.36 | step 25000, ep 2 (0.7440) | −0.0019 / +0.0003 / −0.0000 / +0.0029 / +0.0019 | 0.195, +0.025 (−0.3%) | (on gen31: pending) |
+| gen30 | gen29 | gen28-30 (C1) | 3599c01 | cq 100, vw 0.36 | step 25000, ep 2 (0.7440) | −0.0019 / +0.0003 / −0.0000 / +0.0029 / +0.0019 | 0.195, +0.025 (−0.3%) | on gen31 (C1): +0.002/+0.004/+0.008/+0.011 MONOTONE; 1.09; 0.184, +0.011 |
+| gen31 | gen30 | gen29-31 (C1) | 3599c01 | cq 100, vw 0.36 | step 33000, ep 2 (0.7353) | −0.0038 / +0.0008 / −0.0015 / +0.0028 / −0.0005 | **0.192**, +0.014 (**−1.3%**, best of the run) | (on gen32: pending); exp072's reference net |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
