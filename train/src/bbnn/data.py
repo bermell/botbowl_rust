@@ -226,12 +226,19 @@ def open_prepared(path, augment=False):
     return MultiDimsDataset(dirs, augment=augment)
 
 
-def make_loader(ds, batch_size, shuffle):
+def make_loader(ds, batch_size, shuffle, workers=0):
     """The `DataLoader` that fits ``ds``: a per-group batch sampler for a
-    mixed corpus, the plain shuffled loader otherwise."""
+    mixed corpus, the plain shuffled loader otherwise.
+
+    ``workers`` > 0 (plan 063) loads batches in that many forked processes, kept alive across
+    epochs. The batch order still comes from the sampler in the main process, so it changes only
+    where the loading happens; the y-flip augmentation draws from each worker's own seeded RNG."""
+    kw = {"num_workers": workers, "persistent_workers": True, "prefetch_factor": 4} if workers else {}
     if isinstance(ds, MultiDimsDataset):
-        return DataLoader(ds, batch_sampler=PerDimsBatchSampler(ds, batch_size, shuffle=shuffle), collate_fn=collate)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, collate_fn=collate)
+        return DataLoader(
+            ds, batch_sampler=PerDimsBatchSampler(ds, batch_size, shuffle=shuffle), collate_fn=collate, **kw
+        )
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, collate_fn=collate, **kw)
 
 
 def collate(batch):

@@ -9,6 +9,7 @@ check, not a quality metric.
 
 import argparse
 import json
+import math
 import os
 import random
 import time
@@ -17,9 +18,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
-from .data import MultiDimsDataset, PreparedDataset, collate, make_loader, open_prepared
+from .data import MultiDimsDataset, make_loader, open_prepared
 from .export import export_onnx
 from .model import BBNet, masked_policy_logits, check_schema
 
@@ -165,18 +165,54 @@ def evaluate(model, loader, device, per_drive_value_weight=False):
     ends each group on a short batch, and weighting those equally with full
     ones would tilt the pooled number toward the smallest board.
     """
+    return evaluate_by_group(model, loader, device, per_drive_value_weight)[0]
+
+
+def evaluate_by_group(model, loader, device, per_drive_value_weight=False):
+    """`evaluate`, plus the same numbers per board shape from the same pass.
+
+    Returns ``(pooled, {"dims_WxH": (policy, value, top1)})``. A mixed corpus's loader
+    (`PerDimsBatchSampler`, unshuffled) draws every batch from one board, so a batch's spatial
+    shape names its group, and each group's batches are exactly the ones a per-group loader would
+    cut. Both totals therefore accumulate the same additions in the same order as separate passes
+    would — bit-identical numbers (`test_scratch_train.py`) at half the cost of the pooled pass plus
+    one pass per board, which is what the trainer ran before plan 063.
+    """
     model.eval()
-    tot_p = tot_v = tot_a = 0.0
-    n = 0
+    pooled = [0.0, 0.0, 0.0, 0]
+    groups = {}
     with torch.no_grad():
         for batch in loader:
             pl, _, acc, vl = compute_losses(model, batch, device, per_drive_value_weight)
             b = batch["value"].shape[0]
-            tot_p += pl.item() * b
-            tot_v += vl.item() * b
-            tot_a += acc.item() * b
-            n += b
-    return tot_p / n, tot_v / n, tot_a / n
+            h, w = batch["spatial"].shape[2:]
+            g = groups.setdefault(f"dims_{w}x{h}", [0.0, 0.0, 0.0, 0])
+            for t in (pooled, g):
+                t[0] += pl.item() * b
+                t[1] += vl.item() * b
+                t[2] += acc.item() * b
+                t[3] += b
+
+    def mean(t):
+        return t[0] / t[3], t[1] / t[3], t[2] / t[3]
+
+    return mean(pooled), {k: mean(t) for k, t in groups.items()}
+
+
+def lr_factor(step, total, warmup, min_ratio=0.0):
+    """Plan 063's from-scratch schedule as a multiple of the peak lr, for optimizer step ``step``
+    (0-based: the factor applied to the update that makes it step ``step + 1``).
+
+    Linear warmup over ``warmup`` steps to 1, then a half cosine from 1 down to ``min_ratio`` at
+    ``total``. A fresh net under Adam at the peak lr from step 0 takes its largest steps while the
+    moment estimates are still noise; the decay to ~0 lets the last epochs settle instead of
+    bouncing at the peak lr (the restore then has a quiet end of run to choose from).
+    """
+    if warmup and step < warmup:
+        return (step + 1) / warmup
+    span = max(1, total - warmup)
+    progress = min(1.0, (step - warmup) / span)
+    return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
 def describe_data(tag, ds):
@@ -213,7 +249,17 @@ def train(
     freeze_bn=False,
     init_candidate=False,
     eval_at=(),
+    value_conv=32,
+    value_hidden=64,
+    value_pool="mean",
+    policy_conv=0,
+    lr_schedule="constant",
+    warmup_steps=0,
+    min_lr=0.0,
+    loader_workers=0,
 ):
+    if lr_schedule not in ("constant", "cosine"):
+        raise ValueError(f"lr_schedule must be constant or cosine, got {lr_schedule!r}")
     if freeze_bn and init is None:
         raise ValueError("--freeze-bn needs --init: a fresh net's running statistics are just 0 and 1")
     # Before anything that draws: the shuffle order, the augmentation flips,
@@ -235,7 +281,10 @@ def train(
         ds.value = ds.value[:limit]
         ds.chosen = ds.chosen[:limit]
         ds.offsets = ds.offsets[: limit + 1]
-    loader = make_loader(ds, batch_size, shuffle=True)
+    # Plan 063: `loader_workers` > 0 loads batches in that many worker processes. Today's
+    # single-process loader (~2.4-4k samples/s) is what the loop's train phase waits on, and a
+    # 96x8 net from scratch on ~2.7M samples would wait on it for hours.
+    loader = make_loader(ds, batch_size, shuffle=True, workers=loader_workers)
 
     # Held-out set: must be prepared from *disjoint games* (hold out whole
     # generation shards) — samples within a game are consecutive states, so
@@ -244,23 +293,20 @@ def train(
     # On a mixed corpus the pooled val numbers drive the restore, and each
     # board's own numbers are printed beside them: a size that lags is the
     # first thing plan 042's experiments need to see, and the pooled number
-    # cannot show it.
+    # cannot show it. Both come from one pass (`evaluate_by_group`).
     val_loader = None
-    val_group_loaders = {}
+    val_per_board = False
     if val_dir is not None:
         val_ds = open_prepared(val_dir, augment=False)
         print(describe_data("val", val_ds))
-        val_loader = make_loader(val_ds, batch_size, shuffle=False)
-        if isinstance(val_ds, MultiDimsDataset):
-            val_group_loaders = {
-                name: DataLoader(g, batch_size=batch_size, shuffle=False, collate_fn=collate)
-                for name, g in zip(val_ds.names, val_ds.groups)
-            }
+        val_loader = make_loader(val_ds, batch_size, shuffle=False, workers=loader_workers)
+        val_per_board = isinstance(val_ds, MultiDimsDataset)
 
     device = resolve_device(device) if isinstance(device, str) else device
     # --init decides the architecture when given (a shape mismatch against
     # --width/--blocks would otherwise fail strict loading below); a fresh
     # net takes the requested size. 64x6 is the production default.
+    arch = dict(value_conv=value_conv, value_hidden=value_hidden, value_pool=value_pool, policy_conv=policy_conv)
     if init is not None:
         state = torch.load(init, map_location=device)
         shape = BBNet.shape_of(state)
@@ -269,9 +315,11 @@ def train(
         init_head = shape.pop("value_head", "scalar")
         model = BBNet(**shape, value_head=value_head).to(device)
     else:
-        model = BBNet(width=width, blocks=blocks, value_head=value_head).to(device)
+        model = BBNet(width=width, blocks=blocks, value_head=value_head, **arch).to(device)
+    heads = {k: v for k, v in BBNet.shape_of(model.state_dict()).items() if k not in ("width", "blocks")}
     print(f"model: width {model.stem.weight.shape[0]}, blocks {len(model.blocks)}, "
-          f"params {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M")
+          f"params {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M"
+          + (f", heads {heads}" if heads else ""))
 
     # Warm start (AlphaGo Zero keeps one continuously-trained net; generations
     # are checkpoints of a single SGD run, not independent retrainings). We
@@ -382,6 +430,19 @@ def train(
         print(f"schedule: {total_steps} steps", flush=True)
     write_progress(force=True)
 
+    # Plan 063: the from-scratch schedule. `constant` (the default, and what every fine-tune runs)
+    # builds no scheduler at all, so the optimiser steps exactly as before.
+    sched = None
+    if lr_schedule == "cosine":
+        if not total_steps:
+            raise ValueError("--lr-schedule cosine needs a known number of steps")
+        min_ratio = min_lr / lr if lr else 0.0
+        sched = torch.optim.lr_scheduler.LambdaLR(
+            opt, lambda s: lr_factor(s, total_steps, warmup_steps, min_ratio)
+        )
+        print(f"lr schedule: cosine, warmup {warmup_steps} steps, peak {lr} -> {min_lr:g} over {total_steps} steps",
+              flush=True)
+
     # Step-driven when --max-steps is given, epoch-driven otherwise (production).
     #
     # Plan 029 needs this: comparing corpora of different sizes at a fixed epoch
@@ -414,12 +475,15 @@ def train(
         nonlocal best_val, best_epoch, best_step, best_state, best_vp, best_vp_step
         if val_loader is None:
             return ""
-        vp, vv, va = evaluate(model, val_loader, device, per_drive_value_weight)
+        (vp, vv, va), per_board = evaluate_by_group(model, val_loader, device, per_drive_value_weight)
         # Per-board validation (plan 042). Printed on their own lines so the
         # pooled line — the one train_loop.sh greps — keeps its shape.
-        for name, gl in val_group_loaders.items():
-            gp, gv, ga = evaluate(model, gl, device, per_drive_value_weight)
+        for name, (gp, gv, ga) in (per_board.items() if val_per_board else ()):
             print(f"    val@{name}: val_policy {gp:.4f}  val_value {gv:.4f}  val_top1 {ga:.3f}", flush=True)
+            # Before plan 063 each board had its own val pass, and every DataLoader iterator draws
+            # its worker base seed from the global RNG. Draw the same so a seeded run keeps the
+            # shuffle and flip stream it always had (byte-identical nets; `same_run` in plan 063).
+            torch.empty((), dtype=torch.int64).random_()
         set_train_mode(model, freeze_bn)
         if best_vp is None or vp < best_vp:
             best_vp, best_vp_step = vp, step
@@ -463,6 +527,8 @@ def train(
             pl, vl, acc, _ = compute_losses(model, batch, device, per_drive_value_weight)
             (pl + value_weight * vl).backward()
             opt.step()
+            if sched is not None:
+                sched.step()
             step += 1
             tot_p += pl.item()
             tot_v += vl.item()
@@ -476,7 +542,8 @@ def train(
                 validated_at = step
                 prog.update(train_value=tot_v / nb, train_policy=tot_p / nb)
                 print(f"step {step:7d}  policy_loss {tot_p / nb:.4f}  "
-                      f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}" + validate("step"),
+                      f"value_loss {tot_v / nb:.4f}  top1_acc {tot_a / nb:.3f}"
+                      + (f"  lr {sched.get_last_lr()[0]:.2e}" if sched is not None else "") + validate("step"),
                       flush=True)
                 tot_p = tot_v = tot_a = 0.0
                 nb = 0
@@ -599,6 +666,30 @@ def main():
     )
     ap.add_argument("--width", type=int, default=64, help="conv tower width (ignored with --init, which fixes the shape)")
     ap.add_argument("--blocks", type=int, default=6, help="residual blocks (ignored with --init)")
+    # Plan 063: the head knobs of a fresh net (ignored with --init, which fixes the shape). The
+    # defaults are today's heads; `BBNet.shape_of` reads all of them back from a saved net.
+    ap.add_argument("--value-conv", type=int, default=32, help="channels of the value head's 1x1 conv")
+    ap.add_argument("--value-hidden", type=int, default=64, help="width of the value head's hidden layer")
+    ap.add_argument("--value-pool", choices=("mean", "meanmax"), default="mean",
+                    help="value head pooling: global mean, or mean and max concatenated")
+    ap.add_argument("--policy-conv", type=int, default=0,
+                    help="0 = the policy is one 1x1 conv of the trunk; k = a 3x3 conv+BN+ReLU of k channels first")
+    ap.add_argument(
+        "--lr-schedule",
+        choices=("constant", "cosine"),
+        default="constant",
+        help="plan 063: `cosine` = linear warmup over --warmup-steps, then a half cosine from --lr to "
+             "--min-lr at the last step (for a net trained from scratch). `constant` (default) is "
+             "every fine-tune's schedule",
+    )
+    ap.add_argument("--warmup-steps", type=int, default=0, help="linear lr warmup steps (cosine only)")
+    ap.add_argument("--min-lr", type=float, default=0.0, help="the cosine schedule's final lr")
+    ap.add_argument(
+        "--loader-workers",
+        type=int,
+        default=0,
+        help="DataLoader worker processes (0 = load in the training process, as before)",
+    )
     ap.add_argument("--out", type=Path, default=None, help="save state_dict here")
     ap.add_argument("--onnx", type=Path, default=None, help="export ONNX here")
     ap.add_argument(
@@ -677,6 +768,14 @@ def main():
         freeze_bn=args.freeze_bn,
         init_candidate=args.init_candidate,
         eval_at=tuple(int(x) for x in args.eval_at.split(",") if x.strip()),
+        value_conv=args.value_conv,
+        value_hidden=args.value_hidden,
+        value_pool=args.value_pool,
+        policy_conv=args.policy_conv,
+        lr_schedule=args.lr_schedule,
+        warmup_steps=args.warmup_steps,
+        min_lr=args.min_lr,
+        loader_workers=args.loader_workers,
     )
 
 

@@ -45,7 +45,12 @@ from .model import BBNet, SCHEMA_VERSION, SPATIAL_CHANNELS
 
 # Which BatchNorm consumed each conv's output. `policy_head` has none — its
 # bias survives the export as a real conv bias.
-BN_OF: dict[str, str | None] = {"stem": "stem_bn", "value_conv": "value_bn", "policy_head": None}
+BN_OF: dict[str, str | None] = {
+    "stem": "stem_bn",
+    "value_conv": "value_bn",
+    "policy_conv": "policy_bn",  # plan 063: only in a net built with policy_conv > 0
+    "policy_head": None,
+}
 BLOCK_BN = {"c1": "b1", "c2": "b2"}
 
 EPS = nn.BatchNorm2d(1).eps

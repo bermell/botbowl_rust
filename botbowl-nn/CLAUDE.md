@@ -65,7 +65,7 @@ A `Sample::scripted` decision (a formation-driven setup placement, or a forced s
 
 ## Parity fixture
 
-`tests/fixtures/tiny.onnx` + `parity_{h}x{w}_*.npy` are **committed** (built by `train/src/bbnn/fixture.py`). `tests/parity.rs` (not `#[ignore]`d) asserts tract == PyTorch to `< 1e-4` at two board sizes — this is what de-risks tract op coverage (Expand/Shape broadcast, ReduceMean, BN fold, dynamic axes). Rebuild the fixture after any `model.py` architecture change: `cd train && uv run python -m bbnn.fixture`.
+`tests/fixtures/tiny.onnx` + `parity_{h}x{w}_*.npy` are **committed** (built by `train/src/bbnn/fixture.py`). `tests/parity.rs` (not `#[ignore]`d) asserts tract == PyTorch to `< 1e-4` at two board sizes — this is what de-risks tract op coverage (Expand/Shape broadcast, ReduceMean, BN fold, dynamic axes). Rebuild the fixture after any `model.py` architecture change: `cd train && uv run python -m bbnn.fixture`. `heads/tiny_heads.onnx` (+ its own `parity_*`) is the plan-063 second case: every non-default head knob (`policy_conv`, `value_pool = "meanmax"`, wider `value_conv`/`value_hidden`), so tract's ReduceMax/Concat and the policy conv's BN fold are covered too; `uv run python -m bbnn.fixture --heads` rebuilds only it (the sidecar canary reads `tiny`'s 9x16 inputs, so leave those alone unless the net itself changed). Any shape the knobs make loads anywhere a 64x6 does — the ONNX names and shapes do not change, and every Python loader rebuilds the net from `BBNet.shape_of(state_dict)`.
 
 ```sh
 cargo test -p botbowl-nn                 # unit + prepare integration + parity

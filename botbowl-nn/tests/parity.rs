@@ -23,7 +23,10 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn check_size(eval: &NnEvaluator, h: usize, w: usize) {
-    let dir = fixtures();
+    check_size_in(&fixtures(), eval, h, w);
+}
+
+fn check_size_in(dir: &std::path::Path, eval: &NnEvaluator, h: usize, w: usize) {
     let tag = format!("{h}x{w}");
     let spatial = npy::read(dir.join(format!("parity_{tag}_spatial.npy"))).unwrap();
     let global = npy::read(dir.join(format!("parity_{tag}_global.npy"))).unwrap();
@@ -55,4 +58,22 @@ fn tract_matches_pytorch_at_two_board_sizes() {
     let eval = NnEvaluator::from_path(&onnx).expect("load tiny.onnx");
     check_size(&eval, 17, 28);
     check_size(&eval, 9, 16);
+}
+
+/// Plan 063: the head knobs (`policy_conv`, `value_pool = "meanmax"`, wider value conv and hidden
+/// layer) add ops the default net never exports — ReduceMax, Concat, a BN folded into a 3x3 conv in
+/// front of the policy 1x1. The committed `heads/tiny_heads.onnx` (built by
+/// `uv run python -m bbnn.fixture --heads`) has all of them, with random BN statistics.
+#[test]
+fn tract_matches_pytorch_with_the_plan_063_heads() {
+    let dir = fixtures().join("heads");
+    let onnx = dir.join("tiny_heads.onnx");
+    assert!(
+        onnx.exists(),
+        "missing fixture {} — run `uv run python -m bbnn.fixture --heads`",
+        onnx.display()
+    );
+    let eval = NnEvaluator::from_path(&onnx).expect("load tiny_heads.onnx");
+    check_size_in(&dir, &eval, 9, 16);
+    check_size_in(&dir, &eval, 7, 12);
 }

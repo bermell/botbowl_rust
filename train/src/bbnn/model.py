@@ -68,6 +68,17 @@ class BBNet(nn.Module):
     ``value`` output stays the scalar the search reads, ``P(self) - P(opp)``, so every consumer
     (ONNX export, the sidecar, the Rust evaluator) is unchanged. ``wdl=True`` on ``forward`` /
     ``forward_masked`` returns the three logits instead, for the trainer's loss.
+
+    Plan 063 (exp072), the head knobs — every default is the net the loop has always trained, so a
+    64x6 checkpoint keeps its exact state_dict and `shape_of` reads each knob back from the weights:
+    - ``value_conv``: channels of the value head's 1x1 conv (32);
+    - ``value_hidden``: width of the value head's hidden layer (64);
+    - ``value_pool``: ``"mean"`` (global mean over the board) or ``"meanmax"`` (mean and max
+      concatenated, doubling the hidden layer's input: a local threat, a loose ball or a free
+      carrier, is a max, and a mean over a 198-cell board dilutes it);
+    - ``policy_conv``: 0 = the policy logits are one 1x1 conv of the trunk; ``k > 0`` puts a 3x3
+      conv + BN + ReLU of ``k`` channels (``policy_conv`` / ``policy_bn``) in front of that 1x1
+      (``policy_head``), giving the policy capacity of its own that the value head does not share.
     """
 
     def __init__(
@@ -81,19 +92,36 @@ class BBNet(nn.Module):
         value_hidden: int = 64,
         schema_version: int = SCHEMA_VERSION,
         value_head: str = "scalar",
+        value_conv: int = 32,
+        value_pool: str = "mean",
+        policy_conv: int = 0,
     ):
         super().__init__()
         if value_head not in ("scalar", "wdl"):
             raise ValueError(f"value_head must be scalar or wdl, got {value_head!r}")
+        if value_pool not in ("mean", "meanmax"):
+            raise ValueError(f"value_pool must be mean or meanmax, got {value_pool!r}")
+        if policy_conv < 0 or value_conv < 1 or value_hidden < 1:
+            raise ValueError(
+                f"bad head widths: policy_conv {policy_conv}, value_conv {value_conv}, value_hidden {value_hidden}"
+            )
         self.value_head = value_head
+        self.value_pool = value_pool
         self.global_fc = nn.Linear(global_f, global_embed)
         self.stem = nn.Conv2d(spatial_ch + global_embed, width, 3, padding=1)
         self.stem_bn = nn.BatchNorm2d(width)
         self.blocks = nn.ModuleList(ResidualBlock(width) for _ in range(blocks))
-        self.policy_head = nn.Conv2d(width, policy_ch, 1)
-        self.value_conv = nn.Conv2d(width, 32, 1)
-        self.value_bn = nn.BatchNorm2d(32)
-        self.value_fc1 = nn.Linear(32, value_hidden)
+        # Off (0) registers nothing and draws nothing from the RNG, so a default net's init and
+        # state_dict are exactly the old constructor's (`test_arch.py` pins the seeded init).
+        if policy_conv:
+            self.policy_conv = nn.Conv2d(width, policy_conv, 3, padding=1)
+            self.policy_bn = nn.BatchNorm2d(policy_conv)
+        else:
+            self.policy_conv = None
+        self.policy_head = nn.Conv2d(policy_conv or width, policy_ch, 1)
+        self.value_conv = nn.Conv2d(width, value_conv, 1)
+        self.value_bn = nn.BatchNorm2d(value_conv)
+        self.value_fc1 = nn.Linear(value_conv * (2 if value_pool == "meanmax" else 1), value_hidden)
         self.value_fc2 = nn.Linear(value_hidden, 3 if value_head == "wdl" else 1)
         # Not a parameter and unused by `forward` (so absent from the ONNX
         # export); it rides in the state_dict so a loader can tell a v8
@@ -102,15 +130,30 @@ class BBNet(nn.Module):
 
     @staticmethod
     def shape_of(state_dict) -> dict:
-        """``{"width", "blocks"}`` implied by a saved state_dict, so a loader
+        """The constructor kwargs implied by a saved state_dict, so a loader
         can build a matching net without being told the architecture (plan
-        032 #9 trains wider/deeper nets next to the 64x6 default). Every
-        other constructor argument is pinned by the encoder/action schema."""
+        032 #9 trains wider/deeper nets next to the 64x6 default; plan 063
+        adds the head knobs). Always ``width`` and ``blocks``; a head knob
+        only when it is not the default, so today's nets read back as
+        ``{"width", "blocks"}`` exactly as before. Every other constructor
+        argument is pinned by the encoder/action schema."""
         width = int(state_dict["stem.weight"].shape[0])
         blocks = len({k.split(".")[1] for k in state_dict if k.startswith("blocks.")})
         shape = {"width": width, "blocks": blocks}
         if int(state_dict["value_fc2.weight"].shape[0]) == 3:
             shape["value_head"] = "wdl"
+        value_conv = int(state_dict["value_conv.weight"].shape[0])
+        value_hidden, fc1_in = (int(d) for d in state_dict["value_fc1.weight"].shape)
+        if value_conv != 32:
+            shape["value_conv"] = value_conv
+        if fc1_in == 2 * value_conv:
+            shape["value_pool"] = "meanmax"
+        elif fc1_in != value_conv:
+            raise ValueError(f"value_fc1 takes {fc1_in} inputs from a {value_conv}-channel value conv")
+        if value_hidden != 64:
+            shape["value_hidden"] = value_hidden
+        if "policy_conv.weight" in state_dict:
+            shape["policy_conv"] = int(state_dict["policy_conv.weight"].shape[0])
         return shape
 
     @classmethod
@@ -122,6 +165,27 @@ class BBNet(nn.Module):
         model = cls(**cls.shape_of(state_dict), **kwargs)
         model.load_state_dict(state_dict)
         return model
+
+    def _policy_out(self, x, mask=None):
+        """The policy head on the trunk ``x``. ``mask`` re-zeroes the canvas padding after the
+        3x3 conv, as the unpadded net's zero padding would be at the real edge."""
+        if self.policy_conv is not None:
+            x = F.relu(self.policy_bn(self.policy_conv(x)))
+            if mask is not None:
+                x = x * mask
+        return self.policy_head(x)
+
+    def _pool(self, v, mask=None):
+        """Global pooling of the value features: the mean, or (``meanmax``) the mean and the max
+        concatenated. With a ``mask`` the mean runs over the real cells only; the max needs no
+        correction, since ``v`` is a ReLU output (>= 0) whose padding is already zeroed."""
+        if mask is None:
+            mean = v.mean(dim=(2, 3))                    # ReduceMean -> (N, C)
+        else:
+            mean = v.sum(dim=(2, 3)) / mask.sum(dim=(2, 3)).clamp_min(1.0)
+        if self.value_pool == "mean":
+            return mean
+        return torch.cat([mean, v.amax(dim=(2, 3))], dim=1)  # (N, 2C)
 
     def _value_out(self, v, wdl):
         """The value head's last layer: the scalar, or (``wdl``) the three logits."""
@@ -143,9 +207,9 @@ class BBNet(nn.Module):
         x = F.relu(self.stem_bn(self.stem(x)))
         for b in self.blocks:
             x = b(x)
-        policy = self.policy_head(x)                     # (N, A, H, W)
-        v = F.relu(self.value_bn(self.value_conv(x)))    # (N, 32, H, W)
-        v = v.mean(dim=(2, 3))                           # ReduceMean → (N, 32)
+        policy = self._policy_out(x)                     # (N, A, H, W)
+        v = F.relu(self.value_bn(self.value_conv(x)))    # (N, value_conv, H, W)
+        v = self._pool(v)                                # (N, value_conv), or 2x for meanmax
         v = F.relu(self.value_fc1(v))
         return policy, self._value_out(v, wdl)           # (N, 1), or (N, 3) logits
 
@@ -170,9 +234,9 @@ class BBNet(nn.Module):
             y = F.relu(b.b1(b.c1(x))) * mask
             y = b.b2(b.c2(y)) * mask
             x = F.relu(x + y)
-        policy = self.policy_head(x)
+        policy = self._policy_out(x, mask)
         v = F.relu(self.value_bn(self.value_conv(x))) * mask
-        v = v.sum(dim=(2, 3)) / mask.sum(dim=(2, 3)).clamp_min(1.0)
+        v = self._pool(v, mask)
         v = F.relu(self.value_fc1(v))
         return policy, self._value_out(v, wdl)
 
