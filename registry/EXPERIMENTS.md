@@ -8,6 +8,32 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp072"></a>exp072: a bigger net from scratch on the clean v9 corpora (plan 063), planned 2026-10-13
+
+- **Status:** planned; code and script built 2026-10-13, not run (needs the loop stopped after gen31's
+  training, ~18 h of GPU for the three trainings plus the drives).
+- **Question:** is the 64x6 net the ceiling now? Does a 96x8 trunk, with or without bigger heads,
+  trained from scratch on every clean v9 corpus beat the loop's gen31 in play — and does a 64x6
+  trained the same way (the control) already do so?
+- **Setup:** `scripts/exp072_bigger_net.sh` (commit in `runs/exp072/status.md`). Data: `runs/loopmix16x9v9`
+  gen10-31 MC-labelled shards, cq τ=100, value blend 1.0; train = shards 0-3,5,6 of gen10-31 (~2.66 M),
+  val = 4,7 of gen10-30 (~0.84 M, checkpoint selection), test = 4,7 of gen31 (~40 k). Arms `C64x6`
+  (today's shape), `A96x8` (96x8, today's heads), `B96x8h` (96x8 + `--value-conv 64 --value-pool
+  meanmax --value-hidden 128 --policy-conv 96`). Recipe: batch 256, Adam, lr 1e-3, 2000 warmup steps
+  then cosine to 0, 10 epochs, val every 5000 steps, restore on val_policy + val_value, value weight
+  0.36, per-drive value weight, BN live, 6 loader workers, seed 72. Scored by: test-set absorption vs
+  gen31 (`absorb_probe.py`), the value bench (`v9_gen01_val.jsonl`) paired vs gen31, the sidecar's
+  forward cost (`nn_server.py --bench`), and paired contested drives vs gen31 under C1 both sides
+  (`cfgs/chance_all_partial.toml`, 1000 descents, both position sets, SPRT 0.5:0.55, cap 800/board).
+- **Cost (CPU-measured, relative to 64x6):** forward 2.7× (A) / 2.8-2.9× (B), train step 2.5× / 2.7×,
+  tract 2.5× / 2.6×; MACs 2.86× / 3.03×. GPU estimate: C ~2.7 h, A ~7.3 h, B ~7.8 h of training.
+- **Decision rule (plan 063 §7):** H1 on both boards or H1 on one with the other level; no >1%
+  regression on the value bench or test value MSE; A over B unless B is better by >1 SE; if C64x6
+  passes too, adopt C first (no throughput cost) and require the 96x8 net to beat it. A 96x8 net
+  makes a loop generation ~2.3× longer: adoption is the user's call.
+- **Prior:** plan 032 #9 (2026-09-08, old rules): 96x8 from scratch on 2.2 M samples, 0.508 ± 0.043 vs
+  its 64x6 twin in 120 games — no gain at that data size and that resolution.
+
 ### MC labels through the hub: equivalence and overhead (plan 062), 2026-10-10
 
 - **Question:** does `botbowl-hub job label` (plan 062, protocol v19) write what
