@@ -15,6 +15,14 @@ Defaults unless a row says otherwise:
 
 ## v9 rules (2026-10-06 on)
 
+### exp072: scratch-trained nets vs the loop's gen31 (plan 063; C1 both sides, 1000 descents, SPRT 0.5:0.55, loop hub)
+
+| A | vs B | 14x7 | 16x9 | commit | date |
+|---|---|---|---|---|---|
+| exp072 C64x6 (scratch, gen10-31) | v9 gen31 | 0.463 ± 0.029 (H0, 16 pairs) | 0.502 ± 0.022 (H0, 113 pairs) | e647d02 | 2026-10-14 |
+| exp072 A96x8 (scratch) | v9 gen31 | 0.500 ± 0.032 (H0, 38 pairs) | 0.508 ± 0.018 (H0, 196 pairs) | e647d02 | 2026-10-14 |
+| exp072 B96x8h (scratch, bigger heads) | v9 gen31 | 0.471 ± 0.021 (H0, 33 pairs) | 0.508 ± 0.018 (H0, 188 pairs) | e647d02 | 2026-10-14 |
+
 ### exp070: chance model arms vs today's search (plan 061; gen21 both sides, 1000 descents, vs `cfgs/gumbel16_f1000.toml`; on the loop's hub; cap 400 pairs per board)
 
 | A (preset) | vs B | 14x7 | 16x9 | SPRT | commit | date |

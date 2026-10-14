@@ -8,6 +8,20 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp073"></a>exp073: the 96x8 nets fine-tuned in the loop's regime, started 2026-10-14
+
+- **Question:** exp072's scratch 96x8 nets fit gen10-31's average target. Fine-tuned on exactly the
+  window and recipe the loop's gen33 used (gen31-33, MC labels, cq τ 100, lr 5e-5, 3 epochs,
+  `--freeze-bn`, value weight 0.36 per-drive), does a 96x8 start beat the 64x6 lineage?
+- **Setup:** `scripts/exp073_bignet_finetune.sh` (commit in `runs/exp073/status.md`): arms A96x8 and
+  B96x8h from `runs/exp072/<arm>/net.pt`; scored on gen33's held-out shards (absorption/test), the value
+  bench paired vs gen33, and drives vs gen33 under C1 at 1000 descents, **300 fixed pairs per board**
+  (no SPRT). The loop pauses after gen34's generate for the ~2 h of fine-tunes and is relaunched by the
+  script; the drives share its hub.
+- **Adoption rule:** an arm that beats gen33 on drives (both boards, or one with the other level) and is
+  not worse on the value bench / test value MSE becomes the loop's net (the user's call on the ~2x
+  generation slowdown).
+
 ### <a id="exp072"></a>exp072: a bigger net from scratch on the clean v9 corpora (plan 063), started 2026-10-13
 
 - **Status:** started 2026-10-13 08:35 at e647d02 (`RELAUNCH=1 scripts/exp072_bigger_net.sh`, the loop stopped by `scripts/stop_after.sh "gen31 train done"`); the loop relaunches after the GPU phases and the drives share its hub. The user chose 96x8 and asked to test bigger heads (2026-10-13).
@@ -29,6 +43,12 @@ ends (see the root CLAUDE.md).
   scratch arm on gen31's own held-out shards (KL 0.055 vs 0.104): the scratch nets fit the average of
   gen10-31's targets, not the current ones. Inference: 96x8 costs ~2.0x per sample on the GPU (less
   than the 2.7x CPU estimate). Drives vs gen31 (C1, 1000 descents) follow on the loop's hub.
+- **Drives vs gen31 (2026-10-14, C1 both sides, 1000 descents, SPRT 0.5:0.55 on the loop's hub):**
+  C64x6 14x7 0.463 ± 0.029 (H0, 16 pairs), 16x9 0.502 ± 0.022 (H0, 113); A96x8 0.500 ± 0.032 (H0, 38),
+  0.508 ± 0.018 (H0, 196); B96x8h 0.471 ± 0.021 (H0, 33), 0.508 ± 0.018 (H0, 188). Every scratch arm
+  plays about even with gen31 despite its much worse fit to the current targets (the 14x7 SPRTs stopped
+  far too early to read). **Conclusion:** at equal training 96x8 is the better net; the fair question is
+  a 96x8 trained in the loop's regime → exp073.
 - **Question:** is the 64x6 net the ceiling now? Does a 96x8 trunk, with or without bigger heads,
   trained from scratch on every clean v9 corpus beat the loop's gen31 in play — and does a 64x6
   trained the same way (the control) already do so?
