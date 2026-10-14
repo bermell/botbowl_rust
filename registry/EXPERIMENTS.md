@@ -18,6 +18,17 @@ ends (see the root CLAUDE.md).
   bench paired vs gen33, and drives vs gen33 under C1 at 1000 descents, **300 fixed pairs per board**
   (no SPRT). The loop pauses after gen34's generate for the ~2 h of fine-tunes and is relaunched by the
   script; the drives share its hub.
+- **Result, single-net (2026-10-15 00:38, 457120f):** fine-tunes took 39-40 min each (the 64x6 one ~27).
+
+  | on gen33's held-out shards / the value bench | loop gen33 (64x6) | A96x8 fine-tuned | B96x8h fine-tuned |
+  |---|---|---|---|
+  | KL(target‖net) | **0.053** | 0.084 | 0.085 |
+  | log P(played) / P(played) | **−0.695 / 0.681** | −0.715 / 0.674 | −0.716 / 0.673 |
+  | value MSE | 0.0785 | 0.0760 | **0.0743** |
+  | value bench RMS (paired vs gen33) | 0.193 | 0.189 (−2.2%) | **0.184 (−4.3%, ~3 SE)** |
+
+  One fine-tune makes the 96x8 value heads clearly better than gen33's (B: −4.3% on the bench, −5.4%
+  test MSE), but closes only part of the policy gap (KL 0.104 → 0.085 vs 0.053).
 - **Adoption rule:** an arm that beats gen33 on drives (both boards, or one with the other level) and is
   not worse on the value bench / test value MSE becomes the loop's net (the user's call on the ~2x
   generation slowdown).
