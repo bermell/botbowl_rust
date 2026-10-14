@@ -11,6 +11,24 @@ ends (see the root CLAUDE.md).
 ### <a id="exp072"></a>exp072: a bigger net from scratch on the clean v9 corpora (plan 063), started 2026-10-13
 
 - **Status:** started 2026-10-13 08:35 at e647d02 (`RELAUNCH=1 scripts/exp072_bigger_net.sh`, the loop stopped by `scripts/stop_after.sh "gen31 train done"`); the loop relaunches after the GPU phases and the drives share its hub. The user chose 96x8 and asked to test bigger heads (2026-10-13).
+- **Result, training and single-net numbers (2026-10-14 09:38, e647d02):**
+
+  | | 64x6 scratch (C) | 96x8 (A) | 96x8 + heads (B) | loop gen31 (64x6 fine-tune lineage) |
+  |---|---|---|---|---|
+  | train time | 204 min | 523 min | 556 min | — |
+  | val (gen10-30 held-out) policy / value | 0.7717 / 0.0871 | 0.7614 / 0.0816 | **0.7607 / 0.0803** | — |
+  | test (gen31 shards 4,7) KL(target‖net) | 0.117 | 0.105 | 0.104 | **0.055** |
+  | test log P(played) / P(played) | −0.749 / 0.653 | −0.739 / 0.659 | −0.736 / 0.659 | **−0.701 / 0.680** |
+  | test value MSE | 0.0899 | 0.0840 | 0.0830 | **0.0815** |
+  | value bench RMS (paired vs gen31) | 0.219 (+14.1%) | 0.196 (+2.1%) | 0.196 (+2.2%) | **0.192** |
+  | GPU µs per sample at batch 12 / 24 | 141 / 116 | 263 / 223 | 276 / 235 | 133 / 106 |
+
+  At equal training (scratch on gen10-31) the 96x8 trunk beats 64x6 on every number (value MSE −6%,
+  test KL −10%, value bench 0.219 → 0.196) and the bigger heads add a little (value −1.6%). But the
+  loop's gen31 — 64x6 fine-tuned generation after generation on the most recent window — beats every
+  scratch arm on gen31's own held-out shards (KL 0.055 vs 0.104): the scratch nets fit the average of
+  gen10-31's targets, not the current ones. Inference: 96x8 costs ~2.0x per sample on the GPU (less
+  than the 2.7x CPU estimate). Drives vs gen31 (C1, 1000 descents) follow on the loop's hub.
 - **Question:** is the 64x6 net the ceiling now? Does a 96x8 trunk, with or without bigger heads,
   trained from scratch on every clean v9 corpus beat the loop's gen31 in play — and does a 64x6
   trained the same way (the control) already do so?
