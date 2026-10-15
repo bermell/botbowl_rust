@@ -344,6 +344,10 @@ LABEL_CHUNK_SAMPLES="${LABEL_CHUNK_SAMPLES:-32}"
 # Plan 056 §2: score every new net's value head on a frozen MC benchmark (scripts/value_bench.sh,
 # seconds) next to its generator; the benchmark .jsonl path, or empty = off.
 VALUE_BENCH="${VALUE_BENCH:-}"
+# Shadow lineage (section 3b): SHADOW_INIT = the first .pt of a second net fine-tuned alongside the
+# loop's every generation (never generating); SHADOW_NAME prefixes its models/ files.
+SHADOW_INIT="${SHADOW_INIT:-}"
+SHADOW_NAME="${SHADOW_NAME:-shadow}"
 # Plan 055 §6: the standing net check (scripts/net_check.sh, the search-improvement curve over a
 # budget ladder) on each generation's generator, on the corpus it just generated, in the background
 # alongside labelling and training (~35-90 min). on|off.
@@ -521,6 +525,7 @@ CHAMPION_FILE="$RUN_DIR/champion.txt"
 # when WARM_FROM=latest. Distinct from champion.txt, which is the last net
 # that *passed the gate* and is therefore the only one that generates games.
 LATEST_FILE="$RUN_DIR/latest_net.txt"
+SHADOW_LATEST="$RUN_DIR/shadow_latest.txt"   # section 3b: the shadow lineage's latest .pt
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 status() { echo "[$(date '+%F %T')] $*" >> "$STATUS"; log "STATUS: $*"; }
@@ -1359,6 +1364,51 @@ while [ "$G" -le "$MAX_GENS" ]; do
         prune_prepared "$((G - 1))"
     fi
     [ -f "$MODEL.onnx" ] || die "$GG onnx export missing: $MODEL.onnx"
+
+    # -- 3b. shadow lineage (plan 063 / exp073 follow-up, the user 2026-10-15) --------------------
+    # A second net (e.g. the 96x8 + bigger heads) fine-tuned every generation on the same window with
+    # the same recipe, from its own previous checkpoint. It never generates: it only learns, and is
+    # scored against this generation's net (absorption on the held-out shards, value bench paired),
+    # until it converges and the two play head to head. Off unless SHADOW_INIT names its first .pt.
+    if [ -n "$SHADOW_INIT" ] && [ ! -e "$GEN_DIR/.shadow_trained" ]; then
+        SHADOW_PREV="$SHADOW_INIT"; [ -s "$SHADOW_LATEST" ] && [ -f "$(cat "$SHADOW_LATEST")" ] && SHADOW_PREV="$(cat "$SHADOW_LATEST")"
+        SHADOW_MODEL="$MODEL_DIR/${SHADOW_NAME}_$GG"
+        DIMS_TRAIN="$GEN_DIR/prepared_train"; DIMS_VAL="$GEN_DIR/prepared_val"
+        if [ ! -d "$DIMS_TRAIN" ] || [ ! -d "$DIMS_VAL" ]; then
+            status "WARN: $GG shadow skipped — this generation's prepared dirs are gone"
+        else
+            SECONDS=0
+            status "$GG shadow train: $(basename "$SHADOW_PREV") -> $(basename "$SHADOW_MODEL") (same window and recipe)"
+            # shellcheck disable=SC2086
+            if "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
+                    --epochs "$EPOCHS" --device "$TRAIN_DEVICE" --init "$SHADOW_PREV" --lr "$WARM_LR" \
+                    --select-on "$SELECT_ON" --eval-every "$EVAL_EVERY" $TRAIN_TARGET_ARGS \
+                    --out "$SHADOW_MODEL.pt" --onnx "$SHADOW_MODEL.onnx" > "$GEN_DIR/shadow_train.log" 2>&1; then
+                echo "$SHADOW_MODEL.pt" > "$SHADOW_LATEST"
+                status "$GG shadow train done ($((SECONDS / 60)) min): $(grep 'restored best-val weights' "$GEN_DIR/shadow_train.log" | tail -1)"
+                PROBE_IN=""; for K in $VAL_SHARDS; do f="$GEN_DIR/mc/shard$K.jsonl"; [ -s "$f" ] || f="$GEN_DIR/shard$K.jsonl"; [ -s "$f" ] && PROBE_IN="$PROBE_IN $f"; done
+                rm -rf "$GEN_DIR/shadow_probe_val"
+                # shellcheck disable=SC2086
+                if [ -n "$PROBE_IN" ] && "$PREPARE" --in $PROBE_IN --out "$GEN_DIR/shadow_probe_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+                    && "$PY" "$REPO/scripts/absorb_probe.py" --summary --val "$GEN_DIR/shadow_probe_val" \
+                        "$GG=$MODEL.pt" "shadow=$SHADOW_MODEL.pt" > "$GEN_DIR/shadow_absorb.txt" 2>&1; then
+                    status "$GG shadow vs $GG (held-out): $(awk '$1=="'"$GG"'"||$1=="shadow"{printf "%s KL %s logP %s P %s valMSE %s; ", $1, $4, $5, $6, $8}' "$GEN_DIR/shadow_absorb.txt")"
+                else
+                    status "WARN: $GG shadow absorption failed — see $GEN_DIR/shadow_absorb.txt"
+                fi
+                rm -rf "$GEN_DIR/shadow_probe_val"
+                if [ -n "$VALUE_BENCH" ] && [ -f "$VALUE_BENCH" ] && "$REPO/scripts/value_bench.sh" "$VALUE_BENCH" "$GEN_DIR/shadow_value_bench" \
+                        "$GG=$MODEL.onnx" "shadow=$SHADOW_MODEL.onnx" > "$GEN_DIR/shadow_value_bench.log" 2>&1; then
+                    status "$GG shadow value bench: $(grep -E '^VALUE_BENCH' "$GEN_DIR/shadow_value_bench/summary.txt" | sed 's/^VALUE_BENCH_*//' | paste -sd'|')"
+                else
+                    status "WARN: $GG shadow value bench failed or skipped"
+                fi
+            else
+                status "WARN: $GG shadow training failed — see $GEN_DIR/shadow_train.log"
+            fi
+        fi
+        touch "$GEN_DIR/.shadow_trained"
+    fi
 
     # -- 4. benchmark: fixed rung(s) + vs the frozen anchor ----------------------
     # Submitted, not waited for: it runs alongside the next generation (see
