@@ -15,6 +15,13 @@ Defaults unless a row says otherwise:
 
 ## v9 rules (2026-10-06 on)
 
+### exp073: the 96x8 nets fine-tuned on gen31-33 vs the loop's gen33 (C1 both sides, 1000 descents, 300 fixed pairs per board)
+
+| A | vs B | 14x7 | 16x9 | commit | date |
+|---|---|---|---|---|---|
+| exp073 A96x8 (fine-tuned) | v9 gen33 | 0.500 ± 0.012 | 0.509 ± 0.014 | 457120f | 2026-10-15 |
+| exp073 B96x8h (fine-tuned, bigger heads) | v9 gen33 | 0.507 ± 0.013 | 0.515 ± 0.014 | 457120f | 2026-10-15 |
+
 ### exp072: scratch-trained nets vs the loop's gen31 (plan 063; C1 both sides, 1000 descents, SPRT 0.5:0.55, loop hub)
 
 | A | vs B | 14x7 | 16x9 | commit | date |

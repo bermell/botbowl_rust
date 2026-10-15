@@ -8,7 +8,7 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
-### <a id="exp073"></a>exp073: the 96x8 nets fine-tuned in the loop's regime, started 2026-10-14
+### <a id="exp073"></a>exp073: the 96x8 nets fine-tuned in the loop's regime, 2026-10-14/15
 
 - **Question:** exp072's scratch 96x8 nets fit gen10-31's average target. Fine-tuned on exactly the
   window and recipe the loop's gen33 used (gen31-33, MC labels, cq τ 100, lr 5e-5, 3 epochs,
@@ -29,6 +29,13 @@ ends (see the root CLAUDE.md).
 
   One fine-tune makes the 96x8 value heads clearly better than gen33's (B: −4.3% on the bench, −5.4%
   test MSE), but closes only part of the policy gap (KL 0.104 → 0.085 vs 0.053).
+- **Drives vs gen33 (2026-10-15, C1 both sides, 1000 descents, 300 fixed pairs per board):** A96x8
+  14x7 0.500 ± 0.012, 16x9 0.509 ± 0.014; B96x8h 14x7 0.507 ± 0.013, 16x9 0.515 ± 0.014 (+1.1 SE).
+- **Conclusion:** after one fine-tune the 96x8 nets play even with gen33 (B slightly ahead on 16x9, not
+  significant) at ~2x the inference cost: not adopted yet. The user (2026-10-15): the 96x8 + heads net's
+  benches have not converged (gen33's had); keep fine-tuning it on the loop's data as a **shadow
+  lineage** (train_loop.sh section 3b, `SHADOW_INIT`, models `shadow96h_genNN`) and pit the two again
+  once its benches flatten.
 - **Adoption rule:** an arm that beats gen33 on drives (both boards, or one with the other level) and is
   not worse on the value bench / test value MSE becomes the loop's net (the user's call on the ~2x
   generation slowdown).
