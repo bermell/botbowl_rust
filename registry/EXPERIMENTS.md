@@ -18,6 +18,7 @@ ends (see the root CLAUDE.md).
   (`launch_plan058.sh`). From gen38 the loop's nets (`bbnet_mix16x9v9_genNN`) are 96x8 + heads,
   warm-started from the previous one; everything else unchanged (C1 search, 400x8 games, MC labels,
   cq τ 100, value weight 0.36). Reference: the 64x6 **gen36** (the best of the plateau), frozen.
+- **What actually happened (2026-10-16 01:25):** the STOP was placed a few seconds after the loop passed its last check, so gen38 was *generated* by the 64x6 gen37. The swap lands before gen38's mc-label: gen38 is labelled by and fine-tuned from shadow96h_gen37 (on 64x6-generated data, like a shadow step), and **gen39 is the first corpus the 96x8 generates**. First fair read: gen42.
 - **Measure:** every 3 generations (gen39, gen42), drives of the 96x8 net vs 64x6 gen36, C1 both sides,
   1000 descents, 300 fixed pairs per board; plus the loop's own benches. Generation ~2x slower.
 - **Decision:** keep the 96x8 lineage if it pulls clearly ahead of gen36 within 3-4 generations;
