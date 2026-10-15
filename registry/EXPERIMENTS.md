@@ -8,6 +8,21 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp074"></a>exp074: the 96x8 + heads lineage generates (trial), started 2026-10-15
+
+- **Question:** does a 96x8 + bigger-heads net, once it generates its own data (its own prior in the cq
+  targets, its own search), pull ahead of the plateaued 64x6 lineage? The shadow comparisons (plan 063)
+  cannot answer it: the shadow's policy target embeds the 64x6 generator's prior (the user, 2026-10-15).
+- **Setup:** the loop stops after gen37's shadow step; `champion.txt` / `latest_net.txt` are pointed at
+  `models/az_v7/shadow96h_gen37.{onnx,pt}` and the loop relaunches with the shadow step off
+  (`launch_plan058.sh`). From gen38 the loop's nets (`bbnet_mix16x9v9_genNN`) are 96x8 + heads,
+  warm-started from the previous one; everything else unchanged (C1 search, 400x8 games, MC labels,
+  cq τ 100, value weight 0.36). Reference: the 64x6 **gen36** (the best of the plateau), frozen.
+- **Measure:** every 3 generations (gen39, gen42), drives of the 96x8 net vs 64x6 gen36, C1 both sides,
+  1000 descents, 300 fixed pairs per board; plus the loop's own benches. Generation ~2x slower.
+- **Decision:** keep the 96x8 lineage if it pulls clearly ahead of gen36 within 3-4 generations;
+  otherwise go back to the 64x6 lineage (gen36/37) — the only loss is time.
+
 ### <a id="exp073"></a>exp073: the 96x8 nets fine-tuned in the loop's regime, 2026-10-14/15
 
 - **Question:** exp072's scratch 96x8 nets fit gen10-31's average target. Fine-tuned on exactly the

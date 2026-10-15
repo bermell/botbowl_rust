@@ -61,7 +61,9 @@ export MAX_GENS=60
 # Shadow lineage (the user, 2026-10-15): keep fine-tuning exp073's 96x8 + bigger heads net on every
 # generation's window alongside the loop's 64x6, scored each generation, until it converges; then the
 # two play head to head again. It never generates.
-export SHADOW_INIT="$REPO/runs/exp073/B96x8h/net.pt" SHADOW_NAME="shadow96h"
+# exp074 (the user, 2026-10-15): from gen38 the 96x8 + heads lineage (shadow96h_gen37) generates and
+# the 64x6 lineage stops at gen36 as the fixed reference; the shadow step is off.
+# export SHADOW_INIT="$REPO/runs/exp073/B96x8h/net.pt" SHADOW_NAME="shadow96h"
 # Plan 062: the mc-label phase runs as a hub job (`botbowl-hub job label`), so helper workers share it.
 export LABEL_VIA_HUB=1
 export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
