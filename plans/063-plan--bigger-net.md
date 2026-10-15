@@ -228,3 +228,17 @@ ONNX interface, and absorb probe / value bench / net check / drives load by shap
 ## 9. Results
 
 Not run yet. Registry: [EXPERIMENTS.md#exp072](../registry/EXPERIMENTS.md#exp072).
+
+
+## Shadow lineage (the user, 2026-10-15)
+
+exp073's B96x8h (96x8 + bigger heads, fine-tuned on gen31-33) is fine-tuned every generation alongside
+the loop's 64x6 on the same window and recipe (`train_loop.sh` §3b, `SHADOW_INIT`, models
+`models/az_v7/shadow96h_genNN`), never generating. Each row: held-out shards of that generation
+(cq-100 target, MC labels), loop net vs shadow, and the value bench paired. Judge again head to head
+once the shadow's columns stop improving for ~3 generations.
+
+| gen | loop KL / P(played) / valMSE | shadow KL / P(played) / valMSE | value bench loop → shadow (paired) | shadow train |
+|---|---|---|---|---|
+| 34 | 0.0535 / 0.6798 / 0.0832 | 0.0866 / 0.6711 / 0.0774 | 0.194 → **0.182 (−6.2%)** | 44 min, step 29000 |
+| 35 | 0.0525 / 0.6821 / 0.0791 | 0.0829 / 0.6741 / 0.0746 | 0.194 → **0.183 (−5.7%)** | 41 min, step 11000 |
