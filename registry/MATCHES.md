@@ -15,6 +15,12 @@ Defaults unless a row says otherwise:
 
 ## v9 rules (2026-10-06 on)
 
+### Shadow lineage, bare policies (plan 063; `runs/exp073/po_shadow_gen36/run.sh`, `cfgs/policy_only.toml` both sides, tract, 600 pairs per board)
+
+| A | vs B | 14x7 | 16x9 | commit | date |
+|---|---|---|---|---|---|
+| shadow96h_gen36 (96x8 + heads) | v9 gen36 (64x6) | 0.507 ± 0.010 | 0.512 ± 0.010 | eadbe8a | 2026-10-15 |
+
 ### exp073: the 96x8 nets fine-tuned on gen31-33 vs the loop's gen33 (C1 both sides, 1000 descents, 300 fixed pairs per board)
 
 | A | vs B | 14x7 | 16x9 | commit | date |
