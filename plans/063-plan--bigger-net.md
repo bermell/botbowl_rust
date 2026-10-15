@@ -243,5 +243,6 @@ once the shadow's columns stop improving for ~3 generations.
 | 34 | 0.0535 / 0.6798 / 0.0832 | 0.0866 / 0.6711 / 0.0774 | 0.194 → **0.182 (−6.2%)** | 44 min, step 29000 |
 | 35 | 0.0525 / 0.6821 / 0.0791 | 0.0829 / 0.6741 / 0.0746 | 0.194 → **0.183 (−5.7%)** | 41 min, step 11000 |
 | 36 | 0.0524 / 0.6841 / 0.0808 | 0.0840 / 0.6756 / 0.0765 | 0.196 → **0.179 (−8.7%)**; shadow's own bench 0.1834 → 0.1792 | 42 min, step 24000 |
+| 37 | 0.0546 / 0.6811 / 0.0783 | 0.0845 / 0.6732 / 0.0744 | 0.192 → 0.183 (−5.1%); shadow's own bench 0.1792 → 0.1826 | 42 min, step 29000; the last shadow step (exp074 swaps it in as generator) |
 
 Bare policies, shadow96h_gen36 vs gen36 (policy-only drives, tract, 600 pairs per board): 14x7 0.507 ± 0.010, 16x9 0.512 ± 0.010 — the shadow's policy plays slightly better despite its 0.03 higher KL to the 64x6-anchored target, i.e. most of the KL gap was the metric's bias toward the generator. The fair test (its own data) is exp074.
