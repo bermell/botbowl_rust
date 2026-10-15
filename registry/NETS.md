@@ -68,6 +68,7 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen33 | gen32 | gen31-33 (C1) | 8ba1114 | cq 100, vw 0.36 | step 13000, ep 1 (0.7253); 27 min | −0.0025 / −0.0011 / −0.0023 / +0.0038 / −0.0005 | 0.193, +0.007 (+0.1%) | (on gen34: pending); exp073's reference net |
 | gen34 | gen33 | gen32-34 (C1) | 457120f | cq 100, vw 0.36 | step 500, ep 0 (0.7245) | −0.0020 / +0.0012 / −0.0006 / +0.0025 / −0.0043 | 0.194, +0.019 (+0.7%) | |
 | gen35 | gen34 | gen33-35 (C1) | 02fe686 | cq 100, vw 0.36 | step 500, ep 0 (0.7212) | −0.0026 / −0.0013 / −0.0003 / +0.0025 / −0.0002 | 0.194, +0.023 (+0.1%) | |
+| gen36 | gen35 | gen34-36 (C1) | 02fe686 | cq 100, vw 0.36 | step 33000, ep 2 (0.7177); 29 min | −0.0012 / +0.0006 / +0.0007 / +0.0030 / −0.0016 | 0.196, +0.014 (+0.9%) | |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
@@ -76,7 +77,7 @@ Match results for these nets (drives vs the anchor at gen03 and gen06; policy-on
 
 | net | made by | recipe | numbers |
 |---|---|---|---|
-| `models/az_v7/shadow96h_genNN.{pt,onnx}` | the shadow lineage (plan 063 §shadow), from gen34 | exp073 B96x8h fine-tuned every generation on the loop's window and recipe, never generating | per generation in plan 063's shadow table (value bench −6.2% / −5.7% vs the loop's gen34 / gen35) |
+| `models/az_v7/shadow96h_genNN.{pt,onnx}` | the shadow lineage (plan 063 §shadow), from gen34 | exp073 B96x8h fine-tuned every generation on the loop's window and recipe, never generating | per generation in plan 063's shadow table (value bench −6.2% / −5.7% / −8.7% vs the loop's gen34 / 35 / 36; shadow 0.182 / 0.183 / 0.179) |
 | `runs/exp072/{C64x6,A96x8,B96x8h}/net.{pt,onnx}` (copies `models/az_v7/exp072_*`) | exp072, 2026-10-13/14, `scripts/exp072_bigger_net.sh` at e647d02 | from scratch on v9 gen10-31 (train shards), 10 epochs, batch 256, cosine lr 1e-3 (warmup 2000), BN live, cq τ 100, MC labels, value weight 0.36 per-drive; B = 96x8 + value_conv 64, meanmax, value_hidden 128, policy_conv 96 | [EXPERIMENTS.md](EXPERIMENTS.md#exp072): value bench vs gen31 +14.1% / +2.1% / +2.2% |
 | `runs/exp071/{tau50_vw36,tau100_vw36,lr1e4}/net.{pt,onnx}` | exp071, 2026-10-12, `scripts/exp071_train_step.sh` at 630c8d4 | gen26 → one step on the gen25-27 window (C1), the loop's recipe with one change: τ 50 + value weight 0.36 / value weight 0.36 / lr 1e-4 | [EXPERIMENTS.md](EXPERIMENTS.md#exp071) (value bench −1.5% for `tau100_vw36`, adopted) |
 | `runs/exp069/{cq100r,cq50,cq30,gumbel}/net.{pt,onnx}` | exp069 (plan 059), 2026-10-08; script `scripts/exp069_targets_policy_only.sh` at 81b5842, `prepare` binary 43a45c6 | gen06 → one step on the gen05-07 window, the loop's recipe with only the policy target changed: cq τ 100 (re-run) / 50 / 30, Gumbel σ (c_visit 50, c_scale 0.1, min_range 50) | in [EXPERIMENTS.md](EXPERIMENTS.md#exp069) (absorption, value bench) and [MATCHES.md](MATCHES.md) (policy-only vs gen06) |
