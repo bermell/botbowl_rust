@@ -12,7 +12,8 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:?out dir}"; SUITE="${2:?suite}"; shift 2
 [ $# -ge 1 ] || { echo "need at least one net" >&2; exit 2; }
 DATA="${REPO_DATA:-$REPO}"
-[ -d "$DATA/runs" ] || DATA="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir | xargs dirname)"
+[ -f "$DATA/runs/loopmix16x9g/positions/contested_16x9_gen04g.json" ] \
+    || DATA="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir | xargs dirname)"
 CORPUS="${CORPUS:-$DATA/runs/loopmix16x9v9/gen39/shard4.jsonl}"
 POSITIONS="${POSITIONS:-$DATA/runs/loopmix16x9g/positions/contested_16x9_gen04g.json}"
 BOARD="${BOARD:-16x9}"; CPUS="${CPUS:-6,7}"; PAR="${PAR:-2}"; SEED="${SEED:-64000}"

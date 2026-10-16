@@ -24,16 +24,20 @@ pub enum Stat {
 impl Stat {
     pub const ALL: [Stat; 4] = [Stat::St, Stat::Ma, Stat::Ag, Stat::Av];
 
-    /// The range the random-start generator draws from (`botbowl-curriculum` `*_RANGE`): an
-    /// improvement past it is an input the net has never seen, so it is not probed. Higher is
-    /// better for all four in the engine's representation (AG: target = 7 - ag; AV: armour
-    /// breaks on > av).
+    /// The values a random-start player can actually have: the lineman's baseline (ST 3, MA 6,
+    /// AG 3, AV 8) nudged by at most ±2 (`botbowl-curriculum` `add_random`, which then clamps to
+    /// the wider `*_RANGE`s — those bounds are never reached). An improvement past it is an input
+    /// the net has never seen, so it is not probed — and AG 6 would not even be playable: the
+    /// engine's `ag_target` (7 - ag) has no 1+ target and panics. Higher is better for all four
+    /// in the engine's representation (AG: target = 7 - ag; AV: armour breaks on > av).
     pub fn training_range(self) -> (u8, u8) {
+        let base = PlayerStats::new_lineman(TeamType::Home);
+        let around = |v: u8| (v.saturating_sub(2).max(1), v + 2);
         match self {
-            Stat::St => (1, 6),
-            Stat::Ma => (1, 9),
-            Stat::Ag => (1, PlayerStats::MAX_AG),
-            Stat::Av => (3, 11),
+            Stat::St => around(base.str_),
+            Stat::Ma => around(base.ma),
+            Stat::Ag => around(base.ag),
+            Stat::Av => around(base.av),
         }
     }
 
@@ -300,6 +304,9 @@ pub(crate) mod tests {
                 for stat in Stat::ALL {
                     match bump_stat(&s, p.id, stat, 1) {
                         Ok(e) => {
+                            // Still a playable player: the engine's targets exist (AG 6 has none).
+                            let q = e.get_player_unsafe(p.id);
+                            let _ = (q.ag_target(), q.armor_target());
                             let (cells, global) = encoding_diff(&s, &e);
                             assert!(!global);
                             let want: &[&str] = match stat {
