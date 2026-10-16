@@ -165,8 +165,8 @@ ms on two tract threads; the 64x6 ~2 ms).
 
 | | gen36 | gen39 |
 |---|---|---|
-| level noise `|V(flip) - V|`, p50 / p90 / p99 (600 states) | 0.019 / 0.070 / 0.127 | 0.027 / 0.103 / 0.194 |
-| placebo `|ΔV|` (inert skills), p50 / p99 = `tau` (56,772 edits) | 0.0014 / **0.0112** | 0.0011 / **0.0094** |
+| level noise `\|V(flip) - V\|`, p50 / p90 / p99 (600 states) | 0.019 / 0.070 / 0.127 | 0.027 / 0.103 / 0.194 |
+| placebo `\|ΔV\|` (inert skills), p50 / p99 = `tau` (56,772 edits) | 0.0014 / **0.0112** | 0.0011 / **0.0094** |
 | placebo violations beyond `tau` (the false-alarm rate by construction) | 0.5% | 0.6% |
 
 ### 5.2 Skill monotonicity (suite 1)
@@ -203,11 +203,11 @@ placebo's — **the net is blind to them** (expected: their planes were always z
 
 | | gen36 16x9 | gen39 16x9 | gen36 14x7 | gen39 14x7 |
 |---|---|---|---|---|
-| `|ΔV|` y-flip, mean / p90 / max | 0.029 / 0.070 / 0.20 | **0.043 / 0.103 / 0.35** | 0.033 / 0.077 / 0.14 | 0.048 / 0.096 / 0.27 |
+| `\|ΔV\|` y-flip, mean / p90 / max | 0.029 / 0.070 / 0.20 | **0.043 / 0.103 / 0.35** | 0.033 / 0.077 / 0.14 | 0.048 / 0.096 / 0.27 |
 | policy TV y-flip, mean / p90 | 0.073 / 0.165 | 0.064 / 0.157 | 0.071 / 0.162 | 0.056 / 0.140 |
 | **policy argmax is not the mirrored move** | **10.2%** | **8.8%** | 7.8% | 6.7% |
-| colour swap `|ΔV|` (canary) | 0 exactly | 0 exactly | 0 | 0 |
-| used player's movement `|ΔV|`, mean / max | 0.027 / 0.23 | 0.022 / 0.19 | 0.027 / 0.21 | 0.025 / 0.13 |
+| colour swap `\|ΔV\|` (canary) | 0 exactly | 0 exactly | 0 | 0 |
+| used player's movement `\|ΔV\|`, mean / max | 0.027 / 0.23 | 0.022 / 0.19 | 0.027 / 0.21 | 0.025 / 0.13 |
 
 **Test-time y-flip averaging** (`value-bench --symmetrise`, `scripts/exp075_vbench.sh`, paired on the
 same 3023 states): gen36 RMS 0.196 → **0.194 (−1.2%, dMSE −0.0009 ± 0.0002)**, gen39 0.182 → **0.179
@@ -328,7 +328,21 @@ remains, on a small sample. And in these quiet positions the agents **GFI** (mov
   cannot play (`ag_target` = 7 − ag has no 1+; it panicked on 14x7). The random-start generator's
   `AG_RANGE` upper bound is 6 too — unreachable today only because nudges are ±2 from AG 3. The edit
   ranges are now baseline ±2 (880fd51); worth a guard in the generator (`MAX_AG` should be 5, or
-  `ag_target` should accept 1+).
+  `ag_target` should accept 1+). **The web app reaches it today:** the team editor clamps AG to
+  `botbowl-web/proto` `MAX_AG = 6` (`TeamDef::sanitised`, whose doc says a saved team "cannot panic a
+  session"), and an AG 6 player panics the first time the pathfinder builds his dodge target
+  (`pathing.rs` `GameInfo::new` → `ag_target`). `PlayerStats::MAX_AG`'s own doc ("AG is a D6 target
+  number, so 6 is the worst") reads AG the BB2020 way, the opposite of `ag_target`'s LRB6 one. Lowering
+  `PlayerStats::MAX_AG` is **not** free: the encoder divides the AG plane by it (`AG_NORM`), so it is a
+  schema change. The guards that change no current game: `ag_target` saturating at 2+ (a natural 1
+  always fails, so AG 6 plays as 2+), or the web proto's `MAX_AG` at 5.
+- **Caveats on the yardsticks (review).** The placebo skills' planes, like the never-fielded skills',
+  were zero throughout training, so `tau` is the response of an *untrained* input channel; a trained
+  plane's spurious response can be larger, so "beyond `tau`" is a floor-based screen, not a
+  significance test — the evidence is the per-skill concentration (Wrestle, Jump Up, AV), not the
+  pooled rate. The hill-climb keeps the best of 80 proposals of a noisy function and has no placebo
+  climb as a control, so "climbs ending beyond `tau`" is inflated by selection; which skills top the
+  climbs is the informative part.
 
 ## 7. Suggested fixes and follow-ups
 
@@ -363,5 +377,6 @@ remains, on a small sample. And in these quiet positions the agents **GFI** (mov
 7. **Search**: the stability suite says 1000 descents have not converged; it is the same conclusion
    as the net check, from a different angle — if a budget change is ever on the table, this is the
    cheap per-decision view of it. Track the repeat-flip rate (HashMap order): 10% for gen39 at 1000.
-8. **Engine guard**: `MAX_AG` / `AG_RANGE` vs `ag_target` (§6).
+8. **Engine guard**: `MAX_AG` / `AG_RANGE` vs `ag_target` (§6) — reachable from the web team editor
+   today; a placebo-skill hill-climb as the suite's control.
 

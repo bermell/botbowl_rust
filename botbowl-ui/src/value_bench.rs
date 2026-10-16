@@ -75,7 +75,6 @@ fn line_offsets(path: &str, wanted: &HashSet<usize>) -> io::Result<HashMap<usize
     Ok(out)
 }
 
-/// `Ok(None)` when the state cannot be rebuilt or is not the benchmark's (named on stderr).
 /// The scored value: V(s) in the mover's frame, or (plan 064, `--symmetrise`) its mean with the
 /// top-bottom mirror's, `(V(s) + V(y_flipped s)) / 2`. Returns `(v, Some((plain, flip)))` for the
 /// latter.
@@ -93,6 +92,7 @@ fn scored_value(
     ((plain + flip) / 2.0, Some((plain, flip)))
 }
 
+/// `Ok(None)` when the state cannot be rebuilt or is not the benchmark's (named on stderr).
 fn score(
     nn: &botbowl_nn::eval::NnEvaluator,
     e: &Entry,
