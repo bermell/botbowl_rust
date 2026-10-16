@@ -84,6 +84,7 @@ measure before adding.
 
 - `GameStateBuilder` has `new_at_*` constructors (`new_start_of_game`, `new_at_setup`, `new_at_kickoff`) that fast-forward through earlier procedures so tests can jump straight to the situation under test; the setups they walk through are `auto_setup(&mut state, Formation::Line)`.
 - Actions split into `SimpleAT` (no position) and `PosAT` (positional). `AvailableActions` carries the legal set plus a `FullPitch<Option<Arc<Node>>>` of precomputed pathfinding nodes — pathing is computed once per turn and reused for legality + movement resolution. (`Arc`, not `Rc`, so `GameState: Send` for the multi-threaded MCTS workers.)
+- Analysis helpers nothing in the play path calls: `GameState::mirrored` (x-mirror + sides), `GameState::y_flipped` (the long-axis mirror; legal and playable at a `Turn` decision, otherwise don't step it) and `GameState::reask_turn_decision` (regenerate a `Turn` decision's offerings after an edit; refuses every other procedure). Plan 064's probes are built on them.
 - Bots live in `src/bots.rs` (`Bot` trait + `RandomBot`) and `src/scripted_bot.rs` (scripted heuristic bot).
 - TDD-first: when adding rules, add the failing test first. If a test passes without the new code, the code isn't needed.
 
