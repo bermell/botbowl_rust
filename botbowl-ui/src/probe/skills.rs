@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use botbowl_engine::core::gamestate::GameState;
-use botbowl_engine::core::model::BallState;
+use botbowl_engine::core::model::{BallState, PlayerStatus};
 use botbowl_engine::core::table::Skill;
 use botbowl_nn::perspective::mover_for;
 
@@ -138,6 +138,9 @@ pub struct Row {
     pub side: &'static str,
     pub carrier: bool,
     pub active: bool,
+    /// The player's status (`Up` / `Down` / `Stunned`) and whether he has acted this turn.
+    pub status: PlayerStatus,
+    pub used: bool,
     pub edit: String,
     pub class: SkillClass,
     /// V(s), mover's frame.
@@ -174,6 +177,8 @@ pub fn probe_state(net: &Net, b: &Base, top: usize) -> StateResult {
                 side: if own { "own" } else { "opp" },
                 carrier: s.ball == BallState::Carried(p.id),
                 active: s.info.active_player == Some(p.id),
+                status: p.status,
+                used: p.used,
                 edit: e.label(),
                 class: e.class(),
                 v,
@@ -214,6 +219,10 @@ pub struct EditSummary {
     pub opp_violation: f32,
     /// Mean `|ΔV|` (the size of the response, signed or not).
     pub mean_abs: f32,
+    /// The edits on prone or stunned players, their mean gain and `> tau` violation share.
+    pub n_down: usize,
+    pub down_gain: f32,
+    pub down_violation_gt_tau: f32,
 }
 
 pub fn summarise(rows: &[Row], tau: f32) -> (Vec<EditSummary>, BTreeMap<String, serde_json::Value>) {
@@ -243,6 +252,20 @@ pub fn summarise(rows: &[Row], tau: f32) -> (Vec<EditSummary>, BTreeMap<String, 
                 own_violation: frac(rs.iter().filter(|r| r.side == "own").map(|r| r.gain < 0.0)),
                 opp_violation: frac(rs.iter().filter(|r| r.side == "opp").map(|r| r.gain < 0.0)),
                 mean_abs: gains.iter().map(|g| g.abs()).sum::<f32>() / gains.len().max(1) as f32,
+                n_down: rs.iter().filter(|r| r.status != PlayerStatus::Up).count(),
+                down_gain: {
+                    let d: Vec<f32> = rs
+                        .iter()
+                        .filter(|r| r.status != PlayerStatus::Up)
+                        .map(|r| r.gain)
+                        .collect();
+                    d.iter().sum::<f32>() / d.len().max(1) as f32
+                },
+                down_violation_gt_tau: frac(
+                    rs.iter()
+                        .filter(|r| r.status != PlayerStatus::Up)
+                        .map(|r| r.gain < -tau),
+                ),
             }
         })
         .collect();
@@ -286,8 +309,20 @@ pub fn table(edits: &[EditSummary], tau: f32, noise: &Dist, placebo: &Dist) -> S
         noise.p50, noise.p90, noise.p99, noise.n, placebo.p50, placebo.p90, placebo.n
     );
     t += &format!(
-        "{:<16} {:<14} {:>6} {:>8} {:>8} {:>7} {:>7} {:>7} {:>7} {:>8}\n",
-        "edit", "class", "n", "mean", "median", "viol", ">tau", "own", "opp", "worst"
+        "{:<16} {:<14} {:>6} {:>8} {:>8} {:>7} {:>7} {:>7} {:>7} {:>8} {:>6} {:>9} {:>9}\n",
+        "edit",
+        "class",
+        "n",
+        "mean",
+        "median",
+        "viol",
+        ">tau",
+        "own",
+        "opp",
+        "worst",
+        "n_down",
+        "down_mean",
+        "down>tau"
     );
     let mut sorted: Vec<&EditSummary> = edits.iter().collect();
     sorted.sort_by(|a, b| {
@@ -297,7 +332,7 @@ pub fn table(edits: &[EditSummary], tau: f32, noise: &Dist, placebo: &Dist) -> S
     });
     for e in sorted {
         t += &format!(
-            "{:<16} {:<14} {:>6} {:>+8.4} {:>+8.4} {:>6.1}% {:>6.1}% {:>6.1}% {:>6.1}% {:>+8.4}\n",
+            "{:<16} {:<14} {:>6} {:>+8.4} {:>+8.4} {:>6.1}% {:>6.1}% {:>6.1}% {:>6.1}% {:>+8.4} {:>6} {:>+9.4} {:>8.1}%\n",
             e.edit,
             serde_json::to_value(e.class).unwrap().as_str().unwrap_or("?"),
             e.n,
@@ -307,7 +342,10 @@ pub fn table(edits: &[EditSummary], tau: f32, noise: &Dist, placebo: &Dist) -> S
             100.0 * e.violation_gt_tau,
             100.0 * e.own_violation,
             100.0 * e.opp_violation,
-            e.gain.min
+            e.gain.min,
+            e.n_down,
+            e.down_gain,
+            100.0 * e.down_violation_gt_tau
         );
     }
     t
