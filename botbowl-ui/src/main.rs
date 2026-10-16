@@ -7,6 +7,7 @@ mod live;
 mod override_audit;
 mod placement;
 mod positions;
+mod probe;
 mod replay;
 mod roll_census;
 mod value_bench;
@@ -37,5 +38,6 @@ fn main() -> io::Result<()> {
         cli::Command::ValueBench(args) => value_bench::run(args),
         cli::Command::McLabel(args) => botbowl_ui::mc_label::run(args),
         cli::Command::RollCensus(args) => roll_census::run(args),
+        cli::Command::Probe(args) => probe::run(args),
     }
 }

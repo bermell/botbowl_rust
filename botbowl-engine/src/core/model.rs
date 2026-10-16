@@ -1139,6 +1139,26 @@ impl AvailableActions {
         }
     }
 
+    /// The same offerings reflected across the long axis (`y -> height-1-y`), team unchanged.
+    /// `has_paths` is kept — the path nodes live on `GameState`, see `GameState::y_flipped`.
+    pub fn y_flipped(&self, height: Coord) -> AvailableActions {
+        let positional = self.positional.as_ref().map(|src| {
+            let mut dst: FullPitch<PosATSet> = Default::default();
+            for (pos, sv) in src.iter_position() {
+                if !sv.is_empty() {
+                    dst[Position::new((pos.x, height - 1 - pos.y))] = *sv;
+                }
+            }
+            dst
+        });
+        AvailableActions {
+            team: self.team,
+            simple: self.simple,
+            positional,
+            has_paths: self.has_paths,
+        }
+    }
+
     pub fn insert_simple(&mut self, action_type: SimpleAT) {
         assert!(self.team.is_some());
         self.simple.insert(action_type);

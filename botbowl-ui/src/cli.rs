@@ -55,6 +55,77 @@ pub enum Command {
     /// the engine resolved, by kind (`botbowl_mcts::chance_stats::RollKind`), per drive and per
     /// decision, plus where real ball bounces could go. Headless, read-only.
     RollCensus(RollCensusArgs),
+    /// Plan 064: adversarial fault tests of a net (and its search) — controlled position edits
+    /// whose effect on the value or the move is known, and how often the net gets them wrong.
+    /// CPU (tract) only. Writes `{suite}.{tag}.jsonl`, `.summary.json`, `.worst.json` and
+    /// `worst/*.rec.json` recordings (`botbowl-ui replay` / `snapshot --replay F --step 1`).
+    Probe(ProbeArgs),
+}
+
+/// The plan-064 probe suites. See `probe/mod.rs`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeSuite {
+    /// Add a skill / +1 a characteristic: the owner's value must not drop.
+    Skills,
+    /// Translate a lone back-field player: does the preferred destination stay put?
+    LoneMover,
+    /// Top-bottom mirror, colour swap, a used player's movement: value and policy must not move.
+    Symmetry,
+    /// Rerolls, an extra player, a removed or knocked-down opponent, a carrier one square on.
+    Dominance,
+    /// The search's move across budgets and repeats at one budget.
+    Stability,
+    /// Hill-climb position mutations to maximise a skill-monotonicity violation.
+    Hillclimb,
+}
+
+/// `probe` (plan 064). See `probe/mod.rs`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct ProbeArgs {
+    #[arg(value_enum)]
+    pub suite: ProbeSuite,
+    /// The net (ONNX), always on the tract CPU backend.
+    #[arg(long)]
+    pub model: String,
+    /// Random-start trajectory shards: base states are replayed corpus decisions.
+    #[arg(long, num_args = 1..)]
+    pub corpus: Vec<String>,
+    /// Frozen drive position sets (`cfgs/positions`, `runs/*/positions`): base states are their
+    /// regenerated positions, contested ones first. Suites that need a `Turn` decision (lone
+    /// mover, hill-climb) use only these.
+    #[arg(long, num_args = 1..)]
+    pub positions: Vec<String>,
+    /// Only these playable boards, `16x9` or `16x9/6`; comma-separated or repeated.
+    #[arg(long = "board", value_delimiter = ',')]
+    pub boards: Vec<String>,
+    /// Base states (scenarios for the lone mover), from the corpus and the positions each.
+    #[arg(long, default_value_t = 200)]
+    pub states: usize,
+    #[arg(long, default_value_t = 64_000)]
+    pub seed: u64,
+    /// Threads (each a CPU forward at a time; keep it small next to a live loop).
+    #[arg(long, default_value_t = 1)]
+    pub parallel: usize,
+    /// The search preset for the suites that search (lone mover, stability).
+    #[arg(long, default_value = "cfgs/chance_all_partial.toml")]
+    pub search_config: std::path::PathBuf,
+    /// Search budgets (descents). Empty = policy only.
+    #[arg(long, value_delimiter = ',', default_values_t = [250usize, 1000])]
+    pub budgets: Vec<usize>,
+    /// Worst cases dumped.
+    #[arg(long, default_value_t = 20)]
+    pub top: usize,
+    /// Lone mover: start squares per scenario at most.
+    #[arg(long, default_value_t = 16)]
+    pub starts: usize,
+    /// Hill-climb: mutation proposals per start.
+    #[arg(long, default_value_t = 60)]
+    pub steps: usize,
+    #[arg(long)]
+    pub out_dir: String,
+    /// Output name tag; defaults to the model's file stem.
+    #[arg(long)]
+    pub tag: Option<String>,
 }
 
 /// `roll-census` (plan 061). See `roll_census.rs`.
