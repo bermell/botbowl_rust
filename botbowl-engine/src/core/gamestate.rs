@@ -1567,6 +1567,73 @@ impl GameState {
         out
     }
 
+    /// Reflect the situation across the pitch's long axis (`y -> height-1-y`), sides unchanged:
+    /// left and right of the attacking direction swap. A true symmetry of the rules (the NN
+    /// trainer's y-flip augmentation rests on it), so a correct evaluator values `s` and
+    /// `s.y_flipped()` the same. Plan 064's symmetry probe measures how far a net is from that.
+    ///
+    /// Players, the board index, the ball, `bounce_squares` and the positional offerings are
+    /// flipped. The **procedure stack** is not, so in general the result must not be stepped —
+    /// except at a `Turn` decision, whose stack holds no squares: there the flipped state is a
+    /// legal state that plays on. **Path offerings** keep their `has_paths` flag (an encoder
+    /// recomputes them from the state) but the path buffer is dropped, so `get_all_actions()`
+    /// has no path actions.
+    ///
+    /// Test/analysis helper — nothing in the engine's play path calls it.
+    pub fn y_flipped(&self) -> GameState {
+        let height = self.board_dims.height;
+        let flip = |p: Position| Position::new((p.x, height - 1 - p.y));
+
+        let mut out = self.clone();
+        for player in out.fielded_players.iter_mut().flatten() {
+            player.position = flip(player.position);
+        }
+        out.board = Default::default();
+        for player in out.fielded_players.iter().flatten() {
+            out.board[player.position].set(Some(player.id));
+        }
+        out.ball = match self.ball {
+            BallState::OnGround(p) => BallState::OnGround(flip(p)),
+            BallState::InAir(p) => BallState::InAir(flip(p)),
+            other => other,
+        };
+        out.bounce_squares = self.bounce_squares.iter().map(|p| flip(*p)).collect();
+        out.available_actions = Box::new(self.available_actions.y_flipped(height));
+        out.path_buffer = None;
+        out
+    }
+
+    /// Ask the `Turn` procedure on top of the stack for its offerings again, after the caller
+    /// edited the state (moved a player, gave one a skill). The offerings of an edited state are
+    /// stale: they still name the squares and players of the state before the edit.
+    ///
+    /// Only a `Turn` decision is re-askable: `Turn` recomputes its offerings from the state on
+    /// every ask and changes nothing else, so re-asking an unedited state is the identity. Most
+    /// other procedures advance an internal stage when asked (`MoveAction` panics on a second
+    /// ask), so the call refuses them, and a pending roll, and leaves the state untouched.
+    ///
+    /// Analysis helper (plan 064's position probes) — nothing in the play path calls it.
+    pub fn reask_turn_decision(&mut self) -> std::result::Result<(), String> {
+        if !matches!(self.proc_stack_peek(), Some(AnyProc::Turn(_))) {
+            return Err(format!("not a Turn decision (top: {:?})", self.proc_stack_top()));
+        }
+        if self.pending_roll.is_some() || self.available_actions.team.is_none() {
+            return Err("not waiting on an action".into());
+        }
+        // `Turn::step` would act on these instead of asking.
+        if self.info.handle_td_by.is_some() || self.info.turnover || self.info.kickoff_by_team.is_some() {
+            return Err("the turn is ending".into());
+        }
+        if self.available_actions.has_paths {
+            self.clear_path_buffer();
+        }
+        *self.available_actions = AvailableActions::default();
+        match self.micro_step(ProcInput::Nothing) {
+            MicroStepState::NeedAction => Ok(()),
+            other => panic!("re-asking a Turn decision did not ask: {other:?}"),
+        }
+    }
+
     /// Gather every legal action — simple, positional, and path-style. Sorts
     /// at the end because `AvailableActions::simple` is a `HashSet` whose
     /// iteration order is randomized per run, and `RandomBot::get_action`
@@ -2478,5 +2545,188 @@ mod runtime_board_dims_tests {
         // the arrays can't hold it, so you'd have to recompile larger.
         let over = (crate::core::model::WIDTH as i8) + 2;
         let _ = BoardDims::new(over, H, PLAYERS);
+    }
+}
+
+/// Plan 064's analysis helpers: the top-bottom mirror and re-asking a `Turn` decision after an
+/// edit. Nothing in the play path calls either.
+#[cfg(test)]
+mod probe_helper_tests {
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    use crate::bots::{Bot, RandomBot};
+    use crate::core::gamestate::{DiceMode, GameState, GameStateBuilder};
+    use crate::core::model::{Action, BallState, Position};
+    use crate::core::procedures::AnyProc;
+    use crate::core::table::PosAT;
+
+    fn at_turn_decision(state: &GameState) -> bool {
+        matches!(state.proc_stack_peek(), Some(AnyProc::Turn(_))) && state.available_actions.team.is_some()
+    }
+
+    /// Every decision of a seeded random game, flagged `true` at a `Turn` decision.
+    fn decisions(seed: u64, max: usize) -> Vec<(GameState, bool)> {
+        let mut state = GameStateBuilder::new_start_of_game();
+        state.set_logging_state(false);
+        state.set_seed(seed);
+        state.set_dice_mode(DiceMode::RollDice);
+        let mut bot = RandomBot::new();
+        bot.set_seed(ChaCha8Rng::seed_from_u64(seed));
+        let mut out = Vec::new();
+        for _ in 0..4000 {
+            if state.info.game_over || out.len() >= max {
+                break;
+            }
+            if state.available_actions.team.is_some() {
+                out.push((state.clone(), at_turn_decision(&state)));
+            }
+            let a = bot.get_action(&state);
+            state.step(a).unwrap();
+        }
+        out
+    }
+
+    fn flip_action(a: Action, height: i8) -> Action {
+        match a {
+            Action::Positional(at, p) => Action::Positional(at, Position::new((p.x, height - 1 - p.y))),
+            simple => simple,
+        }
+    }
+
+    #[test]
+    fn y_flipping_twice_is_the_identity() {
+        let mut n = 0;
+        for seed in 0..4 {
+            for (s, _) in decisions(seed, 300) {
+                assert!(s.y_flipped().y_flipped() == s, "seed {seed}");
+                n += 1;
+            }
+        }
+        assert!(n > 500, "too few decisions: {n}");
+    }
+
+    /// The flip moves players and the ball and nothing else: same ids, stats, statuses, counters.
+    #[test]
+    fn y_flip_moves_players_and_ball_only() {
+        for (s, _) in decisions(7, 200) {
+            let f = s.y_flipped();
+            let h = s.board_dims.height;
+            for p in s.get_players_on_pitch() {
+                let q = f.get_player(p.id).unwrap();
+                assert_eq!(q.position, Position::new((p.position.x, h - 1 - p.position.y)));
+                assert_eq!(
+                    (&q.stats, q.status, q.used, q.moves),
+                    (&p.stats, p.status, p.used, p.moves)
+                );
+                assert_eq!(
+                    f.get_player_id_at(q.position),
+                    Some(p.id),
+                    "board index follows the player"
+                );
+            }
+            assert_eq!(f.get_players_on_pitch().count(), s.get_players_on_pitch().count());
+            match (s.ball, f.ball) {
+                (BallState::OnGround(a), BallState::OnGround(b)) | (BallState::InAir(a), BallState::InAir(b)) => {
+                    assert_eq!(b, Position::new((a.x, h - 1 - a.y)))
+                }
+                (a, b) => assert_eq!(a, b),
+            }
+            assert!(f.info == s.info && f.home == s.home && f.away == s.away);
+            assert_eq!(f.available_actions.has_paths(), s.available_actions.has_paths());
+        }
+    }
+
+    /// At a `Turn` decision the procedure stack holds no squares, so the flipped state is a legal
+    /// state: it offers exactly the flipped actions, and a game played on from it runs.
+    #[test]
+    fn a_y_flipped_turn_decision_offers_the_flipped_actions_and_plays_on() {
+        let mut checked = 0;
+        for seed in 10..14 {
+            for (s, turn) in decisions(seed, 400) {
+                if !turn {
+                    continue;
+                }
+                let mut f = s.y_flipped();
+                let h = s.board_dims.height;
+                let mut want: Vec<Action> = s.get_all_actions().into_iter().map(|a| flip_action(a, h)).collect();
+                want.sort();
+                assert_eq!(f.get_all_actions(), want, "seed {seed}");
+                let mut bot = RandomBot::new();
+                bot.set_seed(ChaCha8Rng::seed_from_u64(seed));
+                f.set_seed(seed);
+                f.set_dice_mode(DiceMode::RollDice);
+                for _ in 0..60 {
+                    if f.info.game_over {
+                        break;
+                    }
+                    let a = bot.get_action(&f);
+                    f.step(a).unwrap();
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "too few turn decisions: {checked}");
+    }
+
+    #[test]
+    fn re_asking_a_turn_decision_changes_nothing() {
+        let mut n = 0;
+        for seed in 20..24 {
+            for (s, turn) in decisions(seed, 300) {
+                if !turn {
+                    continue;
+                }
+                let mut r = s.clone();
+                r.reask_turn_decision().unwrap();
+                assert!(r == s, "seed {seed}");
+                assert_eq!(r.get_all_actions(), s.get_all_actions());
+                n += 1;
+            }
+        }
+        assert!(n > 20, "too few turn decisions: {n}");
+    }
+
+    /// After an edit the offerings are stale; re-asking makes them follow the edit.
+    #[test]
+    fn re_asking_a_turn_decision_follows_a_moved_player() {
+        let (mut s, _) = decisions(30, 300)
+            .into_iter()
+            .find(|(s, turn)| {
+                *turn
+                    && s.get_all_actions()
+                        .iter()
+                        .any(|a| matches!(a, Action::Positional(PosAT::StartMove, _)))
+            })
+            .unwrap();
+        let team = s.available_actions.team.unwrap();
+        let p = s
+            .get_players_on_pitch_in_team(team)
+            .find(|p| s.is_legal_action(&Action::Positional(PosAT::StartMove, p.position)))
+            .unwrap()
+            .clone();
+        let dims = s.board_dims;
+        let to = Position::all_positions()
+            .find(|q| !dims.is_out(*q) && s.get_player_at(*q).is_none() && s.get_ball_position() != Some(*q))
+            .unwrap();
+        s.move_player(p.id, to).unwrap();
+        assert!(
+            !s.is_legal_action(&Action::Positional(PosAT::StartMove, to)),
+            "stale before re-asking"
+        );
+        s.reask_turn_decision().unwrap();
+        assert!(s.is_legal_action(&Action::Positional(PosAT::StartMove, to)));
+        assert!(!s.is_legal_action(&Action::Positional(PosAT::StartMove, p.position)));
+    }
+
+    #[test]
+    fn re_asking_refuses_anything_but_a_turn_decision() {
+        let (s, _) = decisions(40, 300)
+            .into_iter()
+            .find(|(s, turn)| !turn && s.available_actions.has_paths())
+            .unwrap();
+        let mut r = s.clone();
+        assert!(r.reask_turn_decision().is_err());
+        assert!(r == s, "a refused re-ask leaves the state alone");
     }
 }

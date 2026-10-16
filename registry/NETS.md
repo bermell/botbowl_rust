@@ -76,6 +76,19 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
 
+### Probe numbers (plan 064, [exp075](EXPERIMENTS.md#exp075))
+
+`botbowl-ui probe`, 16x9/6, seed 64000, tract. Skills: share of beneficial edits whose owner loses more
+than `tau` (the p99 of `|ΔV|` for rule-less skills). Symmetry: mean `|V(y-flip) − V|`, share of policy
+argmaxes that are not the mirrored move. Dominance: knock-down-an-opponent / carrier-one-square-on
+violations beyond `tau`. Lone mover: share of starts at the modal destination (policy / search@1000).
+Value bench sym: RMS with the value averaged over the y-flip (paired change vs plain).
+
+| net | skills >tau (tau) | Wrestle / Jump Up / AV+1 own-worse | y-flip `\|ΔV\|`; argmax off | dominance knock-down / carrier | lone mover | value bench sym |
+|---|---|---|---|---|---|---|
+| gen36 | 2.0% (0.0112) | 7.8% / 11.8% / 85% | 0.029; 10.2% | 4.7% / 11.6% | 62.5% / 53.5% | 0.194 (−1.2%) |
+| gen39 | 1.7% (0.0094) | 8.3% / 4.8% / 86% | 0.043; 8.8% | 4.0% / 9.3% | 66.0% / 51.4% | 0.179 (−1.9%) |
+
 ## Experiment arms (not in the loop)
 
 | net | made by | recipe | numbers |

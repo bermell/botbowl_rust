@@ -1,7 +1,7 @@
 # CLAUDE.md — botbowl-ui
 
 The terminal frontend (`live`, `replay`, `snapshot`, `curriculum`, `placement` — an interactive random-start bias tuner) and the headless single-process shells: `dataset` / `eval` over
-`botbowl-play`, the loop stage `mc-label` (MC-averaged value labels, plan 056), plus read-only probes (`convergence`, `positions`, `override-audit`, `value-bench`). Subcommands
+`botbowl-play`, the loop stage `mc-label` (MC-averaged value labels, plan 056), plus read-only probes (`convergence`, `positions`, `override-audit`, `value-bench`, `probe`). Subcommands
 are declared in `src/cli.rs` and dispatched in `src/main.rs`; each lives in its own module. The `dataset`/`eval` flag structs
 live in `botbowl_play::cli_args` (feature `cli`), shared with `botbowl-hub job generate`/`job eval`; `cli.rs` re-exports them.
 
@@ -44,6 +44,25 @@ Things that are easy to get wrong:
   calibration uses. A control row plays only `a_p`; its `search` arm is a copy.
 - **The search is fresh**, with no tree inherited from earlier decisions of the turn, unlike real
   play. Use a deterministic preset (`gumbel_scale = 0`); a noisy one is warned about.
+
+## `probe` (plan 064, `src/probe/`)
+
+Adversarial fault tests: controlled edits with a known effect on replayed corpus decisions
+(`--corpus`) and regenerated drive positions (`--positions`), on **tract only** (no sidecar; raw value
+head, mover's frame). Suites: `skills`, `lone-mover`, `symmetry`, `dominance`, `stability`,
+`hillclimb`; `scripts/exp075_probes.sh` runs them pinned to two cores. Things that are easy to get
+wrong:
+
+- **Edits leave the offerings stale.** A value forward does not care (the encoder recomputes the
+  path plane), but anything that plays on must edit a `Turn` decision and call
+  `GameState::reask_turn_decision` (`edits::reasked`); no other procedure is re-askable.
+- **Characteristic edits stay inside what random starts produce** (lineman baseline ±2,
+  `Stat::training_range`). AG 6 is unplayable (`ag_target` panics).
+- **`tau` is the placebo floor** (p99 `|ΔV|` for skills no rule reads), not the y-flip noise, which is
+  a level error 5-15x larger.
+- **Lone mover: a destination is one `Move`** (pruning P1 + P8), and `V_X` ignores the risk of
+  getting to X — read `regret` / `follow-V` as upper bounds (plan 064 §6).
+- `value-bench --symmetrise` scores V averaged over the y-flip (off by default).
 
 ## `value-bench` (plan 056 §2, `src/value_bench.rs`)
 

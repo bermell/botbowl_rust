@@ -8,6 +8,46 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp075"></a>exp075: adversarial probes of gen36 (64x6) and gen39 (96x8 + heads), run 2026-10-16/17
+
+- **Question:** where are the value/policy net and the search wrong in ways averaged benchmarks hide —
+  skills that lower their owner's value, mirror images valued differently, dominated edits that move
+  the value the wrong way, a lone player whose best square depends on where he starts? (plan 064)
+- **Setup:** `botbowl-ui probe <suite>` (plan 064 §1, tract/CPU only, 2 threads, nice 19),
+  `scripts/exp075_probes.sh runs/exp075 SUITE models/az_v7/bbnet_mix16x9v9_gen{36,39}.onnx`, seed 64000,
+  board 16x9/6 (and 14x7/4 for symmetry, skills, dominance). Base states: 150-300 decisions from
+  `runs/loopmix16x9v9/gen39/shard4.jsonl` (val shard; replayed) + 150-300 positions of
+  `runs/loopmix16x9g/positions/contested_16x9_gen04g.json` (14x7: `contested_14x7_gen04g`). Searches:
+  `cfgs/chance_all_partial.toml` at 250 / 1000 / 4000 descents. Commits per suite in each
+  `*.summary.json` header: symmetry e6a198d, lone mover / stability 8aa7c25, skills / dominance /
+  hill-climb 880fd51. Value bench: `scripts/exp075_vbench.sh runs/value_bench/v9_gen01_val.jsonl ...`
+  (`value-bench --symmetrise`, e6a198d). Noise floor `tau` = p99 of `|ΔV|` for skills with no rules.
+- **Result (gen36 → gen39):**
+  - **Skills:** pooled beneficial edits violate beyond `tau` 2.0% → 1.7% (placebo 0.5%). Worst
+    skills: Wrestle 7.8% → 8.3%, Jump Up 11.8% → 4.8%, Guard 1.9% → 2.5%, Catch 0.9% → 2.3%. AV+1
+    lowers an own player's side 85% → 86% of the time (small, consistent). Never-fielded skills are
+    invisible (placebo-level).
+  - **Symmetry:** y-flip `|ΔV|` mean 0.029 → **0.043**, max 0.20 → 0.35; policy argmax not the
+    mirrored move 10.2% → 8.8%; colour swap 0 exactly; a used player's movement moves V by 0.027 →
+    0.022 (max 0.23). Test-time y-flip averaging: value bench RMS **−1.2% (gen36) / −1.9% (gen39)**,
+    paired, > 4 σ.
+  - **Dominance (beyond `tau`):** knock down an opponent 4.7% → 4.0% (worst −0.21 → −0.30), carrier
+    one square on in open field 12% → 9%, add an own player 3.8% → 1.1%; violations 2-3x more common
+    at activation decisions than at turn starts.
+  - **Hill-climb:** 80 mutations raise the worst skill violation from 0.029 → 0.071 (gen36) and
+    0.044 → 0.109 (gen39); 48% → 60% of climbs end beyond `tau`.
+  - **Lone mover (12 scenarios, 140 starts):** policy keeps one destination 62.5% → 66%, search@1000
+    53.5% → 51%; mostly a frontier effect (the wanted square is out of reach; moves use the full MA),
+    but with the mode within 5 squares still only ~42-54%, and the agents GFI in quiet positions
+    16-25% of starts.
+  - **Stability (40 decisions):** 1000 vs 4000 descents pick different moves 40% → 20% (median Q gap
+    0.06 / 0.09); a repeat at 1000 differs 2.5% → 10%.
+- **Conclusion:** failures are skill- and context-specific (rare-event skills, the mirror, irrelevant
+  inputs, activation context), not capacity: the 96x8 fixes some (Jump Up, adding players) and worsens
+  others (mirror, Catch, Guard). Proposed (plan 064 §7, none adopted): symmetrised inference, an
+  invariance loss, rare-skill credit (paired regulariser or event-centred positions), decision context in
+  the encoding, lone mover v2, and a standing `probe_check.sh`.
+
 ### <a id="exp074"></a>exp074: the 96x8 + heads lineage generates (trial), started 2026-10-15
 
 - **Question:** does a 96x8 + bigger-heads net, once it generates its own data (its own prior in the cq
