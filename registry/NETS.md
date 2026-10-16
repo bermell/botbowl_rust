@@ -70,6 +70,7 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen35 | gen34 | gen33-35 (C1) | 02fe686 | cq 100, vw 0.36 | step 500, ep 0 (0.7212) | −0.0026 / −0.0013 / −0.0003 / +0.0025 / −0.0002 | 0.194, +0.023 (+0.1%) | |
 | gen36 | gen35 | gen34-36 (C1) | 02fe686 | cq 100, vw 0.36 | step 33000, ep 2 (0.7177); 29 min | −0.0012 / +0.0006 / +0.0007 / +0.0030 / −0.0016 | 0.196, +0.014 (+0.9%) | on gen37 (C1): +0.002/+0.003/+0.006/+0.012 MONOTONE; 0.76; 0.189, −0.001; **exp074's 64x6 reference** |
 | gen37 | gen36 | gen35-37 (C1) | eadbe8a | cq 100, vw 0.36 | step 23000, ep 1 (0.7146); 28 min | −0.0037 / −0.0002 / −0.0010 / +0.0038 / +0.0005 | 0.192, +0.013 (−2.0%) | the last 64x6 of the lineage (exp074) |
+| **gen38** (**96x8 + heads**, exp074) | shadow96h_gen37 | gen36-38 (64x6-generated) | eadbe8a | cq 100, vw 0.36 | step 22000, ep 1 (0.7378); 41 min | +0.0011 / +0.0002 / +0.0004 / −0.0012 / +0.0069 (vs shadow96h_gen37) | **0.179**, −0.003 (−1.9% vs shadow96h_gen37; the run's best) | |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).

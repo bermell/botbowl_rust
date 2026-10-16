@@ -29,6 +29,8 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
+| 38 | v9 gen37 (64x6, the last) | 8×400 (5801) | 200,702 | eadbe8a | 48 local, 2 sidecars; 163 min | C1; **labelled by the 96x8** shadow96h_gen37 (exp074 swap), 208 min |
+| 37 | v9 gen36 (64x6) | 8×400 (5804) | 204,997 | 02fe686 | 48 local, 2 sidecars; 209 min, shared with gen36's drives | C1 |
 | 34 | v9 gen33 | 8×400 (5791) | 201,720 | 8ba1114 | 48 local, 2 sidecars; 200 min, shared with gen33's drives | C1 |
 | 33 | v9 gen32 | 8×400 (5841) | 197,940 | 8ba1114 | 48 local, 2 sidecars; 252 min, shared with exp072's drives | C1 |
 | 32 | v9 gen31 | 8×400 (5770) | 199,226 | 3599c01 | 48 local, 2 sidecars; 162 min | C1; MC labels 176 min (shared with exp072's drives, after the exp072 pause) |
