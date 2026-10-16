@@ -76,11 +76,29 @@ fn line_offsets(path: &str, wanted: &HashSet<usize>) -> io::Result<HashMap<usize
 }
 
 /// `Ok(None)` when the state cannot be rebuilt or is not the benchmark's (named on stderr).
+/// The scored value: V(s) in the mover's frame, or (plan 064, `--symmetrise`) its mean with the
+/// top-bottom mirror's, `(V(s) + V(y_flipped s)) / 2`. Returns `(v, Some((plain, flip)))` for the
+/// latter.
+fn scored_value(
+    nn: &botbowl_nn::eval::NnEvaluator,
+    state: &botbowl_engine::core::gamestate::GameState,
+    mover: botbowl_engine::core::model::TeamType,
+    symmetrise: bool,
+) -> (f32, Option<(f32, f32)>) {
+    let plain = value_for(nn, state, mover);
+    if !symmetrise {
+        return (plain, None);
+    }
+    let flip = value_for(nn, &state.y_flipped(), mover);
+    ((plain + flip) / 2.0, Some((plain, flip)))
+}
+
 fn score(
     nn: &botbowl_nn::eval::NnEvaluator,
     e: &Entry,
     offset: Option<u64>,
     model: &str,
+    symmetrise: bool,
 ) -> io::Result<Option<String>> {
     let id = format!("{}:{}:{}", e.corpus, e.line, e.sample);
     let Some(offset) = offset else {
@@ -117,7 +135,12 @@ fn score(
         }
     }
     let mut row = e.raw.clone();
-    row.insert("v".into(), Value::from(value_for(nn, &state, mover) as f64));
+    let (v, parts) = scored_value(nn, &state, mover, symmetrise);
+    row.insert("v".into(), Value::from(v as f64));
+    if let Some((plain, flip)) = parts {
+        row.insert("v_plain".into(), Value::from(plain as f64));
+        row.insert("v_flip".into(), Value::from(flip as f64));
+    }
     row.insert("model".into(), Value::from(model));
     Ok(Some(serde_json::to_string(&row)?))
 }
@@ -159,7 +182,7 @@ pub fn run(args: ValueBenchArgs) -> io::Result<()> {
             let i = next.fetch_add(1, Ordering::Relaxed);
             let Some(e) = entries.get(i) else { return Ok(()) };
             let offset = offsets.get(&(e.corpus.clone(), e.line)).copied();
-            if let Some(line) = score(&nn, e, offset, &args.model)? {
+            if let Some(line) = score(&nn, e, offset, &args.model, args.symmetrise)? {
                 let mut f = out.lock().expect("output mutex");
                 f.write_all(line.as_bytes())?;
                 f.write_all(b"\n")?;
@@ -283,6 +306,7 @@ mod tests {
             nn_server: None,
             parallel: 3,
             out: out.to_str().unwrap().into(),
+            symmetrise: false,
         })
         .unwrap();
 
@@ -305,5 +329,20 @@ mod tests {
             assert_eq!(r["model"], TINY);
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `--symmetrise` scores the mean of the state's and its mirror's value; off, the plain value.
+    #[test]
+    fn symmetrising_averages_the_value_over_the_mirror() {
+        let nn = NnEvaluator::from_path(TINY).unwrap();
+        let t = trajectory(4244);
+        let state = replay_to(&t, 0).unwrap();
+        let mover = state.available_actions.team.unwrap();
+        let (plain, none) = scored_value(&nn, &state, mover, false);
+        assert_eq!((plain, none), (value_for(&nn, &state, mover), None));
+        let (v, parts) = scored_value(&nn, &state, mover, true);
+        let flip = value_for(&nn, &state.y_flipped(), mover);
+        assert_eq!(parts, Some((plain, flip)));
+        assert_eq!(v, (plain + flip) / 2.0);
     }
 }

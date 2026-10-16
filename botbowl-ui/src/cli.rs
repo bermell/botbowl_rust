@@ -211,6 +211,10 @@ pub struct ValueBenchArgs {
     /// Output JSONL: every benchmark line with `v` (the net's V(s), mover's frame) and `model` added.
     #[arg(long)]
     pub out: String,
+    /// Plan 064: score `v = (V(s) + V(y_flipped s)) / 2`, the value averaged over the top-bottom
+    /// mirror (test-time augmentation); `v_plain` and `v_flip` are written too.
+    #[arg(long)]
+    pub symmetrise: bool,
 }
 
 /// `positions`: the candidate positions of a drive-rung set on one board.
