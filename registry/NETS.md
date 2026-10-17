@@ -71,7 +71,8 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen36 | gen35 | gen34-36 (C1) | 02fe686 | cq 100, vw 0.36 | step 33000, ep 2 (0.7177); 29 min | −0.0012 / +0.0006 / +0.0007 / +0.0030 / −0.0016 | 0.196, +0.014 (+0.9%) | on gen37 (C1): +0.002/+0.003/+0.006/+0.012 MONOTONE; 0.76; 0.189, −0.001; **exp074's 64x6 reference** |
 | gen37 | gen36 | gen35-37 (C1) | eadbe8a | cq 100, vw 0.36 | step 23000, ep 1 (0.7146); 28 min | −0.0037 / −0.0002 / −0.0010 / +0.0038 / +0.0005 | 0.192, +0.013 (−2.0%) | the last 64x6 of the lineage (exp074) |
 | **gen38** (**96x8 + heads**, exp074) | shadow96h_gen37 | gen36-38 (64x6-generated) | eadbe8a | cq 100, vw 0.36 | step 22000, ep 1 (0.7378); 41 min | +0.0011 / +0.0002 / +0.0004 / −0.0012 / +0.0069 (vs shadow96h_gen37) | **0.179**, −0.003 (−1.9% vs shadow96h_gen37; the run's best) | |
-| gen39 (96x8 + heads) | gen38 | gen37-39 (gen39 its own) | bff9be0 | cq 100, vw 0.36 | step 34000, ep 2 (0.7375); 42 min | −0.0031 / −0.0006 / −0.0019 / **−0.0049** / −0.0063 | 0.182, +0.010 (+1.8%, worse) | |
+| gen39 (96x8 + heads) | gen38 | gen37-39 (gen39 its own) | bff9be0 | cq 100, vw 0.36 | step 34000, ep 2 (0.7375); 42 min | −0.0031 / −0.0006 / −0.0019 / **−0.0049** / −0.0063 | 0.182, +0.010 (+1.8%, worse) | on gen40 (C1, its own corpus): +0.001/+0.002/+0.004/+0.008 MONOTONE; 0.83; 0.182, −0.008 |
+| gen40 (96x8 + heads) | gen39 | gen38-40 | 36b8597 | cq 100, vw 0.36 | step 17000, ep 1 (0.7276); 62 min | −0.0016 / −0.0012 / −0.0014 / −0.0009 / +0.0000 | **0.181**, +0.022 (−1.0%) | |
 
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).

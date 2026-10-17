@@ -75,6 +75,7 @@ Defaults unless a row says otherwise:
 
 | A | vs B | 14x7 | 16x9 | commit | date |
 |---|---|---|---|---|---|
+| **v9 gen39 (96x8 + heads, exp074)** (C1 both sides) | d1k gen04 v9 | 0.530 ± 0.012 (undecided at 400 pairs) | **0.613 ± 0.035 (H1, 51 pairs)** | bff9be0 | 2026-10-17 |
 | v9 gen36 (C1 both sides) | d1k gen04 v9 | 0.537 ± 0.019 (H1, 139 pairs) | 0.587 ± 0.028 (H1, 81 pairs) | 02fe686 | 2026-10-15 |
 | v9 gen33 (C1 both sides) | d1k gen04 v9 | 0.561 ± 0.019 (H1, 152 pairs) | 0.592 ± 0.032 (H1, 69 pairs) | 8ba1114 | 2026-10-14 |
 | v9 gen30 (C1 both sides, value weight 0.36 from gen28) | d1k gen04 v9 | 0.595 ± 0.032 (H1 after 45 pairs: early stop, wide) | 0.567 ± 0.025 (H1, 106 pairs) | 3599c01 | 2026-10-13 |
