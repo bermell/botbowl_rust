@@ -822,8 +822,10 @@ impl FieldedPlayer {
         Sum2D6Target::try_from(self.stats.av + 1).unwrap()
     }
 
+    /// The AG roll's target, `7 - AG`. There is no 1+ roll, so AG 6 (legal, e.g. on a custom web
+    /// team, though never generated for training) saturates at 2+, as does anything higher.
     pub fn ag_target(&self) -> D6Target {
-        D6Target::try_from(7 - self.stats.ag).unwrap()
+        D6Target::try_from(7u8.saturating_sub(self.stats.ag).clamp(2, 6)).unwrap()
     }
 
     pub fn pass_target(&self) -> D6Target {
@@ -1381,5 +1383,36 @@ mod player_stats_tests {
                 assert!(stats.av <= PlayerStats::MAX_AV, "{:?} AV {}", stats.role, stats.av);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ag_target_tests {
+    use crate::core::dices::D6Target;
+    use crate::core::gamestate::GameStateBuilder;
+    use crate::core::model::{PlayerStats, Position, TeamType};
+
+    fn ag_target_for(ag: u8) -> D6Target {
+        let mut stats = PlayerStats::new_lineman(TeamType::Home);
+        stats.ag = ag;
+        let pos = Position::new((5, 5));
+        let state = GameStateBuilder::new()
+            .add_player_details(pos, TeamType::Home, stats)
+            .build();
+        state.get_player_at(pos).unwrap().ag_target()
+    }
+
+    /// AG is stored the classic way (target = 7 - AG). An AG 6 player is legal (a custom web team
+    /// can field one) but there is no 1+ roll: the target saturates at 2+ instead of panicking.
+    #[test]
+    fn ag_six_saturates_at_two_plus() {
+        assert_eq!(ag_target_for(6), D6Target::TwoPlus);
+    }
+
+    #[test]
+    fn the_usual_range_is_unchanged() {
+        assert_eq!(ag_target_for(1), D6Target::SixPlus);
+        assert_eq!(ag_target_for(3), D6Target::FourPlus);
+        assert_eq!(ag_target_for(5), D6Target::TwoPlus);
     }
 }

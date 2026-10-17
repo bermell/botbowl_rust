@@ -380,3 +380,4 @@ remains, on a small sample. And in these quiet positions the agents **GFI** (mov
 8. **Engine guard**: `MAX_AG` / `AG_RANGE` vs `ag_target` (§6) — reachable from the web team editor
    today; a placebo-skill hill-climb as the suite's control.
 
+**AG 6 fixed (2026-10-17, the user):** `FieldedPlayer::ag_target` now saturates at 2+ (`clamp(7 - AG, 2, 6)`), so an AG-6 player (legal, e.g. on a custom web team; never generated for training) no longer panics. AG 1-5 targets are unchanged, so no loop game changes. Tests: `ag_target_tests` in `botbowl-engine/src/core/model.rs`.
