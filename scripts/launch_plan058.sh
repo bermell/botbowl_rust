@@ -41,7 +41,8 @@ export MODEL_DIR="$M" INIT_CHAMPION="$INIT"
 export ANCHOR="$M/anchor_mix16x9_gen13_v9.onnx" ANCHOR_EVERY=0 P1_GAMES=0 EVAL_BOARD_SIZES=14x7,16x9 EVAL_RUNGS= EVAL_GAMES=30
 export MCTS_ITERS=1000 EVAL_MCTS_ITERS=1000 GEN_BOT_CONFIG="$GUMBEL_GEN" EVAL_BOT_CONFIG="$GUMBEL_EVAL" EXPLORE_ARGS=""
 export EVAL_VENUE=drives DRIVE_REF="$M/bbnet_mix16x9d1k_gen04_v9.onnx" DRIVE_SPRT=0.5:0.55 DRIVE_CAP=800
-export DRIVE_POSITIONS="$POS/contested_14x7_gen04g.json,$POS/contested_16x9_gen04g.json"
+# 16x9 only from 2026-10-18 (the user: "We can stop playing on 14x7, bigger boards is the thing now").
+export DRIVE_POSITIONS="$POS/contested_16x9_gen04g.json"
 export ORIGIN_EVERY=0
 # Plan 059: cq tau 50 ran gen09-11 (the user, 2026-10-08) and did not speed up the policy (§7: gen11 vs
 # gen08 policy-only 0.496 against tau 100's 0.507 over the previous three steps); back to tau 100 from
