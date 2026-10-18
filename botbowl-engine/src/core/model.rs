@@ -79,9 +79,89 @@ impl<'de> Deserialize<'de> for BoardCell {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// A per-square array at the compiled **capacity** (`WIDTH x HEIGHT`), the active board inset in
+/// its low corner. `Serialize` is derived (`{"data": [[cell; HEIGHT]; WIDTH]}`); `Deserialize` is
+/// capacity-portable in a human-readable format (plan 065): a corpus written by a binary of another
+/// capacity loads here, see [`FullPitch::deserialize`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FullPitch<T> {
     data: [[T; HEIGHT]; WIDTH],
+}
+
+/// Plan 065: a stored state loads in a binary of another compiled capacity. The capacity-sized
+/// arrays (`FullPitch`, the roster arrays) only ever differ between capacities by empty cells past
+/// the active board, so a human-readable (JSONL corpus) array of any length loads: a shorter one is
+/// padded with `T::default()`, a longer one must hold only defaults past this capacity or the load
+/// fails ("past this binary's capacity" — a board that does not fit, never a silent drop). A
+/// non-self-describing format (postcard, hub <-> worker) keeps the fixed-length layout it was
+/// written with; the hub refuses a worker of another capacity anyway.
+impl<'de, T> Deserialize<'de> for FullPitch<T>
+where
+    T: Deserialize<'de> + Default + PartialEq,
+{
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error;
+        if !deserializer.is_human_readable() {
+            #[derive(Deserialize)]
+            #[serde(rename = "FullPitch")]
+            struct Fixed<T> {
+                data: [[T; HEIGHT]; WIDTH],
+            }
+            return Fixed::<T>::deserialize(deserializer).map(|f| FullPitch { data: f.data });
+        }
+        #[derive(Deserialize)]
+        #[serde(rename = "FullPitch")]
+        struct Any<T> {
+            data: Vec<Vec<T>>,
+        }
+        let any = Any::<T>::deserialize(deserializer)?;
+        let mut pitch: FullPitch<T> = Default::default();
+        let empty = T::default();
+        for (x, col) in any.data.into_iter().enumerate() {
+            for (y, cell) in col.into_iter().enumerate() {
+                if x < WIDTH && y < HEIGHT {
+                    pitch.data[x][y] = cell;
+                } else if cell != empty {
+                    return Err(D::Error::custom(format!(
+                        "square ({x}, {y}) is set but lies past this binary's capacity {WIDTH}x{HEIGHT} \
+                         (engine dims); rebuild with a bigger BOARD_SIZE_*"
+                    )));
+                }
+            }
+        }
+        Ok(pitch)
+    }
+}
+
+/// The roster arrays' capacity-portable load (plan 065), the [`FullPitch`] rule for a flat array of
+/// `2 * ROSTER_PER_TEAM` slots: any length in a human-readable format, `None` past this capacity.
+pub fn deserialize_roster_slots<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<[Option<T>; 2 * ROSTER_PER_TEAM], D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    use serde::de::Error;
+    if !deserializer.is_human_readable() {
+        return <[Option<T>; 2 * ROSTER_PER_TEAM]>::deserialize(deserializer);
+    }
+    let slots = Vec::<Option<T>>::deserialize(deserializer)?;
+    let mut out: [Option<T>; 2 * ROSTER_PER_TEAM] = std::array::from_fn(|_| None);
+    for (i, slot) in slots.into_iter().enumerate() {
+        match (out.get_mut(i), slot) {
+            (Some(dst), slot) => *dst = slot,
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(D::Error::custom(format!(
+                    "roster slot {i} is set but lies past this binary's capacity of {} slots; \
+                     rebuild with a bigger BOARD_PLAYERS",
+                    2 * ROSTER_PER_TEAM
+                )))
+            }
+        }
+    }
+    Ok(out)
 }
 impl<T> Index<Position> for FullPitch<T> {
     type Output = T;

@@ -81,8 +81,15 @@ impl Procedure for KickoffTable {
                 game_state.away.bribes += 1;
             }
             Sum2D6::Three => {
-                //Timeout
-                if game_state.info.home_turn <= 5 {
+                // Time-out (BB2020): if the *kicking* team's turn marker is on turn 6, 7 or 8 both
+                // markers move one space back, otherwise both move one space forward. Reading
+                // Home's marker instead moved them the wrong way when Away kicked on 6 with Home
+                // on 5 (plan 065; `tests/kickoff_table.rs`).
+                let kicking_turn = match game_state.info.kicking_this_drive {
+                    TeamType::Home => game_state.info.home_turn,
+                    TeamType::Away => game_state.info.away_turn,
+                };
+                if kicking_turn <= 5 {
                     game_state.info.away_turn += 1;
                     game_state.info.home_turn += 1;
                 } else {
@@ -793,6 +800,13 @@ mod tests {
         for (w, h, players) in [
             (28, 17, 11),
             (22, 11, 8),
+            // Plan 065: the density rule's 7-player boards at 20x11/7 capacity (18x10, 20x9, 18x11,
+            // 20x10 playable; 20x11/7 is the capacity itself), the first boards with the kickoff
+            // table on.
+            (20, 12, 7),
+            (22, 11, 7),
+            (20, 13, 7),
+            (22, 12, 7),
             (18, 11, 6),
             (16, 9, 4),
             // Even heights (no longer rejected) and the short boards where the

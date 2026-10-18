@@ -90,10 +90,13 @@ pub fn load_input(name: &str, input: &Path, out: &Path, chunk_samples: u32) -> i
             continue;
         }
         let lite: Lite = serde_json::from_str(&line).map_err(|e| invalid(format!("{}: {e}", input.display())))?;
-        if lite.meta.board_capacity != BoardCapacity::current() {
+        // Plan 065: any capacity the board fits replays it (`BoardCapacity::holds`); hub and workers
+        // share one capacity, so this is also what the workers can replay.
+        if !BoardCapacity::current().holds(lite.meta.board_dims) {
             return Err(invalid(format!(
-                "{}: corpus built at capacity {:?}, this binary is {:?}",
+                "{}: board {:?} (corpus capacity {:?}) does not fit this binary's capacity {:?}",
                 input.display(),
+                lite.meta.board_dims,
                 lite.meta.board_capacity,
                 BoardCapacity::current()
             )));
@@ -255,16 +258,30 @@ mod tests {
     }
 
     #[test]
-    fn a_corpus_of_another_capacity_is_refused() {
+    fn a_corpus_whose_board_does_not_fit_this_capacity_is_refused() {
         let d = dir("capacity");
         let mut t = trajectory(44);
-        t.meta.board_capacity.width += 2;
+        t.meta.board_dims.width = BoardCapacity::current().width as i8 + 2;
         let input = d.join("shard0.jsonl");
         std::fs::write(&input, serde_json::to_string(&t).unwrap() + "\n").unwrap();
         let e = load_input("shard0", &input, &d.join("out.jsonl"), 32)
             .err()
             .expect("refused");
         assert!(e.to_string().contains("capacity"), "{e}");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// Plan 065: a corpus written at another capacity loads when its board fits this one (a 20x11
+    /// loop labels and replays its 16x9-capacity window).
+    #[test]
+    fn a_corpus_of_another_capacity_whose_board_fits_loads() {
+        let d = dir("capacity_fits");
+        let mut t = trajectory(45);
+        t.meta.board_capacity.width += 2;
+        let input = d.join("shard0.jsonl");
+        std::fs::write(&input, serde_json::to_string(&t).unwrap() + "\n").unwrap();
+        let shard = load_input("shard0", &input, &d.join("out.jsonl"), 32).expect("loads");
+        assert_eq!(shard.seeds, vec![t.meta.seed]);
         std::fs::remove_dir_all(&d).ok();
     }
 }

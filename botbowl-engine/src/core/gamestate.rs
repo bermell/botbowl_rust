@@ -452,7 +452,10 @@ pub struct GameState {
     // in the dugout, and at most ROSTER_PER_TEAM per team can exist. (SetupLine
     // can field more than TEAM_SIZE when the roster is smaller than the
     // formation template, so fielded must hold the full roster, not 2*TEAM_SIZE.)
+    // Capacity-portable in a JSONL corpus (plan 065), as `board` is through `FullPitch`.
+    #[serde(deserialize_with = "model::deserialize_roster_slots")]
     fielded_players: [Option<FieldedPlayer>; 2 * ROSTER_PER_TEAM],
+    #[serde(deserialize_with = "model::deserialize_roster_slots")]
     dugout_players: [Option<DugoutPlayer>; 2 * ROSTER_PER_TEAM],
     board: FullPitch<BoardCell>,
     pub ball: BallState,

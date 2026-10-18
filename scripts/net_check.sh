@@ -14,21 +14,26 @@
 #
 # CONFIG defaults to cfgs/gumbel16_f1000.toml; LADDER to "64 250 1000 4000". Env: OVERRIDES (per
 # rung, default 250), PLAYOUTS (default 32), PARALLEL (threads per rung, default 2), BOARDS
-# (default 14x7,16x9), SEED (default 55100).
+# (default $NET_CHECK_BOARDS, else 14x7,16x9), SEED (default 55100). The build capacity is BOARD_SIZE_W/H and
+# BOARD_PLAYERS (default 16x9/6, plan 065).
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO"
 NET="${1:?net .onnx}"; GEN="${2:?generation dir with shard*.jsonl}"; OUT="${3:?out dir}"
 CFG="${4:-cfgs/gumbel16_f1000.toml}"; LADDER="${5:-64 250 1000 4000}"
 OVERRIDES="${OVERRIDES:-250}"; PLAYOUTS="${PLAYOUTS:-32}"; PARALLEL="${PARALLEL:-2}"
-BOARDS="${BOARDS:-14x7,16x9}"; SEED="${SEED:-55100}"
+BOARDS="${BOARDS:-${NET_CHECK_BOARDS:-14x7,16x9}}"; SEED="${SEED:-55100}"
 mkdir -p "$OUT"
-export BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR="$REPO/target/16x9"
+# Plan 065: the capacity follows the caller (the loop exports its BUILD_* as BOARD_SIZE_*), 16x9/6 when
+# unset. A binary replays any corpus whose boards fit its capacity (`BoardCapacity::holds`).
+export BOARD_SIZE_W="${BOARD_SIZE_W:-16}" BOARD_SIZE_H="${BOARD_SIZE_H:-9}" BOARD_PLAYERS="${BOARD_PLAYERS:-6}"
+export CARGO_TARGET_DIR="$REPO/target/${BOARD_SIZE_W}x${BOARD_SIZE_H}"
+CANVAS="$((BOARD_SIZE_H + 2))x$((BOARD_SIZE_W + 2))"   # the build capacity, border included (11x18 at 16x9)
 UI="$CARGO_TARGET_DIR/release/botbowl-ui"; PY="$REPO/train/.venv/bin/python"
 SOCK="/tmp/bbnn-netcheck-$$.sock"
 NN_PID=""; trap '[ -n "$NN_PID" ] && kill "$NN_PID" 2>/dev/null; rm -f "$SOCK"' EXIT INT TERM
 cargo build --release -p botbowl-ui >> "$OUT/build.log" 2>&1 || { echo "build failed — see $OUT/build.log" >&2; exit 1; }
 "$PY" scripts/nn_server.py --socket "$SOCK" --device cuda --model "$NET" --max-models 2 \
-    --stats-every 300 --canvas 11x18 >> "$OUT/nn_server.log" 2>&1 & NN_PID=$!
+    --stats-every 300 --canvas "$CANVAS" >> "$OUT/nn_server.log" 2>&1 & NN_PID=$!
 for _ in $(seq 120); do [ -S "$SOCK" ] && break; sleep 1; done
 [ -S "$SOCK" ] || { echo "nn_server did not come up — see $OUT/nn_server.log" >&2; exit 1; }
 SHARDS=$(ls "$GEN"/shard*.jsonl)

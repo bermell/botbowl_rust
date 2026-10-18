@@ -241,13 +241,14 @@ fn index_corpus(args: &OverrideAuditArgs) -> io::Result<Vec<Candidate>> {
             }
             let t: LiteTraj = serde_json::from_str(&line)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{path}:{li}: {e}")))?;
-            if t.meta.board_capacity != capacity {
+            // Plan 065: any capacity the board fits replays it (`BoardCapacity::holds`).
+            if !capacity.holds(t.meta.board_dims) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "{path}: corpus built at capacity {:?}, this binary is {capacity:?}; rebuild with the matching \
-                         BOARD_SIZE_W/H/PLAYERS (playable = engine - 2)",
-                        t.meta.board_capacity
+                        "{path}: board {:?} (corpus capacity {:?}) does not fit this binary's capacity {capacity:?}; \
+                         rebuild with a bigger BOARD_SIZE_W/H/PLAYERS (playable = engine - 2)",
+                        t.meta.board_dims, t.meta.board_capacity
                     ),
                 ));
             }
