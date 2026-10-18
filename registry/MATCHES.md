@@ -15,6 +15,12 @@ Defaults unless a row says otherwise:
 
 ## v9 rules (2026-10-06 on)
 
+### exp074: the 96x8 + heads lineage vs the frozen 64x6 gen36 (C1 both sides, 300 fixed pairs per board, loop hub)
+
+| A | vs B | 14x7 | 16x9 | budgets | date |
+|---|---|---|---|---|---|
+| v9 gen42 (96x8 + heads, 3 gens own data) | v9 gen36 (64x6) | 0.506 ± 0.013 | 0.517 ± 0.012 | 1000 vs 1000 descents | 2026-10-18 |
+
 ### Shadow lineage, bare policies (plan 063; `runs/exp073/po_shadow_gen36/run.sh`, `cfgs/policy_only.toml` both sides, tract, 600 pairs per board)
 
 | A | vs B | 14x7 | 16x9 | commit | date |
@@ -75,6 +81,7 @@ Defaults unless a row says otherwise:
 
 | A | vs B | 14x7 | 16x9 | commit | date |
 |---|---|---|---|---|---|
+| v9 gen42 (96x8 + heads) (C1 both sides) | d1k gen04 v9 | 0.585 ± 0.032 (H1, 49 pairs) | 0.544 ± 0.018 (H1, 211 pairs) | dde8a82 | 2026-10-18 |
 | **v9 gen39 (96x8 + heads, exp074)** (C1 both sides) | d1k gen04 v9 | 0.530 ± 0.012 (undecided at 400 pairs) | **0.613 ± 0.035 (H1, 51 pairs)** | bff9be0 | 2026-10-17 |
 | v9 gen36 (C1 both sides) | d1k gen04 v9 | 0.537 ± 0.019 (H1, 139 pairs) | 0.587 ± 0.028 (H1, 81 pairs) | 02fe686 | 2026-10-15 |
 | v9 gen33 (C1 both sides) | d1k gen04 v9 | 0.561 ± 0.019 (H1, 152 pairs) | 0.592 ± 0.032 (H1, 69 pairs) | 8ba1114 | 2026-10-14 |
