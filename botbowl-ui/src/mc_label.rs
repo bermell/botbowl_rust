@@ -65,11 +65,13 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
             continue;
         }
         let t: Trajectory = serde_json::from_str(&line).map_err(invalid)?;
-        if t.meta.board_capacity != BoardCapacity::current() {
+        // Plan 065: any capacity the board fits replays it (`BoardCapacity::holds`).
+        if !BoardCapacity::current().holds(t.meta.board_dims) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "{input}: corpus built at capacity {:?}, this binary is {:?}",
+                    "{input}: board {:?} (corpus capacity {:?}) does not fit this binary's capacity {:?}",
+                    t.meta.board_dims,
                     t.meta.board_capacity,
                     BoardCapacity::current()
                 ),

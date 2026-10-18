@@ -106,12 +106,15 @@ fn score(
         return Ok(None);
     };
     let traj = load_trajectory(&e.corpus, offset)?;
-    if traj.meta.board_capacity != BoardCapacity::current() {
+    // Plan 065: any capacity the board fits replays it (`BoardCapacity::holds`).
+    if !BoardCapacity::current().holds(traj.meta.board_dims) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "{}: corpus built at capacity {:?}, this binary is {:?}; rebuild with the matching BOARD_SIZE_*",
+                "{}: board {:?} (corpus capacity {:?}) does not fit this binary's capacity {:?}; rebuild with a bigger \
+                 BOARD_SIZE_*",
                 e.corpus,
+                traj.meta.board_dims,
                 traj.meta.board_capacity,
                 BoardCapacity::current()
             ),

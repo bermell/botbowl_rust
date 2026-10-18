@@ -384,6 +384,20 @@ impl BoardCapacity {
             team_size: TEAM_SIZE,
         }
     }
+
+    /// Plan 065: whether a binary of this capacity can load and replay a trajectory played on
+    /// `board`, whatever capacity wrote it. Gameplay reads only the runtime `BoardDims` (never the
+    /// capacity), and a stored `GameState` loads at any capacity its board fits
+    /// (`FullPitch`'s capacity-portable `Deserialize`), so the board, not the writer's capacity, is
+    /// what has to fit. The replay tools (`mc-label`, `value-bench`, `override-audit`, `probe`, the
+    /// hub's `job label`) check this instead of capacity equality.
+    pub fn holds(&self, board: BoardDims) -> bool {
+        board.width >= 0
+            && board.height >= 0
+            && board.width as usize <= self.width
+            && board.height as usize <= self.height
+            && board.team_size <= self.team_size
+    }
 }
 
 /// Provenance for a batch of samples — everything needed to reproduce or
@@ -590,6 +604,25 @@ mod tests {
 
     fn sample_state() -> GameState {
         GameStateBuilder::new_start_of_game()
+    }
+
+    #[test]
+    fn a_capacity_holds_every_board_that_fits_it_and_no_other() {
+        let cap = BoardCapacity {
+            width: 18,
+            height: 11,
+            team_size: 6,
+        };
+        let board = |w, h, t| BoardDims {
+            width: w,
+            height: h,
+            team_size: t,
+        };
+        assert!(cap.holds(board(18, 11, 6)), "its own board");
+        assert!(cap.holds(board(16, 9, 4)), "a smaller board, whatever capacity wrote it");
+        assert!(!cap.holds(board(20, 11, 6)), "too wide");
+        assert!(!cap.holds(board(18, 13, 6)), "too tall");
+        assert!(!cap.holds(board(18, 11, 7)), "too many players");
     }
 
     fn dummy_sample() -> Sample {
