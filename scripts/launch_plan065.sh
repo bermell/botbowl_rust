@@ -37,6 +37,15 @@ export BOARD_SIZE_W=20 BOARD_SIZE_H=11 BOARD_PLAYERS=7 CARGO_TARGET_DIR="$REPO/t
 unset BLOOD_MCTS_BUDGET
 source "$REPO/scripts/lib/git.sh"
 require_clean_tree 2>>"$LOG" || { say "FATAL: dirty tree"; exit 1; }
+# Before touching the run: train_loop.sh reuses any hub that already answers on the port. One left
+# over from the 16x9 run (built at 16x9/6) would refuse every 20x11 worker, the local one included,
+# and the generate phase would wait forever; and a 16x9 loop still running would read the new
+# size_centre.txt below. Never launch over either.
+if (exec 3<>"/dev/tcp/127.0.0.1/13337") 2>/dev/null; then
+    say "FATAL: something still listens on port 13337 (the 16x9 loop's hub?); stop it first"
+    echo "something still listens on port 13337; stop the old loop and hub first (plan 065 §7)" >&2
+    exit 1
+fi
 say "start (plan 065, capacity 20x11/7): commit $(git rev-parse --short HEAD), champion $(cat "$RUN/champion.txt" 2>/dev/null || basename "$INIT")"
 [ -e "$RUN"/.mirror.done ] || echo "skipped: drives only" > "$RUN"/.mirror.done
 
@@ -76,14 +85,6 @@ export NET_CHECK_BOARDS=16x9,20x11
 # (MC labels ~1.4x, samples 0.65x at ~1.5x the cells each); 200 if a generation may be ~35% longer.
 export GAMES_PER_SHARD="${GAMES_PER_SHARD:-150}" GEN_PARALLEL_GAMES=48 GEN_SIDECARS=2 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
 export HUB_ALLOW_FROM=""
-# train_loop.sh reuses any hub that already answers on HUB_PORT. One left over from the 16x9 run
-# (built at 16x9/6) would refuse every 20x11 worker, the local one included, and the generate phase
-# would wait forever: never launch over it.
-if (exec 3<>"/dev/tcp/127.0.0.1/$HUB_PORT") 2>/dev/null; then
-    say "FATAL: something still listens on port $HUB_PORT (the 16x9 hub?); stop it first"
-    echo "something still listens on port $HUB_PORT; stop the old hub first (plan 065 §7)" >&2
-    exit 1
-fi
 
 LAST_GAME=$(git log -1 --format=%h -- $(game_crates))
 printf 'hub_commit = "%s"\nallow = [%s]\n' "$(git rev-parse --short HEAD)" \
