@@ -20,6 +20,7 @@ Defaults unless a row says otherwise:
 | A | vs B | 14x7 | 16x9 | budgets | date |
 |---|---|---|---|---|---|
 | v9 gen42 (96x8 + heads, 3 gens own data) | v9 gen36 (64x6) | 0.506 ± 0.013 | 0.517 ± 0.012 | 1000 vs 1000 descents | 2026-10-18 |
+| v9 gen42 (96x8 + heads) | v9 gen36 (64x6) at **2x the descents** (equal compute) | — (14x7 dropped) | 0.512 ± 0.015 | 1000 vs 2000 descents (`--opponent-iters 2000`; 96x8 ≈ 2.1x GPU per sample) | 2026-10-18 |
 
 ### Shadow lineage, bare policies (plan 063; `runs/exp073/po_shadow_gen36/run.sh`, `cfgs/policy_only.toml` both sides, tract, 600 pairs per board)
 
