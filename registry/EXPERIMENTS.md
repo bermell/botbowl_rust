@@ -8,6 +8,25 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp076"></a>exp076: the loop moves to 20x11/7 (plan 065), planned 2026-10-18
+
+- **Question:** does the v9 loop keep improving when its boards grow from ≤16x9/6 to a mix centred on
+  20x11/7 (the user, 2026-10-18: "bigger boards are the direction")? 7 players turn the kickoff table on.
+- **Setup:** `scripts/launch_plan065.sh` continues `runs/loopmix16x9v9` from the champion at the switch
+  (planned: gen44, the 96x8 + heads lineage), first 20x11 corpus gen45. Capacity 20x11/7
+  (`target/20x11`), sizes `--size-centre 220 --size-temperature 0.3 --size-floor 0.2 --size-aspect 1.5-2.8
+  --size-max-area 220 --size-min-area 70 --cells-per-player 26` (20x11/7 11.2%, 7-player boards 50.9%,
+  16x9/6 4.7%), sidecar canvas 13x22, `GAMES_PER_SHARD` per plan 065 §5; everything else as
+  `launch_plan058.sh` (C1, MC labels ×8, cq τ 100, value weight 0.36, lr 5e-5, `--freeze-bn`).
+  Commit: the merge of plan 065 (capacity-portable `GameState` load, kickoff Time-out fix).
+- **Measure:** drives every 3 generations vs `bbnet_mix16x9d1k_gen04_v9` on `contested_16x9_gen04g` (the
+  curve so far) and on a 20x11 contested set screened with the switch champion (plan 065 §4); value bench
+  v9 (series) + `v9_20x11_val` (`VALUE_BENCH_2`, frozen from gen45's held-out shards); net check on
+  16x9 + 20x11 decisions; per-board TD rate in `status.md`.
+- **Decision:** keep going while the 16x9 drive curve holds (no drop beyond its noise vs gen42/45) and the
+  20x11 value bench improves; if the 16x9 curve drops, raise the floor or lower the centre (plan 042's
+  dilution answer), not abandon the size.
+
 ### <a id="exp075"></a>exp075: adversarial probes of gen36 (64x6) and gen39 (96x8 + heads), run 2026-10-16/17
 
 - **Question:** where are the value/policy net and the search wrong in ways averaged benchmarks hide —

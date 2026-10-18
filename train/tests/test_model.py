@@ -122,6 +122,14 @@ CURRICULUM_TENSORS = [(ph + 2, pw + 2) for (pw, ph) in [
 ]]
 CANVAS = (11, 18)
 
+# Plan 065: the 20x11/7 capacity's grid (areas 70..220, aspect 1.5-2.8) on its 13x22 canvas.
+CURRICULUM_20x11_TENSORS = [(ph + 2, pw + 2) for (pw, ph) in [
+    (12, 6), (12, 7), (12, 8), (14, 5), (14, 6), (14, 7), (14, 8), (14, 9), (16, 6), (16, 7), (16, 8),
+    (16, 9), (16, 10), (18, 7), (18, 8), (18, 9), (18, 10), (18, 11), (20, 8), (20, 9), (20, 10), (20, 11),
+]]
+CANVAS_20x11 = (13, 22)
+CANVASES = [(CANVAS, CURRICULUM_TENSORS), (CANVAS_20x11, CURRICULUM_20x11_TENSORS)]
+
 
 def _net_with_live_batchnorm(seed=0):
     """A random net whose BatchNorms have non-trivial running statistics, so their bias really
@@ -146,28 +154,30 @@ def _embed(spatial, canvas):
     return out, mask
 
 
-def test_masked_canvas_forward_matches_every_board_unpadded():
+@pytest.mark.parametrize("canvas,boards", CANVASES, ids=["11x18", "13x22"])
+def test_masked_canvas_forward_matches_every_board_unpadded(canvas, boards):
     net = _net_with_live_batchnorm()
-    for (h, w) in CURRICULUM_TENSORS:
+    for (h, w) in boards:
         s = torch.randn(3, SPATIAL_CHANNELS, h, w)
         g = torch.randn(3, GLOBAL_FEATURES)
         with torch.no_grad():
             ref_p, ref_v = net(s, g)
-            cs, m = _embed(s, CANVAS)
+            cs, m = _embed(s, canvas)
             p, v = net.forward_masked(cs, g, m)
         dp = (p[:, :, :h, :w] - ref_p).abs().max().item()
         dv = (v - ref_v).abs().max().item()
         assert dp < 1e-5 and dv < 1e-5, f"{h}x{w}: dp={dp:.2e} dv={dv:.2e}"
 
 
-def test_masked_forward_batches_different_boards_together():
+@pytest.mark.parametrize("canvas,boards", CANVASES, ids=["11x18", "13x22"])
+def test_masked_forward_batches_different_boards_together(canvas, boards):
     """The point of the canvas: one batch, many board sizes, each row its own board's answer."""
     net = _net_with_live_batchnorm(1)
     rows = []
-    for (h, w) in CURRICULUM_TENSORS:
+    for (h, w) in boards:
         rows.append((h, w, torch.randn(1, SPATIAL_CHANNELS, h, w), torch.randn(1, GLOBAL_FEATURES)))
-    cs = torch.cat([_embed(s, CANVAS)[0] for (_, _, s, _) in rows])
-    m = torch.cat([_embed(s, CANVAS)[1] for (_, _, s, _) in rows])
+    cs = torch.cat([_embed(s, canvas)[0] for (_, _, s, _) in rows])
+    m = torch.cat([_embed(s, canvas)[1] for (_, _, s, _) in rows])
     g = torch.cat([gg for (_, _, _, gg) in rows])
     with torch.no_grad():
         p, v = net.forward_masked(cs, g, m)

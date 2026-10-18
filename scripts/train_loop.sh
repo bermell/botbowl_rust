@@ -344,6 +344,7 @@ LABEL_CHUNK_SAMPLES="${LABEL_CHUNK_SAMPLES:-32}"
 # Plan 056 §2: score every new net's value head on a frozen MC benchmark (scripts/value_bench.sh,
 # seconds) next to its generator; the benchmark .jsonl path, or empty = off.
 VALUE_BENCH="${VALUE_BENCH:-}"
+VALUE_BENCH_2="${VALUE_BENCH_2:-}"   # plan 065: a second benchmark (another board set), same treatment
 # Shadow lineage (section 3b): SHADOW_INIT = the first .pt of a second net fine-tuned alongside the
 # loop's every generation (never generating); SHADOW_NAME prefixes its models/ files.
 SHADOW_INIT="${SHADOW_INIT:-}"
@@ -1345,14 +1346,18 @@ while [ "$G" -le "$MAX_GENS" ]; do
             rm -rf "$GEN_DIR/probe_val"
         fi
         # Plan 056 §2: the value head against Monte Carlo truth, the new net paired with its generator.
-        if [ -n "$VALUE_BENCH" ] && [ -f "$VALUE_BENCH" ]; then
-            if "$REPO/scripts/value_bench.sh" "$VALUE_BENCH" "$GEN_DIR/value_bench" \
-                    "generator=$TRAIN_CHAMP" "$GG=$MODEL.onnx" > "$GEN_DIR/value_bench.log" 2>&1; then
-                status "$GG value bench: $(grep -E '^VALUE_BENCH' "$GEN_DIR/value_bench/summary.txt" | sed 's/^VALUE_BENCH_*//' | paste -sd'|')"
+        # Plan 065: VALUE_BENCH_2, a second benchmark (e.g. 20x11 states) scored the same way into
+        # value_bench_2/; the first keeps its directory and status line.
+        for VB in "value_bench|value bench|$VALUE_BENCH" "value_bench_2|value bench 2|$VALUE_BENCH_2"; do
+            IFS='|' read -r VB_DIR VB_NAME VB_FILE <<< "$VB"
+            [ -n "$VB_FILE" ] && [ -f "$VB_FILE" ] || continue
+            if "$REPO/scripts/value_bench.sh" "$VB_FILE" "$GEN_DIR/$VB_DIR" \
+                    "generator=$TRAIN_CHAMP" "$GG=$MODEL.onnx" > "$GEN_DIR/$VB_DIR.log" 2>&1; then
+                status "$GG $VB_NAME: $(grep -E '^VALUE_BENCH' "$GEN_DIR/$VB_DIR/summary.txt" | sed 's/^VALUE_BENCH_*//' | paste -sd'|')"
             else
-                status "WARN: $GG value bench failed — see $GEN_DIR/value_bench.log"
+                status "WARN: $GG $VB_NAME failed — see $GEN_DIR/$VB_DIR.log"
             fi
-        fi
+        done
         echo "$MODEL.pt" > "$LATEST_FILE"
         # Gateless: the net just trained generates the next generation,
         # unconditionally. The benchmark below measures it; it does not
