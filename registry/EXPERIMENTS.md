@@ -9,6 +9,7 @@ ends (see the root CLAUDE.md).
 ## v9 rules (2026-10-06 on)
 
 ### <a id="exp076"></a>exp076: the loop moves to 20x11/7 (plan 065), planned 2026-10-18
+- **Switched 2026-10-18 18:14 (cf83459):** the gen44 16x9 generate died at 2481/3200 games when a review build filled the disk (FATAL 18:11); the loop was relaunched straight onto `scripts/launch_plan065.sh`, so **gen44 is the first 20x11/7 generation** (champion gen43, 96x8 + heads), 150 games a shard, canvas 13x22, GPU 100% at ~2850 forwards/s. The 20x11 screen (300 candidates x 4, gen43 vs itself) runs on the hub alongside; the 20x11 value bench is built from gen44's held-out shards (`GEN=gen44`).
 
 - **Question:** does the v9 loop keep improving when its boards grow from ≤16x9/6 to a mix centred on
   20x11/7 (the user, 2026-10-18: "bigger boards are the direction")? 7 players turn the kickoff table on.
