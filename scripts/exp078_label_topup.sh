@@ -29,7 +29,9 @@
 #
 # Env (defaults in brackets):
 #   P (required)                RUN [runs/loopmix16x9v9]  M [models/az_v7]  TIER [mix16x9v9]  OUT [runs/exp078]
-#   TOPUP [8] playouts added    TOPUP_VIA [hub] hub|local SEL [16] 16|8     SEED [78] trainer seed
+#   TOPUP [8] playouts added    TOPUP_VIA [hub] hub|local SEED [78] trainer seed (both arms)
+#   SEL [16] the val labels both arms restore on: 16 = the topped-up ones (8 + TOPUP; "16" names them in
+#            file names whatever TOPUP is), 8 = the loop's own
 #   EXTERNAL_HUB  submit the top-up and drives to this running hub (same commit, protocol v21+) and start
 #                 no hub or worker; else own hub on HUB_BIND:PORT [127.0.0.1:13378] + one local worker
 #                 of STREAMS [48] in-process streams. PORT=13337 HUB_BIND=0.0.0.0 with the loop stopped
