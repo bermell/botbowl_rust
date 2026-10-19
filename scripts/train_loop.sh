@@ -378,6 +378,23 @@ INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
 # i.e. 3.8x, using 4.3 cores against 5.3.
 NN_SERVER="${NN_SERVER:-on}"                # on|off
 NN_SOCKET="${NN_SOCKET:-/tmp/bbnn-loop.sock}"
+# Plan 066 phase 5: where this box's nets run. `inproc` (the default): inside the processes that use
+# them, through libtorch — the binaries are built `--features botbowl-ui/torch,botbowl-worker/torch`,
+# every local worker and tool gets `--nn-backend inproc`, no sidecar is started (NN_SERVER is
+# ignored), and every net needs NET.ts beside NET.onnx, which the loop exports itself (ensure_ts,
+# from NET.pt). One worker per phase holds every stream (GEN_SIDECARS / LABEL_SIDECARS are ignored):
+# its batch queue spans all of them, which measured +12% GPU samples/s over two sidecars at 48
+# streams (exp077). GPU memory: ~0.4 GB of CUDA context per process plus ~0.3 GB per net per lane,
+# and nothing is evicted — the bound is that the local worker is restarted every phase (so it holds
+# only that phase's nets) and the net check runs its whole ladder in one process.
+# `sidecar` keeps the plan-024 Python sidecars exactly as before (rollback).
+NN_BACKEND="${NN_BACKEND:-inproc}"
+case "$NN_BACKEND" in
+    inproc) NN_SERVER=off ;;
+    sidecar) ;;
+    *) echo "NN_BACKEND must be inproc or sidecar, got '$NN_BACKEND'" >&2; exit 1 ;;
+esac
+export NN_BACKEND
 # Plan 058 §9: sidecars during generate (only). One Python sidecar tops out near 8k samples/s with
 # the GPU ~80% busy; two keep the GPU full (+9% at 48 streams). Each extra sidecar gets its own
 # local worker with an equal share of GEN_PARALLEL_GAMES (named local2, local3, ...).
@@ -387,6 +404,9 @@ GEN_SIDECARS="${GEN_SIDECARS:-1}"
 # 10 streams over 12 board shapes, and the sidecar batches per shape, so mean_batch was 1.55 with
 # the GPU 95% busy on launches. Exact (train/tests/test_model.py). `off` = one queue per shape.
 NN_CANVAS="${NN_CANVAS:-$((BUILD_H + 2))x$((BUILD_W + 2))}"
+# The in-process backend stages onto the same canvas (its default is the build capacity, which is
+# what NN_CANVAS defaults to as well).
+[ "$NN_CANVAS" = off ] || export BLOOD_NN_CANVAS="$NN_CANVAS"
 # Concurrent games per *nn* shard. RAM-bound, not speed-bound: each
 # in-flight game holds its own MCTS tree, and a tree high-waters around
 # 400-500 MB at 1000 iters on this tier. Measured over 10 min in the exact
@@ -515,7 +535,10 @@ HUB_URL="http://127.0.0.1:$HUB_PORT"
 # One token per machine, shared by every run and side hub, so remote workers never need a new one.
 HUB_TOKEN_FILE="${HUB_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/botbowl/hub.token}"
 WORKER_CACHE="$RUN_DIR/worker-cache"
-PY="$REPO/train/.venv/bin/python"
+PY="${PY:-$REPO/train/.venv/bin/python}"; export PY
+# The trainer, the probes and bbnn.export_ts come from this checkout's train/src, whatever the venv
+# was installed from (a worktree has no venv of its own and borrows the main checkout's).
+export PYTHONPATH="$REPO/train/src${PYTHONPATH:+:$PYTHONPATH}"
 SUMMARY="$REPO/scripts/eval_summary.py"
 
 mkdir -p "$RUN_DIR" "$MODEL_DIR"
@@ -644,6 +667,39 @@ nn_server_start() {
         fi
     done
 }
+# ---- in-process backend (plan 066) -------------------------------------------
+# ensure_ts NET.onnx...: NET.ts beside each NET.onnx for the in-process backend, exported from
+# NET.pt by bbnn.export_ts (the sidecar's trace of forward_masked, staged like NN_CANVAS). Idempotent:
+# an existing .ts newer than its .pt is kept. The hub ships the .ts with the ONNX to its workers
+# (protocol v20), so exporting before a job is submitted is all a worker needs. A net with no .pt
+# cannot be exported and is fatal here — never a quiet tract run later.
+ensure_ts() {
+    [ "$NN_BACKEND" = inproc ] || return 0
+    local onnx pt ts canvas
+    canvas="$NN_CANVAS"; [ "$canvas" = off ] && canvas="$((BUILD_H + 2))x$((BUILD_W + 2))"
+    for onnx in "$@"; do
+        [ -n "$onnx" ] && [ -f "$onnx" ] || continue
+        pt="${onnx%.onnx}.pt"; ts="${onnx%.onnx}.ts"
+        [ -s "$ts" ] && [ "$ts" -nt "$pt" ] && continue
+        [ -f "$pt" ] || die "NN_BACKEND=inproc: no $(basename "$pt") beside $onnx to export $(basename "$ts") from (python -m bbnn.from_onnx can rebuild one)"
+        "$PY" -m bbnn.export_ts "$pt" --out "$ts" --canvas "$canvas" >> "$LOG" 2>&1 \
+            || die "bbnn.export_ts failed for $pt — see loop.log"
+        log "exported $(basename "$ts") (canvas $canvas)"
+    done
+}
+# backend_check LOG WHAT: a phase's NN work must have run where NN_BACKEND says. A forward that fell
+# back to tract (NN_SERVER_FALLBACK, both backends) or an in-process phase whose log never shows a
+# net loaded in-process gets a WARN line on status.md: the corpus is still right, just made at CPU
+# speed, which is the failure that otherwise goes unnoticed for a whole generation.
+backend_check() {
+    local f="$1" what="$2"
+    grep -q 'NN_SERVER_FALLBACK' "$f" 2>/dev/null \
+        && status "WARN: $what fell back to tract (NN_SERVER_FALLBACK) — see $f"
+    if [ "$NN_BACKEND" = inproc ] && ! grep -q 'NN_INPROC loaded' "$f" 2>/dev/null; then
+        status "WARN: $what never loaded a net in-process (NN_BACKEND=inproc) — see $f"
+    fi
+    return 0
+}
 NN_EXTRA=()
 nn_server_stop() {
     local e
@@ -734,6 +790,8 @@ generate_jobs() {
 worker_start() {
     local extra="" mem="" share="$1" k=2 e
     [ -n "$NN_SERVER_PID" ] && extra="--nn-server $NN_SOCKET"
+    # Plan 066: one worker, its nets in-process (NN_EXTRA is empty: no sidecars were started).
+    [ "$NN_BACKEND" = inproc ] && extra="--nn-backend inproc"
     [ -n "$WORKER_MEM_FLOOR_MB" ] && mem="--mem-floor-mb $WORKER_MEM_FLOOR_MB"
     # One worker per sidecar, the streams split evenly (the first takes the remainder).
     [ "${#NN_EXTRA[@]}" -gt 0 ] && share=$(($1 / (${#NN_EXTRA[@]} + 1)))
@@ -742,7 +800,7 @@ worker_start() {
         --name "local" --parallel-games $(($1 - share * ${#NN_EXTRA[@]})) --cache-dir "$WORKER_CACHE" $extra $mem \
         >> "$2" 2>&1 &
     WORKER_PID=$!
-    log "local worker started (pid $WORKER_PID, x$(($1 - share * ${#NN_EXTRA[@]}))${extra:+ via sidecar})"
+    log "local worker started (pid $WORKER_PID, x$(($1 - share * ${#NN_EXTRA[@]}))${extra:+ ($extra)})"
     for e in "${NN_EXTRA[@]}"; do
         # shellcheck disable=SC2086
         "$WORKER" --hub "ws://127.0.0.1:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
@@ -832,12 +890,30 @@ case ":$PATH:" in
 esac
 command -v cargo >/dev/null 2>&1 || die "cargo not on PATH (looked in \$HOME/.cargo/bin) — cannot build"
 
-log "building release binaries (capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}) with $(cargo --version)"
-if ! cargo build --release -p botbowl-ui -p botbowl-nn -p botbowl-hub -p botbowl-worker >> "$LOG" 2>&1; then
-    die "cargo build failed — see loop.log"
+log "building release binaries (capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, NN_BACKEND=$NN_BACKEND) with $(cargo --version)"
+if [ "$NN_BACKEND" = inproc ]; then
+    # Plan 066: libtorch from train/.venv's torch wheel; its CUDA headers need crt/ and nv/target,
+    # which the wheel leaves to the nvcc/cccl wheels (headers only, ~16 MB, into ~/.cache/botbowl).
+    ls "$HOME"/.cache/botbowl/cuda_nvcc/*/include/crt/host_config.h > /dev/null 2>&1 || [ -n "${BOTBOWL_CUDA_INCLUDE:-}" ] \
+        || PY="$PY" "$REPO/scripts/fetch_cuda_headers.sh" >> "$LOG" 2>&1 \
+        || die "scripts/fetch_cuda_headers.sh failed — see loop.log (or set BOTBOWL_CUDA_INCLUDE, or NN_BACKEND=sidecar)"
+    # The hub runs no net: built on its own, without the feature, so it does not link libtorch.
+    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-hub >> "$LOG" 2>&1 || die "cargo build (hub) failed — see loop.log"
+    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-ui -p botbowl-nn -p botbowl-worker \
+        --features botbowl-ui/torch,botbowl-worker/torch >> "$LOG" 2>&1 || die "cargo build (torch) failed — see loop.log"
+else
+    if ! cargo build --release -p botbowl-ui -p botbowl-nn -p botbowl-hub -p botbowl-worker >> "$LOG" 2>&1; then
+        die "cargo build failed — see loop.log"
+    fi
 fi
 [ -x "$UI" ] && [ -x "$PREPARE" ] && [ -x "$HUB" ] && [ -x "$WORKER" ] || die "expected binaries missing after build"
-status "build ok"
+status "build ok (NN_BACKEND=$NN_BACKEND)"
+# Plan 066: every net this run loads by name gets its TorchScript export now, so a missing .pt
+# stops the launch instead of a phase hours in. Nets made later (each generation's) are exported
+# as they appear.
+ensure_ts "$INIT_CHAMPION" "$(champion)" "$DRIVE_REF" "$ORIGIN_REF"
+{ [ "$EVAL_VENUE" = games ] || [ "$ANCHOR_EVERY" -gt 0 ]; } && ensure_ts "$ANCHOR"
+[ "$NN_BACKEND" = inproc ] && status "in-process inference: nets run in the local worker and tools (libtorch, canvas ${NN_CANVAS}); no sidecars"
 hub_start
 
 # ---- pre-flight: heuristic mirror match (plan 021 open issue 5) --------------
@@ -995,8 +1071,11 @@ eval_submit() {
     GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"; MODEL="$MODEL_DIR/bbnet_${TIER}_$GG"
     PG=$(printf 'gen%02d' $((G - 1)))
     EVAL_JOBS=()
+    ensure_ts "$MODEL.onnx"
     if [ "$EVAL_VENUE" = drives ]; then
         REF=$(drive_ref_of "$G")
+        ensure_ts "$REF" "$ORIGIN_REF"
+        [ "$P1_GAMES" -gt 0 ] && ensure_ts "$MODEL_DIR/bbnet_${TIER}_$PG.onnx" "$(drive_ref_of $((G - 1)))"
         eval_job drives "$GEN_DIR/drives" "$GG drives vs $(net_name "$REF")" \
             --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
             --positions "$DRIVE_POSITIONS" --sprt "$DRIVE_SPRT" --vs-games "$DRIVE_CAP" \
@@ -1027,6 +1106,7 @@ eval_submit() {
             RUNG_ARGS="--skip-fixed-rungs"
             RUNG_DESC=""
         fi
+        ensure_ts "$ANCHOR"
         # shellcheck disable=SC2046,SC2086
         eval_job anchor "$GEN_DIR" "$GG full games vs $(net_name "$ANCHOR") (anchor)" \
             --model "$MODEL.onnx" --seed 0 $RUNG_ARGS $(size_eval_args) \
@@ -1047,6 +1127,7 @@ eval_finish() {
     for j in "${EVAL_JOBS[@]}"; do read -r pid _ _ <<< "$j"; kill -0 "$pid" 2>/dev/null && alive=1; done
     if [ -n "$alive" ]; then
         if [ -z "$WORKER_PID" ]; then
+            ensure_ts "$(champion)"
             nn_server_start "$(champion)"
             worker_start "$EVAL_PARALLEL_GAMES" "$GEN_DIR/eval.worker.log"
             started=1
@@ -1060,7 +1141,7 @@ eval_finish() {
             die "$GG $name eval failed — see $dir/eval.log and hub.log"
         fi
     done
-    [ -n "$started" ] && { worker_stop; nn_server_stop; }
+    [ -n "$started" ] && { worker_stop; nn_server_stop; backend_check "$GEN_DIR/eval.worker.log" "$GG eval (local worker)"; }
     EVAL_PENDING_G=""
     EVAL_JOBS=()
     touch "$GEN_DIR/.evaluated"
@@ -1132,6 +1213,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ ! -e "$GEN_DIR/.generated" ]; then
         SECONDS=0
         CHAMP="$(champion)"
+        ensure_ts "$CHAMP"
         nn_server_start "$CHAMP" "$GEN_SIDECARS"
         # Plan 041: the games run on whatever workers are connected to the
         # hub — this box's local worker (started here, inside the sidecar's
@@ -1144,7 +1226,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # tract and warns once, in generate.worker.log).
         worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
         SIZE_ARGS=$(size_gen_args)
-        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES$([ "${#NN_EXTRA[@]}" -gt 0 ] && echo " over $((${#NN_EXTRA[@]} + 1)) sidecars") + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
+        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES$([ "${#NN_EXTRA[@]}" -gt 0 ] && echo " over $((${#NN_EXTRA[@]} + 1)) sidecars")$([ "$NN_BACKEND" = inproc ] && echo " in-process") + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
         if ! generate_jobs "$GEN_DIR" "$CHAMP" "$SIZE_ARGS"; then
             worker_stop
             nn_server_stop
@@ -1153,8 +1235,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # A local worker that silently ran on tract all generation is the
         # failure this phase can otherwise hide: it finishes, its corpus is
         # correct, and it is just 4x slower. Surface it.
-        grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/generate.worker.log" \
-            && status "WARN: $GG had the local worker fall back to tract — see generate.worker.log and nn_server.log"
+        case "$EVALUATOR" in nn|nn-value) backend_check "$GEN_DIR/generate.worker.log" "$GG generate (local worker)" ;; esac
         GEN_MIN=$((SECONDS / 60))
         # The previous generation's eval shared these workers; it must be
         # done before the sidecar makes way for the trainer.
@@ -1194,9 +1275,10 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ "$NET_CHECK" = on ] && [ ! -e "$GEN_DIR/.trained" ] && [ ! -e "$GEN_DIR/.net_checked" ] \
         && [ ! -e "$GEN_DIR/.net_check_started" ]; then
         NC_NET="$(champion)"
+        ensure_ts "$NC_NET"
         touch "$GEN_DIR/.net_check_started"
         (
-            "$REPO/scripts/net_check.sh" "$NC_NET" "$GEN_DIR" "$GEN_DIR/net_check" "$NET_CHECK_CONFIG" \
+            "$REPO/scripts/net_check.sh" "$NC_NET" "$GEN_DIR" "$GEN_DIR/net_check" "$NET_CHECK_CONFIG" ${NET_CHECK_LADDER:+"$NET_CHECK_LADDER"} \
                 > "$GEN_DIR/net_check.log" 2>&1 \
                 && status "$GG net check ($(basename "$NC_NET") on its own $GG corpus): $(cat "$GEN_DIR/net_check/net_check.txt")" \
                 && touch "$GEN_DIR/.net_checked" \
@@ -1220,25 +1302,28 @@ while [ "$G" -le "$MAX_GENS" ]; do
         if [ "$LABEL_VIA_HUB" = 1 ]; then
             # Plan 062: the same labels as a hub job — this box's worker on the sidecar(s) plus any
             # remote worker (tract). Same net, playouts, seed, output dir and summary lines.
+            ensure_ts "$MC_NET"
             nn_server_start "$MC_NET" "$LABEL_SIDECARS"
             worker_start "$LABEL_PARALLEL_GAMES" "$GEN_DIR/mc_label.worker.log"
-            status "$GG mc-label via the hub: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}, local x$LABEL_PARALLEL_GAMES + hub workers, items of $LABEL_CHUNK_SAMPLES samples"
+            status "$GG mc-label via the hub: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}, local x$LABEL_PARALLEL_GAMES$([ "$NN_BACKEND" = inproc ] && echo " in-process") + hub workers, items of $LABEL_CHUNK_SAMPLES samples"
             # shellcheck disable=SC2086
             "$HUB" job label --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" --label "$GG mc-label" \
                 --corpus $MC_IN --model "$MC_NET" --playouts "$MC_LABEL_PLAYOUTS" --seed "$((56000 + G))" \
                 --chunk-samples "$LABEL_CHUNK_SAMPLES" --out-dir "$GEN_DIR/mc" --wait >> "$GEN_DIR/mc_label.log" 2>&1
             MC_RC=$?
             worker_stop
-            grep -q 'NN_SERVER_FALLBACK' "$GEN_DIR/mc_label.worker.log" 2>/dev/null \
-                && status "WARN: $GG mc-label had the local worker fall back to tract — see mc_label.worker.log and nn_server.log"
+            backend_check "$GEN_DIR/mc_label.worker.log" "$GG mc-label (local worker)"
         else
+            ensure_ts "$MC_NET"
             nn_server_start "$MC_NET"
             status "$GG mc-label: $(echo $TRAIN_SHARDS $VAL_SHARDS | wc -w) train+val shards x $MC_LABEL_PLAYOUTS policy-only playouts per sample under $(basename "$MC_NET")${NN_SERVER_PID:+ via sidecar}"
             # shellcheck disable=SC2086
             "$UI" mc-label --corpus $MC_IN --model "$MC_NET" ${NN_SERVER_PID:+--nn-server "$NN_SOCKET"} \
+                $([ "$NN_BACKEND" = inproc ] && echo "--nn-backend inproc") \
                 --playouts "$MC_LABEL_PLAYOUTS" --parallel "$MC_LABEL_PARALLEL" --seed "$((56000 + G))" \
                 --out-dir "$GEN_DIR/mc" 2>> "$GEN_DIR/mc_label.log"
             MC_RC=$?
+            backend_check "$GEN_DIR/mc_label.log" "$GG mc-label"
         fi
         nn_server_stop
         [ "$MC_RC" -eq 0 ] || die "$GG mc-label failed — see $GEN_DIR/mc_label.log"
@@ -1327,6 +1412,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         fi
         BEST=$(grep 'restored best-val weights' "$GEN_DIR/train.log" | tail -1)
         BASE=$(grep 'warm-start baseline' "$GEN_DIR/train.log" | tail -1)
+        ensure_ts "$MODEL.onnx"
         status "$GG train done ($((SECONDS / 60)) min): ${BEST:-best-val line not found}${BASE:+ (warm-start baseline was${BASE##*val_value})}"
         # Plan 054 E1: did this fine-tune absorb the search's improvement? Score the new net and the
         # net that generated this generation on this generation's own held-out shards: a positive
@@ -1351,6 +1437,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
         for VB in "value_bench|value bench|$VALUE_BENCH" "value_bench_2|value bench 2|$VALUE_BENCH_2"; do
             IFS='|' read -r VB_DIR VB_NAME VB_FILE <<< "$VB"
             [ -n "$VB_FILE" ] && [ -f "$VB_FILE" ] || continue
+            ensure_ts "$TRAIN_CHAMP" "$MODEL.onnx"
             if "$REPO/scripts/value_bench.sh" "$VB_FILE" "$GEN_DIR/$VB_DIR" \
                     "generator=$TRAIN_CHAMP" "$GG=$MODEL.onnx" > "$GEN_DIR/$VB_DIR.log" 2>&1; then
                 status "$GG $VB_NAME: $(grep -E '^VALUE_BENCH' "$GEN_DIR/$VB_DIR/summary.txt" | sed 's/^VALUE_BENCH_*//' | paste -sd'|')"
@@ -1390,6 +1477,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
                     --select-on "$SELECT_ON" --eval-every "$EVAL_EVERY" $TRAIN_TARGET_ARGS \
                     --out "$SHADOW_MODEL.pt" --onnx "$SHADOW_MODEL.onnx" > "$GEN_DIR/shadow_train.log" 2>&1; then
                 echo "$SHADOW_MODEL.pt" > "$SHADOW_LATEST"
+                ensure_ts "$SHADOW_MODEL.onnx"
                 status "$GG shadow train done ($((SECONDS / 60)) min): $(grep 'restored best-val weights' "$GEN_DIR/shadow_train.log" | tail -1)"
                 PROBE_IN=""; for K in $VAL_SHARDS; do f="$GEN_DIR/mc/shard$K.jsonl"; [ -s "$f" ] || f="$GEN_DIR/shard$K.jsonl"; [ -s "$f" ] && PROBE_IN="$PROBE_IN $f"; done
                 rm -rf "$GEN_DIR/shadow_probe_val"

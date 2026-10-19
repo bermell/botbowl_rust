@@ -163,6 +163,12 @@ pub struct OverrideAuditArgs {
     pub search_config: std::path::PathBuf,
     #[arg(long, default_value_t = 1000)]
     pub search_iters: usize,
+    /// Plan 066: audit every budget of this ladder at once, in this process (`--search-iters` is then
+    /// ignored), each with its own `--out` (which must contain `{iters}`). The rungs share one loaded
+    /// net — in-process, one GPU queue and one CUDA context — where separate processes would each pay
+    /// for their own. `scripts/net_check.sh` uses it.
+    #[arg(long, value_delimiter = ',')]
+    pub ladder: Vec<usize>,
     /// Stop after this many override rows (every row under `--all`).
     #[arg(long, default_value_t = 1000)]
     pub decisions: u32,

@@ -563,7 +563,7 @@ pub fn get_or_load(onnx: &Path, device: &str, expected_canary: &(f32, Vec<f32>))
     let backend = InProcBackend::start(&ts, &cfg)?;
     backend.check_canary(expected_canary, &onnx.display().to_string())?;
     eprintln!(
-        "NN_INPROC loaded {} on {} (canvas {}x{}, {} lanes x {} graphs, cudnn {:?}) in {:.1}s (canary ok)",
+        "NN_INPROC loaded {} on {} (canvas {}x{}, {} lanes x {} graphs, cudnn {:?}) in {:.1}s (canary ok; {} net(s) loaded in this process, never evicted)",
         ts.display(),
         device,
         cfg.canvas.0,
@@ -571,7 +571,8 @@ pub fn get_or_load(onnx: &Path, device: &str, expected_canary: &(f32, Vec<f32>))
         cfg.lanes,
         BUCKETS.len(),
         cfg.cudnn,
-        t0.elapsed().as_secs_f64()
+        t0.elapsed().as_secs_f64(),
+        reg.len() + 1
     );
     let backend = Arc::new(backend);
     reg.insert(key, Arc::clone(&backend));
