@@ -8,6 +8,12 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp078"></a>exp078: 8 vs 16 MC-label playouts (plan 067), planned 2026-10-19
+
+- **Question:** is the value head limited by label noise? Estimated from gen44: an 8-playout label's noise variance ≈ 0.049 (0.036-0.059 for P(score) 0.6-0.85) against a val value MSE of 0.080, leaving ≈ 0.031 (RMS 0.18) for the net, which matches the value bench (RMS 0.178/0.186 vs 48-playout truth). Best checkpoints land early (gen44: step 8000, epoch 0). Doubling playouts costs ~+3.7 h per generation on this box; doubling the games for the same noise cut costs ~+9 h.
+- **Setup (planned, the user approved 2026-10-19):** at the next plateau, top the window's labels up from 8 to 16 playouts (exact: 8 more independent playouts, averaged in; to be built in plan 067), train two nets from the same parent with the loop's recipe (arm A 8, arm B 16), with a model-selection rule that is fair across label noise. Judge on both value benches, net check, and optionally paired drives. The top-up also measures the 8-playout label noise directly (Var(a−b)/2 over two independent 8-playout means).
+- **Decision rule:** if arm B wins the 20x11 value bench clearly (paired, beyond its SE) without losing the net check, the loop moves to 16 playouts.
+
 ### <a id="exp077"></a>exp077: in-process libtorch inference vs the Python sidecar (plan 066), run 2026-10-19
 
 - **Question:** can an in-process Rust batch queue running libtorch replace `scripts/nn_server.py` with **bit-identical** outputs, and what does it buy on this box (the HPC case: the sidecar's ~1.5 ms of Python per batch would cap an H100)?
