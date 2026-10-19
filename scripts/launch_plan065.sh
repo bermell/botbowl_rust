@@ -7,7 +7,8 @@
 #   - the size mix centred on 20x11 (area 220, T 0.3, floor 0.2, areas 70..220, aspect 1.5-2.8,
 #     26 cells a player): 20x11/7 11%, every 7-player board 51%, 16x9/6 4.7%, area > 144 72%
 #     (plan 065 §3; 7 players turn the kickoff table on);
-#   - the GPU sidecars pad onto a 13x22 canvas (the capacity, border included; NN_CANVAS);
+#   - the nets (in-process since plan 066; the sidecars before) pad onto a 13x22 canvas (the
+#     capacity, border included; NN_CANVAS);
 #   - drives on the 20x11 contested set next to the 16x9 one, once the 20x11 set exists (§4);
 #   - the net check samples 16x9 and 20x11 decisions; a second value benchmark (VALUE_BENCH_2) on
 #     20x11 states once it is frozen (§4);
@@ -87,6 +88,12 @@ export NET_CHECK_BOARDS=16x9,20x11
 # 3.7x: quadratic in drive length). 150 games a shard keep the generate phase at today's length
 # (MC labels ~1.4x, samples 0.65x at ~1.5x the cells each); 200 if a generation may be ~35% longer.
 export GAMES_PER_SHARD="${GAMES_PER_SHARD:-150}" GEN_PARALLEL_GAMES=48 GEN_SIDECARS=2 WORKER_MEM_FLOOR_MB=1536 HUB_PORT=13337
+# Plan 066 phase 5 (the user, 2026-10-19): the nets run in-process — one local worker per phase with
+# all 48 generation / 48 label streams in one batch queue (2 lanes), every tool with
+# --nn-backend inproc, NET.ts exported beside each NET.onnx by the loop; no Python sidecar. exp077:
+# 0 differing bits against the sidecar, +12% GPU samples/s generating, +14% labelling, -1.9 GB RSS.
+# NN_BACKEND=sidecar rolls back to the two sidecars of plan 058 (GEN_SIDECARS=2) exactly as before.
+export NN_BACKEND="${NN_BACKEND:-inproc}"
 export HUB_ALLOW_FROM=""
 
 LAST_GAME=$(git log -1 --format=%h -- $(game_crates))

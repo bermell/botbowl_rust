@@ -460,7 +460,44 @@ fn audit_one(ctx: &Ctx, c: &Candidate) -> io::Result<Audited> {
     })
 }
 
+/// One audit, or with `--ladder` one per budget, concurrently in this process (see the flag).
 pub fn run(args: OverrideAuditArgs) -> io::Result<()> {
+    if args.ladder.is_empty() {
+        return run_one(args);
+    }
+    if !args.out.contains("{iters}") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--ladder needs an --out containing {iters}".to_string(),
+        ));
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = args
+            .ladder
+            .iter()
+            .map(|&iters| {
+                let mut one = args.clone();
+                one.ladder.clear();
+                one.search_iters = iters;
+                one.out = args.out.replace("{iters}", &iters.to_string());
+                (iters, scope.spawn(move || run_one(one)))
+            })
+            .collect();
+        let mut first_err = None;
+        for (iters, h) in handles {
+            let r = h
+                .join()
+                .unwrap_or_else(|_| Err(io::Error::other(format!("rung {iters} panicked"))));
+            if let Err(e) = r {
+                eprintln!("override-audit: rung {iters} failed: {e}");
+                first_err.get_or_insert(e);
+            }
+        }
+        first_err.map_or(Ok(()), Err)
+    })
+}
+
+fn run_one(args: OverrideAuditArgs) -> io::Result<()> {
     let invalid = |m: String| io::Error::new(io::ErrorKind::InvalidInput, m);
     if !(0.0..=1.0).contains(&args.control_frac) {
         return Err(invalid("--control-frac must be in [0, 1]".into()));
