@@ -1,8 +1,11 @@
 # Plan 066 — in-process batched inference (retire the Python sidecar)
 
-**Status:** planned 2026-10-19. The loop (`runs/loopmix16x9v9`) pauses after gen45's generate so the
-GPU and memory are free for this work (the user: "more important than generating data").
-Registry: exp077 (to be added when the parity gate runs).
+**Status:** phases 1–4 done 2026-10-19, phase 6 written (§8); **the parity gate passes: 0 differing
+bits** in tests A and B (120,000 corpus states, every board, every bucket, policy and value-only,
+deterministic *and* production cuDNN) and test C (identical corpora modulo two hash-collision
+counters). Phase 5 (switching the loop) is the user's call. Results in §7, throughput in §7.4.
+The loop (`runs/loopmix16x9v9`) paused after gen45's generate for this work (the user: "more
+important than generating data"). Registry: exp077.
 
 **The idea (the user, 2026-10-19):** the search computes its input tensor in Rust, writes it into a
 preallocated slot, and a thread that owns the GPU notices, runs the net on every slot that is ready,
@@ -154,3 +157,196 @@ must produce identical output bits. Three tests, all must pass before the switch
   one in-process queue would win GPU time on this box, where the GPU is the floor. A follow-up.
 - **Zero-copy on Grace Hopper:** the graph's input buffer can point at the slots directly once the
   copy shows up in a profile; the first version keeps the explicit pinned copy everywhere.
+
+## 7. Results (2026-10-19, commit 696d1d6 on the plan-066 branch, net gen44 96x8 + heads)
+
+### 7.1 What was built
+
+- **`botbowl-nn` feature `torch`** (off by default; a default build is unchanged and needs no
+  libtorch): `csrc/inproc_shim.cpp` (≈300 lines of `extern "C"` over the libtorch C++ API, compiled
+  by `build.rs` with `cc`), `src/inproc.rs` (FFI, the graph runners, the executor, the registry,
+  the canary, `.ts` resolution), `src/batch_queue.rs` (the slot ring and batcher threads; always
+  compiled, unit-tested on the CPU with a fake executor: slot reuse with re-staging, wake-ups under
+  more callers than slots, batch-composition invariance, a failing device fails fast and kills the
+  queue, a wedged device times out). `tests/inproc.rs` runs on the GPU: canary, tract agreement,
+  batch invariance under 24 threads, every head knob on the canvas, missing export and bad device
+  are errors. `botbowl-nn/CLAUDE.md` §inproc documents it.
+- **Linking against the trainer's wheel works**: `train/.venv`'s torch 2.13.0+cu126 (`include/`,
+  `lib/`, new C++ ABI), no `tch`. The wheel lacks two header sets libtorch's CUDA headers include
+  (`crt/host_config.h` from nvcc, `nv/target` from cccl): `scripts/fetch_cuda_headers.sh` unpacks
+  them from the matching PyPI wheels into `~/.cache/botbowl/cuda_nvcc/12.6` (16 MB, headers only).
+  Binaries carry an rpath to the wheel's `torch/lib` and `nvidia/cuda_runtime/lib`, so nothing
+  needs `LD_LIBRARY_PATH`. The shim compiles in ~20 s; a `--features torch` `botbowl-ui` adds
+  nothing measurable to link time.
+- **The net file: `python -m bbnn.export_ts NET.pt` → `NET.ts`** (the sidecar's trace of
+  `MaskedNet`, unoptimised, device-free, ≈6 MB for gen44). The shim moves it to the device and runs
+  `torch::jit::optimize_for_inference`. The hub ships `<stem>.ts` with the ONNX
+  (`ToWorker::Model.torchscript`, **hub protocol v20**), a worker stores `<id>.ts`, and an
+  in-process worker counts a cached net only with its `.ts`. Checked end to end on a test hub
+  (port 13399): a 4-game `job generate` through `botbowl-worker --nn-backend inproc` loaded the
+  shipped `.ts` (canary ok); a net with no `.ts` on the hub failed its task three times with "no
+  TorchScript export … export it with bbnn.export_ts" in `hub.log` — never a tract run.
+- **Switches**: `--nn-backend inproc [--nn-device cuda:N]` on `dataset`, `eval`, `mc-label`,
+  `value-bench`, `override-audit`, `convergence` and `botbowl-worker` (env `BLOOD_NN_BACKEND`,
+  `BLOOD_NN_DEVICE`); `hub job …` refuses them (the worker decides). Knobs: `BLOOD_NN_CANVAS`,
+  `BLOOD_NN_LANES` (2), `BLOOD_NN_SLOTS` (256), `BLOOD_NN_DETERMINISTIC`, `BLOOD_NN_TF32`,
+  `BLOOD_NN_INPROC_STATS`. `nn_server.py --deterministic` is new (default unchanged) for test C.
+- Two deviations from §2, both forced: graph capture uses CUDA's *thread-local* capture mode (the
+  sidecar's global mode turned another net's concurrent replays into capture errors — the eval
+  phase loads its second net while the first serves; the mode only scopes error checking), and a
+  process-wide lock serialises loads/captures.
+
+### 7.2 Phase 1 spike: which route reproduces the sidecar
+
+**The sidecar does not run eager `forward_masked`.** With its default `--jit auto` it runs
+`torch.jit.trace` + `torch.jit.optimize_for_inference` of `MaskedNet`: frozen, BatchNorm folded
+into the convolutions on the GPU, and conv+ReLU fused into `aten::cudnn_convolution_relu` (11 of
+them in gen44's graph). So "TorchScript with JIT optimisation off" (§2) is the *wrong* target:
+
+| route (gen44, 120,000 states, cuDNN deterministic) | values differing | policy logits differing | max abs diff |
+|---|---|---|---|
+| TorchScript trace, **no** `optimize_for_inference` (`--no-optimize`) | 96,042 / 120,000 | 411,565,263 / 455,108,416 | value 3.1e-6, policy 1.8e-4 |
+| TorchScript trace + `torch::jit::optimize_for_inference` in C++ (**built**) | **0** | **0** | 0 |
+
+The optimised graphs are the same op for op (146 ops, Python `model.masked.graph` vs the shim's
+`graph()`). The ATen fallback was not needed.
+
+### 7.3 The gate (§4)
+
+Harness: `scripts/parity066.sh` (A, B: `inproc_parity` example + `parity066.py`, which drives the
+sidecar's own `Registry`/`warm`/`RunnerPool`/`GraphRunner` exactly as `nn_server.main` does) and
+`scripts/gatec066.sh` (C). States: 120,000 from `runs/loopmix16x9v9/gen44/shard0-7`, all 22 boards
+of the mix (14x8 … 22x13), staged on the 13x22 canvas; plan: 6,959 batches cycling through all 12
+buckets, full and partial (padded) batches, policy and value-only alternating (≥290 rows per bucket
+and path; 59,984 rows with policy = 455,108,416 logits). Every comparison is over all 455,228,416
+output floats, counting differing **bits** (popcount of XOR).
+
+| test | comparison | differing bits | values / logits differing |
+|---|---|---|---|
+| A (deterministic) | in-process vs sidecar | **0** | 0 / 0 |
+| A | sidecar vs sidecar (two processes) | 0 | 0 / 0 |
+| A | in-process vs in-process (two processes) | 0 | 0 / 0 |
+| A | in-process lane 1 vs lane 0 | 0 | 0 / 0 |
+| A | in-process run 2 vs sidecar run 2 | 0 | 0 / 0 |
+| B (production, `benchmark=True`) | in-process vs sidecar | **0** | 0 / 0 |
+| B | **sidecar vs sidecar: the floor** | **0** | 0 / 0 |
+| B | in-process vs in-process | 0 | 0 / 0 |
+| B | in-process lane 1 vs lane 0 | 0 | 0 / 0 |
+| B | in-process run 2 vs sidecar run 2 | 0 | 0 / 0 |
+
+So on this box the floor is 0 too: cuDNN's timing-based algorithm choice lands on the same
+algorithms in every process for this net and these shapes, and B's bar is the strict one, 0 bits —
+met. (B ran while the loop's gen45 net check shared the GPU; contention did not move a choice.
+Nothing guarantees that on another GPU, which is why `BLOOD_NN_DETERMINISTIC` exists.)
+
+**C (end to end, cuDNN deterministic, one stream, batches of 1).** `botbowl-ui` built with
+`torch,deterministic_hash`, run under `fixed_getrandom.so` with the new `FIXRAND_PER_CALL=1` (every
+`getrandom` call gets the same bytes, so a process that also loads libtorch hands std the same
+`RandomState` keys). `dataset --mode random-start --next-drive --games 3 --seed 77000 --bot-config
+cfgs/chance_all_partial_gen.toml --mcts-iters 1000 --evaluator nn` (centred 20x11 size mix; 4
+records, 161 samples, 71,257 forwards each) and `mc-label` (2 trajectories, 4 playouts):
+
+| corpus | sidecar vs sidecar (floor) | in-process vs sidecar |
+|---|---|---|
+| `dataset` | identical (4 / 4 lines) | every sample, visit count, value, tree block, outcome identical; `meta.extra.eq_checks` / `eq_rejects` differ |
+| `mc-label` | identical | **identical** |
+
+`eq_checks`/`eq_rejects` count `GameState` equality checks on hash-bucket collisions in the search's
+registry — a function of hash-table layout, i.e. of std's per-thread `RandomState`, which a process
+with extra threads (the batchers, libtorch's) seeds differently even under the shim. Every
+recombination *hit* and probe count matches, as does everything the search decided. I count that
+as "modulo telemetry"; the user may want to see it.
+
+### 7.4 Throughput on this box
+
+(see below)
+
+### 7.5 Open items
+
+- **Phase 5 (the switch)**: `train_loop.sh` must export `NET.ts` beside every `NET.onnx` it writes
+  (`python -m bbnn.export_ts`, the init champion and the anchor/drive reference nets included — the
+  hub ships whatever `.ts` sits next to the ONNX), build the local worker and the per-gen tools with
+  `--features torch` into the loop's target dir, and pass `--nn-backend inproc` instead of starting
+  sidecars; allowlist the commit. Helper workers keep the sidecar (protocol v20 locks them out until
+  they update, as every protocol bump does). Not done here.
+- The canary still runs the committed *9x16* fixture, now through the masked canvas path (the path
+  every request takes). It does not cover a bigger board's padding; test A does.
+- Batch composition: the in-process queue, like the sidecar, gives a state bit-identical results
+  only within the same bucket; across buckets the difference is ≤ 1e-5 (`tests/inproc.rs`), as
+  before.
+
+## 8. Phase 6 — HPC readiness (written, not run)
+
+**What carries over unchanged.** The `.ts` file is device-independent (traced on the CPU,
+unoptimised); `optimize_for_inference` and the graph capture run at load on whatever device the
+worker has, so one export serves this box, a Grace Hopper node and an x86 A100/H100 node. The hub
+already ships it with the ONNX. The queue, the canary and the fallback semantics are the same
+everywhere.
+
+**aarch64 + CUDA (Grace Hopper, GH200).**
+- PyTorch publishes `manylinux_2_28_aarch64` CUDA wheels (cu126/cu128) with the same `include/` +
+  `lib/` layout. Create the venv on the node (`cd train && uv sync`, or any venv with that torch),
+  then build with `BOTBOWL_TORCH_DIR=<venv>/lib/python3.X/site-packages/torch`.
+- Headers: `scripts/fetch_cuda_headers.sh` picks the aarch64 nvcc/cccl wheels by `uname -m`; or set
+  `BOTBOWL_CUDA_INCLUDE` to the site's CUDA module (`$CUDA_HOME/include`), which has everything.
+- ABI: check `python -c "import torch; print(torch._C._GLIBCXX_USE_CXX11_ABI)"` and set
+  `BOTBOWL_TORCH_CXX11_ABI` to match (default 1). The wheel's libstdc++ requirement may exceed the
+  system compiler's on old RHEL images: load a newer GCC module.
+- Hopper is sm_90, in every cu12x wheel. Build the botbowl binaries with the same
+  `BOARD_SIZE_*` env as the hub, as for any worker.
+
+**Numerics on Ampere/Hopper — decide before the first HPC corpus.** torch's default
+`cudnn.allow_tf32 = True` turns every convolution into TF32 on sm_80+, in the sidecar and the
+in-process backend alike. That is a numerics change (≈1e-3 relative on conv outputs) that this box
+has never seen; the canary's `< 1e-3` against tract may or may not hold for the logits. Run the
+pilot with `BLOOD_NN_TF32=0` (fp32 convolutions, same arithmetic as here up to kernel choice), and
+treat TF32 (and bf16) as the separate speed step of §6 with its own gate (value bench, net check,
+drives). Bit parity with *this* box is not expected on another GPU (different kernels); parity there
+means in-process vs that node's own sidecar, which `scripts/parity066.sh` measures as is.
+
+**ROCm (MI250/MI300).** ROCm wheels of torch (`torch+rocm6.x`) keep the `c10/cuda`, `ATen/cuda`
+header names (hipified underneath), but the shim's direct CUDA runtime use (`cudaEventDefault`,
+`cudaEventBlockingSync`, `cudaStreamCaptureModeThreadLocal`, `cuda_runtime_api.h`) must become HIP
+(`hipify-perl csrc/inproc_shim.cpp`, or a `#ifdef USE_ROCM` block), `build.rs` must link
+`torch_hip`/`c10_hip`/`amdhip64` instead of `torch_cuda`/`c10_cuda`/`cudart`, and the device string
+stays `cuda` (PyTorch maps it to HIP). Graph capture works on ROCm ≥ 5.3 builds of torch 2.x. Not
+attempted; budget a day, and run test A against a ROCm sidecar first.
+
+**One process per GPU, NUMA-pinned.** One `botbowl-worker --nn-backend inproc` per GPU, all its
+game threads sharing that GPU's queue:
+```sh
+# per GH200 superchip k (72 Grace cores, 1 H100); BOARD_SIZE_* as the hub
+CUDA_VISIBLE_DEVICES=$k BLOOD_NN_LANES=4 BLOOD_NN_TF32=0 numactl --cpunodebind=$k --membind=$k \
+  botbowl-worker --hub ws://HUB:PORT/ws --token-file ~/.config/botbowl/hub.token \
+  --nn-backend inproc --nn-device cuda --parallel-games 128 --cache-dir $TMPDIR/models-$k
+```
+`--parallel-games` sets the offered batch: with the GPU ~50x faster than the 1060 the search, not
+the GPU, becomes the floor, so start at ~2 streams per core and raise until the batcher's
+`mean_batch` sits near the top bucket (64) or the cores saturate. `BLOOD_NN_LANES` (CUDA streams /
+batcher threads) 2 → 4 if the stats line shows the device idle between batches. The largest bucket
+is fixed at 64 (the sidecar's `BUCKETS`); an H100 may want 128/256 — a one-line change to
+`inproc::BUCKETS`, but a different bucket is a different kernel shape, so re-run test A.
+
+**Slurm.** A job array, one task per GPU, each task one worker dialing the hub on the training box
+(or a hub on a login node: it is CPU-only and stateless across restarts):
+```sh
+#SBATCH --array=0-15 --gpus-per-task=1 --cpus-per-task=72 --mem=0 --time=12:00:00
+BLOOD_NN_TF32=0 srun --cpu-bind=none numactl --cpunodebind=$SLURM_LOCALID --membind=$SLURM_LOCALID \
+     botbowl-worker --hub ws://$HUB/ws --nn-backend inproc --parallel-games 128 --name $SLURMD_NODENAME-$SLURM_LOCALID
+```
+The worker reconnects on its own, so preemption and requeue need nothing; the hub's
+`--worker-timeout` requeues a dead node's games. Outbound websocket from compute nodes to the hub
+must be allowed (or tunnel through the login node). Model files arrive over the socket (≈12 MB per
+net with its `.ts`), cached per task in `$TMPDIR`. The commit allowlist applies as for any worker.
+
+**Scaling test for a pilot allocation (≈ one node-day).**
+1. One GPU, `dataset --nn-backend inproc` via `scripts/perf_gen_steady.sh` (`BACKEND=inproc`,
+   `BOARD=20x11/7`, `CANVAS=13x22`): streams 64 / 128 / 256 × lanes 2 / 4 → decisions/min,
+   samples/s, mean batch, GPU util, CPU. Find the knee; record the host cost per batch from the
+   stats line (`fwd` vs wall).
+2. Same with `BLOOD_NN_TF32=1` — the speed of the numerics step, for the §6 decision.
+3. Four workers on one node (one per GPU): linear in GPUs? (NUMA pinning on vs off.)
+4. 2–4 nodes against one hub: hub CPU, websocket throughput (trajectories are zstd'd, ~20x), and
+   whether the hub's writer keeps up; `job label` items the same way.
+5. Before any HPC corpus feeds training: test A/B in-process vs a sidecar *on that node*, the value
+   bench and the net check of the generator net on that node's numerics.
