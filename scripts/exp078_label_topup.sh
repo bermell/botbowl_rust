@@ -116,7 +116,12 @@ WIN=()
 for g in $(seq $((P - WINDOW_GENS + 2)) $((P + 1))); do [ -e "$RUN/$(gg "$g")/.generated" ] && WIN+=("$g"); done
 [ "${#WIN[@]}" -eq "$WINDOW_GENS" ] || die "window $(gg $((P - 1)))-$(gg $((P + 1))) incomplete: ${WIN[*]}"
 if [ "$WAIT_LOOP" = 1 ]; then
-    until [ -e "$NEXT/.mc_labelled" ]; do sleep 300; done
+    # A loop stopped before it labelled gen P+1 (STOP touched during generate exits "before
+    # genP+1 mc-label") will never label it: say so instead of waiting forever.
+    until [ -e "$NEXT/.mc_labelled" ]; do
+        loop_running || die "$(gg $((P + 1))) is not mc-labelled and the loop is not running (STOP before its mc-label?): relaunch the loop, touch STOP during that mc-label, then rerun"
+        sleep 300
+    done
     if loop_running; then status "waiting for the loop to stop (touch $RUN/STOP during $(gg $((P + 1))) mc-label)"; fi
     while loop_running; do sleep 120; done
 fi
