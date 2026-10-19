@@ -70,6 +70,9 @@ export ORIGIN_EVERY=0
 export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=on
 export TRAIN_EXTRA_ARGS="--freeze-bn --eval-at 250,500"
 export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=96 NEXT_DRIVE=1 DRIVE_EVAL_EVERY=3
+# 2026-10-19: 96 label streams on 20x11 boards held 9.9 GB in the worker and swapped the 16 GB box
+# (memory stalls ~1/3 of the time, labels at ~90 samples/min); 48 streams for the label worker.
+export LABEL_PARALLEL_GAMES=48
 export VALUE_WEIGHT=0.36
 export MAX_GENS=60
 export LABEL_VIA_HUB=1
