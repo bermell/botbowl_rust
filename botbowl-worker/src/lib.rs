@@ -707,7 +707,13 @@ pub async fn run_once(
     results: &mut mpsc::UnboundedReceiver<ToHub>,
     results_tx: &mpsc::UnboundedSender<ToHub>,
 ) -> Result<Ended, Fatal> {
-    let (ws, _) = tokio_tungstenite::connect_async(&cfg.hub_url)
+    // A model frame carries the ONNX and, since protocol v20, its TorchScript export: ~12 MB for
+    // the 96x8 net, past tungstenite's 16 MiB default frame limit for anything ~1.4x bigger. The
+    // hub accepts 64 MiB messages; take the same frames.
+    let ws_cfg = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_frame_size(Some(64 << 20))
+        .max_message_size(Some(64 << 20));
+    let (ws, _) = tokio_tungstenite::connect_async_with_config(&cfg.hub_url, Some(ws_cfg), false)
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, format!("{}: {e}", cfg.hub_url)))?;
     let (mut sink, mut stream) = ws.split();

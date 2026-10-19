@@ -239,3 +239,58 @@ async fn the_startup_index_names_a_cache_without_any_job() {
     assert!(wait_for(&mut late, &named).await.is_some(), "named on connect");
     drop((sink, sink2));
 }
+
+/// Protocol v20 (plan 066): a net's TorchScript export rides with its ONNX, and a real worker
+/// stores it as `<id>.ts`. The export here is 20 MiB, past tungstenite's 16 MiB default frame
+/// limit — a worker with the default limit dropped the connection on the model frame and never
+/// ran the task. (This worker runs tract; the bytes only have to arrive.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_large_torchscript_export_reaches_a_real_worker() {
+    use botbowl_hub::api::JobState;
+    use botbowl_worker::{run_once, WorkerConfig};
+    use std::sync::Arc;
+
+    let dir = tmp("ts");
+    let (path, id) = named_net(&dir);
+    let ts: Vec<u8> = (0..20u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(path.with_extension("ts"), &ts).unwrap();
+    let (hub, addr, _task) = Hub::start(HubConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        token: TOKEN.into(),
+        allow_commit_mismatch: false,
+        allowed_commits: std::env::temp_dir().join("botbowl-hub-test-no-such-allowlist.toml"),
+        worker_timeout: Duration::from_secs(300),
+        run_dir: None,
+        allow_from: Vec::new(),
+        rate_interval: Duration::from_secs(300),
+        registry_dir: None,
+    })
+    .await
+    .unwrap();
+    let cfg = WorkerConfig {
+        hub_url: format!("ws://{addr}/ws"),
+        token: TOKEN.into(),
+        name: "w".into(),
+        parallel_games: Some(1),
+        nn_server: None,
+        cache_dir: dir.join("cache"),
+        mem_floor_mb: 0,
+        reconnect_max: Duration::from_secs(1),
+    };
+    let cache = cfg.cache_dir.clone();
+    let _worker = tokio::spawn(async move {
+        let store = Arc::new(ModelStore::open(&cfg.cache_dir, None).unwrap());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run_once(&cfg, store, &mut rx, &tx).await
+    });
+    let job_id = hub.submit_eval(job(&dir, path)).unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(300), hub.wait(job_id))
+        .await
+        .expect("the job finished: the worker received the model frame")
+        .expect("job exists");
+    assert_eq!(status.state, JobState::Done, "{status:?}");
+    let stored = std::fs::read(cache.join(format!("{}.ts", id.to_hex()))).expect("<id>.ts in the cache");
+    assert!(stored == ts, "the stored export is the hub's bytes");
+}
