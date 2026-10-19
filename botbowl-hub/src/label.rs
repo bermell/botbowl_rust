@@ -35,8 +35,8 @@ use serde::Deserialize;
 use botbowl_data::{BoardCapacity, Trajectory, TrajectoryMeta};
 use botbowl_hub_proto::LabelConfig;
 use botbowl_play::mc_label::{
-    apply_labels, apply_topup, check_prior_labels, check_topup_model, first_drives, label_tag, shard_prior, split_items, topup_config,
-    topup_records_path, LabelTag,
+    apply_labels, apply_topup, check_prior_labels, check_topup_model, first_drives, label_tag, shard_prior,
+    split_items, topup_config, topup_records_path, LabelTag,
 };
 
 use crate::api::{JobId, LabelJobRequest};

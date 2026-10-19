@@ -107,7 +107,9 @@ impl LabelTag {
 pub fn shard_prior<'a>(metas: impl IntoIterator<Item = &'a TrajectoryMeta>) -> Result<LabelTag, String> {
     let mut prior: Option<(&str, LabelTag)> = None;
     for m in metas {
-        let Some(tag) = m.extra.get("value_label") else { continue };
+        let Some(tag) = m.extra.get("value_label") else {
+            continue;
+        };
         let Some(parsed) = LabelTag::parse(tag) else {
             return Err(format!("value_label {tag:?} is not an mc_policy label"));
         };
@@ -217,7 +219,11 @@ pub fn apply_topup(
         ));
     }
     if added.len() != traj.samples.len() {
-        return Err(format!("{} added labels for {} samples", added.len(), traj.samples.len()));
+        return Err(format!(
+            "{} added labels for {} samples",
+            added.len(),
+            traj.samples.len()
+        ));
     }
     let total = LabelTag::parse(tag).ok_or_else(|| format!("{tag:?} is not an mc_policy tag"))?;
     let k = total
@@ -688,7 +694,10 @@ mod tests {
         assert_eq!(apply_topup(&mut t, None, &prior, &tag16), Ok(None));
         assert_eq!(json(&t), before, "None leaves the trajectory as it was");
         assert!(apply_topup(&mut t, Some(&[0.0, 0.0]), &prior, &tag16).is_err());
-        assert!(apply_topup(&mut t, Some(&[0.0; 3]), &prior, &tag8).is_err(), "adds nothing");
+        assert!(
+            apply_topup(&mut t, Some(&[0.0; 3]), &prior, &tag8).is_err(),
+            "adds nothing"
+        );
         assert_eq!(json(&t), before);
 
         let rec = apply_topup(&mut t, Some(&[0.75, -0.5, 0.125]), &prior, &tag16)

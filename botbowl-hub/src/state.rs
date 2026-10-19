@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use botbowl_hub_proto::{
-    BoardDims, BotSpec, BuildInfo, EvalGameLine, GenerateConfig, LabelItem, LabelResult, ModelId, Task,
-    TaskId, ToWorker,
+    BoardDims, BotSpec, BuildInfo, EvalGameLine, GenerateConfig, LabelItem, LabelResult, ModelId, Task, TaskId,
+    ToWorker,
 };
 use botbowl_play::board_sizes::board_label;
 use botbowl_play::eval::{LadderRow, Report};

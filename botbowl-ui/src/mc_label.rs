@@ -42,8 +42,8 @@ use botbowl_engine::core::gamestate::GameState;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::{load_nn, Evaluator};
 use botbowl_play::mc_label::{
-    apply_labels, apply_topup, check_prior_labels, check_topup_model, first_drives, label_tag, replay_all, rng_for, sample_label,
-    shard_prior, summary_line, topup_config, topup_records_path, LabelTag,
+    apply_labels, apply_topup, check_prior_labels, check_topup_model, first_drives, label_tag, replay_all, rng_for,
+    sample_label, shard_prior, summary_line, topup_config, topup_records_path, LabelTag,
 };
 use botbowl_play::policy::PolicyBot;
 use botbowl_play::GAME_STACK_SIZE;

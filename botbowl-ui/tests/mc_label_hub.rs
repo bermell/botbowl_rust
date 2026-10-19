@@ -462,7 +462,10 @@ async fn a_topup_through_the_hub_equals_the_local_topup_and_a_fresh_labelling() 
                 }
             }
         }
-        assert!(recs.next().is_none(), "{file}: more records than topped-up trajectories");
+        assert!(
+            recs.next().is_none(),
+            "{file}: more records than topped-up trajectories"
+        );
     }
     assert!(topped_up >= 4, "too few trajectories topped up: {topped_up}");
     // Not vacuous: some added playouts scored.

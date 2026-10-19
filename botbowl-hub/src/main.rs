@@ -1199,7 +1199,10 @@ mod tests {
         assert!(req.top_up);
         assert_eq!((req.cfg.playouts, req.cfg.skip), (8, 0));
         for flag in [&["--seed", "56044"][..], &["--playouts", "8"]] {
-            assert!(job(&[&base[..], &["--top-up", "8"], flag].concat()).is_err(), "{flag:?}");
+            assert!(
+                job(&[&base[..], &["--top-up", "8"], flag].concat()).is_err(),
+                "{flag:?}"
+            );
         }
         assert!(label(&[&base[..], &["--top-up", "0"]].concat()).is_err());
     }
