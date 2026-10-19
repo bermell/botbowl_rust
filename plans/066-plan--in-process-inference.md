@@ -3,7 +3,8 @@
 **Status:** phases 1–4 done 2026-10-19, phase 6 written (§8); **the parity gate passes: 0 differing
 bits** in tests A and B (120,000 corpus states, every board, every bucket, policy and value-only,
 deterministic *and* production cuDNN) and test C (identical corpora modulo two hash-collision
-counters). Phase 5 (switching the loop) is the user's call. Results in §7, throughput in §7.4.
+counters). Throughput on this box: +12% GPU samples/s in generation, +14% in mc-label, ~1.9 GB RSS
+back (§7.4). Phase 5 (switching the loop) is the user's call. Results in §7.
 The loop (`runs/loopmix16x9v9`) paused after gen45's generate for this work (the user: "more
 important than generating data"). Registry: exp077.
 
@@ -259,7 +260,41 @@ as "modulo telemetry"; the user may want to see it.
 
 ### 7.4 Throughput on this box
 
-(see below)
+`scripts/perf066.sh` (→ `perf_gen_steady.sh` with `BACKEND`, `perf_label.sh`), same commit, net
+gen44, C1 generation preset, 1000 iterations, the 20x11 loop's centred size mix, canvas 13x22,
+production cuDNN, GPU otherwise idle; warm-up 240 s, window 600 s. Sidecar arm = the loop's shape
+(48 streams over 2 sidecars, 2 `dataset` processes of 24).
+
+| generation | decisions/min | GPU samples/s | mean batch | CPU (generator + sidecars) | peak RSS (generator + sidecars) | min MemAvailable |
+|---|---|---|---|---|---|---|
+| sidecars, 48 streams | 137.4 | 2,810 | 11.8 / 11.8 | 294% + 90% | 6,498 + 2,330 MB | 4,715 MB |
+| **in-process, 48 streams** | **201.8** | **3,150 (+12%)** | 23.3 | 410% + 0 | **6,952 MB** | 5,612 MB |
+| in-process, 64 streams | 160.5 | 3,038 | 30.8 | 412% | 8,762 MB | 3,657 MB |
+| in-process, 96 streams | 138.9 | 3,199 | 46.6 | 409% | 11,486 MB | **1,303 MB** |
+
+| mc-label (48 trajectories, 2,138 samples x 8 playouts, `--parallel 48`) | samples/min | CPU | peak RSS | labels |
+|---|---|---|---|---|
+| sidecar | 532 | 181% + 68% | 252 + 1,184 MB | — |
+| in-process | **608 (+14%)** | 250% | 1,257 MB | byte-identical to the sidecar's (48 / 48 lines) |
+
+Reading it:
+- **GPU samples/s is the number to trust: +12% generation, +14% labelling.** The GPU is the floor
+  (98-99% busy in every arm). One queue for all 48 streams doubles the mean batch (11.8 → 23.3), so
+  the bigger, better-occupied buckets do more per kernel launch; the in-process stats line reports
+  317 µs of device time per sample against the sidecar's 643 µs, but with two lanes on two CUDA
+  streams the batches overlap on the device, so per-batch device times are not additive — use
+  samples/s.
+- decisions/min (+47% at 48 streams) overstates it: the window is 10 minutes of a few dozen games,
+  and the two arms play *different* games (the sidecar arm's two processes take seeds
+  `SEED+100000·i` for i = 1, 2; the in-process arm only i = 1), so the decision mix differs. Treat
+  it as "at least not slower", and the samples/s as the gain.
+- **~1.9 GB of RSS back** (8.8 GB → 7.0 GB for 48 streams) and no Python process; the CPU the
+  sidecars used (90%) goes to the searches (the generator's own CPU rises 294% → 410% because it
+  does more work per minute).
+- **More streams do not help here**: 64 and 96 streams keep the GPU as busy (3,038 / 3,199
+  samples/s) while each search waits longer, so decisions/min falls, and 96 streams take the box
+  to 1.3 GB MemAvailable. **48 stays the right stream count on this box.** On an HPC GPU, where
+  the device is ~50x faster, the stream count is the knob that matters (§8).
 
 ### 7.5 Open items
 
