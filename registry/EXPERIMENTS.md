@@ -10,6 +10,7 @@ ends (see the root CLAUDE.md).
 
 ### <a id="exp076"></a>exp076: the loop moves to 20x11/7 (plan 065), planned 2026-10-18
 - **Switched 2026-10-18 18:14 (cf83459):** the gen44 16x9 generate died at 2481/3200 games when a review build filled the disk (FATAL 18:11); the loop was relaunched straight onto `scripts/launch_plan065.sh`, so **gen44 is the first 20x11/7 generation** (champion gen43, 96x8 + heads), 150 games a shard, canvas 13x22, GPU 100% at ~2850 forwards/s. The 20x11 screen (300 candidates x 4, gen43 vs itself) runs on the hub alongside; the 20x11 value bench is built from gen44's held-out shards (`GEN=gen44`).
+- **gen44 (2026-10-19):** 2098 records (8×150) in 506 min; MC labels 319 min at 96 label streams, which held 9.9 GB and swapped the 16 GB box (the background net check of gen43 was killed, no number) → 48 label streams from gen45 (f816254). Trained 70 min, best at step 8000 (epoch 0). Value bench (16x9 series) 0.178, −1.1% vs gen43 (the run's best); **20x11 bench (`v9_20x11_val`, frozen from gen44's val shards with gen43) 0.186 vs gen43's 0.192, −3.0%**, bias +0.035 → +0.018. Relaunched 09:15 at 33d66aa with both drive sets (16x9 + `contested_20x11_gen43`); gen45 is the first benchmark generation on 20x11.
 
 - **Question:** does the v9 loop keep improving when its boards grow from ≤16x9/6 to a mix centred on
   20x11/7 (the user, 2026-10-18: "bigger boards are the direction")? 7 players turn the kickoff table on.
