@@ -4,7 +4,8 @@
 bits** in tests A and B (120,000 corpus states, every board, every bucket, policy and value-only,
 deterministic *and* production cuDNN) and test C (identical corpora modulo two hash-collision
 counters). Throughput on this box: +12% GPU samples/s in generation, +14% in mc-label, ~1.9 GB RSS
-back (§7.4). Phase 5 (switching the loop) is the user's call. Results in §7.
+back (§7.4). **Phase 5 done 2026-10-19 (the user approved): the loop runs its nets in-process by
+default (`NN_BACKEND=inproc`), smoke-tested end to end (§9);** relaunch pending. Results in §7.
 The loop (`runs/loopmix16x9v9`) paused after gen45's generate for this work (the user: "more
 important than generating data"). Registry: exp077.
 
@@ -303,12 +304,7 @@ Reading it:
 
 ### 7.5 Open items
 
-- **Phase 5 (the switch)**: `train_loop.sh` must export `NET.ts` beside every `NET.onnx` it writes
-  (`python -m bbnn.export_ts`, the init champion and the anchor/drive reference nets included — the
-  hub ships whatever `.ts` sits next to the ONNX), build the local worker and the per-gen tools with
-  `--features torch` into the loop's target dir, and pass `--nn-backend inproc` instead of starting
-  sidecars; allowlist the commit. Helper workers keep the sidecar (protocol v20 locks them out until
-  they update, as every protocol bump does). Not done here.
+- **Phase 5 (the switch)**: done, see §9.
 - The canary still runs the committed *9x16* fixture, now through the masked canvas path (the path
   every request takes). It does not cover a bigger board's padding; test A does.
 - Batch composition: the in-process queue, like the sidecar, gives a state bit-identical results
@@ -390,3 +386,56 @@ net with its `.ts`), cached per task in `$TMPDIR`. The commit allowlist applies 
    whether the hub's writer keeps up; `job label` items the same way.
 5. Before any HPC corpus feeds training: test A/B in-process vs a sidecar *on that node*, the value
    bench and the net check of the generator net on that node's numerics.
+
+## 9. Phase 5 — the loop on the in-process backend (2026-10-19)
+
+**What changed** (`NN_BACKEND`, default `inproc`; `sidecar` = everything exactly as before):
+
+| script | under `NN_BACKEND=inproc` |
+|---|---|
+| `train_loop.sh` | builds `botbowl-ui`/`botbowl-nn`/`botbowl-worker` with `--features botbowl-ui/torch,botbowl-worker/torch` into the loop's target dir (`target/20x11`), the hub separately without it (it runs no net and so does not link libtorch); fetches the CUDA headers (`scripts/fetch_cuda_headers.sh`) if `~/.cache/botbowl/cuda_nvcc` has none. `NN_SERVER` is forced off, so no sidecar starts, and `worker_start` gives the one local worker every stream of the phase plus `--nn-backend inproc` (`GEN_SIDECARS`/`LABEL_SIDECARS` ignored: 48 generation / 48 label streams in one queue, 2 lanes). `ensure_ts` exports `NET.ts` (`bbnn.export_ts --canvas $NN_CANVAS`, from `NET.pt`; skipped when the `.ts` is newer than the `.pt`; a missing `.pt` is fatal) at launch for the init champion, the champion, the drive and origin references and the anchor (when used), right after each training for the new net, and before every phase or job that loads a net (generate, mc-label, net check, value benches, eval jobs incl. P1, shadow). The hub reads the `.ts` when a job names the net and ships it to workers (protocol v20). `mc-label` (local path) gets `--nn-backend inproc`. `backend_check` puts a `WARN` on status.md for any `NN_SERVER_FALLBACK` in a phase's log and for an in-process phase whose log never shows `NN_INPROC loaded` (generate, mc-label local and hub, eval worker). `PY` is overridable and `PYTHONPATH` points at the checkout's own `train/src`. |
+| `launch_plan065.sh` | `NN_BACKEND=inproc` (overridable); comments. `GEN_SIDECARS=2` stays for the rollback. |
+| `net_check.sh` | the whole budget ladder in **one** `override-audit --ladder 64,250,1000,4000 --out b{iters}.jsonl` process (new flag: the rungs run concurrently on threads and share one loaded net, i.e. one CUDA context and one GPU queue — four processes would hold four contexts); exits 3 on a tract fallback or no in-process load. |
+| `value_bench.sh` | one `value-bench --nn-backend inproc` process per net, in turn; exits 3 on a fallback / no load. |
+
+**GPU memory policy: per-phase processes, no eviction code.** The registry never evicts, but every
+process that loads nets is short-lived: the loop already restarts its local worker every phase (it
+then holds that phase's nets: the generator, plus the drive reference while the previous
+generation's overlapped eval runs), the net check is one process per generation, and each value
+bench net is its own process. Measured in the smoke test: worker with one net 1,022 MiB, with two
+(gen01 + drive reference) 1,564 MiB; net-check process 1,022 MiB; whole card peak 1,811 MiB (the
+label worker and the background net check side by side). The heaviest real overlap is the trainer
+plus the background net check (≈1 GB, as the net check's sidecar was) — the same as before.
+
+**Smoke test** (`scripts/loop_smoke066.sh runs/exp077/loop_smoke`, commit e634dfd, one generation of
+the 20x11 loop's settings shrunk: 8x2 games at 200 iterations, 2 MC playouts, 1 epoch, drives capped
+at 8 per set, net check ladder 64/250 at 4 overrides, both value benches, own hub on port 13398,
+own run and models dirs with the live nets symlinked): `train_loop.sh` exit 0 in 6 min; every
+phase ran in-process:
+
+| phase | process | evidence |
+|---|---|---|
+| launch | — | `exported bbnet_mix16x9v9_gen44.ts`, `bbnet_mix16x9d1k_gen04_v9.ts`; "in-process inference … no sidecars" |
+| generate (29 records) | local worker x48 | `NN_INPROC loaded …/worker-cache/<id>.ts … (1 net)`, 1,022 MiB GPU |
+| net check (background) | one `botbowl-ui override-audit --ladder` | `NN_INPROC loaded …gen44.ts`; MONOTONE line on status.md |
+| mc-label via the hub | local worker x48 | `NN_INPROC loaded` (1 net), 1,022 MiB |
+| train, absorption | python | `exported bbnet_smoke_gen01.ts` right after training |
+| value bench, value bench 2 | `value-bench` per net | `NN_INPROC loaded` per net; gen44 RMS 0.1784 / 0.1863 — exactly the live loop's sidecar numbers for gen44 |
+| eval (drives vs d1k gen04, in `eval_finish`) | local worker | two loads (gen01, then the reference: "2 net(s) loaded"), 1,564 MiB |
+
+No `NN_SERVER_FALLBACK` anywhere, no backend `WARN`, and 0 sampler ticks with an `nn_server.py`
+process. Peak GPU 1,811 MiB of 6,144; lowest MemAvailable 10.3 GB; largest process RSS 2.4 GB (the
+worker). (The value benches first failed in the smoke because the benchmark rows name their corpus
+by a path relative to the main checkout and the smoke ran from the worktree; rerun with a `runs`
+link there they passed. The real loop runs from the main checkout.)
+
+**Parity re-run from the loop's own build** (`target/20x11` built by `train_loop.sh`, the `.ts` the
+loop exported; `MAX_STATES=12000`, 19 boards, 696 batches): 0 differing bits in all ten comparisons
+(det and prod: in-process vs sidecar, sidecar vs sidecar, in-process vs in-process, lane 1 vs lane
+0, run 2 vs run 2).
+
+**Relaunch** (from the main checkout, after the merge and with the STOP file removed):
+`nohup scripts/launch_plan065.sh > /dev/null 2>&1 &`. The first launch builds `target/20x11` with
+the torch feature (~5 min) and exports `.ts` files beside gen44, the d1k gen04 reference and
+g056 gen04 in `models/az_v7`. Helper workers stay on their sidecars or tract; protocol v20 means
+they need this commit (as every bump).
