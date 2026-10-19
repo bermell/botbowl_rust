@@ -236,6 +236,16 @@ address is the clients', not the box's.
   unchanged. Labels are bitwise reproducible only on one backend: tract and the GPU sidecar differ in
   the last bits of a forward, so a near-tie argmax can flip a playout — as two local runs on the GPU
   already can.
+- **`job label --top-up K` (plan 067, protocol v21)** tops up already-labelled shards. Reading
+  (`label::load_input` with a `LabelSpec`) finds each shard's labelling (`shard_prior`: one tag, or
+  the shard is refused), checks the net against it and every prior label against the 1/n grid, and
+  gives the shard its own `LabelConfig` (that labelling's seed, `skip = n`, `K` playouts) and tag;
+  untagged trajectories get no items and are written back unchanged. So `Kind::Label` holds no
+  job-wide config any more: **the cfg and tag are per shard** (`LabelInput.cfg`/`.tag`), and a job
+  over several generations continues each one's own seed. Workers return the K added means;
+  `ShardWrite` combines them with the prior labels read back from the lines (`apply_topup`) and
+  writes `topup/<shard>` before the shard. `mc_label_hub.rs` pins hub == local bytes for a top-up
+  too, and local top-up == a fresh `(n+K)` labelling.
 - **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
   task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries
   `RungReq.board` → `Task::Eval.board`, and a multi-size ladder names rungs `opponent@14x7/4`

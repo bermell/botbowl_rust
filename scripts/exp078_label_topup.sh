@@ -203,7 +203,8 @@ for g in "${WIN[@]}"; do
     status "$G2 top-up done: $(grep -o '([0-9]* left unlabelled)' "$OUT/mc16/$G2/topup.log" | tr -dc '0-9\n' | awk '{s+=$1} END {print s+0}') trajectories not topped up (kept at 8)"
     touch "$OUT/mc16/$G2/.reported"
 done
-[ "$DRIVES" = 1 ] || hub_down
+# The worker holds ~1 GB of GPU memory: down before training, up again for the drives.
+hub_down
 
 # ---- 2. the label noise, measured --------------------------------------------------------------------
 if [ ! -s "$OUT/label_noise.txt" ]; then

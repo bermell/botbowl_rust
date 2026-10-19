@@ -18,6 +18,11 @@
 //! piece that decides a label or the output bytes is `botbowl_play::mc_label`, which the hub's
 //! `job label` (plan 062) runs on its workers, so the two write the same file.
 //!
+//! `--top-up K` (plan 067): the input is a labelled shard; every labelled sample gets K more playouts
+//! continuing its own dice stream (seed and prior count from its tag), the label becomes the mean of
+//! all of them — a fresh labelling with the total, bit for bit — and `<out-dir>/topup/<shard>` gets
+//! each sample's prior and added means (`scripts/label_noise.py`).
+//!
 //! ```text
 //! BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR=target/16x9 \
 //! cargo run --release -p botbowl-ui -- mc-label --corpus runs/loopmix16x9g/gen07/shard0.jsonl \
