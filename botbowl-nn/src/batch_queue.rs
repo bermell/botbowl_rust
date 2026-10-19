@@ -413,6 +413,8 @@ impl BatchQueue {
                 // so nobody else waits on a wedged device.
                 let msg = format!("no answer from the device in {:?}", sh.wait_timeout);
                 sh.state.lock().unwrap().dead.get_or_insert(msg.clone());
+                // This slot is never freed: wake every owner waiting for one, so it sees `dead`.
+                sh.freed.notify_all();
                 return Err(msg);
             }
             thread::park_timeout(deadline - now);
@@ -523,6 +525,10 @@ fn batcher(sh: &Shared, lane: usize) {
             }
         }
         sh.work.notify_all();
+        if result.is_err() {
+            // Owners waiting for a free slot must see `dead` too, not wait for one to come back.
+            sh.freed.notify_all();
+        }
         if let Ok(device) = &result {
             let c = &sh.counters;
             c.batches.fetch_add(1, Ordering::Relaxed);
@@ -767,6 +773,24 @@ mod tests {
         assert!(e.contains("no answer"), "{e}");
         assert!(t0.elapsed() < Duration::from_secs(1));
         assert!(q.forward(&s, &g, 2, 2, false).is_err());
+    }
+
+    /// More callers than slots on a wedged device: the slot owner times out and never frees its
+    /// slot, so a caller waiting for one must be woken by the queue dying, not wait forever.
+    #[test]
+    fn callers_waiting_for_a_slot_see_a_dead_queue() {
+        let mut fake = Fake::new(1, 2);
+        fake.hang = true;
+        let q = BatchQueue::with_timeout(Arc::new(fake), GEO, 1, Duration::from_millis(100));
+        let (s, g) = input(0, 2, 2);
+        let t0 = Instant::now();
+        thread::scope(|sc| {
+            for _ in 0..3 {
+                let (q, s, g) = (&q, &s, &g);
+                sc.spawn(move || assert!(q.forward(s, g, 2, 2, false).is_err()));
+            }
+        });
+        assert!(t0.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
