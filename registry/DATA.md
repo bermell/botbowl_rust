@@ -83,6 +83,7 @@ Per-generation corpus statistics (TD rates, skill use, setups) are in plan 058 �
 | file | what | built by | settings |
 |---|---|---|---|
 | `runs/value_bench/v9_gen01_val.jsonl` | **the value benchmark under the v9 rules** (plan 056 §2 / 058 §6): 3023 states from the v9 loop's gen01 held-out shards (4, 7), random-start drive-1 states only | `scripts/value_bench_build_v9.sh runs/loopmix16x9v9 models/az_v7/bbnet_mix16x9g056_gen04_v9.onnx …` (2026-10-07, ae721b7) | `override-audit --all --decisions 3000 --playouts 48 --seed 58100 --board 14x7,16x9`, MC under the init net's policy; mean MC SE 0.071 |
+| `runs/loopmix16x9v9/positions/contested_20x11_gen43.json` | the 20x11/7 contested drive set (plan 065 §4): 142 of 300 candidates (`positions --board 20x11/7 --count 300 --seed-base 72000000 --min-turns-left 4`) with an attacker TD rate in 0.25-0.75 over 4 playouts each | screened 2026-10-18/19 at cf83459 by v9 gen43 (96x8 + heads) vs itself, C1, 1000 descents, on the loop's hub | attacker TD rate over all candidates 0.681 |
 | `runs/loopmix16x9g/positions/contested_{14x7,16x9}_gen04g.json` | the contested drive start positions every drive match uses (plan 051) | screened 2026-10-03 at a3c041d with the Gumbel loop's gen04 | 500 biased random seeds per board (the file stores seeds and bias, so the engine rebuilds the positions under the current rules) |
 | `runs/value_bench/{g05_gen06,d1k_gen01}.jsonl` | pre-v9 value benchmarks (plan 056) | 2026-10-05 | not readable by v9 code |
 
