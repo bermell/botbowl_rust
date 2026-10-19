@@ -129,6 +129,15 @@ int bbt_set_cudnn(int benchmark, int deterministic) {
   BBT_CATCH(-1)
 }
 
+// `torch.backends.cudnn.allow_tf32` (torch's default is on; it only matters on Ampere and later,
+// where it makes every convolution TF32 — a numerics change, see plan 066 §8).
+int bbt_set_cudnn_tf32(int allow) {
+  BBT_TRY
+  at::globalContext().setAllowTF32CuDNN(allow != 0);
+  return 0;
+  BBT_CATCH(-1)
+}
+
 // Load a TorchScript `MaskedNet` (`python -m bbnn.export_ts`) onto `device` ("cuda", "cuda:1",
 // "cpu"), put it in eval mode and, if `optimize`, apply `torch::jit::optimize_for_inference` — the
 // C++ twin of the `torch.jit.optimize_for_inference` call in the sidecar's `maybe_trace_masked`.

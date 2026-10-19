@@ -42,6 +42,7 @@ mod ffi {
         pub fn bbt_last_error() -> *const c_char;
         pub fn bbt_cuda_device_count() -> c_int;
         pub fn bbt_set_cudnn(benchmark: c_int, deterministic: c_int) -> c_int;
+        pub fn bbt_set_cudnn_tf32(allow: c_int) -> c_int;
         pub fn bbt_model_load(path: *const c_char, device: *const c_char, optimize: c_int, c: i64, f: i64, a: i64) -> *mut c_void;
         pub fn bbt_model_graph(model: *mut c_void, buf: *mut c_char, cap: i64) -> i64;
         pub fn bbt_model_forward(
@@ -95,6 +96,16 @@ pub fn set_cudnn(mode: CudnnMode) -> Result<(), String> {
     // SAFETY: plain FFI call with integer arguments.
     if unsafe { ffi::bbt_set_cudnn(b, d) } != 0 {
         return Err(last_error());
+    }
+    // `BLOOD_NN_TF32=0|1` sets cuDNN's TF32 permission; unset keeps torch's default (on), which is
+    // what the sidecar runs. Irrelevant before Ampere; on an H100 it decides whether every
+    // convolution is fp32 or TF32 (plan 066 §8).
+    if let Ok(v) = std::env::var("BLOOD_NN_TF32") {
+        let allow = !(v.is_empty() || v == "0");
+        // SAFETY: plain FFI call.
+        if unsafe { ffi::bbt_set_cudnn_tf32(allow as c_int) } != 0 {
+            return Err(last_error());
+        }
     }
     Ok(())
 }
