@@ -899,8 +899,14 @@ if [ "$NN_BACKEND" = inproc ]; then
         || die "scripts/fetch_cuda_headers.sh failed — see loop.log (or set BOTBOWL_CUDA_INCLUDE, or NN_BACKEND=sidecar)"
     # The hub runs no net: built on its own, without the feature, so it does not link libtorch.
     cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-hub >> "$LOG" 2>&1 || die "cargo build (hub) failed — see loop.log"
-    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-ui -p botbowl-nn -p botbowl-worker \
-        --features botbowl-ui/torch,botbowl-worker/torch >> "$LOG" 2>&1 || die "cargo build (torch) failed — see loop.log"
+    # botbowl-ui on its own, with exactly the command net_check.sh and value_bench.sh run: built
+    # together with the worker, its dependencies resolve other features, so their build recompiled
+    # nn/mcts/play/ui (~40 s in the background during mc-label) and swapped the loop's botbowl-ui for
+    # a second variant every generation.
+    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-nn -p botbowl-worker \
+        --features botbowl-worker/torch >> "$LOG" 2>&1 || die "cargo build (worker, torch) failed — see loop.log"
+    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-ui --features botbowl-ui/torch >> "$LOG" 2>&1 \
+        || die "cargo build (botbowl-ui, torch) failed — see loop.log"
 else
     if ! cargo build --release -p botbowl-ui -p botbowl-nn -p botbowl-hub -p botbowl-worker >> "$LOG" 2>&1; then
         die "cargo build failed — see loop.log"
@@ -1477,7 +1483,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
                     --select-on "$SELECT_ON" --eval-every "$EVAL_EVERY" $TRAIN_TARGET_ARGS \
                     --out "$SHADOW_MODEL.pt" --onnx "$SHADOW_MODEL.onnx" > "$GEN_DIR/shadow_train.log" 2>&1; then
                 echo "$SHADOW_MODEL.pt" > "$SHADOW_LATEST"
-                ensure_ts "$SHADOW_MODEL.onnx"
+                ensure_ts "$SHADOW_MODEL.onnx" "$MODEL.onnx"   # the shadow value bench pairs it with this generation's net
                 status "$GG shadow train done ($((SECONDS / 60)) min): $(grep 'restored best-val weights' "$GEN_DIR/shadow_train.log" | tail -1)"
                 PROBE_IN=""; for K in $VAL_SHARDS; do f="$GEN_DIR/mc/shard$K.jsonl"; [ -s "$f" ] || f="$GEN_DIR/shard$K.jsonl"; [ -s "$f" ] && PROBE_IN="$PROBE_IN $f"; done
                 rm -rf "$GEN_DIR/shadow_probe_val"

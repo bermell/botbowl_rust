@@ -398,6 +398,13 @@ net with its `.ts`), cached per task in `$TMPDIR`. The commit allowlist applies 
 | `net_check.sh` | the whole budget ladder in **one** `override-audit --ladder 64,250,1000,4000 --out b{iters}.jsonl` process (new flag: the rungs run concurrently on threads and share one loaded net, i.e. one CUDA context and one GPU queue — four processes would hold four contexts); exits 3 on a tract fallback or no in-process load. |
 | `value_bench.sh` | one `value-bench --nn-backend inproc` process per net, in turn; exits 3 on a fallback / no load. |
 
+Review fixes (2026-10-19): the loop builds `botbowl-nn`+`botbowl-worker` and then `botbowl-ui` on its
+own with the exact command `net_check.sh`/`value_bench.sh` run — built together with the worker,
+botbowl-ui's dependencies resolved other features, so the helper scripts' build recompiled
+nn/mcts/play/ui (37 s in the smoke's net check) and swapped the loop's `botbowl-ui` for a second
+variant every generation; now their build is a no-op and every binary keeps its md5. The shadow value
+bench's pairing net gets `ensure_ts` too.
+
 **GPU memory policy: per-phase processes, no eviction code.** The registry never evicts, but every
 process that loads nets is short-lived: the loop already restarts its local worker every phase (it
 then holds that phase's nets: the generator, plus the drive reference while the previous
