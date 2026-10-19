@@ -12,6 +12,11 @@ static int init;
 ssize_t getrandom(void *buf, size_t len, unsigned int flags) {
     (void)flags;
     unsigned char *b = buf;
+    /* FIXRAND_PER_CALL=1 (plan 066 gate C): every call starts the stream over, so the bytes a call
+     * gets do not depend on how many calls came before it — a process that also loads libtorch
+     * (which may draw on getrandom itself) then hands std the same RandomState keys as one that
+     * does not. */
+    if (init && getenv("FIXRAND_PER_CALL")) init = 0;
     if (!init) {
         const char *e = getenv("FIXRAND_SEED");
         ctr = e ? strtoull(e, 0, 10) : 0x9E3779B97F4A7C15ull;

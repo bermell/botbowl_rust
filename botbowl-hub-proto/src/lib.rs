@@ -51,7 +51,9 @@ pub use botbowl_play::mc_label::LabelConfig;
 // `chance_mass`, `chance_widen_c`, `chance_widen_alpha`, inside `SearchConfig.config`.
 // v19 (plan 062): `Task::Label` (sample ranges of corpus trajectories, shipped zstd) and
 // `ToHub::LabelDone` (their MC value labels) — distributed `mc-label`.
-pub const PROTOCOL_VERSION: u32 = 19;
+// v20 (plan 066): `ToWorker::Model.torchscript` — the net's TorchScript export rides with its ONNX,
+// so a worker on the in-process backend has the file it loads.
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
@@ -394,6 +396,11 @@ pub enum ToWorker {
     Model {
         id: ModelId,
         onnx: Vec<u8>,
+        /// The net's TorchScript export (`<stem>.ts` beside the ONNX on the hub, plan 066), for a
+        /// worker on the in-process backend; `None` when the hub has none. Identified by the
+        /// ONNX's id: the worker stores it as `<id>.ts`, and the in-process canary (the ONNX's
+        /// tract answer on the parity fixture, `< 1e-3`) is what checks the two belong together.
+        torchscript: Option<Vec<u8>>,
     },
     Task(Task),
     /// Finish in-flight games, then expect the socket to close.

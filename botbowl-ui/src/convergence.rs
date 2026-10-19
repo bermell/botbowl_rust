@@ -147,6 +147,7 @@ pub fn run(args: ConvergenceArgs) -> io::Result<()> {
     };
     // `--nn-server` batches every probe thread's forwards on the GPU sidecar; without it each
     // thread runs tract on the CPU, about 12x the cost per forward.
+    args.backend.apply()?;
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());
     let nn = load_nn(
         evaluator,

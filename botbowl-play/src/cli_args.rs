@@ -305,6 +305,33 @@ pub struct DatasetArgs {
     /// fallback: BLOOD_NN_SERVER (the repo's BLOOD_* convention).
     #[arg(long)]
     pub nn_server: Option<String>,
+    #[command(flatten)]
+    pub backend: NnBackendArgs,
+}
+
+/// Plan 066: which inference backend this process uses, next to every `--nn-server` flag.
+#[derive(Args, Debug, Clone, Default)]
+pub struct NnBackendArgs {
+    /// `sidecar` (the default: `--nn-server` if given, else tract on the CPU) or `inproc`: the net
+    /// runs in this process through libtorch, batched across every search thread. `inproc` needs a
+    /// `--features torch` build and the net's TorchScript export (`<net>.ts` beside the ONNX,
+    /// `python -m bbnn.export_ts`); a missing one is an error, not a tract run. Env fallback
+    /// BLOOD_NN_BACKEND.
+    #[arg(long)]
+    pub nn_backend: Option<String>,
+    /// Device for `--nn-backend inproc`: `cuda` (default) or `cuda:N`. Env fallback BLOOD_NN_DEVICE.
+    #[arg(long)]
+    pub nn_device: Option<String>,
+}
+
+impl NnBackendArgs {
+    /// Set the process-wide backend (`botbowl_nn::eval::configure_backend`). Call before loading a
+    /// net; every evaluator built afterwards uses it.
+    pub fn apply(&self) -> std::io::Result<()> {
+        botbowl_nn::eval::configure_backend(self.nn_backend.as_deref(), self.nn_device.as_deref())
+            .map(|_| ())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    }
 }
 
 /// `mc-label` (plan 056 arm F): Monte Carlo value labels, see [`crate::mc_label`]. `botbowl-hub
@@ -321,6 +348,8 @@ pub struct McLabelArgs {
     /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
     #[arg(long)]
     pub nn_server: Option<String>,
+    #[command(flatten)]
+    pub backend: NnBackendArgs,
     /// Playouts averaged per sample.
     #[arg(long, default_value_t = 8)]
     pub playouts: u32,
@@ -363,6 +392,8 @@ pub struct EvalArgs {
     /// fallback: BLOOD_NN_SERVER (the repo's BLOOD_* convention).
     #[arg(long)]
     pub nn_server: Option<String>,
+    #[command(flatten)]
+    pub backend: NnBackendArgs,
     /// Candidate search iterations per move.
     #[arg(long, default_value_t = 1000)]
     pub mcts_iters: usize,

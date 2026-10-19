@@ -34,6 +34,15 @@ struct Cli {
     /// training box only.
     #[arg(long)]
     nn_server: Option<PathBuf>,
+    /// `sidecar` (default: `--nn-server` if given, else tract) or `inproc` (plan 066): the nets run
+    /// in this process through libtorch, one batch queue for every game thread. Needs a
+    /// `--features torch` build; the hub ships each net's `<stem>.ts` with its ONNX. Env fallback
+    /// BLOOD_NN_BACKEND.
+    #[arg(long)]
+    nn_backend: Option<String>,
+    /// Device for `--nn-backend inproc`: `cuda` or `cuda:N`. Env fallback BLOOD_NN_DEVICE.
+    #[arg(long)]
+    nn_device: Option<String>,
     /// Model cache directory.
     #[arg(long, default_value_os_t = default_cache_dir())]
     cache_dir: PathBuf,
@@ -105,6 +114,16 @@ async fn main() {
         }),
     };
     warn_about_stale_env();
+    match botbowl_nn::eval::configure_backend(cli.nn_backend.as_deref(), cli.nn_device.as_deref()) {
+        Ok(botbowl_nn::eval::BackendChoice::InProcess { device }) => {
+            eprintln!("[worker] nets run in-process on {device} (plan 066)");
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("[worker] {e}");
+            std::process::exit(2);
+        }
+    }
     let cfg = WorkerConfig {
         hub_url: cli.hub,
         token,

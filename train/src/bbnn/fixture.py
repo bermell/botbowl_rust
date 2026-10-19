@@ -56,9 +56,31 @@ def build_heads(out_dir: Path | None = None):
     print(f"heads fixture written → {out_dir}")
 
 
+def build_ts(out_dir: Path | None = None):
+    """Plan 066: TorchScript exports of both committed fixture nets (`tiny.ts`, `heads/tiny_heads.ts`)
+    for the in-process backend's tests. Built *from the committed ONNX* (`bbnn.from_onnx`: BatchNorm
+    comes back folded, an eval-equivalent net), so they need no seed to line up with it — the tests'
+    canary (the ONNX's tract answer, `< 1e-3`) checks the pairing."""
+    from .export_ts import trace_masked
+    from .from_onnx import shape_of_onnx, state_dict_from_onnx
+
+    out_dir = out_dir or fixtures_dir()
+    for onnx in (out_dir / "tiny.onnx", out_dir / "heads" / "tiny_heads.onnx"):
+        sd = state_dict_from_onnx(onnx)
+        net = BBNet(**shape_of_onnx(sd))
+        net.load_state_dict(sd)
+        net.eval()
+        trace_masked(net, (13, 22), "cpu").save(str(onnx.with_suffix(".ts")))
+        print(f"torchscript fixture written → {onnx.with_suffix('.ts')}")
+
+
 if __name__ == "__main__":
     import sys
 
+    # `--ts` (plan 066) writes only the TorchScript twins of the committed ONNX fixtures.
+    if "--ts" in sys.argv:
+        build_ts()
+        raise SystemExit(0)
     # `--heads` rebuilds only the plan-063 heads fixture; plain runs rebuild both. The canary of
     # `scripts/nn_server.py` reads tiny's 9x16 inputs, so rebuilding tiny is never needed for heads.
     if "--heads" not in sys.argv:

@@ -110,6 +110,7 @@ fn fixture() -> &'static Fixture {
             corpus: inputs(&corpus),
             model: TINY.into(),
             nn_server: None,
+            backend: Default::default(),
             playouts: CFG.playouts,
             seed: CFG.seed,
             parallel: 2,

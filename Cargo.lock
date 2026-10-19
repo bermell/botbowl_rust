@@ -457,6 +457,7 @@ dependencies = [
  "botbowl-curriculum",
  "botbowl-data",
  "botbowl-engine",
+ "cc",
  "clap",
  "rand 0.8.6",
  "rand_chacha 0.3.1",

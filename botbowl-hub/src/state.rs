@@ -461,6 +461,8 @@ pub fn index_models(dirs: &[PathBuf]) -> HashMap<ModelId, PathBuf> {
 pub struct Inner {
     pub workers: HashMap<WorkerId, WorkerConn>,
     pub models: HashMap<ModelId, Arc<Vec<u8>>>,
+    /// Each model's TorchScript export (plan 066), when one sits beside its ONNX.
+    pub torchscripts: HashMap<ModelId, Arc<Vec<u8>>>,
     /// The path each model was first loaded from, for `ToWorker::ModelName`.
     pub model_paths: HashMap<ModelId, PathBuf>,
     /// Every net found on this box at startup (`Hub::index_models`), so the models a worker
@@ -487,6 +489,16 @@ impl Inner {
         let id = ModelId::of(&bytes);
         self.models.entry(id).or_insert_with(|| Arc::new(bytes));
         self.model_paths.entry(id).or_insert_with(|| path.to_path_buf());
+        // Plan 066: ship the TorchScript export with it when there is one (beside the path, or
+        // beside the file it links to), read again on every load so a later export is picked up.
+        let ts = [Some(path.with_extension("ts")), path.canonicalize().ok().map(|p| p.with_extension("ts"))]
+            .into_iter()
+            .flatten()
+            .find(|p| p.is_file());
+        if let Some(ts) = ts {
+            let b = std::fs::read(&ts).map_err(|e| io::Error::new(e.kind(), format!("model {}: {e}", ts.display())))?;
+            self.torchscripts.insert(id, Arc::new(b));
+        }
         Ok(id)
     }
 
@@ -959,6 +971,7 @@ impl Inner {
                             let _ = w.tx.send(ToWorker::Model {
                                 id: m,
                                 onnx: bytes.as_ref().clone(),
+                                torchscript: self.torchscripts.get(&m).map(|t| t.as_ref().clone()),
                             });
                             w.known_models.insert(m);
                         }

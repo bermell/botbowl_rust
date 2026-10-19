@@ -168,6 +168,7 @@ pub fn run(args: ValueBenchArgs) -> io::Result<()> {
         }
     }
 
+    args.backend.apply()?;
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());
     let nn = load_nn(
         Evaluator::Nn,
@@ -307,6 +308,7 @@ mod tests {
             bench: bench_path.to_str().unwrap().into(),
             model: TINY.into(),
             nn_server: None,
+            backend: Default::default(),
             parallel: 3,
             out: out.to_str().unwrap().into(),
             symmetrise: false,

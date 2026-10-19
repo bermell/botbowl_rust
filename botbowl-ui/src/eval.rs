@@ -285,6 +285,7 @@ fn run_rung_games(
 }
 
 pub fn run(args: EvalArgs) -> io::Result<()> {
+    args.backend.apply()?;
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());
     // Plan 043: resolve the bot presets before anything else, so a bad path or a misspelled knob
     // fails in the first second rather than after the lecture battery.

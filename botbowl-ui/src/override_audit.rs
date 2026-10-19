@@ -472,6 +472,7 @@ pub fn run(args: OverrideAuditArgs) -> io::Result<()> {
             preset.name, preset.config.gumbel_scale
         );
     }
+    args.backend.apply()?;
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());
     let nn = load_nn(
         Evaluator::Nn,

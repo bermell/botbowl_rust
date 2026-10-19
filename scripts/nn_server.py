@@ -1391,6 +1391,12 @@ def main() -> int:
         "the masked forward, so all board sizes share one batch queue. Exact up to float reassociation "
         "(train/tests/test_model.py). Unset = one queue per board size, as before.",
     )
+    ap.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="cuDNN deterministic=True, benchmark=False (plan 066 §4: reproducible bits run to run and "
+        "process to process, for the parity gate). DEFAULT off: benchmark=True, as the loop runs.",
+    )
     ap.add_argument("--torch-threads", type=int, default=None)
     ap.add_argument(
         "--switch-interval",
@@ -1428,7 +1434,11 @@ def main() -> int:
         return 1
     if args.torch_threads:
         torch.set_num_threads(args.torch_threads)
-    torch.backends.cudnn.benchmark = True
+    if args.deterministic:
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+    else:
+        torch.backends.cudnn.benchmark = True
 
     canvas = parse_sizes(args.canvas)[0] if args.canvas else None
     registry = Registry(args.device, args.max_models, args.jit, canvas)

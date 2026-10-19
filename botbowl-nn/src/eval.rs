@@ -25,8 +25,13 @@
 //! reference. [`Backend::Remote`] forwards to `scripts/nn_server.py` over
 //! a Unix socket so inference can be batched across the generation
 //! loop's shard processes — and always carries a tract fallback, so a
-//! dead or wedged server makes a shard slow rather than broken. Only
-//! [`NnEvaluator::forward_raw`] and its value-only sibling dispatch;
+//! dead or wedged server makes a shard slow rather than broken.
+//! `Backend::InProcess` (plan 066, feature `torch`) runs the same libtorch
+//! forward inside this process behind a batch queue ([`crate::batch_queue`]);
+//! it is chosen process-wide ([`configure_backend`], `BLOOD_NN_BACKEND`),
+//! so every evaluator a tool builds through
+//! [`NnEvaluator::from_path_with_server`] gets it without a new argument.
+//! Only [`NnEvaluator::forward_raw`] and its value-only sibling dispatch;
 //! everything above them is backend-agnostic, so no call site in
 //! `botbowl-mcts` changes and nothing becomes async.
 
@@ -120,13 +125,72 @@ impl TractBackend {
 
 /// Where a forward is actually executed. `Remote` always owns a `Tract`
 /// fallback — that is what keeps "a dead server is a slow shard, not a
-/// dead shard" true by construction.
+/// dead shard" true by construction. `InProcess` owns one for the same
+/// reason: a device that fails mid-run makes the process slow and loud,
+/// never wrong or hung.
 pub enum Backend {
     Tract(TractBackend),
     Remote {
         client: RemoteClient,
         fallback: TractBackend,
     },
+    #[cfg(feature = "torch")]
+    InProcess {
+        backend: Arc<crate::inproc::InProcBackend>,
+        fallback: TractBackend,
+        served: AtomicU64,
+        fell_back: AtomicU64,
+        warned: std::sync::atomic::AtomicBool,
+    },
+}
+
+/// Which backend [`NnEvaluator::from_path_with_server`] builds, process-wide.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackendChoice {
+    /// Tract, or the sidecar when a socket is given — the behaviour before plan 066.
+    Default,
+    /// libtorch in this process on `device` (`cuda`, `cuda:N`). Needs the `torch` build feature.
+    InProcess { device: String },
+}
+
+static BACKEND_CHOICE: Mutex<Option<BackendChoice>> = Mutex::new(None);
+
+/// Parse a `--nn-backend` / `BLOOD_NN_BACKEND` value with its `--nn-device` / `BLOOD_NN_DEVICE`.
+/// `sidecar`, `tract`, `default` and the empty string all mean [`BackendChoice::Default`].
+pub fn parse_backend(backend: &str, device: Option<&str>) -> Result<BackendChoice, String> {
+    match backend.trim() {
+        "" | "default" | "sidecar" | "tract" | "remote" => Ok(BackendChoice::Default),
+        "inproc" | "in-process" | "torch" => {
+            let device = device.filter(|d| !d.is_empty()).unwrap_or("cuda").to_string();
+            if !(device == "cuda" || device.starts_with("cuda:")) {
+                return Err(format!("--nn-device {device}: want cuda or cuda:N"));
+            }
+            Ok(BackendChoice::InProcess { device })
+        }
+        other => Err(format!("--nn-backend {other}: want sidecar or inproc")),
+    }
+}
+
+/// Set the process-wide backend from a tool's `--nn-backend` / `--nn-device` flags, each falling
+/// back to its env var (`BLOOD_NN_BACKEND`, `BLOOD_NN_DEVICE`). Call once, before loading a net.
+pub fn configure_backend(backend: Option<&str>, device: Option<&str>) -> Result<BackendChoice, String> {
+    let env_b = std::env::var("BLOOD_NN_BACKEND").ok();
+    let env_d = std::env::var("BLOOD_NN_DEVICE").ok();
+    let b = backend.or(env_b.as_deref()).unwrap_or("");
+    let d = device.or(env_d.as_deref());
+    let choice = parse_backend(b, d)?;
+    *BACKEND_CHOICE.lock().unwrap() = Some(choice.clone());
+    Ok(choice)
+}
+
+/// The process-wide choice: what [`configure_backend`] set, else the env vars, else `Default`.
+pub fn backend_choice() -> Result<BackendChoice, String> {
+    if let Some(c) = BACKEND_CHOICE.lock().unwrap().clone() {
+        return Ok(c);
+    }
+    let env_b = std::env::var("BLOOD_NN_BACKEND").unwrap_or_default();
+    let env_d = std::env::var("BLOOD_NN_DEVICE").ok();
+    parse_backend(&env_b, env_d.as_deref())
 }
 
 /// Frozen value/policy network. `Send + Sync` — safe to share across MCTS
@@ -185,6 +249,8 @@ impl std::fmt::Debug for NnEvaluator {
         match &self.backend {
             Backend::Tract(_) => write!(f, "NnEvaluator{{tract}}"),
             Backend::Remote { client, .. } => write!(f, "NnEvaluator{{remote: {client:?}}}"),
+            #[cfg(feature = "torch")]
+            Backend::InProcess { backend, .. } => write!(f, "NnEvaluator{{{backend:?}}}"),
         }
     }
 }
@@ -213,9 +279,18 @@ impl NnEvaluator {
     ///
     /// Errors only if the ONNX fails to load or the canary disagrees. An
     /// unreachable server is *not* an error: it warns and uses tract.
+    ///
+    /// When the process-wide backend is in-process ([`configure_backend`],
+    /// `BLOOD_NN_BACKEND=inproc`), `server` is ignored and the net runs here
+    /// through libtorch; a missing TorchScript export, a device that cannot be
+    /// used, a binary built without the `torch` feature or a canary mismatch
+    /// is then an error — never a quiet tract run.
     pub fn from_path_with_server(path: impl AsRef<Path>, server: Option<&Path>) -> TractResult<Self> {
         let path = path.as_ref();
         let tract = TractBackend::from_path(path)?;
+        if let BackendChoice::InProcess { device } = backend_choice().map_err(TractError::msg)? {
+            return Self::in_process(path, tract, &device);
+        }
         let Some(socket) = server else {
             return Ok(NnEvaluator {
                 backend: Backend::Tract(tract),
@@ -235,12 +310,53 @@ impl NnEvaluator {
         })
     }
 
-    /// `(served remotely, fell back to tract)`, or `None` on the pure
-    /// tract backend.
+    #[cfg(not(feature = "torch"))]
+    fn in_process(_path: &Path, _tract: TractBackend, device: &str) -> TractResult<Self> {
+        Err(TractError::msg(format!(
+            "--nn-backend inproc (device {device}): this binary was built without the `torch` feature \
+             — rebuild with `--features torch` (plan 066), or use --nn-server"
+        )))
+    }
+
+    #[cfg(feature = "torch")]
+    fn in_process(path: &Path, tract: TractBackend, device: &str) -> TractResult<Self> {
+        // Tract's own answer on the canary input, via the very ONNX the caller named: the
+        // in-process net must agree with it (`inproc::get_or_load`).
+        let (cs, cg) = crate::remote::canary_input();
+        let (policy, value) = tract.forward(&cs, &cg, crate::remote::CANARY_H, crate::remote::CANARY_W);
+        let backend = crate::inproc::get_or_load(path, device, &(value, policy))
+            .map_err(|e| TractError::msg(format!("in-process backend for {}: {e}", path.display())))?;
+        Ok(NnEvaluator {
+            backend: Backend::InProcess {
+                backend,
+                fallback: tract,
+                served: AtomicU64::new(0),
+                fell_back: AtomicU64::new(0),
+                warned: std::sync::atomic::AtomicBool::new(false),
+            },
+        })
+    }
+
+    /// `(served by the batching backend, fell back to tract)`, or `None` on
+    /// the pure tract backend. Covers the sidecar and the in-process backend.
     pub fn remote_stats(&self) -> Option<(u64, u64)> {
         match &self.backend {
             Backend::Tract(_) => None,
             Backend::Remote { client, .. } => Some((client.served_count(), client.fallback_count())),
+            #[cfg(feature = "torch")]
+            Backend::InProcess { served, fell_back, .. } => {
+                Some((served.load(Ordering::Relaxed), fell_back.load(Ordering::Relaxed)))
+            }
+        }
+    }
+
+    /// The in-process batch queue's stats line (mean batch, device time, samples/s), or `None`
+    /// on the other backends.
+    pub fn inproc_stats_line(&self) -> Option<String> {
+        match &self.backend {
+            #[cfg(feature = "torch")]
+            Backend::InProcess { backend, .. } => Some(backend.stats().line()),
+            _ => None,
         }
     }
 
@@ -288,6 +404,31 @@ impl NnEvaluator {
             Backend::Remote { client, fallback } => match client.forward(spatial, global, h, w, want_policy) {
                 Ok(out) => out,
                 Err(_) => fallback.forward(spatial, global, h, w),
+            },
+            #[cfg(feature = "torch")]
+            Backend::InProcess {
+                backend,
+                fallback,
+                served,
+                fell_back,
+                warned,
+            } => match backend.forward(spatial, global, h, w, want_policy) {
+                Ok(out) => {
+                    served.fetch_add(1, Ordering::Relaxed);
+                    out
+                }
+                Err(e) => {
+                    // Same token as the sidecar's, so the loop's existing check
+                    // (`grep NN_SERVER_FALLBACK`) catches it.
+                    if !warned.swap(true, Ordering::Relaxed) {
+                        eprintln!(
+                            "NN_SERVER_FALLBACK in-process backend failed: {e} — using tract for this process; further warnings suppressed"
+                        );
+                    }
+                    fell_back.fetch_add(1, Ordering::Relaxed);
+                    let (policy, v) = fallback.forward(spatial, global, h, w);
+                    (if want_policy { policy } else { Vec::new() }, v)
+                }
             },
         };
         FORWARDS.fetch_add(1, Ordering::Relaxed);
