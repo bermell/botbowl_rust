@@ -17,6 +17,13 @@
 //!
 //! A shard whose output exists at submit is skipped, as locally, so a rerun of a phase that died
 //! half-way only labels what is missing.
+//!
+//! **Top-up** (plan 067, [`LabelJobRequest::top_up`]): reading also finds the shard's labelling
+//! ([`shard_prior`], refused when there is none or two) and checks the net against it; a
+//! trajectory without a label gets no items and is written back as it is. Each shard's
+//! [`LabelConfig`] continues its own labelling ([`topup_config`]: its seed, its playouts skipped),
+//! the workers return the added playouts' means, and the write combines them with the prior labels
+//! read back from the lines ([`apply_topup`]) and writes the `topup/<shard>` records, as locally.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -26,7 +33,11 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use botbowl_data::{BoardCapacity, Trajectory, TrajectoryMeta};
-use botbowl_play::mc_label::{apply_labels, first_drives, split_items};
+use botbowl_hub_proto::LabelConfig;
+use botbowl_play::mc_label::{
+    apply_labels, apply_topup, check_prior_labels, check_topup_model, first_drives, label_tag, shard_prior, split_items, topup_config,
+    topup_records_path, LabelTag,
+};
 
 use crate::api::{JobId, LabelJobRequest};
 
@@ -51,22 +62,61 @@ pub struct LabelInput {
     pub firsts: Vec<Option<usize>>,
     /// The work items, trajectory by trajectory, each one's ranges in order.
     pub items: Vec<Item>,
+    /// What the workers play for this shard: the request's labelling, or for a top-up its
+    /// continuation of the shard's own.
+    pub cfg: LabelConfig,
+    /// `meta.extra.value_label` of every trajectory this job labels.
+    pub tag: String,
+    /// A top-up: the shard's labelling, and per trajectory whether it carries it (an untagged one
+    /// has no items and is written back unchanged, counted as unlabelled).
+    pub prior: Option<LabelTag>,
+    pub untagged: Vec<bool>,
 }
 
 /// What reading needs from a line, without building a `GameState` per sample.
 #[derive(Deserialize)]
 struct Lite {
     meta: TrajectoryMeta,
-    samples: Vec<serde::de::IgnoredAny>,
+    samples: Vec<LiteSample>,
+}
+
+/// A sample's label only: a top-up checks the prior labels before any playout is spent.
+#[derive(Deserialize)]
+struct LiteSample {
+    #[serde(default)]
+    outcome_value: Option<f32>,
 }
 
 fn invalid(what: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
+/// What a label job asks of each of its shards.
+#[derive(Clone, Debug)]
+pub struct LabelSpec {
+    /// The request's labelling (for a top-up: `playouts` added, `seed` unused).
+    pub cfg: LabelConfig,
+    /// The net as the user typed it, for the provenance tag.
+    pub model: String,
+    pub top_up: bool,
+    pub chunk_samples: u32,
+}
+
+impl LabelSpec {
+    pub fn of(req: &LabelJobRequest) -> Self {
+        LabelSpec {
+            cfg: req.cfg,
+            model: req.model.clone(),
+            top_up: req.top_up,
+            chunk_samples: req.chunk_samples,
+        }
+    }
+}
+
 /// Read one shard. Errors are the local tool's: an unreadable file, a line that is not a
-/// trajectory, a corpus built at another capacity.
-pub fn load_input(name: &str, input: &Path, out: &Path, chunk_samples: u32) -> io::Result<LabelInput> {
+/// trajectory, a corpus built at another capacity; and for a top-up a shard with no labelling or
+/// two, a net that is not the labels', a label off its playout grid.
+pub fn load_input(name: &str, input: &Path, out: &Path, spec: &LabelSpec) -> io::Result<LabelInput> {
     let mut shard = LabelInput {
         name: name.to_string(),
         input: input.to_path_buf(),
@@ -77,12 +127,17 @@ pub fn load_input(name: &str, input: &Path, out: &Path, chunk_samples: u32) -> i
         samples: Vec::new(),
         firsts: Vec::new(),
         items: Vec::new(),
+        cfg: spec.cfg,
+        tag: label_tag(&spec.cfg, &spec.model),
+        prior: None,
+        untagged: Vec::new(),
     };
     if shard.skipped {
         return Ok(shard);
     }
     let mut lines = Vec::new();
     let mut metas = Vec::new();
+    let mut prior_ok: Vec<Result<(), String>> = Vec::new();
     let file = File::open(input).map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", input.display())))?;
     for line in BufReader::new(file).lines() {
         let line = line?;
@@ -103,12 +158,36 @@ pub fn load_input(name: &str, input: &Path, out: &Path, chunk_samples: u32) -> i
         }
         shard.seeds.push(lite.meta.seed);
         shard.samples.push(lite.samples.len());
+        if spec.top_up {
+            // Checked against the shard's labelling below, once it is known.
+            prior_ok.push(match LabelTag::of(&lite.meta) {
+                Some(tag) => check_prior_labels(lite.samples.iter().map(|s| s.outcome_value), tag.playouts),
+                None => Ok(()),
+            });
+        }
         metas.push(lite.meta);
         lines.push(zstd::encode_all(line.as_bytes(), ZSTD_LEVEL)?);
     }
     shard.firsts = first_drives(&metas);
+    shard.untagged = vec![false; metas.len()];
+    if spec.top_up {
+        let bad = |why: String| invalid(format!("{}: {why}", input.display()));
+        let prior = shard_prior(&metas).map_err(bad)?;
+        check_topup_model(&prior, &spec.model).map_err(bad)?;
+        for (m, ok) in metas.iter().zip(&prior_ok) {
+            ok.clone().map_err(|e| bad(format!("seed {:?}: {e}", m.seed)))?;
+        }
+        shard.untagged = metas.iter().map(|m| LabelTag::of(m).is_none()).collect();
+        shard.cfg = topup_config(&prior, spec.cfg.playouts, spec.cfg.max_steps);
+        shard.tag = label_tag(&shard.cfg, &spec.model);
+        shard.prior = Some(prior);
+    }
     for (t, &n) in shard.samples.iter().enumerate() {
-        for r in split_items(n, chunk_samples as usize) {
+        // An untagged trajectory has nothing to top up: no items, written back as it is.
+        if shard.untagged[t] {
+            continue;
+        }
+        for r in split_items(n, spec.chunk_samples as usize) {
             shard.items.push((t, r.start as u32, r.end as u32));
         }
     }
@@ -124,11 +203,12 @@ pub fn load_inputs(req: &LabelJobRequest) -> io::Result<Vec<LabelInput>> {
     if req.cfg.playouts == 0 {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "--playouts must be > 0"));
     }
+    let spec = LabelSpec::of(req);
     std::thread::scope(|scope| {
         let handles: Vec<_> = req
             .shards
             .iter()
-            .map(|s| scope.spawn(|| load_input(&s.name, &s.input, &s.out, req.chunk_samples)))
+            .map(|s| scope.spawn(|| load_input(&s.name, &s.input, &s.out, &spec)))
             .collect();
         handles
             .into_iter()
@@ -146,28 +226,54 @@ pub struct ShardWrite {
     pub unit: usize,
     pub out: PathBuf,
     pub lines: Arc<Vec<Vec<u8>>>,
-    /// Per trajectory: its labels, or `None` when it does not replay.
+    /// Per trajectory: its labels (a top-up's: the added playouts' means), or `None` when it does
+    /// not replay (or, topping up, has no label).
     pub labels: Vec<Option<Vec<f32>>>,
     pub tag: String,
+    /// A top-up: the shard's labelling, combined with the added means and recorded in
+    /// `topup/<shard>`.
+    pub prior: Option<LabelTag>,
 }
 
 impl ShardWrite {
-    /// Write `out.partial`, then rename it to `out`: the local tool's file, line for line.
+    /// Write `out.partial`, then rename it to `out`: the local tool's file, line for line. A
+    /// top-up's records are written and renamed first, as locally (the shard is the marker).
     pub fn run(&self) -> io::Result<()> {
         if let Some(dir) = self.out.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let partial = self.out.with_extension("jsonl.partial");
         let mut w = io::BufWriter::new(File::create(&partial)?);
+        let records = self.prior.as_ref().map(|_| topup_records_path(&self.out));
+        let mut rec_out = match &records {
+            Some(r) => {
+                std::fs::create_dir_all(r.parent().expect("under the out dir"))?;
+                Some(io::BufWriter::new(File::create(r.with_extension("jsonl.partial"))?))
+            }
+            None => None,
+        };
         for (line, labels) in self.lines.iter().zip(&self.labels) {
             let json = zstd::decode_all(&line[..])?;
             let mut traj: Trajectory = serde_json::from_slice(&json).map_err(|e| invalid(e.to_string()))?;
-            apply_labels(&mut traj, labels.as_deref(), &self.tag);
+            match (&self.prior, &mut rec_out) {
+                (Some(prior), Some(rw)) => {
+                    if let Some(rec) = apply_topup(&mut traj, labels.as_deref(), prior, &self.tag).map_err(invalid)? {
+                        rw.write_all(serde_json::to_string(&rec)?.as_bytes())?;
+                        rw.write_all(b"\n")?;
+                    }
+                }
+                _ => apply_labels(&mut traj, labels.as_deref(), &self.tag),
+            }
             w.write_all(serde_json::to_string(&traj)?.as_bytes())?;
             w.write_all(b"\n")?;
         }
         w.flush()?;
         drop(w);
+        if let (Some(r), Some(mut rw)) = (records, rec_out) {
+            rw.flush()?;
+            drop(rw);
+            std::fs::rename(r.with_extension("jsonl.partial"), &r)?;
+        }
         std::fs::rename(&partial, &self.out)
     }
 }
@@ -177,6 +283,20 @@ mod tests {
     use super::*;
     use botbowl_hub_proto::{BoardDims, Evaluator, SearchConfig};
     use botbowl_play::generate::{play_trajectory, GenMode, GenerateConfig, RandomStartBias};
+
+    fn spec(chunk_samples: u32) -> LabelSpec {
+        LabelSpec {
+            cfg: LabelConfig {
+                playouts: 8,
+                seed: 1,
+                max_steps: 100,
+                skip: 0,
+            },
+            model: "m.onnx".into(),
+            top_up: false,
+            chunk_samples,
+        }
+    }
 
     fn trajectory(seed: u64) -> Trajectory {
         let board = BoardDims::try_new(16, 9, 4).unwrap_or_else(|_| BoardDims::from_env());
@@ -219,7 +339,7 @@ mod tests {
         let text = format!("{}\n\n{}\r\n{}\n", line(&next), line(&other), line(&first));
         let input = d.join("shard0.jsonl");
         std::fs::write(&input, text).unwrap();
-        let shard = load_input("shard0", &input, &d.join("out/shard0.jsonl"), 7).unwrap();
+        let shard = load_input("shard0", &input, &d.join("out/shard0.jsonl"), &spec(7)).unwrap();
         assert!(!shard.skipped);
         assert_eq!(shard.lines.len(), 3);
         assert_eq!(shard.firsts, vec![Some(2), None, None]);
@@ -247,12 +367,13 @@ mod tests {
             lines: Arc::clone(&shard.lines),
             labels: vec![None; 3],
             tag: "t".into(),
+            prior: None,
         };
         w.run().unwrap();
         let out = std::fs::read_to_string(d.join("out/shard0.jsonl")).unwrap();
         assert_eq!(out, format!("{}\n{}\n{}\n", line(&next), line(&other), line(&first)));
         // Once the output exists, a shard is skipped and not even read.
-        let again = load_input("shard0", &input, &d.join("out/shard0.jsonl"), 7).unwrap();
+        let again = load_input("shard0", &input, &d.join("out/shard0.jsonl"), &spec(7)).unwrap();
         assert!(again.skipped && again.lines.is_empty());
         std::fs::remove_dir_all(&d).ok();
     }
@@ -264,7 +385,7 @@ mod tests {
         t.meta.board_dims.width = BoardCapacity::current().width as i8 + 2;
         let input = d.join("shard0.jsonl");
         std::fs::write(&input, serde_json::to_string(&t).unwrap() + "\n").unwrap();
-        let e = load_input("shard0", &input, &d.join("out.jsonl"), 32)
+        let e = load_input("shard0", &input, &d.join("out.jsonl"), &spec(32))
             .err()
             .expect("refused");
         assert!(e.to_string().contains("capacity"), "{e}");
@@ -280,7 +401,7 @@ mod tests {
         t.meta.board_capacity.width += 2;
         let input = d.join("shard0.jsonl");
         std::fs::write(&input, serde_json::to_string(&t).unwrap() + "\n").unwrap();
-        let shard = load_input("shard0", &input, &d.join("out.jsonl"), 32).expect("loads");
+        let shard = load_input("shard0", &input, &d.join("out.jsonl"), &spec(32)).expect("loads");
         assert_eq!(shard.seeds, vec![t.meta.seed]);
         std::fs::remove_dir_all(&d).ok();
     }

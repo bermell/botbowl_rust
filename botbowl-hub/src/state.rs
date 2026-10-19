@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use botbowl_hub_proto::{
-    BoardDims, BotSpec, BuildInfo, EvalGameLine, GenerateConfig, LabelConfig, LabelItem, LabelResult, ModelId, Task,
+    BoardDims, BotSpec, BuildInfo, EvalGameLine, GenerateConfig, LabelItem, LabelResult, ModelId, Task,
     TaskId, ToWorker,
 };
 use botbowl_play::board_sizes::board_label;
@@ -102,7 +102,8 @@ impl LabelShard {
     fn new(input: LabelInput) -> Self {
         LabelShard {
             labels: input.samples.iter().map(|&n| vec![0.0; n]).collect(),
-            unlabellable: vec![false; input.samples.len()],
+            // A top-up's untagged trajectories have no items: unlabelled from the start.
+            unlabellable: input.untagged.clone(),
             input,
             done: HashSet::new(),
             labelled: 0,
@@ -118,7 +119,7 @@ impl LabelShard {
     }
 
     /// The write, once every item is in (at most once).
-    fn take_write(&mut self, job: JobId, unit: usize, tag: &str) -> Option<ShardWrite> {
+    fn take_write(&mut self, job: JobId, unit: usize) -> Option<ShardWrite> {
         if self.writing || self.input.skipped || self.done.len() < self.input.items.len() {
             return None;
         }
@@ -134,7 +135,8 @@ impl LabelShard {
             out: self.input.out.clone(),
             lines: Arc::clone(&self.input.lines),
             labels,
-            tag: tag.to_string(),
+            tag: self.input.tag.clone(),
+            prior: self.input.prior.clone(),
         })
     }
 
@@ -177,12 +179,11 @@ enum Kind {
     Generate {
         shards: Vec<Shard>,
     },
+    /// Each shard carries its own `LabelConfig` and tag (`LabelInput.cfg` / `.tag`): a top-up
+    /// continues every shard's own labelling (plan 067).
     Label {
         shards: Vec<LabelShard>,
-        cfg: LabelConfig,
         model: ModelId,
-        /// `meta.extra.value_label` of every labelled trajectory.
-        tag: String,
     },
 }
 
@@ -337,7 +338,7 @@ impl Job {
                     model: s.model,
                 }
             }
-            Kind::Label { shards, cfg, model, .. } => {
+            Kind::Label { shards, model } => {
                 let s = &shards[unit].input;
                 Task::Label {
                     id,
@@ -355,7 +356,7 @@ impl Job {
                             }
                         })
                         .collect(),
-                    cfg: *cfg,
+                    cfg: s.cfg,
                     model: *model,
                 }
             }
@@ -583,7 +584,6 @@ impl Inner {
         inputs: Vec<LabelInput>,
     ) -> io::Result<(JobId, Vec<ShardWrite>)> {
         let model = self.load_model(&req.model_path)?;
-        let tag = botbowl_play::mc_label::label_tag(&req.cfg, &req.model);
         let mut pending = VecDeque::new();
         for (i, s) in inputs.iter().enumerate() {
             if s.skipped {
@@ -593,18 +593,13 @@ impl Inner {
             }
         }
         let shards = inputs.into_iter().map(LabelShard::new).collect();
-        let kind = Kind::Label {
-            shards,
-            cfg: req.cfg,
-            model,
-            tag: tag.clone(),
-        };
+        let kind = Kind::Label { shards, model };
         let id = self.insert_job(kind, req.label, req.batch, pending);
         let job = self.jobs.get_mut(&id).expect("just inserted");
         let mut writes = Vec::new();
         if let Kind::Label { shards, .. } = &mut job.kind {
             for (unit, s) in shards.iter_mut().enumerate() {
-                writes.extend(s.take_write(id, unit, &tag));
+                writes.extend(s.take_write(id, unit));
             }
         }
         if job.all_done() {
@@ -1154,7 +1149,7 @@ impl Inner {
         if job.state != JobState::Running {
             return None;
         }
-        let Kind::Label { shards, tag, .. } = &mut job.kind else {
+        let Kind::Label { shards, .. } = &mut job.kind else {
             return None;
         };
         let s = &mut shards[unit];
@@ -1195,7 +1190,7 @@ impl Inner {
                 s.unlabellable[t] = true;
             }
         }
-        let write = s.take_write(job_id, unit, tag);
+        let write = s.take_write(job_id, unit);
         job.by_worker.entry(name.to_string()).or_default().add(&c);
         self.ledger.record(Instant::now(), name, job_id, c);
         write
@@ -1208,7 +1203,7 @@ impl Inner {
             return;
         }
         let elapsed = job.started.elapsed().as_secs_f64();
-        let Kind::Label { shards, cfg, .. } = &mut job.kind else {
+        let Kind::Label { shards, .. } = &mut job.kind else {
             return;
         };
         let s = &mut shards[unit];
@@ -1229,7 +1224,7 @@ impl Inner {
                 st.trajectories as usize,
                 st.unlabelled as usize,
                 st.samples as usize,
-                cfg.playouts,
+                s.input.cfg.playouts,
                 st.secs
             )
         );

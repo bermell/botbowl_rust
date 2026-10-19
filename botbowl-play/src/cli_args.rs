@@ -356,6 +356,14 @@ pub struct McLabelArgs {
     /// Playout dice derive from it, the trajectory's seed and the sample index.
     #[arg(long, default_value_t = 56_000)]
     pub seed: u64,
+    /// Plan 067: top up instead of label. The `--corpus` shards are already MC-labelled (`mc/`
+    /// copies); each labelled sample gets this many more playouts under `--model` (the net its
+    /// labels name), continuing its own dice stream past the playouts it has (the labels' seed and
+    /// count come from their `value_label` tag), and its label becomes the mean of all of them —
+    /// exactly a fresh labelling with the total. `<out-dir>/topup/<shard>` gets each sample's prior
+    /// and added means (`scripts/label_noise.py`).
+    #[arg(long, conflicts_with_all = ["playouts", "seed"])]
+    pub top_up: Option<u32>,
     /// Trajectories labelled at once, one thread each.
     #[arg(long, default_value_t = 8)]
     pub parallel: usize,
@@ -370,10 +378,16 @@ impl McLabelArgs {
     /// What every label is a function of, besides the net and the state.
     pub fn config(&self) -> crate::mc_label::LabelConfig {
         crate::mc_label::LabelConfig {
-            playouts: self.playouts,
+            playouts: self.added_playouts(),
             seed: self.seed,
             max_steps: self.max_steps,
+            skip: 0,
         }
+    }
+
+    /// The playouts this run plays per sample: `--top-up`'s when topping up, else `--playouts`.
+    pub fn added_playouts(&self) -> u32 {
+        self.top_up.unwrap_or(self.playouts)
     }
 }
 

@@ -137,6 +137,12 @@ pub struct LabelJobRequest {
     /// As [`EvalJobRequest::label`] (`gen03 mc-label`).
     #[serde(default)]
     pub label: Option<String>,
+    /// Plan 067 (`--top-up`): the shards are MC-labelled already and each labelled sample gets
+    /// `cfg.playouts` more playouts, continuing its own dice stream (each shard's seed and prior
+    /// count come from its labels' tag; `cfg.seed` is unused), written as `botbowl-ui mc-label
+    /// --top-up` writes it, `topup/<shard>` records included.
+    #[serde(default)]
+    pub top_up: bool,
 }
 
 pub type JobId = u64;
