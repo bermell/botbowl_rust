@@ -196,6 +196,11 @@ must produce identical output bits. Three tests, all must pass before the switch
   sidecar's global mode turned another net's concurrent replays into capture errors — the eval
   phase loads its second net while the first serves; the mode only scopes error checking), and a
   process-wide lock serialises loads/captures.
+  Review fix (2026-10-19): the lane and capture streams are dedicated CUDA streams, not
+  libtorch's 32-stream pool — with pool streams a process's fifth net captured on its first net's
+  lane-1 stream and that net's queue died mid-load (`loading_more_nets_never_disturbs_one_that_serves`).
+  A reduced test A/B rerun after the fix (12,000 gen44 states, 19 boards, det and prod): 0 differing
+  bits in all ten comparisons.
 
 ### 7.2 Phase 1 spike: which route reproduces the sidecar
 

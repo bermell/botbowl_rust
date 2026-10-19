@@ -155,3 +155,63 @@ fn bad_device_is_an_error() {
     let err = InProcBackend::start(&fixtures().join("tiny.ts"), &cfg).unwrap_err();
     assert!(err.contains("out of range") || err.contains("device"), "{err}");
 }
+
+/// Nets loaded while another serves must not disturb it. libtorch's stream pool hands out 32
+/// streams round-robin and a load draws 27 of them, so with pool streams the fifth net's capture
+/// stream was the first net's lane-1 replay stream: the first net's batches, enqueued from its
+/// batcher thread during that capture, were recorded into the new graph instead of run, and its
+/// queue died (`operation not permitted when stream is capturing`). A long-lived worker loads a
+/// net per generation and eval opponent, so it reaches five. The shim's lane and capture streams
+/// are its own now.
+#[test]
+fn loading_more_nets_never_disturbs_one_that_serves() {
+    if !have_gpu() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("bbnn_inproc_many_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ts: Vec<PathBuf> = (0..6)
+        .map(|k| {
+            let p = dir.join(format!("net{k}.ts"));
+            std::fs::copy(fixtures().join("tiny.ts"), &p).unwrap();
+            p
+        })
+        .collect();
+    let cfg = InProcConfig::from_env("cuda").unwrap();
+    let first = InProcBackend::start(&ts[0], &cfg).expect("load the serving net");
+    let (cs, cg) = canary_input();
+    let reference = first.forward(&cs, &cg, CANARY_H, CANARY_W, false).unwrap().1;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mut later = Vec::new();
+    thread::scope(|s| {
+        let serving: Vec<_> = (0..16)
+            .map(|_| {
+                let (first, cs, cg, stop) = (&first, &cs, &cg, &stop);
+                s.spawn(move || {
+                    let mut n = 0u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let v = first
+                            .forward(cs, cg, CANARY_H, CANARY_W, false)
+                            .expect("serving net failed during a load")
+                            .1;
+                        assert!((v - reference).abs() < 1e-5, "value {v} vs {reference}");
+                        n += 1;
+                    }
+                    n
+                })
+            })
+            .collect();
+        for p in &ts[1..] {
+            later.push(InProcBackend::start(p, &cfg).expect("load a later net"));
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for h in serving {
+            assert!(h.join().unwrap() > 0);
+        }
+    });
+    assert!(first.queue.dead().is_none(), "{:?}", first.queue.dead());
+    for b in &later {
+        assert_eq!(b.forward(&cs, &cg, CANARY_H, CANARY_W, false).unwrap().1, reference);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

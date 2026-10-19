@@ -59,6 +59,19 @@ int set_err(const std::string& msg) {
     return ret;                                          \
   }
 
+// A stream of its own, never shared: libtorch's pool (`getStreamFromPool`, what
+// `torch.cuda.Stream()` returns) hands out 32 streams round-robin, so a later model's capture
+// stream can be an earlier model's replay stream. In the single-threaded sidecar that is harmless;
+// here another model's batcher may be replaying on that stream while this thread captures, and
+// work enqueued onto a capturing stream from any thread is recorded into the graph instead of run.
+// Same flags and priority as a pool stream (non-blocking, default priority), so the kernels are
+// the same. Never destroyed: models live for the process.
+c10::cuda::CUDAStream dedicated_stream(c10::DeviceIndex device) {
+  cudaStream_t s = nullptr;
+  C10_CUDA_CHECK(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking));
+  return c10::cuda::getStreamFromExternal(s, device);
+}
+
 struct Model {
   torch::jit::Module module;
   c10::Device device;
@@ -74,7 +87,7 @@ struct Model {
 
   c10::cuda::CUDAStream lane(int i) {
     if ((size_t)i >= lanes.size()) lanes.resize(i + 1);
-    if (!lanes[i]) lanes[i] = c10::cuda::getStreamFromPool(false, device.index());
+    if (!lanes[i]) lanes[i] = dedicated_stream(device.index());
     return *lanes[i];
   }
 };
@@ -262,7 +275,7 @@ void* bbt_runner_new(void* model, int64_t bucket, int64_t h, int64_t w, int lane
   // torch.cuda.graph.__enter__: synchronize, empty_cache, enter the capture stream, capture_begin.
   c10::cuda::device_synchronize();
   c10::cuda::CUDACachingAllocator::emptyCache();
-  if (!m->capture_stream) m->capture_stream = c10::cuda::getStreamFromPool(false, m->device.index());
+  if (!m->capture_stream) m->capture_stream = dedicated_stream(m->device.index());
   r->graph = std::make_unique<at::cuda::CUDAGraph>();
   {
     c10::cuda::CUDAStreamGuard sg(*m->capture_stream);
