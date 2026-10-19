@@ -147,7 +147,13 @@ impl ModelStore {
             };
             let Some(id) = ModelId::from_hex(stem) else { continue };
             match std::fs::read(e.path()) {
-                Ok(bytes) if ModelId::of(&bytes) == id => out.push(id),
+                // On the in-process backend a cached net counts only with its TorchScript export
+                // (plan 066): reporting it without one would stop the hub from sending the file.
+                Ok(bytes) if ModelId::of(&bytes) == id => {
+                    if !Self::needs_torchscript() || self.ts_path(&id).is_file() {
+                        out.push(id);
+                    }
+                }
                 _ => {
                     let _ = std::fs::remove_file(e.path());
                 }
@@ -156,12 +162,42 @@ impl ModelStore {
         out
     }
 
+    /// Where model `id`'s TorchScript export lives: `<id>.ts` beside `<id>.onnx`, which is the
+    /// sibling `botbowl_nn::inproc::resolve_torchscript` looks for first.
+    fn ts_path(&self, id: &ModelId) -> PathBuf {
+        self.path(id).with_extension("ts")
+    }
+
+    /// Whether this process runs nets in-process (and so loads `<id>.ts`, not just the ONNX).
+    fn needs_torchscript() -> bool {
+        matches!(
+            botbowl_nn::eval::backend_choice(),
+            Ok(botbowl_nn::eval::BackendChoice::InProcess { .. })
+        )
+    }
+
     pub fn put(&self, id: ModelId, onnx: &[u8]) -> io::Result<()> {
+        self.put_with_torchscript(id, onnx, None)
+    }
+
+    /// Store a model and, when the hub sent one, its TorchScript export as `<id>.ts`.
+    pub fn put_with_torchscript(&self, id: ModelId, onnx: &[u8], torchscript: Option<&[u8]>) -> io::Result<()> {
         if ModelId::of(onnx) != id {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "model bytes do not hash to their id",
             ));
+        }
+        if let Some(ts) = torchscript {
+            let tmp = self.ts_path(&id).with_extension("ts.part");
+            std::fs::write(&tmp, ts)?;
+            std::fs::rename(&tmp, self.ts_path(&id))?;
+        } else if Self::needs_torchscript() {
+            eprintln!(
+                "[worker] WARN: model {id} arrived without a TorchScript export and this worker runs \
+                 --nn-backend inproc: tasks on it will fail until the hub has `<net>.ts` beside the \
+                 ONNX (python -m bbnn.export_ts)"
+            );
         }
         let tmp = self.path(&id).with_extension("onnx.part");
         std::fs::write(&tmp, onnx)?;
@@ -739,8 +775,8 @@ pub async fn run_once(
                                 eprintln!("[worker] could not record the name of model {id}: {e}");
                             }
                         }
-                        Ok(ToWorker::Model { id, onnx }) => {
-                            if let Err(e) = store.put(id, &onnx) {
+                        Ok(ToWorker::Model { id, onnx, torchscript }) => {
+                            if let Err(e) = store.put_with_torchscript(id, &onnx, torchscript.as_deref()) {
                                 eprintln!("[worker] rejecting model {id}: {e}");
                             }
                         }

@@ -156,6 +156,8 @@ pub struct OverrideAuditArgs {
     /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
     #[arg(long)]
     pub nn_server: Option<String>,
+    #[command(flatten)]
+    pub backend: botbowl_play::cli_args::NnBackendArgs,
     /// The search whose picks are audited: a deterministic eval preset.
     #[arg(long, default_value = "cfgs/gumbel16_f1000.toml")]
     pub search_config: std::path::PathBuf,
@@ -205,6 +207,8 @@ pub struct ValueBenchArgs {
     /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
     #[arg(long)]
     pub nn_server: Option<String>,
+    #[command(flatten)]
+    pub backend: botbowl_play::cli_args::NnBackendArgs,
     /// States scored at once, one thread each.
     #[arg(long, default_value_t = 4)]
     pub parallel: usize,
@@ -304,6 +308,8 @@ pub struct ConvergenceArgs {
     /// Inference sidecar socket (`scripts/nn_server.py`); env fallback `BLOOD_NN_SERVER`.
     #[arg(long)]
     pub nn_server: Option<String>,
+    #[command(flatten)]
+    pub backend: botbowl_play::cli_args::NnBackendArgs,
     /// A bot preset (`cfgs/*.toml`) instead of the `--puct-*` flags, e.g. plan 053's
     /// `cfgs/gumbel16_iters.toml`. Its name joins the selection rule in each row's `puct` field.
     #[arg(long, conflicts_with_all = ["puct_c", "puct_range_floor"])]

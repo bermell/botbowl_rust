@@ -21,6 +21,10 @@ zstd = { workspace = true }
 # ~12 GB RSS idle and its memory governor deadlocked), mimalloc returns them to the OS.
 mimalloc = { workspace = true }
 
+[features]
+# Plan 066: `--nn-backend inproc`, libtorch in this process (see botbowl-nn/build.rs). Off by default.
+torch = ["botbowl-nn/torch"]
+
 [[bin]]
 name = "botbowl-worker"
 path = "src/main.rs"

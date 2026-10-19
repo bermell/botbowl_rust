@@ -177,6 +177,7 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
     }
     // Load the ONNX evaluator once; every bot in every game shares the
     // Arc (the net is frozen — pure function of state).
+    args.backend.apply()?;
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());
     let nn = load_nn(
         cfg.evaluator,
@@ -285,6 +286,9 @@ forwards_per_decision={:.1}",
         );
     }
 
+    if let Some(line) = nn.as_ref().and_then(|n| n.inproc_stats_line()) {
+        println!("NN_INPROC {line}");
+    }
     if let Some((served, fell_back)) = nn.as_ref().and_then(|n| n.remote_stats()) {
         println!(
             "NN_SERVER served={served} fell_back_to_tract={fell_back}{}",

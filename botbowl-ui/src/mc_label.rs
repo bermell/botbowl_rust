@@ -172,6 +172,7 @@ pub fn run(args: McLabelArgs) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "--playouts must be > 0"));
     }
     fs::create_dir_all(&args.out_dir)?;
+    args.backend.apply()?;
     let server = crate::cli::nn_server_path(args.nn_server.as_deref());
     let nn = load_nn(
         Evaluator::Nn,
@@ -240,6 +241,7 @@ mod tests {
             corpus: vec![input.to_str().unwrap().into()],
             model: TINY.into(),
             nn_server: None,
+            backend: Default::default(),
             playouts: 3,
             seed: 7,
             parallel: 2,
@@ -324,6 +326,7 @@ mod tests {
             corpus: vec![input.to_str().unwrap().into()],
             model: TINY.into(),
             nn_server: None,
+            backend: Default::default(),
             playouts: 2,
             seed: 9,
             parallel: 2,

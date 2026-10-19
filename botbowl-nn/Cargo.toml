@@ -3,6 +3,9 @@ name = "botbowl-nn"
 version.workspace = true
 edition.workspace = true
 description = "Neural-network feature encoder, offline prepare step, and tract-onnx inference evaluator for Blood Bowl MCTS (plan 017)."
+# The build script publishes the libtorch rpath to dependents (`DEP_BBNN_TORCH_RPATH`) under the
+# `torch` feature (plan 066); without it, it publishes nothing.
+links = "bbnn_torch"
 
 [dependencies]
 botbowl-engine = { workspace = true }
@@ -11,6 +14,15 @@ tract-onnx = "0.21"
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
+
+[build-dependencies]
+cc = { version = "1", optional = true }
+
+[features]
+# Plan 066: the in-process libtorch backend (`src/inproc.rs`, `csrc/inproc_shim.cpp`). Off by
+# default — a default build links no libtorch and builds anywhere (a Mac included). See build.rs for
+# where libtorch is found.
+torch = ["dep:cc"]
 
 [dev-dependencies]
 botbowl-curriculum = { workspace = true }

@@ -26,6 +26,8 @@ mimalloc = { workspace = true }
 [features]
 # Reproducible search for benchmarks only (`scripts/perf_search_bench.sh`).
 deterministic_hash = ["botbowl-mcts/deterministic_hash"]
+# Plan 066: `--nn-backend inproc`, libtorch in this process (see botbowl-nn/build.rs). Off by default.
+torch = ["botbowl-nn/torch"]
 
 [dev-dependencies]
 insta = "1"

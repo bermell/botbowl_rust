@@ -265,6 +265,8 @@ fn build_label_request(a: &LabelJobArgs, m: &ArgMatches) -> Result<LabelJobReque
         &[
             ("parallel", "workers size themselves (botbowl-worker --parallel-games)"),
             ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
+            ("nn_backend", "each worker picks its own backend (botbowl-worker --nn-backend)"),
+            ("nn_device", "each worker picks its own device (botbowl-worker --nn-device)"),
         ],
     )?;
     let ml = &a.ml;
@@ -399,6 +401,8 @@ fn build_generate_request(a: &GenerateJobArgs, m: &ArgMatches) -> Result<Generat
                 "workers size themselves (botbowl-worker --parallel-games)",
             ),
             ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
+            ("nn_backend", "each worker picks its own backend (botbowl-worker --nn-backend)"),
+            ("nn_device", "each worker picks its own device (botbowl-worker --nn-device)"),
         ],
     )?;
     let ds = &a.ds;
@@ -555,6 +559,8 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
                 "workers size themselves (botbowl-worker --parallel-games)",
             ),
             ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
+            ("nn_backend", "each worker picks its own backend (botbowl-worker --nn-backend)"),
+            ("nn_device", "each worker picks its own device (botbowl-worker --nn-device)"),
             ("trials", "the hub never runs the lecture battery"),
             ("skip_ladder", "a hub eval job is the ladder"),
             (

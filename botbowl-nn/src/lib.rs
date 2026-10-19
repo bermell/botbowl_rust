@@ -19,10 +19,16 @@
 //!   with an optional batched remote backend.
 //! - [`remote`] — client for the batching inference sidecar
 //!   (`scripts/nn_server.py`, plan 024).
+//! - [`batch_queue`] — the in-process batch queue (plan 066): slots and batcher
+//!   threads in the search process, no socket.
+//! - `inproc` (feature `torch`) — the libtorch executor behind that queue.
 
 pub mod actions;
+pub mod batch_queue;
 pub mod encode;
 pub mod eval;
+#[cfg(feature = "torch")]
+pub mod inproc;
 pub mod npy;
 pub mod perspective;
 pub mod remote;
