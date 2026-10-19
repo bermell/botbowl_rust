@@ -257,7 +257,12 @@ void* bbt_runner_new(void* model, int64_t bucket, int64_t h, int64_t w, int lane
   r->graph = std::make_unique<at::cuda::CUDAGraph>();
   {
     c10::cuda::CUDAStreamGuard sg(*m->capture_stream);
-    r->graph->capture_begin();
+    // Thread-local capture mode, not the sidecar's "global": the sidecar captures from its only
+    // thread, but here another net's batchers may be replaying (and syncing) on other threads
+    // while this one captures (the eval phase loads its second net while the first serves), and
+    // global mode turns their calls into capture errors. The mode only scopes error checking; the
+    // captured kernels are the same.
+    r->graph->capture_begin({0, 0}, cudaStreamCaptureModeThreadLocal);
     {
       torch::NoGradGuard ng;
       auto [p, v] = outputs2(m->module.forward(inputs3(dev_s, dev_g, dev_m)));

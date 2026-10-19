@@ -173,7 +173,6 @@ fn spawn_worker(url: &str, name: &str, parallel: u16) -> tokio::task::JoinHandle
         name: name.into(),
         parallel_games: Some(parallel),
         nn_server: None,
-        backend: Default::default(),
         cache_dir: tmp(&format!("cache-{name}")),
         mem_floor_mb: 0,
         reconnect_max: Duration::from_secs(1),

@@ -482,6 +482,10 @@ impl std::fmt::Debug for InProcBackend {
 impl InProcBackend {
     /// Load, validate, capture and start the batchers — no registry, no canary.
     pub fn start(ts: &Path, cfg: &InProcConfig) -> Result<Self, String> {
+        // One load/capture at a time per process: two captures interleaving on the device would
+        // each see the other's work.
+        static LOADING: Mutex<()> = Mutex::new(());
+        let _one_at_a_time = LOADING.lock().unwrap_or_else(|e| e.into_inner());
         set_cudnn(cfg.cudnn)?;
         let geo = cfg.geometry();
         let model = TorchModel::load(ts, &cfg.device, true)?;
