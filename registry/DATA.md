@@ -29,7 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
-| 45 | v9 gen44 (96x8 + heads) | 8×150 (2114) | (pending labels) | 33d66aa | 48 local, 2 sidecars; 333 min | 20x11/7 capacity, centre 220; TD rate 0.738 (20x11/20x10/18x11 0.695); C1; **MC labels pending: the loop paused at STOP before gen45 mc-label (2026-10-19 14:48) for plan 066** |
+| 45 | v9 gen44 (96x8 + heads) | 8×150 (2114) | 124,861 | 33d66aa (labels 0f27dd1) | 48 local, 2 sidecars; 333 min | 20x11/7 capacity, centre 220; TD rate 0.738 (20x11/20x10/18x11 0.695); C1; the loop paused at STOP before mc-label (2026-10-19 14:48-20:57) for plan 066; **MC labels 216 min in-process (plan 066, first in-process generation step), 48 label streams, ~580 samples/min** |
 | 44 | v9 gen43 (96x8 + heads) | 8×150 (2098) | 127,617 | cf83459 | 48 local, 2 sidecars; 506 min | **first 20x11/7-capacity corpus** (plan 065, exp076): `--size-centre 220 --size-max-area 220`, 22 boards from 12x6/3 to 20x11/7 (20x11/7 255 records, 20x10/7 241, 18x11/7 220, 16x9/6 79); kickoff table on; TD rate 0.75 (20x11 0.68); C1; MC labels 319 min at 96 label streams (swapped the box; 48 from gen45). The first 16x9 attempt at gen44 died at 18:11 when the disk filled. |
 | 43 | v9 gen42 (96x8 + heads) | 8×400 (5872) | 200,979 | 61cf72b | 48 local, 2 sidecars; 620 min | C1; MC labels 317 min; the last 16x9-capacity corpus |
 | 42 | v9 gen41 (96x8 + heads) | 8×400 (5816) | 200,051 | dde8a82 | 48 local, 2 sidecars; 392 min | C1; MC labels 238 min |
