@@ -76,6 +76,10 @@ for KIND in dataset label; do
     "$PY" "$REPO/scripts/parity066.py" corpus "$A" "$B" | tee -a "$OUT/summary.txt" || true
     log "== $KIND: in-process vs sidecar"
     "$PY" "$REPO/scripts/parity066.py" corpus "$A" "$C" | tee -a "$OUT/summary.txt" || true
+    # `corpus` reports only the first difference per line, and `meta` sorts before `samples`: a
+    # line that differs in the hash-layout counters alone must be shown to agree everywhere else.
+    log "== $KIND: in-process vs sidecar, without the hash-collision counters"
+    "$PY" "$REPO/scripts/parity066.py" corpus "$A" "$C" --ignore eq_checks eq_rejects | tee -a "$OUT/summary.txt" || true
 done
 grep -h "NN_SERVER\|NN_INPROC\|fell_back\|wrote" "$OUT"/dataset_*.log "$OUT"/label_*.log | tee -a "$OUT/summary.txt" || true
 log "done"
