@@ -80,22 +80,23 @@ Defaults unless a row says otherwise:
 
 ### The loop's drive benchmark (Gumbel f1000 both sides, vs `bbnet_mix16x9d1k_gen04_v9`, SPRT, cap 800 drives per set)
 
-| A | vs B | 14x7 | 16x9 | commit | date |
-|---|---|---|---|---|---|
-| v9 gen42 (96x8 + heads) (C1 both sides) | d1k gen04 v9 | 0.585 ± 0.032 (H1, 49 pairs) | 0.544 ± 0.018 (H1, 211 pairs) | dde8a82 | 2026-10-18 |
-| **v9 gen39 (96x8 + heads, exp074)** (C1 both sides) | d1k gen04 v9 | 0.530 ± 0.012 (undecided at 400 pairs) | **0.613 ± 0.035 (H1, 51 pairs)** | bff9be0 | 2026-10-17 |
-| v9 gen36 (C1 both sides) | d1k gen04 v9 | 0.537 ± 0.019 (H1, 139 pairs) | 0.587 ± 0.028 (H1, 81 pairs) | 02fe686 | 2026-10-15 |
-| v9 gen33 (C1 both sides) | d1k gen04 v9 | 0.561 ± 0.019 (H1, 152 pairs) | 0.592 ± 0.032 (H1, 69 pairs) | 8ba1114 | 2026-10-14 |
-| v9 gen30 (C1 both sides, value weight 0.36 from gen28) | d1k gen04 v9 | 0.595 ± 0.032 (H1 after 45 pairs: early stop, wide) | 0.567 ± 0.025 (H1, 106 pairs) | 3599c01 | 2026-10-13 |
-| v9 gen27 (C1 both sides) | d1k gen04 v9 | 0.531 ± 0.012 (H1, 358 pairs) | 0.576 ± 0.028 (H1, 85 pairs) | 630c8d4 | 2026-10-12 |
-| v9 gen24 (**C1 search on both sides** from here: `chance_all_partial`) | d1k gen04 v9 | 0.534 ± 0.026 (H1, 44 pairs) | 0.570 ± 0.029 (H1, 75 pairs) | 6b5899a | 2026-10-11 |
-| v9 gen21 | d1k gen04 v9 | 0.513 ± 0.014 (H0, 334 pairs) | 0.572 ± 0.025 (H1, 115 pairs) | b13f105 (stamped 3bb2b12) | 2026-10-11 |
-| v9 gen18 | d1k gen04 v9 | 0.521 ± 0.013 (undecided at 400 pairs, LLR −1.10) | 0.582 ± 0.038 (H1 after only 26 pairs: an early SPRT stop, wide) | b13f105 | 2026-10-10 |
-| **v9 gen15** | d1k gen04 v9 | **0.551 ± 0.020 (H1, 121 pairs)**, the first 14x7 H1 | **0.557 ± 0.021 (H1, 158 pairs)** | e423b43 (game code 71827c9) | 2026-10-10 |
-| v9 gen12 (first τ=100 net after the revert) | d1k gen04 v9 | 0.524 ± 0.012 (undecided at 400 pairs, LLR −0.44) | **0.538 ± 0.015 (H1, 306 pairs)** | 71827c9 | 2026-10-09 |
-| **v9 gen09** (first τ=50 net) | d1k gen04 v9 | 0.507 ± 0.020 (H0, 140 pairs) | **0.540 ± 0.017 (H1, 239 pairs)** | f75eda5 | 2026-10-08 |
-| v9 gen06 | d1k gen04 v9 | 0.483 ± 0.023 (H0, 116 pairs) | 0.505 ± 0.021 (H0, 158 pairs) | 43a45c6 | 2026-10-08 |
-| v9 gen03 | d1k gen04 v9 | 0.449 ± 0.035 (H0, 68 pairs) | 0.481 ± 0.025 (H0, 101 pairs) | ae721b7 | 2026-10-07 |
+| A | vs B | 14x7 | 16x9 | 20x11 | commit | date |
+|---|---|---|---|---|---|---|
+| v9 gen45 (96x8 + heads; first gen trained on 20x11 data) (C1 both sides) | d1k gen04 v9 | — (dropped) | 0.565 ± 0.024 (H1, 71 pairs) | **0.629 ± 0.045 (H1, 28 pairs)**, `contested_20x11_gen43` | 33d66aa / 0f27dd1 (eval in-process) | 2026-10-20 |
+| v9 gen42 (96x8 + heads) (C1 both sides) | d1k gen04 v9 | 0.585 ± 0.032 (H1, 49 pairs) | 0.544 ± 0.018 (H1, 211 pairs) | — | dde8a82 | 2026-10-18 |
+| **v9 gen39 (96x8 + heads, exp074)** (C1 both sides) | d1k gen04 v9 | 0.530 ± 0.012 (undecided at 400 pairs) | **0.613 ± 0.035 (H1, 51 pairs)** | — | bff9be0 | 2026-10-17 |
+| v9 gen36 (C1 both sides) | d1k gen04 v9 | 0.537 ± 0.019 (H1, 139 pairs) | 0.587 ± 0.028 (H1, 81 pairs) | — | 02fe686 | 2026-10-15 |
+| v9 gen33 (C1 both sides) | d1k gen04 v9 | 0.561 ± 0.019 (H1, 152 pairs) | 0.592 ± 0.032 (H1, 69 pairs) | — | 8ba1114 | 2026-10-14 |
+| v9 gen30 (C1 both sides, value weight 0.36 from gen28) | d1k gen04 v9 | 0.595 ± 0.032 (H1 after 45 pairs: early stop, wide) | 0.567 ± 0.025 (H1, 106 pairs) | — | 3599c01 | 2026-10-13 |
+| v9 gen27 (C1 both sides) | d1k gen04 v9 | 0.531 ± 0.012 (H1, 358 pairs) | 0.576 ± 0.028 (H1, 85 pairs) | — | 630c8d4 | 2026-10-12 |
+| v9 gen24 (**C1 search on both sides** from here: `chance_all_partial`) | d1k gen04 v9 | 0.534 ± 0.026 (H1, 44 pairs) | 0.570 ± 0.029 (H1, 75 pairs) | — | 6b5899a | 2026-10-11 |
+| v9 gen21 | d1k gen04 v9 | 0.513 ± 0.014 (H0, 334 pairs) | 0.572 ± 0.025 (H1, 115 pairs) | — | b13f105 (stamped 3bb2b12) | 2026-10-11 |
+| v9 gen18 | d1k gen04 v9 | 0.521 ± 0.013 (undecided at 400 pairs, LLR −1.10) | 0.582 ± 0.038 (H1 after only 26 pairs: an early SPRT stop, wide) | — | b13f105 | 2026-10-10 |
+| **v9 gen15** | d1k gen04 v9 | **0.551 ± 0.020 (H1, 121 pairs)**, the first 14x7 H1 | **0.557 ± 0.021 (H1, 158 pairs)** | — | e423b43 (game code 71827c9) | 2026-10-10 |
+| v9 gen12 (first τ=100 net after the revert) | d1k gen04 v9 | 0.524 ± 0.012 (undecided at 400 pairs, LLR −0.44) | **0.538 ± 0.015 (H1, 306 pairs)** | — | 71827c9 | 2026-10-09 |
+| **v9 gen09** (first τ=50 net) | d1k gen04 v9 | 0.507 ± 0.020 (H0, 140 pairs) | **0.540 ± 0.017 (H1, 239 pairs)** | — | f75eda5 | 2026-10-08 |
+| v9 gen06 | d1k gen04 v9 | 0.483 ± 0.023 (H0, 116 pairs) | 0.505 ± 0.021 (H0, 158 pairs) | — | 43a45c6 | 2026-10-08 |
+| v9 gen03 | d1k gen04 v9 | 0.449 ± 0.035 (H0, 68 pairs) | 0.481 ± 0.025 (H0, 101 pairs) | — | ae721b7 | 2026-10-07 |
 
 ## Pre-v9 rules (for reference; the nets need migrating and the results do not carry over)
 
