@@ -72,6 +72,17 @@ cannot distort, then on Arm), and the net's positions/s per batch size and preci
    the size mix), fp32 / TF32 / bf16, `channels_last`, NUMA pinning; later zero-copy slots in coherent
    memory. Output: positions/s and CPU per forward per setting. Parity first (`scripts/parity066.sh` on
    the cluster), then a numerics gate for TF32/bf16 (value benches, net check, drives) — not bit parity.
+4b. **Generation and labelling share each GPU** (the user, 2026-10-21: "if CPU becomes the bottleneck in
+   generation we should do the bare policy labeling in parallel; and if there's spare GPU we can increase
+   the number of rollouts up from 8 almost for free"). Labelling is bare-policy playouts — a forward per
+   step with no tree — so its CPU per forward is a fraction of the search's; it is the natural filler for
+   a GPU that generation's CPU cannot keep busy. Two pieces: (a) **stream labels within a generation** —
+   label items for a trajectory are queued as soon as it arrives (same generator net, so no lag), and the
+   labels finish shortly after the last game instead of a separate phase (plan 062's "pipelining" step);
+   (b) per GPU, a worker runs G generation streams (enough to saturate the cores) plus L label streams
+   (enough to fill the GPU), both tuned in the suite (item 4). Playouts per sample then follow the spare
+   GPU: exp078 (8 vs 16, plan 067's exact top-up) becomes an 8/16/32 sweep in the A/B phase. Needs the
+   labelling CPU per forward (item 1) to size G and L.
 5. **Orchestration:** the hub (and registry, web app for the community) on the persistent partition;
    workers as Slurm job arrays (one process per GPU, pinned to its superchip) dialling it; the trainer on
    its own GPU; corpora on the parallel file system; resume across walltime limits (the loop's markers
