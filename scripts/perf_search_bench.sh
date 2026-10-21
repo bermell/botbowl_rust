@@ -33,7 +33,12 @@
 #                      binary, so the tree can change while a matrix runs);
 #   RECORD=1           perf record (LBR call stacks) instead of perf stat: OUT/TAG.buckets splits
 #                      the instructions after the first search into search / encoder / inference /
-#                      rest, and "instructions" in the result line are those, start-up excluded.
+#                      rest. Use the shares only: the kernel throttles the sample rate
+#                      (perf_event_max_sample_rate), so the sampled weight is not a count;
+#   AFTER_LOAD=1       count only once the net is loaded (perf stat starts disabled and is enabled
+#                      on the "NN_INPROC loaded" line): libtorch's load and CUDA graph capture cost
+#                      95-132G instructions on this box, varying run to run, which no subtraction
+#                      survives. The counts then cover the games alone (within ~0.1 s of the load).
 # The loop's generation workload (plan 069 §1):
 #   CAP=20x11/7 SIZES=20x11/7 NEXT_DRIVE=1 CONFIG=cfgs/chance_all_partial_gen.toml EVALUATOR=nn \
 #     BACKEND=inproc MODEL=models/az_v7/bbnet_mix16x9v9_gen48.onnx scripts/perf_search_bench.sh OUT
@@ -74,6 +79,14 @@ if [ -n "${RECORD:-}" ]; then
     # Profile instead of count: instructions sampled every PERIOD (1M) with LBR call stacks, split into
     # search / encoder / inference / rest after the first search (scripts/perf_buckets.py).
     PERF=(perf record -q -e instructions:u -c "${PERIOD:-1000003}" --call-graph lbr -o "$OUT/$TAG.data")
+elif [ -n "${AFTER_LOAD:-}" ]; then
+    CTL="$OUT/$TAG.ctl"; ACK="$OUT/$TAG.ack"; rm -f "$CTL" "$ACK"; mkfifo "$CTL" "$ACK"
+    PERF=(perf stat -x, -e "$EVENTS" -o "$OUT/$TAG.stat" -D -1 --control "fifo:$CTL,$ACK")
+    : > "$OUT/$TAG.log"
+    (
+        until grep -q 'NN_INPROC loaded' "$OUT/$TAG.log" 2> /dev/null; do sleep 0.05; done
+        echo enable > "$CTL"; head -c 5 "$ACK" > /dev/null
+    ) &
 else
     PERF=(perf stat -x, -e "$EVENTS" -o "$OUT/$TAG.stat")
 fi
@@ -81,13 +94,14 @@ LD_PRELOAD="$SHIM" BLOOD_NN_PROFILE=1 taskset -c "$CORE" nice -n 19 "${PERF[@]}"
     "$BIN" dataset --mode random-start "${SIZE_ARGS[@]}" \
     --games "$GAMES" --seed "$SEED" --mcts-iters "$ITERS" --bot-config "$CONFIG" --parallel-games "$STREAMS" \
     --evaluator "$EVALUATOR" "${NN_ARGS[@]}" --out "$OUT/$TAG.jsonl" --truncate > "$OUT/$TAG.out" 2> "$OUT/$TAG.log"
+[ -n "${AFTER_LOAD:-}" ] && { wait; rm -f "$CTL" "$ACK"; }
 if [ -n "${RECORD:-}" ]; then
     DEMANGLE=cat; command -v rustfilt > /dev/null && DEMANGLE=rustfilt
     perf script -i "$OUT/$TAG.data" -F comm,tid,period,ip,sym,dso 2> /dev/null | "$DEMANGLE" \
         | python3 scripts/perf_buckets.py --after run_search --top 15 > "$OUT/$TAG.buckets"
     INS=$(sed -n 's/^samples [0-9]*, weight \([0-9]*\).*/\1/p' "$OUT/$TAG.buckets")  # after start-up
 else
-    INS=$(grep instructions "$OUT/$TAG.stat" | cut -d, -f1)
+    INS=$(grep "instructions:u" "$OUT/$TAG.stat" | cut -d, -f1)
 fi
 HASH=$(python3 - "$OUT/$TAG.jsonl" <<'PY'
 import hashlib, json, sys
