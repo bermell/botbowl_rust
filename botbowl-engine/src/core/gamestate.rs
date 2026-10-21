@@ -523,6 +523,31 @@ pub struct GameState {
 
 impl Eq for GameState {}
 
+/// The `GameState` fields the pathfinder reads, copied: the key of `PathFinder`'s per-thread
+/// memo (plan 069 §1b). The search computes the same paths twice for every new move decision —
+/// `MoveAction` fills the offerings, then the NN encoder recomputes them for its path plane (it
+/// must: the buffer is not serialised and not part of `PartialEq`, see botbowl-nn's CLAUDE.md) —
+/// and between the two only fields outside this set change (the procedure stack).
+///
+/// **Every field `PathFinder::fill_player_paths` reads, directly or through the `GameState`
+/// methods it calls, must be in here**: the pathfinder, its `GameInfo::new` and its expansion
+/// helpers (`get_player_at`, `get_adj_players`, `get_tz_on*`, `get_catch_target`,
+/// `get_pass_target`/`get_pass_modifier`/`get_intercepters`, `get_blockdices_from`, `is_out`,
+/// `get_endzone_x`, `rush_target`) read `board`, `fielded_players`, `info`, `ball` and
+/// `board_dims`; the team states are in too, for safety. A field read but missing would hand back
+/// another state's paths. Debug builds recompute on every hit and compare
+/// (`PathFinder::fill_player_paths`).
+#[derive(Clone)]
+pub(crate) struct PathInputs {
+    board: FullPitch<BoardCell>,
+    info: GameInfo,
+    ball: BallState,
+    fielded_players: [Option<FieldedPlayer>; 2 * ROSTER_PER_TEAM],
+    home: TeamState,
+    away: TeamState,
+    board_dims: BoardDims,
+}
+
 // Hand-rolled Clone instead of derived: `path_buffer` is reusable scratch
 // allocated up to 4KB on the heap. Cloning it eagerly would regress the MCTS
 // hot path, where GameState clones happen for every tree expansion and the
@@ -1430,6 +1455,32 @@ impl GameState {
             }
         }
         false
+    }
+
+    /// A copy of every field [`PathFinder`](super::pathing::PathFinder) reads, the key of its
+    /// per-thread memo (plan 069 §1b). See [`PathInputs`].
+    pub(crate) fn path_inputs(&self) -> PathInputs {
+        PathInputs {
+            board: self.board,
+            info: self.info.clone(),
+            ball: self.ball,
+            fielded_players: self.fielded_players.clone(),
+            home: self.home,
+            away: self.away,
+            board_dims: self.board_dims,
+        }
+    }
+
+    /// Whether `self` agrees with `key` on every field the pathfinder reads, compared with the
+    /// fields' own `PartialEq` (the one `GameState`'s is made of), cheapest rejections first.
+    pub(crate) fn path_inputs_match(&self, key: &PathInputs) -> bool {
+        self.board == key.board
+            && self.info == key.info
+            && self.ball == key.ball
+            && self.fielded_players == key.fielded_players
+            && self.home == key.home
+            && self.away == key.away
+            && self.board_dims == key.board_dims
     }
 
     /// Borrow the path offerings produced by the last `MoveAction` /

@@ -804,7 +804,46 @@ impl<'a> PathFinder<'a> {
     /// callers can pass a buffer that was filled by a previous call. This is
     /// the variant used by `MoveAction`/`BlockAction` to write directly into
     /// `GameState::path_buffer` and skip a per-frame 4KB allocation.
+    ///
+    /// Served from a one-entry per-thread memo when the last fill on this thread was for the same
+    /// player on a state that agrees on every field the pathfinder reads ([`PathInputs`]): the
+    /// search fills a new move decision's offerings and the NN encoder recomputes the same paths
+    /// for its path plane right after (plan 069 §1b). The nodes are shared (`Arc`, immutable), so
+    /// a hit is exactly what a fresh fill would have returned; debug builds check it.
+    ///
+    /// [`PathInputs`]: crate::core::gamestate::PathInputs
     pub fn fill_player_paths(game_state: &GameState, id: PlayerID, out: &mut FullPitch<OptRcNode>) -> Result<()> {
+        let hit = LAST_PATHS.with(|slot| match slot.borrow().as_ref() {
+            Some(m) if m.id == id && game_state.path_inputs_match(&m.key) => {
+                out.clone_from(&m.paths);
+                true
+            }
+            _ => false,
+        });
+        if hit {
+            #[cfg(debug_assertions)]
+            {
+                let mut fresh: FullPitch<OptRcNode> = Default::default();
+                Self::compute_player_paths(game_state, id, &mut fresh)?;
+                debug_assert!(
+                    same_paths(out, &fresh),
+                    "PathFinder memo returned stale paths: a field the pathfinder reads is missing from PathInputs"
+                );
+            }
+            return Ok(());
+        }
+        Self::compute_player_paths(game_state, id, out)?;
+        LAST_PATHS.with(|slot| {
+            *slot.borrow_mut() = Some(PathMemo {
+                id,
+                key: game_state.path_inputs(),
+                paths: out.clone(),
+            })
+        });
+        Ok(())
+    }
+
+    fn compute_player_paths(game_state: &GameState, id: PlayerID, out: &mut FullPitch<OptRcNode>) -> Result<()> {
         // Release any stale Arc payload from a previous fill — caller may
         // be reusing the same buffer.
         for slot in out.iter_mut() {
@@ -998,6 +1037,33 @@ impl<'a> PathFinder<'a> {
                 });
         }
     }
+}
+
+/// The last `fill_player_paths` on this thread: whose paths, the inputs they were computed from,
+/// and the result (plan 069 §1b).
+struct PathMemo {
+    id: PlayerID,
+    key: crate::core::gamestate::PathInputs,
+    paths: FullPitch<OptRcNode>,
+}
+
+thread_local! {
+    static LAST_PATHS: std::cell::RefCell<Option<PathMemo>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Square for square the same offering: present on the same squares, with the same probability
+/// (bit for bit), action type and route. What a memo hit must return (checked in debug builds).
+#[cfg(any(debug_assertions, test))]
+fn same_paths(a: &FullPitch<OptRcNode>, b: &FullPitch<OptRcNode>) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| match (x, y) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            x.prob.to_bits() == y.prob.to_bits()
+                && x.get_action_type() == y.get_action_type()
+                && x.iter().collect::<Vec<_>>() == y.iter().collect::<Vec<_>>()
+        }
+        _ => false,
+    })
 }
 
 /// The risky nodes waiting for their batch, one batch per distinct probability (by bit pattern),
