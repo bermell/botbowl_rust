@@ -183,7 +183,9 @@ pub fn parse_backend(backend: &str, device: Option<&str>) -> Result<BackendChoic
             Ok(BackendChoice::InProcess { device })
         }
         "null" => Ok(BackendChoice::Null),
-        other => Err(format!("--nn-backend {other}: want sidecar or inproc (or null, a benchmark stub)")),
+        other => Err(format!(
+            "--nn-backend {other}: want sidecar or inproc (or null, a benchmark stub)"
+        )),
     }
 }
 
@@ -450,7 +452,11 @@ impl NnEvaluator {
                 }
             },
             Backend::Null => (
-                if want_policy { vec![0.0; crate::actions::POLICY_CHANNELS * h * w] } else { Vec::new() },
+                if want_policy {
+                    vec![0.0; crate::actions::POLICY_CHANNELS * h * w]
+                } else {
+                    Vec::new()
+                },
                 0.0,
             ),
         };

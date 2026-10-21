@@ -977,7 +977,11 @@ impl GameState {
     pub fn get_player_at_coord(&self, x: Coord, y: Coord) -> Option<&FieldedPlayer> {
         let id = self.get_player_id_at_coord(x, y)?;
         // A board square naming an unfielded player is an internal logical error.
-        Some(self.fielded_players[id].as_ref().expect("board names a player that is not fielded"))
+        Some(
+            self.fielded_players[id]
+                .as_ref()
+                .expect("board names a player that is not fielded"),
+        )
     }
 
     #[inline]
