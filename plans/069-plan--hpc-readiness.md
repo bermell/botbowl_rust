@@ -21,6 +21,21 @@ tune the inference in the new system."
   (Apptainer?), whether compute nodes can reach a service on the persistent partition (the hub), outbound
   internet, storage quotas, allocation expiry.
 
+## 0b. What the centre's docs say (Arrhenius, NAISS; the user, 2026-10-21) and what follows
+
+| fact | consequence for us |
+|---|---|
+| SSH login with password + 2FA (`login.hpc.arrhenius.naiss.se`); rsync the same way | nothing on this box can drive the cluster unattended: **the loop must run entirely inside Slurm jobs**; transfers in and out are manual (a multiplexed SSH session, if allowed, makes them one 2FA per session) |
+| GPU partition = GH200 (**aarch64**); CPU partition = AMD Turin (**x86_64**); a `fat` large-memory CPU partition | two architectures: Arm builds for GPU nodes, today's x86 binaries run on CPU nodes unchanged (tract workers there are an option if CPU time is cheap) |
+| Lmod; GPU toolchain `GPU/buildenv-nvhpc/25.9-cu13.0` (CUDA 13.0) | our libtorch is torch 2.13 + cu126; don't depend on modules — **Apptainer container** with its own CUDA user space (driver must support it) |
+| Apptainer supported; build inside `interactive -A <project>` | build the `.sif` on an Arm GPU node, not here (x86 + qemu is slow); possibly no internet there → `cargo vendor` + a wheelhouse prepared here |
+| home 30 GiB / 1 M files; project storage `/nobackup/proj/disk/<project>` (**not backed up**; quota via `storagequota`) | venvs and target dirs live in the container or project storage; corpora have a retention policy; nets, registry and positions are copied back here (they are small) |
+| Slurm: `-A`, `-p cpu|gpu|fat`, `-n`, `-c`, `-t`, `--gpus`; `srun`/`mpprun` | no MPI needed: **loop-in-a-job** — node 0 of a job runs the hub, the trainer and a worker; nodes 1..N run one worker per GPU (`srun`, `CUDA_VISIBLE_DEVICES`, pinned to the superchip) dialling node 0; the loop resumes from its markers in the next job (`sbatch --dependency=afterany`) |
+
+Still unknown: walltime limit, whether a job can take 1 GPU (a quarter node) and how GPU-hours are billed
+(per GPU or per node), CPU-partition billing, outbound internet from compute nodes, SSH multiplexing
+policy, project quota, allocation expiry.
+
 ## 1. The cost model flips (estimates — §2 replaces them with measurements)
 
 On this box generation is bound by GPU arithmetic (GTX 1060: 625 µs of kernels per position, 3,150
