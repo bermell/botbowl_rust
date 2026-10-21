@@ -82,6 +82,7 @@ Defaults unless a row says otherwise:
 
 | A | vs B | 14x7 | 16x9 | 20x11 | commit | date |
 |---|---|---|---|---|---|---|
+| v9 gen48 (96x8 + heads) (C1 both sides) | d1k gen04 v9 | — (dropped) | 0.593 ± 0.030 (H1, 41 pairs) | **0.710 ± 0.050 (H1, 20 pairs)**, `contested_20x11_gen43` | 0f27dd1 (in-process) | 2026-10-21 |
 | v9 gen45 (96x8 + heads; first gen trained on 20x11 data) (C1 both sides) | d1k gen04 v9 | — (dropped) | 0.565 ± 0.024 (H1, 71 pairs) | **0.629 ± 0.045 (H1, 28 pairs)**, `contested_20x11_gen43` | 33d66aa / 0f27dd1 (eval in-process) | 2026-10-20 |
 | v9 gen42 (96x8 + heads) (C1 both sides) | d1k gen04 v9 | 0.585 ± 0.032 (H1, 49 pairs) | 0.544 ± 0.018 (H1, 211 pairs) | — | dde8a82 | 2026-10-18 |
 | **v9 gen39 (96x8 + heads, exp074)** (C1 both sides) | d1k gen04 v9 | 0.530 ± 0.012 (undecided at 400 pairs) | **0.613 ± 0.035 (H1, 51 pairs)** | — | bff9be0 | 2026-10-17 |

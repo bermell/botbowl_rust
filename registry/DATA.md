@@ -29,6 +29,7 @@ Common settings, all generations (`scripts/launch_plan058.sh` → `scripts/train
 
 | gen | generator net | games (records) | samples | commit | streams | notes |
 |---|---|---|---|---|---|---|
+| 48 | v9 gen47 (96x8 + heads) | 8×150 (2130) | 126,872 | 0f27dd1 | 48 local in-process; 308 min | 20x11/7, centre 220; TD rate 0.751 (large boards 0.700); C1; MC labels 301 min in-process (net check overlapping) |
 | 47 | v9 gen46 (96x8 + heads) | 8×150 (2123) | 124,310 | 0f27dd1 | 48 local in-process; 302 min | 20x11/7, centre 220; TD rate 0.749 (large boards 0.713); C1; MC labels 298 min in-process (net check overlapping) |
 | 46 | v9 gen45 (96x8 + heads) | 8×150 (2112) | 127,586 | 0f27dd1 | 48 local in-process; 353 min (with gen45 drives overlapped) | 20x11/7, centre 220; TD rate 0.744 (large boards 0.703); C1; MC labels 306 min in-process (shared the GPU with the 196-min net check) |
 | 45 | v9 gen44 (96x8 + heads) | 8×150 (2114) | 124,861 | 33d66aa (labels 0f27dd1) | 48 local, 2 sidecars; 333 min | 20x11/7 capacity, centre 220; TD rate 0.738 (20x11/20x10/18x11 0.695); C1; the loop paused at STOP before mc-label (2026-10-19 14:48-20:57) for plan 066; **MC labels 216 min in-process (plan 066, first in-process generation step), 48 label streams, ~580 samples/min** |
