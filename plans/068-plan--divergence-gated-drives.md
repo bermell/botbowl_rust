@@ -3,6 +3,18 @@
 **Status:** built and measured 2026-10-21 (exp079); behind `--drive-gate`, off by default. Adoption by
 the loop is the user's call (§8).
 
+**Headline.** The gate works and is free: a move fingerprint on each drive line marks the pairs that
+were one game played twice, which score exactly ½. In a null control (gen48 vs gen48) every such
+pair did score ½, and the rest scored 0.485 ± 0.061. But it buys no compute. At 1000 descents the
+search disagrees with *itself* at 4-6% of decisions, so 87-90% of a net's 20x11 pairs against itself
+diverge (65% on the shorter 16x9 drives). A one-generation step (gen47 vs gen48) diverges exactly as
+often. No cheap prescreen (bare policy, 64 descents) predicts the rest. The SPRT on divergent pairs
+is the ordinary SPRT with `s1` scaled by `p_div`, with no efficiency gain. On gen45 vs gen48 (16x9)
+both tests said H0 (at 36 and 39 pairs). Fixed on the way: Gumbel-root ties now follow a
+deterministic `tie_break` (the null floor drops from 6.3% to 4.1% per decision), and the forward memo
+could serve one net's evaluation to another on a shared thread. What would make the gate pay is an
+order-independent recon_mcts backprop (§3, §4).
+
 The user (2026-10-21): "that feature for the drive benchmark that checks if the networks take
 different moves at all for each other and only play out the drives where it does". The loop's
 reference is about to move to a much closer net (v9 gen48), so drive scores will sit near 0.5, and the
@@ -272,7 +284,16 @@ to load with a CUDA out-of-memory on the shared 6 GB card).
   100 searches per pair for both bots (the loop's gen48 rung: 28.8 candidate searches per 16x9
   drive and 33.6 per 20x11 drive, i.e. ~115 and ~134 per pair). The fingerprint is one hash per
   move.
-- **Ungated arm:** UNGATED
+- **Ungated arm: not run.** It failed to load beside the gated arm (CUDA out of memory on the
+  6 GB card the loop shares). The loop's train and generate phases followed, and I would not leave
+  a 1.6 GB GPU process beside the trainer, nor unattended beside a generate phase that needs ~10 GB
+  of host memory. What it would have checked is close to tautological. An ungated drive *is* the
+  gated one minus the hash (`a_gated_drive_fingerprints_its_moves_and_an_ungated_one_is_unchanged`
+  pins the ungated line byte for byte), and role seeding reaches no move under this preset. The
+  gated arm's all-pairs score, 0.446 ± 0.029, is therefore today's rung's measurement of this pair.
+  An independent replicate costs about an hour per 30 pairs on a quiet GPU:
+  `ARM=g45plain CAND=gen45 REF=gen48 GATE= SPRT= CAP=120 PARALLEL=16 scripts/exp079_validate.sh`,
+  then `scripts/gate_replay.py runs/exp079/val_g45plain/eval.games.jsonl`.
 
 ## 8. What the loop would need
 
