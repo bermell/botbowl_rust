@@ -273,6 +273,9 @@ fn build_label_request(a: &LabelJobArgs, m: &ArgMatches) -> Result<LabelJobReque
     if ml.playouts == 0 {
         return Err("--playouts must be > 0".into());
     }
+    if ml.top_up == Some(0) {
+        return Err("--top-up must be > 0".into());
+    }
     let out_dir = PathBuf::from(&ml.out_dir);
     let shards = ml
         .corpus
@@ -301,6 +304,7 @@ fn build_label_request(a: &LabelJobArgs, m: &ArgMatches) -> Result<LabelJobReque
         chunk_samples: a.chunk_samples.max(1),
         batch: a.batch.max(1),
         label: a.client.label.clone(),
+        top_up: ml.top_up.is_some(),
     })
 }
 
@@ -609,7 +613,9 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
             .filter(|p| !p.is_empty())
             .map(|path| {
                 let set = PositionSet::load(path)?;
-                Ok((Some(set.board_dims()?), Some(set.rung()?)))
+                let mut rung = set.rung()?;
+                rung.gate = a.drive_gate.is_some();
+                Ok((Some(set.board_dims()?), Some(rung)))
             })
             .collect::<Result<_, String>>()
             .map_err(|e| format!("--positions: {e}"))?,
@@ -687,6 +693,7 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
         report_out: abs(&PathBuf::from(report_out)),
         batch: job.batch,
         sprt: a.sprt,
+        drive_gate: a.drive_gate,
         label: job.client.label.clone(),
     })
 }
@@ -902,9 +909,10 @@ fn main() {
                         std::process::exit(2)
                     });
                     let what = format!(
-                        "label job: {} shard(s) x {} playouts per sample",
+                        "label job: {} shard(s) x {} playouts per sample{}",
                         req.shards.len(),
-                        req.cfg.playouts
+                        req.cfg.playouts,
+                        if req.top_up { " (top-up)" } else { "" }
                     );
                     (a.client.clone(), a.wait, JobRequest::Label(req), what)
                 }
@@ -1186,6 +1194,20 @@ mod tests {
         ])
         .unwrap_err();
         assert!(e.contains("--playouts"), "{e}");
+        assert!(!req.top_up);
+        // Plan 067: `--top-up K` plays K more per sample; the seed and the prior count come from the
+        // shards' labels, so `--seed` and `--playouts` are refused alongside it.
+        let base = ["label", "--in", "mc/a.jsonl", "--model", "m.onnx", "--out-dir", "o"];
+        let req = label(&[&base[..], &["--top-up", "8"]].concat()).unwrap();
+        assert!(req.top_up);
+        assert_eq!((req.cfg.playouts, req.cfg.skip), (8, 0));
+        for flag in [&["--seed", "56044"][..], &["--playouts", "8"]] {
+            assert!(
+                job(&[&base[..], &["--top-up", "8"], flag].concat()).is_err(),
+                "{flag:?}"
+            );
+        }
+        assert!(label(&[&base[..], &["--top-up", "0"]].concat()).is_err());
     }
 
     /// `train_loop.sh`'s `eval_job` for the drives rung, minus `--positions` (it loads files).

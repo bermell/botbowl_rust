@@ -36,7 +36,7 @@ use botbowl_play::bots::{
     Evaluator, NamedConfig, SearchConfig,
 };
 use botbowl_play::drives::{
-    drive_assignment, drive_rung_name, play_drive_game, position_state, DriveRung, PositionSet,
+    drive_assignment, drive_rung_name, play_drive_game_gated, position_state, DriveRung, PositionSet,
 };
 use botbowl_play::eval::{ladder_assignment, play_ladder_game, rung_name, LadderRow, LectureRow, Report};
 use botbowl_play::stats::Sprt;
@@ -155,7 +155,13 @@ fn run_ladder_rung(
                 .expect("--per-game-out: cannot open"),
         )
     });
-    let mut row = LadderRow::on_board(opponent, venue.board()).with_sprt(sprt);
+    let gate = match venue {
+        Venue::Drives(..) => args.drive_gate,
+        Venue::Games(_) => None,
+    };
+    let mut row = LadderRow::on_board(opponent, venue.board())
+        .with_sprt(sprt)
+        .with_gate(gate);
     row.opponent = name.clone();
     let state = RungState {
         row: Mutex::new(row),
@@ -245,7 +251,7 @@ fn run_rung_games(
             Venue::Drives(board, set) => {
                 let (i, attacks, dice) = drive_assignment(set.positions.len(), args.seed, g);
                 let seed = set.positions[i];
-                play_drive_game(
+                play_drive_game_gated(
                     &mut *candidate,
                     &mut *opponent,
                     name,
@@ -255,6 +261,7 @@ fn run_rung_games(
                     attacks,
                     dice,
                     args.max_steps,
+                    set.gate,
                 )
             }
         };
@@ -263,6 +270,9 @@ fn run_rung_games(
             use std::io::Write;
             serde_json::to_writer(&mut *w, &line).expect("per-game log write failed");
             writeln!(w).expect("per-game log write failed");
+            // A game takes seconds to minutes: flushing each line costs nothing and means a
+            // rung stopped from outside keeps every game it finished (plan 068).
+            w.flush().expect("per-game log flush failed");
         }
 
         let mut row = state.row.lock().expect("row mutex");
@@ -378,7 +388,9 @@ pub fn run(args: EvalArgs) -> io::Result<()> {
             .filter(|p| !p.is_empty())
             .map(|path| {
                 let set = PositionSet::load(path)?;
-                Ok((set.board_dims()?, set.rung()?))
+                let mut rung = set.rung()?;
+                rung.gate = args.drive_gate.is_some();
+                Ok((set.board_dims()?, rung))
             })
             .collect::<Result<_, String>>()
             .map_err(invalid)?,

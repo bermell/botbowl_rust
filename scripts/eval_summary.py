@@ -69,8 +69,25 @@ def paired(row: dict) -> str:
     if counts and sum(counts) >= 2:
         out += f" [paired SE {row.get('points_se', float('nan')):.3f}, {sum(counts)} pairs]"
     s = row.get("sprt")
+    g = row.get("gate")
     if s:
-        out += f" [SPRT {s['s0']}:{s['s1']} {s['verdict']} LLR {s['llr']:.2f} after {s['pairs']} pairs]"
+        on = " divergent" if g and g.get("mode") == "sprt" else ""
+        out += f" [SPRT {s['s0']}:{s['s1']} {s['verdict']} LLR {s['llr']:.2f} after {s['pairs']}{on} pairs]"
+    if g:
+        # Plan 068: the divergence gate. p_div = pairs whose two games played different moves;
+        # s_div = the candidate's score on those; implied = 0.5 + p_div (s_div - 0.5), the score
+        # over every pair. `other` is the test the rung was not stopped by.
+        n = g["identical"] + sum(g["divergent"]["counts"])
+        other = g.get("other_decided_at")
+        other = f"{other[0]}@{other[1]}" if other else "undecided"
+        out += (
+            f" [gate {g['mode']} p_div {g['p_div']:.3f}±{g['p_div_se']:.3f} of {n}"
+            f" s_div {g['s_div']:.3f}±{g['s_div_se']:.3f} implied {g['implied']:.3f}±{g['implied_se']:.3f}"
+            f" other {other} LLR {g.get('other_llr', 0.0):.2f}"
+        )
+        if g.get("mismatched") or g.get("unknown"):
+            out += f" MISMATCHED {g.get('mismatched', 0)} UNKNOWN {g.get('unknown', 0)}"
+        out += "]"
     return out
 
 

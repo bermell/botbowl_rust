@@ -197,6 +197,15 @@ pub fn backend_choice() -> Result<BackendChoice, String> {
 /// worker threads via `Arc`.
 pub struct NnEvaluator {
     backend: Backend,
+    /// Process-unique, for the `LAST_FORWARD` memo's key (plan 068): two nets searching on one
+    /// thread (a drive's candidate and opponent) must never be served each other's forward.
+    id: u64,
+}
+
+/// The next [`NnEvaluator::id`].
+fn next_evaluator_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 thread_local! {
@@ -233,6 +242,10 @@ thread_local! {
 }
 
 struct CachedForward {
+    /// The evaluator that computed it ([`NnEvaluator::id`]): part of the key. Before plan 068 the
+    /// key was the state alone, so on a thread shared by two nets (an eval drive's candidate and
+    /// opponent alternate on one) a search could start from the other net's forward of its root.
+    owner: u64,
     /// The memo key. Owned, so the slot can outlive the caller's borrow.
     state: GameState,
     /// Kept so a value-only hit that later needs the policy (the remote
@@ -262,6 +275,7 @@ impl NnEvaluator {
     /// `train/src/bbnn/export.py`).
     pub fn from_path(path: impl AsRef<Path>) -> TractResult<Self> {
         Ok(NnEvaluator {
+            id: next_evaluator_id(),
             backend: Backend::Tract(TractBackend::from_path(path)?),
         })
     }
@@ -293,6 +307,7 @@ impl NnEvaluator {
         }
         let Some(socket) = server else {
             return Ok(NnEvaluator {
+                id: next_evaluator_id(),
                 backend: Backend::Tract(tract),
             });
         };
@@ -303,6 +318,7 @@ impl NnEvaluator {
         let client = RemoteClient::new(socket, &path.to_string_lossy(), (value, policy))
             .map_err(|e| TractError::msg(e.to_string()))?;
         Ok(NnEvaluator {
+            id: next_evaluator_id(),
             backend: Backend::Remote {
                 client,
                 fallback: tract,
@@ -327,6 +343,7 @@ impl NnEvaluator {
         let backend = crate::inproc::get_or_load(path, device, &(value, policy))
             .map_err(|e| TractError::msg(format!("in-process backend for {}: {e}", path.display())))?;
         Ok(NnEvaluator {
+            id: next_evaluator_id(),
             backend: Backend::InProcess {
                 backend,
                 fallback: tract,
@@ -457,7 +474,7 @@ impl NnEvaluator {
         let probe = LAST_FORWARD.with(|slot| {
             let slot = slot.borrow();
             let Some(c) = slot.as_ref() else { return Probe::Miss };
-            if c.state != *state {
+            if c.owner != self.id || c.state != *state {
                 return Probe::Miss;
             }
             match (want_policy, &c.policy) {
@@ -481,6 +498,7 @@ impl NnEvaluator {
                 let (policy, value) = self.forward_counted(&enc.spatial, &enc.global, enc.h, enc.w, want_policy);
                 LAST_FORWARD.with(|slot| {
                     *slot.borrow_mut() = Some(CachedForward {
+                        owner: self.id,
                         state: state.clone(),
                         enc,
                         policy: if policy.is_empty() { None } else { Some(policy.clone()) },

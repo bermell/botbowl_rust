@@ -63,4 +63,15 @@ fn a_state_is_encoded_and_forwarded_once_for_both_heads() {
     assert_eq!(priors_hit, priors_fresh, "a memo hit must equal a fresh forward");
     assert_eq!(eval.value_home_i64(&a), value_a);
     assert_eq!(forwards(), n0 + 3);
+
+    // Plan 068: the key is the evaluator as well as the state. A second net asking for the same
+    // state on this thread (an eval drive's opponent, searching the root the candidate's search
+    // just evaluated) forwards through its own net rather than reading the first one's slot.
+    let other = NnEvaluator::from_path(&onnx).expect("load tiny.onnx again");
+    let _ = other.priors(&a, &actions);
+    assert_eq!(forwards(), n0 + 4, "another evaluator on the same state misses");
+    let _ = other.value_home_i64(&a);
+    assert_eq!(forwards(), n0 + 4, "and then hits its own slot");
+    let _ = eval.value_home_i64(&a);
+    assert_eq!(forwards(), n0 + 5, "which the first evaluator does not read");
 }

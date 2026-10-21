@@ -47,6 +47,19 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   still works. **`DriveStart` is the one drive-end rule** (a score on either side, a half change,
   game over): `random_start_trajectory`, `play_drive_game` and `botbowl-ui override-audit`'s
   playouts all stop on it, and `outcome_for` scores it in the value target's units.
+- **The divergence gate (plan 068, `--drive-gate report|sprt`).** `play_drive_game_gated(.., gate)`
+  seeds the bots by role (`ATTACKER_SEED_MIX`/`DEFENDER_SEED_MIX`) instead of by bot and fingerprints
+  every move (`MovePath`, FNV-1a over `(kind, type, x, y)`, no std hasher) into `EvalGameLine.path`.
+  Both games of a pair share their dice, so equal fingerprints mean the pair was one game played
+  twice and scores exactly ½. `LadderRow::with_gate(mode)` folds the split into `GateRow`
+  (`identical`, `divergent`, `p_div`, `s_div`, `implied`), in the same half-pair stash as the pairs;
+  under `GateMode::Sprt` the rung's `sprt` runs on the divergent pairs and the all-pairs test is
+  reported as `gate.other_*` (named so a `"verdict":` grep finds only the rung's own). `mismatched`
+  (an identical pair that did not score ½) must stay 0. Ungated, a drive line is byte-identical.
+  `lockstep_drive` plays a pair interleaved (four bot instances, one per bot and role, so each sees
+  what it sees in the normal pair) and stops at the first disagreement: `botbowl-ui drive-agree`'s
+  measurement. **The gate wants deterministic bots** (`cfgs/chance_all_partial_det.toml`): under the
+  shipped `tie_break = "hash"` a net disagrees with itself within a few decisions (exp079).
 - **Clap-free by default.** The `cli` feature adds `cli_args`: the `dataset`/`eval` flag structs (`DatasetArgs`, `EvalArgs`, `BiasArgs`, `SizeArgs`, `EvalSizeArgs`, the CLI enums with `From` impls onto the types here, `EvalArgs::candidate_search`/`opponent_search`, `vs_rung_label`). `botbowl-ui` flattens them whole and `botbowl-hub job generate`/`job eval` flatten the same structs, so the two CLIs cannot drift; the hub refuses the process-local flags (`--parallel-games`, `--nn-server`, `--trials`, ...) by checking `ArgMatches::value_source`. Without the feature the library has no clap dependency.
 - **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
   weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform
@@ -76,6 +89,12 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   range), `apply_labels`, `label_tag`, `summary_line`. `policy` is `PolicyBot` and `play_out`,
   moved from `botbowl-ui override-audit` (whose tests still pin them). `botbowl-ui mc-label` and
   the hub's `job label` are the two shells; byte-identical output between them is a test.
+  **Top-up (plan 067)** lives here too: `LabelConfig.skip` (playouts already drawn from each
+  sample's stream; 0 = a fresh labelling, exactly as before), `LabelTag::parse`/`shard_prior` (the
+  labelling a shard carries), `check_topup_model`, `topup_config` (the prior's seed, `skip = n`),
+  `playout_sum`/`combine` (integer sums: the `(n+k)` label bit for bit), `apply_topup` (labels,
+  tag, `value_label_history`, a `TopUpRecord`) and `topup_records_path`. Keep `playout_seeds` the one
+  place a playout's dice seed is drawn: the top-up's exactness and disjointness rest on it.
 
 ## Verifying a change is behaviour-neutral
 

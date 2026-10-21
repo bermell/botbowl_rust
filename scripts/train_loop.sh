@@ -503,6 +503,11 @@ ORIGIN_DRIVES="${ORIGIN_DRIVES:-400}"
 DRIVE_POSITIONS="${DRIVE_POSITIONS:-}"
 DRIVE_SPRT="${DRIVE_SPRT:-0.5:0.55}"
 DRIVE_CAP="${DRIVE_CAP:-800}"
+# Plan 068: DRIVE_GATE=report|sprt runs the drive rung (not the origin match) under the divergence
+# gate (`job eval --drive-gate`): pairs whose two games played the same moves (one game twice,
+# exactly 1/2) are told apart; `sprt` runs $DRIVE_SPRT on the other pairs only. It wants
+# deterministic bots: EVAL_BOT_CONFIG=cfgs/chance_all_partial_det.toml. Empty (default) = off.
+DRIVE_GATE="${DRIVE_GATE:-}"
 P1_GAMES="${P1_GAMES:-0}"
 ANCHOR_EVERY="${ANCHOR_EVERY:-0}"
 # -----------------------------------------------------------------------------
@@ -1085,6 +1090,7 @@ eval_submit() {
         eval_job drives "$GEN_DIR/drives" "$GG drives vs $(net_name "$REF")" \
             --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
             --positions "$DRIVE_POSITIONS" --sprt "$DRIVE_SPRT" --vs-games "$DRIVE_CAP" \
+            ${DRIVE_GATE:+--drive-gate "$DRIVE_GATE"} \
             --vs-evaluator "$EVALUATOR" --vs-model "$REF"
         if [ "$ORIGIN_EVERY" -gt 0 ] && [ $((G % ORIGIN_EVERY)) -eq 0 ]; then
             eval_job origin "$GEN_DIR/drives_origin" "$GG drives vs $(net_name "$ORIGIN_REF") (origin)" \

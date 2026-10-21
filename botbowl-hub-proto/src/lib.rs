@@ -53,7 +53,12 @@ pub use botbowl_play::mc_label::LabelConfig;
 // `ToHub::LabelDone` (their MC value labels) — distributed `mc-label`.
 // v20 (plan 066): `ToWorker::Model.torchscript` — the net's TorchScript export rides with its ONNX,
 // so a worker on the in-process backend has the file it loads.
-pub const PROTOCOL_VERSION: u32 = 20;
+// v21 (plan 067): `LabelConfig.skip` (an MC-label top-up continues each sample's dice stream), inside
+// `Task::Label.cfg`.
+// v22 (plan 068): `DriveRung.gate` (the divergence gate: bots seeded by role, moves fingerprinted)
+// and `EvalGameLine.path` (the fingerprint), a trailing field always on the wire. (Developed as v21
+// beside plan 067; renumbered when both merged.)
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
@@ -456,6 +461,7 @@ mod tests {
                 set: "t".into(),
                 bias: Default::default(),
                 positions: vec![3, 5],
+                gate: true,
             }),
         };
         let bytes = encode(&ToWorker::Task(task.clone()));
@@ -505,6 +511,8 @@ mod tests {
             playouts: 8,
             seed: 56_016,
             max_steps: 100_000,
+            // Plan 067: a top-up's skip rides in the frame.
+            skip: 8,
         };
         let task = Task::Label {
             id: 11,

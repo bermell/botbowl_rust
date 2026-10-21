@@ -72,6 +72,11 @@ pub struct EvalJobRequest {
     /// alone uses it, so the worker protocol does not change.
     #[serde(default)]
     pub sprt: Option<botbowl_play::stats::Sprt>,
+    /// Plan 068: the divergence gate on this job's drive rungs (`--drive-gate`). The hub's fold
+    /// uses the mode; the workers only need to know a rung is gated, which rides in its
+    /// `DriveRung.gate`.
+    #[serde(default)]
+    pub drive_gate: Option<botbowl_play::eval::GateMode>,
     /// What the job is called when we talk about it (`gen03 drives vs gen21`), for the status
     /// page. `None` falls back to the job kind.
     #[serde(default)]
@@ -137,6 +142,12 @@ pub struct LabelJobRequest {
     /// As [`EvalJobRequest::label`] (`gen03 mc-label`).
     #[serde(default)]
     pub label: Option<String>,
+    /// Plan 067 (`--top-up`): the shards are MC-labelled already and each labelled sample gets
+    /// `cfg.playouts` more playouts, continuing its own dice stream (each shard's seed and prior
+    /// count come from its labels' tag; `cfg.seed` is unused), written as `botbowl-ui mc-label
+    /// --top-up` writes it, `topup/<shard>` records included.
+    #[serde(default)]
+    pub top_up: bool,
 }
 
 pub type JobId = u64;
