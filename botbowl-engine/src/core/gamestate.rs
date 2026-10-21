@@ -523,6 +523,31 @@ pub struct GameState {
 
 impl Eq for GameState {}
 
+/// The `GameState` fields the pathfinder reads, copied: the key of `PathFinder`'s per-thread
+/// memo (plan 069 §1b). The search computes the same paths twice for every new move decision —
+/// `MoveAction` fills the offerings, then the NN encoder recomputes them for its path plane (it
+/// must: the buffer is not serialised and not part of `PartialEq`, see botbowl-nn's CLAUDE.md) —
+/// and between the two only fields outside this set change (the procedure stack).
+///
+/// **Every field `PathFinder::fill_player_paths` reads, directly or through the `GameState`
+/// methods it calls, must be in here**: the pathfinder, its `GameInfo::new` and its expansion
+/// helpers (`get_player_at`, `get_adj_players`, `get_tz_on*`, `get_catch_target`,
+/// `get_pass_target`/`get_pass_modifier`/`get_intercepters`, `get_blockdices_from`, `is_out`,
+/// `get_endzone_x`, `rush_target`) read `board`, `fielded_players`, `info`, `ball` and
+/// `board_dims`; the team states are in too, for safety. A field read but missing would hand back
+/// another state's paths. Debug builds recompute on every hit and compare
+/// (`PathFinder::fill_player_paths`).
+#[derive(Clone)]
+pub(crate) struct PathInputs {
+    board: FullPitch<BoardCell>,
+    info: GameInfo,
+    ball: BallState,
+    fielded_players: [Option<FieldedPlayer>; 2 * ROSTER_PER_TEAM],
+    home: TeamState,
+    away: TeamState,
+    board_dims: BoardDims,
+}
+
 // Hand-rolled Clone instead of derived: `path_buffer` is reusable scratch
 // allocated up to 4KB on the heap. Cloning it eagerly would regress the MCTS
 // hot path, where GameState clones happen for every tree expansion and the
@@ -930,27 +955,36 @@ impl GameState {
         self.available_actions.get_team()
     }
 
+    // The board lookups are inlined: the pathfinder makes one per neighbour of every node it
+    // expands, and the calls were ~4% of the search's instructions (plan 069 §1b).
+    #[inline]
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
         self.get_player_id_at_coord(p.x, p.y)
     }
+    #[inline]
     pub fn get_player_at(&self, p: Position) -> Option<&FieldedPlayer> {
         self.get_player_at_coord(p.x, p.y)
     }
 
+    #[inline]
     pub fn get_player_id_at_coord(&self, x: Coord, y: Coord) -> Option<PlayerID> {
         //unwrap is OK here because if you're requesting negative indicies, you want the program to crash!
         // let xx = usize::try_from(x).unwrap();
         // let yy = usize::try_from(y).unwrap();
         self.board[Position::new((x, y))].get()
     }
+    #[inline]
     pub fn get_player_at_coord(&self, x: Coord, y: Coord) -> Option<&FieldedPlayer> {
-        match self.get_player_id_at_coord(x, y) {
-            None => None,
-            Some(id) => Some(self.get_player(id).unwrap()),
-            //above unwrap is safe for bad input. If it panics it's an interal logical error!
-        }
+        let id = self.get_player_id_at_coord(x, y)?;
+        // A board square naming an unfielded player is an internal logical error.
+        Some(
+            self.fielded_players[id]
+                .as_ref()
+                .expect("board names a player that is not fielded"),
+        )
     }
 
+    #[inline]
     pub fn get_player_unsafe(&self, id: PlayerID) -> &FieldedPlayer {
         self.fielded_players[id].as_ref().unwrap()
     }
@@ -1432,6 +1466,32 @@ impl GameState {
         false
     }
 
+    /// A copy of every field [`PathFinder`](super::pathing::PathFinder) reads, the key of its
+    /// per-thread memo (plan 069 §1b). See [`PathInputs`].
+    pub(crate) fn path_inputs(&self) -> PathInputs {
+        PathInputs {
+            board: self.board,
+            info: self.info.clone(),
+            ball: self.ball,
+            fielded_players: self.fielded_players.clone(),
+            home: self.home,
+            away: self.away,
+            board_dims: self.board_dims,
+        }
+    }
+
+    /// Whether `self` agrees with `key` on every field the pathfinder reads, compared with the
+    /// fields' own `PartialEq` (the one `GameState`'s is made of), cheapest rejections first.
+    pub(crate) fn path_inputs_match(&self, key: &PathInputs) -> bool {
+        self.board == key.board
+            && self.info == key.info
+            && self.ball == key.ball
+            && self.fielded_players == key.fielded_players
+            && self.home == key.home
+            && self.away == key.away
+            && self.board_dims == key.board_dims
+    }
+
     /// Borrow the path offerings produced by the last `MoveAction` /
     /// `BlockAction`. Returns `None` unless `available_actions.has_paths` is
     /// true — even when a buffer was allocated for an earlier decision, it's
@@ -1773,16 +1833,40 @@ impl GameState {
             .filter(move |pos| *pos != from && *pos != to)
     }
 
+    /// Whether `pos` is one of [`get_interception_positions`](Self::get_interception_positions)`(from,
+    /// to)`: the same tests, on one square.
+    fn is_interception_position(from: Position, to: Position, pos: Position) -> bool {
+        let (fr_x, fr_y, to_x, to_y) = (from.x as i16, from.y as i16, to.x as i16, to.y as i16);
+        let (x, y) = (pos.x as i16, pos.y as i16);
+        let dx = to_x - fr_x;
+        let dy = to_y - fr_y;
+        let distance_squared = dx * dx + dy * dy;
+        let distance = (distance_squared as f32).sqrt();
+        (min(fr_x, to_x) - 1..=max(fr_x, to_x) + 1).contains(&x)
+            && (min(fr_y, to_y) - 1..=max(fr_y, to_y) + 1).contains(&y)
+            && (x - fr_x).pow(2) + (y - fr_y).pow(2) <= distance_squared
+            && (x - to_x).pow(2) + (y - to_y).pow(2) <= distance_squared
+            && 1.2 >= ((to_x - x) * dy - (to_y - y) * dx).abs() as f32 / distance
+            && !pos.is_out()
+            && pos != from
+            && pos != to
+    }
+
+    /// `team`'s players who can intercept a pass `from` → `to`, with their catch targets, in
+    /// [`get_interception_positions`](Self::get_interception_positions) order (x, then y).
+    ///
+    /// Tests each of `team`'s fielded players against the corridor instead of scanning every
+    /// square of its bounding box: the pathfinder asks once per pass target per node it expands,
+    /// and the scan was ~6% of the search's instructions (plan 069 §1b).
     pub fn get_intercepters(&self, team: TeamType, from: Position, to: Position) -> Vec<(Position, D6Target)> {
-        // TODO: thos function needs tests!!!
-        GameState::get_interception_positions(from, to)
-            .filter_map(|pos| {
-                self.get_player_at(pos)
-                    .filter(|p| p.stats.team == team && p.can_catch())
-                    .and_then(|p| self.get_catch_target(p.id).ok())
-                    .map(|target| (pos, target))
-            })
-            .collect::<Vec<(Position, D6Target)>>()
+        let mut out: Vec<(Position, D6Target)> = self
+            .get_players_on_pitch()
+            .filter(|p| p.stats.team == team && p.can_catch())
+            .filter(|p| GameState::is_interception_position(from, to, p.position))
+            .filter_map(|p| self.get_catch_target(p.id).ok().map(|target| (p.position, target)))
+            .collect();
+        out.sort_unstable_by_key(|(pos, _)| (pos.x, pos.y));
+        out
     }
 
     pub fn get_pass_modifier(&self, id: usize, from: Position, to: Position) -> Option<i8> {
@@ -1903,6 +1987,31 @@ mod gamestate_tests {
             assert_eq!(to_from.collect::<HashSet<_>>(), from_to.collect::<HashSet<_>>());
         }
     }
+    /// Plan 069 §1b: `get_intercepters` tests players against `is_interception_position`; it must
+    /// accept exactly the squares `get_interception_positions` yields, for every pass.
+    #[test]
+    fn interception_predicate_matches_the_square_scan() {
+        let w = crate::core::model::WIDTH_;
+        let h = crate::core::model::HEIGHT_;
+        let froms = itertools::iproduct!((1..w - 1).step_by(3), (1..h - 1).step_by(2));
+        for ((fx, fy), dx, dy) in itertools::iproduct!(froms, -13i8..=13, -13i8..=13) {
+            let from = Position::new((fx, fy));
+            let (tx, ty) = (fx + dx, fy + dy);
+            if (dx, dy) == (0, 0) || tx < 1 || ty < 1 || tx >= w - 1 || ty >= h - 1 {
+                continue;
+            }
+            let to = Position::new((tx, ty));
+            let scan: HashSet<Position> = GameState::get_interception_positions(from, to).collect();
+            for pos in Position::all_positions() {
+                assert_eq!(
+                    GameState::is_interception_position(from, to, pos),
+                    scan.contains(&pos),
+                    "{from:?} -> {to:?} at {pos:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn interception_positions() {
         let correct_thing = [

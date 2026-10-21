@@ -293,9 +293,16 @@ pub fn encode(state: &GameState) -> Encoded {
     // integer `i / plane` per element (that alone was most of `encode`'s
     // no-path cost). Division, not a reciprocal multiply: the raw/normalised
     // identity is pinned bit-for-bit and Python divides too.
+    //
+    // Most planes are flags or counts with scale 1, where `v / 1.0 == v` exactly: those skip the
+    // division (52 of 61 planes; the division was most of `encode`'s own time, plan 069 §1b).
     let mut spatial = Vec::with_capacity(raw.spatial.len());
     for (chunk, &scale) in raw.spatial.chunks_exact(plane).zip(scales.iter()) {
-        spatial.extend(chunk.iter().map(|&v| v as f32 / scale));
+        if scale == 1.0 {
+            spatial.extend(chunk.iter().map(|&v| v as f32));
+        } else {
+            spatial.extend(chunk.iter().map(|&v| v as f32 / scale));
+        }
     }
     Encoded {
         spatial,

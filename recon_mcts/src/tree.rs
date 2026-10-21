@@ -105,7 +105,7 @@ pub trait SearchTree {
     /// threads expanded the `SearchTree` during the execution of this method (`SearchTree`
     /// expansion results in an update of scores in the `SearchTree`, which could lead to the
     /// exploration of a new area of the `SearchTree`).
-    fn step(&self) -> Option<<Self::GD as GameDynamics>::State>;
+    fn step(&self) -> Option<Arc<<Self::GD as GameDynamics>::State>>;
 
     /// Returns a `Status` with the currently anticipated `GameDynamics::Action` if available.
     fn best_action(&self) -> Status<<Self::GD as GameDynamics>::Action>;
@@ -191,7 +191,7 @@ where
     type Memory = M;
 
     #[inline(always)]
-    fn step(&self) -> Option<<Self::GD as GameDynamics>::State> {
+    fn step(&self) -> Option<Arc<<Self::GD as GameDynamics>::State>> {
         Self::step(self)
     }
 
@@ -395,7 +395,7 @@ pub mod state_memory {
 
     use std::hash::Hash;
     use std::sync::atomic::Ordering;
-    use std::sync::RwLock;
+    use std::sync::{Arc, RwLock};
 
     /// A trait used to modify how states are stored in the transposition table.  Generally for
     /// internal use.
@@ -413,7 +413,7 @@ pub mod state_memory {
         fn eq(&self, rhs: &Self) -> bool;
 
         /// Associated function to set how the `State` should be stored after a child is created.
-        fn modify_state(state: &RwLock<Option<Self::State>>);
+        fn modify_state(state: &RwLock<Option<Arc<Self::State>>>);
     }
 
     /// Memory usage is state dependent (could use lots of storage if states are large).
@@ -432,7 +432,7 @@ pub mod state_memory {
             self.player() == rhs.player() && self.state_eq(rhs)
         }
 
-        fn modify_state(_: &RwLock<Option<Self::State>>) {}
+        fn modify_state(_: &RwLock<Option<Arc<Self::State>>>) {}
     }
 
     /// Slower performance but better memory efficiency for large states.
@@ -451,7 +451,7 @@ pub mod state_memory {
             self.player() == rhs.player() && self.state_eq(rhs)
         }
 
-        fn modify_state(state: &RwLock<Option<Self::State>>) {
+        fn modify_state(state: &RwLock<Option<Arc<Self::State>>>) {
             *state.write().unwrap() = None;
         }
     }
@@ -473,7 +473,7 @@ pub mod state_memory {
             self.hash.load(Ordering::Relaxed) == rhs.hash.load(Ordering::Relaxed)
         }
 
-        fn modify_state(state: &RwLock<Option<Self::State>>) {
+        fn modify_state(state: &RwLock<Option<Arc<Self::State>>>) {
             *state.write().unwrap() = None;
         }
     }
@@ -675,7 +675,10 @@ where
     // thrown away).
     player: OnceLock<P>,
     depth: AtomicUsize,
-    state: RwLock<Option<S>>,
+    /// Behind an `Arc` so a descent carries the state it is at by reference count instead of
+    /// cloning (and moving) a whole state at every edge (plan 069 §1b). States are immutable once
+    /// stored: replacing one swaps the `Arc`.
+    state: RwLock<Option<Arc<S>>>,
     score: RwLock<Option<Q>>,
     score_gen: AtomicUsize,
     parents: RwLock<HashSet<(A, WeakWrap<Self>)>>,
@@ -725,7 +728,7 @@ where
             hash: AtomicU64::new(Self::hash(&player, &state)),
             player: OnceLock::from(player),
             depth: AtomicUsize::new(0),
-            state: RwLock::new(Some(state)),
+            state: RwLock::new(Some(Arc::new(state))),
             score: RwLock::new(None),
             score_gen: AtomicUsize::new(0),
             parents: RwLock::new(HashSet::new()),
@@ -755,7 +758,7 @@ where
                 hash: AtomicU64::new(hash),
                 player: OnceLock::from(player),
                 depth,
-                state: RwLock::new(Some(state)),
+                state: RwLock::new(Some(Arc::new(state))),
                 score: RwLock::new(None),
                 score_gen: AtomicUsize::new(0),
                 parents: RwLock::new(HashSet::new()),
@@ -905,10 +908,19 @@ where
     }
 
     pub(crate) fn get_state(&self) -> S {
+        match &*self.state.read().unwrap() {
+            Some(s) => S::clone(s),
+            None => (*self.get_state_arc()).clone(),
+        }
+    }
+
+    /// The node's state, shared when it is stored and derived (from a parent, by `apply_action`)
+    /// when the memory mode keeps none.
+    pub(crate) fn get_state_arc(&self) -> Arc<S> {
         // for `GetState`, equality is ultimately determined by applying actions to the root state
         // and determining whether the final states are identical
         match &*self.state.read().unwrap() {
-            Some(ref s) => s.clone(),
+            Some(s) => Arc::clone(s),
             None => {
                 let parents = self.parents.read().unwrap();
                 let (a, p) = parents
@@ -916,7 +928,7 @@ where
                     .next()
                     .expect("can't calculate state for node without parents");
                 let state = WeakNode::upgrade(p).get_state();
-                GD::apply_action(&*self.game_dynamics, state, a).unwrap()
+                Arc::new(GD::apply_action(&*self.game_dynamics, state, a).unwrap())
             }
         }
     }
@@ -949,15 +961,15 @@ where
         debug_assert!(r, "parent did not know about child");
 
         if let ref mut s @ None = *new_root.state.write().unwrap() {
-            let state_old = self
-                .state
-                .write()
-                .unwrap()
-                .as_ref()
-                .expect("move_root called from child")
-                .clone();
+            let state_old = S::clone(
+                self.state
+                    .write()
+                    .unwrap()
+                    .as_ref()
+                    .expect("move_root called from child"),
+            );
 
-            *s = GD::apply_action(&*self.game_dynamics, state_old, action);
+            *s = GD::apply_action(&*self.game_dynamics, state_old, action).map(Arc::new);
         }
 
         new_root.parents.write().unwrap().clear();
@@ -1320,7 +1332,7 @@ where
             // reports those, and they have no mover yet by construction.
             player: self.player.get().cloned(),
             score: self.score.read().unwrap().clone(),
-            state: self.state.read().unwrap().clone(),
+            state: self.state.read().unwrap().as_deref().cloned(),
             n_parents: self.parents.read().unwrap().len(),
             n_children: Status::from_children(&*self.children.read().unwrap(), HashMap::len),
             solved: self.solved.load(Ordering::Relaxed),
@@ -1398,7 +1410,7 @@ where
     /// Read the node's stored state in place (no clone). `None` when the memory mode keeps no
     /// state for it, or for a placeholder.
     pub fn with_state<R>(&self, f: impl FnOnce(Option<&S>) -> R) -> R {
-        f(self.state.read().unwrap().as_ref())
+        f(self.state.read().unwrap().as_deref())
     }
 }
 
@@ -1474,7 +1486,7 @@ where
                 // remove the orphan as a parent; `Node::get_state` checks the node's state, so we
                 // have to check the status of the node's state with only a read lock first, then,
                 // if needed, calculate the state, and then write the state to the node
-                let state = self_arc.get_state();
+                let state = self_arc.get_state_arc();
                 *self_arc.state.write().unwrap() = Some(state);
             }
         }
@@ -1500,7 +1512,7 @@ where
                     && c.registered.load(Ordering::Relaxed)
                     && c.state.read().unwrap().is_none()
                 {
-                    *c.state.write().unwrap() = Some(c.inner.get_state());
+                    *c.state.write().unwrap() = Some(c.inner.get_state_arc());
                 }
 
                 let r = c.parents.write().unwrap().remove(&(a, ArcNode::downgrade(self_arc)));
@@ -2053,7 +2065,7 @@ where
         }
     }
 
-    fn step(&self) -> Option<S> {
+    fn step(&self) -> Option<Arc<S>> {
         let _prune_rlk = self.prune_lock.read().unwrap();
         let node = ArcNode::clone(&*self.root.read().unwrap());
         // Solved root: the whole reachable game space has been explored
@@ -2063,7 +2075,7 @@ where
         if node.solved.load(Ordering::Acquire) {
             return None;
         }
-        let state = node.get_state();
+        let state = node.get_state_arc();
         self.step_into(state, node)
     }
 
@@ -2135,7 +2147,7 @@ where
         }
     }
 
-    fn step_into(&self, node_state: S, node: ArcNode<GD, S, P, A, Q, I, M>) -> Option<S> {
+    fn step_into(&self, node_state: Arc<S>, node: ArcNode<GD, S, P, A, Q, I, M>) -> Option<Arc<S>> {
         let mut path: Vec<(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)> = Vec::new();
         let out = self.descend(node_state, node, &mut path);
         // Every edge the descent took, whatever stopped it: see `GameDynamics::release_descent`.
@@ -2155,10 +2167,10 @@ where
 
     fn descend(
         &self,
-        mut node_state: S,
+        mut node_state: Arc<S>,
         mut node: ArcNode<GD, S, P, A, Q, I, M>,
         path: &mut Vec<(ArcNode<GD, S, P, A, Q, I, M>, Option<A>)>,
-    ) -> Option<S> {
+    ) -> Option<Arc<S>> {
         // Descent guard: the recombined graph must be a DAG (see
         // `GameDynamics::State` docs), but a `GameDynamics` whose states
         // can recur creates a true cycle once the registry merges the
@@ -2262,7 +2274,9 @@ where
                     let stored = next_node.state.read().unwrap().clone();
                     let child_state = match stored {
                         Some(state) => Some(state),
-                        None => GD::apply_action(&*next_node.game_dynamics, node_state.clone(), &action),
+                        None => {
+                            GD::apply_action(&*next_node.game_dynamics, S::clone(&node_state), &action).map(Arc::new)
+                        }
                     };
                     match child_state {
                         Some(new_state) => {
@@ -2583,7 +2597,7 @@ where
     fn materialize_placeholder(
         &self,
         node: &ArcNode<GD, S, P, A, Q, I, M>,
-        node_state: &S,
+        node_state: &Arc<S>,
         parent_player: &P,
         action: &A,
     ) -> MaterializeOutcome<GD, S, P, A, Q, I, M>
@@ -2618,7 +2632,7 @@ where
         // probe reads `self.hash` and StateMemory::eq may read state).
         let h = Self::hash_for(player, node_state);
         node.hash.store(h, Ordering::Relaxed);
-        *node.state.write().unwrap() = Some(node_state.clone());
+        *node.state.write().unwrap() = Some(Arc::clone(node_state));
 
         // Registry probe. The `ProbeGuard` spans the `get` and nothing else: the arms below insert
         // into `parents` maps, whose `PartialEq` is the same one the eq counters hook.
@@ -2887,7 +2901,7 @@ where
                 // filled, never left pending.
                 player: OnceLock::from(player),
                 depth: AtomicUsize::new(0),
-                state: RwLock::new(Some(state)),
+                state: RwLock::new(Some(Arc::new(state))),
                 score: RwLock::new(None),
                 score_gen: AtomicUsize::new(0),
                 parents: RwLock::new(HashSet::new()),

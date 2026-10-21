@@ -237,6 +237,18 @@ pub fn run(args: McLabelArgs) -> io::Result<()> {
     for input in &args.corpus {
         label_shard(&nn, &args, input, &tag)?;
     }
+    if botbowl_nn::eval::profile_enabled() {
+        // Plan 069 §1: forwards and memo traffic of the whole run, for CPU per forward.
+        let (forwards, nanos) = botbowl_nn::eval::profile_counters();
+        let (memo_calls, memo_hits) = botbowl_nn::eval::memo_counters();
+        eprintln!(
+            "NN_PROFILE forwards={forwards} total_ms={:.0} memo_calls={memo_calls} memo_hits={memo_hits}",
+            nanos as f64 / 1e6
+        );
+    }
+    if let Some(line) = nn.inproc_stats_line() {
+        eprintln!("NN_INPROC {line}");
+    }
     Ok(())
 }
 

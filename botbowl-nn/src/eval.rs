@@ -60,10 +60,19 @@ type Runnable = TypedRunnableModel<TypedModel>;
 /// `BLOOD_NN_PROFILE` only controls *printing*.
 static FORWARDS: AtomicU64 = AtomicU64::new(0);
 static FORWARD_NANOS: AtomicU64 = AtomicU64::new(0);
+/// Evaluations asked of the memo (`forward_memo` calls) and how many it served without a forward
+/// (plan 069 §1: forwards per descent and per decision, split by where they go).
+static MEMO_CALLS: AtomicU64 = AtomicU64::new(0);
+static MEMO_HITS: AtomicU64 = AtomicU64::new(0);
 
 /// `(forwards, total nanoseconds)` spent in NN forwards so far.
 pub fn profile_counters() -> (u64, u64) {
     (FORWARDS.load(Ordering::Relaxed), FORWARD_NANOS.load(Ordering::Relaxed))
+}
+
+/// `(evaluations asked, served by the LAST_FORWARD memo without a forward)` so far.
+pub fn memo_counters() -> (u64, u64) {
+    (MEMO_CALLS.load(Ordering::Relaxed), MEMO_HITS.load(Ordering::Relaxed))
 }
 
 /// Whether `BLOOD_NN_PROFILE` asks for the profile line to be printed.
@@ -142,6 +151,10 @@ pub enum Backend {
         fell_back: AtomicU64,
         warned: std::sync::atomic::AtomicBool,
     },
+    /// Debug only (`--nn-backend null`, plan 069 §1): no network. Every forward returns value 0
+    /// and an all-zero policy (uniform priors), so a benchmark sees the search and the encoder —
+    /// which still runs — without inference. Never for data: the games mean nothing.
+    Null,
 }
 
 /// Which backend [`NnEvaluator::from_path_with_server`] builds, process-wide.
@@ -151,6 +164,8 @@ pub enum BackendChoice {
     Default,
     /// libtorch in this process on `device` (`cuda`, `cuda:N`). Needs the `torch` build feature.
     InProcess { device: String },
+    /// No network: value 0 and uniform priors at once, the encoder still runs (debug/benchmarks).
+    Null,
 }
 
 static BACKEND_CHOICE: Mutex<Option<BackendChoice>> = Mutex::new(None);
@@ -167,7 +182,10 @@ pub fn parse_backend(backend: &str, device: Option<&str>) -> Result<BackendChoic
             }
             Ok(BackendChoice::InProcess { device })
         }
-        other => Err(format!("--nn-backend {other}: want sidecar or inproc")),
+        "null" => Ok(BackendChoice::Null),
+        other => Err(format!(
+            "--nn-backend {other}: want sidecar or inproc (or null, a benchmark stub)"
+        )),
     }
 }
 
@@ -264,6 +282,7 @@ impl std::fmt::Debug for NnEvaluator {
             Backend::Remote { client, .. } => write!(f, "NnEvaluator{{remote: {client:?}}}"),
             #[cfg(feature = "torch")]
             Backend::InProcess { backend, .. } => write!(f, "NnEvaluator{{{backend:?}}}"),
+            Backend::Null => write!(f, "NnEvaluator{{null}}"),
         }
     }
 }
@@ -302,8 +321,22 @@ impl NnEvaluator {
     pub fn from_path_with_server(path: impl AsRef<Path>, server: Option<&Path>) -> TractResult<Self> {
         let path = path.as_ref();
         let tract = TractBackend::from_path(path)?;
-        if let BackendChoice::InProcess { device } = backend_choice().map_err(TractError::msg)? {
-            return Self::in_process(path, tract, &device);
+        match backend_choice().map_err(TractError::msg)? {
+            BackendChoice::InProcess { device } => return Self::in_process(path, tract, &device),
+            BackendChoice::Null => {
+                // Loud on every load: a run on the stub produces plausible-looking files whose
+                // values and priors mean nothing, so it must never pass unnoticed in a log.
+                eprintln!(
+                    "NN_NULL_BACKEND {}: --nn-backend null (or BLOOD_NN_BACKEND=null) — no network, value 0 \
+                     and uniform priors; for benchmarks only, the output is not data",
+                    path.display()
+                );
+                return Ok(NnEvaluator {
+                    id: next_evaluator_id(),
+                    backend: Backend::Null,
+                });
+            }
+            BackendChoice::Default => {}
         }
         let Some(socket) = server else {
             return Ok(NnEvaluator {
@@ -358,7 +391,7 @@ impl NnEvaluator {
     /// the pure tract backend. Covers the sidecar and the in-process backend.
     pub fn remote_stats(&self) -> Option<(u64, u64)> {
         match &self.backend {
-            Backend::Tract(_) => None,
+            Backend::Tract(_) | Backend::Null => None,
             Backend::Remote { client, .. } => Some((client.served_count(), client.fallback_count())),
             #[cfg(feature = "torch")]
             Backend::InProcess { served, fell_back, .. } => {
@@ -447,6 +480,14 @@ impl NnEvaluator {
                     (if want_policy { policy } else { Vec::new() }, v)
                 }
             },
+            Backend::Null => (
+                if want_policy {
+                    vec![0.0; crate::actions::POLICY_CHANNELS * h * w]
+                } else {
+                    Vec::new()
+                },
+                0.0,
+            ),
         };
         FORWARDS.fetch_add(1, Ordering::Relaxed);
         FORWARD_NANOS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -471,6 +512,7 @@ impl NnEvaluator {
             HitNeedsPolicy,
             Miss,
         }
+        MEMO_CALLS.fetch_add(1, Ordering::Relaxed);
         let probe = LAST_FORWARD.with(|slot| {
             let slot = slot.borrow();
             let Some(c) = slot.as_ref() else { return Probe::Miss };
@@ -484,7 +526,10 @@ impl NnEvaluator {
             }
         });
         match probe {
-            Probe::Hit(policy, value) => (policy, value),
+            Probe::Hit(policy, value) => {
+                MEMO_HITS.fetch_add(1, Ordering::Relaxed);
+                (policy, value)
+            }
             Probe::HitNeedsPolicy => LAST_FORWARD.with(|slot| {
                 let mut slot = slot.borrow_mut();
                 let c = slot.as_mut().expect("probed as a hit");
