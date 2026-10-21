@@ -132,6 +132,18 @@ def replay(name, by_pair, rule, s0, s1, a, b):
         fmt = lambda c: f"{c[0]} after {c[1]} pairs ({c[2]} cand searches)" if c else f"undecided after {n} pairs (LLR {{}})"
         print(f"  SPRT {rule} all pairs:       " + (fmt(cross_all) if cross_all else f"undecided after {n} (LLR {llr(allp, s0, s1):.2f})"))
         print(f"  SPRT {rule} divergent pairs: " + (fmt(cross_div) if cross_div else f"undecided after {n} (LLR {llr(divp, s0, s1):.2f}, {divp.n()} divergent)"))
+        # Wald's approximation: expected pairs to reach a bound if the observed mean and variance
+        # were the truth. For the divergent test, total pairs = divergent pairs / p_div.
+        def projected(p, scale):
+            if p.n() < 2 or p.var() <= 0:
+                return "-"
+            drift = (s1 - s0) * (2 * p.mean() - s0 - s1) / (2 * p.var())
+            if drift == 0:
+                return "inf"
+            bound = math.log((1 - b) / a) if drift > 0 else -math.log(b / (1 - a))
+            return f"{'H1' if drift > 0 else 'H0'} in ~{bound / abs(drift) * scale:.0f} pairs"
+        print(f"  projected (Wald, at these estimates): all pairs {projected(allp, 1)}; "
+              f"divergent test {projected(divp, 1 / pd if pd else float('inf'))} (all kinds)")
 
 
 main()

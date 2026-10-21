@@ -201,11 +201,17 @@ Unset, a drive line and a report are byte-identical to today's (`path` and `gate
 JSON when absent). On the hub wire the gate needs **protocol v21** (`DriveRung.gate`,
 `EvalGameLine.path`); the mode rides only in the hub's `EvalJobRequest.drive_gate`.
 
-The rung's report line gains a trailing segment (after the SPRT, so existing greps still match):
+The rung's report line gains a trailing segment, after the SPRT, so existing greps still match.
+Real output from the CPU smoke (`scripts/exp079_gate_smoke.sh`, scripted against random and scripted
+on the 16x9 set):
 
 ```
-... pts 0.534 ± 0.012 (250 pairs)  margin +0.07 ± 0.03  SPRT(0.5:0.55) H1 LLR 2.97  gate sprt p_div 0.876 ± 0.021 (219/250) s_div 0.539 ± 0.014 implied 0.534 ± 0.012 other Undecided LLR 1.80 decided@250
+  ladder  vs random drives(contested_16x9_gen04g)@16x9/6 ... pts 0.917 ± 0.048 (6 pairs)  margin +0.83 ± 0.11  SPRT(0.5:0.55) Undecided LLR 8.46  gate report p_div 1.000 ± 0.000 (6/6) s_div 0.917 ± 0.048 implied 0.917 ± 0.048 other Undecided LLR 8.46
+  ladder  vs scripted drives(contested_16x9_gen04g)@16x9/6 ... pts 0.500 ± 0.000 (6 pairs)  margin +0.00 ± 0.25  SPRT(0.5:0.55) Undecided LLR -0.03  gate report p_div 0.000 ± 0.000 (0/6) s_div 0.500 ± 0.000 implied 0.500 ± 0.000 other Undecided LLR 0.00
 ```
+
+(Undecided at LLR 8.46: the 8-pair guard.) Under `sprt` the segment ends with `decided@N` once the
+rung's own test has crossed, and `[k mismatched, j unknown]` appears if either count is nonzero.
 
 `report.json`'s row gains `gate`: `mode`, `identical`, `divergent` (pentanomial), `mismatched`
 (identical pairs that did not score ½; must be 0), `unknown` (a half without a fingerprint),
