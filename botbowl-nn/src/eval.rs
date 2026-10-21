@@ -309,7 +309,16 @@ impl NnEvaluator {
         let tract = TractBackend::from_path(path)?;
         match backend_choice().map_err(TractError::msg)? {
             BackendChoice::InProcess { device } => return Self::in_process(path, tract, &device),
-            BackendChoice::Null => return Ok(NnEvaluator { backend: Backend::Null }),
+            BackendChoice::Null => {
+                // Loud on every load: a run on the stub produces plausible-looking files whose
+                // values and priors mean nothing, so it must never pass unnoticed in a log.
+                eprintln!(
+                    "NN_NULL_BACKEND {}: --nn-backend null (or BLOOD_NN_BACKEND=null) — no network, value 0 \
+                     and uniform priors; for benchmarks only, the output is not data",
+                    path.display()
+                );
+                return Ok(NnEvaluator { backend: Backend::Null });
+            }
             BackendChoice::Default => {}
         }
         let Some(socket) = server else {
