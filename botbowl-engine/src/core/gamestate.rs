@@ -1829,16 +1829,40 @@ impl GameState {
             .filter(move |pos| *pos != from && *pos != to)
     }
 
+    /// Whether `pos` is one of [`get_interception_positions`](Self::get_interception_positions)`(from,
+    /// to)`: the same tests, on one square.
+    fn is_interception_position(from: Position, to: Position, pos: Position) -> bool {
+        let (fr_x, fr_y, to_x, to_y) = (from.x as i16, from.y as i16, to.x as i16, to.y as i16);
+        let (x, y) = (pos.x as i16, pos.y as i16);
+        let dx = to_x - fr_x;
+        let dy = to_y - fr_y;
+        let distance_squared = dx * dx + dy * dy;
+        let distance = (distance_squared as f32).sqrt();
+        (min(fr_x, to_x) - 1..=max(fr_x, to_x) + 1).contains(&x)
+            && (min(fr_y, to_y) - 1..=max(fr_y, to_y) + 1).contains(&y)
+            && (x - fr_x).pow(2) + (y - fr_y).pow(2) <= distance_squared
+            && (x - to_x).pow(2) + (y - to_y).pow(2) <= distance_squared
+            && 1.2 >= ((to_x - x) * dy - (to_y - y) * dx).abs() as f32 / distance
+            && !pos.is_out()
+            && pos != from
+            && pos != to
+    }
+
+    /// `team`'s players who can intercept a pass `from` → `to`, with their catch targets, in
+    /// [`get_interception_positions`](Self::get_interception_positions) order (x, then y).
+    ///
+    /// Tests each of `team`'s fielded players against the corridor instead of scanning every
+    /// square of its bounding box: the pathfinder asks once per pass target per node it expands,
+    /// and the scan was ~6% of the search's instructions (plan 069 §1b).
     pub fn get_intercepters(&self, team: TeamType, from: Position, to: Position) -> Vec<(Position, D6Target)> {
-        // TODO: thos function needs tests!!!
-        GameState::get_interception_positions(from, to)
-            .filter_map(|pos| {
-                self.get_player_at(pos)
-                    .filter(|p| p.stats.team == team && p.can_catch())
-                    .and_then(|p| self.get_catch_target(p.id).ok())
-                    .map(|target| (pos, target))
-            })
-            .collect::<Vec<(Position, D6Target)>>()
+        let mut out: Vec<(Position, D6Target)> = self
+            .get_players_on_pitch()
+            .filter(|p| p.stats.team == team && p.can_catch())
+            .filter(|p| GameState::is_interception_position(from, to, p.position))
+            .filter_map(|p| self.get_catch_target(p.id).ok().map(|target| (p.position, target)))
+            .collect();
+        out.sort_unstable_by_key(|(pos, _)| (pos.x, pos.y));
+        out
     }
 
     pub fn get_pass_modifier(&self, id: usize, from: Position, to: Position) -> Option<i8> {
@@ -1959,6 +1983,31 @@ mod gamestate_tests {
             assert_eq!(to_from.collect::<HashSet<_>>(), from_to.collect::<HashSet<_>>());
         }
     }
+    /// Plan 069 §1b: `get_intercepters` tests players against `is_interception_position`; it must
+    /// accept exactly the squares `get_interception_positions` yields, for every pass.
+    #[test]
+    fn interception_predicate_matches_the_square_scan() {
+        let w = crate::core::model::WIDTH_;
+        let h = crate::core::model::HEIGHT_;
+        let froms = itertools::iproduct!((1..w - 1).step_by(3), (1..h - 1).step_by(2));
+        for ((fx, fy), dx, dy) in itertools::iproduct!(froms, -13i8..=13, -13i8..=13) {
+            let from = Position::new((fx, fy));
+            let (tx, ty) = (fx + dx, fy + dy);
+            if (dx, dy) == (0, 0) || tx < 1 || ty < 1 || tx >= w - 1 || ty >= h - 1 {
+                continue;
+            }
+            let to = Position::new((tx, ty));
+            let scan: HashSet<Position> = GameState::get_interception_positions(from, to).collect();
+            for pos in Position::all_positions() {
+                assert_eq!(
+                    GameState::is_interception_position(from, to, pos),
+                    scan.contains(&pos),
+                    "{from:?} -> {to:?} at {pos:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn interception_positions() {
         let correct_thing = [
