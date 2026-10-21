@@ -145,8 +145,8 @@ Not built:
   against gen48 it diverges in 37 of 40, and none of its 3 "never" positions is one of the 5 where
   the search never diverges. A 64-descent lockstep fares no better (gen47: 1 of its 3 "never"
   positions is a real one). The positions that never diverge are mostly short drives that end in a
-  quick score, and nothing cheap tells which. Skipping by prescreen would throw away divergent, informative pairs and keep none of the
-  identical ones.
+  quick score, and nothing cheap tells which. Skipping by prescreen would throw away divergent,
+  informative pairs and keep none of the identical ones.
 - **A first-decision filter** (plan 051's "disagreement filter"). On gen47 against gen48 the first
   searched decision differs in 5 of 40 positions (0 of 40 for gen48 against itself), so it does
   find positions where the nets differ. But the other 35 positions diverge later in 30 cases, and
@@ -184,8 +184,8 @@ here.
   with itself only makes more pairs divergent (a larger `p_div`, less to gain), never a wrong
   answer. Determinism is about efficiency, not correctness.
 - **What the SPRT means.** On divergent pairs, `--sprt 0.5:0.55` tests "when the two bots play
-  differently, the candidate scores 0.50" against "0.55". With `p_div` well below 1 that is a much
-  smaller unconditional effect, `0.05 p_div`: the gate turns "is it better by 0.05 per drive" into
+  differently, the candidate scores 0.50" against "0.55". With `p_div` below 1 that is a smaller
+  unconditional effect, `0.05 p_div`: the gate turns "is it better by 0.05 per drive" into
   "is it better by 0.05 when it plays differently". H0 still means "no better", because `s_div = ½`
   iff `s_all = ½`. Divergent pairs arrive i.i.d. (positions are cycled as today), so the sequential
   test is valid on the subsequence. The pair count it reports is divergent pairs; `own_decided_at`
@@ -202,8 +202,8 @@ here.
   estimated as it goes instead of fixed in advance. There is no efficiency to gain: identical
   pairs carry no information about *which* bot is better, but they are evidence that the
   unconditional effect is small, and the all-pairs test already uses that.
-- **Hence on a true null the gated test is slower, by about `1/p²`.** At the same thresholds the
-  all-pairs test reaches H0 in `1/p²` fewer pairs. On the 16x9 null arm (p = 0.65) Wald's
+- **Hence on a true null the gated test is slower, by about `1/p²`.** At the same thresholds it
+  needs about `1/p²` times as many pairs as the all-pairs test to reach H0. On the 16x9 null arm (p = 0.65) Wald's
   projection at the observed moments is 69 pairs all-pairs against 141 gated. On a pair whose
   conditional effect is `s1`, the gated test reaches H1 where the all-pairs test, at `p < ½`,
   drifts to H0. That is the hypothesis change, not a speedup. The report gives both tests (`other`)
@@ -250,7 +250,8 @@ in-process, beside the live loop (`scripts/exp079_validate.sh`, `exp079_phase2.s
 `runs/exp079/val_*`). The arms ran at a fixed size (no SPRT stop) and were stopped by box time, not
 by a verdict. `scripts/gate_replay.py` replayed both sequential tests from the per-game lines in
 pair order. Throughput beside the loop's mc-label phase was about 1 drive per minute at 16 streams
-(0.6 per arm at 8 + 8).
+(the null arm) and 0.6 at 8 (the gated gen45 arm, which ran alone: the ungated arm beside it failed
+to load with a CUDA out-of-memory on the shared 6 GB card).
 
 | arm | pairs | identical | p_div | s_div | all-pairs (= implied) | mismatched | SPRT 0.5:0.55 all pairs | SPRT 0.5:0.55 divergent |
 |---|---|---|---|---|---|---|---|---|
@@ -265,8 +266,8 @@ pair order. Throughput beside the loop's mc-label phase was about 1 drive per mi
   projects 41 against 35. That is the direction of §5's H0 cost, smaller than its `1/p² = 1.3` at
   p = 0.875, because here the effect is not zero: s_div is below ½ and pushes both tests toward H0.
 - **16x9 drives are shorter**, so more pairs are identical there than on 20x11. The null control
-  gives 35% identical on 16x9 against 12.5% in the 20x11 lockstep. Still, gen45 against gen48 is
-  12.5% identical on 16x9 as well.
+  gives 35% identical on 16x9 against 12.5% in the 20x11 lockstep. gen45 against gen48 is 12.5%
+  identical on 16x9 (7/56), against 2.5% (1/40) in the 20x11 lockstep.
 - **Compute per pair is unchanged by the gate:** 46-52 candidate searches per pair here, about
   100 searches per pair for both bots (the loop's gen48 rung: 28.8 candidate searches per 16x9
   drive and 33.6 per 20x11 drive, i.e. ~115 and ~134 per pair). The fingerprint is one hash per
@@ -286,8 +287,7 @@ pair order. Throughput beside the loop's mc-label phase was about 1 drive per mi
   only), so drive points before and after the switch are not strictly comparable. Expect the same
   strength. That has not been measured head to head.
 - **The memo fix and the Gumbel tie-break fix ship with the merge either way.** The memo fix
-  changes eval and generation only where a thread hosts two nets, which is eval and never
-  generation. The Gumbel change is inert under the shipped `tie_break = "hash"`.
+  changes only threads that host two nets: eval rungs, never generation or mc-label. The Gumbel change is inert under the shipped `tie_break = "hash"`.
 
 ## 9. Risks
 
