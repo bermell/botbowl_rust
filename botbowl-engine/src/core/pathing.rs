@@ -1123,6 +1123,38 @@ mod tests {
         assert_eq!(path.position.x, state.get_endzone_x(TeamType::Home));
     }
 
+    /// Plan 069 §1b: the per-thread memo serves an exact repeat, and never the paths of a state
+    /// that differs in something the pathfinder reads — here an opponent moved next to the mover,
+    /// which adds a dodge to every route out.
+    #[test]
+    fn path_memo_serves_only_exact_repeats() {
+        let cx = crate::core::model::WIDTH_ / 2;
+        let cy = crate::core::model::HEIGHT_ / 2;
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((cx, cy)))
+            .add_away_player(Position::new((cx + 4, cy)))
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(Position::new((cx, cy))).unwrap();
+        let fresh = |s: &GameState| {
+            let mut out: FullPitch<OptRcNode> = Default::default();
+            PathFinder::compute_player_paths(s, id, &mut out).unwrap();
+            out
+        };
+        let first = PathFinder::player_paths(&state, id).unwrap();
+        let repeat = PathFinder::player_paths(&state.clone(), id).unwrap();
+        assert!(same_paths(&first, &repeat) && same_paths(&repeat, &fresh(&state)));
+
+        let away = state.get_player_id_at(Position::new((cx + 4, cy))).unwrap();
+        state.move_player(away, Position::new((cx + 1, cy))).unwrap();
+        let moved = PathFinder::player_paths(&state, id).unwrap();
+        assert!(same_paths(&moved, &fresh(&state)));
+        assert!(!same_paths(&moved, &first), "the moved marker must change the paths");
+    }
+
     #[test]
     fn safest_path_to_non_active_teammate() {
         // Two home players, no opponents. Path from teammate (not yet activated) to a target.
