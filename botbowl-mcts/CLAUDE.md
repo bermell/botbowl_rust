@@ -71,6 +71,12 @@ replaces the PUCT root with sequential halving:
   best survivor.
 - **`gumbel_q_floor`** floors q̂'s normalising range (Q points). 0 is the paper's rule, which
   follows noise on our flat Q (exp060). 1000 is the measured setting (`cfgs/gumbel16_f1000*.toml`).
+- **Ties at the root (plan 068):** `Halving` sorts stably, so among equal logits the considered set,
+  the order survivors are searched in and the pick follow the root's child order. Under the shipped
+  `tie_break = "hash"` that is the tree's `HashMap` order, random per tree, and two bots on one net
+  split there. With any other `tie_break` the root's children are ordered by it first (preferred
+  first); `hash` is unchanged. It does not make a search fully reproducible: backprop's walk over a
+  recombined DAG is order-dependent too (exp079 measured what is left).
 - **Default:** `gumbel_m = 0` is byte-identical to the shipped search. `tests/gumbel_root.rs` pins
   that, the schedule and reproducibility.
 

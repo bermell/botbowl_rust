@@ -66,6 +66,12 @@ pub struct EvalGameLine {
     /// `board`.
     #[serde(default)]
     pub attacker: Option<TeamType>,
+    /// Plan 068: under the divergence gate (`--drive-gate`), the fingerprint of every move this
+    /// drive played (`drives::MovePath`). The two games of a pair share their dice, so equal
+    /// fingerprints mean they were the same game and the pair scores exactly ½. Absent otherwise.
+    /// Same trailing-field rules as `board`.
+    #[serde(default)]
+    pub path: Option<u64>,
 }
 
 impl Serialize for EvalGameLine {
@@ -76,7 +82,12 @@ impl Serialize for EvalGameLine {
         let with_board = self.board.is_some() || binary;
         let with_telemetry = self.telemetry.is_some() || binary;
         let with_attacker = self.attacker.is_some() || binary;
-        let n = 8 + usize::from(with_board) + usize::from(with_telemetry) + usize::from(with_attacker);
+        let with_path = self.path.is_some() || binary;
+        let n = 8
+            + usize::from(with_board)
+            + usize::from(with_telemetry)
+            + usize::from(with_attacker)
+            + usize::from(with_path);
         let mut s = serializer.serialize_struct("EvalGameLine", n)?;
         s.serialize_field("rung", &self.rung)?;
         s.serialize_field("game", &self.game)?;
@@ -94,6 +105,9 @@ impl Serialize for EvalGameLine {
         }
         if with_attacker {
             s.serialize_field("attacker", &self.attacker)?;
+        }
+        if with_path {
+            s.serialize_field("path", &self.path)?;
         }
         s.end()
     }
@@ -218,6 +232,7 @@ fn line_of(
         board: board.map(board_label),
         telemetry,
         attacker: None,
+        path: None,
     }
 }
 
@@ -302,11 +317,157 @@ pub struct LadderRow {
     /// the overshoot, but the verdict, LLR and pair count here are the decision's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprt: Option<SprtStatus>,
-    /// Pairs with one game in, keyed by `game / 2`: the game index and its half points. Held
-    /// here so both fold owners (the ui rung runner and the hub) pair identically. Never
-    /// serialised; [`LadderRow::finish`] drops whatever is left.
+    /// Plan 068: the divergence gate's split of the pairs, when the rung runs one
+    /// ([`LadderRow::with_gate`]). Under [`GateMode::Sprt`] the rung's `sprt` above is run on the
+    /// divergent pairs only, and the all-pairs test is reported here instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateRow>,
+    /// Pairs with one game in, keyed by `game / 2`: the game index, its half points and its move
+    /// fingerprint. Held here so both fold owners (the ui rung runner and the hub) pair
+    /// identically. Never serialised; [`LadderRow::finish`] drops whatever is left.
     #[serde(skip)]
-    half_pairs: std::collections::BTreeMap<u32, (u32, u8)>,
+    half_pairs: std::collections::BTreeMap<u32, (u32, u8, Option<u64>)>,
+}
+
+/// Plan 068: what the divergence gate does on a drive rung.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GateMode {
+    /// Fingerprint the games and report the split; the SPRT still runs on every pair.
+    Report,
+    /// As `Report`, and the rung's SPRT runs on the divergent pairs only: H0/H1 are about the
+    /// candidate's score *when the two bots play differently*.
+    Sprt,
+}
+
+impl GateMode {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "report" => Ok(GateMode::Report),
+            "sprt" => Ok(GateMode::Sprt),
+            _ => Err(format!("--drive-gate: expected `report` or `sprt`, got `{s}`")),
+        }
+    }
+}
+
+/// Plan 068: a drive rung's pairs split by whether the two games played the same moves.
+///
+/// The two games of a pair share their dice, so a pair whose games have equal move fingerprints
+/// was one game played twice with the sides swapped: it scores exactly ½ and carries no
+/// information about which bot is better. Leaving those out cannot change the sign of the
+/// comparison: the score over every pair is `0.5 + p_div (s_div − 0.5)`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct GateRow {
+    pub mode: GateMode,
+    /// Pairs whose two games played the same moves.
+    pub identical: u32,
+    /// The other pairs, scored as usual.
+    pub divergent: Pentanomial,
+    /// Identical pairs that did *not* score exactly ½ (should be 0: a nonzero count means the
+    /// two games did not share their dice, and the gate is unsound for this rung).
+    #[serde(default)]
+    pub mismatched: u32,
+    /// Pairs with a half that carried no fingerprint (a line from an ungated producer). Counted
+    /// as divergent, which is the conservative side.
+    #[serde(default)]
+    pub unknown: u32,
+    /// `divergent / (identical + divergent)` and its binomial SE.
+    #[serde(default)]
+    pub p_div: f64,
+    #[serde(default)]
+    pub p_div_se: f64,
+    /// The candidate's per-game score over the divergent pairs, and its pair SE.
+    #[serde(default)]
+    pub s_div: f64,
+    #[serde(default)]
+    pub s_div_se: f64,
+    /// `0.5 + p_div (s_div − 0.5)`: the score over every pair, implied by the two above. It
+    /// equals the all-pairs mean exactly (identical pairs score ½), with the all-pairs SE.
+    #[serde(default)]
+    pub implied: f64,
+    #[serde(default)]
+    pub implied_se: f64,
+    /// The test this rung is *not* stopped by, for comparison: under `Sprt` the all-pairs test,
+    /// under `Report` the divergent-pairs test. Its log-likelihood ratio now, its verdict, and the
+    /// pairs (of every kind) played when it first crossed a bound, if it has. Named so that a
+    /// `"verdict":` grep on `report.json` only ever finds the rung's own `sprt`.
+    #[serde(default)]
+    pub other_llr: f64,
+    #[serde(default)]
+    pub other_verdict_now: Option<Verdict>,
+    #[serde(default)]
+    pub other_decided_at: Option<(Verdict, u32)>,
+    /// Pairs of every kind played when the rung's own SPRT crossed a bound (its `sprt.pairs`
+    /// counts divergent pairs under `Sprt`).
+    #[serde(default)]
+    pub own_decided_at: Option<u32>,
+}
+
+impl GateRow {
+    fn new(mode: GateMode) -> Self {
+        GateRow {
+            mode,
+            identical: 0,
+            divergent: Pentanomial::default(),
+            mismatched: 0,
+            unknown: 0,
+            p_div: 0.0,
+            p_div_se: 0.0,
+            s_div: 0.5,
+            s_div_se: 0.0,
+            implied: 0.5,
+            implied_se: 0.0,
+            other_llr: 0.0,
+            other_verdict_now: None,
+            other_decided_at: None,
+            own_decided_at: None,
+        }
+    }
+
+    fn pairs(&self) -> u32 {
+        self.identical + self.divergent.pairs()
+    }
+
+    /// The gate's part of the rung's report line, after the SPRT: one `key value` run that a
+    /// shell `grep -o` / `awk` can take apart, e.g.
+    /// `  gate sprt p_div 0.412 ± 0.031 (103/250) s_div 0.583 ± 0.024 implied 0.534 ± 0.010 other H0@212 LLR -2.95`.
+    /// `p_div` is computed here, so it reads right before [`LadderRow::finish`] too.
+    pub fn summary(&self) -> String {
+        let n = self.pairs();
+        let d = self.divergent.pairs();
+        let p = if n > 0 { d as f64 / n as f64 } else { 0.0 };
+        let p_se = if n > 0 { (p * (1.0 - p) / n as f64).sqrt() } else { 0.0 };
+        let s_div = self.divergent.mean();
+        let other = match self.other_decided_at {
+            Some((v, at)) => format!("{v:?}@{at}"),
+            None => "Undecided".to_string(),
+        };
+        format!(
+            "  gate {} p_div {:.3} ± {:.3} ({}/{}) s_div {:.3} ± {:.3} implied {:.3} ± {:.3} other {} LLR {:.2}{}{}",
+            match self.mode {
+                GateMode::Report => "report",
+                GateMode::Sprt => "sprt",
+            },
+            p,
+            p_se,
+            d,
+            n,
+            s_div,
+            self.divergent.se(),
+            0.5 + p * (s_div - 0.5),
+            self.implied_se,
+            other,
+            self.other_llr,
+            self.own_decided_at
+                .map(|at| format!(" decided@{at}"))
+                .unwrap_or_default(),
+            if self.mismatched + self.unknown > 0 {
+                format!(" [{} mismatched, {} unknown]", self.mismatched, self.unknown)
+            } else {
+                String::new()
+            },
+        )
+    }
 }
 
 impl LadderRow {
@@ -329,6 +490,13 @@ impl LadderRow {
     /// Run an SPRT on this rung's pairs. `None` keeps the fixed-N behaviour.
     pub fn with_sprt(mut self, rule: Option<Sprt>) -> Self {
         self.sprt = rule.map(|r| r.status(&self.pairs));
+        self
+    }
+
+    /// Plan 068: run the divergence gate on this rung's pairs. `None` keeps today's behaviour. Call
+    /// after [`LadderRow::with_sprt`].
+    pub fn with_gate(mut self, mode: Option<GateMode>) -> Self {
+        self.gate = mode.map(GateRow::new);
         self
     }
 
@@ -386,17 +554,54 @@ impl LadderRow {
             std::cmp::Ordering::Less => 0,
         };
         match self.half_pairs.remove(&(line.game / 2)) {
-            Some((other, h)) if other != line.game => {
+            Some((other, h, other_path)) if other != line.game => {
                 self.pairs.record(h, half_points);
-                // A verdict is final at its first crossing: games still in flight keep landing
-                // after a rung decides, and they must not withdraw it.
-                if let Some(s) = self.sprt.as_mut().filter(|s| s.verdict == Verdict::Undecided) {
-                    *s = s.rule.status(&self.pairs);
+                let Some(gate) = self.gate.as_mut() else {
+                    // A verdict is final at its first crossing: games still in flight keep landing
+                    // after a rung decides, and they must not withdraw it.
+                    if let Some(s) = self.sprt.as_mut().filter(|s| s.verdict == Verdict::Undecided) {
+                        *s = s.rule.status(&self.pairs);
+                    }
+                    return;
+                };
+                // Plan 068: one game played twice, or two different games?
+                match (other_path, line.path) {
+                    (Some(a), Some(b)) if a == b => {
+                        gate.identical += 1;
+                        if h + half_points != 2 {
+                            gate.mismatched += 1;
+                        }
+                    }
+                    (Some(_), Some(_)) => gate.divergent.record(h, half_points),
+                    _ => {
+                        gate.unknown += 1;
+                        gate.divergent.record(h, half_points);
+                    }
+                }
+                let (own, other) = match gate.mode {
+                    GateMode::Sprt => (gate.divergent, self.pairs),
+                    GateMode::Report => (self.pairs, gate.divergent),
+                };
+                let played = gate.pairs();
+                if let Some(s) = self.sprt.as_mut() {
+                    if s.verdict == Verdict::Undecided {
+                        *s = s.rule.status(&own);
+                        if s.verdict != Verdict::Undecided {
+                            gate.own_decided_at = Some(played);
+                        }
+                    }
+                    let o = s.rule.status(&other);
+                    gate.other_llr = o.llr;
+                    gate.other_verdict_now = Some(o.verdict);
+                    if gate.other_decided_at.is_none() && o.verdict != Verdict::Undecided {
+                        gate.other_decided_at = Some((o.verdict, played));
+                    }
                 }
             }
             // Nothing waiting, or the same game again: hold this one until its mirror arrives.
             _ => {
-                self.half_pairs.insert(line.game / 2, (line.game, half_points));
+                self.half_pairs
+                    .insert(line.game / 2, (line.game, half_points, line.path));
             }
         }
     }
@@ -405,7 +610,7 @@ impl LadderRow {
     /// `botbowl-hub job eval --wait`. Plan 051's fields are appended so existing greps still match.
     pub fn report_line(&self) -> String {
         format!(
-            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}  pts {:.3} ± {:.3} ({} pairs)  margin {:+.2} ± {:.2}{}",
+            "  ladder  vs {:16} win_rate {:.2}  (W{} D{} L{})  [home {}-{} away {}-{}]  TD {}:{}  [side TD H{} A{}]{}  pts {:.3} ± {:.3} ({} pairs)  margin {:+.2} ± {:.2}{}{}",
             self.opponent,
             self.win_rate,
             self.wins,
@@ -432,6 +637,7 @@ impl LadderRow {
             self.sprt
                 .map(|s| format!("  SPRT({}:{}) {:?} LLR {:.2}", s.rule.s0, s.rule.s1, s.verdict, s.llr))
                 .unwrap_or_default(),
+            self.gate.as_ref().map(GateRow::summary).unwrap_or_default(),
         )
     }
 
@@ -448,6 +654,18 @@ impl LadderRow {
             }
         }
         self.points_se = self.pairs.se();
+        if let Some(g) = self.gate.as_mut() {
+            let n = g.pairs();
+            let d = g.divergent.pairs();
+            if n > 0 {
+                g.p_div = d as f64 / n as f64;
+                g.p_div_se = (g.p_div * (1.0 - g.p_div) / n as f64).sqrt();
+            }
+            g.s_div = g.divergent.mean();
+            g.s_div_se = g.divergent.se();
+            g.implied = 0.5 + g.p_div * (g.s_div - 0.5);
+            g.implied_se = self.pairs.se();
+        }
         self.half_pairs.clear();
         self
     }
@@ -504,6 +722,7 @@ mod tests {
             board: None,
             telemetry: None,
             attacker: None,
+            path: None,
         }
     }
 
@@ -852,6 +1071,139 @@ mod tests {
         assert!(
             row.pairs.pairs() > at_decision.pairs,
             "the overshoot is still counted in pairs"
+        );
+    }
+
+    /// Plan 068: `path` follows the trailing-field rules: absent from JSON unless set, always on
+    /// the postcard wire.
+    #[test]
+    fn path_is_a_trailing_optional_key_that_survives_postcard() {
+        let mut l = line(0, TeamType::Home, 1, 0, true);
+        let plain = serde_json::to_string(&l).unwrap();
+        assert!(!plain.contains("path"), "an ungated line keeps the old format: {plain}");
+        l.attacker = Some(TeamType::Home);
+        l.path = Some(0xdead_beef_0123_4567);
+        let json = serde_json::to_string(&l).unwrap();
+        assert!(
+            json.ends_with(r#""attacker":"Home","path":16045690981116495207}"#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<EvalGameLine>(&json).unwrap(), l);
+        for path in [None, Some(3)] {
+            l.path = path;
+            let back: EvalGameLine = postcard::from_bytes(&postcard::to_allocvec(&l).unwrap()).unwrap();
+            assert_eq!(back, l);
+        }
+    }
+
+    fn drive(g: u32, team: TeamType, h: u8, a: u8, path: u64) -> EvalGameLine {
+        EvalGameLine {
+            attacker: Some(TeamType::Home),
+            path: Some(path),
+            ..line(g, team, h, a, true)
+        }
+    }
+
+    /// Plan 068: equal fingerprints are one game played twice (½, left out of `divergent`), any
+    /// arrival order folds the same, and a pair that matched but did not score ½ is flagged.
+    #[test]
+    fn the_gate_splits_identical_from_divergent_pairs() {
+        let lines = [
+            drive(0, TeamType::Home, 1, 0, 7), // pair 0: same path, the attacker scores: 1 + 0
+            drive(1, TeamType::Away, 1, 0, 7),
+            drive(2, TeamType::Home, 0, 0, 9), // pair 1: same path, no score: ½ + ½
+            drive(3, TeamType::Away, 0, 0, 9),
+            drive(4, TeamType::Home, 1, 0, 1), // pair 2: different paths, two wins
+            drive(5, TeamType::Away, 0, 1, 2),
+            drive(6, TeamType::Home, 0, 1, 3), // pair 3: different paths, a loss and a draw
+            drive(7, TeamType::Away, 0, 0, 4),
+            drive(8, TeamType::Home, 1, 0, 5), // pair 4: same path but two wins: mismatched
+            drive(9, TeamType::Away, 0, 1, 5),
+        ];
+        let fold = |order: &[usize]| {
+            let mut row = LadderRow::new("d").with_gate(Some(GateMode::Report));
+            for &i in order {
+                row.record(&lines[i]);
+            }
+            row.finish()
+        };
+        let a = fold(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(a, fold(&[9, 3, 0, 6, 4, 1, 8, 7, 2, 5]));
+        let g = a.gate.unwrap();
+        assert_eq!((g.identical, g.mismatched, g.unknown), (3, 1, 0));
+        assert_eq!(g.divergent.counts, [0, 1, 0, 0, 1]);
+        assert!((g.p_div - 0.4).abs() < 1e-12);
+        assert!((g.s_div - 0.625).abs() < 1e-12);
+        let text = a.report_line();
+        assert!(text.contains("  gate report p_div 0.400"), "{text}");
+        assert!(text.contains("[1 mismatched, 0 unknown]"), "{text}");
+    }
+
+    /// The implied score is the all-pairs mean when every identical pair scores ½, and a pair with
+    /// a half that has no fingerprint counts as divergent.
+    #[test]
+    fn the_implied_score_is_the_all_pairs_mean() {
+        let mut row = LadderRow::new("d").with_gate(Some(GateMode::Report));
+        let mut g = 0;
+        for (cand_wins, same) in [(true, false), (true, true), (false, false), (true, false), (true, true)] {
+            let (h, a) = if cand_wins { (1, 0) } else { (0, 1) };
+            let path = if same { 42 } else { g as u64 + 100 };
+            row.record(&drive(g, TeamType::Home, h, a, path));
+            // Identical: the same game, so the same side scores. Divergent: the mirror result.
+            let (mh, ma) = if same { (h, a) } else { (a, h) };
+            row.record(&drive(g + 1, TeamType::Away, mh, ma, path + u64::from(!same)));
+            g += 2;
+        }
+        let mut stray = drive(g, TeamType::Home, 1, 0, 0);
+        stray.path = None;
+        row.record(&stray);
+        row.record(&drive(g + 1, TeamType::Away, 0, 1, 0));
+        let row = row.finish();
+        let gate = row.gate.unwrap();
+        assert_eq!((gate.identical, gate.divergent.pairs(), gate.unknown), (2, 4, 1));
+        assert!((gate.implied - row.pairs.mean()).abs() < 1e-12);
+        assert!((gate.implied_se - row.points_se).abs() < 1e-12);
+    }
+
+    /// Under `GateMode::Sprt` the rung's test runs on the divergent pairs only: a candidate that
+    /// wins most divergent pairs decides H1 although two pairs in three are identical, and the
+    /// all-pairs test is reported beside it.
+    #[test]
+    fn the_gated_sprt_runs_on_divergent_pairs() {
+        let rule = crate::stats::Sprt::parse("0.5:0.55").unwrap();
+        let mut row = LadderRow::new("d")
+            .with_sprt(Some(rule))
+            .with_gate(Some(GateMode::Sprt));
+        let mut g = 0u32;
+        let mut k = 0u32;
+        while !row.decided() {
+            for _ in 0..2 {
+                row.record(&drive(g, TeamType::Home, 0, 0, 1));
+                row.record(&drive(g + 1, TeamType::Away, 0, 0, 1));
+                g += 2;
+            }
+            // Divergent: four double wins, then a double loss.
+            let (h, a) = if k % 5 != 4 { (1, 0) } else { (0, 1) };
+            row.record(&drive(g, TeamType::Home, h, a, 2));
+            row.record(&drive(g + 1, TeamType::Away, a, h, 3));
+            g += 2;
+            k += 1;
+            assert!(k < 500, "never decided");
+        }
+        let s = row.sprt.unwrap();
+        assert_eq!(s.verdict, crate::stats::Verdict::H1);
+        let gate = row.gate.unwrap();
+        assert_eq!(s.pairs, gate.divergent.pairs(), "the test counted divergent pairs");
+        assert_eq!(gate.own_decided_at, Some(gate.identical + gate.divergent.pairs()));
+        // The all-pairs test is reported beside it, on every pair. (With an effect this large it
+        // is not behind: the identical pairs shrink its variance. It answers a different question.)
+        assert!((gate.other_llr - rule.llr(&row.pairs)).abs() < 1e-12);
+        assert_eq!(row.pairs.pairs(), gate.identical + gate.divergent.pairs());
+        let json = serde_json::to_string(&row).unwrap();
+        assert_eq!(
+            json.matches(r#""verdict":"#).count(),
+            1,
+            "only the rung's own test is a `verdict`: {json}"
         );
     }
 

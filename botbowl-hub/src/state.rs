@@ -614,7 +614,8 @@ impl Inner {
         let mut pending = VecDeque::new();
         for (i, r) in req.rungs.iter().enumerate() {
             let opponent = self.resolve_bot(&r.opponent)?;
-            let mut row = LadderRow::new(&r.name).with_sprt(req.sprt);
+            let gate = r.drives.as_ref().and(req.drive_gate);
+            let mut row = LadderRow::new(&r.name).with_sprt(req.sprt).with_gate(gate);
             row.board = r.board.map(board_label);
             rungs.push(Rung {
                 name: r.name.clone(),

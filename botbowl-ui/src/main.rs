@@ -1,6 +1,7 @@
 mod convergence;
 mod curriculum;
 mod dataset;
+mod drive_agree;
 mod eval;
 mod live;
 
@@ -39,5 +40,6 @@ fn main() -> io::Result<()> {
         cli::Command::McLabel(args) => botbowl_ui::mc_label::run(args),
         cli::Command::RollCensus(args) => roll_census::run(args),
         cli::Command::Probe(args) => probe::run(args),
+        cli::Command::DriveAgree(args) => drive_agree::run(args),
     }
 }
