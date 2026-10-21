@@ -190,9 +190,24 @@ here.
   iff `s_all = ½`. Divergent pairs arrive i.i.d. (positions are cycled as today), so the sequential
   test is valid on the subsequence. The pair count it reports is divergent pairs; `own_decided_at`
   counts every pair played.
-- **The all-pairs test is not always slower.** Identical pairs sit at exactly ½ and shrink the
-  all-pairs variance. With a large effect (all-pairs mean above `s1`) the all-pairs test can cross
-  first. The two tests answer different questions, so the report gives both.
+- **The gated SPRT is the ordinary SPRT with `s1` scaled by `p_div`, at the same cost.** Write
+  `p = p_div`, `δ = s_div − ½` and `σ_d²` for the variance of a divergent pair's score. The
+  all-pairs mean is `½ + pδ` and its variance about `p σ_d²` (identical pairs sit at exactly ½).
+  The normal-approximation LLR drift per pair played is then the same for both tests:
+  - the all-pairs test at `s0 : s0 + p (s1 − s0)`;
+  - the divergent-pairs test at `s0 : s1`, counted per pair of every kind:
+    `p (s1 − s0)(2δ − (s1 − s0)) / (2σ_d²)`.
+
+  So `--drive-gate sprt` at 0.5:0.55 *is* today's test at 0.5:(0.5 + 0.05 p_div), with `p_div`
+  estimated as it goes instead of fixed in advance. There is no efficiency to gain: identical
+  pairs carry no information about *which* bot is better, but they are evidence that the
+  unconditional effect is small, and the all-pairs test already uses that.
+- **Hence on a true null the gated test is slower, by about `1/p²`.** At the same thresholds the
+  all-pairs test reaches H0 in `1/p²` fewer pairs. On the 16x9 null arm (p = 0.65) Wald's
+  projection at the observed moments is 69 pairs all-pairs against 141 gated. On a pair whose
+  conditional effect is `s1`, the gated test reaches H1 where the all-pairs test, at `p < ½`,
+  drifts to H0. That is the hypothesis change, not a speedup. The report gives both tests (`other`)
+  so they can be compared on every run.
 
 ## 6. Flag and output
 
@@ -229,7 +244,34 @@ rung only (not the origin match). It wants `EVAL_BOT_CONFIG=cfgs/chance_all_part
 
 ## 7. Validation
 
-RESULTS-VAL
+Real drive rungs through `botbowl-ui eval`, the rung's own code path, gated `report`: the first
+positions of `contested_16x9_gen04g`, `--seed 0`, `chance_all_partial_det`, 1000 descents,
+in-process, beside the live loop (`scripts/exp079_validate.sh`, `exp079_phase2.sh`; outputs in
+`runs/exp079/val_*`). The arms ran at a fixed size (no SPRT stop) and were stopped by box time, not
+by a verdict. `scripts/gate_replay.py` replayed both sequential tests from the per-game lines in
+pair order. Throughput beside the loop's mc-label phase was about 1 drive per minute at 16 streams
+(0.6 per arm at 8 + 8).
+
+| arm | pairs | identical | p_div | s_div | all-pairs (= implied) | mismatched | SPRT 0.5:0.55 all pairs | SPRT 0.5:0.55 divergent |
+|---|---|---|---|---|---|---|---|---|
+| null: gen48 vs gen48 | 26 | 9 | 0.654 ± 0.093 | 0.485 ± 0.061 | 0.490 ± 0.040 | 0 | undecided (LLR −1.10; Wald ~69 pairs to H0) | undecided (LLR −0.54; Wald ~141) |
+| gen45 vs gen48 | 56 | 7 | 0.875 ± 0.044 | 0.439 ± 0.033 | 0.446 ± 0.029 | 0 | **H0 at 36 pairs** | **H0 at 39 pairs** |
+
+- **Null control passes.** s_div is 0.485 ± 0.061, consistent with ½. Every identical pair scored
+  exactly ½ (0 mismatched), which is the gate's soundness check.
+- **The real pair agrees with the loop's curve.** gen45 is worse than gen48 here (0.446 ± 0.029).
+  Against the d1k reference on this set the loop measured gen45 at 0.565 and gen48 at 0.593. Both
+  tests say H0, and the gated one needed 3 more pairs (39 against 36). At the final moments Wald
+  projects 41 against 35. That is the direction of §5's H0 cost, smaller than its `1/p² = 1.3` at
+  p = 0.875, because here the effect is not zero: s_div is below ½ and pushes both tests toward H0.
+- **16x9 drives are shorter**, so more pairs are identical there than on 20x11. The null control
+  gives 35% identical on 16x9 against 12.5% in the 20x11 lockstep. Still, gen45 against gen48 is
+  12.5% identical on 16x9 as well.
+- **Compute per pair is unchanged by the gate:** 46-52 candidate searches per pair here, about
+  100 searches per pair for both bots (the loop's gen48 rung: 28.8 candidate searches per 16x9
+  drive and 33.6 per 20x11 drive, i.e. ~115 and ~134 per pair). The fingerprint is one hash per
+  move.
+- **Ungated arm:** UNGATED
 
 ## 8. What the loop would need
 
