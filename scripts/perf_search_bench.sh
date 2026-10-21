@@ -28,7 +28,9 @@
 #                      `torch` feature (TORCH=1 builds it for a heuristic run too, so one binary
 #                      serves every arm; a torch build always restarts the fixed getrandom stream);
 #   STREAMS=1          --parallel-games (above 1 only reproducible with BACKEND=null or heuristic);
-#   EVENTS=instructions:u   perf stat events (e.g. instructions:u,cycles:u,task-clock for IPC).
+#   EVENTS=instructions:u   perf stat events (e.g. instructions:u,cycles:u,task-clock for IPC);
+#   BIN=path           run this prebuilt botbowl-ui instead of building (a saved copy of a commit's
+#                      binary, so the tree can change while a matrix runs).
 # The loop's generation workload (plan 069 §1):
 #   CAP=20x11/7 SIZES=20x11/7 NEXT_DRIVE=1 CONFIG=cfgs/chance_all_partial_gen.toml EVALUATOR=nn \
 #     BACKEND=inproc MODEL=models/az_v7/bbnet_mix16x9v9_gen48.onnx scripts/perf_search_bench.sh OUT
@@ -46,8 +48,11 @@ CW="${CAP%%x*}"; CR="${CAP#*x}"; CH="${CR%%/*}"; CP="${CR#*/}"
 TORCH="${TORCH:-${BACKEND:+1}}"
 FEATURES=deterministic_hash; [ -n "$TORCH" ] && FEATURES="$FEATURES,torch"
 export BOARD_SIZE_W="$CW" BOARD_SIZE_H="$CH" BOARD_PLAYERS="$CP" CARGO_TARGET_DIR="$REPO/target/perf-${CW}x${CH}"
-cargo build --release -j "${BUILD_JOBS:-3}" -p botbowl-ui --features "$FEATURES" >> "$OUT/build.log" 2>&1 \
-    || { echo "build failed, see $OUT/build.log" >&2; exit 1; }
+if [ -z "${BIN:-}" ]; then
+    cargo build --release -j "${BUILD_JOBS:-3}" -p botbowl-ui --features "$FEATURES" >> "$OUT/build.log" 2>&1 \
+        || { echo "build failed, see $OUT/build.log" >&2; exit 1; }
+    BIN="$CARGO_TARGET_DIR/release/botbowl-ui"
+fi
 SHIM="$CARGO_TARGET_DIR/fixed_getrandom.so"
 [ "$SHIM" -nt scripts/fixed_getrandom.c ] || gcc -O2 -shared -fPIC -o "$SHIM" scripts/fixed_getrandom.c
 NN_ARGS=(); [ "$EVALUATOR" = nn ] && NN_ARGS=(--model "${MODEL:?MODEL=net.onnx for EVALUATOR=nn}")
@@ -63,7 +68,7 @@ fi
 # every call so std gets the same RandomState keys either way (plan 066 gate C).
 [ -n "$TORCH" ] && export FIXRAND_PER_CALL=1 BLOOD_NN_DETERMINISTIC=1 BLOOD_NN_LANES="${BLOOD_NN_LANES:-1}"
 LD_PRELOAD="$SHIM" BLOOD_NN_PROFILE=1 taskset -c "$CORE" nice -n 19 perf stat -x, -e "$EVENTS" -o "$OUT/$TAG.stat" \
-    "$CARGO_TARGET_DIR/release/botbowl-ui" dataset --mode random-start "${SIZE_ARGS[@]}" \
+    "$BIN" dataset --mode random-start "${SIZE_ARGS[@]}" \
     --games "$GAMES" --seed "$SEED" --mcts-iters "$ITERS" --bot-config "$CONFIG" --parallel-games "$STREAMS" \
     --evaluator "$EVALUATOR" "${NN_ARGS[@]}" --out "$OUT/$TAG.jsonl" --truncate > "$OUT/$TAG.out" 2> "$OUT/$TAG.log"
 INS=$(grep instructions "$OUT/$TAG.stat" | cut -d, -f1)
