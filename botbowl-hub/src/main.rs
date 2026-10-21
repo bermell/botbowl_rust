@@ -609,7 +609,9 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
             .filter(|p| !p.is_empty())
             .map(|path| {
                 let set = PositionSet::load(path)?;
-                Ok((Some(set.board_dims()?), Some(set.rung()?)))
+                let mut rung = set.rung()?;
+                rung.gate = a.drive_gate.is_some();
+                Ok((Some(set.board_dims()?), Some(rung)))
             })
             .collect::<Result<_, String>>()
             .map_err(|e| format!("--positions: {e}"))?,
@@ -687,6 +689,7 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
         report_out: abs(&PathBuf::from(report_out)),
         batch: job.batch,
         sprt: a.sprt,
+        drive_gate: a.drive_gate,
         label: job.client.label.clone(),
     })
 }

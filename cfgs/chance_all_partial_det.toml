@@ -1,0 +1,15 @@
+# Plan 068: `chance_all_partial` (the drive benchmark's eval preset) with a deterministic tie-break,
+# so a search is a function of its state: two bots on one net play the same move. The shipped
+# `tie_break = "hash"` resolves exact ties in each tree's own `HashMap` order, and the Gumbel root
+# keeps that order among equal logits, so the same net disagreed with itself within a few
+# decisions of a drive (exp079). `mover` prefers the move nearest the mover's own attacking endzone
+# among exact ties only (mirror-covariant), at the root and below it. The divergence gate
+# (`--drive-gate`) needs deterministic bots to tell "the nets differ" from "the search rolled".
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+bounce_model = "catch"
+pass_scatter_model = "grouped"
+throw_in_model = "grouped"
+chance_backup = "partial"
+tie_break = "mover"

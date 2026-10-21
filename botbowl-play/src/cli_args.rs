@@ -541,6 +541,19 @@ pub struct EvalArgs {
     /// board, instead of full games. `--board-sizes` is ignored. `--games` counts drives.
     #[arg(long)]
     pub positions: Option<String>,
+    /// Plan 068: the divergence gate on drive rungs (needs `--positions`). Each drive's moves are
+    /// fingerprinted and the bots seeded by role, so a pair whose two games played the same moves
+    /// (one game twice: exactly ½) is told apart from one where the bots chose differently.
+    /// `report`: report the divergence rate `p_div`, the score on divergent pairs `s_div` and the
+    /// implied score, SPRT on every pair as before. `sprt`: the same, and `--sprt` runs on the
+    /// divergent pairs (H0/H1 are then about the score when the bots play differently). Unset:
+    /// exactly today's drives.
+    #[arg(long, value_parser = parse_gate, requires = "positions")]
+    pub drive_gate: Option<crate::eval::GateMode>,
+}
+
+fn parse_gate(s: &str) -> Result<crate::eval::GateMode, String> {
+    crate::eval::GateMode::parse(s)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

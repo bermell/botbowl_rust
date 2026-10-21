@@ -121,6 +121,7 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
         report_out: dir.join("report.json"),
         batch: 2,
         sprt: None,
+        drive_gate: None,
         label: None,
     }
 }
@@ -288,6 +289,7 @@ async fn drive_rungs_reproduce_the_single_process_drives() {
         set: "t".into(),
         bias: Default::default(),
         positions: vec![11, 12, 13],
+        gate: false,
     };
     let (hub, url) = start_hub().await;
     let _w1 = spawn_worker(worker_cfg(&url, "w1", 2));
@@ -335,6 +337,73 @@ async fn drive_rungs_reproduce_the_single_process_drives() {
     assert_eq!((row.games, row.pairs.pairs()), (games, games / 2));
 }
 
+/// Plan 068: a gated drive rung on the hub reproduces the single-process gated drives line for
+/// line (fingerprints included), and its fold splits the pairs. Scripted against scripted plays
+/// the same moves in both games of every pair, so every pair is identical and scores ½.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gated_drive_rungs_fingerprint_and_split_the_pairs() {
+    use botbowl_play::drives::{drive_assignment, play_drive_game_gated, position_state, DriveRung};
+    use botbowl_play::eval::GateMode;
+    let Ok(b) = BoardDims::try_new(14, 7, 3) else {
+        eprintln!("skipped: capacity {WIDTH}x{HEIGHT}/{TEAM_SIZE} too small for 14x7/3");
+        return;
+    };
+    let set = DriveRung {
+        set: "t".into(),
+        bias: Default::default(),
+        positions: vec![11, 12, 13],
+        gate: true,
+    };
+    let (hub, url) = start_hub().await;
+    let _w1 = spawn_worker(worker_cfg(&url, "w1", 2));
+    let _w2 = spawn_worker(worker_cfg(&url, "w2", 1));
+    let dir = tmp("gated_drives");
+    let games = 6u32;
+    let name = botbowl_play::drives::drive_rung_name("scripted", "t", b);
+    let mut req = job(&dir);
+    req.drive_gate = Some(GateMode::Sprt);
+    req.rungs = vec![RungReq {
+        name: name.clone(),
+        games,
+        opponent: BotReq::Scripted,
+        board: Some(b),
+        drives: Some(set.clone()),
+    }];
+    let id = hub.submit_eval(req).unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
+        .await
+        .expect("job finished in time")
+        .expect("job exists");
+    assert_eq!(status.state, JobState::Done, "{status:?}");
+
+    let mut want = Vec::new();
+    for g in 0..games {
+        let (i, attacks, dice) = drive_assignment(set.positions.len(), SEED, g);
+        let p = set.positions[i];
+        want.push(play_drive_game_gated(
+            &mut ScriptedBot::new(),
+            &mut ScriptedBot::new(),
+            &name,
+            g,
+            p,
+            position_state(&set.bias, b, p),
+            attacks,
+            dice,
+            100_000,
+            true,
+        ));
+    }
+    let mut got = read_lines(&dir.join("eval.games.jsonl"));
+    got.sort_by_key(key);
+    assert_eq!(got, want, "gated drive lines differ from the direct computation");
+    assert!(got.iter().all(|l| l.path.is_some()));
+    let row = &status.report.expect("report attached").ladder[0];
+    let gate = row.gate.expect("the rung ran the gate");
+    assert_eq!(gate.mode, GateMode::Sprt);
+    assert_eq!((gate.identical, gate.divergent.pairs()), (games / 2, 0), "{gate:?}");
+    assert_eq!((gate.mismatched, gate.unknown), (0, 0));
+}
+
 /// Plan 042: a rung that names a board plays on it, on every worker, and
 /// the lines and rows say which board — reproduced line for line by the
 /// direct computation with the same `board`.
@@ -374,6 +443,7 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
         report_out: dir.join("report.json"),
         batch: 2,
         sprt: None,
+        drive_gate: None,
         label: None,
     };
     let id = hub.submit_eval(req).unwrap();

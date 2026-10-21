@@ -66,6 +66,7 @@ fn job(dir: &std::path::Path, model: PathBuf) -> EvalJobRequest {
         report_out: dir.join("report.json"),
         batch: 2,
         sprt: None,
+        drive_gate: None,
         label: None,
     }
 }

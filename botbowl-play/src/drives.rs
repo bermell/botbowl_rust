@@ -20,11 +20,17 @@ use serde::{Deserialize, Serialize};
 use botbowl_curriculum::generate_random_start;
 use botbowl_engine::bots::Bot;
 use botbowl_engine::core::gamestate::{DiceMode, GameState};
-use botbowl_engine::core::model::{other_team, BoardDims, TeamType};
+use botbowl_engine::core::model::{other_team, Action as EngineAction, BoardDims, TeamType};
 
 use crate::board_sizes::{board_label, parse_board};
 use crate::eval::{EvalGameLine, CANDIDATE_SEED_MIX, OPPONENT_SEED_MIX};
 use crate::generate::RandomStartBias;
+
+/// Plan 068: bot seeds by role rather than by bot under the divergence gate, so the attacker of
+/// both games of a pair draws the same search noise (and the defender likewise). Without it, a
+/// preset with root noise makes even a net against itself diverge at its first decision.
+pub(crate) const ATTACKER_SEED_MIX: u64 = 0x5A5A_A5A5_5A5A_A5A5;
+pub(crate) const DEFENDER_SEED_MIX: u64 = 0xA5A5_5A5A_A5A5_5A5A;
 
 /// Turns in a half. A position needs at least [`MIN_TURNS_LEFT`] of them left for the side to
 /// move, or the clock rather than the bots ends the drive and the sample carries no information.
@@ -94,6 +100,7 @@ impl PositionSet {
             set: self.name.clone(),
             bias: self.bias,
             positions,
+            gate: false,
         })
     }
 }
@@ -105,6 +112,10 @@ pub struct DriveRung {
     pub set: String,
     pub bias: RandomStartBias,
     pub positions: Vec<u64>,
+    /// Plan 068: play under the divergence gate ([`play_drive_game_gated`]): bots seeded by role
+    /// and every line fingerprinted. False is today's drive. On the worker wire since v21.
+    #[serde(default)]
+    pub gate: bool,
 }
 
 /// The rung label for drives from `set` against `opponent` on `board`. The opponent part stays a
@@ -218,10 +229,43 @@ pub fn play_drive_game(
     rung: &str,
     game: u32,
     position_seed: u64,
+    state: GameState,
+    candidate_attacks: bool,
+    dice_seed: u64,
+    max_steps: u32,
+) -> EvalGameLine {
+    play_drive_game_gated(
+        candidate,
+        opponent,
+        rung,
+        game,
+        position_seed,
+        state,
+        candidate_attacks,
+        dice_seed,
+        max_steps,
+        false,
+    )
+}
+
+/// [`play_drive_game`], optionally under the plan-068 divergence gate (`gate`). Gated, the bots
+/// are seeded by role ([`ATTACKER_SEED_MIX`] / [`DEFENDER_SEED_MIX`]) instead of by bot, and the
+/// line carries `path`, the fingerprint of every move played ([`MovePath`]). The two games of a
+/// pair share their dice, so equal fingerprints mean the two games were the same game: both bots
+/// chose the same move at every decision, and the pair scores exactly ½. Ungated, the line is
+/// byte-identical to [`play_drive_game`]'s.
+#[allow(clippy::too_many_arguments)]
+pub fn play_drive_game_gated(
+    candidate: &mut dyn Bot,
+    opponent: &mut dyn Bot,
+    rung: &str,
+    game: u32,
+    position_seed: u64,
     mut state: GameState,
     candidate_attacks: bool,
     dice_seed: u64,
     max_steps: u32,
+    gate: bool,
 ) -> EvalGameLine {
     let attacker = attacker_of(&state);
     let candidate_team = if candidate_attacks {
@@ -232,10 +276,16 @@ pub fn play_drive_game(
     state.set_seed(dice_seed);
     state.set_dice_mode(DiceMode::RollDice);
     state.set_logging_state(false);
-    candidate.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ CANDIDATE_SEED_MIX));
-    opponent.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ OPPONENT_SEED_MIX));
+    let (cand_mix, opp_mix) = match (gate, candidate_attacks) {
+        (false, _) => (CANDIDATE_SEED_MIX, OPPONENT_SEED_MIX),
+        (true, true) => (ATTACKER_SEED_MIX, DEFENDER_SEED_MIX),
+        (true, false) => (DEFENDER_SEED_MIX, ATTACKER_SEED_MIX),
+    };
+    candidate.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ cand_mix));
+    opponent.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ opp_mix));
 
     let start = DriveStart::of(&state);
+    let mut path = MovePath::default();
     let mut steps = 0u32;
     while !start.over(&state) && steps < max_steps {
         let action = match state.available_actions.team {
@@ -243,6 +293,9 @@ pub fn play_drive_game(
             Some(_) => opponent.get_action(&state),
             None => break,
         };
+        if gate {
+            path.push(action);
+        }
         state.step(action).expect("engine step failed during a drive");
         botbowl_mcts::MctsBot::release_stale_tree_of(&mut *candidate, &state);
         botbowl_mcts::MctsBot::release_stale_tree_of(&mut *opponent, &state);
@@ -263,7 +316,171 @@ pub fn play_drive_game(
         board: Some(board_label(state.board_dims)),
         telemetry,
         attacker: Some(attacker),
+        path: gate.then_some(path.0),
     }
+}
+
+/// Plan 068: a fingerprint of the moves a drive played, in order: 64-bit FNV-1a over each action's
+/// `(kind, type, x, y)` bytes. It is a function of the actions alone, the same on every platform
+/// and compiler (no `std` hasher), so two workers that played the two games of a pair agree on
+/// it exactly when the games did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MovePath(pub u64);
+
+impl Default for MovePath {
+    fn default() -> Self {
+        MovePath(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl MovePath {
+    pub fn push(&mut self, action: EngineAction) {
+        let bytes = match action {
+            EngineAction::Positional(at, pos) => [1u8, at as u8, pos.x as u8, pos.y as u8],
+            EngineAction::Simple(at) => [2u8, at as u8, 0, 0],
+        };
+        for b in bytes {
+            self.0 ^= b as u64;
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
+/// Plan 068: the four bot instances of a lockstep pair, one per (bot, role). In the normal pair,
+/// game `2k` has the candidate attacking against the opponent defending, and game `2k+1` has the
+/// opponent attacking against the candidate defending. Each instance here sees exactly the states
+/// its counterpart in those two games sees on the shared prefix, so its trees, and so its moves,
+/// are the ones the normal pair would get.
+pub struct LockstepBots<'a> {
+    pub cand_att: &'a mut dyn Bot,
+    pub cand_def: &'a mut dyn Bot,
+    pub opp_att: &'a mut dyn Bot,
+    pub opp_def: &'a mut dyn Bot,
+}
+
+/// One decision of a lockstep drive, as the probe sees it.
+pub struct LockstepDecision<'s> {
+    pub state: &'s GameState,
+    /// Engine steps before this decision.
+    pub step: u32,
+    /// The attacker is to move.
+    pub attacker_to_move: bool,
+    /// The candidate's and the opponent's move for the side to move. On the shared prefix the
+    /// two agree until the divergence. Past it (with `follow`), game `2k` plays `cand` when the
+    /// attacker moves and `opp` when the defender does; the other is the move the counterfactual
+    /// bot would have made there.
+    pub cand: EngineAction,
+    pub opp: EngineAction,
+    /// False on the shared prefix, true while following game `2k` past the divergence.
+    pub after_divergence: bool,
+}
+
+/// What a lockstep run of one position found.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LockstepOutcome {
+    /// Engine steps on the shared prefix (every step is a decision by the side to move).
+    pub prefix_steps: u32,
+    /// The step at which the two bots first chose differently; `None` if they never did, in which
+    /// case the two games of the pair are the same game and the pair scores exactly ½.
+    pub divergence: Option<u32>,
+    /// The drive reached its end (score, half, game over) on the shared prefix.
+    pub ended: bool,
+    /// `follow`: steps of game `2k` played past the divergence.
+    pub followed_steps: u32,
+}
+
+/// Plan 068: play one position in lockstep. At every decision both bots of the side to move are
+/// asked; while they agree the move is played (it is the same move in both games of the pair,
+/// which share their dice), and the first disagreement is the divergence. With `follow`, game
+/// `2k` (candidate attacking) is played on to the end of the drive past it, both bots still asked
+/// at every decision, so the probe sees agreement over a whole drive. `probe` is called once per
+/// decision, before the move is played. Seeds the bots as [`play_drive_game`] does (`role_seeds`
+/// = false) or by role (true; see [`DriveGate`]).
+#[allow(clippy::too_many_arguments)]
+pub fn lockstep_drive(
+    bots: LockstepBots<'_>,
+    mut state: GameState,
+    dice_seed: u64,
+    max_steps: u32,
+    role_seeds: bool,
+    follow: bool,
+    mut probe: impl FnMut(&LockstepDecision<'_>),
+) -> LockstepOutcome {
+    let LockstepBots {
+        cand_att,
+        cand_def,
+        opp_att,
+        opp_def,
+    } = bots;
+    let attacker = attacker_of(&state);
+    state.set_seed(dice_seed);
+    state.set_dice_mode(DiceMode::RollDice);
+    state.set_logging_state(false);
+    let (att_mix, def_mix) = if role_seeds {
+        (ATTACKER_SEED_MIX, DEFENDER_SEED_MIX)
+    } else {
+        (CANDIDATE_SEED_MIX, OPPONENT_SEED_MIX)
+    };
+    // Game 2k: the candidate attacks. Game 2k+1: the opponent attacks.
+    cand_att.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ att_mix));
+    opp_def.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ def_mix));
+    let (cand_def_mix, opp_att_mix) = if role_seeds {
+        (DEFENDER_SEED_MIX, ATTACKER_SEED_MIX)
+    } else {
+        (CANDIDATE_SEED_MIX, OPPONENT_SEED_MIX)
+    };
+    cand_def.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ cand_def_mix));
+    opp_att.set_seed(ChaCha8Rng::seed_from_u64(dice_seed ^ opp_att_mix));
+
+    let start = DriveStart::of(&state);
+    let mut out = LockstepOutcome::default();
+    let mut steps = 0u32;
+    while !start.over(&state) && steps < max_steps {
+        let Some(team) = state.available_actions.team else {
+            break;
+        };
+        let attacking = team == attacker;
+        let diverged = out.divergence.is_some();
+        // Past the divergence game 2k is played: the candidate on attack, the opponent on defence.
+        let (cand, opp) = if attacking {
+            (cand_att.get_action(&state), opp_att.get_action(&state))
+        } else {
+            (cand_def.get_action(&state), opp_def.get_action(&state))
+        };
+        probe(&LockstepDecision {
+            state: &state,
+            step: steps,
+            attacker_to_move: attacking,
+            cand,
+            opp,
+            after_divergence: diverged,
+        });
+        if !diverged && cand != opp {
+            out.divergence = Some(steps);
+            out.prefix_steps = steps;
+            if !follow {
+                return out;
+            }
+        }
+        let played = if out.divergence.is_none() || attacking {
+            cand
+        } else {
+            opp
+        };
+        state.step(played).expect("engine step failed during a lockstep drive");
+        for bot in [&mut *cand_att, &mut *cand_def, &mut *opp_att, &mut *opp_def] {
+            botbowl_mcts::MctsBot::release_stale_tree_of(bot, &state);
+        }
+        steps += 1;
+        if out.divergence.is_some() {
+            out.followed_steps += 1;
+        }
+    }
+    if out.divergence.is_none() {
+        out.prefix_steps = steps;
+        out.ended = start.over(&state);
+    }
+    out
 }
 
 #[cfg(test)]
