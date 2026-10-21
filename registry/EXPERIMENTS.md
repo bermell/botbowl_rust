@@ -8,6 +8,17 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp080"></a>exp080: CPU per descent and per forward, profiled and cut (plan 069 item 1), run 2026-10-21/22
+
+- **Question:** on a GH200 (72 Neoverse V2 cores per H100), does the CPU (search + encoder + batcher) or the GPU bind generation and labelling, and how much search CPU can be cut without changing games?
+- **Setup:** branch `worktree-agent-a58c85de114fdbc68` (ef820ec … 7bf76b8, not merged; review pending). 20x11/7 capacity, `cfgs/chance_all_partial_gen.toml`, 1000 descents, random-start `--next-drive`; evaluators gen48 in-process (1 stream, cuDNN deterministic), a new debug `--nn-backend null` (value 0, uniform priors, encoder runs) and the heuristic; `perf stat` user+kernel instructions on one pinned CPU (counting after libtorch's load), LBR call-graph split; µs at a measured 5.2 ± 0.5 instructions/ns (IPC 1.24-1.39 at ~3.9 GHz). Scripts `scripts/perf_search_bench.sh` (new knobs), `perf_label_bench.sh`, `exp080_cpu_matrix.sh`; outputs `runs/exp080/`.
+- **Result, generation per forward (20x11, real net):** batch-independent CPU **1.11M instructions (214 µs) → 0.68M (130 µs)** after five game-identical cuts (search 0.788M → 0.553M, encoder 0.263M → 0.065M, client 0.06M) + ~0.2M per batch for the batcher/driver. 0.613 forwards per descent, 471 per decision; the forward memo serves 49% of evaluation calls. Per descent −33% on 16x9, 20x11 and the mix; null net −45.5%, heuristic −29%. Same trajectory hashes before/after (heuristic, null, real net on three boards, labels). `-C target-cpu=native` another −5.2% (not committed; use `neoverse-v2` on Grace).
+- **Result, mc-label:** 186 forwards per sample (23 per playout); batch-independent CPU per forward 0.65M → 0.33M (64 µs); generation/labelling CPU per forward ≈ 2.0.
+- **Hot spots (before):** pathfinder 48% (move offerings 29%, the encoder recomputing the same paths 19%), node teardown 8%, SipHash 7%. Next identical cuts: pathfinder arena (−10-15%), bulk teardown (−5-8%), f32 straight into the batch slot. Game-changing proposals: a faster hasher (−6-8%, pairs with determinism), more streams per process.
+- **Streams:** instructions per descent flat 1→96 streams (null net); IPC 1.26 → 1.13; ~16 MB RSS per 20x11 stream. **Anomaly:** in-process with the GPU, task-clock per forward 870-1106 µs at an effective 0.9-1.3 GHz — threads scheduled without retiring instructions; explains most of the loop's apparent "1.3 ms CPU per forward"; unexplained (driver blocking vs SMT contention with the live loop) — measure on Grace.
+- **Projection (one V2 core ≈ this box's core at 0.7-1.2×, no SMT, batches ≥64, ~6 cores for batcher/driver/hub, no anomaly):** 66 cores × 7.7k forwards/s ≈ **500k positions/s** (300-700k) vs the H100's ~40k/s fp32 or 150-300k bf16 → **the GPU binds** (~10× at fp32, ~2× at bf16); if the anomaly holds on Grace, CPU ≈ 100k/s and binds against bf16. ~1,000 streams (~16 GB of trees) to fill an H100.
+- **Conclusion (provisional):** precision and batch size on the H100 are worth more than further search cuts; measure the anomaly first on Grace.
+
 ### <a id="exp079"></a>exp079: divergence-gated drives (plan 068), run 2026-10-21
 
 - **Question (the user, 2026-10-21):** can the drive benchmark play out only the drives where the two nets take different moves, to save compute as the reference moves to a close net (gen48)?
