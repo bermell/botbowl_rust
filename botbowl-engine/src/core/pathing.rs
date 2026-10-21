@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::{collections::HashMap, hash, iter::zip, sync::Arc};
+use std::sync::Arc;
 
 use crate::core::model;
 use model::*;
@@ -400,6 +400,11 @@ impl Node {
 pub struct PathFinder<'a> {
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
+    /// Every square `nodes` may have been written on since the last batch was locked in (a
+    /// superset, with repeats): the lock-in pass visits these instead of the whole pitch, which
+    /// it did once per probability batch (plan 069 §1b). The pass treats each square on its own,
+    /// so the order and the repeats do not matter.
+    touched: Vec<Position>,
     open_set: Vec<Arc<Node>>,
     risky_sets: RiskySet,
     info: GameInfo<'a>,
@@ -783,6 +788,7 @@ impl<'a> PathFinder<'a> {
         PathFinder {
             nodes: Default::default(),
             locked_nodes: Default::default(),
+            touched: Vec::new(),
             open_set: Default::default(),
             risky_sets: Default::default(),
             info,
@@ -844,8 +850,15 @@ impl<'a> PathFinder<'a> {
                 pf.expand_node(node);
             }
 
-            //clear pf.nodes
-            for (node, locked) in zip(pf.nodes.iter_mut(), pf.locked_nodes.iter_mut()) {
+            //clear pf.nodes: only squares written since the last batch can hold a node
+            let PathFinder {
+                nodes,
+                locked_nodes,
+                touched,
+                ..
+            } = &mut pf;
+            for pos in touched.drain(..) {
+                let (node, locked) = (&mut nodes[pos], &mut locked_nodes[pos]);
                 match (&node, &locked) {
                     (Some(n), Some(l)) if n.is_better_than(l) => *locked = node.take(),
                     (Some(_), None) => *locked = node.take(),
@@ -916,6 +929,7 @@ impl<'a> PathFinder<'a> {
                 }
             }
             *best_in_batch = Some(new_node.clone());
+            self.touched.push(new_node.position);
 
             if self.info.can_continue_expanding(&new_node) {
                 self.open_set.push(new_node);
@@ -946,6 +960,7 @@ impl<'a> PathFinder<'a> {
                     .unwrap_or(true)
             })
             .map(|to_pos| {
+                self.touched.push(to_pos);
                 self.info
                     .expand_to(to_pos, &node, &mut self.nodes[to_pos], &self.locked_nodes[to_pos])
             })
@@ -969,6 +984,7 @@ impl<'a> PathFinder<'a> {
                 // TODO: check withing passing range
                 .map(|player| player.position)
                 .map(|to_pos| {
+                    self.touched.push(to_pos);
                     self.info
                         .expand_to(to_pos, &node, &mut self.nodes[to_pos], &self.locked_nodes[to_pos])
                 })
@@ -984,58 +1000,34 @@ impl<'a> PathFinder<'a> {
     }
 }
 
+/// The risky nodes waiting for their batch, one batch per distinct probability (by bit pattern),
+/// each in insertion order; the highest-probability batch is expanded next. A short `Vec` searched
+/// linearly: there are a few dozen distinct probabilities at most, and the `HashMap` it replaced
+/// spent more on SipHashing the keys than the pathfinder spent on the nodes (plan 069 §1b).
 #[derive(Default)]
 struct RiskySet {
-    set: HashMap<HashableFloat, Vec<Arc<Node>>>,
+    set: Vec<(u32, Vec<Arc<Node>>)>,
 }
 impl RiskySet {
     pub fn insert_node(&mut self, node: Arc<Node>) {
         assert!(0_f32 < node.prob && node.prob <= 1.0_f32);
-        let prob = HashableFloat(node.prob);
-        self.set.entry(prob).or_default().push(node);
-    }
-    pub fn get_next_batch(&mut self) -> Option<Vec<Arc<Node>>> {
-        match self.set.keys().map(|hf| hf.0).reduce(f32::max) {
-            Some(max_prob) => self.set.remove(&HashableFloat(max_prob)),
-            None => None,
+        let key = node.prob.to_bits();
+        match self.set.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, batch)) => batch.push(node),
+            None => self.set.push((key, vec![node])),
         }
     }
-    // pub fn is_empty(&self) -> bool {
-    //     self.set.is_empty()
-    // }
+    pub fn get_next_batch(&mut self) -> Option<Vec<Arc<Node>>> {
+        let max_prob = self.set.iter().map(|(k, _)| f32::from_bits(*k)).reduce(f32::max)?;
+        let i = self.set.iter().position(|(k, _)| *k == max_prob.to_bits())?;
+        Some(self.set.swap_remove(i).1)
+    }
 }
 impl Debug for RiskySet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RiskySet").field("len", &self.set.len()).finish()
     }
 }
-
-// Nasty workaround to get hashable floats
-#[derive(Debug, Copy, Clone)]
-struct HashableFloat(f32);
-
-impl HashableFloat {
-    fn key(&self) -> u32 {
-        self.0.to_bits()
-    }
-}
-
-impl hash::Hash for HashableFloat {
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: hash::Hasher,
-    {
-        self.key().hash(state)
-    }
-}
-
-impl PartialEq for HashableFloat {
-    fn eq(&self, other: &HashableFloat) -> bool {
-        self.key() == other.key()
-    }
-}
-
-impl Eq for HashableFloat {}
 
 #[cfg(test)]
 mod tests {

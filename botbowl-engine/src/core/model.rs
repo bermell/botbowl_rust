@@ -210,8 +210,15 @@ impl<T> FullPitch<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.data.iter().flat_map(|r| r.iter())
     }
+    /// Every square with its position, in [`Position::all_positions`] order (x outer, y inner).
+    /// A nested `enumerate` over the columns rather than itertools' `cartesian_product`, whose
+    /// per-item range cloning made this loop most of `collect_non_path_actions` (plan 069 §1b).
     pub fn iter_position(&self) -> impl Iterator<Item = (Position, &T)> {
-        Position::all_positions().map(|p| (p, &self[p]))
+        self.data.iter().enumerate().flat_map(|(x, col)| {
+            col.iter()
+                .enumerate()
+                .map(move |(y, t)| (Position::new((x as Coord, y as Coord)), t))
+        })
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
@@ -1185,6 +1192,9 @@ impl AvailableActions {
     pub fn collect_non_path_actions(&self, out: &mut Vec<Action>) {
         if let Some(positional) = self.positional.as_ref() {
             for (pos, sv) in positional.iter_position() {
+                if sv.is_empty() {
+                    continue;
+                }
                 for at in sv.iter() {
                     out.push(Action::Positional(at, pos));
                 }
