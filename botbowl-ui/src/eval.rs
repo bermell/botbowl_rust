@@ -270,6 +270,9 @@ fn run_rung_games(
             use std::io::Write;
             serde_json::to_writer(&mut *w, &line).expect("per-game log write failed");
             writeln!(w).expect("per-game log write failed");
+            // A game takes seconds to minutes: flushing each line costs nothing and means a
+            // rung stopped from outside keeps every game it finished (plan 068).
+            w.flush().expect("per-game log flush failed");
         }
 
         let mut row = state.row.lock().expect("row mutex");

@@ -83,7 +83,11 @@ def main():
         by_rung = defaultdict(lambda: defaultdict(dict))
         for l in open(path):
             if l.strip():
-                g = json.loads(l)
+                try:
+                    g = json.loads(l)
+                except json.JSONDecodeError:
+                    print(f"  (skipped a torn line: the run was stopped mid-write)")
+                    continue
                 by_rung[g["rung"]][g["game"] // 2][g["game"] % 2] = g
         for rung, by_pair in sorted(by_rung.items()):
             replay(f"{path} [{rung}]", by_pair, args.sprt, s0, s1, a, b)
