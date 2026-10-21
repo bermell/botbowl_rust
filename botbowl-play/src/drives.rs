@@ -546,6 +546,144 @@ mod tests {
         assert_eq!(row.pairs.pairs(), 4);
     }
 
+    /// Plan 068: ungated, a drive is exactly today's line; gated, it carries the path, and a pair
+    /// of the same deterministic bot plays one game twice: one path, exactly ½.
+    #[test]
+    fn a_gated_drive_fingerprints_its_moves_and_an_ungated_one_is_unchanged() {
+        let Some(b) = board() else { return };
+        let bias = RandomStartBias::default();
+        for seed in [40u64, 41, 42] {
+            let state = || position_state(&bias, b, seed);
+            let plain = play_drive_game(
+                &mut ScriptedBot::new(),
+                &mut RandomBot::new(),
+                "t",
+                0,
+                seed,
+                state(),
+                true,
+                7,
+                20_000,
+            );
+            let off = play_drive_game_gated(
+                &mut ScriptedBot::new(),
+                &mut RandomBot::new(),
+                "t",
+                0,
+                seed,
+                state(),
+                true,
+                7,
+                20_000,
+                false,
+            );
+            assert_eq!(plain, off);
+            assert_eq!(off.path, None);
+            let pair: Vec<EvalGameLine> = [true, false]
+                .into_iter()
+                .enumerate()
+                .map(|(g, attacks)| {
+                    play_drive_game_gated(
+                        &mut ScriptedBot::new(),
+                        &mut ScriptedBot::new(),
+                        "t",
+                        g as u32,
+                        seed,
+                        state(),
+                        attacks,
+                        7,
+                        20_000,
+                        true,
+                    )
+                })
+                .collect();
+            assert!(pair[0].path.is_some());
+            assert_eq!(pair[0].path, pair[1].path, "seed {seed}: one game, played twice");
+            assert_eq!(
+                (pair[0].home_score, pair[0].away_score),
+                (pair[1].home_score, pair[1].away_score)
+            );
+            let mut row = LadderRow::new("t").with_gate(Some(crate::eval::GateMode::Report));
+            row.record(&pair[0]);
+            row.record(&pair[1]);
+            let gate = row.finish().gate.unwrap();
+            assert_eq!((gate.identical, gate.mismatched), (1, 0));
+        }
+    }
+
+    #[test]
+    fn move_paths_tell_orders_and_kinds_apart() {
+        use botbowl_engine::core::model::Position;
+        use botbowl_engine::core::table::{PosAT, SimpleAT};
+        let a = EngineAction::Positional(PosAT::Move, Position::new((3, 4)));
+        let c = EngineAction::Simple(SimpleAT::EndTurn);
+        let path = |acts: &[EngineAction]| {
+            let mut p = MovePath::default();
+            acts.iter().for_each(|&x| p.push(x));
+            p
+        };
+        assert_eq!(path(&[a, c]), path(&[a, c]));
+        assert_ne!(path(&[a, c]), path(&[c, a]));
+        assert_ne!(path(&[a]), path(&[a, a]));
+        assert_ne!(path(&[]), path(&[c]));
+    }
+
+    /// Plan 068: lockstep with the same deterministic bot never diverges and plays the drive to its
+    /// end; against a different bot it stops at the first disagreement, and every decision before
+    /// it was an agreement.
+    #[test]
+    fn lockstep_finds_the_first_disagreement() {
+        let Some(b) = board() else { return };
+        let bias = RandomStartBias::default();
+        let state = position_state(&bias, b, 41);
+        let (mut s1, mut s2, mut s3, mut s4) = (
+            ScriptedBot::new(),
+            ScriptedBot::new(),
+            ScriptedBot::new(),
+            ScriptedBot::new(),
+        );
+        let mut seen = 0;
+        let same = lockstep_drive(
+            LockstepBots {
+                cand_att: &mut s1,
+                cand_def: &mut s2,
+                opp_att: &mut s3,
+                opp_def: &mut s4,
+            },
+            state.clone(),
+            7,
+            20_000,
+            true,
+            false,
+            |d| {
+                assert_eq!(d.cand, d.opp);
+                seen += 1;
+            },
+        );
+        assert_eq!(same.divergence, None);
+        assert!(same.ended && same.prefix_steps == seen && seen > 0);
+        let (mut c1, mut c2) = (ScriptedBot::new(), ScriptedBot::new());
+        let (mut r1, mut r2) = (RandomBot::new(), RandomBot::new());
+        let mut log = Vec::new();
+        let diff = lockstep_drive(
+            LockstepBots {
+                cand_att: &mut c1,
+                cand_def: &mut c2,
+                opp_att: &mut r1,
+                opp_def: &mut r2,
+            },
+            state,
+            7,
+            20_000,
+            true,
+            false,
+            |d| log.push(d.cand == d.opp),
+        );
+        let at = diff.divergence.expect("scripted and random part ways");
+        assert_eq!(log.len() as u32, at + 1);
+        assert!(log[..at as usize].iter().all(|&x| x) && !log[at as usize]);
+    }
+
     #[test]
     fn a_set_plays_its_screened_positions_when_it_has_them() {
         let mut set = PositionSet {
