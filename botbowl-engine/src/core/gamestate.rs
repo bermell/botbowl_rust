@@ -955,27 +955,32 @@ impl GameState {
         self.available_actions.get_team()
     }
 
+    // The board lookups are inlined: the pathfinder makes one per neighbour of every node it
+    // expands, and the calls were ~4% of the search's instructions (plan 069 §1b).
+    #[inline]
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {
         self.get_player_id_at_coord(p.x, p.y)
     }
+    #[inline]
     pub fn get_player_at(&self, p: Position) -> Option<&FieldedPlayer> {
         self.get_player_at_coord(p.x, p.y)
     }
 
+    #[inline]
     pub fn get_player_id_at_coord(&self, x: Coord, y: Coord) -> Option<PlayerID> {
         //unwrap is OK here because if you're requesting negative indicies, you want the program to crash!
         // let xx = usize::try_from(x).unwrap();
         // let yy = usize::try_from(y).unwrap();
         self.board[Position::new((x, y))].get()
     }
+    #[inline]
     pub fn get_player_at_coord(&self, x: Coord, y: Coord) -> Option<&FieldedPlayer> {
-        match self.get_player_id_at_coord(x, y) {
-            None => None,
-            Some(id) => Some(self.get_player(id).unwrap()),
-            //above unwrap is safe for bad input. If it panics it's an interal logical error!
-        }
+        let id = self.get_player_id_at_coord(x, y)?;
+        // A board square naming an unfielded player is an internal logical error.
+        Some(self.fielded_players[id].as_ref().expect("board names a player that is not fielded"))
     }
 
+    #[inline]
     pub fn get_player_unsafe(&self, id: PlayerID) -> &FieldedPlayer {
         self.fielded_players[id].as_ref().unwrap()
     }
