@@ -8,6 +8,13 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp079"></a>exp079: divergence-gated drives (plan 068), run 2026-10-21
+
+- **Question (the user, 2026-10-21):** can the drive benchmark play out only the drives where the two nets take different moves, to save compute as the reference moves to a close net (gen48)?
+- **Setup:** branch `worktree-agent-a250a0f5d8ca950d1` (e7407b0..4f4c40e, not merged; review pending). Lockstep measurement (`botbowl-ui drive-agree`, both bots asked at every decision of a shared trajectory) on 40 positions of `contested_20x11_gen43`, 1000 descents, C1, in-process; validation on `contested_16x9_gen04g` through the real `eval --drive-gate`. Outputs `runs/exp079/`.
+- **Result:** pairs already share their dice, so a pair with identical play scores exactly 0.5 (9 of 9 identical pairs in the null control). But **a net disagrees with itself at 1000 descents**: per-decision agreement gen48 vs gen48 0.937 ± 0.010 (shipped preset; 0.959 with the deterministic tie-break preset), so 88-90% of its own pairs diverge on 20x11; gen47 vs gen48 0.933, gen45 vs gen48 0.905. Bare-policy agreement does not predict search agreement (gen48 vs itself: policy never diverges in 40/40, the search does in 35/40); a 64-descent prescreen caught 1 of 5. Null control gen48 vs gen48 gated: s_div 0.485 ± 0.061 (26 pairs); gen45 vs gen48: p_div 0.875, s_div 0.439 ± 0.033, all-pairs 0.446 ± 0.029 (56 pairs), H0 at 36 pairs all-pairs vs 39 gated. Self-disagreement sources: Gumbel-root ties in HashMap order (fixed for deterministic `tie_break`; `cfgs/chance_all_partial_det.toml`) and recon_mcts backprop order at equal depth (not fixed). **Found on the way: the NN forward memo was keyed by state only, so a thread shared by two nets could serve one net's forward to the other** (keyed per evaluator on the branch; impact on past two-net matches under review).
+- **Conclusion:** the gate is correct but buys no compute on this search (`report` mode is free and informative; `sprt` mode only rescales the hypothesis). The real lever is search determinism (backprop order), a search change with its own gate.
+
 ### <a id="exp078"></a>exp078: 8 vs 16 MC-label playouts (plan 067), planned 2026-10-19
 
 - **Question:** is the value head limited by label noise? Estimated from gen44: an 8-playout label's noise variance ≈ 0.049 (0.036-0.059 for P(score) 0.6-0.85) against a val value MSE of 0.080, leaving ≈ 0.031 (RMS 0.18) for the net, which matches the value bench (RMS 0.178/0.186 vs 48-playout truth). Best checkpoints land early (gen44: step 8000, epoch 0). Doubling playouts costs ~+3.7 h per generation on this box; doubling the games for the same noise cut costs ~+9 h.
