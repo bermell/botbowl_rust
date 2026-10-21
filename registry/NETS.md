@@ -82,6 +82,24 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen47 (96x8 + heads) | gen46 | gen45-47 | 0f27dd1 | cq 100, vw 0.36 | step 19000, ep 2 (0.8099); 24 min | −0.0018 / +0.0013 / +0.0021 / +0.0025 / +0.0011 | **0.174**, +0.013 (**−2.2%**, the run's best); **20x11 bench: 0.179, +0.007 (−1.1%, best)** | on gen48: +0.001/+0.002/+0.005/+0.007 MONOTONE; 0.78; 0.158, −0.004 |
 | gen48 (96x8 + heads) | gen47 | gen46-48 | 0f27dd1 | cq 100, vw 0.36 | step 20928, ep 3 (0.8100); 24 min | −0.0002 / +0.0024 / +0.0005 / +0.0022 / −0.0006 | 0.175, +0.019 (+0.5%); 20x11 bench: 0.182, +0.012 (+1.7%) | drives vs d1k: 16x9 0.593, 20x11 **0.710** (MATCHES) |
 
+### Re-frozen value benches (2026-10-21, MC truth under gen48)
+
+The old benches' truth is playouts under old policies (`v9_gen01_val`: g056 gen04; `v9_20x11_val`: gen43), so a net that learns
+its own, stronger policy's values drifts away from them. Re-frozen from gen49's held-out shards (4, 7) with 48 playouts under
+gen48 ([DATA.md](DATA.md#frozen-benchmark-sets)); RMS with the MC noise variance removed, paired dRMS against gen48
+(`runs/value_bench/g49_{20x11,16x9}/summary.txt`, `scripts/value_bench.sh`, in-process, 0f27dd1).
+
+| net | `v9_20x11_gen49_val` RMS, bias (n 3023) | paired vs gen48 | `v9_16x9_gen49_val` RMS, bias (n 1478) | paired vs gen48 |
+|---|---|---|---|---|
+| gen44 | 0.169, −0.011 | +6.7% (dMSE +0.0034 ± 0.0005) | 0.144, −0.023 | +3.6% (+0.0014 ± 0.0006) |
+| gen45 | 0.163, −0.027 | +3.4% (+0.0017 ± 0.0004) | 0.143, −0.025 | +2.6% (+0.0010 ± 0.0006) |
+| gen46 | 0.158, −0.003 | −0.1% (−0.0000 ± 0.0003) | 0.139, −0.005 | −0.5% (−0.0002 ± 0.0005) |
+| gen47 | 0.157, −0.016 | −0.7% (−0.0004 ± 0.0003) | 0.140, −0.016 | +0.1% (+0.0001 ± 0.0003) |
+| gen48 (the truth's own policy) | 0.158, −0.010 | — | 0.139, −0.010 | — |
+
+Steady gains gen44 → gen46 on both, flat gen46-48. gen48 does not score better than gen47 on its own policy's truth, so the
+bench does not obviously favour its generator.
+
 Match results for these nets (drives vs the anchor at gen03 and gen06; policy-only lineage) are in
 [MATCHES.md](MATCHES.md).
 
