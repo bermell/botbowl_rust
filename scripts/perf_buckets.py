@@ -76,20 +76,31 @@ def period_of(head):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--top", type=int, default=0, help="also list the top N leaf symbols per bucket")
+    ap.add_argument("--after", default=None,
+                    help="skip samples until one whose chain matches this regex (e.g. run_search: "
+                         "drop the start-up, libtorch load and CUDA graph capture); needs time order")
     args = ap.parse_args()
     tot = collections.Counter()
     leaves = collections.defaultdict(collections.Counter)
-    n = 0
+    n = skipped = 0
+    started = args.after is None
+    after = re.compile(args.after) if args.after else None
     for head, frames in samples(sys.stdin):
         if not frames:
             continue
+        if not started:
+            if any(after.search(s) for s, _ in frames):
+                started = True
+            else:
+                skipped += period_of(head)
+                continue
         p = period_of(head)
         b = bucket(frames)
         tot[b] += p
         leaves[b][frames[0][0]] += p
         n += 1
     total = sum(tot.values()) or 1
-    print(f"samples {n}, weight {total}")
+    print(f"samples {n}, weight {total}" + (f", skipped before --after: {skipped}" if args.after else ""))
     for b in sorted(tot, key=lambda k: -tot[k]):
         print(f"{b:28s} {100.0 * tot[b] / total:6.2f}%")
     for top in ("encoder", "inference", "search", "rest"):
