@@ -80,11 +80,17 @@ def main():
     s0, s1 = parts[:2]
     a, b = (parts[2], parts[3]) if len(parts) == 4 else (0.05, 0.05)
     for path in args.lines:
-        by_pair = defaultdict(dict)
+        by_rung = defaultdict(lambda: defaultdict(dict))
         for l in open(path):
             if l.strip():
                 g = json.loads(l)
-                by_pair[g["game"] // 2][g["game"] % 2] = g
+                by_rung[g["rung"]][g["game"] // 2][g["game"] % 2] = g
+        for rung, by_pair in sorted(by_rung.items()):
+            replay(f"{path} [{rung}]", by_pair, args.sprt, s0, s1, a, b)
+
+
+def replay(name, by_pair, rule, s0, s1, a, b):
+    if True:
         allp, divp = Penta(), Penta()
         ident = mism = unknown = 0
         searches = 0
@@ -113,15 +119,15 @@ def main():
                 cross_div = (v, played, searches)
         n = allp.n()
         pd = divp.n() / n if n else 0.0
-        print(f"== {path}: {n} pairs, {ident} identical, {divp.n()} divergent"
+        print(f"== {name}: {n} pairs, {ident} identical, {divp.n()} divergent"
               + (f", {mism} MISMATCHED" if mism else "") + (f", {unknown} without path" if unknown else ""))
         print(f"  p_div {pd:.3f} ± {math.sqrt(pd * (1 - pd) / n) if n else 0:.3f}   "
               f"s_div {divp.mean():.3f} ± {divp.se():.3f}   implied {0.5 + pd * (divp.mean() - 0.5):.3f}   "
               f"all-pairs {allp.mean():.3f} ± {allp.se():.3f}")
         print(f"  candidate searches {searches} ({searches / max(n, 1):.0f} per pair, both bots ~2x)")
         fmt = lambda c: f"{c[0]} after {c[1]} pairs ({c[2]} cand searches)" if c else f"undecided after {n} pairs (LLR {{}})"
-        print(f"  SPRT {args.sprt} all pairs:       " + (fmt(cross_all) if cross_all else f"undecided after {n} (LLR {llr(allp, s0, s1):.2f})"))
-        print(f"  SPRT {args.sprt} divergent pairs: " + (fmt(cross_div) if cross_div else f"undecided after {n} (LLR {llr(divp, s0, s1):.2f}, {divp.n()} divergent)"))
+        print(f"  SPRT {rule} all pairs:       " + (fmt(cross_all) if cross_all else f"undecided after {n} (LLR {llr(allp, s0, s1):.2f})"))
+        print(f"  SPRT {rule} divergent pairs: " + (fmt(cross_div) if cross_div else f"undecided after {n} (LLR {llr(divp, s0, s1):.2f}, {divp.n()} divergent)"))
 
 
 main()
