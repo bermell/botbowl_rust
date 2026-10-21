@@ -31,7 +31,13 @@ def point(row: dict) -> str:
     verdict = s.get("verdict", "")
     pairs = s.get("pairs") or sum((row.get("pairs") or {}).get("counts") or [0])
     tag = {"H1": "H1", "H0": "H0"}.get(verdict, "-")
-    return f"{row['points']:.3f}±{row.get('points_se', float('nan')):.3f} {tag}/{pairs}"
+    out = f"{row['points']:.3f}±{row.get('points_se', float('nan')):.3f} {tag}/{pairs}"
+    g = row.get("gate")
+    if g:
+        # Plan 068: under `--drive-gate sprt` the verdict and its pair count are the divergent
+        # pairs'; the point is the all-pairs score either way.
+        out += f" (p_div {g['p_div']:.2f} s_div {g['s_div']:.3f})"
+    return out
 
 
 def main() -> int:
