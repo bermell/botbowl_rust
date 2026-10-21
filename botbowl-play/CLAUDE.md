@@ -76,6 +76,12 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   range), `apply_labels`, `label_tag`, `summary_line`. `policy` is `PolicyBot` and `play_out`,
   moved from `botbowl-ui override-audit` (whose tests still pin them). `botbowl-ui mc-label` and
   the hub's `job label` are the two shells; byte-identical output between them is a test.
+  **Top-up (plan 067)** lives here too: `LabelConfig.skip` (playouts already drawn from each
+  sample's stream; 0 = a fresh labelling, exactly as before), `LabelTag::parse`/`shard_prior` (the
+  labelling a shard carries), `check_topup_model`, `topup_config` (the prior's seed, `skip = n`),
+  `playout_sum`/`combine` (integer sums: the `(n+k)` label bit for bit), `apply_topup` (labels,
+  tag, `value_label_history`, a `TopUpRecord`) and `topup_records_path`. Keep `playout_seeds` the one
+  place a playout's dice seed is drawn: the top-up's exactness and disjointness rest on it.
 
 ## Verifying a change is behaviour-neutral
 

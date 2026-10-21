@@ -3,8 +3,8 @@
 **Status:** Built 2026-10-10 on a branch; off by default (`LABEL_VIA_HUB=0` keeps the loop's
 local `botbowl-ui mc-label` exactly as it was). Hub protocol v19. Output is byte-identical to the
 local tool on the same backend (a test). Overhead on CPU, 2 threads: +3%, within noise (§6). A
-top-up from n to m playouts is exact (§5, not built). Pipelining with generation is designed, not
-built (§7).
+top-up from n to m playouts is exact (§5; built in plan 067: `--top-up K`, protocol v21).
+Pipelining with generation is designed, not built (§7).
 
 ## 1. Why
 
