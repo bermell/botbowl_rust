@@ -80,7 +80,8 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen45 (96x8 + heads) | gen44 | gen43-45 (gen44-45 20x11/7 capacity) | 0f27dd1 (**in-process inference**, plan 066) | cq 100, vw 0.36 | step 18000, ep 2 (0.7668); 30 min | −0.0031 / +0.0007 / −0.0019 / +0.0030 / −0.0001 | **0.177**, +0.007 (−0.8%; the run's best); **20x11 bench: 0.181, −0.002 (−2.8%)** | on gen46 (in-process, one ladder process): +0.001/+0.003/+0.004/+0.006 MONOTONE; 0.78; 0.184, −0.014 |
 | gen46 (96x8 + heads) | gen45 | gen44-46 (all 20x11/7 capacity) | 0f27dd1 | cq 100, vw 0.36 | step 19000, ep 2 (0.8128); 24 min | −0.0020 / +0.0007 / +0.0003 / +0.0030 / −0.0017 | 0.178, +0.028 (+0.7%, flat); 20x11 bench: 0.181, +0.022 (−0.2%, flat); bias up ~0.02 on both | on gen47: +0.001/+0.003/+0.005/+0.005 MONOTONE (flat 1000→4000); 0.51; 0.170, +0.014 |
 | gen47 (96x8 + heads) | gen46 | gen45-47 | 0f27dd1 | cq 100, vw 0.36 | step 19000, ep 2 (0.8099); 24 min | −0.0018 / +0.0013 / +0.0021 / +0.0025 / +0.0011 | **0.174**, +0.013 (**−2.2%**, the run's best); **20x11 bench: 0.179, +0.007 (−1.1%, best)** | on gen48: +0.001/+0.002/+0.005/+0.007 MONOTONE; 0.78; 0.158, −0.004 |
-| gen48 (96x8 + heads) | gen47 | gen46-48 | 0f27dd1 | cq 100, vw 0.36 | step 20928, ep 3 (0.8100); 24 min | −0.0002 / +0.0024 / +0.0005 / +0.0022 / −0.0006 | 0.175, +0.019 (+0.5%); 20x11 bench: 0.182, +0.012 (+1.7%) | drives vs d1k: 16x9 0.593, 20x11 **0.710** (MATCHES) |
+| gen48 (96x8 + heads) | gen47 | gen46-48 | 0f27dd1 | cq 100, vw 0.36 | step 20928, ep 3 (0.8100); 24 min | −0.0002 / +0.0024 / +0.0005 / +0.0022 / −0.0006 | 0.175, +0.019 (+0.5%); 20x11 bench: 0.182, +0.012 (+1.7%) | on gen49: +0.001/+0.002/+0.005/+0.009 MONOTONE; 0.67; 0.159, −0.001; drives vs d1k: 16x9 0.593, 20x11 **0.710** (MATCHES) |
+| gen49 (96x8 + heads) | gen48 | gen47-49 | 0f27dd1 | cq 100, vw 0.36 | step 5000, ep 0 (0.8101); 33 min | −0.0021 / −0.0013 / −0.0009 / +0.0031 / +0.0009 | old benches 0.177 (+0.8%) / 20x11 0.181 (−0.7%); **re-frozen (gen48 truth): 20x11 0.157 (−0.8% vs gen48), 16x9 0.137 (−1.9%)** | |
 
 ### Re-frozen value benches (2026-10-21, MC truth under gen48)
 
@@ -96,6 +97,7 @@ gen48 ([DATA.md](DATA.md#frozen-benchmark-sets)); RMS with the MC noise variance
 | gen46 | 0.158, −0.003 | −0.1% (−0.0000 ± 0.0003) | 0.139, −0.005 | −0.5% (−0.0002 ± 0.0005) |
 | gen47 | 0.157, −0.016 | −0.7% (−0.0004 ± 0.0003) | 0.140, −0.016 | +0.1% (+0.0001 ± 0.0003) |
 | gen48 (the truth's own policy) | 0.158, −0.010 | — | 0.139, −0.010 | — |
+| gen49 | 0.157, −0.010 | −0.8% (−0.0004 ± 0.0002) | 0.137, −0.010 | −1.9% (−0.0007 ± 0.0003) |
 
 Steady gains gen44 → gen46 on both, flat gen46-48. gen48 does not score better than gen47 on its own policy's truth, so the
 bench does not obviously favour its generator.
