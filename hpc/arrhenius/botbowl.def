@@ -1,0 +1,135 @@
+# Plan 069 item 3: the botbowl image for Arrhenius's GPU nodes (GH200: aarch64 Neoverse V2 + H100).
+#
+# Build it with hpc/arrhenius/build_image.sh (on an Arm node: `interactive -A <project> -p gpu ...`),
+# which stages the source and this file into the bundle directory that make_bundles.sh produced and
+# runs `apptainer build` there, so every %files path below is relative to that directory. Nothing
+# in %post touches the network: Rust, crates, wheels and CUDA headers all come from the bundle. Only
+# the base image does, and build_image.sh swaps the two header lines below for
+#     Bootstrap: docker-archive
+#     From: base/python-3.12-bookworm-arm64.tar
+# when the bundle carries the base (make_bundles.sh does unless SKIP_BASE=1).
+#
+# What is in it (/opt/botbowl):
+#   src/        the commit, as a shallow git clone: the binaries' provenance stamp runs
+#               `git rev-parse HEAD` / `git status` here at startup, so corpora are stamped with the
+#               real commit, clean (git's safe.directory is '*' system-wide: the files are root's)
+#   bin/        botbowl-ui, botbowl-worker, botbowl-hub, prepare: release, capacity 20x11/7,
+#               -C target-cpu=neoverse-v2, the ui and worker with the in-process libtorch backend
+#   vendor/     the vendored crates + cargo-vendor.toml, to rebuild a checkout offline in the image
+#   cuda_nvcc/  crt/ + nv/target headers for the shim (from the nvcc/cccl wheels)
+# /opt/venv     the trainer's locked venv (torch 2.13.0+cu126 aarch64, its CUDA 12.6 libraries and
+#               cuDNN 9.10 as wheels); train/.venv in src/ points at it
+# /usr/local    Rust (the standalone installer: rustc + cargo, no rustup)
+#
+# The CUDA user space is the torch wheel's (nvidia-*-cu12 wheels, 12.6), not a toolkit in the base:
+# exactly what this repo's own training box runs. The driver comes from the host: run with --nv.
+Bootstrap: docker
+From: python:3.12-bookworm@sha256:903c1a88edb0a18dbc4e02ef07545d18eefea9839ee40761266a640f8d5213d6
+
+%setup
+    mkdir -p "${APPTAINER_ROOTFS}/opt/botbowl/stage"
+
+%files
+    src.tar /opt/botbowl/stage/src.tar
+    vendor.tar.gz /opt/botbowl/stage/vendor.tar.gz
+    wheels /opt/botbowl/stage/wheels
+    rust /opt/botbowl/stage/rust
+
+%post
+    set -eu
+    S=/opt/botbowl/stage
+    arch=$(uname -m)
+    [ "$arch" = aarch64 ] || { echo "botbowl.def is for aarch64 (GH200); this is $arch" >&2; exit 1; }
+    JOBS=$(nproc); [ "$JOBS" -gt 32 ] && JOBS=32
+
+    # ---- Rust (standalone installer, no rustup) ----
+    mkdir -p /tmp/rust && tar -xJf "$S"/rust/rust-*-aarch64-unknown-linux-gnu.tar.xz -C /tmp/rust --strip-components=1
+    /tmp/rust/install.sh --prefix=/usr/local --disable-ldconfig \
+        --components=rustc,cargo,rust-std-aarch64-unknown-linux-gnu,rustfmt-preview > /dev/null
+    rm -rf /tmp/rust
+    rustc --version && cargo --version
+
+    # ---- trainer venv: exactly train/uv.lock's wheels, hash-checked, no resolver, no index ----
+    /usr/local/bin/python3.12 -m venv /opt/venv
+    /opt/venv/bin/pip install --no-cache-dir --no-index --find-links "$S/wheels" --no-deps \
+        --require-hashes -r "$S/wheels/requirements.txt"
+    /opt/venv/bin/python -c "import torch, numpy, onnx; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
+
+    # ---- source (shallow clone of one commit), venv link, git settings ----
+    tar -xf "$S/src.tar" -C /opt/botbowl
+    ln -s /opt/venv /opt/botbowl/src/train/.venv
+    echo /opt/botbowl/src/train/src > /opt/venv/lib/python3.12/site-packages/bbnn-src.pth
+    # Root owns the tree; every user must still be able to ask git for the provenance stamp.
+    git config --system --add safe.directory '*'
+    # squashfs changes inodes, so git would re-hash every file on each `git status` at startup.
+    git config --system core.checkStat minimal
+
+    # ---- CUDA headers for the shim (crt/, nv/target), from the bundled wheels ----
+    PY=/opt/venv/bin/python CUDA_WHEEL_DIR="$S/wheels/cuda-headers" CUDA_HEADERS_DEST=/opt/botbowl/cuda_nvcc \
+        /opt/botbowl/src/scripts/fetch_cuda_headers.sh
+
+    # ---- vendored crates ----
+    tar -xzf "$S/vendor.tar.gz" -C /opt/botbowl
+    cat > /opt/botbowl/cargo-vendor.toml <<'EOF'
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "/opt/botbowl/vendor"
+EOF
+
+    # ---- build: the loop's three invocations (train_loop.sh NN_BACKEND=inproc) ----
+    export CARGO_HOME=/tmp/cargo-home CARGO_TARGET_DIR=/tmp/botbowl-target
+    export BOARD_SIZE_W=20 BOARD_SIZE_H=11 BOARD_PLAYERS=7
+    export RUSTFLAGS="-C target-cpu=neoverse-v2"
+    export BOTBOWL_TORCH_DIR=/opt/venv/lib/python3.12/site-packages/torch
+    export BOTBOWL_CUDA_NVCC_INCLUDE=/opt/botbowl/cuda_nvcc/include
+    C="--release --offline --locked --config /opt/botbowl/cargo-vendor.toml -j $JOBS"
+    cd /opt/botbowl/src
+    cargo build $C -p botbowl-hub
+    cargo build $C -p botbowl-nn -p botbowl-worker --features botbowl-worker/torch
+    cargo build $C -p botbowl-ui --features botbowl-ui/torch
+    mkdir -p /opt/botbowl/bin
+    for b in botbowl-ui botbowl-worker botbowl-hub prepare; do
+        install -m 0755 "$CARGO_TARGET_DIR/release/$b" /opt/botbowl/bin/
+    done
+    rm -rf "$CARGO_TARGET_DIR" "$CARGO_HOME" "$S"
+    # The stamp the binaries will report (must be the commit, clean).
+    git -C /opt/botbowl/src rev-parse HEAD > /opt/botbowl/COMMIT
+    test -z "$(git -C /opt/botbowl/src status --porcelain --untracked-files=no)"
+
+%environment
+    export PATH=/opt/botbowl/bin:/opt/venv/bin:$PATH
+    # train_loop.sh and the scripts read the trainer's python from $PY.
+    export PY=/opt/venv/bin/python
+    # The capacity the binaries were built for; helper workers must also *run* with it (plan 065).
+    export BOARD_SIZE_W=20 BOARD_SIZE_H=11 BOARD_PLAYERS=7
+    # For `cargo build` of a checkout inside the image (README): libtorch, the shim's CUDA headers,
+    # GH200 code generation. Vendored crates: a .cargo/config.toml above the checkout (README).
+    export BOTBOWL_TORCH_DIR=/opt/venv/lib/python3.12/site-packages/torch
+    export BOTBOWL_CUDA_NVCC_INCLUDE=/opt/botbowl/cuda_nvcc/include
+    export BOTBOWL_CARGO_VENDOR_CONFIG=/opt/botbowl/cargo-vendor.toml
+    export RUSTFLAGS="-C target-cpu=neoverse-v2"
+
+%runscript
+    exec "$@"
+
+%test
+    set -eu
+    for b in botbowl-ui botbowl-worker botbowl-hub prepare; do /opt/botbowl/bin/$b --help > /dev/null; done
+    # The ui and worker resolve libtorch and cudart through their rpath, without LD_LIBRARY_PATH.
+    ldd /opt/botbowl/bin/botbowl-worker | grep -E 'libtorch_cuda|libcudart'
+    ! ldd /opt/botbowl/bin/botbowl-worker | grep 'not found'
+    /opt/venv/bin/python -c "import torch; assert torch.__version__ == '2.13.0+cu126', torch.__version__; print('cudnn', torch.backends.cudnn.version())"
+
+%labels
+    org.botbowl.plan 069
+    org.botbowl.capacity 20x11/7
+    org.botbowl.torch 2.13.0+cu126
+    org.botbowl.target-cpu neoverse-v2
+
+%help
+    botbowl for Arrhenius GPU nodes. Run with --nv, e.g.
+        apptainer exec --nv botbowl.sif botbowl-worker --hub ws://HOST:7777/ws --nn-backend inproc
+        apptainer exec --nv botbowl.sif python -m bbnn.train ...
+    The built commit is in /opt/botbowl/COMMIT. See hpc/arrhenius/README.md.

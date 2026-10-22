@@ -9,7 +9,9 @@
 //!   what the sidecar runs, so the two share every kernel (a worktree finds its main checkout's).
 //!
 //! CUDA runtime headers (`cuda_runtime_api.h`): `BOTBOWL_CUDA_INCLUDE`, else the wheel's sibling
-//! `nvidia/cuda_runtime/include`, else `/usr/local/cuda/include`. The binary gets an rpath to the
+//! `nvidia/cuda_runtime/include`, else `/usr/local/cuda/include`; when those lack `crt/` (nvcc) and
+//! `nv/target` (cccl), `BOTBOWL_CUDA_NVCC_INCLUDE` or `scripts/fetch_cuda_headers.sh`'s
+//! `~/.cache/botbowl/cuda_nvcc/<ver>/include` supplies them. The binary gets an rpath to the
 //! torch `lib/` (and to the CUDA runtime it linked), so it runs without `LD_LIBRARY_PATH`.
 //! `BOTBOWL_TORCH_CXX11_ABI` (default 1; the 2.x wheels use the new ABI) sets
 //! `_GLIBCXX_USE_CXX11_ABI`.
@@ -54,6 +56,7 @@ mod torch {
     /// does not (the wheel's runtime package leaves crt/ to the nvcc package).
     fn find_cuda_include(torch: &Path) -> Vec<PathBuf> {
         println!("cargo:rerun-if-env-changed=BOTBOWL_CUDA_INCLUDE");
+        println!("cargo:rerun-if-env-changed=BOTBOWL_CUDA_NVCC_INCLUDE");
         if let Ok(d) = std::env::var("BOTBOWL_CUDA_INCLUDE") {
             return std::env::split_paths(&d).collect();
         }
@@ -78,13 +81,16 @@ mod torch {
                 dirs.extend(v);
             }
         }
-        if !rt.join("crt/host_config.h").is_file() {
-            // `scripts/fetch_cuda_headers.sh` puts the nvcc wheel's include/ here; a venv that
-            // has nvidia-cuda-nvcc-cu12 installed has it beside the runtime.
-            let mut cands: Vec<PathBuf> = torch
-                .parent()
-                .map(|p| p.join("nvidia/cuda_nvcc/include"))
+        let covered = |f: &str| dirs.iter().any(|d| d.join(f).is_file());
+        if !(covered("crt/host_config.h") && covered("nv/target")) {
+            // `scripts/fetch_cuda_headers.sh` puts the nvcc and cccl wheels' include/ into one dir:
+            // `BOTBOWL_CUDA_NVCC_INCLUDE` names it (an image ships it outside $HOME, plan 069),
+            // else ~/.cache/botbowl/cuda_nvcc/<ver>/include. A venv with both
+            // nvidia-cuda-nvcc-cu12 and nvidia-cuda-cccl-cu12 installed is covered above.
+            let mut cands: Vec<PathBuf> = std::env::var_os("BOTBOWL_CUDA_NVCC_INCLUDE")
+                .map(PathBuf::from)
                 .into_iter()
+                .chain(torch.parent().map(|p| p.join("nvidia/cuda_nvcc/include")))
                 .collect();
             if let Some(home) = std::env::var_os("HOME") {
                 let cache = PathBuf::from(home).join(".cache/botbowl/cuda_nvcc");
@@ -101,8 +107,9 @@ mod torch {
                 Some(p) => dirs.push(p),
                 None => panic!(
                     "feature `torch`: {} has no crt/host_config.h (nvcc) and nv/target (cccl) — run scripts/fetch_cuda_headers.sh \
-                     (fetches the nvcc and cccl wheels' headers into ~/.cache/botbowl/cuda_nvcc), or set \
-                     BOTBOWL_CUDA_INCLUDE to a CUDA toolkit's include/",
+                     (fetches the nvcc and cccl wheels' headers into ~/.cache/botbowl/cuda_nvcc), set \
+                     BOTBOWL_CUDA_NVCC_INCLUDE to a dir holding both, or set BOTBOWL_CUDA_INCLUDE to a \
+                     CUDA toolkit's include/",
                     rt.display()
                 ),
             }
