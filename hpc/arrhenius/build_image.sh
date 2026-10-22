@@ -34,7 +34,9 @@ for f in vendor.tar.gz wheels/requirements.txt MANIFEST; do
     [ -e "$BUNDLE/$f" ] || { echo "$BUNDLE/$f missing — run make_bundles.sh" >&2; exit 1; }
 done
 ls "$BUNDLE"/rust/rust-*-aarch64-unknown-linux-gnu.tar.xz > /dev/null
-for lock in Cargo.lock recon_mcts/Cargo.lock train/uv.lock; do
+# recon_mcts/Cargo.lock is gitignored (regenerated per checkout) and the image only builds the botbowl
+# workspace, whose Cargo.lock pins recon_mcts's dependencies; so it is not checked here.
+for lock in Cargo.lock train/uv.lock; do
     want=$(sha256sum "$REPO/$lock" | awk '{print $1}')
     grep -q "^$lock sha256: $want" "$BUNDLE/MANIFEST" \
         || { echo "$lock changed since the bundle was made — rerun make_bundles.sh" >&2; exit 1; }
