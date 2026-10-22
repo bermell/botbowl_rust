@@ -8,6 +8,20 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp081"></a>exp081: bf16 / fp16 inference numerics vs fp32, offline on CPU (plan 069 item 4), run 2026-10-22
+
+- **Question:** the H100 binds generation (exp080), and tensor-core precision is worth ~4-7× throughput over fp32 — how much do reduced-precision forwards change the net's outputs and decisions?
+- **Setup:** gen48 (`models/az_v7/bbnet_mix16x9v9_gen48.pt`), eval mode, on gen48's held-out shard 4 (`prepare --policy-target cq --tau 100`, 11,726 samples over 21 boards, the 20x11 mix); fp32 vs `torch.autocast("cpu", bfloat16 | float16)`; script `scripts/exp081_precision_study.py` (`train/.venv/bin/python scripts/exp081_precision_study.py NET.pt PREPARED_DIR`), output `runs/exp081/result.txt`. CPU autocast approximates GPU tensor-core kernels (fp32 accumulation there), so this bounds rather than reproduces the H100's numbers.
+- **Result:**
+
+  | | value \|Δv\| mean / max | value MSE vs MC label | policy KL(fp32‖·) | top-1 move changes | … of them at a near-tie (top-2 log-margin < 0.1) |
+  |---|---|---|---|---|---|
+  | bf16 | 0.0020 / 0.016 | 0.06722 → 0.06723 | 8.1e-5 | 0.74% (87) | 85 of 87 |
+  | fp16 | 0.00026 / 0.0025 | 0.06722 → 0.06722 | 1e-6 | 0.05% (6) | 6 of 6 |
+
+  For scale: the search at 1000 descents disagrees with itself at 4-6% of decisions (exp079), and the value bench resolves ~0.003 in RMS.
+- **Conclusion:** both are far below the search's own noise; **fp16 is ~8× closer to fp32 than bf16 at the same H100 tensor-core rate**, with no overflow on this net — prefer fp16 for inference (bf16 for training is fine). Confirm on the cluster with the real kernels: value benches, net check and paired drives fp32-bot vs fp16-bot.
+
 ### <a id="exp080"></a>exp080: CPU per descent and per forward, profiled and cut (plan 069 item 1), run 2026-10-21/22
 
 - **Question:** on a GH200 (72 Neoverse V2 cores per H100), does the CPU (search + encoder + batcher) or the GPU bind generation and labelling, and how much search CPU can be cut without changing games?
