@@ -7,7 +7,7 @@ training box, so neither the build nor a job needs the internet or a module.
 
 | file | what |
 |---|---|
-| `botbowl.def` | the image: arm64 `python:3.12-bookworm` (pinned digest), Rust, the trainer venv, the four binaries built at capacity 20x11/7 with `-C target-cpu=neoverse-v2` and the in-process libtorch backend |
+| `botbowl.def` | the image: arm64 `python:3.12-bookworm` (pinned digest), Rust, the trainer venv, the four binaries and the `inproc_parity` harness built at capacity 20x11/7 with `-C target-cpu=neoverse-v2` and the in-process libtorch backend |
 | `make_bundles.sh` | fetches everything the build needs (vendored crates, aarch64 wheels, CUDA header wheels, Rust installer, base image) into `bundle/` (gitignored) |
 | `wheelhouse.py` | the wheel part: exactly `train/uv.lock`'s files for cp312 linux aarch64, sha256-checked, plus `requirements.txt` for a no-resolve, no-index install |
 | `build_image.sh` | stages HEAD (a shallow clone) into the bundle dir and runs `apptainer build` there |
@@ -132,10 +132,19 @@ srun -A <project> -p gpu --gpus 1 -t 5 bash -c 'curl -sI https://index.crates.io
 apptainer --version                            # ≥ 1.1 for unprivileged builds
 uname -m; lscpu | grep -E "Model name|NUMA"    # aarch64, Neoverse-V2, NUMA layout of the superchips
 getconf PAGESIZE                               # Grace kernels are often 64K-page: note it (see risks)
+projinfo 2>/dev/null || sshare -U -l           # allocation: hours left, expiry, billing per GPU or per node?
+scontrol show config | grep -Ei "MaxArraySize|MaxJobCount|SchedulerType|PriorityType"   # job arrays, backfill
+apptainer build --fakeroot /tmp/t.sif docker://busybox 2>&1 | tail -1   # may an unprivileged user build here?
+srun -A <project> -p gpu --gpus 1 -t 5 bash -c 'getent hosts <persistent-partition-host>; nc -zv <persistent-partition-host> 7777'   # can a compute node reach a hub there?
+srun -A <project> -p cpu -n 1 -t 5 hostname    # does the CPU partition run (and draw on the same hours)?
 ```
 
-Note what each says in plan 069 §0b (walltime, one-GPU jobs and billing, internet, quotas). If a job
-can take one GPU, the shakedown and the inference suite need no full node.
+On the login node, also check whether SSH connection sharing (`ControlMaster`/`ControlPersist`) is
+allowed: with password + 2FA every rsync otherwise asks again.
+
+Note what each says in plan 069 §0b (walltime, one-GPU jobs and billing, CPU-partition billing,
+internet, a route to the persistent partition, job arrays, SSH sharing, quotas, allocation expiry). If a
+job can take one GPU, the shakedown and the inference suite need no full node.
 
 ## Verified here, and what is left for the cluster
 

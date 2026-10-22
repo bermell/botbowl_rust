@@ -13,8 +13,9 @@
 #   src/        the commit, as a shallow git clone: the binaries' provenance stamp runs
 #               `git rev-parse HEAD` / `git status` here at startup, so corpora are stamped with the
 #               real commit, clean (git's safe.directory is '*' system-wide: the files are root's)
-#   bin/        botbowl-ui, botbowl-worker, botbowl-hub, prepare: release, capacity 20x11/7,
-#               -C target-cpu=neoverse-v2, the ui and worker with the in-process libtorch backend
+#   bin/        botbowl-ui, botbowl-worker, botbowl-hub, prepare, inproc_parity: release, capacity
+#               20x11/7, -C target-cpu=neoverse-v2, the ui, worker and parity harness with the
+#               in-process libtorch backend
 #   vendor/     the vendored crates + cargo-vendor.toml, to rebuild a checkout offline in the image
 #   cuda_nvcc/  crt/ + nv/target headers for the shim (from the nvcc/cccl wheels)
 # /opt/venv     the trainer's locked venv (torch 2.13.0+cu126 aarch64, its CUDA 12.6 libraries and
@@ -89,8 +90,10 @@ EOF
     cargo build $C -p botbowl-hub
     cargo build $C -p botbowl-nn -p botbowl-worker --features botbowl-worker/torch
     cargo build $C -p botbowl-ui --features botbowl-ui/torch
+    # The parity harness (plan 066 tests A/B; the Slurm tuning suite runs it from /opt/botbowl/bin).
+    cargo build $C -p botbowl-nn --features torch --example inproc_parity
     mkdir -p /opt/botbowl/bin
-    for b in botbowl-ui botbowl-worker botbowl-hub prepare; do
+    for b in botbowl-ui botbowl-worker botbowl-hub prepare examples/inproc_parity; do
         install -m 0755 "$CARGO_TARGET_DIR/release/$b" /opt/botbowl/bin/
     done
     rm -rf "$CARGO_TARGET_DIR" "$CARGO_HOME" "$S"
@@ -117,6 +120,7 @@ EOF
 %test
     set -eu
     for b in botbowl-ui botbowl-worker botbowl-hub prepare; do /opt/botbowl/bin/$b --help > /dev/null; done
+    ! ldd /opt/botbowl/bin/inproc_parity | grep 'not found'
     # The ui and worker resolve libtorch and cudart through their rpath, without LD_LIBRARY_PATH.
     ldd /opt/botbowl/bin/botbowl-worker | grep -E 'libtorch_cuda|libcudart'
     ! ldd /opt/botbowl/bin/botbowl-worker | grep 'not found'
