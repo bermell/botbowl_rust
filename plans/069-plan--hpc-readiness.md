@@ -67,6 +67,29 @@ cannot distort, then on Arm), and the net's positions/s per batch size and preci
 3. **Arm build and container:** aarch64 Rust (`cargo check --target aarch64-unknown-linux-gnu` here),
    libtorch for aarch64 + CUDA (the torch wheel's C++ API), the CUDA-headers script for aarch64, an
    Apptainer definition with Rust binaries, the venv and the trainer; rpaths.
+   **Built 2026-10-22, verified as far as an x86 box can (`hpc/arrhenius/`, README there).**
+   Decisions: the base is arm64 `python:3.12-bookworm` (pinned digest; gcc 12, git, glibc 2.36,
+   Python 3.12), **not** an NGC or `nvidia/cuda` image — the CUDA user space is the torch wheel's
+   own, as on this box: **torch 2.13.0+cu126, the exact `train/uv.lock` build** (the cu126 index
+   publishes `manylinux_2_28_aarch64` wheels and the universal lock already pins them), CUDA 12.6
+   runtime, cuDNN 9.10.2.21, NCCL 2.29.3; its `libtorch_cuda.so` carries sm_80 + sm_90 SASS. The
+   driver is the host's (`--nv`); a 12.6 user space under the cu13.0-era driver (≥ 580) needs no
+   forward-compat package. Binaries in the image: `botbowl-ui`/`botbowl-worker` (torch), `botbowl-hub`,
+   `prepare` at 20x11/7, `-C target-cpu=neoverse-v2`; the source is a shallow clone, so the git
+   provenance stamp works inside the container (system `safe.directory '*'`). Offline:
+   `make_bundles.sh` fetches the vendored crates of both workspaces (51 MB tarball), the lock's
+   aarch64 wheels with a hash-checked `requirements.txt` (2.9 GB), the nvcc/cccl header wheels, the
+   Rust 1.98.0 installer and the base as a docker-archive (4.1 GB in all), so neither the image build
+   nor a job needs internet; `build_image.sh` builds HEAD on an Arm node. Code: `build.rs` takes
+   `BOTBOWL_CUDA_NVCC_INCLUDE` and accepts crt/ and nv/target from separate wheel dirs;
+   `fetch_cuda_headers.sh` gained offline/cross-arch/dest knobs. Verified here: aarch64 check of
+   both workspaces (nothing x86-specific found: no intrinsics, asm or arch cfgs; `perf stat -e
+   instructions:u` works on Arm, nothing uses LBR), release cross builds of all four binaries with
+   the shim linked against the aarch64 wheel (`cross_check.sh`, Debian's cross gcc 12 in docker, no
+   qemu), offline vendored builds with an empty `CARGO_HOME`. **Left for the cluster:** the
+   `apptainer build` and its `%test`, torch on the H100, `parity066.sh`/`gatec066.sh` there, the
+   first-login checklist (README), and the 64K-page question. Arm results are not expected to be
+   bit-identical to x86 (glibc libm FMA paths, tract kernels): determinism checks compare Arm with Arm.
 4. **Inference tuning suite** (scripted, so the first pilot hours measure instead of fiddle): bucket sizes
    up to 512–1024, lanes, streams per process, processes per GPU, multiple canvases (padding waste across
    the size mix), fp32 / TF32 / bf16, `channels_last`, NUMA pinning; later zero-copy slots in coherent

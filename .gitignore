@@ -8,3 +8,5 @@ train/.venv
 # about a specific commit and must never travel with the code it talks about. See
 # hub-allowed-commits.toml.example and botbowl-hub/CLAUDE.md.
 /hub-allowed-commits.toml
+# Plan 069: make_bundles.sh output (crates, wheels, Rust, base image: GBs, never committed)
+/hpc/arrhenius/bundle
