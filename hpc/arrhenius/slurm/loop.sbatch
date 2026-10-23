@@ -97,8 +97,10 @@ show_env "$ENVF"
 
 # ---- checkout mode: build the checkout's binaries in the image, once, before any task -----------
 if [ "$BIN_MODE" = checkout ]; then
+    # Offline, from the image's vendored crates (its BOTBOWL_CARGO_VENDOR_CONFIG), into CARGO_TARGET_DIR
+    # (= CHECKOUT_TARGET, from the env file); the checkout's Cargo.lock must be the image's.
     # shellcheck disable=SC2016
-    container_cmd "$ENVF" bash -c 'cd "$1" && C="--release --offline -j ${BUILD_JOBS:-32}" &&
+    container_cmd "$ENVF" bash -c 'cd "$1" && C="--release --offline -j ${BUILD_JOBS:-32} ${BOTBOWL_CARGO_VENDOR_CONFIG:+--config $BOTBOWL_CARGO_VENDOR_CONFIG}" &&
         cargo build $C -p botbowl-hub && cargo build $C -p botbowl-nn -p botbowl-worker --features botbowl-worker/torch &&
         cargo build $C -p botbowl-ui --features botbowl-ui/torch' _ "$CHECKOUT"
     if dry; then

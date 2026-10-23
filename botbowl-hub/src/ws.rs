@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use botbowl_hub_proto::{decode, encode, BuildInfo, Capacity, RejectReason, ToHub, ToWorker, PROTOCOL_VERSION};
 
 use crate::allowlist::Allowlist;
-use crate::state::WorkerConn;
+use crate::state::{TrajectoryPayload, WorkerConn};
 use crate::Hub;
 
 /// Streams for a worker that did not say: one per core, one per GiB.
@@ -192,10 +192,12 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
                         samples,
                         zstd_json,
                     }) => {
+                        // Inflate and peek before the lock (plan 069 item 6); the lock only writes.
+                        let payload = TrajectoryPayload::decode(&zstd_json);
                         hub.inner
                             .lock()
                             .unwrap()
-                            .trajectory_done(wid, task, game, samples, zstd_json);
+                            .trajectory_done(wid, task, game, samples, payload);
                         hub.changed.notify_waiters();
                     }
                     Ok(ToHub::TaskFailed { task, error }) => {

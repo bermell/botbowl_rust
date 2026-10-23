@@ -32,17 +32,18 @@ import time
 import urllib.request
 
 DEFAULT_STAGES = [
-    # realistic per-unit times (a 20x11 generate game ~60 s on a stream, a label item ~15 s)
-    "generate:100:60:180",
-    "generate:1000:60:180",
-    "generate:4000:60:180",
+    # near-realistic per-unit times (a 20x11 generate game ~60 s on a stream, a label item ~15 s;
+    # generate at 20 s so each stream runs three 4-game tasks within the stage)
+    "generate:100:20:240",
+    "generate:1000:20:240",
+    "generate:4000:20:240",
     "label:100:15:180",
     "label:1000:15:180",
     "label:4000:15:180",
     # compressed time: where does the hub saturate?
     "generate:4000:4:60::discard",
     "generate:4000:1:60::discard",
-    "label:4000:2:60",
+    "label:4000:4:45",
     # many thin workers (tract boxes, CPU-partition nodes): per-connection cost
     "generate:1000:10:120:1000",
 ]
@@ -51,12 +52,14 @@ DEFAULT_STAGES = [
 def parse_stage(s):
     f = s.split(":")
     kind, streams, secs, duration = f[0], int(f[1]), float(f[2]), float(f[3])
-    conns = int(f[4]) if len(f) > 4 and f[4] else max(1, math.ceil(streams / 64))
+    # Default: GPU-worker-shaped connections of 64 streams; the stream count is rounded to fill them
+    # (1000 -> 16 x 64 = 1024, 4000 -> 62 x 64 = 3968).
+    conns = int(f[4]) if len(f) > 4 and f[4] else max(1, round(streams / 64))
+    per_conn = max(1, round(streams / conns))
     discard = len(f) > 5 and f[5] == "discard"
     assert kind in ("generate", "label"), s
-    assert streams % conns == 0, f"{s}: streams must divide evenly over {conns} connections"
-    return dict(spec=s, kind=kind, streams=streams, secs=secs, duration=duration, conns=conns,
-                per_conn=streams // conns, discard=discard)
+    return dict(spec=s, kind=kind, streams=conns * per_conn, secs=secs, duration=duration, conns=conns,
+                per_conn=per_conn, discard=discard)
 
 
 def token(path):
@@ -146,6 +149,12 @@ def run_stage(a, st, idx, tok, games, mean_samples):
 
     # Inputs first (the label job's corpus), so their writing is not in the hub's numbers.
     units = math.ceil(st["streams"] * st["duration"] / st["secs"])
+    if st["kind"] == "generate":
+        # Generate tasks are 4 games (`job generate --batch` default): whole tasks per stream, and
+        # shards of equal size, so no stream idles for want of a batch.
+        tasks = max(1, round(st["duration"] / (st["secs"] * 4)))
+        units = st["streams"] * tasks * 4
+        units = math.ceil(units / 32) * 32
     if st["kind"] == "label":
         inputs, items, trajs, nbytes = write_label_inputs(games, units, a.chunk_samples, 8, d)
         res.update(label_items=items, label_trajectories=trajs, label_input_mb=nbytes / 1e6)
@@ -231,7 +240,13 @@ def run_stage(a, st, idx, tok, games, mean_samples):
                 last_cpu = (now, ps[0])
                 samples.append(dict(t=now - t0, cpu_pct=cpu_pct, rss_mb=ps[1], threads=ps[2]))
             if int(now - t0) % 2 == 0:
-                js = api(port, tok, f"/api/jobs/{job}")
+                # An overloaded hub answers its API late (the API takes the same lock as every
+                # result): count it, as `job --wait` would retry, and keep going.
+                try:
+                    js = api(port, tok, f"/api/jobs/{job}")
+                except Exception:
+                    res["api_timeouts"] = res.get("api_timeouts", 0) + 1
+                    continue
                 state = js["state"] if isinstance(js["state"], str) else json.dumps(js["state"])
                 if state != "Running":
                     break
@@ -345,10 +360,18 @@ def main():
         except Exception as e:  # one failed stage should not lose the others
             print(f"!! stage {spec} failed: {e}", flush=True)
             results.append(dict(stage=spec, state=f"error: {e}"))
+            if not a.keep:  # a failed stage's corpus files are GBs: never leave them behind
+                for d in os.listdir(a.out):
+                    for sub in ("gen", "mc"):
+                        shutil.rmtree(os.path.join(a.out, d, sub), ignore_errors=True)
+                    if os.path.isdir(os.path.join(a.out, d)):
+                        for fn in os.listdir(os.path.join(a.out, d)):
+                            if fn.startswith("in") and fn.endswith(".jsonl"):
+                                os.remove(os.path.join(a.out, d, fn))
         with open(os.path.join(a.out, "summary.json"), "w") as f:
             json.dump(results, f, indent=1)
 
-    rows = ["| stage | conns x streams | s/unit | units | state | wall s | ideal s | achieved/offered | hub CPU % mean / p95 | hub RSS MB | dispatch ms p50 / p99 / max | worst-interval p99 | MB/s in / out | submit s |",
+    rows = ["| stage | conns x streams | s/unit | units | state | wall s | ideal s | achieved/offered | hub CPU % mean / p95 | hub RSS MB | dispatch ms p50 / p99 / max | worst-interval p99 | MB/s hub->fake / fake->hub | submit s |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in results:
         dm = r.get("dispatch_ms") or {}
