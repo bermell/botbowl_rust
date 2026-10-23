@@ -28,3 +28,9 @@ torch = ["botbowl-nn/torch"]
 [[bin]]
 name = "botbowl-worker"
 path = "src/main.rs"
+
+# Plan 069 item 6: a load-test worker for the hub (canned results, no games, no nets);
+# scripts/hub_scale.py drives it.
+[[bin]]
+name = "botbowl-fake-worker"
+path = "src/bin/fake_worker.rs"

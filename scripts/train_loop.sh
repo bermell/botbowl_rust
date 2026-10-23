@@ -531,7 +531,47 @@ PREPARE="$CARGO_TARGET_DIR/release/prepare"
 HUB="$CARGO_TARGET_DIR/release/botbowl-hub"
 WORKER="$CARGO_TARGET_DIR/release/botbowl-worker"
 HUB_PORT="${HUB_PORT:-7777}"
-HUB_URL="http://127.0.0.1:$HUB_PORT"
+# Plan 069 item 5: knobs for running the loop inside a Slurm job (hpc/arrhenius/slurm/). Every one
+# defaults to the training box's behaviour.
+#   HUB_HOST       where the hub listens, for the job client and the local worker: this box
+#                  (127.0.0.1) or another host. HUB_EXTERNAL=1: never start a hub here — wait up to
+#                  HUB_WAIT_SECS for one at HUB_HOST (a hub on a persistent service node).
+#   HUB_ALLOWED_COMMITS  the hub's --allowed-commits file; unset = its default, the cwd's
+#                  hub-allowed-commits.toml.
+#   LOCAL_WORKER   on|off. off: the loop starts no worker of its own; every game, label and drive
+#                  runs on workers started by someone else (the job's per-GPU workers).
+#   BOTBOWL_BIN_DIR  prebuilt binaries (the image's /opt/botbowl/bin, or a checkout the job built):
+#                  no cargo build here; net_check.sh and value_bench.sh use them too.
+#   LOOP_DEADLINE, STOP_MARGIN_SECS  the job's end (epoch seconds) and a margin: at a phase boundary
+#                  with less than the margin left, exit cleanly with code 75, so the next job of the
+#                  chain resumes from the markers instead of the walltime killing a phase midway.
+#   EXIT_ON_SIGNAL 1: on SIGTERM/SIGINT clean up and exit 143. Without it the trap cleans up and
+#                  bash carries on with the next command (the job's walltime signal needs an exit).
+HUB_HOST="${HUB_HOST:-127.0.0.1}"
+HUB_EXTERNAL="${HUB_EXTERNAL:-0}"
+HUB_WAIT_SECS="${HUB_WAIT_SECS:-300}"
+HUB_ALLOWED_COMMITS="${HUB_ALLOWED_COMMITS:-}"
+LOCAL_WORKER="${LOCAL_WORKER:-on}"
+BOTBOWL_BIN_DIR="${BOTBOWL_BIN_DIR:-}"
+LOOP_DEADLINE="${LOOP_DEADLINE:-}"
+STOP_MARGIN_SECS="${STOP_MARGIN_SECS:-0}"
+#   STOP_PHASE_ESTIMATE  on|off (with LOOP_DEADLINE): the margin for a phase is also at least 1.25x
+#                  what that phase took last time (status.md's "genNN <phase> done (N min" lines);
+#                  a phase that could never fit in a job (longer than the job) exits 76 instead,
+#                  which stops the chain rather than relaunching it into the same wall forever.
+#   PREPARED_ROOT  where prepared_train/prepared_val go (genNN/ under it; default the generation's
+#                  own dir). Set, a generation marked prepared whose dirs are missing (another
+#                  job's node-local disk) is prepared again instead of failing.
+STOP_PHASE_ESTIMATE="${STOP_PHASE_ESTIMATE:-on}"
+PREPARED_ROOT="${PREPARED_ROOT:-}"
+LOOP_T0=$(date +%s)
+EXIT_ON_SIGNAL="${EXIT_ON_SIGNAL:-0}"
+if [ -n "$BOTBOWL_BIN_DIR" ]; then
+    export BOTBOWL_BIN_DIR
+    UI="$BOTBOWL_BIN_DIR/botbowl-ui"; PREPARE="$BOTBOWL_BIN_DIR/prepare"
+    HUB="$BOTBOWL_BIN_DIR/botbowl-hub"; WORKER="$BOTBOWL_BIN_DIR/botbowl-worker"
+fi
+HUB_URL="http://$HUB_HOST:$HUB_PORT"
 # One token per machine, shared by every run and side hub, so remote workers never need a new one.
 HUB_TOKEN_FILE="${HUB_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/botbowl/hub.token}"
 WORKER_CACHE="$RUN_DIR/worker-cache"
@@ -559,14 +599,39 @@ check_stop() {
         status "STOP file present — exiting cleanly ($1)"
         exit 0
     fi
+    # Plan 069 item 5: a Slurm job's walltime. Exit 75 (not 0) so the job script tells "out of
+    # time, resume" from "stopped" and "finished".
+    [ -n "$LOOP_DEADLINE" ] || return 0
+    local need="$STOP_MARGIN_SECS" est
+    if [ "$STOP_PHASE_ESTIMATE" = on ]; then
+        est=$(phase_secs "${1##* }")
+        [ "$est" -gt "$need" ] && need="$est"
+        if [ $((est * 4 / 5)) -gt $((LOOP_DEADLINE - LOOP_T0)) ]; then
+            status "FATAL: the ${1##* } phase took $((est * 4 / 5 / 60)) min last time, longer than a whole job ($(((LOOP_DEADLINE - LOOP_T0) / 60)) min): raise the walltime or shrink the phase (GAMES_PER_SHARD, more nodes) — stopping the chain ($1)"
+            exit 76
+        fi
+    fi
+    if [ $(($(date +%s) + need)) -gt "$LOOP_DEADLINE" ]; then
+        status "deadline: $(((LOOP_DEADLINE - $(date +%s)) / 60)) min left of this job, under the $((need / 60)) min the next phase needs — exiting cleanly ($1); the next job resumes here"
+        exit 75
+    fi
+}
+# phase_secs PHASE: 1.25x the minutes the last "genNN PHASE done (N min" line on status.md reports,
+# in seconds; 0 without one. The benchmark is only submitted at its boundary, so it costs nothing.
+phase_secs() {
+    local m
+    case "$1" in generate|mc-label|prepare|train) ;; *) echo 0; return ;; esac
+    m=$(grep -oE "gen[0-9]+ $1 done \(([0-9]+) min" "$STATUS" 2> /dev/null | tail -n 1 | grep -oE '[0-9]+ min' | grep -oE '[0-9]+')
+    echo $((${m:-0} * 75))
 }
 champion() { cat "$CHAMPION_FILE"; }
 # Free disk in GiB. `df -g` is macOS-only; -BG/-k are the portable GNU spellings.
+# Of the run dir's file system (the checkout's on the training box, where the run dir is in it).
 free_gb() {
-    if df -BG . >/dev/null 2>&1; then
-        df -BG . | awk 'NR==2{gsub(/G/,"",$4); print $4"G"}'
+    if df -BG "$RUN_DIR" >/dev/null 2>&1; then
+        df -BG "$RUN_DIR" | awk 'NR==2{gsub(/G/,"",$4); print $4"G"}'
     else
-        df -k . | awk 'NR==2{printf "%dG", $4/1048576}'
+        df -k "$RUN_DIR" | awk 'NR==2{printf "%dG", $4/1048576}'
     fi
 }
 
@@ -607,11 +672,12 @@ window_shards() {
 # current one has trained. The .prepared marker goes with them: leaving it
 # behind would make a resume skip prepare and then die on missing dims dirs.
 prune_prepared() {
-    local pg
+    local pg pd
     pg="$RUN_DIR/$(printf 'gen%02d' "$1")"
+    pd="${PREPARED_ROOT:+$PREPARED_ROOT/$(printf 'gen%02d' "$1")}"; pd="${pd:-$pg}"
     [ -d "$pg" ] || return 0
-    [ -d "$pg/prepared_train" ] || [ -d "$pg/prepared_val" ] || return 0
-    rm -rf "$pg/prepared_train" "$pg/prepared_val"
+    [ -d "$pd/prepared_train" ] || [ -d "$pd/prepared_val" ] || return 0
+    rm -rf "$pd/prepared_train" "$pd/prepared_val"
     rm -f "$pg/.prepared"
     log "pruned prepared_* from $(basename "$pg") (regenerable from its shards)"
 }
@@ -693,6 +759,7 @@ ensure_ts() {
 # speed, which is the failure that otherwise goes unnoticed for a whole generation.
 backend_check() {
     local f="$1" what="$2"
+    [ "$LOCAL_WORKER" = off ] && return 0   # no local worker, so no log of its own to check
     grep -q 'NN_SERVER_FALLBACK' "$f" 2>/dev/null \
         && status "WARN: $what fell back to tract (NN_SERVER_FALLBACK) — see $f"
     if [ "$NN_BACKEND" = inproc ] && ! grep -q 'NN_INPROC loaded' "$f" 2>/dev/null; then
@@ -723,10 +790,21 @@ hub_start() {
         log "hub already running on $HUB_URL; reusing"
         return 0
     fi
+    if [ "$HUB_EXTERNAL" = 1 ]; then
+        local w=0
+        until "$HUB" status --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" > /dev/null 2>&1; do
+            w=$((w + 5))
+            [ "$w" -gt "$HUB_WAIT_SECS" ] && die "no hub answers at $HUB_URL after ${HUB_WAIT_SECS}s (HUB_EXTERNAL=1: the loop never starts one)"
+            sleep 5
+        done
+        status "using the external hub at $HUB_URL (HUB_EXTERNAL=1)"
+        return 0
+    fi
     # HUB_ALLOW_FROM (comma-separated addresses / CIDR networks): only these clients, plus loopback,
     # get the hub's pages and the web play app; workers' /ws stays open (token-authenticated).
     "$HUB" serve --bind "0.0.0.0:$HUB_PORT" --token-file "$HUB_TOKEN_FILE" --run-dir "$RUN_DIR" \
-        ${HUB_ALLOW_FROM:+--allow-from "$HUB_ALLOW_FROM"} >> "$RUN_DIR/hub.log" 2>&1 &
+        ${HUB_ALLOW_FROM:+--allow-from "$HUB_ALLOW_FROM"} ${HUB_ALLOWED_COMMITS:+--allowed-commits "$HUB_ALLOWED_COMMITS"} \
+        >> "$RUN_DIR/hub.log" 2>&1 &
     HUB_PID=$!
     local i=0
     until "$HUB" status --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" > /dev/null 2>&1; do
@@ -789,6 +867,10 @@ generate_jobs() {
 }
 worker_start() {
     local extra="" mem="" share="$1" k=2 e
+    if [ "$LOCAL_WORKER" = off ]; then
+        log "no local worker (LOCAL_WORKER=off): the phase runs on the hub's other workers"
+        return 0
+    fi
     [ -n "$NN_SERVER_PID" ] && extra="--nn-server $NN_SOCKET"
     # Plan 066: one worker, its nets in-process (NN_EXTRA is empty: no sidecars were started).
     [ "$NN_BACKEND" = inproc ] && extra="--nn-backend inproc"
@@ -796,14 +878,14 @@ worker_start() {
     # One worker per sidecar, the streams split evenly (the first takes the remainder).
     [ "${#NN_EXTRA[@]}" -gt 0 ] && share=$(($1 / (${#NN_EXTRA[@]} + 1)))
     # shellcheck disable=SC2086
-    "$WORKER" --hub "ws://127.0.0.1:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
+    "$WORKER" --hub "ws://$HUB_HOST:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
         --name "local" --parallel-games $(($1 - share * ${#NN_EXTRA[@]})) --cache-dir "$WORKER_CACHE" $extra $mem \
         >> "$2" 2>&1 &
     WORKER_PID=$!
     log "local worker started (pid $WORKER_PID, x$(($1 - share * ${#NN_EXTRA[@]}))${extra:+ ($extra)})"
     for e in "${NN_EXTRA[@]}"; do
         # shellcheck disable=SC2086
-        "$WORKER" --hub "ws://127.0.0.1:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
+        "$WORKER" --hub "ws://$HUB_HOST:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
             --name "local$k" --parallel-games "$share" --cache-dir "$WORKER_CACHE-$k" --nn-server "${e#*:}" $mem \
             >> "$2" 2>&1 &
         WORKER_EXTRA+=($!)
@@ -849,7 +931,12 @@ size_curve_args() {
 }
 [ "$SIZE_MODE" = fixed ] || { [ -s "$RUN_DIR/size_centre.txt" ] || echo "$SIZE_CENTRE" > "$RUN_DIR/size_centre.txt"; }
 # Never leave a server (and its 400 MB of VRAM) behind on any exit path.
-trap cleanup EXIT INT TERM
+if [ "$EXIT_ON_SIGNAL" = 1 ]; then
+    trap cleanup EXIT
+    trap 'status "signal received — cleaning up and exiting; a relaunch resumes from the markers"; exit 143' INT TERM
+else
+    trap cleanup EXIT INT TERM
+fi
 
 [ -f "$CHAMPION_FILE" ] || echo "$INIT_CHAMPION" > "$CHAMPION_FILE"
 [ -x "$PY" ] || die "trainer venv python not found: $PY"
@@ -884,36 +971,42 @@ esac
 # part of most profiles, so `cargo` is typically *not* on PATH here even
 # though it is in the terminal you launched from. Put it back rather than
 # dying 30 seconds into a multi-day run.
-case ":$PATH:" in
-    *":$HOME/.cargo/bin:"*) ;;
-    *) [ -x "$HOME/.cargo/bin/cargo" ] && export PATH="$HOME/.cargo/bin:$PATH" ;;
-esac
-command -v cargo >/dev/null 2>&1 || die "cargo not on PATH (looked in \$HOME/.cargo/bin) — cannot build"
-
-log "building release binaries (capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, NN_BACKEND=$NN_BACKEND) with $(cargo --version)"
-if [ "$NN_BACKEND" = inproc ]; then
-    # Plan 066: libtorch from train/.venv's torch wheel; its CUDA headers need crt/ and nv/target,
-    # which the wheel leaves to the nvcc/cccl wheels (headers only, ~16 MB, into ~/.cache/botbowl).
-    ls "$HOME"/.cache/botbowl/cuda_nvcc/*/include/crt/host_config.h > /dev/null 2>&1 || [ -n "${BOTBOWL_CUDA_INCLUDE:-}" ] \
-        || PY="$PY" "$REPO/scripts/fetch_cuda_headers.sh" >> "$LOG" 2>&1 \
-        || die "scripts/fetch_cuda_headers.sh failed — see loop.log (or set BOTBOWL_CUDA_INCLUDE, or NN_BACKEND=sidecar)"
-    # The hub runs no net: built on its own, without the feature, so it does not link libtorch.
-    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-hub >> "$LOG" 2>&1 || die "cargo build (hub) failed — see loop.log"
-    # botbowl-ui on its own, with exactly the command net_check.sh and value_bench.sh run: built
-    # together with the worker, its dependencies resolve other features, so their build recompiled
-    # nn/mcts/play/ui (~40 s in the background during mc-label) and swapped the loop's botbowl-ui for
-    # a second variant every generation.
-    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-nn -p botbowl-worker \
-        --features botbowl-worker/torch >> "$LOG" 2>&1 || die "cargo build (worker, torch) failed — see loop.log"
-    cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-ui --features botbowl-ui/torch >> "$LOG" 2>&1 \
-        || die "cargo build (botbowl-ui, torch) failed — see loop.log"
+if [ -n "$BOTBOWL_BIN_DIR" ]; then
+    # Plan 069 item 5: binaries built elsewhere (the Apptainer image, or the job's own build step).
+    for b in "$UI" "$PREPARE" "$HUB" "$WORKER"; do [ -x "$b" ] || die "BOTBOWL_BIN_DIR: $b missing"; done
+    status "prebuilt binaries from $BOTBOWL_BIN_DIR (BOTBOWL_BIN_DIR), no build; NN_BACKEND=$NN_BACKEND"
 else
-    if ! cargo build --release -p botbowl-ui -p botbowl-nn -p botbowl-hub -p botbowl-worker >> "$LOG" 2>&1; then
-        die "cargo build failed — see loop.log"
+    case ":$PATH:" in
+        *":$HOME/.cargo/bin:"*) ;;
+        *) [ -x "$HOME/.cargo/bin/cargo" ] && export PATH="$HOME/.cargo/bin:$PATH" ;;
+    esac
+    command -v cargo >/dev/null 2>&1 || die "cargo not on PATH (looked in \$HOME/.cargo/bin) — cannot build"
+
+    log "building release binaries (capacity ${BUILD_W}x${BUILD_H}/${BUILD_PLAYERS}, NN_BACKEND=$NN_BACKEND) with $(cargo --version)"
+    if [ "$NN_BACKEND" = inproc ]; then
+        # Plan 066: libtorch from train/.venv's torch wheel; its CUDA headers need crt/ and nv/target,
+        # which the wheel leaves to the nvcc/cccl wheels (headers only, ~16 MB, into ~/.cache/botbowl).
+        ls "$HOME"/.cache/botbowl/cuda_nvcc/*/include/crt/host_config.h > /dev/null 2>&1 || [ -n "${BOTBOWL_CUDA_INCLUDE:-}" ] \
+            || PY="$PY" "$REPO/scripts/fetch_cuda_headers.sh" >> "$LOG" 2>&1 \
+            || die "scripts/fetch_cuda_headers.sh failed — see loop.log (or set BOTBOWL_CUDA_INCLUDE, or NN_BACKEND=sidecar)"
+        # The hub runs no net: built on its own, without the feature, so it does not link libtorch.
+        cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-hub >> "$LOG" 2>&1 || die "cargo build (hub) failed — see loop.log"
+        # botbowl-ui on its own, with exactly the command net_check.sh and value_bench.sh run: built
+        # together with the worker, its dependencies resolve other features, so their build recompiled
+        # nn/mcts/play/ui (~40 s in the background during mc-label) and swapped the loop's botbowl-ui for
+        # a second variant every generation.
+        cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-nn -p botbowl-worker \
+            --features botbowl-worker/torch >> "$LOG" 2>&1 || die "cargo build (worker, torch) failed — see loop.log"
+        cargo build --release -j "${BUILD_JOBS:-4}" -p botbowl-ui --features botbowl-ui/torch >> "$LOG" 2>&1 \
+            || die "cargo build (botbowl-ui, torch) failed — see loop.log"
+    else
+        if ! cargo build --release -p botbowl-ui -p botbowl-nn -p botbowl-hub -p botbowl-worker >> "$LOG" 2>&1; then
+            die "cargo build failed — see loop.log"
+        fi
     fi
+    [ -x "$UI" ] && [ -x "$PREPARE" ] && [ -x "$HUB" ] && [ -x "$WORKER" ] || die "expected binaries missing after build"
+    status "build ok (NN_BACKEND=$NN_BACKEND)"
 fi
-[ -x "$UI" ] && [ -x "$PREPARE" ] && [ -x "$HUB" ] && [ -x "$WORKER" ] || die "expected binaries missing after build"
-status "build ok (NN_BACKEND=$NN_BACKEND)"
 # Plan 066: every net this run loads by name gets its TorchScript export now, so a missing .pt
 # stops the launch instead of a phase hours in. Nets made later (each generation's) are exported
 # as they appear.
@@ -921,6 +1014,7 @@ ensure_ts "$INIT_CHAMPION" "$(champion)" "$DRIVE_REF" "$ORIGIN_REF"
 { [ "$EVAL_VENUE" = games ] || [ "$ANCHOR_EVERY" -gt 0 ]; } && ensure_ts "$ANCHOR"
 [ "$NN_BACKEND" = inproc ] && status "in-process inference: nets run in the local worker and tools (libtorch, canvas ${NN_CANVAS}); no sidecars"
 hub_start
+[ -n "$LOOP_DEADLINE" ] && status "job deadline $(date -d "@$LOOP_DEADLINE" '+%F %T' 2>/dev/null || echo "$LOOP_DEADLINE"), margin $((STOP_MARGIN_SECS / 60)) min; hub $HUB_URL; local worker $LOCAL_WORKER"
 
 # ---- pre-flight: heuristic mirror match (plan 021 open issue 5) --------------
 check_stop "before mirror match"
@@ -1344,6 +1438,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
     # past an already-trained generation, rebuilding them would cost minutes
     # and ~10 GB to feed a train step that is about to be skipped.
     check_stop "before $GG prepare"
+    PREP_DIR="${PREPARED_ROOT:+$PREPARED_ROOT/$GG}"; PREP_DIR="${PREP_DIR:-$GEN_DIR}"
+    if [ -n "$PREPARED_ROOT" ] && [ -e "$GEN_DIR/.prepared" ] && [ ! -e "$GEN_DIR/.trained" ] \
+        && ! { ls -d "$PREP_DIR"/prepared_train/dims_* && ls -d "$PREP_DIR"/prepared_val/dims_*; } > /dev/null 2>&1; then
+        status "$GG prepared dirs are not in $PREP_DIR (PREPARED_ROOT on another job's disk?): preparing again"
+        rm -f "$GEN_DIR/.prepared"
+    fi
     if [ -e "$GEN_DIR/.trained" ]; then
         DIMS_TRAIN=""; DIMS_VAL=""
     elif [ ! -e "$GEN_DIR/.prepared" ]; then
@@ -1358,17 +1458,17 @@ while [ "$G" -le "$MAX_GENS" ]; do
         WIN_GENS=$(echo "$TRAIN_IN" | tr ' ' '\n' | grep -c . )
         status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards, target $PREPARE_TARGET_ARGS"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $TRAIN_IN --out "$PREP_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (train) failed"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $VAL_IN --out "$PREP_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (val) failed"
         status "$GG prepare done ($((SECONDS / 60)) min), disk free $(free_gb)"
         touch "$GEN_DIR/.prepared"
     fi
     if [ ! -e "$GEN_DIR/.trained" ]; then
         # Plan 042: the whole prepared dir, every dims_* inside it (see gen00).
-        DIMS_TRAIN="$GEN_DIR/prepared_train"; DIMS_VAL="$GEN_DIR/prepared_val"
+        DIMS_TRAIN="$PREP_DIR/prepared_train"; DIMS_VAL="$PREP_DIR/prepared_val"
         ls -d "$DIMS_TRAIN"/dims_* > /dev/null 2>&1 && ls -d "$DIMS_VAL"/dims_* > /dev/null 2>&1 \
             || die "$GG prepared dims dirs missing"
     fi
@@ -1471,7 +1571,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
     if [ -n "$SHADOW_INIT" ] && [ ! -e "$GEN_DIR/.shadow_trained" ]; then
         SHADOW_PREV="$SHADOW_INIT"; [ -s "$SHADOW_LATEST" ] && [ -f "$(cat "$SHADOW_LATEST")" ] && SHADOW_PREV="$(cat "$SHADOW_LATEST")"
         SHADOW_MODEL="$MODEL_DIR/${SHADOW_NAME}_$GG"
-        DIMS_TRAIN="$GEN_DIR/prepared_train"; DIMS_VAL="$GEN_DIR/prepared_val"
+        DIMS_TRAIN="$PREP_DIR/prepared_train"; DIMS_VAL="$PREP_DIR/prepared_val"
         if [ ! -d "$DIMS_TRAIN" ] || [ ! -d "$DIMS_VAL" ]; then
             status "WARN: $GG shadow skipped — this generation's prepared dirs are gone"
         else

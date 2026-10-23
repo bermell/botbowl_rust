@@ -32,9 +32,20 @@ tune the inference in the new system."
 | home 30 GiB / 1 M files; project storage `/nobackup/proj/disk/<project>` (**not backed up**; quota via `storagequota`) | venvs and target dirs live in the container or project storage; corpora have a retention policy; nets, registry and positions are copied back here (they are small) |
 | Slurm: `-A`, `-p cpu|gpu|fat`, `-n`, `-c`, `-t`, `--gpus`; `srun`/`mpprun` | no MPI needed: **loop-in-a-job** — node 0 of a job runs the hub, the trainer and a worker; nodes 1..N run one worker per GPU (`srun`, `CUDA_VISIBLE_DEVICES`, pinned to the superchip) dialling node 0; the loop resumes from its markers in the next job (`sbatch --dependency=afterany`) |
 
-Still unknown: walltime limit, whether a job can take 1 GPU (a quarter node) and how GPU-hours are billed
-(per GPU or per node), CPU-partition billing, outbound internet from compute nodes, SSH multiplexing
-policy, project quota, allocation expiry.
+More from the centre's docs (the user, 2026-10-23):
+
+| fact | consequence for us |
+|---|---|
+| GPU node: 4x GH200, each 72 Arm cores + H100 with **96 GB HBM** + **128 GB LPDDR**; 4x Slingshot 200 Gb; **1.8 TB node-local NVMe** usable during a job; 382 nodes | one Slurm task per superchip (`-c 72`, one GPU each); worker model caches and (optionally) the trainer's prepared data on the NVMe (`LOCAL_SCRATCH`, `PREPARED_ROOT=local`) |
+| CPU partition: 192 thin nodes, 2x EPYC 9755 Turin (128 cores per socket), 768 GB, 1.8 TB NVMe; 20 fat nodes 2x EPYC 9745, 3 TB | x86 tract workers are possible there (same commit, an x86 build at 20x11/7) |
+| Lustre: disk tier 25 PB / 260 GiB/s; **flash tier 2 PB / 15M IOPS random 4K reads** | corpora and run dirs on the disk tier; training data (the loader mmaps `spatial.npy` and reads it at random) on the flash tier if quota allows |
+| PCD (persistent) partition = **virtual machines** on 32 nodes of 2x EPYC 9555 (3 with an L40S), CEPH 2.5 PB, Ethernet; container services planned | a hub there must reach GPU nodes *and* mount project Lustre to write corpora; until both are confirmed, the hub lives in the loop job and PCD hosts at most the status/registry/web side |
+| Slurm: `-A naiss<N>-gpu` / `-A naiss<N>-cpu` (separate accounts: the CPU partition is a separate allocation); `-p` default cpu; **`-t` default 2 h**, max unknown; jobs ≥ 10 min; arrays `-a`; `-C <feature>`; `sbatch --test-only`; `srun`/`mpprun`; their GPU example `-n 8 -c 72 --gpus 8 -p gpu` | the job shape is theirs (task per GPU); every loop phase must fit in one job, so the loop checks at each phase boundary against the last duration of that phase and stops the chain if one cannot fit; `submit.sh --test-only` |
+
+Still unknown: the walltime maximum, whether a job can take 1 GPU (their example allocates in GPU units)
+and how GPU-hours are billed (per GPU or per node), outbound internet from compute nodes, whether compute
+nodes reach a PCD VM and whether a VM can mount Lustre, the NVMe's path in a job, SSH multiplexing
+policy, project quota (incl. flash tier), allocation expiry.
 
 ## 1. The cost model flips (estimates — §2 replaces them with measurements)
 
@@ -110,9 +121,29 @@ cannot distort, then on Arm), and the net's positions/s per batch size and preci
    workers as Slurm job arrays (one process per GPU, pinned to its superchip) dialling it; the trainer on
    its own GPU; corpora on the parallel file system; resume across walltime limits (the loop's markers
    already resume). Possibly tract workers on the CPU partition for labels if it is billed separately.
+   **Built 2026-10-23 (`hpc/arrhenius/slurm/`, README there), checked by dry run only.** Loop in a
+   job: one srun step, a task per GH200 (`-c 72`, a GPU each, the centre's own example); task 0 runs
+   `train_loop.sh` in the image (hub, trainer, its per-phase worker, as on the box), every other task a
+   long-lived `botbowl-worker` dialling it; `workers.sbatch` adds worker-only jobs (they follow the
+   loop job's `hub.addr`). Chain: each job queues its successor (`afterany`), or all up front; a
+   `chain.state` file says continue/stop and why; `submit.sh stop` is the loop's STOP file. New
+   train_loop knobs, all default-off: `BOTBOWL_BIN_DIR` (prebuilt binaries, no cargo; also
+   net_check.sh/value_bench.sh), `HUB_HOST`/`HUB_EXTERNAL`/`HUB_ALLOWED_COMMITS`, `LOCAL_WORKER`,
+   `LOOP_DEADLINE` + `STOP_MARGIN_SECS` + `STOP_PHASE_ESTIMATE` (exit 75 at a boundary the next
+   phase cannot finish before, 76 when a phase is longer than a whole job), `EXIT_ON_SIGNAL`,
+   `PREPARED_ROOT`. The persistent-hub variant is knobs only (`HUB_EXTERNAL=1` + worker arrays) and
+   needs PCD → compute reachability and Lustre on the VM. **Gap:** a generate phase cut by the
+   walltime restarts from scratch (the hub has no restart recovery, plan 041 phase 3), so with 2 h
+   jobs `GAMES_PER_SHARD` must keep a generate phase well inside one job.
 6. **Scale tests here with fake workers:** the hub with thousands of streams (websockets, zstd, label
    items of 32 samples → many small messages), `prepare` and the data loader at 10–100× today's corpus,
    multi-GPU training (DDP) if one H100 cannot keep up.
+   **Tools (2026-10-23):** `botbowl-fake-worker` (a bin of botbowl-worker: the real handshake and
+   frames, canned corpus lines as results, sleeps for games; many connections per process; reports
+   dispatch latency = last result sent → next task, connect latency, MB/s), `scripts/hub_scale.sh` +
+   `hub_scale.py` (stages of generate/label at 100/1,000/4,000 streams, realistic and compressed
+   time, hub CPU/RSS sampled, `summary.md`), `scripts/prepare_scale.sh` (prepare and the loader at
+   R× a corpus). Results: below.
 7. **Bug chasing before hours burn:** a 20x11/7 random-game fuzz at scale (panics, hash/eq invariants,
    kickoff table, 7-player setups); the probe findings (mirror asymmetry, rare-skill values, AV sign);
    full-size 26x15/11 fuzz and a tiny end-to-end loop for later.
