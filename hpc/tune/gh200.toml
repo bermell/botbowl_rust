@@ -1,0 +1,113 @@
+# The tuning suite for one GH200 superchip (72 Neoverse V2 cores, one H100 with 96 GB HBM, 128 GB
+# LPDDR coherent), one Slurm task: `-c 72 --gpus 1`. ~2.5 h for every row on one GPU; `--shard K/4`
+# splits it over the four superchips of a node (~40 min), `--only micro,queue` runs the cheap first
+# third alone. See hpc/tune/README.md for the job script and what to run first.
+#
+#   P=/nobackup/proj/disk/<project>/botbowl
+#   hpc/tune/run_suite.sh hpc/tune/gh200.toml $P/runs/hpc_tune/pilot1
+#
+# Sized for 96 GB of HBM: up to 2,048 streams per GPU and buckets to 1,024 (a 1,024 graph is ~0.5-1 GB
+# per lane with its pool), several processes per GPU. Every row is a few minutes: load + capture
+# (~0.5-1 min with 20 buckets x 2 lanes), `warm`, then the `window` it measures.
+
+[suite]
+net = "$P/models/bbnet_mix16x9v9_gen49.onnx"       # .pt and .ts beside it (copied from the box)
+label_corpus = ["$P/runs/corpus/gen49_shard4.jsonl", "$P/runs/corpus/gen49_shard5.jsonl"]
+scratch = "$TMPDIR/hpc_tune"                        # node-local NVMe: gen/label output is throwaway
+capacity = "20x11/7"
+canvas = "13x22"
+config = "cfgs/chance_all_partial_gen.toml"
+iters = 1000
+sizes = "mix"
+seed = 69400
+warm = 60
+window = 90
+stats_every = 5
+label_repeat = 8          # two shards x 8 = ~70M forwards: outlasts warm + window at 300k/s
+
+# ---- 1. Net throughput, no search (~15 min): positions/s vs batch, precision, layout, lanes.
+# `fp32` = TF32 off (true fp32), `default` = torch's defaults (TF32 convolutions on Hopper: what the
+# loop runs today if nothing is set), `tf32` = TF32 on for matmuls too, `fp16` / `bf16` = the exports.
+[[micro]]
+precision = ["fp32", "default", "tf32", "fp16", "bf16"]
+channels_last = [false, true]
+lanes = 2
+batches = [1, 16, 64, 128, 256, 512, 1024]
+phase_secs = 6
+warm_secs = 2
+
+[[micro]]
+precision = "fp16"
+lanes = [1, 3, 4]
+batches = [64, 256, 1024]
+phase_secs = 6
+
+# ---- 2. The queue with no search (~6 min): can the batchers feed the GPU at 2,048 streams?
+[[queue]]
+precision = ["fp32", "fp16"]
+lanes = [2, 4]
+buckets = "to1024"
+clients = [64, 256, 512, 1024, 2048]
+phase_secs = 10
+
+# ---- 3. Generation (~1 h): streams per GPU at fp32 and fp16 — where does the CPU bind?
+[[gen]]
+streams = [128, 256, 512, 1024]
+precision = ["fp32", "fp16"]
+buckets = "to1024"
+lanes = 2
+pin = "node"
+
+# lanes and bucket lists at 512 streams (fp16)
+[[gen]]
+streams = 512
+precision = "fp16"
+lanes = [1, 4]
+buckets = ["to256", "to1024"]
+pin = "node"
+
+# processes per GPU at 1,024 streams in all: one CUDA context each, time-sliced unless MPS
+[[gen]]
+streams = 1024
+precision = "fp16"
+buckets = "to1024"
+processes = [2, 4]
+pin = ["node", "split"]
+
+[[gen]]
+streams = 1024
+precision = "fp16"
+buckets = "to1024"
+processes = 4
+pin = "split"
+mps = true
+
+# pinning off (the scheduler's choice) as the control for `node`
+[[gen]]
+streams = 512
+precision = "fp16"
+buckets = "to1024"
+pin = "none"
+
+# ---- 4. Labelling alone (~15 min): bare-policy playouts, ~half the CPU per forward.
+[[label]]
+streams = [256, 512, 1024, 2048]
+precision = "fp16"
+buckets = "to1024"
+pin = "node"
+
+# ---- 5. Generation + labelling on one GPU (plan 069 item 4b, ~25 min).
+[[mix]]
+gen_streams = [256, 512]
+label_streams = [256, 1024]
+precision = "fp16"
+buckets = "to1024"
+pin = "node"
+
+[[mix]]
+gen_streams = 512
+label_streams = 1024
+precision = "fp16"
+buckets = "to1024"
+pin = "split"
+mps = [false, true]

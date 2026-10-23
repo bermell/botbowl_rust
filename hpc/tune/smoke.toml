@@ -1,0 +1,61 @@
+# The tuning suite at toy sizes on the training box's GTX 1060 (6 GB, Pascal: no tensor cores, so
+# fp16 is functional but not fast, and bf16 has no cuDNN kernels — it is left out here). A smoke test
+# of the driver, the knobs and the exports, ~15 min; its numbers say nothing about an H100.
+#
+#   hpc/tune/run_suite.sh hpc/tune/smoke.toml /home/mattias/repos/botbowl_rust/runs/hpc_tune/smoke
+#
+# Relative paths resolve against this checkout, else the main checkout (a worktree has no models/).
+
+[suite]
+net = "models/az_v7/bbnet_mix16x9v9_gen49.onnx"     # .pt and .ts beside it; variants are exported there
+label_corpus = ["runs/hpc_tune/label_slice.jsonl"]   # head -n 40 of a gen49 shard (copy, not the loop's file)
+capacity = "20x11/7"
+canvas = "13x22"
+config = "cfgs/chance_all_partial_gen.toml"
+iters = 1000
+sizes = "mix"
+seed = 69400
+warm = 20
+window = 30
+stats_every = 2
+label_repeat = 2
+
+# Net throughput, no search: default (= fp32 on Pascal) vs the fp16 export, lanes 1 and 2.
+[[micro]]
+precision = ["default", "fp16"]
+lanes = [1, 2]
+batches = [1, 8, 32, 128]
+phase_secs = 4
+warm_secs = 1
+
+# channels-last export loads and runs (one row).
+[[micro]]
+precision = "fp16"
+channels_last = true
+lanes = 1
+batches = [32]
+phase_secs = 3
+
+# The queue with no search, buckets up to 128.
+[[queue]]
+lanes = 2
+buckets = "to128"
+clients = [8, 64]
+phase_secs = 5
+
+[[gen]]
+streams = [8, 24]
+buckets = ["default", "to128"]
+
+[[gen]]
+streams = 16
+processes = 2
+pin = "split"
+
+[[label]]
+streams = 16
+
+[[mix]]
+gen_streams = 8
+label_streams = 8
+pin = ["node", "split"]

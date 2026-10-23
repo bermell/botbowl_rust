@@ -7,7 +7,7 @@ training box, so neither the build nor a job needs the internet or a module.
 
 | file | what |
 |---|---|
-| `botbowl.def` | the image: arm64 `python:3.12-bookworm` (pinned digest), Rust, the trainer venv, the four binaries and the `inproc_parity` harness built at capacity 20x11/7 with `-C target-cpu=neoverse-v2` and the in-process libtorch backend |
+| `botbowl.def` | the image: arm64 `python:3.12-bookworm` (pinned digest), Rust, the trainer venv, the four binaries, the `inproc_parity` harness and the tuning suite's `inproc_bench` built at capacity 20x11/7 with `-C target-cpu=neoverse-v2` and the in-process libtorch backend |
 | `make_bundles.sh` | fetches everything the build needs (vendored crates, aarch64 wheels, CUDA header wheels, Rust installer, base image) into `bundle/` (gitignored) |
 | `wheelhouse.py` | the wheel part: exactly `train/uv.lock`'s files for cp312 linux aarch64, sha256-checked, plus `requirements.txt` for a no-resolve, no-index install |
 | `build_image.sh` | stages HEAD (a shallow clone) into the bundle dir and runs `apptainer build` there |
@@ -79,6 +79,7 @@ Parity before anything else (plan 069 item 4): `scripts/parity066.sh` builds an 
 so run it from the checkout in project storage (next section), with a net, its `.pt`/`.ts` and a
 shard copied over:
 `apptainer exec --nv --bind $P $SIF bash -c "cd $P/botbowl_rust && CARGO_TARGET_DIR=$P/target/20x11-torch scripts/parity066.sh $P/runs/parity $P/models/NET.onnx '$P/runs/SHARD.jsonl'"`.
+Then the inference tuning suite: `hpc/tune/README.md` ("On the first pilot node").
 
 ## Where things go
 

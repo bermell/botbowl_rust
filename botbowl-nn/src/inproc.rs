@@ -34,7 +34,126 @@ use crate::encode::{GLOBAL_FEATURES, SPATIAL_CHANNELS};
 use crate::remote::{canary_input, CANARY_H, CANARY_TOL, CANARY_W};
 
 /// The sidecar's CUDA-graph buckets (`nn_server.py` `BUCKETS`): a batch of 9 runs as a padded 12.
+/// The default; `BLOOD_NN_BUCKETS` replaces it (plan 069 item 4: an H100 wants batches of
+/// 512-1024, which the sidecar never had).
 pub const BUCKETS: [usize; 12] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
+
+/// `BLOOD_NN_BUCKETS=1,2,4,…,1024`: the CUDA-graph buckets, ascending, the largest being the
+/// queue's largest batch. Unset or empty: [`BUCKETS`]. Each bucket is one captured graph per lane
+/// with its own pinned buffers and private memory pool, so a long list costs load time (three
+/// warm-up calls and a capture each) and device memory (the largest buckets dominate: activations
+/// scale with the batch). Padding waste is `bucket - n` rows per batch, so the list wants to be
+/// dense where batches actually land.
+pub fn buckets_from_env() -> Result<Vec<usize>, String> {
+    match std::env::var("BLOOD_NN_BUCKETS") {
+        Ok(v) if !v.trim().is_empty() => parse_buckets(&v),
+        _ => Ok(BUCKETS.to_vec()),
+    }
+}
+
+/// Parse a comma-separated, strictly ascending list of positive bucket sizes.
+pub fn parse_buckets(v: &str) -> Result<Vec<usize>, String> {
+    let mut out: Vec<usize> = Vec::new();
+    for t in v.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        let b: usize = t.parse().map_err(|_| format!("BLOOD_NN_BUCKETS={v}: {t:?} is not a number"))?;
+        if b == 0 || out.last().is_some_and(|&l| b <= l) {
+            return Err(format!("BLOOD_NN_BUCKETS={v}: want positive sizes in strictly ascending order"));
+        }
+        out.push(b);
+    }
+    if out.is_empty() {
+        return Err(format!("BLOOD_NN_BUCKETS={v}: no buckets"));
+    }
+    Ok(out)
+}
+
+/// Numerics of the in-process forward (`BLOOD_NN_PRECISION`, plan 069 item 4). Opt-in: unset is
+/// [`Precision::Default`], which is exactly the sidecar's route (bit parity, plan 066 §4).
+///
+/// * `Default` — whatever torch's defaults are on the device: on Ampere and later that is **TF32
+///   convolutions** (`cudnn.allow_tf32` defaults to on) with fp32 matmuls; on the 1060 plain fp32.
+///   `BLOOD_NN_TF32` still sets cuDNN's flag, as before.
+/// * `Fp32` — TF32 off for both cuDNN and cuBLAS: true fp32 on any GPU (the reference on an H100).
+/// * `Tf32` — TF32 on for both.
+/// * `Fp16` / `Bf16` — the export's reduced-precision variant (`<net>.fp16.ts`, written by
+///   `python -m bbnn.export_ts NET.pt --dtype fp16`): BatchNorm folded in fp32, weights cast, the
+///   module casting its fp32 inputs and returning fp32 outputs, so the queue, the staging and the
+///   H2D copy are unchanged. exp081 (CPU autocast): fp16 changes 0.05% of top-1 moves, bf16 0.74%.
+///
+/// `BLOOD_NN_CHANNELS_LAST=1` loads the `-cl` variant of the same file (`<net>.fp16-cl.ts`,
+/// `<net>.fp32-cl.ts`: NHWC weights and inputs, the tensor cores' native layout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Precision {
+    Default,
+    Fp32,
+    Tf32,
+    Fp16,
+    Bf16,
+}
+
+impl Precision {
+    pub fn parse(v: &str) -> Result<Self, String> {
+        Ok(match v.trim().to_ascii_lowercase().as_str() {
+            "" | "default" => Precision::Default,
+            "fp32" | "f32" => Precision::Fp32,
+            "tf32" => Precision::Tf32,
+            "fp16" | "f16" | "half" => Precision::Fp16,
+            "bf16" => Precision::Bf16,
+            other => return Err(format!("BLOOD_NN_PRECISION={other}: want default, fp32, tf32, fp16 or bf16")),
+        })
+    }
+
+    /// `BLOOD_NN_PRECISION` (unset = `Default`).
+    pub fn from_env() -> Result<Self, String> {
+        Self::parse(&std::env::var("BLOOD_NN_PRECISION").unwrap_or_default())
+    }
+
+    /// The dtype of the file this precision loads: the fp32 export for the three fp32 modes.
+    pub fn file_dtype(self) -> &'static str {
+        match self {
+            Precision::Fp16 => "fp16",
+            Precision::Bf16 => "bf16",
+            _ => "fp32",
+        }
+    }
+}
+
+/// The export variant `precision` + `channels_last` load: `None` for the plain export (`<net>.ts`),
+/// else the tag of `<net>.<tag>.ts` (`fp16`, `bf16-cl`, `fp32-cl`, …; `bbnn.export_ts` names them).
+pub fn variant_tag(precision: Precision, channels_last: bool) -> Option<String> {
+    match (precision.file_dtype(), channels_last) {
+        ("fp32", false) => None,
+        (d, false) => Some(d.to_string()),
+        (d, true) => Some(format!("{d}-cl")),
+    }
+}
+
+/// `X.ts` → `X.<tag>.ts`, beside it.
+pub fn variant_path(base_ts: &Path, tag: &str) -> PathBuf {
+    let stem = base_ts.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    base_ts.with_file_name(format!("{stem}.{tag}.ts"))
+}
+
+/// The canary's tolerance for a load: [`CANARY_TOL`] (1e-3, tract vs fp32) unless the file is a
+/// reduced-precision export (its `bbnn_variant` tag) or the process runs TF32; the canary is there
+/// to catch the wrong net or a broken layout, which miss by far more. `BLOOD_NN_CANARY_TOL`
+/// overrides. `Default` keeps 1e-3 even on an H100, where its convolutions are TF32: whether the
+/// 9x16 fixture stays inside 1e-3 there is the first thing the tuning suite's `default` row shows
+/// (plan 069 item 4).
+pub fn canary_tolerance(precision: Precision, file_variant: &str) -> f32 {
+    if let Some(t) = std::env::var("BLOOD_NN_CANARY_TOL").ok().and_then(|v| v.parse::<f32>().ok()) {
+        return t;
+    }
+    let by_file = if file_variant.starts_with("bf16") {
+        1e-1
+    } else if file_variant.starts_with("fp16") {
+        2e-2
+    } else {
+        CANARY_TOL
+    };
+    let by_flags = if precision == Precision::Tf32 { 2e-2 } else { CANARY_TOL };
+    by_file.max(by_flags)
+}
 
 mod ffi {
     use super::*;
@@ -43,6 +162,8 @@ mod ffi {
         pub fn bbt_cuda_device_count() -> c_int;
         pub fn bbt_set_cudnn(benchmark: c_int, deterministic: c_int) -> c_int;
         pub fn bbt_set_cudnn_tf32(allow: c_int) -> c_int;
+        pub fn bbt_set_matmul_tf32(allow: c_int) -> c_int;
+        pub fn bbt_model_variant(model: *mut c_void, buf: *mut c_char, cap: i64) -> i64;
         pub fn bbt_model_load(path: *const c_char, device: *const c_char, optimize: c_int, c: i64, f: i64, a: i64) -> *mut c_void;
         pub fn bbt_model_graph(model: *mut c_void, buf: *mut c_char, cap: i64) -> i64;
         pub fn bbt_model_forward(
@@ -60,6 +181,7 @@ mod ffi {
         pub fn bbt_runner_host_policy(runner: *mut c_void) -> *mut f32;
         pub fn bbt_runner_launch(runner: *mut c_void, n: i64, want_policy: c_int) -> c_int;
         pub fn bbt_runner_wait(runner: *mut c_void, device_ms: *mut f32) -> c_int;
+        pub fn bbt_runner_free(runner: *mut c_void);
     }
 }
 
@@ -110,6 +232,22 @@ pub fn set_cudnn(mode: CudnnMode) -> Result<(), String> {
     Ok(())
 }
 
+/// The process-wide TF32 flags an explicit precision asks for (`Fp32`: both off; `Tf32`: both on).
+/// `Default`, `Fp16` and `Bf16` touch nothing, so a default process makes exactly the calls it made
+/// before plan 069. Call after [`set_cudnn`] (it wins over `BLOOD_NN_TF32`) and before loading.
+pub fn set_precision(p: Precision) -> Result<(), String> {
+    let allow = match p {
+        Precision::Fp32 => 0,
+        Precision::Tf32 => 1,
+        _ => return Ok(()),
+    };
+    // SAFETY: plain FFI calls with an integer argument.
+    if unsafe { ffi::bbt_set_cudnn_tf32(allow) } != 0 || unsafe { ffi::bbt_set_matmul_tf32(allow) } != 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
 /// Number of CUDA devices libtorch sees.
 pub fn cuda_device_count() -> usize {
     // SAFETY: plain FFI call.
@@ -146,6 +284,19 @@ impl TorchModel {
             return Err(format!("loading {}: {}", ts.display(), last_error()));
         }
         Ok(TorchModel { ptr })
+    }
+
+    /// The export's `bbnn_variant` tag (`fp16`, `bf16-cl`, …), empty for a plain fp32 export.
+    pub fn variant(&self) -> String {
+        // SAFETY: as `graph`: measure, then fill.
+        let n = unsafe { ffi::bbt_model_variant(self.ptr, std::ptr::null_mut(), 0) };
+        if n <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u8; n as usize + 1];
+        unsafe { ffi::bbt_model_variant(self.ptr, buf.as_mut_ptr() as *mut c_char, buf.len() as i64) };
+        buf.truncate(n as usize);
+        String::from_utf8_lossy(&buf).into_owned()
     }
 
     /// The (optimised) forward graph as TorchScript IR text.
@@ -260,6 +411,14 @@ impl GraphRunner {
         Ok(Duration::from_secs_f64(ms as f64 / 1e3))
     }
 
+    /// Free the graph, its pool and its pinned buffers now. Runners are otherwise never freed
+    /// (they live in an executor for the process); the tuning bench (`examples/inproc_bench.rs`)
+    /// captures one bucket after another and must not keep the large ones.
+    pub fn release(self) {
+        // SAFETY: the runner is live and this consumes its only handle.
+        unsafe { ffi::bbt_runner_free(self.ptr) };
+    }
+
     /// The value output (after [`run`](Self::run)).
     pub fn values(&self) -> &[f32] {
         // SAFETY: `bucket` pinned floats owned by the runner.
@@ -288,31 +447,55 @@ pub fn crop_policy(row: &[f32], geo: &Geometry, h: usize, w: usize, out: &mut Ve
     }
 }
 
-/// The smallest bucket that holds `n` (the largest one if none does).
+/// The smallest of the default [`BUCKETS`] that holds `n` (the largest one if none does).
 pub fn bucket_for(n: usize) -> usize {
-    BUCKETS.iter().copied().find(|&b| b >= n).unwrap_or(BUCKETS[BUCKETS.len() - 1])
+    bucket_in(&BUCKETS, n)
+}
+
+/// The smallest of `buckets` that holds `n` (the largest one if none does).
+pub fn bucket_in(buckets: &[usize], n: usize) -> usize {
+    buckets.iter().copied().find(|&b| b >= n).unwrap_or(buckets[buckets.len() - 1])
 }
 
 /// The [`Executor`] over captured graphs: `runners[lane][bucket index]`.
 pub struct TorchExecutor {
     pub model: TorchModel,
     pub geo: Geometry,
+    buckets: Vec<usize>,
     runners: Vec<Vec<Mutex<GraphRunner>>>,
 }
 
 impl TorchExecutor {
-    /// Capture every bucket on every lane: lane 0's twelve graphs in bucket order (the sidecar's
-    /// `prewarm` order), then lane 1's, …
+    /// Capture the default [`BUCKETS`] on every lane (what the parity harness compares with the
+    /// sidecar).
     pub fn capture(model: TorchModel, geo: Geometry, lanes: usize) -> Result<Self, String> {
+        Self::capture_buckets(model, geo, lanes, &BUCKETS)
+    }
+
+    /// Capture every bucket on every lane: lane 0's graphs in bucket order (the sidecar's
+    /// `prewarm` order), then lane 1's, …
+    pub fn capture_buckets(model: TorchModel, geo: Geometry, lanes: usize, buckets: &[usize]) -> Result<Self, String> {
+        if buckets.is_empty() {
+            return Err("no buckets to capture".into());
+        }
         let mut runners = Vec::with_capacity(lanes);
         for lane in 0..lanes {
-            let mut row = Vec::with_capacity(BUCKETS.len());
-            for &b in &BUCKETS {
+            let mut row = Vec::with_capacity(buckets.len());
+            for &b in buckets {
                 row.push(Mutex::new(GraphRunner::new(&model, geo, b, lane)?));
             }
             runners.push(row);
         }
-        Ok(TorchExecutor { model, geo, runners })
+        Ok(TorchExecutor {
+            model,
+            geo,
+            buckets: buckets.to_vec(),
+            runners,
+        })
+    }
+
+    pub fn buckets(&self) -> &[usize] {
+        &self.buckets
     }
 
     /// Run a batch directly on `lane` (bypassing the queue): the parity harness's entry point.
@@ -323,7 +506,7 @@ impl TorchExecutor {
         rows: &[(&[f32], &[f32], &[f32], usize, usize)],
         want_policy: bool,
     ) -> Result<(Vec<f32>, Vec<Vec<f32>>), String> {
-        let bi = BUCKETS.iter().position(|&b| b >= rows.len()).ok_or("batch larger than the largest bucket")?;
+        let bi = self.buckets.iter().position(|&b| b >= rows.len()).ok_or("batch larger than the largest bucket")?;
         let mut r = self.runners[lane][bi].lock().unwrap();
         for (i, (s, g, m, _, _)) in rows.iter().enumerate() {
             r.stage_row(i, s, g, m);
@@ -348,15 +531,16 @@ impl Executor for TorchExecutor {
     }
 
     fn max_batch(&self) -> usize {
-        BUCKETS[BUCKETS.len() - 1]
+        self.buckets[self.buckets.len() - 1]
     }
 
     fn bucket_for(&self, n: usize) -> usize {
-        bucket_for(n)
+        bucket_in(&self.buckets, n)
     }
 
     fn run(&self, lane: usize, rows: &mut [MutexGuard<'_, SlotData>], want_policy: bool) -> Result<Duration, String> {
-        let bi = BUCKETS
+        let bi = self
+            .buckets
             .iter()
             .position(|&b| b >= rows.len())
             .ok_or_else(|| format!("batch of {} exceeds the largest bucket", rows.len()))?;
@@ -388,14 +572,26 @@ pub struct InProcConfig {
     pub canvas: (usize, usize),
     /// Batcher threads (CUDA streams); 2 = the sidecar's depth-2 pipeline.
     pub lanes: usize,
-    /// Slot ring size.
+    /// Slot ring size. Every search thread holds at most one slot, so more streams than slots
+    /// wait for one: a process with 1,000 streams wants `BLOOD_NN_SLOTS` above 1,000.
     pub slots: usize,
     pub cudnn: CudnnMode,
+    /// CUDA-graph buckets, ascending (`BLOOD_NN_BUCKETS`, default [`BUCKETS`]).
+    pub buckets: Vec<usize>,
+    /// `BLOOD_NN_PRECISION` (default `Default`: the sidecar's route).
+    pub precision: Precision,
+    /// `BLOOD_NN_CHANNELS_LAST=1`: load the export's `-cl` variant.
+    pub channels_last: bool,
+    /// `BLOOD_NN_OPTIMIZE=0` skips `optimize_for_inference`: an escape hatch should a
+    /// reduced-precision export not survive its fusions on some device (default on, as the sidecar).
+    pub optimize: bool,
 }
 
 impl InProcConfig {
     /// `device` from the caller; `BLOOD_NN_CANVAS=HxW` (default: the compiled capacity),
-    /// `BLOOD_NN_LANES` (2), `BLOOD_NN_SLOTS` (256), `BLOOD_NN_DETERMINISTIC` (off).
+    /// `BLOOD_NN_LANES` (2), `BLOOD_NN_SLOTS` (256), `BLOOD_NN_DETERMINISTIC` (off),
+    /// `BLOOD_NN_BUCKETS` (the sidecar's twelve), `BLOOD_NN_PRECISION` (default),
+    /// `BLOOD_NN_CHANNELS_LAST` (off), `BLOOD_NN_OPTIMIZE` (on).
     pub fn from_env(device: &str) -> Result<Self, String> {
         use botbowl_engine::core::model::{HEIGHT, WIDTH};
         let canvas = match std::env::var("BLOOD_NN_CANVAS") {
@@ -414,13 +610,44 @@ impl InProcConfig {
                 _ => Ok(default),
             }
         };
+        let flag = |name: &str, default: bool| match std::env::var(name) {
+            Ok(v) if !v.is_empty() => v != "0",
+            _ => default,
+        };
         Ok(InProcConfig {
             device: device.to_string(),
             canvas,
             lanes: num("BLOOD_NN_LANES", 2)?.max(1),
             slots: num("BLOOD_NN_SLOTS", 256)?.max(1),
             cudnn: CudnnMode::from_env(),
+            buckets: buckets_from_env()?,
+            precision: Precision::from_env()?,
+            channels_last: flag("BLOOD_NN_CHANNELS_LAST", false),
+            optimize: flag("BLOOD_NN_OPTIMIZE", true),
         })
+    }
+
+    /// The file this config loads for a net whose plain export is `base_ts`: `base_ts` itself, or
+    /// its `<tag>` variant beside it ([`variant_tag`]), which must exist — a precision silently
+    /// running on the fp32 file would measure the wrong thing.
+    pub fn resolve_variant(&self, base_ts: &Path) -> Result<PathBuf, String> {
+        let Some(tag) = variant_tag(self.precision, self.channels_last) else {
+            return Ok(base_ts.to_path_buf());
+        };
+        let p = variant_path(base_ts, &tag);
+        if p.is_file() {
+            return p.canonicalize().map_err(|e| e.to_string());
+        }
+        Err(format!(
+            "BLOOD_NN_PRECISION={:?}{}: no {} — export it with `train/.venv/bin/python -m bbnn.export_ts \
+             <the net's .pt> --dtype {}{} --out {}`",
+            self.precision,
+            if self.channels_last { " BLOOD_NN_CHANNELS_LAST=1" } else { "" },
+            p.display(),
+            self.precision.file_dtype(),
+            if self.channels_last { " --channels-last" } else { "" },
+            p.display()
+        ))
     }
 
     fn geometry(&self) -> Geometry {
@@ -480,6 +707,10 @@ pub struct InProcBackend {
     pub ts: PathBuf,
     pub device: String,
     pub queue: BatchQueue,
+    /// The loaded file's `bbnn_variant` tag (empty: plain fp32 export).
+    pub variant: String,
+    /// The canary's tolerance for this load ([`canary_tolerance`]).
+    pub canary_tol: f32,
     /// Kept for the parity harness and tests (direct batches, the graph text).
     pub exec: Arc<TorchExecutor>,
 }
@@ -498,15 +729,19 @@ impl InProcBackend {
         static LOADING: Mutex<()> = Mutex::new(());
         let _one_at_a_time = LOADING.lock().unwrap_or_else(|e| e.into_inner());
         set_cudnn(cfg.cudnn)?;
+        set_precision(cfg.precision)?;
         let geo = cfg.geometry();
-        let model = TorchModel::load(ts, &cfg.device, true)?;
+        let model = TorchModel::load(ts, &cfg.device, cfg.optimize)?;
+        let variant = model.variant();
         sidecar_validation_calls(&model, &geo)?;
-        let exec = Arc::new(TorchExecutor::capture(model, geo, cfg.lanes)?);
+        let exec = Arc::new(TorchExecutor::capture_buckets(model, geo, cfg.lanes, &cfg.buckets)?);
         let queue = BatchQueue::new(exec.clone() as Arc<dyn Executor>, geo, cfg.slots);
         Ok(InProcBackend {
             ts: ts.to_path_buf(),
             device: cfg.device.clone(),
             queue,
+            canary_tol: canary_tolerance(cfg.precision, &variant),
+            variant,
             exec,
         })
     }
@@ -520,21 +755,23 @@ impl InProcBackend {
     }
 
     /// The canary interlock: the committed 9x16 fixture through the queue vs `expected` (tract
-    /// on the caller's ONNX), `< CANARY_TOL` on the value and every policy logit.
+    /// on the caller's ONNX), `< canary_tol` on the value and every policy logit ([`CANARY_TOL`]
+    /// for an fp32 load).
     pub fn check_canary(&self, expected: &(f32, Vec<f32>), what: &str) -> Result<(), String> {
         let (s, g) = canary_input();
         let (policy, value) = self.forward(&s, &g, CANARY_H, CANARY_W, true)?;
         let (ev, ep) = expected;
         let dv = (value - ev).abs();
-        if dv >= CANARY_TOL || !dv.is_finite() {
-            return Err(format!("canary value {value} vs tract {ev} (|Δ| = {dv}) for {what}"));
+        let tol = self.canary_tol;
+        if dv >= tol || !dv.is_finite() {
+            return Err(format!("canary value {value} vs tract {ev} (|Δ| = {dv} ≥ {tol}) for {what}"));
         }
         if policy.len() != ep.len() {
             return Err(format!("canary policy length {} vs tract {} for {what}", policy.len(), ep.len()));
         }
         let dp = policy.iter().zip(ep).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        if dp >= CANARY_TOL || !dp.is_finite() {
-            return Err(format!("canary policy max-abs-diff {dp} for {what}"));
+        if dp >= tol || !dp.is_finite() {
+            return Err(format!("canary policy max-abs-diff {dp} ≥ {tol} for {what}"));
         }
         Ok(())
     }
@@ -549,7 +786,8 @@ fn registry() -> &'static Mutex<HashMap<(String, PathBuf), Arc<InProcBackend>>> 
 /// The shared backend for `onnx`'s TorchScript on `device`, loading it (and checking its canary
 /// against `expected_canary`, tract's answer on that ONNX) on first use.
 pub fn get_or_load(onnx: &Path, device: &str, expected_canary: &(f32, Vec<f32>)) -> Result<Arc<InProcBackend>, String> {
-    let ts = resolve_torchscript(onnx)?;
+    let cfg = InProcConfig::from_env(device)?;
+    let ts = cfg.resolve_variant(&resolve_torchscript(onnx)?)?;
     let key = (device.to_string(), ts.clone());
     // Held across the load: two evaluators racing for one net must not capture it twice.
     let mut reg = registry().lock().unwrap();
@@ -558,20 +796,28 @@ pub fn get_or_load(onnx: &Path, device: &str, expected_canary: &(f32, Vec<f32>))
         b.check_canary(expected_canary, &onnx.display().to_string())?;
         return Ok(Arc::clone(b));
     }
-    let cfg = InProcConfig::from_env(device)?;
     let t0 = std::time::Instant::now();
     let backend = InProcBackend::start(&ts, &cfg)?;
     backend.check_canary(expected_canary, &onnx.display().to_string())?;
     eprintln!(
-        "NN_INPROC loaded {} on {} (canvas {}x{}, {} lanes x {} graphs, cudnn {:?}) in {:.1}s (canary ok; {} net(s) loaded in this process, never evicted)",
+        "NN_INPROC loaded {} on {} (canvas {}x{}, {} lanes x {} graphs up to {}, cudnn {:?}, precision {:?}{}{}) in {:.1}s (canary ok at {}; {} net(s) loaded in this process, never evicted)",
         ts.display(),
         device,
         cfg.canvas.0,
         cfg.canvas.1,
         cfg.lanes,
-        BUCKETS.len(),
+        cfg.buckets.len(),
+        cfg.buckets[cfg.buckets.len() - 1],
         cfg.cudnn,
+        cfg.precision,
+        if backend.variant.is_empty() {
+            String::new()
+        } else {
+            format!(", file {}", backend.variant)
+        },
+        if cfg.optimize { "" } else { ", NOT optimised" },
         t0.elapsed().as_secs_f64(),
+        backend.canary_tol,
         reg.len() + 1
     );
     let backend = Arc::new(backend);
@@ -647,4 +893,44 @@ pub fn resolve_torchscript(onnx: &Path) -> Result<PathBuf, String> {
         },
         sibling.display()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bucket_lists_parse_strictly_ascending() {
+        assert_eq!(parse_buckets("1, 2,4,64,1024").unwrap(), vec![1, 2, 4, 64, 1024]);
+        assert!(parse_buckets("1,4,4").is_err());
+        assert!(parse_buckets("8,4").is_err());
+        assert!(parse_buckets("0,4").is_err());
+        assert!(parse_buckets("1,x").is_err());
+        assert!(parse_buckets(" , ").is_err());
+        assert_eq!(bucket_in(&[1, 8, 64], 9), 64);
+        assert_eq!(bucket_in(&[1, 8, 64], 200), 64);
+        assert_eq!(bucket_for(9), 12);
+    }
+
+    /// The default loads the plain export (bit parity with the sidecar); every other precision or
+    /// layout names its own file beside it.
+    #[test]
+    fn precision_picks_the_export_variant() {
+        let base = Path::new("/m/bbnet_gen48.ts");
+        for p in [Precision::Default, Precision::Fp32, Precision::Tf32] {
+            assert_eq!(variant_tag(p, false), None);
+            assert_eq!(variant_tag(p, true).as_deref(), Some("fp32-cl"));
+        }
+        assert_eq!(variant_tag(Precision::Fp16, false).as_deref(), Some("fp16"));
+        assert_eq!(variant_tag(Precision::Bf16, true).as_deref(), Some("bf16-cl"));
+        assert_eq!(variant_path(base, "fp16-cl"), Path::new("/m/bbnet_gen48.fp16-cl.ts"));
+        assert_eq!(Precision::parse("").unwrap(), Precision::Default);
+        assert_eq!(Precision::parse("FP16").unwrap(), Precision::Fp16);
+        assert!(Precision::parse("fp8").is_err());
+        if std::env::var_os("BLOOD_NN_CANARY_TOL").is_none() {
+            assert_eq!(canary_tolerance(Precision::Default, ""), CANARY_TOL);
+            assert!(canary_tolerance(Precision::Fp16, "fp16-cl") > CANARY_TOL);
+            assert!(canary_tolerance(Precision::Tf32, "") > CANARY_TOL);
+        }
+    }
 }
