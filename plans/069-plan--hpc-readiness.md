@@ -143,7 +143,57 @@ cannot distort, then on Arm), and the net's positions/s per batch size and preci
    dispatch latency = last result sent → next task, connect latency, MB/s), `scripts/hub_scale.sh` +
    `hub_scale.py` (stages of generate/label at 100/1,000/4,000 streams, realistic and compressed
    time, hub CPU/RSS sampled, `summary.md`), `scripts/prepare_scale.sh` (prepare and the loader at
-   R× a corpus). Results: below.
+   R× a corpus).
+   **Results (2026-10-23, this 8-core box, shared with a GPU tuning run, so absolute CPU is approximate;
+   canned = 48 heuristic 20x11 games, ~370 KB a line raw / ~15 KB zstd, ~2x a 16x9 NN line):**
+
+   | stage (streams x s/unit) | achieved / offered | hub CPU (% of a core) | hub RSS | dispatch latency p50 / p99 |
+   |---|---|---|---|---|
+   | generate 100 x 20 s (5 games/s) | 1.00 | 4 | 17 MB | 12 / 40 ms |
+   | generate 992 x 20 s (50 games/s) | 0.99 | 26 | 33 MB | 6 / 43 ms |
+   | generate 4,030 x 20 s (200 games/s), before the fix | 0.99 | 60 | 56 MB | 7 / **1,184 ms** (max 2.1 s) |
+   | same, after (`TrajectoryPayload`, 7d7f487) | 0.99 | 73 | 49 MB | 5 / 38 ms |
+   | generate 4,030 x 4 s (1,000 games/s): before | **overload** (~600 games/s, latency unbounded, API timed out) | | | |
+   | same, after | 1.00 | 252 | 66 MB | 6 / 330 ms |
+   | generate 4,030 x 1 s (4,000 games/s), after | 0.31 (= ~1,250 games/s, the ceiling here) | 282 | 99 MB | 6.8 / 31 s |
+   | generate 1,000 connections x 1 stream x 10 s | 0.98 | 54 | 172 MB | 6 / 29 ms (after) |
+   | label 100 x 15 s | 0.93 (tail) | 2 | 97 MB | 0.7 / 1.5 ms |
+   | label 992 x 15 s (66 items/s) | 1.00 | 12 | 544 MB | 0.2 / 0.9 ms |
+   | label 4,030 x 15 s (270 items/s; 10.8 GB input) | 1.00 | 51 | 1.96 GB | 0.5 / 1.2 ms |
+   | label 4,030 x 4 s (1,000 items/s) | 0.98 | 144 | 1.91 GB | 0.2 / 1.1 ms |
+
+   Reading: (1) **The one clear bottleneck was per-result work under the hub's single lock**: zstd inflate
+   plus the `drive_summary` scan of each ~370 KB line, ~2 ms a game. Fixed (7d7f487): decoded in the
+   websocket task, the lock only writes; ceiling here ~600 → ~1,250 games/s. A realistic cluster load
+   (60 s games: 4,000 streams = 67 games/s; 16,000 = 270/s) is now well inside it. (2) Labels are cheap
+   per message (~0.5 ms p50 at 1,000 items/s); their cost is **memory and submit time**: the hub holds
+   every input line zstd'd, ~0.18 GB RSS per GB of corpus, and `job label` parses the corpus at submit,
+   ~1.6 s per GB (CLI submit timeout 600 s → ~350 GB per job). At 100x today's generation (~100 GB of
+   JSON) that is ~18 GB on node 0 and ~3 min of submit. (3) Many thin connections (1,000 x 1 stream)
+   cost nothing visible. (4) **Residual, not fixed:** shard writes (`write_all` + `flush` per game) are
+   still under the lock — fine on local disk, but on Lustre a slow write stalls every result and the
+   API (`job --wait` polls, the status page) behind it; if the cluster shows it, give each generate
+   shard a writer thread as label shards already have (`label::ShardWrite`). The API shares the lock,
+   so an overloaded hub answers its own `/api/jobs` late (`job --wait` retries, harmless).
+
+   `prepare` and the loader (`scripts/prepare_scale.sh`, a current-schema 1,800-game heuristic 20x11-mix
+   corpus, 820 MB, 76k kept samples, repeated R times):
+
+   | R | prepare | prepare RSS | output | loader open RSS | loader samples/s, 0 / 4 workers |
+   |---|---|---|---|---|---|
+   | 1 | 6.3 s | 12 MB | 1.0 GB | 549 MB | 13.9k / 25.3k |
+   | 3 | 18.9 s | 16 MB | 3.1 GB | 721 MB | 13.6k / 25.2k |
+   | 10 | 64 s | 35 MB | 10.3 GB | 1.3 GB | **3.6k / 15.4k** |
+
+   `prepare` is linear and streams (~12k samples/s, flat memory): 100x is ~11 min and ~100 GB of output
+   — no problem. The loader is the one to watch: everything but `spatial.npy` is read into RAM
+   (~85 MB per 76k samples → ~9 GB at 100x, per process; forked workers share it copy-on-write), and
+   `spatial.npy` is mmapped and read at random, so throughput holds only while it fits the page cache:
+   at 10x (10 GB on a 15 GB box) it fell 4x with no workers and 40% with four. On a GH200 node (480 GB
+   LPDDR) 100x fits in memory once read; from Lustre the first epoch is random 13 KB reads, which is
+   what the flash tier (or node-local NVMe, `PREPARED_ROOT=local`) is for. Loader workers are needed
+   either way: 25k samples/s from cache with four may not keep an H100 training a 96x8 net busy —
+   measure the trainer's own samples/s on the H100 before choosing `--loader-workers`.
 7. **Bug chasing before hours burn:** a 20x11/7 random-game fuzz at scale (panics, hash/eq invariants,
    kickoff table, 7-player setups); the probe findings (mirror asymmetry, rare-skill values, AV sign);
    full-size 26x15/11 fuzz and a tiny end-to-end loop for later.

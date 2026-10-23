@@ -8,6 +8,13 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### Hub and `prepare` at cluster scale, fake workers (plan 069 item 6), run 2026-10-23
+
+- **Question:** does the hub keep up with thousands of streams (generate trajectories, 32-sample label items), and how do `prepare` and the trainer's loader scale with a 10-100x corpus?
+- **Setup:** commits a6b6d87 (before) and 7d7f487 (hub fix), 20x11/7 build in `target/hubscale`; `scripts/hub_scale.sh OUT` (`botbowl-fake-worker`: real protocol, canned results — 48 heuristic 20x11 games, ~370 KB a line — sleeps for games; hub on ports 14100+); `scripts/prepare_scale.sh OUT CORPUS "1 3 10"` on a 1,800-game heuristic 20x11-mix corpus (`dataset --seed 70000 --mcts-iters 200 --size-centre 150`). Box shared with a GPU tuning run: CPU numbers approximate.
+- **Result:** tables in plan 069 item 6. Before the fix, 4,030 streams at 200 games/s gave dispatch p99 1.18 s and ~600 games/s overloaded the hub; after, p99 38 ms and ~1,250 games/s ceiling. Labels: ~0.5 ms per item at 1,000 items/s; the hub holds ~0.18 GB RSS per GB of label input and parses ~1.6 s/GB at submit. `prepare` linear, ~12k samples/s, flat memory; the loader falls 4x (0 workers) once `spatial.npy` outgrows the page cache.
+- **Conclusion:** per-result inflate/peek moved off the hub's lock (7d7f487); realistic cluster loads (67-270 games/s) are well inside the ceiling. Open: shard writes still under the lock (watch on Lustre); training data on flash tier / NVMe / page cache, and loader workers sized on the H100.
+
 ### <a id="exp081"></a>exp081: bf16 / fp16 inference numerics vs fp32, offline on CPU (plan 069 item 4), run 2026-10-22
 
 - **Question:** the H100 binds generation (exp080), and tensor-core precision is worth ~4-7× throughput over fp32 — how much do reduced-precision forwards change the net's outputs and decisions?
