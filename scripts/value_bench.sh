@@ -28,7 +28,12 @@ UI="$CARGO_TARGET_DIR/release/botbowl-ui"; PY="${PY:-$REPO/train/.venv/bin/pytho
 SOCK="/tmp/bbnn-vbench-$$.sock"
 NN_PID=""; trap '[ -n "$NN_PID" ] && kill "$NN_PID" 2>/dev/null; rm -f "$SOCK"' EXIT INT TERM
 FEATURES=(); [ "$NN_BACKEND" = inproc ] && FEATURES=(--features botbowl-ui/torch)
-cargo build --release -j 4 -p botbowl-ui "${FEATURES[@]}" >> "$OUT/build.log" 2>&1 || { echo "build failed — see $OUT/build.log" >&2; exit 1; }
+# Plan 069 item 5: BOTBOWL_BIN_DIR = prebuilt binaries (the Apptainer image, or a Slurm job's build).
+if [ -n "${BOTBOWL_BIN_DIR:-}" ]; then
+    UI="$BOTBOWL_BIN_DIR/botbowl-ui"; [ -x "$UI" ] || { echo "BOTBOWL_BIN_DIR: no $UI" >&2; exit 1; }
+else
+    cargo build --release -j 4 -p botbowl-ui "${FEATURES[@]}" >> "$OUT/build.log" 2>&1 || { echo "build failed — see $OUT/build.log" >&2; exit 1; }
+fi
 first="${1#*=}"
 if [ "$NN_BACKEND" = inproc ]; then
     NN_ARGS=(--nn-backend inproc)

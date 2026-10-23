@@ -298,6 +298,14 @@ rates count every game, record and sample once per worker (`rates.rs` unit tests
 late joiners, wall-clock intervals and the log line; `generate_job.rs` end to end); and
 `pages.rs` drives every page route, the registry (rendering, per-request reads, no path escape)
 and the throughput section against a ledger with a written past.
+**Load (plan 069 item 6):** `botbowl-fake-worker` (a second bin of botbowl-worker) speaks the
+real protocol with canned results and sleeps instead of games, many connections per process;
+`scripts/hub_scale.sh OUT` runs the hub at 100 / 1,000 / 4,000 fake streams for generate and label
+jobs (ports 14000+) and writes `OUT/summary.md` (achieved vs offered result rate, hub CPU and RSS,
+dispatch latency). Rerun it after touching `state.rs`'s per-result path or `dispatch`. Everything
+per-result that does not need `Inner` belongs before the lock: a trajectory is inflated and peeked
+in the websocket task (`TrajectoryPayload::decode`), which took the ceiling on an 8-core box from
+~600 to ~1,250 games/s (plan 069 item 6); shard writes are still under it.
 For MCTS/NN paths, run real binaries at 14x7 against a current-schema net
 (`scripts/make_random_net.py` makes one) — search output is not reproducible across processes,
 so compare seed sets, labels and counts, not lines.

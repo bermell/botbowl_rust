@@ -375,6 +375,54 @@ impl Job {
     }
 }
 
+/// A `TrajectoryDone` payload, decompressed, checked and peeked at by the websocket task before it
+/// takes the hub's one lock (plan 069 item 6). Under the lock these cost ~2 ms a game at 20x11 (a
+/// ~370 KB line inflated, then scanned whole by `drive_summary`), which at 4,000 fake streams and
+/// 200 games/s held the lock most of the time: dispatch latency p99 1.2 s. Now the lock only
+/// writes the lines.
+pub struct TrajectoryPayload {
+    /// The JSON lines, newline-separated (no trailing newline), or why they cannot be written.
+    lines: Result<Vec<u8>, String>,
+    /// `drive_summary` of each line, in order.
+    summaries: Vec<Option<(String, u32)>>,
+}
+
+impl TrajectoryPayload {
+    pub fn decode(zstd_json: &[u8]) -> Self {
+        if zstd_json.is_empty() {
+            return TrajectoryPayload {
+                lines: Ok(Vec::new()),
+                summaries: Vec::new(),
+            };
+        }
+        let json = match zstd::decode_all(zstd_json) {
+            Ok(json) => json,
+            Err(e) => {
+                return TrajectoryPayload {
+                    lines: Err(format!("zstd: {e}")),
+                    summaries: Vec::new(),
+                }
+            }
+        };
+        if json.split(|b| *b == b'\n').any(|l| l.is_empty()) {
+            return TrajectoryPayload {
+                lines: Err("trajectory payload has an empty line".into()),
+                summaries: Vec::new(),
+            };
+        }
+        let summaries = json.split(|b| *b == b'\n').map(drive_summary).collect();
+        TrajectoryPayload {
+            lines: Ok(json),
+            summaries,
+        }
+    }
+
+    /// The game legitimately produced nothing (an empty `zstd_json`): counted, not written.
+    fn nothing(&self) -> bool {
+        matches!(&self.lines, Ok(v) if v.is_empty())
+    }
+}
+
 /// The board and the drive's own touchdowns, read from a trajectory line without keeping its
 /// samples. `outcome` is the absolute scoreline; a random-start drive begins at
 /// `meta.extra.start_score`, so its touchdowns are the difference (`td_rate.py`'s rule).
@@ -1058,7 +1106,14 @@ impl Inner {
         self.dispatch();
     }
 
-    pub fn trajectory_done(&mut self, worker: WorkerId, task: TaskId, game: u32, samples: u32, zstd_json: Vec<u8>) {
+    pub fn trajectory_done(
+        &mut self,
+        worker: WorkerId,
+        task: TaskId,
+        game: u32,
+        samples: u32,
+        payload: TrajectoryPayload,
+    ) {
         let name = self.worker_name(worker);
         let Some((job_id, unit)) = self.game_arrived(worker, task, game) else {
             return;
@@ -1070,37 +1125,30 @@ impl Inner {
         let s = &mut shards[unit];
         let fresh = s.done.insert(game);
         let mut records = 0u64;
-        if fresh && !zstd_json.is_empty() {
+        if fresh && !payload.nothing() {
             // One JSON line per record; a game that played the drive after its
             // score sends two (plan 047). Each is written as its own line.
-            let written = zstd::decode_all(&zstd_json[..])
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("zstd: {e}")))
+            let TrajectoryPayload { lines, summaries } = payload;
+            let written = lines
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
                 .and_then(|json| {
-                    let lines: Vec<&[u8]> = json.split(|b| *b == b'\n').collect();
-                    if lines.iter().any(|l| l.is_empty()) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "trajectory payload has an empty line",
-                        ));
-                    }
-                    for line in &lines {
+                    for line in json.split(|b| *b == b'\n') {
                         s.writer.write_all(line)?;
                         s.writer.write_all(b"\n")?;
                     }
-                    s.writer.flush()?;
-                    Ok(json)
+                    s.writer.flush()
                 });
             match written {
-                Ok(json) => {
+                Ok(()) => {
                     s.samples += samples as u64;
                     // Page statistics only: a line the peek cannot read is still a valid
                     // corpus line, so it is written and just not counted here. The
                     // samples are attributed to the first record; the count is a page
                     // figure, not a corpus one.
-                    for (i, line) in json.split(|b| *b == b'\n').enumerate() {
+                    for (i, summary) in summaries.into_iter().enumerate() {
                         s.written += 1;
                         records += 1;
-                        if let Some((board, tds)) = drive_summary(line) {
+                        if let Some((board, tds)) = summary {
                             s.stats.add(board, tds, if i == 0 { samples as u64 } else { 0 });
                         }
                     }

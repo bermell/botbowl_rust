@@ -12,6 +12,7 @@ training box, so neither the build nor a job needs the internet or a module.
 | `wheelhouse.py` | the wheel part: exactly `train/uv.lock`'s files for cp312 linux aarch64, sha256-checked, plus `requirements.txt` for a no-resolve, no-index install |
 | `build_image.sh` | stages HEAD (a shallow clone) into the bundle dir and runs `apptainer build` there |
 | `cross_check.sh`, `cross.Dockerfile` | on an x86 box, `cargo check`/`build` for aarch64 incl. the C/C++/asm parts (Debian bookworm's cross gcc 12, the image's compiler and glibc), no qemu |
+| `slurm/` | plan 069 item 5: the loop in chained Slurm jobs (a task per GH200, task 0 the loop, the rest workers), workers-only jobs, dry run; its own README |
 
 ## What the image runs on
 
