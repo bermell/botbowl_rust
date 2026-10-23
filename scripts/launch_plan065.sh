@@ -61,11 +61,24 @@ export TIER_OVERRIDE=mix16x9v9
 export MODEL_DIR="$M" INIT_CHAMPION="$INIT"
 export ANCHOR="$M/anchor_mix16x9_gen13_v9.onnx" ANCHOR_EVERY=0 P1_GAMES=0 EVAL_BOARD_SIZES=16x9,20x11 EVAL_RUNGS= EVAL_GAMES=30
 export MCTS_ITERS=1000 EVAL_MCTS_ITERS=1000 GEN_BOT_CONFIG="$GUMBEL_GEN" EVAL_BOT_CONFIG="$GUMBEL_EVAL" EXPLORE_ARGS=""
-export EVAL_VENUE=drives DRIVE_REF="$M/bbnet_mix16x9d1k_gen04_v9.onnx" DRIVE_SPRT=0.5:0.55 DRIVE_CAP=800
+# Measurement reset at gen48 (the user, 2026-10-21; relaunched 2026-10-23): drives against gen48 on
+# contested sets screened under gen48 (20x11 at 1000 descents, 16x9 at 250), value benches re-frozen
+# under gen48's MC labels, and the divergence gate's report (plan 068; free, `sprt` stays off). The
+# gen04 curve ends at gen51; MEASURE=gen04 restores it.
+export EVAL_VENUE=drives DRIVE_SPRT=0.5:0.55 DRIVE_CAP=800
+if [ "${MEASURE:-gen48}" = gen48 ]; then
+    export DRIVE_REF="$M/bbnet_mix16x9v9_gen48.onnx" DRIVE_GATE=report
+else
+    export DRIVE_REF="$M/bbnet_mix16x9d1k_gen04_v9.onnx"
+fi
 # 16x9 (the curve so far) and, once screened, 20x11. The loop refuses to start on a missing set, so
 # the 20x11 one joins at the first launch after it exists (plan 065 §4 builds it).
+if [ "${MEASURE:-gen48}" = gen48 ]; then
+    export DRIVE_POSITIONS="$POS20/contested_16x9_gen48.json,$POS20/contested_20x11_gen48.json"
+else
 SET20=$(ls -t "$POS20"/contested_20x11_*.json 2>/dev/null | head -1)
 export DRIVE_POSITIONS="$POS/contested_16x9_gen04g.json${SET20:+,$SET20}"
+fi
 [ -n "$SET20" ] || say "no 20x11 contested set in $POS20 yet: drives on 16x9 only (plan 065 §4)"
 export ORIGIN_EVERY=0
 export CQ_TAU=100 WARM_LR=5e-5 SELECT_ON=combined EVAL_EVERY=1000 ABSORB_PROBE=on
@@ -82,6 +95,9 @@ export LABEL_VIA_HUB=1
 # generation's held-out shards (plan 065 §4); scored once the file exists.
 export VALUE_BENCH="$REPO/runs/value_bench/v9_gen01_val.jsonl" NET_CHECK=on
 export VALUE_BENCH_2="${VALUE_BENCH_2:-$REPO/runs/value_bench/v9_20x11_val.jsonl}"
+if [ "${MEASURE:-gen48}" = gen48 ]; then
+    export VALUE_BENCH="$REPO/runs/value_bench/v9_16x9_gen49_val.jsonl" VALUE_BENCH_2="$REPO/runs/value_bench/v9_20x11_gen49_val.jsonl"
+fi
 export NET_CHECK_BOARDS=16x9,20x11
 # Plan 065 §5 (gen36 on CPU, 36 games a mix): a game of the 20x11 mix costs 1.90x the forwards of
 # one of the 16x9 mix and each forward 1.44x on the 13x22 canvas -> 2.7x the GPU per game (MC labels
