@@ -37,7 +37,7 @@ use botbowl_hub_proto::{
 use botbowl_mcts::SearchBudget;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::make_mcts;
-use botbowl_play::drives::{drive_assignment, play_drive_game, position_state};
+use botbowl_play::drives::{drive_assignment, play_drive_game_gated, position_state};
 use botbowl_play::eval::{ladder_assignment, play_ladder_game};
 use botbowl_play::generate::play_trajectory;
 use botbowl_play::mc_label::label_range;
@@ -451,7 +451,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
                     (Some(set), Some(b)) => {
                         let (i, attacks, dice) = drive_assignment(set.positions.len(), *seed, g);
                         let p = set.positions[i];
-                        play_drive_game(
+                        play_drive_game_gated(
                             &mut *cand,
                             &mut *opp,
                             rung,
@@ -461,6 +461,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
                             attacks,
                             dice,
                             *max_steps,
+                            set.gate,
                         )
                     }
                     _ => {

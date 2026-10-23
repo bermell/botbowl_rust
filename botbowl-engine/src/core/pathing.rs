@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::{collections::HashMap, hash, iter::zip, sync::Arc};
+use std::sync::Arc;
 
 use crate::core::model;
 use model::*;
@@ -400,6 +400,11 @@ impl Node {
 pub struct PathFinder<'a> {
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
+    /// Every square `nodes` may have been written on since the last batch was locked in (a
+    /// superset, with repeats): the lock-in pass visits these instead of the whole pitch, which
+    /// it did once per probability batch (plan 069 §1b). The pass treats each square on its own,
+    /// so the order and the repeats do not matter.
+    touched: Vec<Position>,
     open_set: Vec<Arc<Node>>,
     risky_sets: RiskySet,
     info: GameInfo<'a>,
@@ -783,6 +788,7 @@ impl<'a> PathFinder<'a> {
         PathFinder {
             nodes: Default::default(),
             locked_nodes: Default::default(),
+            touched: Vec::new(),
             open_set: Default::default(),
             risky_sets: Default::default(),
             info,
@@ -798,7 +804,46 @@ impl<'a> PathFinder<'a> {
     /// callers can pass a buffer that was filled by a previous call. This is
     /// the variant used by `MoveAction`/`BlockAction` to write directly into
     /// `GameState::path_buffer` and skip a per-frame 4KB allocation.
+    ///
+    /// Served from a one-entry per-thread memo when the last fill on this thread was for the same
+    /// player on a state that agrees on every field the pathfinder reads ([`PathInputs`]): the
+    /// search fills a new move decision's offerings and the NN encoder recomputes the same paths
+    /// for its path plane right after (plan 069 §1b). The nodes are shared (`Arc`, immutable), so
+    /// a hit is exactly what a fresh fill would have returned; debug builds check it.
+    ///
+    /// [`PathInputs`]: crate::core::gamestate::PathInputs
     pub fn fill_player_paths(game_state: &GameState, id: PlayerID, out: &mut FullPitch<OptRcNode>) -> Result<()> {
+        let hit = LAST_PATHS.with(|slot| match slot.borrow().as_ref() {
+            Some(m) if m.id == id && game_state.path_inputs_match(&m.key) => {
+                out.clone_from(&m.paths);
+                true
+            }
+            _ => false,
+        });
+        if hit {
+            #[cfg(debug_assertions)]
+            {
+                let mut fresh: FullPitch<OptRcNode> = Default::default();
+                Self::compute_player_paths(game_state, id, &mut fresh)?;
+                debug_assert!(
+                    same_paths(out, &fresh),
+                    "PathFinder memo returned stale paths: a field the pathfinder reads is missing from PathInputs"
+                );
+            }
+            return Ok(());
+        }
+        Self::compute_player_paths(game_state, id, out)?;
+        LAST_PATHS.with(|slot| {
+            *slot.borrow_mut() = Some(PathMemo {
+                id,
+                key: game_state.path_inputs(),
+                paths: out.clone(),
+            })
+        });
+        Ok(())
+    }
+
+    fn compute_player_paths(game_state: &GameState, id: PlayerID, out: &mut FullPitch<OptRcNode>) -> Result<()> {
         // Release any stale Arc payload from a previous fill — caller may
         // be reusing the same buffer.
         for slot in out.iter_mut() {
@@ -844,8 +889,15 @@ impl<'a> PathFinder<'a> {
                 pf.expand_node(node);
             }
 
-            //clear pf.nodes
-            for (node, locked) in zip(pf.nodes.iter_mut(), pf.locked_nodes.iter_mut()) {
+            //clear pf.nodes: only squares written since the last batch can hold a node
+            let PathFinder {
+                nodes,
+                locked_nodes,
+                touched,
+                ..
+            } = &mut pf;
+            for pos in touched.drain(..) {
+                let (node, locked) = (&mut nodes[pos], &mut locked_nodes[pos]);
                 match (&node, &locked) {
                     (Some(n), Some(l)) if n.is_better_than(l) => *locked = node.take(),
                     (Some(_), None) => *locked = node.take(),
@@ -916,6 +968,7 @@ impl<'a> PathFinder<'a> {
                 }
             }
             *best_in_batch = Some(new_node.clone());
+            self.touched.push(new_node.position);
 
             if self.info.can_continue_expanding(&new_node) {
                 self.open_set.push(new_node);
@@ -946,6 +999,7 @@ impl<'a> PathFinder<'a> {
                     .unwrap_or(true)
             })
             .map(|to_pos| {
+                self.touched.push(to_pos);
                 self.info
                     .expand_to(to_pos, &node, &mut self.nodes[to_pos], &self.locked_nodes[to_pos])
             })
@@ -969,6 +1023,7 @@ impl<'a> PathFinder<'a> {
                 // TODO: check withing passing range
                 .map(|player| player.position)
                 .map(|to_pos| {
+                    self.touched.push(to_pos);
                     self.info
                         .expand_to(to_pos, &node, &mut self.nodes[to_pos], &self.locked_nodes[to_pos])
                 })
@@ -984,58 +1039,61 @@ impl<'a> PathFinder<'a> {
     }
 }
 
+/// The last `fill_player_paths` on this thread: whose paths, the inputs they were computed from,
+/// and the result (plan 069 §1b).
+struct PathMemo {
+    id: PlayerID,
+    key: crate::core::gamestate::PathInputs,
+    paths: FullPitch<OptRcNode>,
+}
+
+thread_local! {
+    static LAST_PATHS: std::cell::RefCell<Option<PathMemo>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Square for square the same offering: present on the same squares, with the same probability
+/// (bit for bit), action type and route. What a memo hit must return (checked in debug builds).
+#[cfg(any(debug_assertions, test))]
+fn same_paths(a: &FullPitch<OptRcNode>, b: &FullPitch<OptRcNode>) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| match (x, y) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            x.prob.to_bits() == y.prob.to_bits()
+                && x.get_action_type() == y.get_action_type()
+                && x.iter().collect::<Vec<_>>() == y.iter().collect::<Vec<_>>()
+        }
+        _ => false,
+    })
+}
+
+/// The risky nodes waiting for their batch, one batch per distinct probability (by bit pattern),
+/// each in insertion order; the highest-probability batch is expanded next. A short `Vec` searched
+/// linearly: there are a few dozen distinct probabilities at most, and the `HashMap` it replaced
+/// spent more on SipHashing the keys than the pathfinder spent on the nodes (plan 069 §1b).
 #[derive(Default)]
 struct RiskySet {
-    set: HashMap<HashableFloat, Vec<Arc<Node>>>,
+    set: Vec<(u32, Vec<Arc<Node>>)>,
 }
 impl RiskySet {
     pub fn insert_node(&mut self, node: Arc<Node>) {
         assert!(0_f32 < node.prob && node.prob <= 1.0_f32);
-        let prob = HashableFloat(node.prob);
-        self.set.entry(prob).or_default().push(node);
-    }
-    pub fn get_next_batch(&mut self) -> Option<Vec<Arc<Node>>> {
-        match self.set.keys().map(|hf| hf.0).reduce(f32::max) {
-            Some(max_prob) => self.set.remove(&HashableFloat(max_prob)),
-            None => None,
+        let key = node.prob.to_bits();
+        match self.set.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, batch)) => batch.push(node),
+            None => self.set.push((key, vec![node])),
         }
     }
-    // pub fn is_empty(&self) -> bool {
-    //     self.set.is_empty()
-    // }
+    pub fn get_next_batch(&mut self) -> Option<Vec<Arc<Node>>> {
+        let max_prob = self.set.iter().map(|(k, _)| f32::from_bits(*k)).reduce(f32::max)?;
+        let i = self.set.iter().position(|(k, _)| *k == max_prob.to_bits())?;
+        Some(self.set.swap_remove(i).1)
+    }
 }
 impl Debug for RiskySet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RiskySet").field("len", &self.set.len()).finish()
     }
 }
-
-// Nasty workaround to get hashable floats
-#[derive(Debug, Copy, Clone)]
-struct HashableFloat(f32);
-
-impl HashableFloat {
-    fn key(&self) -> u32 {
-        self.0.to_bits()
-    }
-}
-
-impl hash::Hash for HashableFloat {
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: hash::Hasher,
-    {
-        self.key().hash(state)
-    }
-}
-
-impl PartialEq for HashableFloat {
-    fn eq(&self, other: &HashableFloat) -> bool {
-        self.key() == other.key()
-    }
-}
-
-impl Eq for HashableFloat {}
 
 #[cfg(test)]
 mod tests {
@@ -1063,6 +1121,38 @@ mod tests {
             .expect("expected a path to the endzone");
         assert!((path.prob - 1.0).abs() < 1e-6);
         assert_eq!(path.position.x, state.get_endzone_x(TeamType::Home));
+    }
+
+    /// Plan 069 §1b: the per-thread memo serves an exact repeat, and never the paths of a state
+    /// that differs in something the pathfinder reads — here an opponent moved next to the mover,
+    /// which adds a dodge to every route out.
+    #[test]
+    fn path_memo_serves_only_exact_repeats() {
+        let cx = crate::core::model::WIDTH_ / 2;
+        let cy = crate::core::model::HEIGHT_ / 2;
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((cx, cy)))
+            .add_away_player(Position::new((cx + 4, cy)))
+            .set_state(BuilderState::Turn { turn: 1 })
+            .build();
+        if state.info.team_turn != TeamType::Home {
+            state.step_simple(SimpleAT::EndTurn);
+        }
+        let id = state.get_player_id_at(Position::new((cx, cy))).unwrap();
+        let fresh = |s: &GameState| {
+            let mut out: FullPitch<OptRcNode> = Default::default();
+            PathFinder::compute_player_paths(s, id, &mut out).unwrap();
+            out
+        };
+        let first = PathFinder::player_paths(&state, id).unwrap();
+        let repeat = PathFinder::player_paths(&state.clone(), id).unwrap();
+        assert!(same_paths(&first, &repeat) && same_paths(&repeat, &fresh(&state)));
+
+        let away = state.get_player_id_at(Position::new((cx + 4, cy))).unwrap();
+        state.move_player(away, Position::new((cx + 1, cy))).unwrap();
+        let moved = PathFinder::player_paths(&state, id).unwrap();
+        assert!(same_paths(&moved, &fresh(&state)));
+        assert!(!same_paths(&moved, &first), "the moved marker must change the paths");
     }
 
     #[test]

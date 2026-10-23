@@ -2877,6 +2877,7 @@ impl MctsBot {
         } else {
             0
         };
+        let gumbel_frame = MoverFrame::for_team(&root_state, agent_team);
         let forced_root = (gumbel_m > 0).then(|| Arc::clone(self.forced_root.get_or_insert_with(Default::default)));
         let mut gd = gd;
         gd.forced_root = forced_root.clone();
@@ -3025,6 +3026,8 @@ impl MctsBot {
                             gumbel_seed,
                             gumbel_q_floor,
                             agent_team,
+                            self.config.tie_break,
+                            gumbel_frame,
                             steps_ref,
                         );
                     }
@@ -3523,13 +3526,21 @@ impl MctsBot {
         seed: u64,
         q_floor: f32,
         agent_team: TeamType,
+        tie_break: TieBreak,
+        frame: MoverFrame,
         steps: &AtomicU64,
     ) -> Option<EngineAction> {
         let sign = if agent_team == TeamType::Home { 1.0 } else { -1.0 };
         let children = || -> Vec<RootChild> {
-            tree.get_next_move_info()
-                .unwrap_or_default()
-                .into_iter()
+            let mut info = tree.get_next_move_info().unwrap_or_default();
+            // Plan 068: `Halving` sorts stably, so equal logits keep this order, and so does the
+            // order survivors are searched in. Under `TieBreak::Hash` (shipped) it is the root's
+            // `HashMap` order, random per tree, which made a net disagree with itself. A
+            // deterministic tie-break orders the root's children by it, preferred first.
+            if tie_break != TieBreak::Hash {
+                info.sort_by(|(a, _), (b, _)| tie_break.cmp_actions(b, a, frame));
+            }
+            info.into_iter()
                 .filter_map(|(a, info)| match &a {
                     BbAction::Player { action, .. } => Some(RootChild {
                         action: *action,

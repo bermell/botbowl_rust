@@ -205,3 +205,48 @@ fn halving_also_drives_a_reused_tree() {
     }
     panic!("no reused root wider than {M} moves found to test");
 }
+
+/// Plan 068: under a deterministic tie-break the Gumbel root orders its children by it, so two
+/// separately built bots (two trees, two `HashMap` orders) search the same states identically:
+/// the same move, and the same visits and Q on every root child. Under the shipped `Hash`
+/// tie-break the root's child order is the tree's own, and two bots can split on equal logits
+/// (exp079: gen48 disagreed with itself within a few decisions of a drive).
+#[test]
+fn a_deterministic_tie_break_makes_two_gumbel_bots_agree() {
+    use rand::SeedableRng;
+    let Some(mut state) = open_state() else { return };
+    let mover = |seed: u64| {
+        let mut cfg = MctsConfig::new();
+        cfg.workers = 1;
+        cfg.gumbel_m = M;
+        cfg.tie_break = botbowl_mcts::TieBreak::Mover;
+        let mut b = MctsBot::with_budget_and_config(SearchBudget::Iterations(N), cfg);
+        b.set_seed(rand_chacha::ChaCha8Rng::seed_from_u64(seed));
+        b
+    };
+    let (mut a, mut b) = (mover(1), mover(2));
+    let stats = |bot: &MctsBot| {
+        let mut c: Vec<_> = bot
+            .last_search()
+            .map(|s| {
+                s.children
+                    .iter()
+                    .map(|e| (format!("{:?}", e.action), e.stats.visits, e.stats.q_home))
+                    .collect()
+            })
+            .unwrap_or_default();
+        c.sort();
+        c
+    };
+    for _ in 0..8 {
+        if state.info.game_over || state.available_actions.team.is_none() {
+            break;
+        }
+        let (x, y) = (a.get_action(&state), b.get_action(&state));
+        assert_eq!(x, y);
+        assert_eq!(stats(&a), stats(&b));
+        state.step(x).unwrap();
+        a.release_stale_tree(&state);
+        b.release_stale_tree(&state);
+    }
+}

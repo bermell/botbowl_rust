@@ -18,6 +18,11 @@
 //! piece that decides a label or the output bytes is `botbowl_play::mc_label`, which the hub's
 //! `job label` (plan 062) runs on its workers, so the two write the same file.
 //!
+//! `--top-up K` (plan 067): the input is a labelled shard; every labelled sample gets K more playouts
+//! continuing its own dice stream (seed and prior count from its tag), the label becomes the mean of
+//! all of them — a fresh labelling with the total, bit for bit — and `<out-dir>/topup/<shard>` gets
+//! each sample's prior and added means (`scripts/label_noise.py`).
+//!
 //! ```text
 //! BOARD_SIZE_W=16 BOARD_SIZE_H=9 BOARD_PLAYERS=6 CARGO_TARGET_DIR=target/16x9 \
 //! cargo run --release -p botbowl-ui -- mc-label --corpus runs/loopmix16x9g/gen07/shard0.jsonl \
@@ -36,7 +41,10 @@ use botbowl_data::{BoardCapacity, Trajectory};
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_nn::eval::NnEvaluator;
 use botbowl_play::bots::{load_nn, Evaluator};
-use botbowl_play::mc_label::{apply_labels, first_drives, label_tag, replay_all, rng_for, sample_label, summary_line};
+use botbowl_play::mc_label::{
+    apply_labels, apply_topup, check_prior_labels, check_topup_model, first_drives, label_tag, replay_all, rng_for,
+    sample_label, shard_prior, summary_line, topup_config, topup_records_path, LabelTag,
+};
 use botbowl_play::policy::PolicyBot;
 use botbowl_play::GAME_STACK_SIZE;
 
@@ -56,7 +64,6 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
     }
     let partial = done.with_extension("jsonl.partial");
     let started = Instant::now();
-    let cfg = args.config();
     let invalid = |e: serde_json::Error| io::Error::new(io::ErrorKind::InvalidData, e);
     let mut trajs: Vec<Trajectory> = Vec::new();
     for line in BufReader::new(File::open(input)?).lines() {
@@ -79,12 +86,32 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
         }
         trajs.push(t);
     }
+    // Plan 067: a top-up continues the shard's labelling — its seed, past its playouts — and only
+    // touches the trajectories that labelling labelled.
+    let bad = |why: String| io::Error::new(io::ErrorKind::InvalidData, format!("{input}: {why}"));
+    let (cfg, tag, prior) = match args.top_up {
+        None => (args.config(), tag.to_string(), None),
+        Some(k) => {
+            let prior = shard_prior(trajs.iter().map(|t| &t.meta)).map_err(bad)?;
+            check_topup_model(&prior, &args.model).map_err(bad)?;
+            for t in trajs.iter().filter(|t| LabelTag::of(&t.meta).is_some()) {
+                check_prior_labels(t.samples.iter().map(|s| s.outcome_value), prior.playouts)
+                    .map_err(|e| bad(format!("seed {:?}: {e}", t.meta.seed)))?;
+            }
+            let cfg = topup_config(&prior, k, args.max_steps);
+            (cfg, label_tag(&cfg, &args.model), Some(prior))
+        }
+    };
     // Next-drive records replay through their seed's first drive.
     let firsts = first_drives(trajs.iter().map(|t| &t.meta));
     let replayed: Vec<Option<Vec<GameState>>> = trajs
         .iter()
         .zip(&firsts)
         .map(|(t, first)| {
+            if prior.is_some() && LabelTag::of(&t.meta).is_none() {
+                eprintln!("left unlabelled (seed {:?}): no MC label to top up", t.meta.seed);
+                return None;
+            }
             replay_all(t, first.map(|j| &trajs[j]))
                 .map_err(|why| eprintln!("left unlabelled (seed {:?}): {why}", t.meta.seed))
                 .ok()
@@ -144,13 +171,35 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
             .push(f32::from_bits(labels[i].load(Ordering::Relaxed)));
     }
     let mut out = io::BufWriter::new(File::create(&partial)?);
+    // A top-up's prior and added means go beside the shard, renamed first: the shard is the marker.
+    let records = prior.as_ref().map(|_| topup_records_path(&done));
+    let mut rec_out = match &records {
+        Some(r) => {
+            fs::create_dir_all(r.parent().expect("under the out dir"))?;
+            Some(io::BufWriter::new(File::create(r.with_extension("jsonl.partial"))?))
+        }
+        None => None,
+    };
     for (traj, labels) in trajs.iter_mut().zip(&by_traj) {
-        apply_labels(traj, labels.as_deref(), tag);
+        match (&prior, &mut rec_out) {
+            (Some(prior), Some(w)) => {
+                if let Some(rec) = apply_topup(traj, labels.as_deref(), prior, &tag).map_err(bad)? {
+                    w.write_all(serde_json::to_string(&rec)?.as_bytes())?;
+                    w.write_all(b"\n")?;
+                }
+            }
+            _ => apply_labels(traj, labels.as_deref(), &tag),
+        }
         out.write_all(serde_json::to_string(traj)?.as_bytes())?;
         out.write_all(b"\n")?;
     }
     out.flush()?;
     drop(out);
+    if let (Some(r), Some(mut w)) = (records, rec_out) {
+        w.flush()?;
+        drop(w);
+        fs::rename(r.with_extension("jsonl.partial"), &r)?;
+    }
     fs::rename(&partial, &done)?;
     eprintln!(
         "{}",
@@ -160,7 +209,7 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
             trajs.len(),
             replayed.iter().filter(|r| r.is_none()).count(),
             items.len(),
-            args.playouts,
+            cfg.playouts,
             started.elapsed().as_secs_f64()
         )
     );
@@ -168,8 +217,11 @@ fn label_shard(nn: &Arc<NnEvaluator>, args: &McLabelArgs, input: &str, tag: &str
 }
 
 pub fn run(args: McLabelArgs) -> io::Result<()> {
-    if args.playouts == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--playouts must be > 0"));
+    if args.added_playouts() == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--playouts and --top-up must be > 0",
+        ));
     }
     fs::create_dir_all(&args.out_dir)?;
     args.backend.apply()?;
@@ -184,6 +236,18 @@ pub fn run(args: McLabelArgs) -> io::Result<()> {
     let tag = label_tag(&args.config(), &args.model);
     for input in &args.corpus {
         label_shard(&nn, &args, input, &tag)?;
+    }
+    if botbowl_nn::eval::profile_enabled() {
+        // Plan 069 §1: forwards and memo traffic of the whole run, for CPU per forward.
+        let (forwards, nanos) = botbowl_nn::eval::profile_counters();
+        let (memo_calls, memo_hits) = botbowl_nn::eval::memo_counters();
+        eprintln!(
+            "NN_PROFILE forwards={forwards} total_ms={:.0} memo_calls={memo_calls} memo_hits={memo_hits}",
+            nanos as f64 / 1e6
+        );
+    }
+    if let Some(line) = nn.inproc_stats_line() {
+        eprintln!("NN_INPROC {line}");
     }
     Ok(())
 }
@@ -246,6 +310,7 @@ mod tests {
             seed: 7,
             parallel: 2,
             max_steps: 100_000,
+            top_up: None,
             out_dir: dir.join("out").to_str().unwrap().into(),
         };
         run(args.clone()).unwrap();
@@ -331,6 +396,7 @@ mod tests {
             seed: 9,
             parallel: 2,
             max_steps: 100_000,
+            top_up: None,
             out_dir: dir.join("out").to_str().unwrap().into(),
         })
         .unwrap();

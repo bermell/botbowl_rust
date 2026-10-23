@@ -356,6 +356,14 @@ pub struct McLabelArgs {
     /// Playout dice derive from it, the trajectory's seed and the sample index.
     #[arg(long, default_value_t = 56_000)]
     pub seed: u64,
+    /// Plan 067: top up instead of label. The `--corpus` shards are already MC-labelled (`mc/`
+    /// copies); each labelled sample gets this many more playouts under `--model` (the net its
+    /// labels name), continuing its own dice stream past the playouts it has (the labels' seed and
+    /// count come from their `value_label` tag), and its label becomes the mean of all of them —
+    /// exactly a fresh labelling with the total. `<out-dir>/topup/<shard>` gets each sample's prior
+    /// and added means (`scripts/label_noise.py`).
+    #[arg(long, conflicts_with_all = ["playouts", "seed"])]
+    pub top_up: Option<u32>,
     /// Trajectories labelled at once, one thread each.
     #[arg(long, default_value_t = 8)]
     pub parallel: usize,
@@ -370,10 +378,16 @@ impl McLabelArgs {
     /// What every label is a function of, besides the net and the state.
     pub fn config(&self) -> crate::mc_label::LabelConfig {
         crate::mc_label::LabelConfig {
-            playouts: self.playouts,
+            playouts: self.added_playouts(),
             seed: self.seed,
             max_steps: self.max_steps,
+            skip: 0,
         }
+    }
+
+    /// The playouts this run plays per sample: `--top-up`'s when topping up, else `--playouts`.
+    pub fn added_playouts(&self) -> u32 {
+        self.top_up.unwrap_or(self.playouts)
     }
 }
 
@@ -541,6 +555,19 @@ pub struct EvalArgs {
     /// board, instead of full games. `--board-sizes` is ignored. `--games` counts drives.
     #[arg(long)]
     pub positions: Option<String>,
+    /// Plan 068: the divergence gate on drive rungs (needs `--positions`). Each drive's moves are
+    /// fingerprinted and the bots seeded by role, so a pair whose two games played the same moves
+    /// (one game twice: exactly ½) is told apart from one where the bots chose differently.
+    /// `report`: report the divergence rate `p_div`, the score on divergent pairs `s_div` and the
+    /// implied score, SPRT on every pair as before. `sprt`: the same, and `--sprt` runs on the
+    /// divergent pairs (H0/H1 are then about the score when the bots play differently). Unset:
+    /// exactly today's drives.
+    #[arg(long, value_parser = parse_gate, requires = "positions")]
+    pub drive_gate: Option<crate::eval::GateMode>,
+}
+
+fn parse_gate(s: &str) -> Result<crate::eval::GateMode, String> {
+    crate::eval::GateMode::parse(s)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]

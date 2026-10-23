@@ -60,6 +60,55 @@ pub enum Command {
     /// CPU (tract) only. Writes `{suite}.{tag}.jsonl`, `.summary.json`, `.worst.json` and
     /// `worst/*.rec.json` recordings (`botbowl-ui replay` / `snapshot --replay F --step 1`).
     Probe(ProbeArgs),
+    /// Plan 068: run two bots in lockstep over a drive set's positions and record where they first
+    /// choose differently (and whether cheap prescreens predict it). Summarise with
+    /// `scripts/drive_agree_summary.py`.
+    DriveAgree(DriveAgreeArgs),
+}
+
+/// `drive-agree` (plan 068 §1). See `drive_agree.rs`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct DriveAgreeArgs {
+    /// The candidate net.
+    #[arg(long)]
+    pub model: String,
+    /// The opponent net (the same file for the self-agreement floor).
+    #[arg(long)]
+    pub vs_model: String,
+    #[command(flatten)]
+    pub backend: botbowl_play::cli_args::NnBackendArgs,
+    /// Both bots' preset.
+    #[arg(long, default_value = "cfgs/chance_all_partial.toml")]
+    pub bot_config: std::path::PathBuf,
+    #[arg(long, default_value_t = 1000)]
+    pub mcts_iters: usize,
+    /// Cheap lockstep runs before the full one, by budget; 0 is the bare policy. Comma-separated.
+    #[arg(long, value_delimiter = ',')]
+    pub prescreen_iters: Vec<usize>,
+    /// Only the prescreens.
+    #[arg(long)]
+    pub skip_full: bool,
+    /// Play game 2k on past the divergence to the drive's end, both bots still asked, so every
+    /// decision of a drive is compared (costs a whole pair).
+    #[arg(long)]
+    pub follow: bool,
+    /// A position set (`positions` + `scripts/positions_screen.py`).
+    #[arg(long)]
+    pub positions: String,
+    #[arg(long, default_value_t = 0)]
+    pub offset: usize,
+    #[arg(long, default_value_t = 40)]
+    pub count: usize,
+    /// Dice base: position `i` plays dice `seed + i`, pair `i`'s dice in a drive rung with this
+    /// `--seed`.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    #[arg(long, default_value_t = 8)]
+    pub parallel: usize,
+    #[arg(long, default_value_t = 100_000)]
+    pub max_steps: u32,
+    #[arg(long)]
+    pub out: String,
 }
 
 /// The plan-064 probe suites. See `probe/mod.rs`.

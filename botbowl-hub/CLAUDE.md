@@ -101,7 +101,7 @@ address is the clients', not the box's.
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
   **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
   re-exported types. **v10** (plan 051) added `Task::Eval.drives` (a drive rung's position set)
-  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. **v19** (plan 062) added `Task::Label` (`LabelItem`s: sample ranges of corpus trajectories, zstd) and `ToHub::LabelDone` (`LabelResult`), the distributed `mc-label`; both are appended variants, so older frames keep their tags. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
+  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. **v19** (plan 062) added `Task::Label` (`LabelItem`s: sample ranges of corpus trajectories, zstd) and `ToHub::LabelDone` (`LabelResult`), the distributed `mc-label`; both are appended variants, so older frames keep their tags. **v21** (plan 067) added `LabelConfig.skip` (the MC-label top-up). **v22** (plan 068) added `DriveRung.gate` (the divergence gate: bots seeded by role, every move fingerprinted) and `EvalGameLine.path` (the fingerprint, a trailing field always on the wire); the gate *mode* rides only in `EvalJobRequest.drive_gate`, since only the hub's fold needs it. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
   wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
@@ -236,6 +236,16 @@ address is the clients', not the box's.
   unchanged. Labels are bitwise reproducible only on one backend: tract and the GPU sidecar differ in
   the last bits of a forward, so a near-tie argmax can flip a playout — as two local runs on the GPU
   already can.
+- **`job label --top-up K` (plan 067, protocol v21)** tops up already-labelled shards. Reading
+  (`label::load_input` with a `LabelSpec`) finds each shard's labelling (`shard_prior`: one tag, or
+  the shard is refused), checks the net against it and every prior label against the 1/n grid, and
+  gives the shard its own `LabelConfig` (that labelling's seed, `skip = n`, `K` playouts) and tag;
+  untagged trajectories get no items and are written back unchanged. So `Kind::Label` holds no
+  job-wide config any more: **the cfg and tag are per shard** (`LabelInput.cfg`/`.tag`), and a job
+  over several generations continues each one's own seed. Workers return the K added means;
+  `ShardWrite` combines them with the prior labels read back from the lines (`apply_topup`) and
+  writes `topup/<shard>` before the shard. `mc_label_hub.rs` pins hub == local bytes for a top-up
+  too, and local top-up == a fresh `(n+K)` labelling.
 - **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
   task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries
   `RungReq.board` → `Task::Eval.board`, and a multi-size ladder names rungs `opponent@14x7/4`

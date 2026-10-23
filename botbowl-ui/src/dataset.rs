@@ -268,10 +268,11 @@ pub fn run(args: DatasetArgs) -> io::Result<()> {
         } else {
             0.0
         };
+        let (memo_calls, memo_hits) = botbowl_nn::eval::memo_counters();
         println!(
             "NN_PROFILE forwards={forwards} total_ms={total_ms:.0} mean_us={mean_us:.0} \
 wall_ms={wall_ms:.0} share={:.3} games={written} forwards_per_game={:.0} \
-forwards_per_decision={:.1}",
+forwards_per_decision={:.1} memo_calls={memo_calls} memo_hits={memo_hits}",
             if wall_ms > 0.0 { total_ms / wall_ms } else { 0.0 },
             if written > 0 {
                 forwards as f64 / written as f64

@@ -78,3 +78,8 @@ noise); the v9 loop generates with it and benchmarks with `chance_all_partial` f
 `BLOOD_MCTS_PASS_SCATTER=grouped`, `BLOOD_MCTS_THROW_IN=grouped`,
 `BLOOD_MCTS_CHANCE_BACKUP=partial|mass|sampled|widen`, `BLOOD_MCTS_CHANCE_MASS`,
 `BLOOD_MCTS_CHANCE_WIDEN_C`, `BLOOD_MCTS_CHANCE_WIDEN_ALPHA`.
+
+`chance_all_partial_det` (plan 068) is `chance_all_partial` with `tie_break = "mover"`: exact ties
+broken by the mover's own geometry instead of each tree's `HashMap` order, at the Gumbel root too.
+It is the preset for the drive benchmark's divergence gate (`--drive-gate`), which needs a net to
+agree with itself; under the shipped tie-break it does not (exp079).

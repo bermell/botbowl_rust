@@ -118,6 +118,12 @@ async fn main() {
         Ok(botbowl_nn::eval::BackendChoice::InProcess { device }) => {
             eprintln!("[worker] nets run in-process on {device} (plan 066)");
         }
+        // Plan 069's `null` stub would play the hub's games and labels with no network and ship
+        // them as data: never on a worker (a stray BLOOD_NN_BACKEND=null from a benchmark shell).
+        Ok(botbowl_nn::eval::BackendChoice::Null) => {
+            eprintln!("[worker] --nn-backend null is a benchmark stub and never runs hub work");
+            std::process::exit(2);
+        }
         Ok(_) => {}
         Err(e) => {
             eprintln!("[worker] {e}");

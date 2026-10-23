@@ -11,6 +11,9 @@
 //!
 //! Policy playouts are deterministic given the net, the state and the dice, so unlike search
 //! output the comparison is of whole files.
+//!
+//! Plan 067: a top-up (`--top-up K`) of that output, locally and through the hub, writes the same
+//! bytes (its `topup/` records too), and equals a fresh labelling with the total playout count.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -27,7 +30,7 @@ use botbowl_hub::{Hub, HubConfig};
 use botbowl_hub_proto::{decode, encode, BuildInfo, LabelConfig, ToHub, ToWorker, PROTOCOL_VERSION};
 use botbowl_play::bots::{Evaluator, SearchConfig};
 use botbowl_play::generate::{play_trajectory, GenMode, GenerateConfig, RandomStartBias};
-use botbowl_play::mc_label::drive_of;
+use botbowl_play::mc_label::{combine, drive_of, TopUpRecord};
 use botbowl_ui::cli::McLabelArgs;
 use botbowl_worker::{run_once, Ended, Fatal, ModelStore, WorkerConfig};
 
@@ -38,6 +41,7 @@ const CFG: LabelConfig = LabelConfig {
     seed: 62,
     // Short playouts: the test pins the plumbing and the bytes, not the labels' quality.
     max_steps: 300,
+    skip: 0,
 };
 const SHARDS: [&str; 2] = ["shard0", "shard1"];
 
@@ -115,6 +119,7 @@ fn fixture() -> &'static Fixture {
             seed: CFG.seed,
             parallel: 2,
             max_steps: CFG.max_steps,
+            top_up: None,
             out_dir: local.to_str().unwrap().into(),
         })
         .unwrap();
@@ -146,6 +151,7 @@ fn request(f: &Fixture, out_dir: &Path, chunk_samples: u32, batch: u16) -> Label
         chunk_samples,
         batch,
         label: Some("test mc-label".into()),
+        top_up: false,
     }
 }
 
@@ -369,4 +375,146 @@ async fn a_vanishing_worker_gets_its_label_items_requeued() {
     let items: u64 = status.units.iter().map(|u| u.total as u64).sum();
     assert_eq!(job.by_worker["ghost"].label_items, 1, "{:?}", job.by_worker);
     assert_eq!(job.by_worker["real"].label_items, items - 1, "{:?}", job.by_worker);
+}
+
+/// `mc-label` flags for one run over `corpus` into `out` (`top_up: Some(k)` tops up instead).
+fn ml_args(corpus: Vec<String>, playouts: u32, top_up: Option<u32>, out: &Path) -> McLabelArgs {
+    McLabelArgs {
+        corpus,
+        model: TINY.into(),
+        nn_server: None,
+        backend: Default::default(),
+        playouts,
+        seed: CFG.seed,
+        parallel: 2,
+        max_steps: TOPUP_STEPS,
+        top_up,
+        out_dir: out.to_str().unwrap().into(),
+    }
+}
+
+/// The top-up test's playouts run to the drive's end (not `CFG`'s 300-step cut, under which every
+/// playout of this corpus scores 0 and a label comparison would check nothing).
+const TOPUP_STEPS: u32 = 100_000;
+
+/// Plan 067: a top-up of `mc-label`'s output by `K` playouts
+///
+/// - is a fresh `n + K`-playout labelling of the raw corpus, label for label and tag for tag (only
+///   `value_label_history` differs: it names the labelling that was topped up), with the
+///   unlabelled trajectories (orphan, divergent) left exactly as they were;
+/// - records, per topped-up trajectory, the prior labels and the `K` added playouts' means, which
+///   combine to the new labels;
+/// - through the hub (items of 3 samples across two workers) writes the local top-up's bytes, the
+///   `topup/` records included, with the same counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_topup_through_the_hub_equals_the_local_topup_and_a_fresh_labelling() {
+    const K: u32 = 3;
+    let f = fixture();
+    let n = CFG.playouts;
+    // The labelling to top up: the fixture's corpus, n playouts.
+    let base = tmp("topup-base");
+    botbowl_ui::mc_label::run(ml_args(inputs(&f.corpus), n, None, &base)).unwrap();
+    let local = tmp("topup-local");
+    botbowl_ui::mc_label::run(ml_args(inputs(&base), 8, Some(K), &local)).unwrap();
+    let fresh = tmp("fresh");
+    botbowl_ui::mc_label::run(ml_args(inputs(&f.corpus), n + K, None, &fresh)).unwrap();
+
+    let read = |p: PathBuf| botbowl_data::read_trajectories(p).unwrap();
+    let json = |t: &Trajectory| serde_json::to_string(t).unwrap();
+    let (mut topped_up, mut nonzero) = (0, 0u32);
+    for s in SHARDS {
+        let file = format!("{s}.jsonl");
+        let (prior, top, want) = (read(base.join(&file)), read(local.join(&file)), read(fresh.join(&file)));
+        let records: Vec<TopUpRecord> = std::fs::read_to_string(local.join("topup").join(&file))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let mut recs = records.iter();
+        assert_eq!(top.len(), want.len());
+        for ((p, t), w) in prior.iter().zip(&top).zip(&want) {
+            let mut t2 = t.clone();
+            let history = t2.meta.extra.remove("value_label_history");
+            assert_eq!(
+                json(&t2),
+                json(w),
+                "{file} seed {:?}: the top-up is not a fresh {}-playout labelling",
+                t.meta.seed,
+                n + K
+            );
+            match p.meta.extra.get("value_label") {
+                None => {
+                    assert!(history.is_none());
+                    assert_eq!(json(t), json(p), "an unlabelled trajectory was touched");
+                }
+                Some(tag) => {
+                    assert_eq!(history.as_ref(), Some(tag));
+                    let r = recs.next().expect("a record per topped-up trajectory");
+                    assert_eq!((r.seed, r.prior_playouts, r.added_playouts), (t.meta.seed, n, K));
+                    let pv: Vec<f32> = p.samples.iter().map(|s| s.outcome_value.unwrap()).collect();
+                    assert_eq!(r.prior, pv);
+                    assert_eq!(r.added.len(), t.samples.len());
+                    for ((&a, &b), s) in r.prior.iter().zip(&r.added).zip(&t.samples) {
+                        assert_eq!(Some(combine(a, n, b, K).unwrap()), s.outcome_value);
+                        nonzero += (b != 0.0) as u32;
+                    }
+                    topped_up += 1;
+                }
+            }
+        }
+        assert!(
+            recs.next().is_none(),
+            "{file}: more records than topped-up trajectories"
+        );
+    }
+    assert!(topped_up >= 4, "too few trajectories topped up: {topped_up}");
+    // Not vacuous: some added playouts scored.
+    assert!(nonzero > 0, "every added playout mean was 0: the test checks nothing");
+
+    // Through the hub: the local top-up's bytes.
+    let (hub, url) = start_hub().await;
+    let _w1 = spawn_worker(&url, "w1", 1);
+    let _w2 = spawn_worker(&url, "w2", 1);
+    let out = tmp("topup-hub");
+    let mut req = request(f, &out, 3, 2);
+    for s in &mut req.shards {
+        s.input = base.join(format!("{}.jsonl", s.name));
+    }
+    req.cfg = LabelConfig {
+        playouts: K,
+        // Unused by a top-up: each shard continues its own labelling's seed.
+        seed: 999,
+        max_steps: TOPUP_STEPS,
+        skip: 0,
+    };
+    req.top_up = true;
+    let id = hub.submit_label(req).unwrap();
+    let status = wait(&hub, id).await;
+    assert_eq!(status.state, JobState::Done, "{status:?}");
+    for (k, s) in SHARDS.iter().enumerate() {
+        let file = format!("{s}.jsonl");
+        for rel in [PathBuf::from(&file), PathBuf::from("topup").join(&file)] {
+            assert!(
+                std::fs::read(out.join(&rel)).unwrap() == std::fs::read(local.join(&rel)).unwrap(),
+                "{}: the hub's top-up differs from mc-label --top-up's",
+                rel.display()
+            );
+        }
+        let Some(UnitStats::Label(l)) = &status.units[k].stats else {
+            panic!("no label stats")
+        };
+        let trajs = read(out.join(&file));
+        let unlabelled = trajs
+            .iter()
+            .filter(|t| !t.meta.extra.contains_key("value_label"))
+            .count();
+        assert_eq!(l.unlabelled as usize, unlabelled, "{file}");
+    }
+
+    // A raw shard (nothing to top up) is refused at submit, locally and on the hub.
+    let raw = tmp("topup-raw");
+    assert!(botbowl_ui::mc_label::run(ml_args(inputs(&f.corpus), 8, Some(K), &raw)).is_err());
+    let mut req = request(f, &tmp("topup-raw-hub"), 3, 2);
+    req.top_up = true;
+    assert!(hub.submit_label(req).is_err());
 }
