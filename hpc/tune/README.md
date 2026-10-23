@@ -38,6 +38,7 @@ Each `gen`/`label`/`mix` row: wait for the net to load and capture, `warm` secon
   no `perf`); `ipc_u`; **`eff_ghz`** = cycles / on-CPU time, which is where exp080's unexplained
   "scheduled but not retiring" overhead (0.9-1.3 GHz effective on this box with the GPU in the process)
   shows up if Grace has it too;
+- the **CPU clock** under the running threads (`cpu_freq_ghz`, `scaling_cur_freq` every 0.5 s) and `eff_ghz` per thread class (`rest_` = search, `batcher_`, `cuda_`);
 - **GPU** utilisation, memory, power and SM clock (`nvidia-smi`, 0.5 s), GPU memory per process, RSS.
 
 `micro` and `queue` rows report the bench's own numbers per bucket / client count (device µs per batch,
@@ -57,7 +58,7 @@ walltime kill costs only the row in flight. Logs and the exact command/env per p
 | `BLOOD_NN_SLOTS` | slot ring; must exceed the streams (the suite sets streams + 2 x largest bucket + 64) |
 | `BLOOD_NN_PRECISION=fp32\|tf32\|fp16\|bf16` | `fp32`/`tf32` set cuDNN and cuBLAS TF32 flags; `fp16`/`bf16` load `NET.fp16.ts` / `NET.bf16.ts` (`python -m bbnn.export_ts NET.pt --dtype fp16`: BatchNorm folded in fp32, weights cast, fp32 in and out). Unset: torch's defaults — **on Hopper that is TF32 convolutions** |
 | `BLOOD_NN_CHANNELS_LAST=1` | load the `-cl` export (`--channels-last`: NHWC weights and inputs) |
-| `BLOOD_NN_CANARY_TOL` | override the load canary's tolerance (1e-3 for fp32 files, 2e-2 fp16/TF32, 1e-1 bf16) |
+| `BLOOD_NN_CANARY_TOL` | override the load canary's tolerance (1e-3 for fp32 files, 0.1 fp16/TF32, 0.5 bf16; gen49 fp16 misses the 1e-3 fixture by 0.042) |
 | `BLOOD_NN_OPTIMIZE=0` | skip `optimize_for_inference` (escape hatch) |
 
 Processes per GPU (`processes`), pinning (`pin = none | node | split | cores:LIST`: `node` = the GPU's
@@ -112,5 +113,17 @@ head -n 40 /home/mattias/repos/botbowl_rust/runs/loopmix16x9v9/gen49/shard4.json
 hpc/tune/run_suite.sh hpc/tune/smoke.toml /home/mattias/repos/botbowl_rust/runs/hpc_tune/smoke
 ```
 
-A smoke test only: Pascal has no tensor cores (fp16 runs, slowly; bf16 has no cuDNN kernels), and the
-loop shares the GPU and the four cores.
+A smoke test only: Pascal has no tensor cores (fp16 runs, slower than fp32; bf16's fused conv+ReLU
+has no cuDNN engine, so the gate runs bf16 unoptimised), and other work may share the box. First run
+2026-10-23: `runs/hpc_tune/smoke/` (results.md, canvas.md), `runs/hpc_tune/parity/` (0 differing bits),
+`runs/hpc_tune/precision_gate/` (numerics.md, value bench); plan 069 item 4 has the numbers.
+
+**Read `cpu_freq_ghz` next to `eff_ghz`.** On this box `eff_ghz` tracks the clock in every row (0.1-0.5 GHz under it): exp080's
+"scheduled but idle" CPU time is the clock (HWP `powersave` + `balance_performance` running the
+cores at ~1-2 GHz under the in-process workload), not lost cycles, and it swings ~3x between runs. A
+row whose `eff_ghz` sits far below the CPU's rated clock is measuring the clock policy, not the
+code: check `meta.json`'s `cpufreq` before comparing CPU per forward across machines or runs.
+
+The value bench's states name their corpora by paths relative to the main checkout (`runs/…`):
+from a worktree, `precision_gate.sh` needs a `runs` symlink to the main checkout's `runs/`; on the
+cluster, put the corpus at the same relative path under the checkout.

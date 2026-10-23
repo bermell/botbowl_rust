@@ -192,9 +192,9 @@ class Pmu:
         for name, config, flags in list(self.events):
             for tid in tids:
                 try:
-                    self.fds.append((name, self._open(tid, config, flags)))
+                    self.fds.append((name, tid, self._open(tid, config, flags)))
                 except OSError as e:
-                    if e.errno in (13, 1, 2, 19, 95, 22) and not any(n == name for n, _ in self.fds):
+                    if e.errno in (13, 1, 2, 19, 95, 22) and not any(n == name for n, _, _ in self.fds):
                         # EACCES/EPERM (paranoid), ENOENT/ENODEV/EOPNOTSUPP (no such PMU event), EINVAL.
                         self.refused[name] = e.strerror
                         self.events = [ev for ev in self.events if ev[0] != name]
@@ -204,12 +204,13 @@ class Pmu:
                         break
                     # ESRCH: the thread exited between listing and opening; skip it.
 
-    def read(self) -> dict[str, float]:
-        out: dict[str, float] = {}
-        for name, fd in self.fds:
+    def read(self) -> dict[int, dict[str, float]]:
+        """tid -> {event: count} (a thread that exited keeps the count it had)."""
+        out: dict[int, dict[str, float]] = {}
+        for name, tid, fd in self.fds:
             try:
                 v, enabled, running = struct.unpack("QQQ", os.read(fd, 24))
-                out[name] = out.get(name, 0.0) + (v * enabled / running if 0 < running < enabled else v)
+                out.setdefault(tid, {})[name] = v * enabled / running if 0 < running < enabled else v
             except OSError:
                 pass
             finally:
@@ -314,38 +315,69 @@ class Window:
         self.pids, self.gpu = pids, GpuSampler(gpu)
         self.pmu = Pmu() if use_pmu else None
         self.t0 = self.before = None
+        self.freqs: list[float] = []
+        self.done = threading.Event()
+
+    def _sample_freq(self):
+        """The clock (`scaling_cur_freq`) of the CPU under each running thread, every 0.5 s. On
+        the training box this is what exp080's anomaly turned out to be: cores at ~1 GHz under the
+        GPU workload (HWP, `powersave` + `balance_performance`), so eff_ghz ≈ this column."""
+        while not self.done.wait(0.5):
+            for pid in self.pids:
+                for t in Path(f"/proc/{pid}/task").glob("*/stat"):
+                    try:
+                        f = t.read_text().rsplit(")", 1)[1].split()
+                        if f[0] == "R":
+                            self.freqs.append(int(Path(
+                                f"/sys/devices/system/cpu/cpu{f[36]}/cpufreq/scaling_cur_freq").read_text()) / 1e6)
+                    except (OSError, IndexError, ValueError):
+                        pass
 
     def start(self):
         self.before = {pid: threads_of(pid) for pid in self.pids}
         if self.pmu:
             self.pmu.open([tid for th in self.before.values() for tid in th])
         self.gpu.start()
+        threading.Thread(target=self._sample_freq, daemon=True).start()
         self.t0 = time.monotonic()
 
     def stop(self) -> dict:
+        """Threads and counters are read first and back to back (stopping nvidia-smi can take a
+        second, long enough for a bench phase's threads to exit). Every sum — schedstat and
+        counters alike — runs over the threads alive at both ends, so a class's cycles and its
+        on-CPU time cover the same threads; `threads_new` / `threads_gone` say what was left out."""
         secs = time.monotonic() - self.t0
-        counters = self.pmu.read() if self.pmu else {}
-        gpu = self.gpu.stop()
         after = {pid: threads_of(pid) for pid in self.pids}
+        counters = self.pmu.read() if self.pmu else {}
+        self.done.set()
+        gpu = self.gpu.stop()
+        if self.freqs:
+            gpu["cpu_freq_ghz"] = sum(self.freqs) / len(self.freqs)
         agg = {f"{c}_{k}": 0 for c in ("batcher", "cuda", "rest") for k in ("run_ns", "wait_ns")}
         agg.update(vol=0, invol=0, threads_new=0, threads_gone=0, threads=0)
         for pid in self.pids:
             b, a = self.before.get(pid, {}), after.get(pid, {})
             agg["threads"] += len(a)
             agg["threads_gone"] += len(set(b) - set(a))
+            agg["threads_new"] += len(set(a) - set(b))
             for tid, t in a.items():
                 p = b.get(tid)
                 if p is None:
-                    agg["threads_new"] += 1
-                    p = {"run_ns": 0, "wait_ns": 0, "vol": 0, "invol": 0}
-                agg[f"{t['class']}_run_ns"] += t["run_ns"] - p["run_ns"]
-                agg[f"{t['class']}_wait_ns"] += t["wait_ns"] - p["wait_ns"]
+                    continue
+                cls = t["class"]
+                agg[f"{cls}_run_ns"] += t["run_ns"] - p["run_ns"]
+                agg[f"{cls}_wait_ns"] += t["wait_ns"] - p["wait_ns"]
                 agg["vol"] += t["vol"] - p["vol"]
                 agg["invol"] += t["invol"] - p["invol"]
+                agg[f"{cls}_vol"] = agg.get(f"{cls}_vol", 0) + t["vol"] - p["vol"]
+                agg[f"{cls}_threads"] = agg.get(f"{cls}_threads", 0) + 1
+                for name, v in counters.get(tid, {}).items():
+                    agg[name] = agg.get(name, 0.0) + v
+                    agg[f"{cls}.{name}"] = agg.get(f"{cls}.{name}", 0.0) + v
         mem = gpu_apps_mem()
         agg["gpu_proc_mem_mb"] = sum(mem.get(pid, 0.0) for pid in self.pids)
         agg["rss_mb"] = sum(rss_mb(pid)[0] for pid in self.pids)
-        return {"secs": secs, **agg, **counters, **gpu, "pmu_refused": dict(self.pmu.refused) if self.pmu else {}}
+        return {"secs": secs, **agg, **gpu, "pmu_refused": dict(self.pmu.refused) if self.pmu else {}}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -544,6 +576,12 @@ class Machine:
             "allowed_cpus": len(self.allowed), "gpu": self.gpu, "gpu_numa_node": self.numa,
             "gpu_node_cpus": len(self.node_cpus), "numactl": bool(self.numactl), "taskset": bool(self.taskset),
             "page_size": os.sysconf("SC_PAGESIZE"),
+            # The CPU clock policy decides the search's speed (exp080's anomaly was HWP clocking
+            # the box to ~1 GHz under the GPU workload): record it.
+            "cpufreq": {k: (Path(f"/sys/devices/system/cpu/cpu0/cpufreq/{k}").read_text().strip()
+                            if Path(f"/sys/devices/system/cpu/cpu0/cpufreq/{k}").exists() else None)
+                        for k in ("scaling_driver", "scaling_governor", "energy_performance_preference",
+                                  "cpuinfo_max_freq")},
             "perf_event_paranoid": Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip()
             if Path("/proc/sys/kernel/perf_event_paranoid").exists() else "?",
             "numa": [l for l in sh(["lscpu"]).splitlines() if "NUMA" in l],
@@ -745,6 +783,10 @@ class Suite:
         if self.csv.exists():
             with open(self.csv) as f:
                 old = list(csv.DictReader(f))
+        # A rerun (--redo) replaces its own line: one per row id, and per bucket / client count for
+        # the bench rows.
+        key = lambda r: (str(r.get("id")), str(r.get("bucket", "")), str(r.get("clients", "")))  # noqa: E731
+        old = [r for r in old if key(r) != key(rec)]
         cols = list(dict.fromkeys([*(old[0].keys() if old else []), *rec.keys()]))
         with open(self.csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols)
@@ -783,7 +825,7 @@ class Suite:
                 secs = float(re.search(r"secs=([\d.]+)", got[1]).group(1))
                 win = Window([p.pid], self.machine.gpu, self.use_pmu)
                 win.start()
-                time.sleep(max(0.5, secs - 0.3))
+                time.sleep(max(0.5, secs - 0.5))
                 w = win.stop()
                 res = p.wait_line("MICRO", 600)
                 if not res:
@@ -838,8 +880,9 @@ class Suite:
                 if vals:
                     rec[f"{kind}_{key}"] = round(sum(vals) / len(vals), 3)
         rec["positions_per_s"] = round(total)
-        for name in outputs:
-            rec[f"{name}_decisions_per_min"] = round((d1[name] - d0[name]) * 60 / max(t1 - t0, 1e-9), 1)
+        if outputs:
+            # Records land when a drive ends, so a short window counts in whole drives: coarse.
+            rec["gen_decisions_per_min"] = round(sum(d1[n] - d0[n] for n in outputs) * 60 / max(t1 - t0, 1e-9), 1)
         rec.update(per_forward(w, total))
         if short:
             rec["note"] = f"{short} exited inside the window (window cut short; workload ran out?)"
@@ -933,7 +976,7 @@ def per_forward(w: dict, positions_per_s: float) -> dict:
         "threads": w["threads"], "threads_new": w["threads_new"], "threads_gone": w["threads_gone"],
         "rss_mb": round(w["rss_mb"]), "gpu_proc_mem_mb": round(w["gpu_proc_mem_mb"]),
     }
-    for k in ("gpu_util", "gpu_mem_mb", "gpu_power_w", "gpu_sm_mhz"):
+    for k in ("gpu_util", "gpu_mem_mb", "gpu_power_w", "gpu_sm_mhz", "cpu_freq_ghz"):
         if k in w:
             out[k] = round(w[k], 1)
     if w.get("pmu_refused"):
@@ -957,6 +1000,21 @@ def per_forward(w: dict, positions_per_s: float) -> dict:
     cycles = w.get("cycles_u", 0) + w.get("cycles_k", 0)
     if cycles and run_ns:
         out["eff_ghz"] = round(cycles / run_ns, 2)
+    # Per thread class (exp080's anomaly: which threads are on a CPU without retiring cycles?).
+    # `eff_ghz` = (user + kernel cycles) / on-CPU time of that class's threads.
+    for cls in ("rest", "batcher", "cuda"):
+        cyc = w.get(f"{cls}.cycles_u", 0) + w.get(f"{cls}.cycles_k", 0)
+        rn = w.get(f"{cls}_run_ns", 0)
+        out[f"{cls}_threads"] = w.get(f"{cls}_threads", 0)
+        if rn:
+            out[f"{cls}_cores_busy"] = round(rn / 1e9 / secs, 2)
+            out[f"{cls}_vol_per_forward"] = round(w.get(f"{cls}_vol", 0) / pf, 2)
+        if cyc and rn:
+            out[f"{cls}_eff_ghz"] = round(cyc / rn, 2)
+            out[f"{cls}_kernel_cycle_share"] = round(w.get(f"{cls}.cycles_k", 0) / cyc, 2)
+        if w.get(f"{cls}.cycles_u"):
+            out[f"{cls}_ipc_u"] = round(w.get(f"{cls}.instr_u", 0) / w[f"{cls}.cycles_u"], 2)
+            out[f"{cls}_instr_u_per_forward"] = round(w.get(f"{cls}.instr_u", 0) / pf)
     return out
 
 
@@ -988,7 +1046,7 @@ TABLE_COLS = {
     "gen": ["precision", "channels_last", "lanes", "buckets", "streams", "processes", "pin", "positions_per_s",
             "gen_decisions_per_min", "gen_mean_batch", "gen_device_busy", "cpu_cores_busy", "cpu_us_per_forward",
             "search_cpu_us_per_forward", "batcher_cpu_us_per_forward", "runq_wait_us_per_forward", "instr_u_per_forward",
-            "eff_ghz", "gpu_util", "rss_mb", "status"],
+            "eff_ghz", "rest_eff_ghz", "batcher_eff_ghz", "cuda_eff_ghz", "cpu_freq_ghz", "gpu_util", "rss_mb", "status"],
     "label": ["precision", "channels_last", "lanes", "buckets", "streams", "processes", "pin", "positions_per_s",
               "label_mean_batch", "label_device_busy", "cpu_cores_busy", "cpu_us_per_forward", "batcher_cpu_us_per_forward",
               "instr_u_per_forward", "eff_ghz", "gpu_util", "status"],

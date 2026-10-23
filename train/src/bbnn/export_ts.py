@@ -195,7 +195,9 @@ def export(
     tag = variant_tag(dtype, channels_last)
     extra = {}
     if not tag:
-        # The plain export, byte for byte what it always was (the default backend loads it).
+        # The plain export, as it always was (the default backend loads it): same code and weights
+        # entries as before plan 069; only the debug pickles' source paths and the serialization id
+        # vary between any two exports.
         traced = trace_masked(net, canvas, "cpu")
     else:
         # A reduced dtype traces where it runs: half-precision convolutions are a GPU thing.

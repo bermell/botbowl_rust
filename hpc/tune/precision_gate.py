@@ -80,7 +80,7 @@ def main() -> int:
     variants = [v for v in args.variants.split(",") if v]
     if "fp32" not in variants:
         variants.insert(0, "fp32")
-    mods = {}
+    mods, notes = {}, {}
     for v in variants:
         p = ts_path(args.net, v)
         if not p.exists():
@@ -89,8 +89,26 @@ def main() -> int:
                   f"{' --channels-last' if v.endswith('-cl') else ''}", file=sys.stderr)
             return 2
         set_flags(v)
-        m = torch.jit.load(str(p), map_location=dev).eval()
-        mods[v] = torch.jit.optimize_for_inference(m)
+        probe = (torch.rand(2, 61, ch, cw, device=dev), torch.rand(2, 18, device=dev), torch.ones(2, 1, ch, cw, device=dev))
+        # The shim's route (optimize_for_inference: cuDNN fused conv+ReLU) first; a device without
+        # an engine for the fused op in this dtype (bf16 on Pascal) falls back to the unoptimised
+        # module (the shim's BLOOD_NN_OPTIMIZE=0), and a variant that cannot run at all is dropped.
+        for optimize in (True, False):
+            m = torch.jit.load(str(p), map_location=dev).eval()
+            try:
+                m = torch.jit.optimize_for_inference(m) if optimize else m
+                with torch.no_grad():
+                    m(*probe)
+                mods[v] = m
+                if not optimize:
+                    notes[v] = "not optimised (the fused op has no engine here)"
+                break
+            except RuntimeError as e:
+                notes[v] = f"cannot run: {str(e).strip().splitlines()[-1][:120]}"
+        if v not in mods and v == "fp32":
+            print(f"precision_gate: the fp32 reference does not run: {notes[v]}", file=sys.stderr)
+            return 2
+    variants = [v for v in variants if v in mods]
     ds = open_prepared(str(args.prepared))
     loader = make_loader(ds, args.batch, shuffle=False)
     acc = {v: dict(n=0, dv=0.0, dv_max=0.0, kl=0.0, flips=0, flips_close=0, se=0.0, secs=0.0) for v in variants}
@@ -154,6 +172,7 @@ def main() -> int:
         lines.append(f"| {v} | {a['dv'] / n:.5f} / {a['dv_max']:.4f} | {se_ref / n:.5f} → {a['se'] / n:.5f} | "
                      f"{a['kl'] / n:.2e} | {100 * top1:.2f}% ({a['flips']}) | {a['flips_close']} | "
                      f"{1e6 * a['secs'] / n:.1f} | {verdict} |")
+    lines += [f"\n`{v}`: {msg}" for v, msg in notes.items()]
     text = "\n".join(lines) + "\n"
     print(text, end="")
     if args.out:

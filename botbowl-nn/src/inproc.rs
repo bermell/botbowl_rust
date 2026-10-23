@@ -136,8 +136,10 @@ pub fn variant_path(base_ts: &Path, tag: &str) -> PathBuf {
 
 /// The canary's tolerance for a load: [`CANARY_TOL`] (1e-3, tract vs fp32) unless the file is a
 /// reduced-precision export (its `bbnn_variant` tag) or the process runs TF32; the canary is there
-/// to catch the wrong net or a broken layout, which miss by far more. `BLOOD_NN_CANARY_TOL`
-/// overrides. `Default` keeps 1e-3 even on an H100, where its convolutions are TF32: whether the
+/// to catch the wrong net or a broken layout, which miss by far more (O(1) on the logits). Measured
+/// on gen49 (1060): the fp16 export misses the fixture by 0.042 on its worst policy logit (fp16
+/// keeps ~3 significant digits of logits in the tens), so fp16/TF32 get 0.1 and bf16 (~8x coarser)
+/// 0.5. `BLOOD_NN_CANARY_TOL` overrides. `Default` keeps 1e-3 even on an H100, where its convolutions are TF32: whether the
 /// 9x16 fixture stays inside 1e-3 there is the first thing the tuning suite's `default` row shows
 /// (plan 069 item 4).
 pub fn canary_tolerance(precision: Precision, file_variant: &str) -> f32 {
@@ -145,13 +147,13 @@ pub fn canary_tolerance(precision: Precision, file_variant: &str) -> f32 {
         return t;
     }
     let by_file = if file_variant.starts_with("bf16") {
-        1e-1
+        5e-1
     } else if file_variant.starts_with("fp16") {
-        2e-2
+        1e-1
     } else {
         CANARY_TOL
     };
-    let by_flags = if precision == Precision::Tf32 { 2e-2 } else { CANARY_TOL };
+    let by_flags = if precision == Precision::Tf32 { 1e-1 } else { CANARY_TOL };
     by_file.max(by_flags)
 }
 
