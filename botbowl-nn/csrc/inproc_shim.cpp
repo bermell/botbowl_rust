@@ -76,6 +76,10 @@ struct Model {
   torch::jit::Module module;
   c10::Device device;
   int64_t c, f, a;
+  // The export's `bbnn_variant` extra file (`python -m bbnn.export_ts --dtype …`): "fp16",
+  // "bf16-cl", … — empty for a plain fp32 export (every file before plan 069 item 4). Read only to
+  // report it and to size the canary tolerance; the module is whatever the file holds.
+  std::string variant;
   std::mutex mu;
   // One replay stream per batcher lane, created on first use.
   std::vector<std::optional<c10::cuda::CUDAStream>> lanes;
@@ -151,6 +155,16 @@ int bbt_set_cudnn_tf32(int allow) {
   BBT_CATCH(-1)
 }
 
+// `torch.backends.cuda.matmul.allow_tf32` (torch's default is off): TF32 for the Linear layers
+// (global embedding, value MLP). Only the explicit `BLOOD_NN_PRECISION=tf32|fp32` calls it, so the
+// default process never touches it (plan 069 item 4).
+int bbt_set_matmul_tf32(int allow) {
+  BBT_TRY
+  at::globalContext().setAllowTF32CuBLAS(allow != 0);
+  return 0;
+  BBT_CATCH(-1)
+}
+
 // Load a TorchScript `MaskedNet` (`python -m bbnn.export_ts`) onto `device` ("cuda", "cuda:1",
 // "cpu"), put it in eval mode and, if `optimize`, apply `torch::jit::optimize_for_inference` — the
 // C++ twin of the `torch.jit.optimize_for_inference` call in the sidecar's `maybe_trace_masked`.
@@ -170,13 +184,31 @@ void* bbt_model_load(const char* path, const char* device, int optimize, int64_t
     }
     if (!dev.has_index()) dev = c10::Device(c10::kCUDA, 0);
   }
-  torch::jit::Module m = torch::jit::load(path, dev);
+  // Asking for an extra file reads one more zip entry and leaves the module untouched (an absent
+  // entry stays empty), so a plain export loads exactly as before.
+  torch::jit::ExtraFilesMap extra{{"bbnn_variant", ""}};
+  torch::jit::Module m = torch::jit::load(path, dev, extra);
   m.eval();
   if (optimize) {
     m = torch::jit::optimize_for_inference(m);
   }
-  return new Model(std::move(m), dev, c, f, a);
+  auto* model = new Model(std::move(m), dev, c, f, a);
+  model->variant = extra["bbnn_variant"];
+  return model;
   BBT_CATCH(nullptr)
+}
+
+// The export's variant tag (see `Model::variant`), NUL-terminated into `buf`; returns its length.
+int64_t bbt_model_variant(void* model, char* buf, int64_t cap) {
+  BBT_TRY
+  const std::string& s = static_cast<Model*>(model)->variant;
+  if (buf && cap > 0) {
+    int64_t n = std::min<int64_t>(cap - 1, (int64_t)s.size());
+    std::memcpy(buf, s.data(), n);
+    buf[n] = 0;
+  }
+  return (int64_t)s.size();
+  BBT_CATCH(-1)
 }
 
 void bbt_model_free(void* model) { delete static_cast<Model*>(model); }

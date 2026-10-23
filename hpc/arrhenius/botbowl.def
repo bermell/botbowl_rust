@@ -13,7 +13,7 @@
 #   src/        the commit, as a shallow git clone: the binaries' provenance stamp runs
 #               `git rev-parse HEAD` / `git status` here at startup, so corpora are stamped with the
 #               real commit, clean (git's safe.directory is '*' system-wide: the files are root's)
-#   bin/        botbowl-ui, botbowl-worker, botbowl-hub, prepare, inproc_parity: release, capacity
+#   bin/        botbowl-ui, botbowl-worker, botbowl-hub, prepare, inproc_parity, inproc_bench: release, capacity
 #               20x11/7, -C target-cpu=neoverse-v2, the ui, worker and parity harness with the
 #               in-process libtorch backend
 #   vendor/     the vendored crates + cargo-vendor.toml, to rebuild a checkout offline in the image
@@ -90,10 +90,12 @@ EOF
     cargo build $C -p botbowl-hub
     cargo build $C -p botbowl-nn -p botbowl-worker --features botbowl-worker/torch
     cargo build $C -p botbowl-ui --features botbowl-ui/torch
-    # The parity harness (plan 066 tests A/B; the Slurm tuning suite runs it from /opt/botbowl/bin).
-    cargo build $C -p botbowl-nn --features torch --example inproc_parity
+    # The parity harness (plan 066 tests A/B) and the tuning suite's net bench (plan 069 item 4,
+    # hpc/tune/; BIN_BENCH=/opt/botbowl/bin/inproc_bench with BIN_UI=/opt/botbowl/bin/botbowl-ui runs
+    # the suite on the image's own commit without a build).
+    cargo build $C -p botbowl-nn --features torch --example inproc_parity --example inproc_bench
     mkdir -p /opt/botbowl/bin
-    for b in botbowl-ui botbowl-worker botbowl-hub prepare examples/inproc_parity; do
+    for b in botbowl-ui botbowl-worker botbowl-hub prepare examples/inproc_parity examples/inproc_bench; do
         install -m 0755 "$CARGO_TARGET_DIR/release/$b" /opt/botbowl/bin/
     done
     rm -rf "$CARGO_TARGET_DIR" "$CARGO_HOME" "$S"
@@ -121,6 +123,7 @@ EOF
     set -eu
     for b in botbowl-ui botbowl-worker botbowl-hub prepare; do /opt/botbowl/bin/$b --help > /dev/null; done
     ! ldd /opt/botbowl/bin/inproc_parity | grep 'not found'
+    ! ldd /opt/botbowl/bin/inproc_bench | grep 'not found'
     # The ui and worker resolve libtorch and cudart through their rpath, without LD_LIBRARY_PATH.
     ldd /opt/botbowl/bin/botbowl-worker | grep -E 'libtorch_cuda|libcudart'
     ! ldd /opt/botbowl/bin/botbowl-worker | grep 'not found'

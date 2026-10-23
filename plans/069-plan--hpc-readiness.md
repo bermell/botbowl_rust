@@ -240,6 +240,61 @@ client 7%, batcher thread 22% at batch 1.
    the size mix), fp32 / TF32 / bf16, `channels_last`, NUMA pinning; later zero-copy slots in coherent
    memory. Output: positions/s and CPU per forward per setting. Parity first (`scripts/parity066.sh` on
    the cluster), then a numerics gate for TF32/bf16 (value benches, net check, drives) — not bit parity.
+   **Smoke-tested on the 1060 2026-10-23** (outputs `runs/hpc_tune/{smoke,parity,precision_gate}/`,
+   registry exp082): build clean against torch 2.13; `parity066.sh` at the default precision **0 differing
+   bits** in all ten det/prod comparisons (20,000 states); every smoke row ran (micro, queue, gen 1-24
+   streams, 2 processes split, label, mix, an fp16 gen row). Found and fixed on the way: the first fp16
+   load failed its canary (gen49 fp16 misses the 1e-3 fixture by **0.042** on its worst policy logit),
+   so reduced-precision tolerances are now 0.1 (fp16/TF32) and 0.5 (bf16); bf16's fused
+   `cudnn_convolution_relu` has no cuDNN engine on Pascal (the gate falls back to the unoptimised
+   module there; fine on Hopper). Numerics gate on gen49's held-out shard 4 (12,849 samples, real
+   1060 kernels): fp16 |Δv| 0.00023 mean / 0.0052 max, top-1 changes 0.19% (all 24 at near-ties),
+   value MSE unchanged; bf16 0.0028 / 0.018, 0.78%; fp16-cl as fp16; value bench (v9_20x11_gen49_val,
+   3,023 states, through the real queue) fp16 vs fp32 dMSE 0.0000 ± 0.0000, RMS 0.157 both. Drives not
+   run here (the command is printed by the gate).
+   **exp080's "scheduled but idle" anomaly is CPU clock frequency** (per-thread counters plus the clock
+   of the CPU under each running thread): every thread class of the in-process worker — search,
+   batchers, CUDA driver threads alike — runs at the same low cycles/on-CPU-time, and that equals
+   `scaling_cur_freq` of the cores they are on (24 streams, ~2.8 cores busy: cores at 0.85-1.15 GHz,
+   search threads at 1.0-1.2 GHz effective; 4 streams: cores ~2.0 GHz, threads ~2.0). It is not the
+   GPU (a pure-CPU spinner in another process reads 4.0-4.1 GHz with the GPU at 87%, and four spinners
+   at once read 4.0 GHz; no thermal throttling), and not missing cycles: the box's HWP (`intel_pstate`
+   active, governor `powersave`, EPP `balance_performance`, one clock for all cores on this i7-7700)
+   picks a low clock for this bursty futex-heavy load, and a spinner pegging one core lifts the whole
+   package (gen threads 1.1 → 2.5 GHz within the same run). Runs vary with it (8 streams: 0.94 GHz /
+   966 µs CPU per forward in one run, 3.3 GHz / 327 µs in the next). So on this box the search's CPU
+   cost is ~3x inflated by clock policy: `cpupower frequency-set -g performance` (or EPP
+   `performance`, root) is the fix to try; on Grace check `scaling_governor` first — the suite now
+   records the cpufreq policy in `meta.json` and `cpu_freq_ghz` (the clock under the running threads)
+   per row, next to per-class `eff_ghz`.
+   **Written 2026-10-23 (`hpc/tune/`, README there):**
+   `hpc/tune/run_suite.sh SPEC OUT` builds `botbowl-ui` (torch) and `examples/inproc_bench` and runs
+   `hpc/tune/tune.py` (stdlib Python ≥ 3.11, runs in the image) over a TOML spec: `micro` (graph replay
+   per bucket, no queue, no search: positions/s vs batch 1-1024, precision, channels-last, lanes),
+   `queue` (N clients on the batch queue, no search), `gen` (the loop's generation: C1 preset, 1000
+   descents, random-start `--next-drive`, the 20x11 mix), `label` (`mc-label`, 8 playouts) and `mix`
+   (item 4b: G generation + L label streams on one GPU); swept: streams, processes per GPU, lanes,
+   bucket lists, precision, channels-last, pinning (`none`/`node`/`split`, numactl or taskset on the
+   GPU's NUMA node), MPS. Per row, over a window after warm-up: positions/s, mean batch, padding,
+   device busy (the queue's counters); CPU per forward split batcher / CUDA threads / search from
+   per-thread schedstat, run-queue wait and context switches; user/kernel instructions and cycles per
+   forward from per-thread `perf_event_open` counters (no `perf` binary needed) and `eff_ghz` =
+   cycles / on-CPU time — the §1 anomaly's signature; GPU util/memory/power/SM clock. Seeded,
+   commit-stamped, resumable (`results.csv`, `results.md`, `meta.json`); `--shard K/4` splits a spec
+   over a node's four superchips (`hpc/tune/pilot.sbatch`). `gh200.toml` is the pilot (~2.5 h on one
+   GPU, ~40 min per node; up to 2,048 streams and buckets to 1,024 for 96 GB HBM), `smoke.toml` the
+   1060 version. New opt-in backend knobs (unset = bit-identical to today): `BLOOD_NN_BUCKETS`,
+   `BLOOD_NN_PRECISION=fp32|tf32|fp16|bf16`, `BLOOD_NN_CHANNELS_LAST`, `BLOOD_NN_OPTIMIZE`,
+   `BLOOD_NN_CANARY_TOL`; fp16/bf16/-cl are export variants (`bbnn.export_ts --dtype fp16
+   [--channels-last]` → `NET.fp16.ts`: BatchNorm folded in fp32, cast, fp32 in/out), so the shim only
+   gained the cuBLAS TF32 flag and a variant tag read. **Note: unset precision on Hopper means TF32
+   convolutions** (torch's `cudnn.allow_tf32` default) — the suite's `default` row shows whether the
+   1e-3 load canary survives that. Numerics gate: `hpc/tune/precision_gate.sh` (exp081's metrics on the
+   GPU's kernels on held-out samples, value benches through the real queue per precision, paired drives
+   variant-bot vs fp32-bot in one process). Padding: `hpc/tune/canvas_waste.py` (per board of the mix,
+   and the best 2-4 canvas sets; written to `OUT/canvas.md`). Not built: multiple canvases, zero-copy
+   slots in coherent memory, u8 planes on the wire (H2D at ~300k positions/s is ~21 GB/s of fp32
+   input, fine over NVLink-C2C).
 4b. **Generation and labelling share each GPU** (the user, 2026-10-21: "if CPU becomes the bottleneck in
    generation we should do the bare policy labeling in parallel; and if there's spare GPU we can increase
    the number of rollouts up from 8 almost for free"). Labelling is bare-policy playouts — a forward per
