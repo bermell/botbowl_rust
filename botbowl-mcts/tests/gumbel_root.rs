@@ -53,7 +53,9 @@ fn bot(m: u16, scale: f32) -> MctsBot {
 /// Walk into the turn until the root offers more than `M` moves (a player's move fan).
 fn wide_state() -> Option<GameState> {
     let mut state = open_state()?;
+    // Plan 070: walked with an order-independent tie-break, so the state does not move with the hasher.
     let mut puct = bot(0, 0.0);
+    puct.config.tie_break = botbowl_mcts::TieBreak::Mover;
     for _ in 0..6 {
         if state.get_all_actions().len() > M as usize * 2 {
             return Some(state);
@@ -77,7 +79,8 @@ fn halving_spends_the_budget_on_the_considered_moves_only() {
     // can reach a move outside the considered set). The search may stop early once every
     // survivor is solved.
     let steps = b.telemetry().iterations as usize;
-    assert!(steps <= N && steps >= N / 3, "{steps} descents");
+    // (Plan 070: on this state every survivor is solved after 77 of 240 descents.)
+    assert!(steps <= N && steps >= N / 4, "{steps} descents");
     assert_eq!(total as usize, steps - 1, "{descents:?}");
 
     // Without noise the considered set is the top M by prior.

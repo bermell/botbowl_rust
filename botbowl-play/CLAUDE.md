@@ -100,7 +100,8 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
 
 `cargo test -p botbowl-play` for the record-format pins, then at the 14x7 tier
 (`BOARD_SIZE_W=14 BOARD_SIZE_H=7 BOARD_PLAYERS=4`, separate `CARGO_TARGET_DIR`)
-`cargo test -p botbowl-ui --test parallel_games --test parallel_rungs`. Search output is not
-reproducible across processes (recon_mcts HashMap order), so compare *metadata* between binaries
-for MCTS runs and full output only for search-free ones
-(`eval --candidate-bot scripted --rungs random,scripted`).
+`cargo test -p botbowl-ui --test parallel_games --test parallel_rungs`. Since plan 070 a
+one-thread search is a pure function of (state, net, seed) in any process (recon_mcts hashes with a
+fixed hasher, and the `mover` tie-break is total), so heuristic, null-net and tract runs compare
+line for line; in-process inference over several streams still differs in the last bits by batch,
+so compare *metadata* there (`eval --candidate-bot scripted --rungs random,scripted` is search-free).

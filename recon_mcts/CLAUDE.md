@@ -38,7 +38,9 @@ Distinctive design points to keep in mind when touching this crate:
 - **Feature flags**: `stable` (default), `nightly`, `two_player`, `test_internals`, `lockref-guard`. Public API surface differs by feature. Tests run with `test_internals` to reach private helpers; do not paper over visibility by widening `pub` in `src/` — gate it on the feature instead. `lockref-guard` is an opt-in debug-build guard against the chained-`lockref::Ref` deadlock pattern (see botbowl plan 013); downstream GD impls opt in via their dependency declaration.
 - **No external runtime deps**: the core library is intentionally std-only safe Rust. Rand/rayon usage belongs in `tests/nim/`, not the root crate.
 
-Module map: `tree.rs` (DAG + worker coordination), `game_dynamics.rs` (trait), `lockref.rs` / `map_maybe.rs` / `ref_iter.rs` / `unique_heap.rs` (supporting primitives).
+Module map: `tree.rs` (DAG + worker coordination), `game_dynamics.rs` (trait), `lockref.rs` / `map_maybe.rs` / `ref_iter.rs` / `unique_heap.rs` (supporting primitives), `fx_hash.rs` (the fixed hasher of every container).
+
+**Hashing (botbowl plan 070):** the children maps, `parents` sets, registry, per-walk visited sets and `UniqueHeap` all use `FxBuildHasher` (rustc-hash 2's multiply-rotate, std-only, no keys): the same iteration order in every process and platform for the same insertions, at a fraction of SipHash's cost (exp084 measured the search's saving). `Node::hash` (the state hash the registry keys on) stays `DefaultHasher`. The `deterministic_hash` feature is a no-op kept for the builds that name it.
 
 ## Conventions
 

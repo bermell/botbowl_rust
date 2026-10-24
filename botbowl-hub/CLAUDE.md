@@ -307,8 +307,10 @@ per-result that does not need `Inner` belongs before the lock: a trajectory is i
 in the websocket task (`TrajectoryPayload::decode`), which took the ceiling on an 8-core box from
 ~600 to ~1,250 games/s (plan 069 item 6); shard writes are still under it.
 For MCTS/NN paths, run real binaries at 14x7 against a current-schema net
-(`scripts/make_random_net.py` makes one) — search output is not reproducible across processes,
-so compare seed sets, labels and counts, not lines.
+(`scripts/make_random_net.py` makes one). Since plan 070 a one-thread search is reproducible
+across processes, but in-process inference with several streams batches differently run to run
+(last-bit differences), and the hub hands games to streams in arrival order, so compare seed sets,
+labels and counts, not lines.
 
 ## Not yet (plan 041 phases 3-5)
 

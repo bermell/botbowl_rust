@@ -4,6 +4,7 @@ use crate::game_dynamics::{DescentEnd, GameDynamics, SelectNodeState};
 use crate::lockref;
 use crate::unique_heap::{self, UniqueHeap};
 
+use crate::fx_hash::FxBuildHasher;
 use std::cmp::Reverse;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
 use std::fmt::Debug;
@@ -13,16 +14,14 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 
-/// The `BuildHasher` used for a node's children map. Behind `deterministic_hash`
-/// this is a fixed-seed hasher (`DefaultHasher`'s seed is constant, unlike
-/// `RandomState`'s per-process seed), so children iteration order — and
-/// anything downstream that breaks ties on it — is reproducible across runs
-/// given the same insertion sequence. Never enabled in production; see the
-/// feature doc-comment in `Cargo.toml`.
-#[cfg(not(feature = "deterministic_hash"))]
-type ChildHasher = std::collections::hash_map::RandomState;
-#[cfg(feature = "deterministic_hash")]
-type ChildHasher = std::hash::BuildHasherDefault<DefaultHasher>;
+/// The `BuildHasher` used for a node's children map: the fixed `FxBuildHasher` (botbowl plan 070),
+/// so children iteration order — and anything downstream that breaks ties on it — is the same in
+/// every process given the same insertion sequence, and cheap. (It was `RandomState`, with a
+/// fixed-seed SipHash behind the `deterministic_hash` feature, which is now a no-op.)
+type ChildHasher = FxBuildHasher;
+
+/// A pointer-keyed visited set for one walk.
+type PtrSet<T> = HashSet<*const T, FxBuildHasher>;
 
 /// Convenience type alias.
 pub type TreeAlias<GD, M> = Tree<NodeAlias<GD, M>, GD>;
@@ -681,9 +680,9 @@ where
     state: RwLock<Option<Arc<S>>>,
     score: RwLock<Option<Q>>,
     score_gen: AtomicUsize,
-    parents: RwLock<HashSet<(A, WeakWrap<Self>)>>,
+    parents: RwLock<HashSet<(A, WeakWrap<Self>), FxBuildHasher>>,
     children: RwLock<Children<I, A, ArcWrap<Self>>>,
-    registry: Arc<RwLock<HashSet<WeakWrap<Self>>>>,
+    registry: Arc<RwLock<HashSet<WeakWrap<Self>, FxBuildHasher>>>,
     registered: AtomicBool,
     /// Monotonic (false → true): this node has been unlinked from the
     /// graph (parents' child maps, children's parent sets, registry) by
@@ -722,7 +721,7 @@ where
         game_dynamics: Arc<GD>,
         player: P,
         state: S,
-        registry: Arc<RwLock<HashSet<WeakNode<GD, S, P, A, Q, I, M>>>>,
+        registry: Arc<RwLock<HashSet<WeakNode<GD, S, P, A, Q, I, M>, FxBuildHasher>>>,
     ) -> ArcWrap<Self> {
         let node = Self {
             hash: AtomicU64::new(Self::hash(&player, &state)),
@@ -731,7 +730,7 @@ where
             state: RwLock::new(Some(Arc::new(state))),
             score: RwLock::new(None),
             score_gen: AtomicUsize::new(0),
-            parents: RwLock::new(HashSet::new()),
+            parents: RwLock::new(HashSet::default()),
             children: RwLock::new(Children::NewLeaf),
             registry,
             registered: AtomicBool::new(false),
@@ -761,7 +760,7 @@ where
                 state: RwLock::new(Some(Arc::new(state))),
                 score: RwLock::new(None),
                 score_gen: AtomicUsize::new(0),
-                parents: RwLock::new(HashSet::new()),
+                parents: RwLock::new(HashSet::default()),
                 children: RwLock::new(Children::NewLeaf),
                 registry,
                 registered: AtomicBool::new(false),
@@ -795,7 +794,7 @@ where
                 state: RwLock::new(None),
                 score: RwLock::new(None),
                 score_gen: AtomicUsize::new(0),
-                parents: RwLock::new(HashSet::new()),
+                parents: RwLock::new(HashSet::default()),
                 children: RwLock::new(Children::NewLeaf),
                 registry,
                 registered: AtomicBool::new(false),
@@ -819,7 +818,7 @@ where
 
     fn register<R>(self_arc: &ArcNode<GD, S, P, A, Q, I, M>, reg_wlk: Option<&mut R>)
     where
-        R: DerefMut<Target = HashSet<WeakNode<GD, S, P, A, Q, I, M>>>,
+        R: DerefMut<Target = HashSet<WeakNode<GD, S, P, A, Q, I, M>, FxBuildHasher>>,
     {
         let mut _r = match reg_wlk {
             Some(reg_wlk) => reg_wlk.insert(ArcNode::downgrade(self_arc)),
@@ -1121,7 +1120,7 @@ where
         // states hash-equal across paths), and walking parents indefinitely
         // through a cycle would update scores forever as each loop nudges
         // the parent's aggregate.
-        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
+        let mut visited: PtrSet<Node<GD, S, P, A, Q, I, M>> = PtrSet::default();
         let mut n_updates = 0;
         let mut h = UniqueHeap::new();
 
@@ -1239,7 +1238,7 @@ where
         // descendant would happily re-push it. Without `visited`,
         // `update_depth` on the re-pushed node bumps its depth by 1 each
         // cycle iteration, spinning forever.
-        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
+        let mut visited: PtrSet<Node<GD, S, P, A, Q, I, M>> = PtrSet::default();
         let mut n_updates = 0;
         let mut h = UniqueHeap::new();
 
@@ -1428,7 +1427,11 @@ where
     /// or a backup from this node never reaches that parent). Read-only, for audits.
     #[doc(hidden)]
     pub fn lists_parent(&self, parent: &Self) -> bool {
-        self.parents.read().unwrap().iter().any(|(_, p)| std::ptr::eq(p.as_ptr(), parent))
+        self.parents
+            .read()
+            .unwrap()
+            .iter()
+            .any(|(_, p)| std::ptr::eq(p.as_ptr(), parent))
     }
 
     /// The node's mover, or `None` for a placeholder that has not been materialised yet.
@@ -2059,7 +2062,7 @@ pub struct Tree<N: ?Sized + OnDrop, GD: ?Sized> {
     // tree because there was some other sequence of actions that would lead to the same game
     // state; if another node with the same state is found, then the newly created node is never
     // connected to the tree or entered into the registry
-    registry: Arc<RwLock<HashSet<WeakWrap<N>>>>,
+    registry: Arc<RwLock<HashSet<WeakWrap<N>, FxBuildHasher>>>,
     reg_info: RegistryInfo,
     game_dynamics: Arc<GD>,
     prune_lock: RwLock<()>,
@@ -2078,7 +2081,9 @@ where
     /// Construct a new `Tree`.
     pub fn new(game_dynamics: GD, _: M, first_player: P, root_state: S) -> Self {
         let game_dynamics = Arc::new(game_dynamics);
-        let registry = Arc::new(RwLock::new(HashSet::<WeakNode<_, _, _, _, _, _, _>>::new()));
+        let registry = Arc::new(RwLock::new(
+            HashSet::<WeakNode<_, _, _, _, _, _, _>, FxBuildHasher>::default(),
+        ));
         let root = Node::new_root(
             Arc::clone(&game_dynamics),
             first_player,
@@ -2207,7 +2212,7 @@ where
         // then descend around it forever. A descent through a DAG is a
         // simple path, so revisiting a node proves a cycle: crash the
         // search with a diagnostic dump instead of hanging.
-        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
+        let mut visited: PtrSet<Node<GD, S, P, A, Q, I, M>> = PtrSet::default();
         visited.insert(&*node.inner);
         path.push((ArcNode::clone(&node), None));
         // Parents that gained a twin on this descent (plan 070): the backprop below is seeded at
@@ -2892,7 +2897,7 @@ where
     }
 
     fn get_registry_nodes(&self) -> HashSet<WeakNode<GD, S, P, A, Q, I, M>> {
-        self.registry.read().unwrap().clone()
+        self.registry.read().unwrap().iter().cloned().collect()
     }
 
     fn get_registry_info(&self) -> &RegistryInfo {
@@ -2940,7 +2945,7 @@ where
                 state: RwLock::new(Some(Arc::new(state))),
                 score: RwLock::new(None),
                 score_gen: AtomicUsize::new(0),
-                parents: RwLock::new(HashSet::new()),
+                parents: RwLock::new(HashSet::default()),
                 children: RwLock::new(Children::NewLeaf),
                 registry: Arc::clone(&self.registry),
                 registered: AtomicBool::new(false),
@@ -2992,7 +2997,7 @@ where
         // reconstruct the action list.
         let mut predecessor: HashMap<*const Node<GD, S, P, A, Q, I, M>, (A, ArcNode<GD, S, P, A, Q, I, M>)> =
             HashMap::new();
-        let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
+        let mut visited: PtrSet<Node<GD, S, P, A, Q, I, M>> = PtrSet::default();
         let mut queue: std::collections::VecDeque<ArcNode<GD, S, P, A, Q, I, M>> = std::collections::VecDeque::new();
         visited.insert(target_ptr);
         queue.push_back(ArcNode::clone(target));

@@ -188,6 +188,7 @@ You can browse the repo and make contributions on [GitHub][repo_url].
     rustdoc::broken_intra_doc_links
 )]
 
+mod fx_hash;
 mod game_dynamics;
 mod lockref;
 mod ref_iter;
