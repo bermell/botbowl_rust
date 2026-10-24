@@ -52,9 +52,17 @@ postcard = { version = "1", features = ["use-std"] }
 zstd = "0.13"
 mimalloc = "0.1"
 
+# Debug builds carry line tables only (backtraces keep file:line) and no debug info for
+# dependencies: full debug info made every test binary ~380 MB, tens of GB per target dir and
+# per worktree. Use `--profile profiling` (below) when a debugger or perf needs full info.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
+
 # Debug builds optimise the hot crates: MCTS tests run the search thousands of times, and
-# unoptimised engine/search code made them the slowest part of `cargo test`. Debug info and
-# debug assertions stay on; only these three crates are affected.
+# unoptimised engine/search code made them the slowest part of `cargo test`. Debug assertions
+# stay on; only these three crates are affected.
 [profile.dev.package.botbowl-engine]
 opt-level = 2
 [profile.dev.package.botbowl-mcts]
