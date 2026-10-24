@@ -74,7 +74,8 @@ fi
 # 16x9 (the curve so far) and, once screened, 20x11. The loop refuses to start on a missing set, so
 # the 20x11 one joins at the first launch after it exists (plan 065 §4 builds it).
 if [ "${MEASURE:-gen48}" = gen48 ]; then
-    export DRIVE_POSITIONS="$POS20/contested_16x9_gen48.json,$POS20/contested_20x11_gen48.json"
+    SET20="$POS20/contested_20x11_gen48.json"
+    export DRIVE_POSITIONS="$POS20/contested_16x9_gen48.json,$SET20"
 else
 SET20=$(ls -t "$POS20"/contested_20x11_*.json 2>/dev/null | head -1)
 export DRIVE_POSITIONS="$POS/contested_16x9_gen04g.json${SET20:+,$SET20}"
