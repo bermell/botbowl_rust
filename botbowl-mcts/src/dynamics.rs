@@ -776,25 +776,33 @@ impl<'s> TieCtx<'s> {
     }
 }
 
-/// The state's own hash (fixed-key SipHash): the per-node seed of [`TieBreak::Hash`].
+/// The per-node seed of [`TieBreak::Hash`]: the state's own `Hash`, through recon_mcts's fixed
+/// FxHash (a fraction of SipHash's cost: on a flat net nearly every selection meets a tie) and a
+/// splitmix64 finaliser.
 fn state_seed(state: &GameState) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = recon_mcts::FxHasher::default();
     state.hash(&mut h);
-    h.finish()
+    splitmix64(h.finish())
 }
 
 /// An action's place in [`TieBreak::Hash`]'s order at the node seeded `seed`: the engine action or
-/// the roll result, without the cached prior or probability.
+/// the roll result, without the cached prior or probability, mixed with the seed.
 fn tie_hash(seed: u64, a: &BbAction) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    seed.hash(&mut h);
+    let mut h = recon_mcts::FxHasher::default();
     match a {
         BbAction::Player { action, .. } => action.hash(&mut h),
         BbAction::Chance { result, .. } => result.hash(&mut h),
     }
-    h.finish()
+    splitmix64(seed ^ h.finish())
+}
+
+/// splitmix64's finaliser: every input bit reaches every output bit.
+fn splitmix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// The mover's geometric frame, for [`TieBreak::Mover`]: the endzone it is

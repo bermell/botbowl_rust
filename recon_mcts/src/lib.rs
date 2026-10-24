@@ -189,6 +189,9 @@ You can browse the repo and make contributions on [GitHub][repo_url].
 )]
 
 mod fx_hash;
+/// The fixed hasher of every container of the tree (botbowl plan 070), for callers that want the
+/// same cheap, keyless hash.
+pub use fx_hash::{FxBuildHasher, FxHasher};
 mod game_dynamics;
 mod lockref;
 mod ref_iter;
