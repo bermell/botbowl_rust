@@ -67,6 +67,7 @@ sections (they get ids and a contents list), pipe tables with a header row, and 
 - **The training loop and `runs/` live on the training box** (Linux, its own checkout). A macOS checkout has no `runs/`; never create one or touch `runs/`, `data/`, `models/` unless asked.
 - **A long-lived worker runs from a checkout's build dir.** Rebuilding into the directory it runs from (`target/release`, or the loop's `target/16x9`) swaps its binary underneath it. The loop and any long-lived worker should run from a dedicated `CARGO_TARGET_DIR` (the launchers use `target/${W}x${H}`), not `target/release`; assume a worker may be running from the main checkout's `target/release` and don't build there.
 - **Agents and parallel sessions work in a git worktree** (`.claude/worktrees/…`, own `target/`), or at least with their own `CARGO_TARGET_DIR`. Never switch branches in a checkout a loop or worker runs from, and don't `cd` from a worktree into the main checkout to build.
+- **Agent worktrees share one target dir:** `CARGO_TARGET_DIR=<main checkout>/target/agents` (absolute path), so dependencies compile once instead of once per worktree; size-specific builds go in subdirs of it (`target/agents/20x11`). Never point it at `target/release`, `target/20x11` or another dir a loop or worker runs from. After a branch is merged, `git worktree remove` its worktree (the branch stays).
 - `Blocking waiting for file lock on build directory` means another cargo process shares the target dir — wait or use your own `CARGO_TARGET_DIR`; it is not a hang.
 
 ## Commands
