@@ -71,12 +71,23 @@ replaces the PUCT root with sequential halving:
   best survivor.
 - **`gumbel_q_floor`** floors q̂'s normalising range (Q points). 0 is the paper's rule, which
   follows noise on our flat Q (exp060). 1000 is the measured setting (`cfgs/gumbel16_f1000*.toml`).
-- **Ties at the root (plan 068):** `Halving` sorts stably, so among equal logits the considered set,
-  the order survivors are searched in and the pick follow the root's child order. Under the shipped
-  `tie_break = "hash"` that is the tree's `HashMap` order, random per tree, and two bots on one net
-  split there. With any other `tie_break` the root's children are ordered by it first (preferred
-  first); `hash` is unchanged. It does not make a search fully reproducible: backprop's walk over a
-  recombined DAG is order-dependent too (exp079 measured what is left).
+- **Ties at the root (plan 068, 070):** `Halving` sorts stably, so among equal logits the considered
+  set, the order survivors are searched in and the pick follow the root's child order. The root's
+  children are ordered by the tie-break first (preferred first), under every `tie_break`.
+- **Determinism (plan 070):** a one-thread search is a pure function of (state, net, seed) under
+  every preset. `tie_break = "hash"` (shipped) orders exact ties by `tie_hash(seed, action)`, the
+  seed being the node state's own hash (`TieCtx`, drawn only when a tie needs it; FxHash +
+  splitmix64): the per-node random order the children `HashMap` used to give, made reproducible.
+  `mover` is total and mirror-covariant (`mover_chance_order`) but a *fixed* order, and a fixed
+  order biases the chance sweep: among equally likely unscored outcomes the same one is swept, and
+  under the partial backup valued, first at every node (exp084: det vs the old search 0.475 ± 0.022
+  over 100 pairs). Keep `mover` for mirror experiments, not for play. The chance backup sums in
+  `chance_term_order` (values break the `|dx|`-folded ties). exp079's suspect, backprop's walk order
+  over the recombined DAG, does not matter (depth is a correct topological key on one thread).
+  `MctsBot::audit_dag` checks a finished DAG (every edge deeper and listed in the child's parent
+  set, every backup equal to its children's — except the documented visit lag);
+  `botbowl-play/tests/search_repeat.rs` runs two copies of a bot in lockstep and compares every root
+  statistic.
 - **Default:** `gumbel_m = 0` is byte-identical to the shipped search. `tests/gumbel_root.rs` pins
   that, the schedule and reproducibility.
 
@@ -114,7 +125,7 @@ generation-only knobs; `ExploreStep::default()` is exactly the plain record (`te
 
 ## MctsConfig — one struct, resolved once at construction
 
-Every knob that shapes a search lives in `MctsConfig` (`dynamics.rs`): `workers`, `memory_mode`, `tree_reuse`, `virtual_loss`, `puct`, `tie_break`, `fpu_reduction`, `horizon_turns`, `horizon`, `stats`, `leaf_stats`, `debug_root`, `budget_mode`, `chance_model`, plan 061's `bounce_model` / `pass_scatter_model` / `throw_in_model` / `chance_backup` / `chance_mass` / `chance_widen_c` / `chance_widen_alpha`, and the plan-047 setup knobs `setup`, `opponent_setup`, `setup_formation`, `setup_budget_scale`, `setup_horizon_turns` (see "Kickoff setup" below). **The environment is read only where a caller asks for it** (plan 059): `MctsConfig::new()` / `Default` / `MctsBot::new` are the shipped configuration and ignore `BLOOD_MCTS_*` entirely (so an exported knob cannot change a test); `MctsConfig::from_env()` / `MctsBot::from_env` apply the overrides, and the CLI paths call them explicitly (`botbowl_play::bots::make_mcts` when no preset is given, `botbowl-ui`'s TUI bot factory and `convergence`). `MctsBot::with_budget_and_config(budget, config)` takes a whole config, which is what lets one process (the web server, plan 034) run several differently-tuned bots. `tests/config_env.rs` pins it.
+Every knob that shapes a search lives in `MctsConfig` (`dynamics.rs`): `workers`, `memory_mode`, `tree_reuse`, `virtual_loss`, `puct`, `tie_break`, `fpu_reduction`, `horizon_turns`, `horizon`, `stats`, `leaf_stats`, `debug_root`, `budget_mode`, `chance_model`, plan 061's `bounce_model` / `pass_scatter_model` / `throw_in_model` / `chance_backup` / `chance_mass` / `chance_widen_c` / `chance_widen_alpha`, plan 070's `backprop` (`fixed` | `legacy`), and the plan-047 setup knobs `setup`, `opponent_setup`, `setup_formation`, `setup_budget_scale`, `setup_horizon_turns` (see "Kickoff setup" below). **The environment is read only where a caller asks for it** (plan 059): `MctsConfig::new()` / `Default` / `MctsBot::new` are the shipped configuration and ignore `BLOOD_MCTS_*` entirely (so an exported knob cannot change a test); `MctsConfig::from_env()` / `MctsBot::from_env` apply the overrides, and the CLI paths call them explicitly (`botbowl_play::bots::make_mcts` when no preset is given, `botbowl-ui`'s TUI bot factory and `convergence`). `MctsBot::with_budget_and_config(budget, config)` takes a whole config, which is what lets one process (the web server, plan 034) run several differently-tuned bots. `tests/config_env.rs` pins it.
 
 **Plan 043 makes it a committable preset.** `MctsConfig` is `Copy` + serde, and its serde default is `MctsConfig::new` (which `Default` now is too; it was `from_env()` until plan 059): a named configuration that absorbed a stray `BLOOD_MCTS_*` would not be reproducible, which is the entire point of naming one. `deny_unknown_fields` turns a typo into an error rather than a knob that silently stays put. Enum variants are `snake_case` on the wire so a preset reads in the same vocabulary as the CLI flags; renaming them is safe because they cross the hub under postcard (variant-by-index) and no persisted JSON names them. `cfgs/` holds the presets, `botbowl_play::bots::load_mcts_config` loads one, and `SearchConfig.config` carries it — see `cfgs/README.md`.
 

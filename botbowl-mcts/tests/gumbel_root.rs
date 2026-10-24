@@ -53,7 +53,9 @@ fn bot(m: u16, scale: f32) -> MctsBot {
 /// Walk into the turn until the root offers more than `M` moves (a player's move fan).
 fn wide_state() -> Option<GameState> {
     let mut state = open_state()?;
+    // Plan 070: walked with an order-independent tie-break, so the state does not move with the hasher.
     let mut puct = bot(0, 0.0);
+    puct.config.tie_break = botbowl_mcts::TieBreak::Mover;
     for _ in 0..6 {
         if state.get_all_actions().len() > M as usize * 2 {
             return Some(state);
@@ -77,7 +79,8 @@ fn halving_spends_the_budget_on_the_considered_moves_only() {
     // can reach a move outside the considered set). The search may stop early once every
     // survivor is solved.
     let steps = b.telemetry().iterations as usize;
-    assert!(steps <= N && steps >= N / 3, "{steps} descents");
+    // (Plan 070: on this state every survivor is solved after 77 of 240 descents.)
+    assert!(steps <= N && steps >= N / 4, "{steps} descents");
     assert_eq!(total as usize, steps - 1, "{descents:?}");
 
     // Without noise the considered set is the top M by prior.
@@ -87,12 +90,17 @@ fn halving_spends_the_budget_on_the_considered_moves_only() {
         .map(|e| (e.action.clone(), e.action.prior_f32().unwrap()))
         .collect();
     by_prior.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    let considered: Vec<_> = by_prior.iter().take(M as usize).map(|(a, _)| a.clone()).collect();
-    let is_considered = |a: &botbowl_engine::core::model::Action| {
-        considered
-            .iter()
-            .any(|c| matches!(c, botbowl_mcts::BbAction::Player { action, .. } if action == a))
+    // Moves tied with the M-th prior are in or out by the tie-break (plan 070: a per-state order
+    // under `hash`), so they may be considered but need not be.
+    let cut = by_prior.get(M as usize - 1).map_or(f32::MIN, |(_, p)| *p);
+    let prior_of = |a: &botbowl_engine::core::model::Action| {
+        by_prior.iter().find_map(|(c, p)| match c {
+            botbowl_mcts::BbAction::Player { action, .. } if action == a => Some(*p),
+            _ => None,
+        })
     };
+    let is_considered = |a: &botbowl_engine::core::model::Action| prior_of(a).is_some_and(|p| p >= cut);
+    let surely_considered = |a: &botbowl_engine::core::model::Action| prior_of(a).is_some_and(|p| p > cut);
     let inside: u32 = descents.iter().filter(|(a, _)| is_considered(a)).map(|(_, n)| n).sum();
     let solved_early = s.children.iter().filter(|e| e.stats.solved).count();
     // Outside the considered set only the fallbacks of moves that got solved mid-phase, one each.
@@ -100,7 +108,7 @@ fn halving_spends_the_budget_on_the_considered_moves_only() {
     // Every considered move that was still open got its phase-one share, N / (3 phases · 8) = 10.
     for e in s.children.iter().filter(|e| !e.stats.solved) {
         if let botbowl_mcts::BbAction::Player { action, .. } = &e.action {
-            if is_considered(action) {
+            if surely_considered(action) {
                 let n = descents.iter().find(|(a, _)| a == action).map_or(0, |(_, n)| *n);
                 assert!(n >= 10, "{action:?} got only {n} descents");
             }

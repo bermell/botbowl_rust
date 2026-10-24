@@ -434,6 +434,74 @@ pub struct BbScore {
     pub proven: Option<i8>,
 }
 
+/// [`MctsBot::audit_dag`]'s walk over one tree (plan 070), a macro because the two memory modes
+/// are two tree types.
+macro_rules! audit_dag_of {
+    ($tree:expr) => {{
+        let gd = $tree.get_game_dynamics();
+        let mut out = DagAudit::default();
+        let root = $tree.get_root_node();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if !seen.insert(&*node as *const _ as usize) {
+                continue;
+            }
+            out.nodes += 1;
+            let Some(children) = node.get_children() else { continue };
+            let Some(mover) = node.mover().copied() else { continue };
+            let mut scored: Vec<(BbScore, BbAction)> = Vec::new();
+            for (a, c) in &children {
+                if c.mover().is_none() {
+                    continue;
+                }
+                out.edges += 1;
+                if !c.lists_parent(&node) {
+                    out.unlisted_parent += 1;
+                }
+                if c.depth() <= node.depth() {
+                    out.depth_violations += 1;
+                }
+                if let Some(q) = c.with_score(|q| q.cloned()) {
+                    scored.push((q, a.clone()));
+                }
+                stack.push(c.clone());
+            }
+            let current = node.with_score(|q| q.cloned());
+            let again = gd.backprop_scores(&mover, current.as_ref(), scored.iter().map(|(q, a)| (q, a)));
+            if let (Some(now), Some(cur)) = (again, current) {
+                out.checked += 1;
+                let (nv, cv) = (now.visits.load(Ordering::Relaxed), cur.visits.load(Ordering::Relaxed));
+                if now.score != cur.score || now.proven != cur.proven {
+                    out.stale_value += 1;
+                } else if nv != cv {
+                    out.stale_visits_only += 1;
+                }
+            }
+        }
+        out
+    }};
+}
+
+/// [`MctsBot::audit_dag`]'s counts (plan 070).
+#[doc(hidden)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DagAudit {
+    pub nodes: usize,
+    /// Edges into materialised children.
+    pub edges: usize,
+    /// Edges whose child is not deeper than its parent.
+    pub depth_violations: usize,
+    /// Edges whose child does not list the parent in its parent set.
+    pub unlisted_parent: usize,
+    /// Expanded, scored nodes whose backup was recomputed.
+    pub checked: usize,
+    /// ... of which the stored score (or proof) differs from the recomputed one.
+    pub stale_value: usize,
+    /// ... of which only the visit count differs.
+    pub stale_visits_only: usize,
+}
+
 impl Clone for BbScore {
     fn clone(&self) -> Self {
         BbScore {
@@ -444,6 +512,19 @@ impl Clone for BbScore {
             proven: self.proven,
         }
     }
+}
+
+/// Plan 070: how a descent backs up a node that gained a transposed child (a twin) on the way.
+/// See `recon_mcts::GameDynamics::back_up_spliced_parents`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Backprop {
+    /// The parent is backed up with the descent, so it never keeps a value that ignores the twin.
+    #[default]
+    Fixed,
+    /// Before plan 070: the parent sees the twin only when a later backup passes through it. For
+    /// A/B runs against the old search (`cfgs/chance_all_partial_legacy.toml`).
+    Legacy,
 }
 
 /// Captures the root-state's turn/score so the search can treat states
@@ -590,7 +671,10 @@ pub enum Evaluator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TieBreak {
-    /// Arbitrary (whatever the children `HashMap` yields last). Shipped.
+    /// Shipped. A pseudo-random order per node: ties go by a hash of (the node's state, the
+    /// action). Before plan 070 it was whatever each node's `HashMap` yielded, random per map and
+    /// per process; this is the same distribution (no outcome or move systematically first), but a
+    /// pure function of the state, so a search is reproducible.
     #[default]
     Hash,
     /// Prefer the action that sorts *first* in `(PosAT, x, y)` order.
@@ -629,14 +713,18 @@ impl TieBreak {
     }
 
     /// Comparator fragment applied *after* the value comparison inside a
-    /// `max_by`: returns `Greater` for the action this rule prefers. Only
-    /// player actions carry board coordinates, so chance outcomes (whose
-    /// order has no side meaning) are left to the map's own order.
-    fn cmp_actions(&self, a: &BbAction, b: &BbAction, frame: MoverFrame) -> std::cmp::Ordering {
+    /// `max_by`: returns `Greater` for the action this rule prefers. `Hash`
+    /// orders every pair (plan 070); `Asc`/`Desc` leave chance outcomes tied.
+    fn cmp_actions(&self, a: &BbAction, b: &BbAction, ctx: &TieCtx<'_>) -> std::cmp::Ordering {
         use std::cmp::Ordering;
+        let frame = ctx.frame;
+        if *self == TieBreak::Hash {
+            let seed = ctx.seed();
+            return tie_hash(seed, b).cmp(&tie_hash(seed, a));
+        }
         match (a, b) {
             (BbAction::Player { action: x, .. }, BbAction::Player { action: y, .. }) => match self {
-                TieBreak::Hash => Ordering::Equal,
+                TieBreak::Hash => unreachable!("handled above"),
                 // `max_by` keeps the greatest, so "prefer the first-sorting
                 // action" means calling the smaller one greater.
                 TieBreak::Asc => y.cmp(x),
@@ -648,13 +736,73 @@ impl TieBreak {
             // sweep order is directional too. Only `Mover` orders them, by
             // the acting side's own attacking direction, so that the order
             // reflects with the board.
+            // Plan 070: total, so no tie is left to the children map's order (D6 faces, block dice and
+            // every other non-directional outcome all share one `chance_key`). Being a fixed order it
+            // is also a fixed bias: among equally likely outcomes the same one is swept (and, under
+            // a partial backup, valued) first at every node. `Hash` has no such bias.
             (BbAction::Chance { result: x, .. }, BbAction::Chance { result: y, .. }) => match self {
-                TieBreak::Mover => chance_key(y, frame.attacking_dx).cmp(&chance_key(x, frame.attacking_dx)),
+                TieBreak::Mover => mover_chance_order(y, x, frame.attacking_dx),
                 _ => Ordering::Equal,
             },
             _ => Ordering::Equal,
         }
     }
+}
+
+/// A tie-break's view of the node (plan 070): the mover's frame for [`TieBreak::Mover`], and for
+/// [`TieBreak::Hash`] a seed drawn from the node's state, hashed only once a tie needs it.
+pub(crate) struct TieCtx<'s> {
+    frame: MoverFrame,
+    state: Option<&'s GameState>,
+    seed: std::cell::Cell<Option<u64>>,
+}
+
+impl<'s> TieCtx<'s> {
+    fn of(state: &'s GameState, team: TeamType) -> Self {
+        Self {
+            frame: MoverFrame::for_team(state, team),
+            state: Some(state),
+            seed: std::cell::Cell::new(None),
+        }
+    }
+
+    fn seed(&self) -> u64 {
+        if let Some(s) = self.seed.get() {
+            return s;
+        }
+        let s = self.state.map_or(0, state_seed);
+        self.seed.set(Some(s));
+        s
+    }
+}
+
+/// The per-node seed of [`TieBreak::Hash`]: the state's own `Hash`, through recon_mcts's fixed
+/// FxHash (a fraction of SipHash's cost: on a flat net nearly every selection meets a tie) and a
+/// splitmix64 finaliser.
+fn state_seed(state: &GameState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = recon_mcts::FxHasher::default();
+    state.hash(&mut h);
+    splitmix64(h.finish())
+}
+
+/// An action's place in [`TieBreak::Hash`]'s order at the node seeded `seed`: the engine action or
+/// the roll result, without the cached prior or probability, mixed with the seed.
+fn tie_hash(seed: u64, a: &BbAction) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = recon_mcts::FxHasher::default();
+    match a {
+        BbAction::Player { action, .. } => action.hash(&mut h),
+        BbAction::Chance { result, .. } => result.hash(&mut h),
+    }
+    splitmix64(seed ^ h.finish())
+}
+
+/// splitmix64's finaliser: every input bit reaches every output bit.
+fn splitmix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
 }
 
 /// The mover's geometric frame, for [`TieBreak::Mover`]: the endzone it is
@@ -700,6 +848,49 @@ fn chance_key(r: &RollResult, attacking_dx: i8) -> (i8, i8, u8) {
     }
 }
 
+/// A total, mirror-covariant order on chance outcomes for [`TieBreak::Mover`] (plan 070):
+/// `chance_key` (the first direction in the acting side's frame), then a scatter's other two
+/// directions in that frame, then [`chance_fields`] (the variant and every non-direction field, all
+/// mirror-invariant), so distinct outcomes always differ by here. `Less` = `x` sorts first. No
+/// allocation: on a flat net it runs at nearly every chance selection.
+fn mover_chance_order(x: &RollResult, y: &RollResult, attacking_dx: i8) -> std::cmp::Ordering {
+    let tail = |r: &RollResult| match r {
+        RollResult::Scatter(_, b, c) => {
+            let (b, c) = (
+                chance_key(&RollResult::D8(*b), attacking_dx),
+                chance_key(&RollResult::D8(*c), attacking_dx),
+            );
+            [b.0, b.1, c.0, c.1]
+        }
+        _ => [0; 4],
+    };
+    chance_key(x, attacking_dx)
+        .cmp(&chance_key(y, attacking_dx))
+        .then_with(|| tail(x).cmp(&tail(y)))
+        .then_with(|| chance_fields(x).cmp(&chance_fields(y)))
+}
+
+/// A chance outcome's variant and non-direction fields, as plain numbers: with the directions in
+/// the acting side's frame ([`mover_chance_order`]) it tells any two outcomes apart.
+fn chance_fields(r: &RollResult) -> (u8, [u8; 3]) {
+    let face = |f: &Option<botbowl_engine::core::dices::BlockDice>| f.map_or(0, |f| f as u8 + 1);
+    match r {
+        RollResult::BlockDice([a, b, c]) => (0, [face(a), face(b), face(c)]),
+        RollResult::Coin(c) => (1, [*c as u8, 0, 0]),
+        RollResult::Pass => (2, [0; 3]),
+        RollResult::Fail => (3, [0; 3]),
+        RollResult::FoulArmor { broken, ejected } => (4, [u8::from(*broken), u8::from(*ejected), 0]),
+        RollResult::FoulInjury { outcome, ejected } => (5, [*outcome as u8, u8::from(*ejected), 0]),
+        RollResult::MiddleOutcome => (6, [0; 3]),
+        RollResult::D6(d) => (7, [*d as u8, 0, 0]),
+        RollResult::D8(_) => (8, [0; 3]),
+        RollResult::Deviate(d, _) => (9, [*d as u8, 0, 0]),
+        RollResult::Scatter(..) => (10, [0; 3]),
+        RollResult::Sum2D6(v) => (11, [*v as u8, 0, 0]),
+        RollResult::ThrowIn { direction, distance } => (12, [*direction as u8, *distance as u8, 0]),
+    }
+}
+
 /// Plan 061 `ChanceBackup::Widen`: which of two equally likely outcomes opens first. `Less` opens
 /// first. Mirror-covariant keys first (the acting side's forward direction, then the `|dx|`-folded
 /// canonical key), the raw result only as the last resort, so the order is total.
@@ -711,6 +902,22 @@ fn widen_order(a: &BbAction, b: &BbAction, frame: MoverFrame) -> std::cmp::Order
             .then_with(|| format!("{x:?}").cmp(&format!("{y:?}"))),
         _ => std::cmp::Ordering::Equal,
     }
+}
+
+/// One outcome's share of a chance node's backup: `(canonical key, visits, probability, score,
+/// proven)`.
+type ChanceTerm = (String, u32, f64, i64, Option<i8>);
+
+/// The order a chance node sums its outcomes in. The canonical key first (mirror-covariant, see
+/// `backprop_scores`), then, because `|dx|` folding gives mirrored directions one key, the values
+/// themselves (plan 070): terms equal in every field contribute the same, so the f64 sum does not
+/// depend on the children map's order at all.
+fn chance_term_order(a: &ChanceTerm, b: &ChanceTerm) -> std::cmp::Ordering {
+    a.0.cmp(&b.0)
+        .then(a.3.cmp(&b.3))
+        .then(a.2.total_cmp(&b.2))
+        .then(a.1.cmp(&b.1))
+        .then(a.4.cmp(&b.4))
 }
 
 /// A total, deterministic ordering key for a chance node's `RollResult`
@@ -831,6 +1038,8 @@ pub struct BloodBowlDynamics {
     /// Plan 060: where each descent ended, for the tree statistics. Observational only; `None`
     /// (default) records nothing.
     pub descent_log: Option<Arc<DescentLog>>,
+    /// Plan 070: see [`Backprop`].
+    pub backprop: Backprop,
 }
 
 impl BloodBowlDynamics {
@@ -881,6 +1090,7 @@ impl Default for BloodBowlDynamics {
             chance_search: ChanceSearch::default(),
             forced_root: None,
             descent_log: None,
+            backprop: Backprop::default(),
         }
     }
 }
@@ -1253,6 +1463,11 @@ impl GameDynamics for BloodBowlDynamics {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some((v - vl).max(0)));
     }
 
+    /// Plan 070: back up the parent of a twin the descent spliced in, unless `Backprop::Legacy`.
+    fn back_up_spliced_parents(&self) -> bool {
+        self.backprop == Backprop::Fixed
+    }
+
     /// Plan 060: tally where the descent ended (`tree_stats::DescentLog`). Observational only.
     fn observe_descent<'a, E>(&self, edges: E, leaf: &Self::State, end: DescentEnd)
     where
@@ -1459,7 +1674,7 @@ impl GameDynamics for BloodBowlDynamics {
             CHANCE_STATS.record_visit(RollKind::of(parent_node_state, req));
             // No side is "to move" at a chance node; the acting team's frame
             // is the right one, since the roll is resolving its action.
-            let tie_frame = MoverFrame::for_team(parent_node_state, parent_node_state.info.team_turn);
+            let tie = TieCtx::of(parent_node_state, parent_node_state.info.team_turn);
             let total = parent_visits + 1.0;
             let cs = self.chance_search;
             // (unscored, visits, probability, action), in the children's own order. Plain data:
@@ -1491,7 +1706,7 @@ impl GameDynamics for BloodBowlDynamics {
                     items.sort_by(|a, b| {
                         b.2.partial_cmp(&a.2)
                             .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| widen_order(&a.3, &b.3, tie_frame))
+                            .then_with(|| widen_order(&a.3, &b.3, tie.frame))
                     });
                     items.truncate(k);
                     let open: f32 = items.iter().map(|i| i.2).sum();
@@ -1512,7 +1727,7 @@ impl GameDynamics for BloodBowlDynamics {
                 .max_by(|((ua, da), aa), ((ub, db), ab)| {
                     ua.cmp(ub)
                         .then(da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
-                        .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
+                        .then_with(|| self.tie_break.cmp_actions(aa, ab, &tie))
                 })
                 .expect("chance node must have at least one outcome");
             bump_chosen(&pick.1, 0);
@@ -1550,8 +1765,8 @@ impl GameDynamics for BloodBowlDynamics {
             self.forced_root.as_ref().unwrap().note_missed();
         }
         let home_perspective = *parent_player == BbPlayer::Home;
-        // For `TieBreak::Mover`: the endzone the side to move is attacking.
-        let tie_frame = MoverFrame::for_team(
+        // For `TieBreak::Mover`: the endzone the side to move is attacking; for `Hash`, the state.
+        let tie = TieCtx::of(
             parent_node_state,
             if home_perspective {
                 TeamType::Home
@@ -1608,7 +1823,7 @@ impl GameDynamics for BloodBowlDynamics {
                     .max_by(|(va, aa), (vb, ab)| {
                         va.partial_cmp(vb)
                             .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
+                            .then_with(|| self.tie_break.cmp_actions(aa, ab, &tie))
                     })
                     .expect("player node must have at least one action")
             }
@@ -1653,7 +1868,7 @@ impl GameDynamics for BloodBowlDynamics {
                     .max_by(|(va, aa), (vb, ab)| {
                         va.partial_cmp(vb)
                             .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
+                            .then_with(|| self.tie_break.cmp_actions(aa, ab, &tie))
                     })
                     .expect("player node must have at least one action")
             }
@@ -1723,7 +1938,7 @@ impl GameDynamics for BloodBowlDynamics {
             // hold `Q`/`A` (`lockref::Ref`s) across the sort, which would
             // pull a second `Ref` while the first is alive and deadlock
             // under contention (plan 013, `lockref-guard`).
-            let mut terms: Vec<(String, u32, f64, i64, Option<i8>)> = child_scores_and_actions
+            let mut terms: Vec<ChanceTerm> = child_scores_and_actions
                 .into_iter()
                 .map(|(q, a)| {
                     let key = match a.deref() {
@@ -1739,7 +1954,7 @@ impl GameDynamics for BloodBowlDynamics {
                     )
                 })
                 .collect();
-            terms.sort_by(|a, b| a.0.cmp(&b.0));
+            terms.sort_by(chance_term_order);
             // Proven only if every outcome is proven to the same drive result.
             let mut proven: Option<Option<i8>> = None;
             for (_, v, prob, score, p) in terms.into_iter() {
@@ -2288,6 +2503,9 @@ pub struct MctsConfig {
     pub chance_widen_c: f32,
     /// Plan 061: `chance_backup = "widen"`'s `alpha`.
     pub chance_widen_alpha: f32,
+    /// Plan 070: `fixed` (default) backs up the parent of every twin a descent splices in;
+    /// `legacy` is the search before plan 070.
+    pub backprop: Backprop,
 }
 
 impl MctsConfig {
@@ -2324,6 +2542,7 @@ impl MctsConfig {
             chance_mass: DEFAULT_CHANCE_MASS,
             chance_widen_c: DEFAULT_CHANCE_WIDEN_C,
             chance_widen_alpha: DEFAULT_CHANCE_WIDEN_ALPHA,
+            backprop: Backprop::Fixed,
         }
     }
 
@@ -2857,6 +3076,7 @@ impl MctsBot {
             chance_search: self.config.chance_search(),
             forced_root: None,
             descent_log: Some(Arc::clone(&self.descent_log)),
+            backprop: self.config.backprop,
         };
         // Plan 060: the tree statistics read every leaf against this search's anchor (captured even
         // when the horizon is off, so the phases still mean something).
@@ -2877,7 +3097,12 @@ impl MctsBot {
         } else {
             0
         };
-        let gumbel_frame = MoverFrame::for_team(&root_state, agent_team);
+        // Plan 070: the root's tie-break, seeded now (the state moves into the tree below).
+        let gumbel_tie = TieCtx {
+            frame: MoverFrame::for_team(&root_state, agent_team),
+            state: None,
+            seed: std::cell::Cell::new(Some(state_seed(&root_state))),
+        };
         let forced_root = (gumbel_m > 0).then(|| Arc::clone(self.forced_root.get_or_insert_with(Default::default)));
         let mut gd = gd;
         gd.forced_root = forced_root.clone();
@@ -3027,7 +3252,7 @@ impl MctsBot {
                             gumbel_q_floor,
                             agent_team,
                             self.config.tie_break,
-                            gumbel_frame,
+                            &gumbel_tie,
                             steps_ref,
                         );
                     }
@@ -3246,6 +3471,17 @@ impl MctsBot {
     /// attributed to either.
     pub fn telemetry(&self) -> &SearchTelemetry {
         &self.telemetry
+    }
+
+    /// Audit the DAG the last search left behind (plan 070): every edge must go strictly deeper,
+    /// and every expanded node's stored score must equal what `backprop_scores` makes of its
+    /// children now. A diagnostic: it walks the whole DAG. `None` when no tree is cached.
+    #[doc(hidden)]
+    pub fn audit_dag(&self) -> Option<DagAudit> {
+        match self.cached_tree.as_ref()? {
+            CachedTree::StoreState(t) => Some(audit_dag_of!(t)),
+            CachedTree::GetState(t) => Some(audit_dag_of!(t)),
+        }
     }
 
     /// Take the accumulated telemetry, leaving the bot's counters at zero.
@@ -3527,19 +3763,18 @@ impl MctsBot {
         q_floor: f32,
         agent_team: TeamType,
         tie_break: TieBreak,
-        frame: MoverFrame,
+        tie: &TieCtx<'_>,
         steps: &AtomicU64,
     ) -> Option<EngineAction> {
         let sign = if agent_team == TeamType::Home { 1.0 } else { -1.0 };
         let children = || -> Vec<RootChild> {
             let mut info = tree.get_next_move_info().unwrap_or_default();
             // Plan 068: `Halving` sorts stably, so equal logits keep this order, and so does the
-            // order survivors are searched in. Under `TieBreak::Hash` (shipped) it is the root's
-            // `HashMap` order, random per tree, which made a net disagree with itself. A
-            // deterministic tie-break orders the root's children by it, preferred first.
-            if tie_break != TieBreak::Hash {
-                info.sort_by(|(a, _), (b, _)| tie_break.cmp_actions(b, a, frame));
-            }
+            // order survivors are searched in. It was the root's `HashMap` order under
+            // `TieBreak::Hash`, random per tree, which made a net disagree with itself; every
+            // tie-break now orders the root's children, preferred first (plan 070: `Hash` by the
+            // root state's seed).
+            info.sort_by(|(a, _), (b, _)| tie_break.cmp_actions(b, a, tie));
             info.into_iter()
                 .filter_map(|(a, info)| match &a {
                     BbAction::Player { action, .. } => Some(RootChild {
@@ -3625,7 +3860,7 @@ impl MctsBot {
         move_info: &[(BbAction, BbNodeInfo)],
         agent_team: TeamType,
         tie_break: TieBreak,
-        root_frame: MoverFrame,
+        tie: &TieCtx<'_>,
         debug_root: bool,
     ) -> EngineAction {
         if debug_root {
@@ -3660,7 +3895,6 @@ impl MctsBot {
             TeamType::Home => 1,
             TeamType::Away => -1,
         };
-        let tie_frame = root_frame;
         let key = |info: &BbNodeInfo| {
             info.score
                 .as_ref()
@@ -3669,11 +3903,7 @@ impl MctsBot {
         };
         let best = move_info
             .iter()
-            .max_by(|(aa, ia), (ab, ib)| {
-                key(ia)
-                    .cmp(&key(ib))
-                    .then_with(|| tie_break.cmp_actions(aa, ab, tie_frame))
-            })
+            .max_by(|(aa, ia), (ab, ib)| key(ia).cmp(&key(ib)).then_with(|| tie_break.cmp_actions(aa, ab, tie)))
             .expect("root must offer at least one action");
         match &best.0 {
             BbAction::Player { action, .. } => *action,
@@ -3731,7 +3961,7 @@ impl MctsBot {
                 &result.move_info,
                 result.agent_team,
                 self.config.tie_break,
-                MoverFrame::for_team(state, result.agent_team),
+                &TieCtx::of(state, result.agent_team),
                 self.config.debug_root,
             )
         });
@@ -3833,7 +4063,7 @@ impl Bot for MctsBot {
                 &result.move_info,
                 result.agent_team,
                 self.config.tie_break,
-                MoverFrame::for_team(state, result.agent_team),
+                &TieCtx::of(state, result.agent_team),
                 self.config.debug_root,
             )
         });
@@ -3859,6 +4089,19 @@ mod tests {
     use super::*;
     use botbowl_engine::core::model::Action as EngineAction;
     use botbowl_engine::core::table::SimpleAT;
+
+    /// A tie-break context with a fixed seed and no state.
+    fn tie(frame: MoverFrame) -> TieCtx<'static> {
+        tie_seeded(frame, 7)
+    }
+
+    fn tie_seeded(frame: MoverFrame, seed: u64) -> TieCtx<'static> {
+        TieCtx {
+            frame,
+            state: None,
+            seed: std::cell::Cell::new(Some(seed)),
+        }
+    }
 
     fn child(score: i64, visits: u32) -> BbScore {
         BbScore {
@@ -5015,28 +5258,41 @@ mod tests {
         // `max_by` keeps the greatest, so the preferred action must
         // compare `Greater`.
         assert_eq!(
-            TieBreak::Asc.cmp_actions(&low, &high, TEST_HOME_FRAME),
-            Ordering::Greater
-        );
-        assert_eq!(TieBreak::Asc.cmp_actions(&high, &low, TEST_HOME_FRAME), Ordering::Less);
-        assert_eq!(TieBreak::Desc.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Less);
-        assert_eq!(
-            TieBreak::Desc.cmp_actions(&high, &low, TEST_HOME_FRAME),
+            TieBreak::Asc.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME)),
             Ordering::Greater
         );
         assert_eq!(
-            TieBreak::Hash.cmp_actions(&low, &high, TEST_HOME_FRAME),
-            Ordering::Equal
+            TieBreak::Asc.cmp_actions(&high, &low, &tie(TEST_HOME_FRAME)),
+            Ordering::Less
+        );
+        assert_eq!(
+            TieBreak::Desc.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME)),
+            Ordering::Less
+        );
+        assert_eq!(
+            TieBreak::Desc.cmp_actions(&high, &low, &tie(TEST_HOME_FRAME)),
+            Ordering::Greater
+        );
+        // `Hash` orders by the node's seed (plan 070): a total order, which flips with the seed.
+        let ab = TieBreak::Hash.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME));
+        assert_ne!(ab, Ordering::Equal);
+        assert_eq!(
+            TieBreak::Hash.cmp_actions(&high, &low, &tie(TEST_HOME_FRAME)),
+            ab.reverse()
+        );
+        assert!(
+            (0..64u64).any(|s| TieBreak::Hash.cmp_actions(&low, &high, &tie_seeded(TEST_HOME_FRAME, s)) != ab),
+            "the order must depend on the node's seed"
         );
         // `Mover` is the mirror-covariant rule: with Home's endzone at x=1
         // the low-x action is nearer, so it wins; with Away's endzone at
         // x=14 the same comparison flips. That flip is the whole point.
         assert_eq!(
-            TieBreak::Mover.cmp_actions(&low, &high, TEST_HOME_FRAME),
+            TieBreak::Mover.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME)),
             Ordering::Greater
         );
         assert_eq!(
-            TieBreak::Mover.cmp_actions(&low, &high, TEST_AWAY_FRAME),
+            TieBreak::Mover.cmp_actions(&low, &high, &tie(TEST_AWAY_FRAME)),
             Ordering::Less
         );
 
@@ -5044,8 +5300,14 @@ mod tests {
         // them — their order has no side meaning.
         let c1 = BbAction::chance(botbowl_engine::core::dices::RollResult::Pass, 0.5);
         let c2 = BbAction::chance(botbowl_engine::core::dices::RollResult::Fail, 0.5);
-        assert_eq!(TieBreak::Asc.cmp_actions(&c1, &c2, TEST_HOME_FRAME), Ordering::Equal);
-        assert_eq!(TieBreak::Desc.cmp_actions(&c1, &c2, TEST_HOME_FRAME), Ordering::Equal);
+        assert_eq!(
+            TieBreak::Asc.cmp_actions(&c1, &c2, &tie(TEST_HOME_FRAME)),
+            Ordering::Equal
+        );
+        assert_eq!(
+            TieBreak::Desc.cmp_actions(&c1, &c2, &tie(TEST_HOME_FRAME)),
+            Ordering::Equal
+        );
     }
 
     /// The default must stay the shipped behaviour: nothing in production
@@ -5054,5 +5316,122 @@ mod tests {
     fn tie_break_defaults_to_hash() {
         assert_eq!(TieBreak::default(), TieBreak::Hash);
         assert_eq!(BloodBowlDynamics::default().tie_break, TieBreak::Hash);
+    }
+
+    /// Every outcome kind a chance node can offer, with every face or direction.
+    fn chance_outcomes() -> Vec<RollResult> {
+        use botbowl_engine::core::dices::{BlockDice, Coin, Sum2D6, D3, D6, D8};
+        use botbowl_engine::core::model::InjuryOutcome;
+        let d6: Vec<D6> = (1..=6).map(|v| D6::try_from(v).unwrap()).collect();
+        let d8: Vec<D8> = (1..=8).map(|v| D8::try_from(v).unwrap()).collect();
+        let mut out = vec![
+            RollResult::Pass,
+            RollResult::Fail,
+            RollResult::MiddleOutcome,
+            RollResult::Coin(Coin::Heads),
+            RollResult::Coin(Coin::Tails),
+        ];
+        out.extend(d6.iter().map(|d| RollResult::D6(*d)));
+        out.extend(d8.iter().map(|d| RollResult::D8(*d)));
+        out.extend((2..=12).map(|v| RollResult::Sum2D6(Sum2D6::try_from(v).unwrap())));
+        for a in &d6 {
+            out.extend(d8.iter().map(|b| RollResult::Deviate(*a, *b)));
+        }
+        for a in &d8 {
+            for b in &d8 {
+                out.extend(d8.iter().map(|c| RollResult::Scatter(*a, *b, *c)));
+            }
+        }
+        for d in (1..=3).map(|v| D3::try_from(v).unwrap()) {
+            out.extend((2..=12).map(|v| RollResult::ThrowIn {
+                direction: d,
+                distance: Sum2D6::try_from(v).unwrap(),
+            }));
+        }
+        for (broken, ejected) in [(false, false), (true, false), (false, true), (true, true)] {
+            out.push(RollResult::FoulArmor { broken, ejected });
+        }
+        for outcome in [InjuryOutcome::Stunned, InjuryOutcome::KO, InjuryOutcome::Casualty] {
+            for ejected in [false, true] {
+                out.push(RollResult::FoulInjury { outcome, ejected });
+            }
+        }
+        let faces = [
+            None,
+            Some(BlockDice::Skull),
+            Some(BlockDice::BothDown),
+            Some(BlockDice::Push),
+            Some(BlockDice::PowPush),
+            Some(BlockDice::Pow),
+        ];
+        for a in &faces[1..] {
+            for b in &faces {
+                out.push(RollResult::BlockDice([*a, *b, None]));
+            }
+        }
+        out
+    }
+
+    /// Plan 070: the `mover` tie-break leaves no two distinct chance outcomes tied, so no tie is
+    /// broken in the children map's order. Before, every non-directional outcome (D6 faces, block
+    /// dice, injuries) shared one key, and two searches of one state could sweep them in two
+    /// orders.
+    #[test]
+    fn the_mover_tie_break_orders_every_pair_of_chance_outcomes() {
+        let outcomes = chance_outcomes();
+        for attacking_dx in [-1, 1] {
+            let frame = MoverFrame {
+                endzone_x: 0,
+                attacking_dx,
+            };
+            for (i, x) in outcomes.iter().enumerate() {
+                let a = BbAction::chance(*x, 0.5);
+                for y in &outcomes[i + 1..] {
+                    let b = BbAction::chance(*y, 0.5);
+                    let ab = TieBreak::Mover.cmp_actions(&a, &b, &tie(frame));
+                    assert_ne!(ab, std::cmp::Ordering::Equal, "{x:?} vs {y:?}");
+                    assert_eq!(
+                        ab,
+                        TieBreak::Mover.cmp_actions(&b, &a, &tie(frame)).reverse(),
+                        "{x:?} vs {y:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Plan 070: a chance node sums its outcomes in one order whatever order its children come
+    /// in. Mirrored directions fold to one canonical key, so the key alone left those in map order,
+    /// and the f64 sum (and the truncated expectation) could differ in the last bit.
+    #[test]
+    fn a_chance_backup_sums_in_one_order_whatever_the_child_order() {
+        use botbowl_engine::core::dices::D8;
+        let terms: Vec<ChanceTerm> = (1..=8u8)
+            .map(|v| {
+                let r = RollResult::D8(D8::try_from(v).unwrap());
+                (
+                    canonical_chance_key(&r),
+                    u32::from(v % 3) + 1,
+                    0.125,
+                    -997 + 331 * i64::from(v) % 1013,
+                    None,
+                )
+            })
+            .collect();
+        let sorted = |order: &[usize]| {
+            let mut t: Vec<ChanceTerm> = order.iter().map(|&i| terms[i].clone()).collect();
+            t.sort_by(chance_term_order);
+            t
+        };
+        let first = sorted(&[0, 1, 2, 3, 4, 5, 6, 7]);
+        let mut order: Vec<usize> = (0..8).collect();
+        for k in 0..64u64 {
+            // A deterministic shuffle per round.
+            for i in (1..order.len()).rev() {
+                let j = ((k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 7) as usize + i * 31) % (i + 1);
+                order.swap(i, j);
+            }
+            assert_eq!(sorted(&order), first, "order {order:?}");
+        }
     }
 }

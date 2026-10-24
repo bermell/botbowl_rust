@@ -101,7 +101,7 @@ address is the clients', not the box's.
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
   **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
   re-exported types. **v10** (plan 051) added `Task::Eval.drives` (a drive rung's position set)
-  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. **v19** (plan 062) added `Task::Label` (`LabelItem`s: sample ranges of corpus trajectories, zstd) and `ToHub::LabelDone` (`LabelResult`), the distributed `mc-label`; both are appended variants, so older frames keep their tags. **v21** (plan 067) added `LabelConfig.skip` (the MC-label top-up). **v22** (plan 068) added `DriveRung.gate` (the divergence gate: bots seeded by role, every move fingerprinted) and `EvalGameLine.path` (the fingerprint, a trailing field always on the wire); the gate *mode* rides only in `EvalJobRequest.drive_gate`, since only the hub's fold needs it. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
+  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. **v19** (plan 062) added `Task::Label` (`LabelItem`s: sample ranges of corpus trajectories, zstd) and `ToHub::LabelDone` (`LabelResult`), the distributed `mc-label`; both are appended variants, so older frames keep their tags. **v21** (plan 067) added `LabelConfig.skip` (the MC-label top-up). **v22** (plan 068) added `DriveRung.gate` (the divergence gate: bots seeded by role, every move fingerprinted) and `EvalGameLine.path` (the fingerprint, a trailing field always on the wire); the gate *mode* rides only in `EvalJobRequest.drive_gate`, since only the hub's fold needs it. **v23** (plan 070) added `MctsConfig.backprop`. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
   wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
@@ -307,8 +307,10 @@ per-result that does not need `Inner` belongs before the lock: a trajectory is i
 in the websocket task (`TrajectoryPayload::decode`), which took the ceiling on an 8-core box from
 ~600 to ~1,250 games/s (plan 069 item 6); shard writes are still under it.
 For MCTS/NN paths, run real binaries at 14x7 against a current-schema net
-(`scripts/make_random_net.py` makes one) — search output is not reproducible across processes,
-so compare seed sets, labels and counts, not lines.
+(`scripts/make_random_net.py` makes one). Since plan 070 a one-thread search is reproducible
+across processes, but in-process inference with several streams batches differently run to run
+(last-bit differences), and the hub hands games to streams in arrival order, so compare seed sets,
+labels and counts, not lines.
 
 ## Not yet (plan 041 phases 3-5)
 

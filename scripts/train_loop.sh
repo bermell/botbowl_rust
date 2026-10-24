@@ -506,7 +506,8 @@ DRIVE_CAP="${DRIVE_CAP:-800}"
 # Plan 068: DRIVE_GATE=report|sprt runs the drive rung (not the origin match) under the divergence
 # gate (`job eval --drive-gate`): pairs whose two games played the same moves (one game twice,
 # exactly 1/2) are told apart; `sprt` runs $DRIVE_SPRT on the other pairs only. It wants
-# deterministic bots: EVAL_BOT_CONFIG=cfgs/chance_all_partial_det.toml. Empty (default) = off.
+# deterministic bots, which every preset is since plan 070 (one thread per search). Empty (default)
+# = off.
 DRIVE_GATE="${DRIVE_GATE:-}"
 P1_GAMES="${P1_GAMES:-0}"
 ANCHOR_EVERY="${ANCHOR_EVERY:-0}"

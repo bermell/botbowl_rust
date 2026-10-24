@@ -23,9 +23,8 @@ rand_distr = "0.4"
 #   cargo test --release -p botbowl-mcts --features expand_bench \
 #       --test expand_bench -- --ignored --nocapture
 expand_bench = []
-# Fixed-seed children-map hashing in recon_mcts, for reproducible search in a release binary:
-# `scripts/perf_search_bench.sh` builds `botbowl-ui --features deterministic_hash` with it. Never
-# for production (see recon_mcts/Cargo.toml).
+# A no-op since plan 070 (recon_mcts hashes its containers with a fixed hasher in every build);
+# kept because `scripts/perf_search_bench.sh` builds `botbowl-ui --features deterministic_hash`.
 deterministic_hash = ["recon_mcts/deterministic_hash"]
 
 [dev-dependencies]

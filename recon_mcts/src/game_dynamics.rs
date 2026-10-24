@@ -197,6 +197,18 @@ pub trait GameDynamics {
     /// adjustment would outlive the descent and accumulate. Default: nothing to undo.
     fn release_descent(&self, _parent_player: &Self::Player, _child_score: &Self::Score) {}
 
+    /// Whether a descent backs up the parent of a twin it spliced in (botbowl plan 070).
+    ///
+    /// A placeholder that materialises as a node already in the registry (a transposition) is
+    /// replaced by that node, so its parent gains a child that may already carry a score. The
+    /// descent then continues into the twin, and its backprop walks up from wherever it ends; if
+    /// that walk stops below the twin (`backprop_scores` returning `None` there), the parent never
+    /// sees its new child and keeps a stale value. With `true` (the default) the descent's backprop
+    /// is also seeded at every such parent. `false` restores the old behaviour, for A/B runs only.
+    fn back_up_spliced_parents(&self) -> bool {
+        true
+    }
+
     /// Called once per descent, when it stops: `edges` are the edges it took, root first, each as
     /// `(player of the node the edge leaves, action)`; `leaf` is the state it stopped at, and `end`
     /// says why it stopped. A swap of a fresh placeholder for an existing twin (recombination) is

@@ -23,13 +23,11 @@ two_player = []
 # materialises Refs into a Vec, which is benign there.
 lockref-guard = []
 
-# Opt-in: makes the children `HashMap` inside `Node`/`Children::Branch` use a
-# fixed-seed hasher instead of the per-process-random default, so iteration
-# order (and therefore any downstream `HashMap`-order tie-break) is
-# reproducible across runs given the same insertion sequence. Never enable in
-# production — it exists purely so tests can assert exact tree equality
-# instead of doing statistics on values that should be provable (plan 023,
-# botbowl_rust).
+# A no-op since botbowl plan 070: every hashed container of the tree (children
+# maps, parents sets, registry, visited sets) uses the fixed `FxBuildHasher`,
+# so iteration order is the same in every process. It used to switch the
+# children maps from `RandomState` to a fixed-seed SipHash for tests (plan 023,
+# botbowl_rust); kept so the builds that name it still resolve.
 deterministic_hash = []
 
 # Tests are in a separate workspace so they can be compiled with feature

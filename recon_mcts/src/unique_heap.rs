@@ -1,5 +1,6 @@
 #![cfg_attr(feature = "nightly", feature(generic_associated_types))]
 
+use crate::fx_hash::FxBuildHasher;
 use std::cmp::{Eq, Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::{BinaryHeap, HashSet};
 use std::hash::Hash;
@@ -60,7 +61,7 @@ impl<T: HeapElem> Eq for OrdWrap<T> {}
 
 pub struct UniqueHeap<N, H> {
     heap: BinaryHeap<OrdWrap<N>>,
-    registry: HashSet<H>,
+    registry: HashSet<H, FxBuildHasher>,
 }
 
 impl<N, H> UniqueHeap<N, H>
@@ -71,7 +72,7 @@ where
     pub fn new() -> Self {
         Self {
             heap: BinaryHeap::new(),
-            registry: HashSet::new(),
+            registry: HashSet::default(),
         }
     }
 
