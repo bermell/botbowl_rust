@@ -1,3 +1,6 @@
+# Plan 070: superseded. The shipped `tie_break = "hash"` is now deterministic too (seeded by each
+# node's state), and `mover`'s fixed chance order biases the partial backup (exp084: 0.475 ± 0.022 against
+# the old search). Kept for plan 068's records.
 # Plan 068: `chance_all_partial` (the drive benchmark's eval preset) with a deterministic tie-break,
 # so a search is a function of its state: two bots on one net play the same move. The shipped
 # `tie_break = "hash"` resolves exact ties in each tree's own `HashMap` order, and the Gumbel root

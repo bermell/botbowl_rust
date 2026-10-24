@@ -15,6 +15,13 @@ Defaults unless a row says otherwise:
 
 ## v9 rules (2026-10-06 on)
 
+### exp084: the plan-070 search vs the search before it (same net both sides, gen52, 1000 descents, in-process, 100 fixed pairs)
+
+| A | vs B | 20x11 contested (gen48 set) | 16x9 contested (gen48 set) | commit | date |
+|---|---|---|---|---|---|
+| plan-070 search, `chance_all_partial` (seeded `hash`, twin backup) | old search, `chance_all_partial_legacy` | 0.502 ± 0.016 (W93 D15 L92) | 0.487 ± 0.014 (seed 0) and 0.505 ± 0.013 (seed 100): 0.496 ± 0.010 over 200 pairs | 2199281 | 2026-10-24 |
+| `chance_all_partial_det` (total `mover`, twin backup) | old search, `chance_all_partial_legacy` | 0.475 ± 0.022 (W88 D14 L98) | — | 08a7c38 | 2026-10-24 |
+
 ### exp074: the 96x8 + heads lineage vs the frozen 64x6 gen36 (C1 both sides, 300 fixed pairs per board, loop hub)
 
 | A | vs B | 14x7 | 16x9 | budgets | date |

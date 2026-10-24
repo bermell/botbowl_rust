@@ -58,8 +58,10 @@ plan 041 phase 0 so the single-box CLI and the distributed worker run the *same*
   (an identical pair that did not score ½) must stay 0. Ungated, a drive line is byte-identical.
   `lockstep_drive` plays a pair interleaved (four bot instances, one per bot and role, so each sees
   what it sees in the normal pair) and stops at the first disagreement: `botbowl-ui drive-agree`'s
-  measurement. **The gate wants deterministic bots** (`cfgs/chance_all_partial_det.toml`): under the
-  shipped `tie_break = "hash"` a net disagrees with itself within a few decisions (exp079).
+  measurement. **The gate wants deterministic bots.** Since plan 070 the shipped presets are (the
+  `hash` tie-break is seeded by the node's state); before, a net disagreed with itself within a few
+  decisions (exp079). `cfgs/chance_all_partial_det.toml` (`mover`) is deterministic too, but its
+  fixed chance order biases the partial backup (exp084): don't benchmark with it.
 - **Clap-free by default.** The `cli` feature adds `cli_args`: the `dataset`/`eval` flag structs (`DatasetArgs`, `EvalArgs`, `BiasArgs`, `SizeArgs`, `EvalSizeArgs`, the CLI enums with `From` impls onto the types here, `EvalArgs::candidate_search`/`opponent_search`, `vs_rung_label`). `botbowl-ui` flattens them whole and `botbowl-hub job generate`/`job eval` flatten the same structs, so the two CLIs cannot drift; the hub refuses the process-local flags (`--parallel-games`, `--nn-server`, `--trials`, ...) by checking `ArgMatches::value_source`. Without the feature the library has no clap dependency.
 - **Board size is decided here, per game, by the seed (plan 042).** `board_sizes::SizeDist` is a
   weighted set of boards (an explicit list, or the centred log-normal-in-area grid with a uniform

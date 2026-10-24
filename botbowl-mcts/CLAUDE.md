@@ -71,17 +71,23 @@ replaces the PUCT root with sequential halving:
   best survivor.
 - **`gumbel_q_floor`** floors q̂'s normalising range (Q points). 0 is the paper's rule, which
   follows noise on our flat Q (exp060). 1000 is the measured setting (`cfgs/gumbel16_f1000*.toml`).
-- **Ties at the root (plan 068):** `Halving` sorts stably, so among equal logits the considered set,
-  the order survivors are searched in and the pick follow the root's child order. Under the shipped
-  `tie_break = "hash"` that is the tree's `HashMap` order, random per tree, and two bots on one net
-  split there. With any other `tie_break` the root's children are ordered by it first (preferred
-  first); `hash` is unchanged. **Plan 070:** with `mover` a one-thread search is fully
-  reproducible. exp079's suspect, backprop's walk order over the recombined DAG, turned out not to
-  matter (depth is a correct topological key); what was left was `mover` leaving non-directional
-  chance outcomes tied (now total: `mover_chance_order`) and the chance backup summing mirrored
-  directions in map order (now `chance_term_order`). `MctsBot::audit_dag` checks a finished DAG
-  (every edge deeper, every backup equal to its children's); `botbowl-play/tests/search_repeat.rs`
-  runs two copies of a bot in lockstep and compares every root statistic.
+- **Ties at the root (plan 068, 070):** `Halving` sorts stably, so among equal logits the considered
+  set, the order survivors are searched in and the pick follow the root's child order. The root's
+  children are ordered by the tie-break first (preferred first), under every `tie_break`.
+- **Determinism (plan 070):** a one-thread search is a pure function of (state, net, seed) under
+  every preset. `tie_break = "hash"` (shipped) orders exact ties by `tie_hash(seed, action)`, the
+  seed being the node state's own hash (`TieCtx`, drawn only when a tie needs it; FxHash +
+  splitmix64): the per-node random order the children `HashMap` used to give, made reproducible.
+  `mover` is total and mirror-covariant (`mover_chance_order`) but a *fixed* order, and a fixed
+  order biases the chance sweep: among equally likely unscored outcomes the same one is swept, and
+  under the partial backup valued, first at every node (exp084: det vs the old search 0.475 ± 0.022
+  over 100 pairs). Keep `mover` for mirror experiments, not for play. The chance backup sums in
+  `chance_term_order` (values break the `|dx|`-folded ties). exp079's suspect, backprop's walk order
+  over the recombined DAG, does not matter (depth is a correct topological key on one thread).
+  `MctsBot::audit_dag` checks a finished DAG (every edge deeper and listed in the child's parent
+  set, every backup equal to its children's — except the documented visit lag);
+  `botbowl-play/tests/search_repeat.rs` runs two copies of a bot in lockstep and compares every root
+  statistic.
 - **Default:** `gumbel_m = 0` is byte-identical to the shipped search. `tests/gumbel_root.rs` pins
   that, the schedule and reproducibility.
 
