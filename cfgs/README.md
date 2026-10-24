@@ -83,3 +83,10 @@ noise); the v9 loop generates with it and benchmarks with `chance_all_partial` f
 broken by the mover's own geometry instead of each tree's `HashMap` order, at the Gumbel root too.
 It is the preset for the drive benchmark's divergence gate (`--drive-gate`), which needs a net to
 agree with itself; under the shipped tie-break it does not (exp079).
+
+Plan 070 (exp084): with the deterministic search, `chance_all_partial_det` and its generation twin
+`chance_all_partial_det_gen` make a one-thread search a pure function of (state, net, seed): the
+same position, seed and net give the same moves in any process. `backprop` (default `fixed`) backs
+up the parent of every transposition a descent splices in; `chance_all_partial_legacy` is
+`chance_all_partial` with `backprop = "legacy"`, the search before plan 070, for A/B runs in one
+binary.

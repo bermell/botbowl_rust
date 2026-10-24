@@ -1101,7 +1101,18 @@ where
         }
     }
 
-    fn backprop_scores(self_arc: &ArcWrap<Self>) -> usize
+    /// Back up the scores above `self_arc` (the node a descent ended at), seeded at `also` as
+    /// well: nodes whose set of scored children grew
+    /// during the descent without a backup necessarily reaching them (the parents of spliced-in
+    /// twins, plan 070). Every seed is backed up and walked past like `self_arc`. One walk, so a
+    /// node above several seeds is still recomputed once, after everything below it.
+    ///
+    /// The walk is a correct reverse topological order because every edge goes strictly deeper
+    /// (`set_min_depth` keeps a node one deeper than its deepest parent): a node is pushed only
+    /// by a deeper child, so it pops after every deeper node of the walk, its updated children
+    /// included. Equal-depth nodes are never parent and child, so the order among them (the
+    /// `parents` sets' iteration order) cannot change a value.
+    fn backprop_scores_from(self_arc: &ArcWrap<Self>, also: &[ArcWrap<Self>]) -> usize
     where
         GD: GameDynamics<Score = Q>,
     {
@@ -1114,10 +1125,15 @@ where
         let mut n_updates = 0;
         let mut h = UniqueHeap::new();
 
-        let seed_ptr: *const Node<GD, S, P, A, Q, I, M> = &*self_arc.inner;
-        visited.insert(seed_ptr);
-        let d = self_arc.depth.load(Ordering::Relaxed);
-        h.push((d, ArcWrap::clone(self_arc)));
+        let mut seeds: Vec<*const Node<GD, S, P, A, Q, I, M>> = Vec::with_capacity(1 + also.len());
+        for seed in std::iter::once(self_arc).chain(also) {
+            let ptr: *const Node<GD, S, P, A, Q, I, M> = &*seed.inner;
+            if visited.insert(ptr) {
+                seeds.push(ptr);
+                let d = seed.depth.load(Ordering::Relaxed);
+                h.push((d, ArcWrap::clone(seed)));
+            }
+        }
 
         while let Some((_, node)) = h.pop() {
             let node_ptr: *const Node<GD, S, P, A, Q, I, M> = &*node.inner;
@@ -1131,14 +1147,14 @@ where
             // their aggregate value didn't change — the *flag* is the
             // new information.
             let newly_solved = node.try_mark_solved();
-            // Walk past the seed unconditionally: the seed's score was just
-            // assigned externally (`GD::score_leaf` on a fresh leaf whose
+            // Walk past the seeds unconditionally: the leaf seed's score was
+            // just assigned externally (`GD::score_leaf` on a fresh leaf whose
             // children are unscored placeholders), so its own `update_score`
             // has nothing to aggregate and returns false — but its parents
             // still need to observe the new score. Interior nodes propagate
             // only when their aggregate actually changed (or they just
             // became solved).
-            if updated || newly_solved || node_ptr == seed_ptr {
+            if updated || newly_solved || seeds.contains(&node_ptr) {
                 node.parents.read().unwrap().iter().for_each(|(_, p)| {
                     let parent_ptr: *const Node<GD, S, P, A, Q, I, M> = p.as_ptr();
                     if visited.insert(parent_ptr) {
@@ -1400,6 +1416,19 @@ where
                 .map(|(a, c)| (a.clone(), ArcNode::clone(c)))
                 .collect(),
         )
+    }
+
+    /// The node's depth: one more than its deepest parent's, so every edge goes strictly deeper.
+    /// Read-only, for audits of that invariant.
+    pub fn depth(&self) -> usize {
+        self.depth.load(Ordering::Relaxed)
+    }
+
+    /// Whether `parent` is in this node's parent set (every child-map edge must be mirrored there,
+    /// or a backup from this node never reaches that parent). Read-only, for audits.
+    #[doc(hidden)]
+    pub fn lists_parent(&self, parent: &Self) -> bool {
+        self.parents.read().unwrap().iter().any(|(_, p)| std::ptr::eq(p.as_ptr(), parent))
     }
 
     /// The node's mover, or `None` for a placeholder that has not been materialised yet.
@@ -2181,6 +2210,10 @@ where
         let mut visited: HashSet<*const Node<GD, S, P, A, Q, I, M>> = HashSet::new();
         visited.insert(&*node.inner);
         path.push((ArcNode::clone(&node), None));
+        // Parents that gained a twin on this descent (plan 070): the backprop below is seeded at
+        // them too, since the walk from where the descent ends may stop short of them.
+        let mut spliced: Vec<ArcNode<GD, S, P, A, Q, I, M>> = Vec::new();
+        let refresh_spliced = self.game_dynamics.back_up_spliced_parents();
         loop {
             let children_rlk = node.children.read().unwrap();
             match *children_rlk {
@@ -2210,6 +2243,9 @@ where
                             .expect("a placeholder is only ever reached across an action edge");
                         match self.materialize_placeholder(&node, &node_state, parent_node.player(), &edge) {
                             MaterializeOutcome::Twin(twin) => {
+                                if refresh_spliced {
+                                    spliced.push(parent_node);
+                                }
                                 // Twin already exists in the registry —
                                 // descent continues with it. `node_state`
                                 // is unchanged (twin has the same state by
@@ -2228,7 +2264,7 @@ where
                         }
                     }
                     self.enumerate_placeholders(&node_state, &node);
-                    Node::backprop_scores(&node);
+                    Node::backprop_scores_from(&node, &spliced);
                     self.observe_descent(path, &node_state, DescentEnd::Expanded);
                     return Some(node_state);
                 }
@@ -2249,7 +2285,7 @@ where
                     if map.values().all(|c| c.solved.load(Ordering::Acquire)) {
                         drop(children_rlk);
                         node.solved.store(true, Ordering::Release);
-                        Node::backprop_scores(&node);
+                        Node::backprop_scores_from(&node, &spliced);
                         self.observe_descent(path, &node_state, DescentEnd::Solved);
                         return None;
                     }
@@ -2334,7 +2370,7 @@ where
                     // from future selection entirely.
                     drop(children_rlk);
                     node.solved.store(true, Ordering::Release);
-                    Node::backprop_scores(&node);
+                    Node::backprop_scores_from(&node, &spliced);
                     self.observe_descent(path, &node_state, DescentEnd::Terminal);
                     return None;
                 }

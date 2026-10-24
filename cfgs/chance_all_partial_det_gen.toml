@@ -1,0 +1,12 @@
+# Plan 070: the generation twin of `chance_all_partial_det` (`chance_all_partial_gen` with
+# `tie_break = "mover"`). With the plan-070 search, a search under it is a pure function of
+# (state, net, seed) on one thread: same position, same seed, same net, same moves.
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+gumbel_scale = 1.0
+bounce_model = "catch"
+pass_scatter_model = "grouped"
+throw_in_model = "grouped"
+chance_backup = "partial"
+tie_break = "mover"

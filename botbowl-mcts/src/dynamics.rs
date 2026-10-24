@@ -434,6 +434,74 @@ pub struct BbScore {
     pub proven: Option<i8>,
 }
 
+/// [`MctsBot::audit_dag`]'s walk over one tree (plan 070), a macro because the two memory modes
+/// are two tree types.
+macro_rules! audit_dag_of {
+    ($tree:expr) => {{
+        let gd = $tree.get_game_dynamics();
+        let mut out = DagAudit::default();
+        let root = $tree.get_root_node();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if !seen.insert(&*node as *const _ as usize) {
+                continue;
+            }
+            out.nodes += 1;
+            let Some(children) = node.get_children() else { continue };
+            let Some(mover) = node.mover().copied() else { continue };
+            let mut scored: Vec<(BbScore, BbAction)> = Vec::new();
+            for (a, c) in &children {
+                if c.mover().is_none() {
+                    continue;
+                }
+                out.edges += 1;
+                if !c.lists_parent(&node) {
+                    out.unlisted_parent += 1;
+                }
+                if c.depth() <= node.depth() {
+                    out.depth_violations += 1;
+                }
+                if let Some(q) = c.with_score(|q| q.cloned()) {
+                    scored.push((q, a.clone()));
+                }
+                stack.push(c.clone());
+            }
+            let current = node.with_score(|q| q.cloned());
+            let again = gd.backprop_scores(&mover, current.as_ref(), scored.iter().map(|(q, a)| (q, a)));
+            if let (Some(now), Some(cur)) = (again, current) {
+                out.checked += 1;
+                let (nv, cv) = (now.visits.load(Ordering::Relaxed), cur.visits.load(Ordering::Relaxed));
+                if now.score != cur.score || now.proven != cur.proven {
+                    out.stale_value += 1;
+                } else if nv != cv {
+                    out.stale_visits_only += 1;
+                }
+            }
+        }
+        out
+    }};
+}
+
+/// [`MctsBot::audit_dag`]'s counts (plan 070).
+#[doc(hidden)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DagAudit {
+    pub nodes: usize,
+    /// Edges into materialised children.
+    pub edges: usize,
+    /// Edges whose child is not deeper than its parent.
+    pub depth_violations: usize,
+    /// Edges whose child does not list the parent in its parent set.
+    pub unlisted_parent: usize,
+    /// Expanded, scored nodes whose backup was recomputed.
+    pub checked: usize,
+    /// ... of which the stored score (or proof) differs from the recomputed one.
+    pub stale_value: usize,
+    /// ... of which only the visit count differs.
+    pub stale_visits_only: usize,
+}
+
 impl Clone for BbScore {
     fn clone(&self) -> Self {
         BbScore {
@@ -444,6 +512,19 @@ impl Clone for BbScore {
             proven: self.proven,
         }
     }
+}
+
+/// Plan 070: how a descent backs up a node that gained a transposed child (a twin) on the way.
+/// See `recon_mcts::GameDynamics::back_up_spliced_parents`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Backprop {
+    /// The parent is backed up with the descent, so it never keeps a value that ignores the twin.
+    #[default]
+    Fixed,
+    /// Before plan 070: the parent sees the twin only when a later backup passes through it. For
+    /// A/B runs against the old search (`cfgs/chance_all_partial_legacy.toml`).
+    Legacy,
 }
 
 /// Captures the root-state's turn/score so the search can treat states
@@ -648,8 +729,10 @@ impl TieBreak {
             // sweep order is directional too. Only `Mover` orders them, by
             // the acting side's own attacking direction, so that the order
             // reflects with the board.
+            // Plan 070: total, so no tie is left to the children map's order (D6 faces, block dice and
+            // every other non-directional outcome all share one `chance_key`).
             (BbAction::Chance { result: x, .. }, BbAction::Chance { result: y, .. }) => match self {
-                TieBreak::Mover => chance_key(y, frame.attacking_dx).cmp(&chance_key(x, frame.attacking_dx)),
+                TieBreak::Mover => mover_chance_order(y, x, frame.attacking_dx),
                 _ => Ordering::Equal,
             },
             _ => Ordering::Equal,
@@ -700,6 +783,27 @@ fn chance_key(r: &RollResult, attacking_dx: i8) -> (i8, i8, u8) {
     }
 }
 
+/// A total, mirror-covariant order on chance outcomes for [`TieBreak::Mover`] (plan 070):
+/// `chance_key` (the first direction in the acting side's frame), then a scatter's other two
+/// directions in that frame, then [`canonical_chance_key`] (every other field verbatim, so
+/// distinct outcomes always differ by here). `Less` = `x` sorts first.
+fn mover_chance_order(x: &RollResult, y: &RollResult, attacking_dx: i8) -> std::cmp::Ordering {
+    let tail = |r: &RollResult| match r {
+        RollResult::Scatter(_, b, c) => {
+            let (b, c) = (
+                chance_key(&RollResult::D8(*b), attacking_dx),
+                chance_key(&RollResult::D8(*c), attacking_dx),
+            );
+            [b.0, b.1, c.0, c.1]
+        }
+        _ => [0; 4],
+    };
+    chance_key(x, attacking_dx)
+        .cmp(&chance_key(y, attacking_dx))
+        .then_with(|| tail(x).cmp(&tail(y)))
+        .then_with(|| canonical_chance_key(x).cmp(&canonical_chance_key(y)))
+}
+
 /// Plan 061 `ChanceBackup::Widen`: which of two equally likely outcomes opens first. `Less` opens
 /// first. Mirror-covariant keys first (the acting side's forward direction, then the `|dx|`-folded
 /// canonical key), the raw result only as the last resort, so the order is total.
@@ -711,6 +815,22 @@ fn widen_order(a: &BbAction, b: &BbAction, frame: MoverFrame) -> std::cmp::Order
             .then_with(|| format!("{x:?}").cmp(&format!("{y:?}"))),
         _ => std::cmp::Ordering::Equal,
     }
+}
+
+/// One outcome's share of a chance node's backup: `(canonical key, visits, probability, score,
+/// proven)`.
+type ChanceTerm = (String, u32, f64, i64, Option<i8>);
+
+/// The order a chance node sums its outcomes in. The canonical key first (mirror-covariant, see
+/// `backprop_scores`), then, because `|dx|` folding gives mirrored directions one key, the values
+/// themselves (plan 070): terms equal in every field contribute the same, so the f64 sum does not
+/// depend on the children map's order at all.
+fn chance_term_order(a: &ChanceTerm, b: &ChanceTerm) -> std::cmp::Ordering {
+    a.0.cmp(&b.0)
+        .then(a.3.cmp(&b.3))
+        .then(a.2.total_cmp(&b.2))
+        .then(a.1.cmp(&b.1))
+        .then(a.4.cmp(&b.4))
 }
 
 /// A total, deterministic ordering key for a chance node's `RollResult`
@@ -831,6 +951,8 @@ pub struct BloodBowlDynamics {
     /// Plan 060: where each descent ended, for the tree statistics. Observational only; `None`
     /// (default) records nothing.
     pub descent_log: Option<Arc<DescentLog>>,
+    /// Plan 070: see [`Backprop`].
+    pub backprop: Backprop,
 }
 
 impl BloodBowlDynamics {
@@ -881,6 +1003,7 @@ impl Default for BloodBowlDynamics {
             chance_search: ChanceSearch::default(),
             forced_root: None,
             descent_log: None,
+            backprop: Backprop::default(),
         }
     }
 }
@@ -1251,6 +1374,11 @@ impl GameDynamics for BloodBowlDynamics {
         let _ = child_score
             .virtual_loss
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some((v - vl).max(0)));
+    }
+
+    /// Plan 070: back up the parent of a twin the descent spliced in, unless `Backprop::Legacy`.
+    fn back_up_spliced_parents(&self) -> bool {
+        self.backprop == Backprop::Fixed
     }
 
     /// Plan 060: tally where the descent ended (`tree_stats::DescentLog`). Observational only.
@@ -1723,7 +1851,7 @@ impl GameDynamics for BloodBowlDynamics {
             // hold `Q`/`A` (`lockref::Ref`s) across the sort, which would
             // pull a second `Ref` while the first is alive and deadlock
             // under contention (plan 013, `lockref-guard`).
-            let mut terms: Vec<(String, u32, f64, i64, Option<i8>)> = child_scores_and_actions
+            let mut terms: Vec<ChanceTerm> = child_scores_and_actions
                 .into_iter()
                 .map(|(q, a)| {
                     let key = match a.deref() {
@@ -1739,7 +1867,7 @@ impl GameDynamics for BloodBowlDynamics {
                     )
                 })
                 .collect();
-            terms.sort_by(|a, b| a.0.cmp(&b.0));
+            terms.sort_by(chance_term_order);
             // Proven only if every outcome is proven to the same drive result.
             let mut proven: Option<Option<i8>> = None;
             for (_, v, prob, score, p) in terms.into_iter() {
@@ -2288,6 +2416,9 @@ pub struct MctsConfig {
     pub chance_widen_c: f32,
     /// Plan 061: `chance_backup = "widen"`'s `alpha`.
     pub chance_widen_alpha: f32,
+    /// Plan 070: `fixed` (default) backs up the parent of every twin a descent splices in;
+    /// `legacy` is the search before plan 070.
+    pub backprop: Backprop,
 }
 
 impl MctsConfig {
@@ -2324,6 +2455,7 @@ impl MctsConfig {
             chance_mass: DEFAULT_CHANCE_MASS,
             chance_widen_c: DEFAULT_CHANCE_WIDEN_C,
             chance_widen_alpha: DEFAULT_CHANCE_WIDEN_ALPHA,
+            backprop: Backprop::Fixed,
         }
     }
 
@@ -2857,6 +2989,7 @@ impl MctsBot {
             chance_search: self.config.chance_search(),
             forced_root: None,
             descent_log: Some(Arc::clone(&self.descent_log)),
+            backprop: self.config.backprop,
         };
         // Plan 060: the tree statistics read every leaf against this search's anchor (captured even
         // when the horizon is off, so the phases still mean something).
@@ -3246,6 +3379,17 @@ impl MctsBot {
     /// attributed to either.
     pub fn telemetry(&self) -> &SearchTelemetry {
         &self.telemetry
+    }
+
+    /// Audit the DAG the last search left behind (plan 070): every edge must go strictly deeper,
+    /// and every expanded node's stored score must equal what `backprop_scores` makes of its
+    /// children now. A diagnostic: it walks the whole DAG. `None` when no tree is cached.
+    #[doc(hidden)]
+    pub fn audit_dag(&self) -> Option<DagAudit> {
+        match self.cached_tree.as_ref()? {
+            CachedTree::StoreState(t) => Some(audit_dag_of!(t)),
+            CachedTree::GetState(t) => Some(audit_dag_of!(t)),
+        }
     }
 
     /// Take the accumulated telemetry, leaving the bot's counters at zero.
@@ -5054,5 +5198,122 @@ mod tests {
     fn tie_break_defaults_to_hash() {
         assert_eq!(TieBreak::default(), TieBreak::Hash);
         assert_eq!(BloodBowlDynamics::default().tie_break, TieBreak::Hash);
+    }
+
+    /// Every outcome kind a chance node can offer, with every face or direction.
+    fn chance_outcomes() -> Vec<RollResult> {
+        use botbowl_engine::core::dices::{BlockDice, Coin, Sum2D6, D3, D6, D8};
+        use botbowl_engine::core::model::InjuryOutcome;
+        let d6: Vec<D6> = (1..=6).map(|v| D6::try_from(v).unwrap()).collect();
+        let d8: Vec<D8> = (1..=8).map(|v| D8::try_from(v).unwrap()).collect();
+        let mut out = vec![
+            RollResult::Pass,
+            RollResult::Fail,
+            RollResult::MiddleOutcome,
+            RollResult::Coin(Coin::Heads),
+            RollResult::Coin(Coin::Tails),
+        ];
+        out.extend(d6.iter().map(|d| RollResult::D6(*d)));
+        out.extend(d8.iter().map(|d| RollResult::D8(*d)));
+        out.extend((2..=12).map(|v| RollResult::Sum2D6(Sum2D6::try_from(v).unwrap())));
+        for a in &d6 {
+            out.extend(d8.iter().map(|b| RollResult::Deviate(*a, *b)));
+        }
+        for a in &d8 {
+            for b in &d8 {
+                out.extend(d8.iter().map(|c| RollResult::Scatter(*a, *b, *c)));
+            }
+        }
+        for d in (1..=3).map(|v| D3::try_from(v).unwrap()) {
+            out.extend((2..=12).map(|v| RollResult::ThrowIn {
+                direction: d,
+                distance: Sum2D6::try_from(v).unwrap(),
+            }));
+        }
+        for (broken, ejected) in [(false, false), (true, false), (false, true), (true, true)] {
+            out.push(RollResult::FoulArmor { broken, ejected });
+        }
+        for outcome in [InjuryOutcome::Stunned, InjuryOutcome::KO, InjuryOutcome::Casualty] {
+            for ejected in [false, true] {
+                out.push(RollResult::FoulInjury { outcome, ejected });
+            }
+        }
+        let faces = [
+            None,
+            Some(BlockDice::Skull),
+            Some(BlockDice::BothDown),
+            Some(BlockDice::Push),
+            Some(BlockDice::PowPush),
+            Some(BlockDice::Pow),
+        ];
+        for a in &faces[1..] {
+            for b in &faces {
+                out.push(RollResult::BlockDice([*a, *b, None]));
+            }
+        }
+        out
+    }
+
+    /// Plan 070: the `mover` tie-break leaves no two distinct chance outcomes tied, so no tie is
+    /// broken in the children map's order. Before, every non-directional outcome (D6 faces, block
+    /// dice, injuries) shared one key, and two searches of one state could sweep them in two
+    /// orders.
+    #[test]
+    fn the_mover_tie_break_orders_every_pair_of_chance_outcomes() {
+        let outcomes = chance_outcomes();
+        for attacking_dx in [-1, 1] {
+            let frame = MoverFrame {
+                endzone_x: 0,
+                attacking_dx,
+            };
+            for (i, x) in outcomes.iter().enumerate() {
+                let a = BbAction::chance(*x, 0.5);
+                for y in &outcomes[i + 1..] {
+                    let b = BbAction::chance(*y, 0.5);
+                    let ab = TieBreak::Mover.cmp_actions(&a, &b, frame);
+                    assert_ne!(ab, std::cmp::Ordering::Equal, "{x:?} vs {y:?}");
+                    assert_eq!(
+                        ab,
+                        TieBreak::Mover.cmp_actions(&b, &a, frame).reverse(),
+                        "{x:?} vs {y:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Plan 070: a chance node sums its outcomes in one order whatever order its children come
+    /// in. Mirrored directions fold to one canonical key, so the key alone left those in map order,
+    /// and the f64 sum (and the truncated expectation) could differ in the last bit.
+    #[test]
+    fn a_chance_backup_sums_in_one_order_whatever_the_child_order() {
+        use botbowl_engine::core::dices::D8;
+        let terms: Vec<ChanceTerm> = (1..=8u8)
+            .map(|v| {
+                let r = RollResult::D8(D8::try_from(v).unwrap());
+                (
+                    canonical_chance_key(&r),
+                    u32::from(v % 3) + 1,
+                    0.125,
+                    -997 + 331 * i64::from(v) % 1013,
+                    None,
+                )
+            })
+            .collect();
+        let sorted = |order: &[usize]| {
+            let mut t: Vec<ChanceTerm> = order.iter().map(|&i| terms[i].clone()).collect();
+            t.sort_by(chance_term_order);
+            t
+        };
+        let first = sorted(&[0, 1, 2, 3, 4, 5, 6, 7]);
+        let mut order: Vec<usize> = (0..8).collect();
+        for k in 0..64u64 {
+            // A deterministic shuffle per round.
+            for i in (1..order.len()).rev() {
+                let j = ((k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 7) as usize + i * 31) % (i + 1);
+                order.swap(i, j);
+            }
+            assert_eq!(sorted(&order), first, "order {order:?}");
+        }
     }
 }

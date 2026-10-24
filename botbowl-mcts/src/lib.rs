@@ -15,8 +15,9 @@ pub mod tree_stats;
 
 pub use action::{BbAction, BbPlayer};
 pub use dynamics::{
-    forced_action, BloodBowlDynamics, BudgetMode, ChanceModel, Evaluator, ExploreOutcome, LeafStats, MctsBot,
-    MctsConfig, MemoryMode, PuctMode, SearchBudget, SetupFormation, SetupPolicy, TieBreak, LEAF_STATS,
+    forced_action, Backprop, BloodBowlDynamics, BudgetMode, ChanceModel, DagAudit, Evaluator, ExploreOutcome,
+    LeafStats, MctsBot, MctsConfig, MemoryMode, PuctMode, SearchBudget, SetupFormation, SetupPolicy, TieBreak,
+    LEAF_STATS,
 };
 pub use exploration::{ExploreStep, RootNoiseSpec, SampleSpec};
 pub use report::{Edge, NodeStats, NodeView, SearchSummary};
