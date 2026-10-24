@@ -785,8 +785,9 @@ fn chance_key(r: &RollResult, attacking_dx: i8) -> (i8, i8, u8) {
 
 /// A total, mirror-covariant order on chance outcomes for [`TieBreak::Mover`] (plan 070):
 /// `chance_key` (the first direction in the acting side's frame), then a scatter's other two
-/// directions in that frame, then [`canonical_chance_key`] (every other field verbatim, so
-/// distinct outcomes always differ by here). `Less` = `x` sorts first.
+/// directions in that frame, then [`chance_fields`] (the variant and every non-direction field, all
+/// mirror-invariant), so distinct outcomes always differ by here. `Less` = `x` sorts first. No
+/// allocation: on a flat net it runs at nearly every chance selection.
 fn mover_chance_order(x: &RollResult, y: &RollResult, attacking_dx: i8) -> std::cmp::Ordering {
     let tail = |r: &RollResult| match r {
         RollResult::Scatter(_, b, c) => {
@@ -801,7 +802,28 @@ fn mover_chance_order(x: &RollResult, y: &RollResult, attacking_dx: i8) -> std::
     chance_key(x, attacking_dx)
         .cmp(&chance_key(y, attacking_dx))
         .then_with(|| tail(x).cmp(&tail(y)))
-        .then_with(|| canonical_chance_key(x).cmp(&canonical_chance_key(y)))
+        .then_with(|| chance_fields(x).cmp(&chance_fields(y)))
+}
+
+/// A chance outcome's variant and non-direction fields, as plain numbers: with the directions in
+/// the acting side's frame ([`mover_chance_order`]) it tells any two outcomes apart.
+fn chance_fields(r: &RollResult) -> (u8, [u8; 3]) {
+    let face = |f: &Option<botbowl_engine::core::dices::BlockDice>| f.map_or(0, |f| f as u8 + 1);
+    match r {
+        RollResult::BlockDice([a, b, c]) => (0, [face(a), face(b), face(c)]),
+        RollResult::Coin(c) => (1, [*c as u8, 0, 0]),
+        RollResult::Pass => (2, [0; 3]),
+        RollResult::Fail => (3, [0; 3]),
+        RollResult::FoulArmor { broken, ejected } => (4, [u8::from(*broken), u8::from(*ejected), 0]),
+        RollResult::FoulInjury { outcome, ejected } => (5, [*outcome as u8, u8::from(*ejected), 0]),
+        RollResult::MiddleOutcome => (6, [0; 3]),
+        RollResult::D6(d) => (7, [*d as u8, 0, 0]),
+        RollResult::D8(_) => (8, [0; 3]),
+        RollResult::Deviate(d, _) => (9, [*d as u8, 0, 0]),
+        RollResult::Scatter(..) => (10, [0; 3]),
+        RollResult::Sum2D6(v) => (11, [*v as u8, 0, 0]),
+        RollResult::ThrowIn { direction, distance } => (12, [*direction as u8, *distance as u8, 0]),
+    }
 }
 
 /// Plan 061 `ChanceBackup::Widen`: which of two equally likely outcomes opens first. `Less` opens
