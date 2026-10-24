@@ -671,7 +671,10 @@ pub enum Evaluator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TieBreak {
-    /// Arbitrary (whatever the children `HashMap` yields last). Shipped.
+    /// Shipped. A pseudo-random order per node: ties go by a hash of (the node's state, the
+    /// action). Before plan 070 it was whatever each node's `HashMap` yielded, random per map and
+    /// per process; this is the same distribution (no outcome or move systematically first), but a
+    /// pure function of the state, so a search is reproducible.
     #[default]
     Hash,
     /// Prefer the action that sorts *first* in `(PosAT, x, y)` order.
@@ -710,14 +713,18 @@ impl TieBreak {
     }
 
     /// Comparator fragment applied *after* the value comparison inside a
-    /// `max_by`: returns `Greater` for the action this rule prefers. Only
-    /// player actions carry board coordinates, so chance outcomes (whose
-    /// order has no side meaning) are left to the map's own order.
-    fn cmp_actions(&self, a: &BbAction, b: &BbAction, frame: MoverFrame) -> std::cmp::Ordering {
+    /// `max_by`: returns `Greater` for the action this rule prefers. `Hash`
+    /// orders every pair (plan 070); `Asc`/`Desc` leave chance outcomes tied.
+    fn cmp_actions(&self, a: &BbAction, b: &BbAction, ctx: &TieCtx<'_>) -> std::cmp::Ordering {
         use std::cmp::Ordering;
+        let frame = ctx.frame;
+        if *self == TieBreak::Hash {
+            let seed = ctx.seed();
+            return tie_hash(seed, b).cmp(&tie_hash(seed, a));
+        }
         match (a, b) {
             (BbAction::Player { action: x, .. }, BbAction::Player { action: y, .. }) => match self {
-                TieBreak::Hash => Ordering::Equal,
+                TieBreak::Hash => unreachable!("handled above"),
                 // `max_by` keeps the greatest, so "prefer the first-sorting
                 // action" means calling the smaller one greater.
                 TieBreak::Asc => y.cmp(x),
@@ -730,7 +737,9 @@ impl TieBreak {
             // the acting side's own attacking direction, so that the order
             // reflects with the board.
             // Plan 070: total, so no tie is left to the children map's order (D6 faces, block dice and
-            // every other non-directional outcome all share one `chance_key`).
+            // every other non-directional outcome all share one `chance_key`). Being a fixed order it
+            // is also a fixed bias: among equally likely outcomes the same one is swept (and, under
+            // a partial backup, valued) first at every node. `Hash` has no such bias.
             (BbAction::Chance { result: x, .. }, BbAction::Chance { result: y, .. }) => match self {
                 TieBreak::Mover => mover_chance_order(y, x, frame.attacking_dx),
                 _ => Ordering::Equal,
@@ -738,6 +747,54 @@ impl TieBreak {
             _ => Ordering::Equal,
         }
     }
+}
+
+/// A tie-break's view of the node (plan 070): the mover's frame for [`TieBreak::Mover`], and for
+/// [`TieBreak::Hash`] a seed drawn from the node's state, hashed only once a tie needs it.
+pub(crate) struct TieCtx<'s> {
+    frame: MoverFrame,
+    state: Option<&'s GameState>,
+    seed: std::cell::Cell<Option<u64>>,
+}
+
+impl<'s> TieCtx<'s> {
+    fn of(state: &'s GameState, team: TeamType) -> Self {
+        Self {
+            frame: MoverFrame::for_team(state, team),
+            state: Some(state),
+            seed: std::cell::Cell::new(None),
+        }
+    }
+
+    fn seed(&self) -> u64 {
+        if let Some(s) = self.seed.get() {
+            return s;
+        }
+        let s = self.state.map_or(0, state_seed);
+        self.seed.set(Some(s));
+        s
+    }
+}
+
+/// The state's own hash (fixed-key SipHash): the per-node seed of [`TieBreak::Hash`].
+fn state_seed(state: &GameState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    state.hash(&mut h);
+    h.finish()
+}
+
+/// An action's place in [`TieBreak::Hash`]'s order at the node seeded `seed`: the engine action or
+/// the roll result, without the cached prior or probability.
+fn tie_hash(seed: u64, a: &BbAction) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut h);
+    match a {
+        BbAction::Player { action, .. } => action.hash(&mut h),
+        BbAction::Chance { result, .. } => result.hash(&mut h),
+    }
+    h.finish()
 }
 
 /// The mover's geometric frame, for [`TieBreak::Mover`]: the endzone it is
@@ -1609,7 +1666,7 @@ impl GameDynamics for BloodBowlDynamics {
             CHANCE_STATS.record_visit(RollKind::of(parent_node_state, req));
             // No side is "to move" at a chance node; the acting team's frame
             // is the right one, since the roll is resolving its action.
-            let tie_frame = MoverFrame::for_team(parent_node_state, parent_node_state.info.team_turn);
+            let tie = TieCtx::of(parent_node_state, parent_node_state.info.team_turn);
             let total = parent_visits + 1.0;
             let cs = self.chance_search;
             // (unscored, visits, probability, action), in the children's own order. Plain data:
@@ -1641,7 +1698,7 @@ impl GameDynamics for BloodBowlDynamics {
                     items.sort_by(|a, b| {
                         b.2.partial_cmp(&a.2)
                             .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| widen_order(&a.3, &b.3, tie_frame))
+                            .then_with(|| widen_order(&a.3, &b.3, tie.frame))
                     });
                     items.truncate(k);
                     let open: f32 = items.iter().map(|i| i.2).sum();
@@ -1662,7 +1719,7 @@ impl GameDynamics for BloodBowlDynamics {
                 .max_by(|((ua, da), aa), ((ub, db), ab)| {
                     ua.cmp(ub)
                         .then(da.partial_cmp(db).unwrap_or(std::cmp::Ordering::Equal))
-                        .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
+                        .then_with(|| self.tie_break.cmp_actions(aa, ab, &tie))
                 })
                 .expect("chance node must have at least one outcome");
             bump_chosen(&pick.1, 0);
@@ -1700,8 +1757,8 @@ impl GameDynamics for BloodBowlDynamics {
             self.forced_root.as_ref().unwrap().note_missed();
         }
         let home_perspective = *parent_player == BbPlayer::Home;
-        // For `TieBreak::Mover`: the endzone the side to move is attacking.
-        let tie_frame = MoverFrame::for_team(
+        // For `TieBreak::Mover`: the endzone the side to move is attacking; for `Hash`, the state.
+        let tie = TieCtx::of(
             parent_node_state,
             if home_perspective {
                 TeamType::Home
@@ -1758,7 +1815,7 @@ impl GameDynamics for BloodBowlDynamics {
                     .max_by(|(va, aa), (vb, ab)| {
                         va.partial_cmp(vb)
                             .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
+                            .then_with(|| self.tie_break.cmp_actions(aa, ab, &tie))
                     })
                     .expect("player node must have at least one action")
             }
@@ -1803,7 +1860,7 @@ impl GameDynamics for BloodBowlDynamics {
                     .max_by(|(va, aa), (vb, ab)| {
                         va.partial_cmp(vb)
                             .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| self.tie_break.cmp_actions(aa, ab, tie_frame))
+                            .then_with(|| self.tie_break.cmp_actions(aa, ab, &tie))
                     })
                     .expect("player node must have at least one action")
             }
@@ -3032,7 +3089,12 @@ impl MctsBot {
         } else {
             0
         };
-        let gumbel_frame = MoverFrame::for_team(&root_state, agent_team);
+        // Plan 070: the root's tie-break, seeded now (the state moves into the tree below).
+        let gumbel_tie = TieCtx {
+            frame: MoverFrame::for_team(&root_state, agent_team),
+            state: None,
+            seed: std::cell::Cell::new(Some(state_seed(&root_state))),
+        };
         let forced_root = (gumbel_m > 0).then(|| Arc::clone(self.forced_root.get_or_insert_with(Default::default)));
         let mut gd = gd;
         gd.forced_root = forced_root.clone();
@@ -3182,7 +3244,7 @@ impl MctsBot {
                             gumbel_q_floor,
                             agent_team,
                             self.config.tie_break,
-                            gumbel_frame,
+                            &gumbel_tie,
                             steps_ref,
                         );
                     }
@@ -3693,19 +3755,18 @@ impl MctsBot {
         q_floor: f32,
         agent_team: TeamType,
         tie_break: TieBreak,
-        frame: MoverFrame,
+        tie: &TieCtx<'_>,
         steps: &AtomicU64,
     ) -> Option<EngineAction> {
         let sign = if agent_team == TeamType::Home { 1.0 } else { -1.0 };
         let children = || -> Vec<RootChild> {
             let mut info = tree.get_next_move_info().unwrap_or_default();
             // Plan 068: `Halving` sorts stably, so equal logits keep this order, and so does the
-            // order survivors are searched in. Under `TieBreak::Hash` (shipped) it is the root's
-            // `HashMap` order, random per tree, which made a net disagree with itself. A
-            // deterministic tie-break orders the root's children by it, preferred first.
-            if tie_break != TieBreak::Hash {
-                info.sort_by(|(a, _), (b, _)| tie_break.cmp_actions(b, a, frame));
-            }
+            // order survivors are searched in. It was the root's `HashMap` order under
+            // `TieBreak::Hash`, random per tree, which made a net disagree with itself; every
+            // tie-break now orders the root's children, preferred first (plan 070: `Hash` by the
+            // root state's seed).
+            info.sort_by(|(a, _), (b, _)| tie_break.cmp_actions(b, a, tie));
             info.into_iter()
                 .filter_map(|(a, info)| match &a {
                     BbAction::Player { action, .. } => Some(RootChild {
@@ -3791,7 +3852,7 @@ impl MctsBot {
         move_info: &[(BbAction, BbNodeInfo)],
         agent_team: TeamType,
         tie_break: TieBreak,
-        root_frame: MoverFrame,
+        tie: &TieCtx<'_>,
         debug_root: bool,
     ) -> EngineAction {
         if debug_root {
@@ -3826,7 +3887,6 @@ impl MctsBot {
             TeamType::Home => 1,
             TeamType::Away => -1,
         };
-        let tie_frame = root_frame;
         let key = |info: &BbNodeInfo| {
             info.score
                 .as_ref()
@@ -3835,11 +3895,7 @@ impl MctsBot {
         };
         let best = move_info
             .iter()
-            .max_by(|(aa, ia), (ab, ib)| {
-                key(ia)
-                    .cmp(&key(ib))
-                    .then_with(|| tie_break.cmp_actions(aa, ab, tie_frame))
-            })
+            .max_by(|(aa, ia), (ab, ib)| key(ia).cmp(&key(ib)).then_with(|| tie_break.cmp_actions(aa, ab, tie)))
             .expect("root must offer at least one action");
         match &best.0 {
             BbAction::Player { action, .. } => *action,
@@ -3897,7 +3953,7 @@ impl MctsBot {
                 &result.move_info,
                 result.agent_team,
                 self.config.tie_break,
-                MoverFrame::for_team(state, result.agent_team),
+                &TieCtx::of(state, result.agent_team),
                 self.config.debug_root,
             )
         });
@@ -3999,7 +4055,7 @@ impl Bot for MctsBot {
                 &result.move_info,
                 result.agent_team,
                 self.config.tie_break,
-                MoverFrame::for_team(state, result.agent_team),
+                &TieCtx::of(state, result.agent_team),
                 self.config.debug_root,
             )
         });
@@ -4025,6 +4081,19 @@ mod tests {
     use super::*;
     use botbowl_engine::core::model::Action as EngineAction;
     use botbowl_engine::core::table::SimpleAT;
+
+    /// A tie-break context with a fixed seed and no state.
+    fn tie(frame: MoverFrame) -> TieCtx<'static> {
+        tie_seeded(frame, 7)
+    }
+
+    fn tie_seeded(frame: MoverFrame, seed: u64) -> TieCtx<'static> {
+        TieCtx {
+            frame,
+            state: None,
+            seed: std::cell::Cell::new(Some(seed)),
+        }
+    }
 
     fn child(score: i64, visits: u32) -> BbScore {
         BbScore {
@@ -5181,28 +5250,41 @@ mod tests {
         // `max_by` keeps the greatest, so the preferred action must
         // compare `Greater`.
         assert_eq!(
-            TieBreak::Asc.cmp_actions(&low, &high, TEST_HOME_FRAME),
-            Ordering::Greater
-        );
-        assert_eq!(TieBreak::Asc.cmp_actions(&high, &low, TEST_HOME_FRAME), Ordering::Less);
-        assert_eq!(TieBreak::Desc.cmp_actions(&low, &high, TEST_HOME_FRAME), Ordering::Less);
-        assert_eq!(
-            TieBreak::Desc.cmp_actions(&high, &low, TEST_HOME_FRAME),
+            TieBreak::Asc.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME)),
             Ordering::Greater
         );
         assert_eq!(
-            TieBreak::Hash.cmp_actions(&low, &high, TEST_HOME_FRAME),
-            Ordering::Equal
+            TieBreak::Asc.cmp_actions(&high, &low, &tie(TEST_HOME_FRAME)),
+            Ordering::Less
+        );
+        assert_eq!(
+            TieBreak::Desc.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME)),
+            Ordering::Less
+        );
+        assert_eq!(
+            TieBreak::Desc.cmp_actions(&high, &low, &tie(TEST_HOME_FRAME)),
+            Ordering::Greater
+        );
+        // `Hash` orders by the node's seed (plan 070): a total order, which flips with the seed.
+        let ab = TieBreak::Hash.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME));
+        assert_ne!(ab, Ordering::Equal);
+        assert_eq!(
+            TieBreak::Hash.cmp_actions(&high, &low, &tie(TEST_HOME_FRAME)),
+            ab.reverse()
+        );
+        assert!(
+            (0..64u64).any(|s| TieBreak::Hash.cmp_actions(&low, &high, &tie_seeded(TEST_HOME_FRAME, s)) != ab),
+            "the order must depend on the node's seed"
         );
         // `Mover` is the mirror-covariant rule: with Home's endzone at x=1
         // the low-x action is nearer, so it wins; with Away's endzone at
         // x=14 the same comparison flips. That flip is the whole point.
         assert_eq!(
-            TieBreak::Mover.cmp_actions(&low, &high, TEST_HOME_FRAME),
+            TieBreak::Mover.cmp_actions(&low, &high, &tie(TEST_HOME_FRAME)),
             Ordering::Greater
         );
         assert_eq!(
-            TieBreak::Mover.cmp_actions(&low, &high, TEST_AWAY_FRAME),
+            TieBreak::Mover.cmp_actions(&low, &high, &tie(TEST_AWAY_FRAME)),
             Ordering::Less
         );
 
@@ -5210,8 +5292,14 @@ mod tests {
         // them — their order has no side meaning.
         let c1 = BbAction::chance(botbowl_engine::core::dices::RollResult::Pass, 0.5);
         let c2 = BbAction::chance(botbowl_engine::core::dices::RollResult::Fail, 0.5);
-        assert_eq!(TieBreak::Asc.cmp_actions(&c1, &c2, TEST_HOME_FRAME), Ordering::Equal);
-        assert_eq!(TieBreak::Desc.cmp_actions(&c1, &c2, TEST_HOME_FRAME), Ordering::Equal);
+        assert_eq!(
+            TieBreak::Asc.cmp_actions(&c1, &c2, &tie(TEST_HOME_FRAME)),
+            Ordering::Equal
+        );
+        assert_eq!(
+            TieBreak::Desc.cmp_actions(&c1, &c2, &tie(TEST_HOME_FRAME)),
+            Ordering::Equal
+        );
     }
 
     /// The default must stay the shipped behaviour: nothing in production
@@ -5292,11 +5380,11 @@ mod tests {
                 let a = BbAction::chance(*x, 0.5);
                 for y in &outcomes[i + 1..] {
                     let b = BbAction::chance(*y, 0.5);
-                    let ab = TieBreak::Mover.cmp_actions(&a, &b, frame);
+                    let ab = TieBreak::Mover.cmp_actions(&a, &b, &tie(frame));
                     assert_ne!(ab, std::cmp::Ordering::Equal, "{x:?} vs {y:?}");
                     assert_eq!(
                         ab,
-                        TieBreak::Mover.cmp_actions(&b, &a, frame).reverse(),
+                        TieBreak::Mover.cmp_actions(&b, &a, &tie(frame)).reverse(),
                         "{x:?} vs {y:?}"
                     );
                 }

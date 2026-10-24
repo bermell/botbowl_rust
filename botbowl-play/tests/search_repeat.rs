@@ -172,16 +172,22 @@ fn run(preset: &str, iters: usize, steps: usize, builtin: u64) -> Totals {
     t
 }
 
-/// The gate: under the deterministic preset, two copies of the bot agree on every root
-/// statistic of every decision, and the DAGs they leave keep every edge strictly deeper and
-/// mirrored in the child's parent set. (Stale backups are counted, not asserted: a descent whose
-/// backup is withheld below a child leaves that child's visit bump unweighted above it, the
-/// documented visit lag.)
+/// The gate: under the shipped preset (`tie_break = "hash"`, seeded by each node's state) and
+/// under `mover`, two copies of the bot agree on every root statistic of every decision, and the
+/// DAGs they leave keep every edge strictly deeper and mirrored in the child's parent set. (Stale
+/// backups are counted, not asserted: a descent whose backup is withheld below a child leaves that
+/// child's visit bump unweighted above it, the documented visit lag.)
 #[test]
-fn two_copies_of_a_deterministic_bot_agree_on_every_root_statistic() {
-    let t = run("cfgs/chance_all_partial_det.toml", 150, 16, 2);
-    assert_eq!((t.audit.depth_violations, t.audit.unlisted_parent), (0, 0), "{t:?}");
-    assert_eq!((t.diffs, t.move_diffs), (0, 0), "{t:?}");
+fn two_copies_of_a_bot_agree_on_every_root_statistic() {
+    for preset in ["cfgs/chance_all_partial.toml", "cfgs/chance_all_partial_det.toml"] {
+        let t = run(preset, 150, 16, 2);
+        assert_eq!(
+            (t.audit.depth_violations, t.audit.unlisted_parent),
+            (0, 0),
+            "{preset}: {t:?}"
+        );
+        assert_eq!((t.diffs, t.move_diffs), (0, 0), "{preset}: {t:?}");
+    }
 }
 
 /// The investigation harness behind exp084: `DET_SET=<positions.json> DET_COUNT DET_ITERS
@@ -189,7 +195,7 @@ fn two_copies_of_a_deterministic_bot_agree_on_every_root_statistic() {
 #[test]
 #[ignore = "investigation harness (plan 070); DET_SET=… for a real drive set"]
 fn the_same_search_twice_gives_the_same_result() {
-    let preset = std::env::var("DET_PRESET").unwrap_or_else(|_| "cfgs/chance_all_partial_det.toml".into());
+    let preset = std::env::var("DET_PRESET").unwrap_or_else(|_| "cfgs/chance_all_partial.toml".into());
     let t = run(&preset, env_or("DET_ITERS", 300usize), env_or("DET_STEPS", 40usize), 4);
     assert_eq!((t.audit.depth_violations, t.audit.unlisted_parent), (0, 0), "{t:?}");
     assert_eq!((t.diffs, t.move_diffs), (0, 0), "{t:?}");

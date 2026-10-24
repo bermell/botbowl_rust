@@ -1,8 +1,8 @@
 # Plan 070: `chance_all_partial` as it searched before plan 070, for A/B runs against the new
 # search in one binary. `backprop = "legacy"`: a descent does not back up the parent of a twin it
 # spliced in, so that parent keeps a value that ignores its new child until a later backup passes
-# through it. (The other plan-070 changes only reorder exact ties, which `tie_break = "hash"`
-# leaves to the children map's order anyway.)
+# through it. Its exact ties go by the plan-070 `hash` order (a per-state pseudo-random order),
+# the same distribution as the old per-map `HashMap` order.
 budget_mode = "iterations"
 gumbel_m = 16
 gumbel_q_floor = 1000
