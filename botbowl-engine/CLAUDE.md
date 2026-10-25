@@ -4,7 +4,8 @@ Pure Blood Bowl rules library (Rust rewrite of [njustesen/botbowl](https://githu
 
 ## Rules target: the 2025 "Season 3" rules
 
-The reference is the S3 rulebook (the user's copy: `~/repos/blood/rules/*.html`), not BB2020 or
+The reference is the S3 rulebook (the user's copy: `~/repos/blood/rules/*.html`, as markdown in
+`~/repos/blood/rules/md/*.md` — grep these; kept out of the repo, it is Games Workshop text), not BB2020 or
 the 2016 rules the Python botbowl followed (the user, 2026-10-25). Cite it in a new rule's test.
 The engine is not fully converted yet. Still on the old rules: the kicker's choice of target
 square (only `KickoffAimMiddle`), and no Throw / Kick Team-mate, Argue the Call or Apothecary.
