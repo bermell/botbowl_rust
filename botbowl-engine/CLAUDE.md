@@ -1,6 +1,22 @@
 # CLAUDE.md — botbowl-engine
 
-Pure Blood Bowl 2020 rules library (Rust rewrite of [njustesen/botbowl](https://github.com/njustesen/botbowl)). No dependency on the other workspace crates.
+Pure Blood Bowl rules library (Rust rewrite of [njustesen/botbowl](https://github.com/njustesen/botbowl)). No dependency on the other workspace crates.
+
+## Rules target: the 2025 "Season 3" rules
+
+The reference is the S3 rulebook (the user's copy: `~/repos/blood/rules/*.html`), not BB2020 or
+the 2016 rules the Python botbowl followed (the user, 2026-10-25). Cite it in a new rule's test.
+The engine is not fully converted yet. Still on the old rules: passing (wildly inaccurate passes,
+deflect-then-catch interception — `get_intercepters` keeps the old catch base on purpose),
+characteristics stored as numbers (`ag_target` = 7 - AG, with the S3 `+1` applied at the dodge /
+pick-up / catch call sites), most of the kick-off table, the kicker's choice of target square, and
+Stand Up's 4+ roll for MA ≤ 2. Converted (2026-10-25): team re-rolls (any number per turn, only
+by the active team — `GameState::may_use_team_reroll`; a die is still never re-rolled twice), a
+touchdown in the opponent's turn skips the scorer's next turn, catch modifiers (-1 bounced /
+thrown-in only), foul assists (must Mark, no Guard), crowd-push and Wrestle turnovers, Stand Firm
+vs Frenzy / Strip Ball, Active skills (Stand Firm, Sidestep) need a Standing player, Catch /
+Sure Hands not once per turn, touchback to Standing players or an empty square, prone players
+fail catches, Changing Weather's Scatter (3), and throw-ins landing 2D6 - 1 squares out.
 
 ## Procedure-stack state machine
 

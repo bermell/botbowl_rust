@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 One git repo containing the botbowl Cargo workspace plus the nested `recon_mcts/` library (folded in via history-preserving subtree merge).
 
-- Botbowl workspace (`Cargo.toml` at repo root) — Blood Bowl 2020 engine + tooling. Member crates sharing one `Cargo.lock` and one `target/` (`botbowl-data` — trajectory schema + JSONL I/O + the git provenance stamp — and `botbowl-nn` are members too; `botbowl-nn` carries its own `CLAUDE.md`):
+- Botbowl workspace (`Cargo.toml` at repo root) — Blood Bowl engine (target: the 2025 "Season 3" rules, partly converted — see `botbowl-engine/CLAUDE.md`) + tooling. Member crates sharing one `Cargo.lock` and one `target/` (`botbowl-data` — trajectory schema + JSONL I/O + the git provenance stamp — and `botbowl-nn` are members too; `botbowl-nn` carries its own `CLAUDE.md`):
   - `botbowl-engine/` — pure rules library, procedure-stack state machine. No dependency on the other crates. Board/team size is build-time configurable via env vars (see its CLAUDE.md).
   - `botbowl-curriculum/` — training scenarios (`Lecture` trait, `run_trials`). Depends on `botbowl-engine`.
   - `botbowl-mcts/` — `BloodBowlDynamics` + `MctsBot`, the adapter onto `recon_mcts`. Depends on `botbowl-engine` + `recon_mcts`.
