@@ -179,16 +179,24 @@ impl ThrowIn {
     }
 
     /// The square this throw-in roll would land on (before occupancy is
-    /// considered): `from + direction * min(distance / scatter_divisor,
-    /// max_scatter)`. Pure, and must mirror `step`'s arithmetic exactly.
+    /// considered): `from + direction * throw_in_length(distance)`. Pure, and must mirror
+    /// `step`'s arithmetic exactly.
     /// Used by the MCTS scripted-outcome picker to choose a roll that keeps
     /// the ball in bounds — an out-of-bounds landing re-requests the roll,
     /// which under a deterministic scripted pick can loop forever on small
     /// boards.
     pub fn target_square(&self, direction: D3, distance: Sum2D6, dims: BoardDims) -> Position {
         let dir = self.get_throw_in_direction(direction, dims);
-        let length = ((distance as i8) / dims.scatter_divisor()).min(dims.max_scatter());
-        self.from + dir * length
+        self.from + dir * Self::throw_in_length(distance, dims)
+    }
+
+    /// How many squares from `from` the ball lands. S3: the ball travels 2D6 squares "counting
+    /// the square underneath the Blood Bowl logo" — `from`, the last square it occupied — "as
+    /// the first square", so it lands 2D6 - 1 squares away. Scaled down on narrow boards (a
+    /// no-op on the full pitch) so a throw-in rarely lands out of bounds again, then capped at
+    /// half the board width as a final safety net.
+    fn throw_in_length(distance: Sum2D6, dims: BoardDims) -> Coord {
+        ((distance as Coord - 1) / dims.scatter_divisor()).min(dims.max_scatter())
     }
 }
 impl Procedure for ThrowIn {
@@ -198,13 +206,10 @@ impl Procedure for ThrowIn {
                 return ProcState::NeedRoll(RequestedRoll::ThrowIn);
             }
             ProcInput::Roll(RollResult::ThrowIn { direction, distance }) => {
-                // Scale distance down on narrow boards (no-op on the full
-                // pitch) so a throw-in rarely lands out of bounds again, then
-                // cap at half the board width as a final safety net.
                 let dims = game_state.board_dims;
                 (
                     self.get_throw_in_direction(direction, dims),
-                    ((distance as i8) / dims.scatter_divisor()).min(dims.max_scatter()),
+                    Self::throw_in_length(distance, dims),
                 )
             }
             _ => panic!("Unexpected input {:?} for ThrowIn", input),
@@ -976,8 +981,8 @@ mod tests {
         let ball_pos = Position::new((5, 1)); // on the top edge
         let start_pos = Position::new((5, 4));
         let up = Direction::up();
-        // ThrowIn from y==1 with D3::One goes direction (1,1); distance is
-        // capped 2d6 — fix 1+1 = 2 → lands at ball_pos + (2,2).
+        // ThrowIn from y==1 with D3::One goes direction (1,1); 2D6 - 1 squares
+        // (S3 counts the origin as the first) — fix 1+2 = 3 → lands at ball_pos + (2,2).
         let catcher_pos = ball_pos + (2, 2);
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
@@ -992,7 +997,7 @@ mod tests {
         state.fix_d8(D8::from(up) as u8); // bounce over the edge — out of bounds
         state.fix_d3(1); // throw-in direction (1,1)
         state.fix_d6(1); // throw-in distance...
-        state.fix_d6(1); // ...1+1 = 2 → lands on the catcher
+        state.fix_d6(2); // ...1+2 = 3 → lands on the catcher
         state.fix_d6(1); // catcher fails the catch
         state.step_simple(SimpleAT::DontUseReroll); // decline the pickup reroll
 
@@ -1044,9 +1049,33 @@ mod tests {
         };
         assert_eq!(
             pos,
-            from + Direction::right() * 6,
-            "raw distance 12 / scatter_divisor 2 == 6, not the unscaled 12"
+            from + Direction::right() * 5,
+            "(raw distance 12 - 1) / scatter_divisor 2 == 5, not the unscaled 11"
         );
+    }
+
+    /// S3, Throw-ins: 2D6 squares counting the square the ball left from as the first, so a 2
+    /// lands on the next square in.
+    #[test]
+    fn a_throw_in_counts_its_origin_as_the_first_square() {
+        use crate::core::dices::{RollResult, Sum2D6, D3};
+        use crate::core::procedures::ball_procs::ThrowIn;
+        use crate::core::procedures::AnyProc;
+
+        let mut state = GameStateBuilder::new().build();
+        assert_eq!(state.board_dims.scatter_divisor(), 1);
+        let from = Position::new((1, 1));
+        let AnyProc::ThrowIn(mut throw_in) = ThrowIn::new(from) else {
+            unreachable!()
+        };
+        throw_in.step(
+            &mut state,
+            ProcInput::Roll(RollResult::ThrowIn {
+                direction: D3::One,
+                distance: Sum2D6::Two,
+            }),
+        );
+        assert_eq!(state.ball, BallState::InAir(from + Direction::right()));
     }
 
     #[test]
@@ -1141,7 +1170,7 @@ mod tests {
         state.fix_d6(1); //armor
         state.fix_d3(2); //throw in direction down
         state.fix_d6(1); //throw in length
-        state.fix_d6(1); //throw in length
+        state.fix_d6(2); //throw in length: 2D6 = 3 lands 2 squares in (S3)
         state.fix_d8(2); //bounce direction down
 
         state.step_positional(PosAT::FollowUp, carrier_pos);
@@ -1192,7 +1221,7 @@ mod tests {
         // out of bounce throw-in
         state.fix_d3(2); // throw-in direction down
         state.fix_d6(1); // throw in length
-        state.fix_d6(1); // throw in length
+        state.fix_d6(2); // throw in length: 2D6 = 3 lands 2 squares in (S3)
         state.fix_d8_direction(Direction::right()); // final bounce
 
         state.step_simple(SimpleAT::SelectBothDown);

@@ -996,7 +996,7 @@ mod tests {
         state.fix_d8_direction(deviate_direction);
         state.fix_d6(deviate_distance as u8);
         state.fix_d6(3); //throw in length
-        state.fix_d6(2); //throw in length
+        state.fix_d6(3); //throw in length: 2D6 = 6 lands 5 squares in (S3)
         state.fix_d3(2); //throw in direction: down
         state.fix_d8_direction(bounce_direction);
         state.step_positional(PosAT::Pass, target_pos);

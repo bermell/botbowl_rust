@@ -462,15 +462,16 @@ fn throw_in_outcome(state: &GameState) -> BbAction {
         // constant short throw.
         return scripted(D3::One, Sum2D6::Two);
     };
-    // Shortest distance that **moves the ball** first. On a board whose narrow axis is 5 squares
-    // or less the engine divides the 2D6 by `scatter_divisor() >= 3`, so 2D6 = 2 (and on 8x3,
-    // 2D6 = 3) carries 0 squares: the ball lands back on the square it was thrown from, on the
+    // Shortest distance that **moves the ball** first. The ball lands 2D6 - 1 squares out (S3
+    // counts the origin as the first square), and on a board whose narrow axis is 5 squares or
+    // less the engine also divides that by `scatter_divisor() >= 3`, so the short throws carry
+    // 0 squares: the ball lands back on the square it was thrown from, on the
     // edge, bounces out again and is thrown in again. In the real game that is a 1-in-36 detour;
     // as the search's one modelled throw-in it is an endless chain of chance nodes
     // (`bounce_squares` grows each lap, so no state repeats and the cycle guard never fires),
     // one lap deeper per descent, whose chance nodes never get a value (plan 060 §6). A throw of
     // one square straight in exists on every legal board (the divisor is at most 4, the playable
-    // cross-axis at least 3), so `Four` is always enough; the larger distances are a guard.
+    // cross-axis at least 3), so `Five` is always enough; `Six` is a guard.
     let origin = throw_in.origin();
     for distance in [Sum2D6::Two, Sum2D6::Three, Sum2D6::Four, Sum2D6::Five, Sum2D6::Six] {
         let pick = [D3::One, D3::Two, D3::Three]
