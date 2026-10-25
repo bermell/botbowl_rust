@@ -983,7 +983,6 @@ pub struct TeamState {
     //ass_coaches: u8,
     //cheerleaders: u8,
     //fame: u8,
-    reroll_used: bool,
     //time_violation: u8,
 }
 fn default_rerolls_start() -> u8 {
@@ -995,22 +994,18 @@ impl TeamState {
         TeamState {
             rerolls_start: default_rerolls_start(),
             rerolls: default_rerolls_start(),
-            reroll_used: false,
             score: 0,
             bribes: 0,
         }
-        //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
+    /// The team has a re-roll left. S3 has no once-per-turn limit: a coach may use as many as
+    /// they have during their own turn (`GameState::may_use_team_reroll` adds the "own turn").
     pub fn can_use_reroll(&self) -> bool {
-        !self.reroll_used && self.rerolls > 0
+        self.rerolls > 0
     }
     pub fn use_reroll(&mut self) {
         assert!(self.can_use_reroll());
-        self.reroll_used = true;
         self.rerolls -= 1;
-    }
-    pub fn reset_reroll_used(&mut self) {
-        self.reroll_used = false;
     }
     /// Half-time: the team gets its full reroll allowance back.
     pub fn restore_rerolls(&mut self) {

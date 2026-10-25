@@ -584,7 +584,7 @@ impl std::hash::Hash for GameState {
         // Whole-struct hashes where the struct is small and every field can move during a search.
         // `GameInfo` in full rather than a hand-picked field list: `player_action_type` alone was
         // 27% of the old collisions, and a hand-maintained subset is exactly how that drift
-        // happened. The team states carry rerolls and `reroll_used`, which the old hash missed.
+        // happened. The team states carry rerolls, which the old hash missed.
         self.info.hash(h);
         self.home.hash(h);
         self.away.hash(h);
@@ -928,6 +928,21 @@ impl GameState {
     }
     pub fn get_active_teamtype(&self) -> Option<TeamType> {
         self.available_actions.get_team()
+    }
+
+    /// The team whose turn is in progress: the team of the `Turn` procedure on the stack. `None`
+    /// outside a team turn (setup, the kick-off, between drives).
+    pub fn turn_team(&self) -> Option<TeamType> {
+        self.proc_stack.iter().rev().find_map(|proc| match proc {
+            AnyProc::Turn(turn) => Some(turn.team),
+            _ => None,
+        })
+    }
+
+    /// `team` may use a team re-roll now: only while it is the active team (S3, Team Re-rolls:
+    /// "can only be used when the team is active"), as many per turn as it has left.
+    pub fn may_use_team_reroll(&self, team: TeamType) -> bool {
+        self.turn_team() == Some(team) && self.get_team(team).can_use_reroll()
     }
 
     pub fn get_player_id_at(&self, p: Position) -> Option<PlayerID> {

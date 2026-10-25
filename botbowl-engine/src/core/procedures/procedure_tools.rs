@@ -128,8 +128,8 @@ where
             _ => (),
         }
 
-        if game_state.get_team_from_player(self.id()).unwrap().can_use_reroll() {
-            let team = game_state.get_player_unsafe(self.id()).stats.team;
+        let team = game_state.get_player_unsafe(self.id()).stats.team;
+        if game_state.may_use_team_reroll(team) {
             let mut aa = AvailableActions::new(team);
             aa.insert_simple(SimpleAT::UseReroll);
             aa.insert_simple(SimpleAT::DontUseReroll);

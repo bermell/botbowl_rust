@@ -297,10 +297,13 @@ mod tests {
 
         state.fix_d6(4); //succeed first reroll
         state.fix_d6(1); //fail next dodge
-        state.fix_d6(1); //armor
-        state.fix_d6(1); //armor
-
         state.step_simple(SimpleAT::UseReroll);
+
+        // S3: the team may use another re-roll in the same turn.
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.step_simple(SimpleAT::DontUseReroll);
 
         assert_eq!(state.get_player_at(target_pos).unwrap().status, PlayerStatus::Down);
 
@@ -394,7 +397,6 @@ mod tests {
         let player = state.get_player(id).unwrap();
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Move, Position::new((9, 2)))));
         assert_eq!(state.get_player_id_at_coord(9, 1).unwrap(), id);
-        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll());
         assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2);
         // assert_eq!(state.get_legal_positions(PosAT::Move).len(), 0);
         assert_eq!(player.total_movement_left(), 0);
@@ -518,7 +520,6 @@ mod tests {
         state.step_simple(SimpleAT::UseReroll);
 
         assert_eq!(state.get_player_id_at_coord(3, 3).unwrap(), id);
-        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll());
         assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2);
         assert_eq!(state.get_mut_player(id).unwrap().total_movement_left(), 6);
         assert_eq!(state.get_mut_player(id).unwrap().gfis_left(), 2);
@@ -785,11 +786,9 @@ mod tests {
         let (mut state, _, target_pos, _) = setup_simple_pass(true, 4);
         let bounce_dir = Direction::up();
         state.fix_d6(6); // pass
-        state.fix_d6(1); // deflect fails
-        state.step_positional(PosAT::Pass, target_pos);
-
+        state.fix_d6(1); // deflect fails (no team re-roll outside the interceptor's own turn)
         state.fix_d6(1); // target fails the catch
-        state.step_simple(SimpleAT::DontUseReroll); // decline the deflect reroll
+        state.step_positional(PosAT::Pass, target_pos);
 
         state.fix_d8_direction(bounce_dir);
         state.step_simple(SimpleAT::DontUseReroll); // decline the catch reroll
@@ -927,10 +926,9 @@ mod tests {
         assert_eq!(interceptor, Position::new((5, 3)));
         state.fix_d6(6); //Pass
         state.fix_d6(6); //deflect
-        state.fix_d6(1); //Catch
+        state.fix_d6(1); //Catch, failed: no team re-roll outside the interceptor's own turn
+        state.fix_d8_direction(Direction::up()); //bounce
         state.step_positional(PosAT::Pass, target_pos);
-        state.fix_d8_direction(Direction::up()); //Catch
-        state.step_simple(SimpleAT::DontUseReroll);
         assert_eq!(state.ball, BallState::OnGround(interceptor + Direction::up()));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
@@ -939,10 +937,10 @@ mod tests {
         let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
         assert_eq!(interceptor, Position::new((5, 3)));
         state.fix_d6(6); //Pass
-        state.fix_d6(1); //deflect
-        state.step_positional(PosAT::Pass, target_pos);
+        state.fix_d6(1); //deflect, failed: the interceptor's team is not the active team, so no
+                         //team re-roll is offered (S3, Team Re-rolls)
         state.fix_d6(6); //Catch
-        state.step_simple(SimpleAT::DontUseReroll);
+        state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Home);

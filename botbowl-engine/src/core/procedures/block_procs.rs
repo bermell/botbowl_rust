@@ -649,6 +649,12 @@ impl Block {
             && self.roll.contains(&Some(BlockDice::BothDown))
     }
 
+    /// A team re-roll for the block dice: the blocker's team has one, and no die of this block
+    /// has been re-rolled yet (never re-roll a re-roll — including Brawler's).
+    fn team_reroll_available(&self, game_state: &GameState) -> bool {
+        !self.rerolled && game_state.may_use_team_reroll(game_state.get_active_player().unwrap().stats.team)
+    }
+
     fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let mut aa = AvailableActions::new_empty();
         let team = game_state.get_active_player().unwrap().stats.team;
@@ -664,14 +670,15 @@ impl Block {
             }
             BlockProcState::UphillSelectReroll => {
                 aa.team = Some(team);
-                if game_state.get_active_players_team().unwrap().can_use_reroll() {
+                if self.team_reroll_available(game_state) {
                     aa.insert_simple(SimpleAT::UseReroll);
                 }
                 aa.insert_simple(SimpleAT::DontUseReroll);
             }
             BlockProcState::Init => panic!("should not happen!"),
         }
-        if self.brawler_available(game_state) {
+        // Brawler is the blocker's: never offered to the defender picking an uphill block's dice.
+        if aa.team == Some(team) && self.brawler_available(game_state) {
             aa.insert_simple(SimpleAT::UseSkill);
         }
         aa
@@ -809,7 +816,7 @@ impl Procedure for Block {
             }
             ProcInput::Roll(RollResult::BlockDice(rolls)) => {
                 self.roll = rolls;
-                let reroll_available = game_state.get_active_players_team().unwrap().can_use_reroll();
+                let reroll_available = self.team_reroll_available(game_state);
                 // Uphill the blocker must get a say before the defender picks.
                 let blocker_asked = reroll_available || self.brawler_available(game_state);
                 self.state = match (reroll_available, blocker_asked, self.is_uphill) {
@@ -2248,6 +2255,28 @@ mod tests {
         assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPow)));
         assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPush)));
+    }
+
+    /// Brawler is the blocker's skill: once the blocker passes on it uphill, the defender picking
+    /// the dice is not offered it.
+    #[test]
+    fn the_defender_cannot_use_the_blockers_brawler_uphill() {
+        let mut state = brawler_block(false, (3, 4), 0, &[BlockDice::BothDown, BlockDice::Push]);
+        state.step_simple(SimpleAT::DontUseReroll);
+        assert_eq!(state.get_available_actions().team, Some(TeamType::Away));
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+    }
+
+    /// S3: any number of team re-rolls per turn, but never a re-roll of a re-roll — the
+    /// re-rolled block dice are final even with team re-rolls left.
+    #[test]
+    fn block_dice_are_team_rerolled_at_most_once() {
+        let mut state = brawler_block(false, (3, 3), 2, &[BlockDice::Skull]);
+        state.fix_blockdice(BlockDice::Skull);
+        state.step_simple(SimpleAT::UseReroll);
+        assert_eq!(state.get_team(TeamType::Home).rerolls, 1);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectSkull)));
     }
 
     /// A home Dauntless blocker with strength `att` against an away defender with `def`, plus
