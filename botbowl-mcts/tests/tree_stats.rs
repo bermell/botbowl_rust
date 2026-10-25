@@ -216,8 +216,11 @@ fn an_edge_bounce_on_a_narrow_board_does_not_run_away() {
         "a 400-descent search runs a {}-ply line: {t:?}",
         t.plies.max
     );
+    // The runaway made nearly every descent end on a fresh chance node. Under S3 every failed
+    // roll in the pickup -> bounce -> catch chain may be team re-rolled (not just the first in
+    // the turn), so more of the frontier is fresh chance nodes: 113/400 here, from under 1/4.
     assert!(
-        t.valued.chance * 4 < t.descents,
+        t.valued.chance * 3 < t.descents,
         "most descents end on a fresh chance node: {t:?}"
     );
 }
