@@ -1001,9 +1001,14 @@ impl GameState {
             None => Err(Box::new(InvalidPlayerId { id })),
         }
     }
+    /// The Agility Test to catch a ball (S3, Catching the Ball): AG, -1 per marking opponent,
+    /// -1 in rain. A ball that Bounced or was Thrown-in is a further -1, applied by the caller.
+    /// The `+1` turns the classic stored AG (`ag_target` = 7 - AG) into the S3 test (AG 3 → 3+),
+    /// as for dodge and pick-up.
     pub fn get_catch_target(&self, id: PlayerID) -> Result<D6Target> {
         let player = self.get_player(id)?;
         let mut target = player.ag_target();
+        target.add_modifer(1);
         let team = player.stats.team;
         target.add_modifer(
             -(self
@@ -1795,6 +1800,9 @@ impl GameState {
                 self.get_player_at(pos)
                     .filter(|p| p.stats.team == team && p.can_catch())
                     .and_then(|p| self.get_catch_target(p.id).ok())
+                    // Pre-S3 interception (pass rules not converted yet): kept at the old
+                    // catch base, one harder than an S3 catch.
+                    .map(|mut target| *target.add_modifer(-1))
                     .map(|target| (pos, target))
             })
             .collect::<Vec<(Position, D6Target)>>()

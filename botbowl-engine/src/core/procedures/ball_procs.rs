@@ -115,9 +115,10 @@ impl Procedure for Bounce {
                 // which keeps recurring bounce states distinct for the
                 // MCTS search graph.)
                 game_state.set_ball(BallState::InAir(new_pos));
+                // -1: catching a ball that has Bounced.
                 ProcState::DoneNew(Catch::new_with_kick_arg(
                     catcher_id,
-                    game_state.get_catch_target(catcher_id).unwrap(),
+                    *game_state.get_catch_target(catcher_id).unwrap().add_modifer(-1),
                     self.kick,
                 ))
             } else {
@@ -225,7 +226,9 @@ impl Procedure for ThrowIn {
                     // the catcher's square for the attempt, so a failed
                     // catch bounces from there.
                     game_state.set_ball(BallState::InAir(target));
-                    ProcState::DoneNew(Catch::new(catcher_id, game_state.get_catch_target(catcher_id).unwrap()))
+                    // -1: catching a ball that has been Thrown-in.
+                    let target = *game_state.get_catch_target(catcher_id).unwrap().add_modifer(-1);
+                    ProcState::DoneNew(Catch::new(catcher_id, target))
                 }
                 _ => {
                     game_state.set_ball(BallState::InAir(target));
@@ -591,8 +594,9 @@ impl SimpleProc for Deflect {
 
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
         game_state.set_ball(BallState::InAir(game_state.get_player_unsafe(self.id).position));
+        // Pre-S3 interception (pass rules not converted yet): the old catch base, then -1.
         let mut catch_target = game_state.get_catch_target(self.id).unwrap();
-        vec![Catch::new(self.id, *catch_target.add_modifer(-1))]
+        vec![Catch::new(self.id, *catch_target.add_modifer(-2))]
     }
 }
 #[cfg(test)]
@@ -800,6 +804,52 @@ mod tests {
             "failed catch must bounce from the catcher's square, got {:?}",
             state.ball
         );
+    }
+
+    /// S3, Catching the Ball: an AG 3 player catches on a 3+; a hand-off has no modifier.
+    #[test]
+    fn a_handoff_catch_has_no_modifier() {
+        let start_pos = Position::new((2, 1));
+        let target_pos = Position::new((3, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        let receiver = state.get_player_id_at(target_pos).unwrap();
+        state.step_positional(PosAT::StartHandoff, start_pos);
+        state.fix_d6(3);
+        state.step_positional(PosAT::Handoff, target_pos);
+        assert_eq!(state.ball, BallState::Carried(receiver));
+    }
+
+    /// ... but catching a ball that has Bounced is -1: an AG 3 player then needs a 4+.
+    #[test]
+    fn a_bounced_catch_is_minus_one() {
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let dir = Direction::from(D8::One);
+        let catcher_pos = ball_pos + dir;
+        let catch_with = |roll: u8| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_home_player(catcher_pos)
+                .add_ball_pos(ball_pos)
+                .build();
+            let catcher = state.get_player_id_at(catcher_pos).unwrap();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fix_d6(2); // fail pickup (3+)
+            state.fix_d8(D8::One as u8); // bounce onto the standing team-mate
+            state.fix_d6(roll);
+            if roll < 4 {
+                state.fix_d8(D8::One as u8); // the failed catch bounces on
+            }
+            state.step_positional(PosAT::Move, ball_pos);
+            state.ball == BallState::Carried(catcher)
+        };
+        assert!(!catch_with(3));
+        assert!(catch_with(4));
     }
 
     /// Same rule for a throw-in that lands on a player: the ball is in
