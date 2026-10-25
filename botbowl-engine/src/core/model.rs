@@ -1293,10 +1293,14 @@ pub struct AvailableActions {
     pub(crate) has_paths: bool,
     /// Legal actions that are **not listed** (`collect_non_path_actions` / `get_all_actions`
     /// leave them out), so bots, the search and the NN never see them: rule-legal moves too
-    /// rare to be worth a branch, offered by a human UI through `get_hidden_simple`
+    /// rare to be worth a branch, offered by a human UI through `collect_hidden_actions`
     /// (`SimpleAT::PassSquare`). `is_legal_action` accepts them.
     #[serde(default)]
     hidden: SimpleATSet,
+    /// The positional ones, same contract. A list, not a `FullPitch`: almost always empty, and
+    /// an empty `Vec` costs nothing to clone.
+    #[serde(default)]
+    hidden_positional: Vec<(PosAT, Position)>,
 }
 
 impl std::fmt::Debug for AvailableActions {
@@ -1343,6 +1347,17 @@ impl AvailableActions {
         assert!(self.team.is_some());
         self.hidden.insert(action_type);
     }
+    pub fn insert_hidden_positional(&mut self, action_type: PosAT, pos: Position) {
+        assert!(self.team.is_some());
+        if !self.hidden_positional.contains(&(action_type, pos)) {
+            self.hidden_positional.push((action_type, pos));
+        }
+    }
+    /// Every hidden action (see the fields), simple and positional: a human UI's to offer.
+    pub fn collect_hidden_actions(&self, out: &mut Vec<Action>) {
+        out.extend(self.hidden_positional.iter().map(|&(at, pos)| Action::Positional(at, pos)));
+        out.extend(self.hidden.iter().map(Action::Simple));
+    }
     pub fn has_paths(&self) -> bool {
         self.has_paths
     }
@@ -1355,7 +1370,11 @@ impl AvailableActions {
         aa
     }
     pub fn is_empty(&self) -> bool {
-        self.simple.is_empty() && !self.has_paths && self.positional.is_none()
+        self.simple.is_empty()
+            && !self.has_paths
+            && self.positional.is_none()
+            && self.hidden.is_empty()
+            && self.hidden_positional.is_empty()
     }
     /// Collects every simple action and every positional action backed by
     /// `self.positional`. Path-style actions are NOT included — call
@@ -1401,6 +1420,11 @@ impl AvailableActions {
             positional,
             has_paths: false,
             hidden: self.hidden,
+            hidden_positional: self
+                .hidden_positional
+                .iter()
+                .map(|&(at, pos)| (at, Position::new((width - 1 - pos.x, pos.y))))
+                .collect(),
         }
     }
 
@@ -1422,6 +1446,11 @@ impl AvailableActions {
             positional,
             has_paths: self.has_paths,
             hidden: self.hidden,
+            hidden_positional: self
+                .hidden_positional
+                .iter()
+                .map(|&(at, pos)| (at, Position::new((pos.x, height - 1 - pos.y))))
+                .collect(),
         }
     }
 
@@ -1451,11 +1480,8 @@ impl AvailableActions {
         match action {
             Action::Simple(at) => self.simple.contains(&at) || self.hidden.contains(&at),
             Action::Positional(at, pos) => {
-                if let Some(allowed_at) = self.positional.as_ref().map(|positions| &positions[pos]) {
-                    allowed_at.contains(&at)
-                } else {
-                    false
-                }
+                self.positional.as_ref().is_some_and(|positions| positions[pos].contains(&at))
+                    || self.hidden_positional.contains(&(at, pos))
             }
         }
     }
@@ -1729,5 +1755,37 @@ mod ag_target_tests {
         let legacy_pa = legacy.replace("\"passing\":4", "\"pass\":\"FivePlus\"");
         let old: PlayerStats = serde_json::from_str(&legacy_pa).unwrap();
         assert_eq!(old.passing, 5);
+    }
+}
+
+#[cfg(test)]
+mod hidden_action_tests {
+    use super::*;
+
+    /// A hidden positional action (a human's Jump or Throw Team-mate) is legal but never
+    /// listed with the bot's actions, and follows the board through the mirror and the y-flip.
+    #[test]
+    fn hidden_positional_actions_are_legal_unlisted_and_mirrored() {
+        let mut aa = AvailableActions::new(TeamType::Home);
+        let target = Position::new((3, 2));
+        aa.insert_hidden_positional(PosAT::Move, target);
+        assert!(!aa.is_empty());
+        assert!(aa.is_legal_non_path_action(Action::Positional(PosAT::Move, target)));
+        assert!(!aa.is_legal_non_path_action(Action::Positional(PosAT::Move, Position::new((3, 3)))));
+
+        let mut listed = Vec::new();
+        aa.collect_non_path_actions(&mut listed);
+        assert!(listed.is_empty());
+
+        let mut hidden = Vec::new();
+        aa.collect_hidden_actions(&mut hidden);
+        assert_eq!(hidden, vec![Action::Positional(PosAT::Move, target)]);
+
+        let mut mirrored = Vec::new();
+        aa.mirrored(10).collect_hidden_actions(&mut mirrored);
+        assert_eq!(mirrored, vec![Action::Positional(PosAT::Move, Position::new((6, 2)))]);
+        let mut flipped = Vec::new();
+        aa.y_flipped(7).collect_hidden_actions(&mut flipped);
+        assert_eq!(flipped, vec![Action::Positional(PosAT::Move, Position::new((3, 4)))]);
     }
 }

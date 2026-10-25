@@ -647,13 +647,24 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
         }
         // Actions the engine hides from bots (`get_all_actions` leaves them out) are a human's
         // to take: pass to any square in range.
-        for at in state.get_available_actions().get_hidden_simple().iter() {
-            let at = mirror::simple_at_to_proto(at);
-            simple_actions.push(pv::SimpleActionView {
-                at,
-                label: at.label().to_string(),
-                img: None,
-            });
+        let mut hidden = Vec::new();
+        state.get_available_actions().collect_hidden_actions(&mut hidden);
+        for action in hidden {
+            match action {
+                em::Action::Positional(at, pos) => {
+                    if let Some(index) = index_of(dims, pos) {
+                        squares[index].actions.push(mirror::pos_at_to_proto(at));
+                    }
+                }
+                em::Action::Simple(at) => {
+                    let at = mirror::simple_at_to_proto(at);
+                    simple_actions.push(pv::SimpleActionView {
+                        at,
+                        label: at.label().to_string(),
+                        img: None,
+                    });
+                }
+            }
         }
         annotate_paths(state, &mut squares);
     }

@@ -68,13 +68,7 @@ fn check(state: &GameState) {
 
     // The view also offers what the engine hides from bots (passing to a square): a human's.
     let mut legal = state.get_all_actions();
-    legal.extend(
-        state
-            .get_available_actions()
-            .get_hidden_simple()
-            .iter()
-            .map(Action::Simple),
-    );
+    state.get_available_actions().collect_hidden_actions(&mut legal);
     legal.sort();
     assert_eq!(
         offered,
