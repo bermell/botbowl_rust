@@ -609,14 +609,17 @@ impl<'a> GameInfo<'a> {
         let victim = self.game_state.get_player_unsafe(victim_id);
         let mut target = victim.armor_target();
 
+        // Foul assists work as a block's (S3, Performing a Foul Action): the assister Marks the
+        // victim (offensive) or the fouler (defensive) and no other opponent Marks the assister.
+        // Guard does not apply — it is for a Block Action only.
         target.add_modifer(
             self.game_state
                 .get_adj_players(victim.position)
                 .filter(|adj_player| {
                     adj_player.id != self.id
                         && adj_player.stats.team == self.team
-                        // Guard assists however many opponents mark the assister.
-                        && (adj_player.has_skill(Skill::Guard) || self.game_state.get_tz_on(adj_player.id) == 0)
+                        && adj_player.has_tackle_zone()
+                        && self.game_state.get_tz_on(adj_player.id) == 0
                 })
                 .count() as i8,
         );
@@ -627,8 +630,7 @@ impl<'a> GameInfo<'a> {
                 .filter(|adj_player| {
                     adj_player.stats.team != self.team
                         && adj_player.has_tackle_zone()
-                        && (adj_player.has_skill(Skill::Guard)
-                            || self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0)
+                        && self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0
                 })
                 .count() as i8),
         );
