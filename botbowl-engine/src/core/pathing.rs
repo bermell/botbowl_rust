@@ -40,6 +40,9 @@ pub enum PathingEvent {
     /// Movement Allowance; a failure ends the activation. Last, so the other variants keep
     /// their postcard index.
     StandUpRoll(D6Target),
+    /// S3 Secure the Ball's pick-up: a plain D6 (2+), no Agility Test; it ends the activation.
+    /// Last, so the other variants keep their postcard index.
+    SecureBall(D6Target),
 }
 
 pub fn event_ends_player_action(event: &PathingEvent) -> bool {
@@ -54,6 +57,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::StandUp => false,
         PathingEvent::StandUpRoll(_) => false,
         PathingEvent::Pass { .. } => true,
+        PathingEvent::SecureBall(_) => true,
     }
 }
 
@@ -243,6 +247,7 @@ impl Node {
                 PathingEvent::Dodge(..) => true,
                 PathingEvent::GFI(_) => true,
                 PathingEvent::Pickup(_) => true,
+                PathingEvent::SecureBall(_) => true,
                 PathingEvent::Touchdown(_) => true,
                 PathingEvent::Pass { .. } => false,
             }
@@ -300,6 +305,10 @@ impl Node {
     fn apply_pickup(&mut self, target: D6Target) {
         self.prob *= target.success_prob();
         self.events.push_back(PathingEvent::Pickup(target));
+    }
+    fn apply_secure_ball(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
+        self.events.push_back(PathingEvent::SecureBall(target));
     }
 
     fn apply_handoff(&mut self, id: PlayerID, target: D6Target) {
@@ -788,6 +797,10 @@ impl<'a> GameInfo<'a> {
             next_node.apply_dodge(ag_test_target(self.agility, -marked), markers);
         }
         match self.ball {
+            PathingBallState::OnGround(ball_pos) if ball_pos == to && self.player_action == PosAT::StartSecureBall => {
+                // S3 Secure the Ball: a D6 2+, whatever the AG, weather or marking.
+                next_node.apply_secure_ball(D6Target::TwoPlus);
+            }
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
                 // touchdown by pickup is handled by the pickup procedure
                 next_node.apply_pickup(ag_test_target(self.agility, self.pickup_modifier - self.tzones[to]));

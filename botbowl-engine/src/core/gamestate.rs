@@ -389,6 +389,10 @@ pub struct GameInfo {
     /// team-mate's Fumbled Throw is an injury roll). Cleared at activation start.
     #[serde(default)]
     pub kick_team_mate_this_activation: bool,
+    /// S3: the team on turn has not declared its one Secure the Ball Action this turn. Reset at
+    /// the start of every team turn, like the other once-per-turn declarations.
+    #[serde(default = "serde_true")]
+    pub secure_ball_available: bool,
 }
 fn serde_true() -> bool {
     true
@@ -421,6 +425,7 @@ impl GameInfo {
             throw_team_mate_available: true,
             kick_team_mate_available: true,
             kick_team_mate_this_activation: false,
+            secure_ball_available: true,
         }
     }
 }

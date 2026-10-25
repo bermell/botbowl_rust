@@ -56,6 +56,7 @@ pub fn pos_at_to_proto(at: et::PosAT) -> pa::PosAT {
         et::PosAT::StartBlock => pa::PosAT::StartBlock,
         et::PosAT::Block => pa::PosAT::Block,
         et::PosAT::PlacePlayer => pa::PosAT::PlacePlayer,
+        et::PosAT::StartSecureBall => pa::PosAT::StartSecureBall,
         et::PosAT::ThrowTeamMate => pa::PosAT::ThrowTeamMate,
     }
 }
@@ -77,6 +78,7 @@ pub fn pos_at_from_proto(at: pa::PosAT) -> et::PosAT {
         pa::PosAT::StartBlock => et::PosAT::StartBlock,
         pa::PosAT::Block => et::PosAT::Block,
         pa::PosAT::PlacePlayer => et::PosAT::PlacePlayer,
+        pa::PosAT::StartSecureBall => et::PosAT::StartSecureBall,
         pa::PosAT::ThrowTeamMate => et::PosAT::ThrowTeamMate,
     }
 }
@@ -475,9 +477,9 @@ mod tests {
             assert_eq!(simple_at_to_proto(simple_at_from_proto(at)), at);
         }
         // ...and the engine side is covered by the same identity, because the
-        // maps are bijections between enums of the same size (16 positional, 18 simple).
-        assert_eq!(pa::PosAT::ALL.len(), 16);
-        assert_eq!(pa::SimpleAT::ALL.len(), 18);
+        // maps are bijections between enums of the same size.
+        assert_eq!(pa::PosAT::ALL.len(), et::PosAT::COUNT);
+        assert_eq!(pa::SimpleAT::ALL.len(), et::SimpleAT::COUNT);
     }
 
     #[test]

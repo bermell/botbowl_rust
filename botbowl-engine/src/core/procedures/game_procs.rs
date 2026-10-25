@@ -132,6 +132,7 @@ impl Procedure for Half {
         info.pass_available = true;
         info.throw_team_mate_available = true;
         info.kick_team_mate_available = true;
+        info.secure_ball_available = true;
         info.turnover = false;
 
         game_state.get_players_on_pitch_mut().for_each(|p| p.used = false);
@@ -242,10 +243,49 @@ impl Turn {
 
             // Throw / Kick Team-mate: hidden, a human's only.
             team_mate_procs::offer_declarations(game_state, &positions, &mut aa);
+            let secure = Self::secure_ball_positions(game_state, self.team, &positions);
+            if !secure.is_empty() {
+                aa.insert_positional(PosAT::StartSecureBall, secure);
+            }
+
             aa.insert_positional(PosAT::StartMove, positions);
         }
         aa.insert_simple(SimpleAT::EndTurn);
         aa
+    }
+
+    /// S3 Secure the Ball: who among `candidates` (unused, not Stunned) may declare it. The ball
+    /// must be loose on the ground, no Standing opposition player within 2 squares of it, the
+    /// team must not have declared one this turn, and the player's free Move must be able to end
+    /// on the ball ("If this is not possible, a player cannot declare this Action").
+    ///
+    /// Not modelled (the engine has neither): Distracted opponents (who would not count) and the
+    /// Big Guy keyword / Unsteady trait (whose players may not declare it).
+    pub fn secure_ball_positions(game_state: &GameState, team: TeamType, candidates: &[Position]) -> Vec<Position> {
+        if !game_state.info.secure_ball_available {
+            return Vec::new();
+        }
+        let BallState::OnGround(ball) = game_state.ball else {
+            return Vec::new();
+        };
+        if game_state
+            .get_players_on_pitch_in_team(other_team(team))
+            .any(|p| p.status == PlayerStatus::Up && p.position.distance_to(&ball) <= 2)
+        {
+            return Vec::new();
+        }
+        candidates
+            .iter()
+            .copied()
+            .filter(|&pos| {
+                let player = game_state.get_player_at(pos).unwrap();
+                // Cheap bound before the pathfinder: every square costs at least one of MA + Rushes.
+                if pos.distance_to(&ball) as i32 > (player.moves_left() + player.gfis_left()) as i32 {
+                    return false;
+                }
+                matches!(PathFinder::player_paths(game_state, player.id), Ok(paths) if paths[ball].is_some())
+            })
+            .collect()
     }
 }
 impl Procedure for Turn {
@@ -291,6 +331,7 @@ impl Procedure for Turn {
             match at {
                 PosAT::StartMove => (),
                 PosAT::StartHandoff => info.handoff_available = false,
+                PosAT::StartSecureBall => info.secure_ball_available = false,
                 PosAT::StartPass => info.pass_available = false,
                 PosAT::StartFoul => info.foul_available = false,
                 PosAT::StartBlitz => {

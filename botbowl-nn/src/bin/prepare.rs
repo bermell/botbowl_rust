@@ -82,7 +82,10 @@ use botbowl_nn::targets::{
 // corpus for the first time.
 // v9: `SimpleAT::UseSkill` / `DontUseSkill` appended at 30/31 (A 30 → 32) for optional skills
 // (Wrestle, Stand Firm). Every v8 channel keeps its index; `migrate.py` appends two zero rows.
-const NN_SCHEMA_VERSION: u32 = 9;
+// v10: `PosAT::StartSecureBall` (S3 Secure the Ball) at positional channel 15, the end of the
+// positional block (A 32 → 33); every simple channel moved up by one (15+i → 16+i).
+// `migrate.py` permutes the head and zero-initialises the new channel.
+const NN_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum SolvedRootArg {

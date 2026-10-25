@@ -58,6 +58,48 @@ impl SimpleProc for PickupProc {
         self.id
     }
 }
+/// S3 Secure the Ball's pick-up: no Agility Test, a plain D6 2+ (`PathingEvent::SecureBall`).
+/// Success picks the ball up and ends the activation (the path event already marked the player
+/// used); a 1 is a turnover and the ball bounces from the player's square. A team re-roll may
+/// re-roll it; Sure Hands may not ("though not when making a Secure the Ball Action").
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SecureBallProc {
+    target: D6Target,
+    id: PlayerID,
+}
+impl SecureBallProc {
+    pub fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        AnyProc::SecureBallProc(SimpleProcContainer::new(SecureBallProc { target, id }))
+    }
+}
+impl SimpleProc for SecureBallProc {
+    fn d6_target(&self) -> D6Target {
+        self.target
+    }
+
+    fn reroll_skill(&self) -> Option<Skill> {
+        None
+    }
+
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
+        game_state.set_ball(BallState::Carried(self.id));
+        let player = game_state.get_player_unsafe(self.id);
+        if player.position.x == game_state.get_endzone_x(player.stats.team) {
+            game_state.info.handle_td_by = Some(self.id);
+        }
+        Vec::new()
+    }
+
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
+        game_state.get_mut_player(self.id).unwrap().used = true;
+        game_state.info.turnover = true;
+        vec![Bounce::new()]
+    }
+
+    fn player_id(&self) -> PlayerID {
+        self.id
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Bounce {
     kick: bool,
@@ -686,6 +728,10 @@ impl SimpleProc for Deflect {
         Vec::new()
     }
 }
+#[cfg(test)]
+#[path = "secure_ball_tests.rs"]
+mod secure_ball_tests;
+
 #[cfg(test)]
 mod tests {
 

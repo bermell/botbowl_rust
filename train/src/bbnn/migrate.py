@@ -48,6 +48,8 @@ SCHEMAS: dict[int, dict] = {
     8: {"C": 61, "F": 18, "A": 30},
     # v9 appended the optional-skill actions UseSkill / DontUseSkill (A 30 -> 32).
     9: {"C": 61, "F": 18, "A": 32},
+    # v10 inserted StartSecureBall at positional channel 15 (A 32 -> 33); the simple block moved up one.
+    10: {"C": 61, "F": 18, "A": 33},
 }
 CURRENT = SCHEMA_VERSION
 assert SCHEMAS[CURRENT] == {"C": SPATIAL_CHANNELS, "F": GLOBAL_FEATURES, "A": POLICY_CHANNELS}
@@ -261,6 +263,29 @@ def _v8_to_v9(sd: StateDict) -> StateDict:
     return out
 
 
+# S3 Secure the Ball (schema v10). Pinned on the Rust side by
+# `botbowl-nn/src/actions.rs::v10_channel_layout_matches_the_migration`.
+#   positional 0..14 unchanged; 15 = StartSecureBall (new, zero)
+#   simple block shifts by one: old 15+i -> 16+i for i in 0..17
+# Inserted inside the positional block rather than appended at 32 so the layout stays
+# "positional channels, then simple ones" (`channel < NUM_POS_AT` is how actions.rs and the audit
+# scripts tell them apart); the price is this permutation, which keeps every weight.
+POLICY_MAP_9_TO_10: list[tuple[int, int]] = [(i, i) for i in range(15)] + [(15 + i, 16 + i) for i in range(17)]
+
+
+def _v9_to_v10(sd: StateDict) -> StateDict:
+    out = dict(sd)
+    w, b = sd["policy_head.weight"], sd["policy_head.bias"]
+    a = SCHEMAS[10]["A"]
+    nw, nb = w.new_zeros((a, *w.shape[1:])), b.new_zeros(a)
+    for old, new in POLICY_MAP_9_TO_10:
+        nw[new] = w[old]
+        nb[new] = b[old]
+    out["policy_head.weight"], out["policy_head.bias"] = nw, nb
+    out["schema_version"] = torch.tensor(10, dtype=torch.int32)
+    return out
+
+
 MIGRATIONS: list[Migration] = [
     Migration(
         6,
@@ -284,6 +309,14 @@ MIGRATIONS: list[Migration] = [
         "optional-skill actions UseSkill/DontUseSkill appended (A 30->32), zero-initialised",
         _v8_to_v9,
         policy_map=[(i, i) for i in range(30)],
+    ),
+    Migration(
+        9,
+        10,
+        "Secure the Ball: StartSecureBall inserted at policy channel 15 (A 32->33, zero-initialised), "
+        "simple channels moved up one, every v9 channel keeps its weights",
+        _v9_to_v10,
+        policy_map=POLICY_MAP_9_TO_10,
     ),
 ]
 

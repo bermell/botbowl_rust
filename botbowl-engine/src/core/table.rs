@@ -20,6 +20,11 @@ pub enum PosAT {
     /// Setup: put the player being placed (`info.active_player`) on this
     /// square of our own half. See `Setup` in `procedures/kickoff_procs.rs`.
     PlacePlayer,
+    /// S3 Secure the Ball: declare it on this player (a free Move that must end on the loose
+    /// ball, which is then picked up on a D6 2+). See `Turn::secure_ball_positions`.
+    StartSecureBall,
+    // Hidden actions only from here on (`PosAT::LISTED`): offered through
+    // `AvailableActions::insert_hidden_positional`, never in a `PosATSet`.
     /// Throw / Kick Team-mate (S3), every step of it: declaring the action on the thrower (or
     /// kicker), picking up the adjacent Right Stuff team-mate on their square, then the target
     /// square. **Hidden** (`AvailableActions::insert_hidden_positional`): legal, never listed,
@@ -396,7 +401,10 @@ impl<'de> Deserialize<'de> for SkillSet {
 }
 
 impl PosAT {
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 17;
+    /// The listed (non-hidden) variants are `ALL[..LISTED]`, the only ones a `PosATSet` holds;
+    /// the rest are hidden actions, kept out of the set so it stays two bytes a square.
+    pub const LISTED: usize = 16;
     /// Every variant, in `index` order. `index` is an exhaustive match, so a new variant fails to
     /// compile until it is numbered, and `pos_at_all_matches_index` checks it was added here too.
     pub const ALL: [PosAT; PosAT::COUNT] = [
@@ -415,6 +423,7 @@ impl PosAT {
         PosAT::StartBlock,
         PosAT::Block,
         PosAT::PlacePlayer,
+        PosAT::StartSecureBall,
         PosAT::ThrowTeamMate,
     ];
     pub const fn index(self) -> usize {
@@ -434,7 +443,8 @@ impl PosAT {
             PosAT::StartBlock => 12,
             PosAT::Block => 13,
             PosAT::PlacePlayer => 14,
-            PosAT::ThrowTeamMate => 15,
+            PosAT::StartSecureBall => 15,
+            PosAT::ThrowTeamMate => 16,
         }
     }
 }
@@ -491,12 +501,16 @@ impl SimpleAT {
 /// sequence of variants so stored corpora read back unchanged.
 macro_rules! enum_bitset {
     ($(#[$attr:meta])* $set:ident, $enum:ident, $bits:ty) => {
+        enum_bitset!($(#[$attr])* $set, $enum, $bits, $enum::COUNT);
+    };
+    // `$members`: the set holds `ALL[..$members]` only (`PosAT`'s hidden variants stay out).
+    ($(#[$attr:meta])* $set:ident, $enum:ident, $bits:ty, $members:expr) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
         pub struct $set($bits);
 
         const _: () = assert!(
-            $enum::COUNT <= <$bits>::BITS as usize,
+            $members <= <$bits>::BITS as usize,
             concat!(stringify!($set), " holds one bit per variant")
         );
 
@@ -505,26 +519,32 @@ macro_rules! enum_bitset {
                 Self(0)
             }
 
-            const fn bit(v: $enum) -> $bits {
-                1 << v.index()
+            /// `None` for a variant the set cannot hold.
+            const fn bit(v: $enum) -> Option<$bits> {
+                if v.index() < $members {
+                    Some(1 << v.index())
+                } else {
+                    None
+                }
             }
 
-            /// Adds `v`; returns whether it was absent (as `HashSet::insert`).
+            /// Adds `v`; returns whether it was absent (as `HashSet::insert`). Panics on a
+            /// variant the set cannot hold.
             pub fn insert(&mut self, v: $enum) -> bool {
                 let absent = !self.contains(&v);
-                self.0 |= Self::bit(v);
+                self.0 |= Self::bit(v).unwrap_or_else(|| panic!("{v:?} cannot be in a {}", stringify!($set)));
                 absent
             }
 
             /// Removes `v`; returns whether it was present (as `HashSet::remove`).
             pub fn remove(&mut self, v: &$enum) -> bool {
                 let present = self.contains(v);
-                self.0 &= !Self::bit(*v);
+                self.0 &= !Self::bit(*v).unwrap_or(0);
                 present
             }
 
             pub fn contains(&self, v: &$enum) -> bool {
-                self.0 & Self::bit(*v) != 0
+                Self::bit(*v).is_some_and(|bit| self.0 & bit != 0)
             }
 
             pub fn clear(&mut self) {
@@ -594,7 +614,8 @@ enum_bitset!(
     /// `Copy` array and an `AvailableActions` clone is a memcpy.
     PosATSet,
     PosAT,
-    u16
+    u16,
+    PosAT::LISTED
 );
 
 enum_bitset!(

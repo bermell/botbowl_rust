@@ -381,7 +381,7 @@ fn reroll_decision(state: &GameState) -> Action {
     let proc_name = state.proc_stack_top();
     match proc_name {
         // Always reroll for these — failure is a turnover or a wasted player action.
-        Some("DodgeProc") | Some("PickupProc") | Some("GfiProc") | Some("Catch") | Some("Pass") => {
+        Some("DodgeProc") | Some("PickupProc") | Some("SecureBallProc") | Some("GfiProc") | Some("Catch") | Some("Pass") => {
             Action::Simple(SimpleAT::UseReroll)
         }
         // Block: reroll if the best available outcome is bad for us.

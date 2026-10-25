@@ -62,6 +62,8 @@ pub enum PosAT {
     /// Setup: put the player being placed (`ViewState::active_player`) on
     /// this square of the own half.
     PlacePlayer,
+    /// S3 Secure the Ball: a free move onto the loose ball, picked up on a 2+.
+    StartSecureBall,
     /// Throw / Kick Team-mate, every step of it: the declaration on the thrower, the team-mate
     /// to pick up, the target square. Offered to humans only (the engine hides it from bots).
     ThrowTeamMate,
@@ -69,7 +71,7 @@ pub enum PosAT {
 
 impl PosAT {
     /// All variants, in policy-channel order.
-    pub const ALL: [PosAT; 16] = [
+    pub const ALL: [PosAT; 17] = [
         PosAT::StartMove,
         PosAT::StartBlitz,
         PosAT::StartPass,
@@ -85,6 +87,7 @@ impl PosAT {
         PosAT::StartBlock,
         PosAT::Block,
         PosAT::PlacePlayer,
+        PosAT::StartSecureBall,
         PosAT::ThrowTeamMate,
     ];
 
@@ -110,6 +113,7 @@ impl PosAT {
             PosAT::StartBlock => "Start block",
             PosAT::Block => "Block",
             PosAT::PlacePlayer => "Place player",
+            PosAT::StartSecureBall => "Start secure ball",
             PosAT::ThrowTeamMate => "Throw team mate",
         }
     }
@@ -117,7 +121,7 @@ impl PosAT {
     /// Sprite path relative to the `/img/` asset mount, when one fits.
     pub fn icon(self) -> Option<&'static str> {
         match self {
-            PosAT::StartMove | PosAT::Move => Some("icons/actions/move.gif"),
+            PosAT::StartMove | PosAT::Move | PosAT::StartSecureBall => Some("icons/actions/move.gif"),
             PosAT::StartBlitz => Some("icons/actions/blitz.gif"),
             PosAT::StartBlock | PosAT::Block => Some("icons/actions/block.gif"),
             PosAT::StartPass | PosAT::Pass | PosAT::ThrowTeamMate => Some("icons/actions/pass.gif"),
@@ -138,6 +142,7 @@ impl PosAT {
                 | PosAT::StartFoul
                 | PosAT::StartHandoff
                 | PosAT::StartBlock
+                | PosAT::StartSecureBall
         )
     }
 }

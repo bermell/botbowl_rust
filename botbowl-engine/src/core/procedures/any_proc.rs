@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::model::Procedure;
 use crate::core::procedures::ball_procs::{
-    Bounce, Catch, Deflect, DeflectOrResolve, Pass, PassToSquare, PickupProc, ThrowIn, Touchback, Touchdown,
+    Bounce, Catch, Deflect, DeflectOrResolve, Pass, PassToSquare, PickupProc, SecureBallProc, ThrowIn, Touchback, Touchdown,
 };
 
 use crate::core::procedures::block_procs::{
@@ -119,4 +119,5 @@ any_proc! {
     ThrowTeamMate(ThrowTeamMate),
     ThrownPlayerFlight(ThrownPlayerFlight),
     TeamMateLanding(SimpleProcContainer<TeamMateLanding>),
+    SecureBallProc(SimpleProcContainer<SecureBallProc>),
 }

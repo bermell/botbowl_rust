@@ -535,6 +535,7 @@ impl Procedure for Charge {
                 info.handoff_available = false;
                 info.pass_available = false;
                 info.foul_available = false;
+                info.secure_ball_available = false;
                 self.offer(game_state)
             }
             // An activation has ended. "If a selected player Falls Over or is Knocked Down during

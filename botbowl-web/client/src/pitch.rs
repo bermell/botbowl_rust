@@ -77,6 +77,7 @@ fn declaration_label(at: PosAT) -> &'static str {
         PosAT::StartFoul => "Foul",
         PosAT::StartHandoff => "Handoff",
         PosAT::StartBlock => "Block",
+        PosAT::StartSecureBall => "Secure ball",
         other => other.label(),
     }
 }

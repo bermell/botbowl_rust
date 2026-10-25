@@ -11,16 +11,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Must match botbowl-nn/src/encode.rs and actions.rs (nn_schema_version 9).
+# Must match botbowl-nn/src/encode.rs and actions.rs (nn_schema_version 10).
 SPATIAL_CHANNELS = 61
 GLOBAL_FEATURES = 18
-POLICY_CHANNELS = 32
+POLICY_CHANNELS = 33
 # The schema the action/encoder layout above is at. Stored in every checkpoint
 # as the ``schema_version`` buffer: v8 (per-player setup) re-laid the policy
 # channels without changing a single tensor shape, so shapes alone can no
 # longer say which schema a state_dict is at. `bbnn.migrate` reads it.
 # v9 appended UseSkill / DontUseSkill (A 30 -> 32).
-SCHEMA_VERSION = 9
+# v10 inserted StartSecureBall at positional channel 15; the simple block moved up one (A 32 -> 33).
+SCHEMA_VERSION = 10
 
 
 class SchemaError(ValueError):

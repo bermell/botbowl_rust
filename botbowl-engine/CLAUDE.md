@@ -31,6 +31,16 @@ thrown-in only), foul assists (must Mark, no Guard), crowd-push and Wrestle turn
 vs Frenzy / Strip Ball, Active skills (Stand Firm, Sidestep) need a Standing player, Catch /
 Sure Hands not once per turn, touchback to Standing players or an empty square, prone players
 fail catches, Changing Weather's Scatter (3), and throw-ins landing 2D6 - 1 squares out.
+Secure the Ball (`PosAT::StartSecureBall`, `Turn::secure_ball_positions`): offered while the ball
+is loose on the ground with no Standing opponent within 2 squares, once per team turn
+(`GameInfo::secure_ball_available`, off during a Charge), only to players whose free Move can reach
+the ball (the pathfinder is asked, behind a distance bound). The move squares stay rules-general:
+the ball square carries `PathingEvent::SecureBall(2+)` → `SecureBallProc` (no AG test or modifiers,
+team re-roll yes, Sure Hands no; 2+ picks up and ends the activation, a 1 is a turnover and a
+bounce); ending the activation anywhere else is a turnover (`secure_ball_turnover_if_off_ball`).
+Not modelled: Distracted opponents and the Big Guy keyword / Unsteady trait (the engine has
+neither). Tests: `procedures/secure_ball_tests.rs`. MCTS rule P10 prunes every move after the
+declaration but the one onto the ball. NN schema v10 gives it policy channel 15.
 Stalling (`game_procs::Stalling`): `Turn` notes an activated ball carrier who could score without a
 die (`could_score_without_dice`: a pathfinder route into the end zone with no event but the
 touchdown, no Bone Head / Wild Animal; one extra pathfinding per carrier declaration, behind an

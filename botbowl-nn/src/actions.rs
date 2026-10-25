@@ -1,8 +1,8 @@
 //! Bijection between engine [`Action`]s and policy-head cells.
 //!
-//! The policy head has `A = 32` channels: the 15 [`PosAT`] variants map
-//! to channels `0..15`, the 17 [`SimpleAT`] variants to channels
-//! `15..32`. The forward and inverse maps are **exhaustive matches** on
+//! The policy head has `A = 33` channels: the 16 [`PosAT`] variants map
+//! to channels `0..16`, the 17 listed [`SimpleAT`] variants to channels
+//! `16..33`. The forward and inverse maps are **exhaustive matches** on
 //! the engine enums — adding a variant there is a compile error here, a
 //! deliberate trip-wire forcing a schema version bump (the manifest
 //! records `A` and the channel names).
@@ -20,7 +20,7 @@ use botbowl_engine::core::table::{PosAT, SimpleAT};
 use crate::perspective::canonical_x;
 
 /// Number of positional action types → policy channels `0..NUM_POS_AT`.
-pub const NUM_POS_AT: usize = 15;
+pub const NUM_POS_AT: usize = 16;
 /// Number of simple action types → policy channels `NUM_POS_AT..POLICY_CHANNELS`.
 pub const NUM_SIMPLE_AT: usize = 17;
 /// Policy-head channel count `A`.
@@ -39,7 +39,7 @@ pub struct ActionCell {
     pub is_simple: bool,
 }
 
-/// Positional action type → channel `0..15`. Exhaustive by design.
+/// Positional action type → channel `0..16`. Exhaustive by design.
 pub fn pos_at_index(at: PosAT) -> usize {
     match at {
         PosAT::StartMove => 0,
@@ -59,6 +59,9 @@ pub fn pos_at_index(at: PosAT) -> usize {
         // Schema v8: per-player setup (the setup used to be a handful of
         // whole-team formation actions the net could not tell apart).
         PosAT::PlacePlayer => 14,
+        // Schema v10: S3 Secure the Ball, at the end of the positional block; every simple
+        // channel moved up by one (`migrate.py`'s `POLICY_MAP_9_TO_10`).
+        PosAT::StartSecureBall => 15,
         // Hidden (Throw / Kick Team-mate, `AvailableActions::insert_hidden_positional`): never
         // listed among a state's legal actions — no channel, no schema change.
         PosAT::ThrowTeamMate => unreachable!("PosAT::ThrowTeamMate is hidden from bots and has no policy channel"),
@@ -114,6 +117,7 @@ pub fn pos_at_from_index(i: usize) -> PosAT {
         12 => PosAT::StartBlock,
         13 => PosAT::Block,
         14 => PosAT::PlacePlayer,
+        15 => PosAT::StartSecureBall,
         _ => panic!("pos_at channel {i} out of range 0..{NUM_POS_AT}"),
     }
 }
@@ -183,9 +187,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_channel_count_is_thirty_two() {
-        assert_eq!(POLICY_CHANNELS, 32);
-        assert_eq!(NUM_POS_AT, 15);
+    fn policy_channel_count_is_thirty_three() {
+        assert_eq!(POLICY_CHANNELS, 33);
+        assert_eq!(NUM_POS_AT, 16);
         assert_eq!(NUM_SIMPLE_AT, 17);
     }
 
@@ -208,6 +212,7 @@ mod tests {
             StartBlock,
             Block,
             PlacePlayer,
+            StartSecureBall,
         ];
         assert_eq!(all.len(), NUM_POS_AT);
         for (i, at) in all.into_iter().enumerate() {
@@ -245,28 +250,25 @@ mod tests {
         }
     }
 
-    /// The v7 → v8 channel map `train/src/bbnn/migrate.py` applies. Pinned
-    /// here so the Rust side and the migration cannot drift apart: a
-    /// positional channel is unchanged, the simple block shifted by one for
-    /// the new `PlacePlayer` channel, and `KickoffAimMiddle` moved from the
-    /// old 14+15 into the slot the dropped formation actions freed.
-    /// The v8 → v9 step `train/src/bbnn/migrate.py` applies: every v8 channel keeps its index,
-    /// the two optional-skill channels are appended.
+    /// The v9 → v10 channel map `train/src/bbnn/migrate.py`'s `POLICY_MAP_9_TO_10` applies.
+    /// Pinned here so the Rust side and the migration cannot drift apart: the positional
+    /// channels 0..15 keep their index, `StartSecureBall` is the new positional channel 15, and
+    /// every simple channel moved up by one (v9's 15+i is v10's 16+i).
+    /// (The v8 → v9 step appended UseSkill/DontUseSkill; v7 → v8 re-laid the setup channels —
+    /// both are pinned on the Python side by `train/tests/test_migrate.py`.)
     #[test]
-    fn v9_channel_layout_matches_the_migration() {
-        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::BenchPlayer), 29);
-        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::UseSkill), 30);
-        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::DontUseSkill), 31);
-    }
-
-    #[test]
-    fn v8_channel_layout_matches_the_migration() {
+    fn v10_channel_layout_matches_the_migration() {
+        assert_eq!(pos_at_index(PosAT::StartMove), 0);
         assert_eq!(pos_at_index(PosAT::Block), 13);
         assert_eq!(pos_at_index(PosAT::PlacePlayer), 14);
-        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::SelectBothDown), 15);
-        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::Receive), 27);
-        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::KickoffAimMiddle), 28);
-        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::BenchPlayer), 29);
+        assert_eq!(pos_at_index(PosAT::StartSecureBall), 15);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::SelectBothDown), 16);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::Receive), 28);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::KickoffAimMiddle), 29);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::BenchPlayer), 30);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::UseSkill), 31);
+        assert_eq!(NUM_POS_AT + simple_at_index(SimpleAT::DontUseSkill), 32);
+        assert_eq!(POLICY_CHANNELS, 33);
     }
 
     #[test]

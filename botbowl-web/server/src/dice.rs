@@ -26,6 +26,7 @@ pub fn purpose(proc: &str) -> String {
         "DodgeProc" => "Dodge".into(),
         "GfiProc" => "GFI".into(),
         "PickupProc" => "Pick-up".into(),
+        "SecureBallProc" => "Secure the ball".into(),
         "ThrowIn" => "Throw-in".into(),
         "CoinToss" => "Coin toss".into(),
         "KickoffTable" => "Kickoff table".into(),

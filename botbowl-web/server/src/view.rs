@@ -69,6 +69,7 @@ fn event_label(event: &PathingEvent) -> String {
         PathingEvent::Foul(_, t) => format!("Armour {}+", *t as u8),
         PathingEvent::StandUp => "Stand up".to_string(),
         PathingEvent::StandUpRoll(t) => format!("Stand up {}+", *t as u8),
+        PathingEvent::SecureBall(t) => format!("Secure the ball {}+", *t as u8),
     }
 }
 
@@ -304,14 +305,15 @@ fn annotate_paths(state: &GameState, squares: &mut [pv::SquareView]) {
     }
 }
 
-/// The six declarations, in policy-channel order.
-const STARTS: [et::PosAT; 6] = [
+/// The seven declarations, in policy-channel order.
+const STARTS: [et::PosAT; 7] = [
     et::PosAT::StartMove,
     et::PosAT::StartBlitz,
     et::PosAT::StartPass,
     et::PosAT::StartFoul,
     et::PosAT::StartHandoff,
     et::PosAT::StartBlock,
+    et::PosAT::StartSecureBall,
 ];
 
 /// Preview every declaration the side to act may make on the player at
@@ -439,7 +441,16 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
     let mut targets = Vec::new();
     for target in squares {
         let intent = match state.get_player_at(target) {
-            // An empty square, or the loose ball: walk there.
+            // The loose ball: walk there and pick it up, or Secure the Ball (a 2+ that ends the
+            // activation) when that is the likelier.
+            None if state.ball == BallState::OnGround(target) => {
+                let walk = find(et::PosAT::StartMove, target);
+                match (walk, find(et::PosAT::StartSecureBall, target)) {
+                    (Some(w), Some(sb)) => Some(if sb.prob.unwrap_or(0.0) > w.prob.unwrap_or(0.0) { sb } else { w }),
+                    (w, sb) => w.or(sb),
+                }
+            }
+            // An empty square: walk there.
             None => find(et::PosAT::StartMove, target),
             // The player's own square — offered only to a prone player: stand up
             // where they lie (a click on the selected player again).
@@ -507,6 +518,7 @@ fn prompt(state: &GameState) -> Option<pv::PromptView> {
         AnyProc::DodgeProc(c) => player_pos(c.id()),
         AnyProc::GfiProc(c) => player_pos(c.id()),
         AnyProc::PickupProc(c) => player_pos(c.id()),
+        AnyProc::SecureBallProc(c) => player_pos(c.id()),
         AnyProc::JumpUp(c) => player_pos(c.id()),
         AnyProc::Push(p) => Some(p.on()),
         // The dice go over the defender: that is what they are about.
@@ -1318,6 +1330,31 @@ mod tests {
         );
         // Previewing changes nothing.
         assert_eq!(view_of(&state), view_of(&a_position()));
+    }
+
+    /// S3 Secure the Ball: with the loose ball clear of standing opponents the player may declare
+    /// it, and a click on the ball takes the likelier of a walk-and-pick-up and a secure (2+).
+    #[test]
+    fn a_clear_loose_ball_offers_secure_the_ball() {
+        let state = GameStateBuilder::new()
+            .with_board_dims(dims())
+            .add_home_players(&[(10, 4)])
+            .add_away_players(&[(2, 1)])
+            .add_ball((8, 4))
+            .build();
+        let sel = selection(&state, pa::Position::new(10, 4), 0).unwrap();
+        assert!(sel.starts.contains(&PosAT::StartSecureBall), "{:?}", sel.starts);
+        let ball = intent_at(&sel, 8, 4).expect("the loose ball's square");
+        // AG 3+ pick-up against a 2+: the secure is likelier.
+        assert_eq!((ball.start, ball.action), (PosAT::StartSecureBall, PosAT::Move));
+        assert!(
+            ball.route.as_ref().unwrap().rolls.iter().any(|r| r.starts_with("Secure the ball 2+")),
+            "{:?}",
+            ball.route
+        );
+        // Elsewhere a click still walks.
+        let walk = intent_at(&sel, 11, 4).expect("an empty square");
+        assert_eq!(walk.start, PosAT::StartMove);
     }
 
     #[test]

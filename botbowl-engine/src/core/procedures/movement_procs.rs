@@ -177,6 +177,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
         PathingEvent::Dodge(target, markers) => vec![DodgeProc::new(active_player, target, markers)],
         PathingEvent::GFI(target) => vec![GfiProc::new(active_player, target)],
         PathingEvent::Pickup(target) => vec![ball_procs::PickupProc::new(active_player, target)],
+        PathingEvent::SecureBall(target) => vec![ball_procs::SecureBallProc::new(active_player, target)],
         PathingEvent::Block(id, dices) => vec![block_procs::Block::new(dices, id)],
         PathingEvent::Handoff(id, target) => vec![
             game_procs::TurnoverIfPossessionLost::new(),
@@ -187,6 +188,18 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
         PathingEvent::StandUp => vec![StandUp::new(active_player)],
         PathingEvent::StandUpRoll(target) => vec![StandUpRoll::new(active_player, target)],
         PathingEvent::Pass { to, pass, modifer } => vec![ball_procs::Pass::new(to, pass, modifer)],
+    }
+}
+
+/// S3 Secure the Ball: "this Move Action must finish on a square containing a ball otherwise a
+/// Turnover is caused". Called when a Secure the Ball activation ends without a turnover; the
+/// pick-up itself (`SecureBallProc`) ends it holding the ball, anything else (ending the move
+/// elsewhere, a failed stand-up) is a turnover.
+fn secure_ball_turnover_if_off_ball(game_state: &mut GameState, id: PlayerID) {
+    if game_state.info.player_action_type == Some(PosAT::StartSecureBall)
+        && game_state.ball != crate::core::model::BallState::Carried(id)
+    {
+        game_state.info.turnover = true;
     }
 }
 
@@ -274,7 +287,10 @@ impl Procedure for MoveAction {
         }
 
         match game_state.get_player(self.player_id) {
-            Ok(player) if player.used => return ProcState::Done,
+            Ok(player) if player.used => {
+                secure_ball_turnover_if_off_ball(game_state, self.player_id);
+                return ProcState::Done;
+            }
             Err(_) => return ProcState::Done, // player not on field anymore
             _ => (),
         }
@@ -323,6 +339,7 @@ impl Procedure for MoveAction {
             }
             (ProcInput::Action(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
+                secure_ball_turnover_if_off_ball(game_state, self.player_id);
                 ProcState::Done
             }
             (ProcInput::Action(Action::Simple(SimpleAT::PassSquare)), MoveActionState::SelectPath) => {

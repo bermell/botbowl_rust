@@ -53,7 +53,10 @@ pub use botbowl_play::mc_label::LabelConfig;
 // `ToHub::LabelDone` (their MC value labels) — distributed `mc-label`.
 // v20 (plan 066): `ToWorker::Model.torchscript` — the net's TorchScript export rides with its ONNX,
 // so a worker on the in-process backend has the file it loads.
-pub const PROTOCOL_VERSION: u32 = 20;
+// v21: `PosAT::StartSecureBall`, `PathingEvent::SecureBall`, `AnyProc::SecureBallProc` and
+// `GameInfo::secure_ball_available` (S3 Secure the Ball), inside trajectories and game states;
+// NN schema v10.
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
