@@ -455,6 +455,7 @@ pub fn resolve_with_rng(request: RequestedRoll, rng: &mut ChaCha8Rng) -> RollRes
             RollResult::BlockDice(dices)
         }
         RequestedRoll::Scatter => RollResult::Scatter(rng.gen(), rng.gen(), rng.gen()),
+        RequestedRoll::Pick(n) => RollResult::Pick(rng.gen_range(0..n.max(1))),
     }
 }
 
@@ -471,6 +472,8 @@ pub struct FixedDice {
     blockdice_fixes: VecDeque<BlockDice>,
     d8_fixes: VecDeque<D8>,
     coin_fixes: VecDeque<Coin>,
+    #[serde(default)]
+    pick_fixes: VecDeque<u8>,
 }
 
 impl FixedDice {
@@ -492,12 +495,17 @@ impl FixedDice {
     pub fn fix_blockdice(&mut self, value: BlockDice) {
         self.blockdice_fixes.push_back(value);
     }
+    /// Pin the next `RequestedRoll::Pick` to index `value` (0-based).
+    pub fn fix_pick(&mut self, value: u8) {
+        self.pick_fixes.push_back(value);
+    }
     pub fn is_empty(&self) -> bool {
         self.d3_fixes.is_empty()
             && self.d6_fixes.is_empty()
             && self.d8_fixes.is_empty()
             && self.blockdice_fixes.is_empty()
             && self.coin_fixes.is_empty()
+            && self.pick_fixes.is_empty()
     }
     pub fn blockdice_fixes_len(&self) -> usize {
         self.blockdice_fixes.len()
@@ -505,12 +513,13 @@ impl FixedDice {
     pub fn assert_is_empty(&self) {
         assert!(
             self.is_empty(),
-            "fixed dices are not empty: d3:{:?}, d6:{:?}, d8:{:?}, blockdice:{:?}, coin:{:?}",
+            "fixed dices are not empty: d3:{:?}, d6:{:?}, d8:{:?}, blockdice:{:?}, coin:{:?}, pick:{:?}",
             self.d3_fixes,
             self.d6_fixes,
             self.d8_fixes,
             self.blockdice_fixes,
             self.coin_fixes,
+            self.pick_fixes,
         );
     }
     fn pop_d3(&mut self, request: &RequestedRoll) -> D3 {
@@ -532,6 +541,11 @@ impl FixedDice {
         self.coin_fixes
             .pop_front()
             .unwrap_or_else(|| panic!("FixedDice queue empty for Coin (request: {:?})", request))
+    }
+    fn pop_pick(&mut self, request: &RequestedRoll) -> u8 {
+        self.pick_fixes
+            .pop_front()
+            .unwrap_or_else(|| panic!("FixedDice queue empty for Pick (request: {:?})", request))
     }
     fn pop_blockdice(&mut self, request: &RequestedRoll) -> BlockDice {
         self.blockdice_fixes
@@ -622,6 +636,11 @@ pub fn resolve_from_fixes(request: RequestedRoll, fixes: &mut FixedDice) -> Roll
         RequestedRoll::Scatter => {
             RollResult::Scatter(fixes.pop_d8(&request), fixes.pop_d8(&request), fixes.pop_d8(&request))
         }
+        RequestedRoll::Pick(n) => {
+            let i = fixes.pop_pick(&request);
+            assert!(i < n, "fixed Pick {i} out of range for Pick({n})");
+            RollResult::Pick(i)
+        }
     }
 }
 
@@ -697,6 +716,10 @@ pub enum RequestedRoll {
     Sum2D6PassFail(Sum2D6Target),
     Sum2D6ThreeOutcomes(Sum2D6Target, Sum2D6Target),
     ThrowIn,
+    /// One of `n` things chosen at random, each equally likely: the kick-off table's "randomly
+    /// selects a player" (the candidates are the procedure's, in a fixed order). Appended last
+    /// so every earlier variant keeps its postcard index.
+    Pick(u8),
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize, Deserialize)]
@@ -714,6 +737,8 @@ pub enum RollResult {
     Scatter(D8, D8, D8),
     Sum2D6(Sum2D6),
     ThrowIn { direction: D3, distance: Sum2D6 },
+    /// The 0-based index chosen by a `RequestedRoll::Pick`.
+    Pick(u8),
 }
 
 impl RequestedRoll {
@@ -735,6 +760,7 @@ impl RequestedRoll {
             Req::Scatter => matches!(result, Res::Scatter(_, _, _)),
             Req::Sum2D6 => matches!(result, Res::Sum2D6(_)),
             Req::ThrowIn => matches!(result, Res::ThrowIn { .. }),
+            Req::Pick(n) => matches!(result, Res::Pick(i) if i < *n),
         }
     }
 }

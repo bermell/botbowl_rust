@@ -211,7 +211,8 @@ fn kickoff_bounce_touchbacks_are_one_child() {
                 D8::try_from(d).unwrap(),
             )));
             if s.pending_roll == Some(RequestedRoll::Sum2D6) {
-                s.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Sum2D6(Sum2D6::Four)));
+                // Get the Ref: an event with no decision and no dice of its own.
+                s.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Sum2D6(Sum2D6::Two)));
             }
             let kick_bounce = matches!(s.proc_stack_peek(), Some(AnyProc::Bounce(b)) if b.is_kick());
             if s.pending_roll != Some(RequestedRoll::D8) || !kick_bounce {

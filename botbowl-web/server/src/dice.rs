@@ -37,6 +37,16 @@ pub fn purpose(proc: &str) -> String {
         "FrenzyBlock" => "Frenzy block".into(),
         // S3 interceptions (the procedures keep their pre-S3 names).
         "DeflectOrResolve" | "Deflect" => "Interception".into(),
+        // Kick-off events.
+        "RollOff" => "Kick-off roll-off".into(),
+        "DodgySnack" => "Dodgy Snack".into(),
+        "PitchInvasion" => "Pitch Invasion".into(),
+        "SwelteringHeat" => "Sweltering Heat".into(),
+        "HighKick" => "High Kick".into(),
+        "QuickSnap" => "Quick Snap".into(),
+        "SolidDefence" => "Solid Defence".into(),
+        "Charge" => "Charge!".into(),
+        "Ejection" => "Bribe".into(),
         other => other.to_string(),
     }
 }
@@ -96,6 +106,7 @@ fn render(requested: &pd::RequestedRoll, result: &pd::RollResult) -> (String, Ve
         pd::RollResult::D6 { value } => (format!("{label}: {value}"), vec![d6_face(*value)]),
         pd::RollResult::D8 { value } => (format!("{label}: {value}"), vec![d8_face(*value)]),
         pd::RollResult::Sum2D6 { value } => (format!("{label}: {value}"), Vec::new()),
+        pd::RollResult::Pick { index } => (format!("{label}: #{}", index + 1), Vec::new()),
         pd::RollResult::Deviate { distance, direction } => (
             format!("{label}: {distance} squares, direction {direction}"),
             vec![d6_face(*distance), d8_face(*direction)],
@@ -151,6 +162,7 @@ mod tests {
             ed::RequestedRoll::Scatter,
             ed::RequestedRoll::Sum2D6,
             ed::RequestedRoll::ThrowIn,
+            ed::RequestedRoll::Pick(4),
             ed::RequestedRoll::D6PassFail(ed::D6Target::FourPlus),
             ed::RequestedRoll::D6ThreeOutcomes(ed::D6Target::TwoPlus, ed::D6Target::FivePlus),
             ed::RequestedRoll::Sum2D6PassFail(ed::Sum2D6Target::SevenPlus),

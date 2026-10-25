@@ -741,6 +741,7 @@ fn canonical_chance_key(r: &RollResult) -> String {
         RollResult::Scatter(a, b, c) => format!("Scatter{}{}{}", d8(*a), d8(*b), d8(*c)),
         RollResult::Sum2D6(s) => format!("Sum2D6{s:?}"),
         RollResult::ThrowIn { direction, distance } => format!("ThrowIn{direction:?}{distance:?}"),
+        RollResult::Pick(i) => format!("Pick{i}"),
     }
 }
 

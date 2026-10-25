@@ -3,9 +3,8 @@
 //! `BoardDims::kickoff_table_enabled` is `team_size >= 7`, so no board the loop played up to 16x9/6
 //! ever rolled it: every kickoff there is the degenerate "the ball just lands". At 20x11/7 capacity
 //! the density rule (26 cells a player) gives 7 players to 18x10, 20x9, 18x11, 20x10 and 20x11, and
-//! every kickoff on them rolls 2D6 on the table. What the engine implements of it: Get the Ref
-//! (a bribe each), Time-out (both turn markers move), Changing Weather (a new weather roll, and on a
-//! nice day a gust scatters the ball once more); the other results resolve as no-ops.
+//! every kickoff on them rolls 2D6 on the table, and every S3 result is implemented
+//! (`procedures/kickoff_events.rs`), several with decisions for the coaches.
 //!
 //! Each test plays whole games through `DiceMode::RegisterRolls` with the caller rolling every die,
 //! as `register_rolls_full_game.rs` does, but forces the table and the weather roll through every
@@ -95,7 +94,7 @@ fn play(dims: BoardDims, seed: u64, seen: &mut Seen) {
                 let before = (state.info.home_turn, state.info.away_turn, turn_of(&state, kicker));
                 let out = state.step_with_roll_or_action(SomeProcInput::Roll(RollResult::Sum2D6(r)));
                 if r == Sum2D6::Three {
-                    // Time-out (BB2020): if the *kicking* team's turn marker is on 6, 7 or 8 both
+                    // Time-out!: if the *kicking* team's turn marker is on 6, 7 or 8 both
                     // markers move one space back; otherwise both move one space forward.
                     let delta: i16 = if (6..=8).contains(&before.2) { -1 } else { 1 };
                     if delta < 0 {

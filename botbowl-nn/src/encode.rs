@@ -464,8 +464,8 @@ pub fn encode_raw(state: &GameState) -> EncodedRaw {
         us.score as f32 / SCORE_NORM,
         them.score as f32 / SCORE_NORM,
         (us.score as f32 - them.score as f32) / SCORE_NORM,
-        us.rerolls as f32 / RR_NORM,
-        them.rerolls as f32 / RR_NORM,
+        us.total_rerolls() as f32 / RR_NORM, // Brilliant Coaching's drive re-roll included
+        them.total_rerolls() as f32 / RR_NORM,
         us.can_use_reroll() as u8 as f32,
         them.can_use_reroll() as u8 as f32,
         state.info.blitz_available as u8 as f32,

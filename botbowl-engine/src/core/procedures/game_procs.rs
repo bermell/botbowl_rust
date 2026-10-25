@@ -5,9 +5,9 @@ use crate::core::model::{DugoutPlayerID, ProcInput};
 use crate::core::dices::{RequestedRoll, RollResult};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position, ProcState, Procedure,
-    TeamType,
+    TeamType, Weather,
 };
-use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs};
+use crate::core::procedures::{ball_procs, block_procs, kickoff_events, kickoff_procs, movement_procs};
 use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
@@ -34,13 +34,26 @@ impl Half {
             kickoff: None,
         })
     }
+    /// The drive boundary: whatever lasted "for the drive" ends here, and the next one starts.
     fn do_kickoff(&mut self, kicking_team: TeamType, game_state: &mut GameState) -> ProcState {
         // A touchdown scored in the opponent's turn has already moved the scorer's turn marker
         // (`Touchdown`), so the next-team rule in `step` hands the drive's first turn to the
         // conceding team.
         game_state.info.kicking_this_drive = kicking_team;
 
-        let procs: Vec<AnyProc> = vec![
+        // Out for the drive that just ended (Dodgy Snack's 1, Sweltering Heat): back in Reserves.
+        game_state
+            .get_dugout_mut()
+            .filter(|p| p.place == DugoutPlace::Heated)
+            .for_each(|p| p.place = DugoutPlace::Reserves);
+        for team in [TeamType::Home, TeamType::Away] {
+            let t = game_state.get_mut_team(team);
+            t.drive_rerolls = 0;
+            t.cheering_fans = false;
+        }
+        game_state.info.cheering_fans_this_turn = false;
+
+        let mut procs: Vec<AnyProc> = vec![
             kickoff_procs::Kickoff::new(),
             kickoff_procs::Setup::new(other_team(kicking_team)),
             kickoff_procs::Setup::new(kicking_team),
@@ -48,7 +61,13 @@ impl Half {
         ];
 
         game_state.set_ball(BallState::OffPitch);
-        game_state.unfield_all_players().unwrap();
+        let drive_ended = game_state.get_players_on_pitch().next().is_some();
+        if game_state.info.weather == Weather::Sweltering && drive_ended {
+            // It picks the fainting players among those on the pitch, then clears it.
+            procs.push(kickoff_events::SwelteringHeat::new());
+        } else {
+            game_state.unfield_all_players().unwrap();
+        }
 
         ProcState::NotDoneNewProcs(procs)
     }
@@ -99,6 +118,11 @@ impl Procedure for Half {
         }
 
         info.team_turn = next_team;
+        let next_team_state = match next_team {
+            TeamType::Home => &mut game_state.home,
+            TeamType::Away => &mut game_state.away,
+        };
+        info.cheering_fans_this_turn = std::mem::take(&mut next_team_state.cheering_fans);
         info.handoff_available = true;
         info.blitz_available = true;
         info.foul_available = true;
@@ -228,6 +252,7 @@ impl Procedure for Turn {
         game_state.info.active_player = None;
         game_state.info.player_action_type = None;
         game_state.info.pickup_this_activation = false;
+        game_state.info.cheering_assist = false;
         if input == ProcInput::Nothing {
             return ProcState::NeedAction(self.available_actions(game_state));
         }
@@ -246,6 +271,9 @@ impl Procedure for Turn {
                     info.blitz_this_activation = true;
                 }
                 PosAT::StartBlock => {
+                    // Cheering Fans' assist goes to the turn's first Block Action (both blocks of
+                    // a Frenzy included); a Blitz is not a Block Action.
+                    info.cheering_assist = std::mem::take(&mut info.cheering_fans_this_turn);
                     let id = info.active_player.unwrap();
                     if game_state.get_player_unsafe(id).status == PlayerStatus::Down {
                         return ProcState::NotDoneNew(block_procs::JumpUp::new(game_state, id));
@@ -1129,5 +1157,87 @@ mod tests {
         state.step_positional(PosAT::FollowUp, away_pos);
 
         // let direction = Direction::from(d8_fix);
+    }
+
+    use crate::core::dices::{RequestedRoll, RollResult, D6};
+    use crate::core::procedures::AnyProc;
+
+    fn mid_half() -> super::Half {
+        super::Half {
+            half: 1,
+            started: true,
+            kicking_this_half: TeamType::Home,
+            kickoff: None,
+        }
+    }
+
+    /// Whatever lasts "for the drive" ends at the next kickoff: Brilliant Coaching's re-roll,
+    /// Cheering Fans not yet used, and a player sitting the drive out (Dodgy Snack's 1).
+    #[test]
+    fn a_new_drive_clears_what_lasted_for_the_last_one() {
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(Position::new((9, 5)))
+            .build();
+        let id = state.get_player_id_at(Position::new((5, 5))).unwrap();
+        state.unfield_player(id, DugoutPlace::Heated).unwrap();
+        state.home.drive_rerolls = 1;
+        state.away.cheering_fans = true;
+        let ProcState::NotDoneNewProcs(procs) = mid_half().do_kickoff(TeamType::Away, &mut state) else {
+            panic!("a kickoff pushes the drive's procedures")
+        };
+        assert!(procs.iter().all(|p| !matches!(p, AnyProc::SwelteringHeat(_))));
+        assert_eq!(state.home.drive_rerolls, 0);
+        assert!(!state.away.cheering_fans);
+        assert!(state.get_dugout().all(|p| p.place == DugoutPlace::Reserves));
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+    }
+
+    /// S3 Weather, Sweltering Heat: "At the end of each Drive ... one Coach rolls a D3 and each
+    /// Coach randomly selects that many of their players that were on the pitch when the Drive
+    /// ended. The selected players are placed in the Reserves Box and cannot be set up on the
+    /// pitch for the next Drive."
+    #[test]
+    fn sweltering_heat_benches_d3_players_of_each_team_for_the_next_drive() {
+        let mut builder = GameStateBuilder::new();
+        for y in 1..=3 {
+            builder.add_home_player(Position::new((5, y)));
+            builder.add_away_player(Position::new((9, y)));
+        }
+        let mut state = builder.build();
+        state.info.weather = Weather::Sweltering;
+        let ProcState::NotDoneNewProcs(mut procs) = mid_half().do_kickoff(TeamType::Away, &mut state) else {
+            panic!("a kickoff pushes the drive's procedures")
+        };
+        let Some(AnyProc::SwelteringHeat(mut heat)) = procs.pop() else {
+            panic!("Sweltering Heat runs first")
+        };
+        assert_eq!(state.get_players_on_pitch().count(), 6, "it picks among the players on the pitch");
+        assert!(matches!(
+            heat.step(&mut state, ProcInput::Nothing),
+            ProcState::NeedRoll(RequestedRoll::D6)
+        ));
+        let mut out = heat.step(&mut state, ProcInput::Roll(RollResult::D6(D6::Three))); // D3 = 2
+        let mut picks = 0;
+        while let ProcState::NeedRoll(RequestedRoll::Pick(n)) = out {
+            assert_eq!(n, 3 - (picks % 2), "picks without replacement");
+            picks += 1;
+            out = heat.step(&mut state, ProcInput::Roll(RollResult::Pick(0)));
+        }
+        assert!(matches!(out, ProcState::Done));
+        assert_eq!(picks, 4);
+        assert_eq!(state.get_players_on_pitch().count(), 0, "the pitch is cleared");
+        let heated = |state: &GameState, team| {
+            state
+                .get_dugout()
+                .filter(|p| p.place == DugoutPlace::Heated && p.stats.team == team)
+                .count()
+        };
+        assert_eq!((heated(&state, TeamType::Home), heated(&state, TeamType::Away)), (2, 2));
+
+        // Back for the drive after.
+        state.info.weather = Weather::Nice;
+        mid_half().do_kickoff(TeamType::Home, &mut state);
+        assert_eq!(heated(&state, TeamType::Home) + heated(&state, TeamType::Away), 0);
     }
 }

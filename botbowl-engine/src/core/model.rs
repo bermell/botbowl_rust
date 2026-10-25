@@ -998,6 +998,10 @@ pub struct FieldedPlayer {
     pub used: bool,
     pub moves: u8,
     pub used_skills: SkillSet,
+    /// Dodgy Snack: MA and AV are one lower for the rest of the drive. The reduction is applied
+    /// to `stats` and undone when the player leaves the pitch (`GameState::unfield_player`).
+    #[serde(default)]
+    pub snack: bool,
 }
 
 
@@ -1025,6 +1029,7 @@ impl std::hash::Hash for FieldedPlayer {
         // A Dodge or Block skill already spent this activation is a different situation from one
         // still in hand, and `PartialEq` agrees — so it has to move the hash.
         self.used_skills.hash_unordered(h);
+        self.snack.hash(h);
     }
 }
 
@@ -1122,10 +1127,22 @@ pub struct TeamState {
     #[serde(default = "default_rerolls_start")]
     pub rerolls_start: u8,
     pub rerolls: u8,
-    //ass_coaches: u8,
-    //cheerleaders: u8,
-    //fame: u8,
-    //time_violation: u8,
+    /// Fan Factor (Dedicated Fans + the pre-game D3), added to Pitch Invasion's roll.
+    #[serde(default)]
+    pub fan_factor: u8,
+    /// Cheerleaders on the roster, added to Cheering Fans' roll.
+    #[serde(default)]
+    pub cheerleaders: u8,
+    /// Assistant Coaches on the roster, added to Brilliant Coaching's roll.
+    #[serde(default)]
+    pub assistant_coaches: u8,
+    /// Brilliant Coaching's free team re-rolls: spent before `rerolls`, lost when the drive ends.
+    #[serde(default)]
+    pub drive_rerolls: u8,
+    /// Cheering Fans won: the first Block Action of this team's next turn gets an extra offensive
+    /// assist. Moved into `GameInfo::cheering_fans_this_turn` when that turn starts.
+    #[serde(default)]
+    pub cheering_fans: bool,
 }
 fn default_rerolls_start() -> u8 {
     3
@@ -1138,16 +1155,30 @@ impl TeamState {
             rerolls: default_rerolls_start(),
             score: 0,
             bribes: 0,
+            fan_factor: 0,
+            cheerleaders: 0,
+            assistant_coaches: 0,
+            drive_rerolls: 0,
+            cheering_fans: false,
         }
     }
     /// The team has a re-roll left. S3 has no once-per-turn limit: a coach may use as many as
     /// they have during their own turn (`GameState::may_use_team_reroll` adds the "own turn").
     pub fn can_use_reroll(&self) -> bool {
-        self.rerolls > 0
+        self.rerolls > 0 || self.drive_rerolls > 0
     }
+    /// Spends Brilliant Coaching's drive re-roll first: it is lost at the end of the drive.
     pub fn use_reroll(&mut self) {
         assert!(self.can_use_reroll());
-        self.rerolls -= 1;
+        if self.drive_rerolls > 0 {
+            self.drive_rerolls -= 1;
+        } else {
+            self.rerolls -= 1;
+        }
+    }
+    /// Every team re-roll available now, the drive's free ones included.
+    pub fn total_rerolls(&self) -> u8 {
+        self.rerolls + self.drive_rerolls
     }
     /// Half-time: the team gets its full reroll allowance back.
     pub fn restore_rerolls(&mut self) {

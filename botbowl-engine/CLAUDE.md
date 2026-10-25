@@ -6,11 +6,14 @@ Pure Blood Bowl rules library (Rust rewrite of [njustesen/botbowl](https://githu
 
 The reference is the S3 rulebook (the user's copy: `~/repos/blood/rules/*.html`), not BB2020 or
 the 2016 rules the Python botbowl followed (the user, 2026-10-25). Cite it in a new rule's test.
-The engine is not fully converted yet. Still on the old rules: most of the kick-off table and the
-kicker's choice of target square. Converted (2026-10-25):
-characteristics as S3 prints them (`PlayerStats.agility` / `armour` are target numbers like PA;
-JSON with the classic `ag` / `av` loads converted, `from_legacy_ag` = 6 - AG, `from_legacy_av` =
-AV + 1; the NN encoder feeds the net the classic numbers back through `legacy_ag` / `legacy_av`,
+The engine is not fully converted yet. Still on the old rules: the kicker's choice of target
+square (only `KickoffAimMiddle`), and no Throw / Kick Team-mate, Argue the Call or Apothecary.
+Converted (2026-10-25):
+the whole kick-off table (`procedures/kickoff_events.rs`, below), characteristics as S3 prints
+them (`PlayerStats.agility` / `passing` / `armour` are target numbers; a test sums its modifiers
+onto the target and clamps to 2+..6+, so AG/PA 1+ passes on any 2 whatever the modifiers — a
+modified 1 is still a fumble on a pass; JSON with the classic `ag` / `av` or a `D6Target` `pass`
+loads converted, `from_legacy_ag` = 6 - AG, `from_legacy_av` = AV + 1; the NN encoder feeds the net the classic numbers back through `legacy_ag` / `legacy_av`,
 so trained nets read identical inputs; random starts draw on the classic scale so a seed still
 regenerates the recorded players), passing to any square in range (`SimpleAT::PassSquare`, a
 **hidden** action: `AvailableActions::hidden` is legal but never listed by `get_all_actions`, so
@@ -67,7 +70,7 @@ Two layers, same three env vars (`BOARD_SIZE_W` playable width even ≥8; `BOARD
 
 **A stored state loads at any capacity its board fits (plan 065).** `FullPitch`'s `Deserialize` and the roster arrays' (`model::deserialize_roster_slots`) accept a JSON array of any length: a shorter one (written by a smaller capacity) is padded with empty cells, a longer one may hold only empty cells past this capacity, otherwise the load fails naming the capacity. `Serialize` is unchanged, and a non-self-describing format (postcard) keeps the fixed layout. So a 20x11-capacity `prepare`/`mc-label`/`value-bench` reads a 16x9-capacity corpus — verified byte-identical `prepare` output, identical value-bench and MC labels, identical scripted drives over the 16x9 position sets. The replay tools check `BoardCapacity::holds(board_dims)` (botbowl-data), not capacity equality. Re-serialising writes this binary's capacity, so a rewritten record's states are padded while its `meta.board_capacity` still names the writer's. `tests/capacity_portable_serde.rs` pins it.
 
-All gameplay geometry is a method on `BoardDims` (mirrors the old `build.rs` formulas): `is_out`, `is_on_team_side`, `endzone_x`, `los_x`/`los_y_range`/`north`/`south_wing_y_range`, `max_scatter` (throw-in & kickoff-deviate cap = width/2), `kickoff_table_enabled` (false <7 players → degenerate kickoff; at 7+ the table implements only Get the Ref, Time-out — moved by the *kicking* team's marker — and Changing Weather, every other result is a no-op; `tests/kickoff_table.rs` resolves every result on each 7-player board), `roster_per_team`. `GameState` delegators exist for the common calls: `state.is_out(pos)`, `state.is_on_team_side(pos, team)`, `state.get_endzone_x/get_line_of_scrimage_x/get_best_kickoff_aim_for`. **Rule: gameplay OOB/geometry goes through `state.board_dims` (or the delegators); `Position::is_out()` is the *physical/capacity* check only, for array-bound sanity (e.g. the `FullPitch` index asserts, `From<Position>` conversion).** Never hard-code 26/15/11 literals.
+All gameplay geometry is a method on `BoardDims` (mirrors the old `build.rs` formulas): `is_out`, `is_on_team_side`, `endzone_x`, `los_x`/`los_y_range`/`north`/`south_wing_y_range`, `max_scatter` (throw-in & kickoff-deviate cap = width/2), `kickoff_table_enabled` (false <7 players → degenerate kickoff; at 7+ every S3 result is implemented, see "Kick-off events" below; `tests/kickoff_table.rs` plays random games through every result on each 7-player board), `roster_per_team`. `GameState` delegators exist for the common calls: `state.is_out(pos)`, `state.is_on_team_side(pos, team)`, `state.get_endzone_x/get_line_of_scrimage_x/get_best_kickoff_aim_for`. **Rule: gameplay OOB/geometry goes through `state.board_dims` (or the delegators); `Position::is_out()` is the *physical/capacity* check only, for array-bound sanity (e.g. the `FullPitch` index asserts, `From<Position>` conversion).** Never hard-code 26/15/11 literals.
 
 Small-board notes: `GameStateBuilder::build()` fast-forwards the (discarded) kickoff under `RollDice` with a fixed seed so it's board-independent. Formations are **board-relative**, not clamped offsets (`Formation` in `procedures/kickoff_procs.rs`): `Line | Spread | Wedge | Zone`, each a pure function of `(BoardDims, TeamType)` whose slots resolve against `los_y_range`/wing ranges, each opening with three line-of-scrimmage slots so it satisfies `is_setup_legal` on every board, and each available only when the board can hold it (`Formation::fits`). Slots the board has no row for are skipped; leftover players go to `reserve_square` (shallow ranks first, wings last, since `is_setup_legal` caps each wing). **Formations are planners, not actions (plan 047).** Since the per-player setup below they answer `Setup`'s placement prompts one at a time (`Formation::next_action`, `auto_setup` for tests), for the scripted bot, the MCTS opponent model and the web UI's auto button. **Setups field in a fixed role order, never dugout-slot order:** the dugout is one shared slot array refilled first-free-slot by `unfield_player`, so whichever team sets up first (the *kicker*) pushes the other team's bench behind its own players. Below `team_size` = formation role slots that used to swap Home's Catcher for its Thrower from the second drive on whenever Away received — a one-seat handicap worth −0.06 in NN games and the Away skew in the gen05-07 value labels (plan 032 #11). Pinned by `lineups_do_not_drift_with_setup_order`; `tests/seat_probe.rs` (`#[ignore]`d, 14x7 build) is the drive-level probe that found it. **Test floor:** the unit suite is green for boards down to engine 16×9 (plan tier 14×7) *except* `blitz_flag_cleared_on_post_block_move_selection`, which has hard-coded edge coords and fails at 16×9 on master too (pre-existing, un-guarded). Tests pinning full-pitch behavior carry `skip_if_board_smaller_than!(W, H)` guards. Runtime-sizing tests live in `gamestate.rs::runtime_board_dims_tests` (build a smaller board via `with_board_dims`, no recompile).
 
@@ -107,6 +110,41 @@ measure before adding.
 - **Staging.** When a team's setup starts, every reserve is fielded onto its own endzone column (spilling one column forward if the roster outgrows it), in placement order, flagged `used = true` until placed. Deliberately more players than the rules allow, never carried into a kickoff. It is what lets a network that only sees the pitch see who is still to come and whom it is placing (`info.active_player`) with no bench representation. `state.setup_team()` says who is placing.
 - **Queue order is fixed:** role rank (L, B, C, T), then id. A setup is therefore a *tree* of depth "players available", not a choice of whom to place next — and two orders of the same placements would field the same players under different ids and never recombine in the MCTS DAG (`add_new_player_to_field` hands out the first free slot).
 - **The mask makes the setup legal; nothing checks it mid-way.** Own-half squares only; a square a *placed* teammate holds is off, one a *waiting* teammate is parked on is fine (the two swap, `swap_players`); a wing closes at its cap (the LOS column inside a wing row is a wing square — `bands()` partition the rows); when the line still needs as many players as there are placements left, only LOS squares are offered; `BenchPlayer` is offered only while the team can still field `min(team_size, available)` and the line without that player — with the stock roster of `team_size + 1` that is one bench per drive, and none once injuries have thinned it. `is_setup_legal` is `debug_assert`ed when the procedure finishes and `any_sequence_of_offered_actions_ends_in_a_legal_setup` walks random offered actions on every test board. On a board whose `team_size` equals the LOS minimum (the 3-player tiers) every placement is a forced line square.
+
+## Kick-off events (S3, `procedures/kickoff_events.rs`)
+
+`KickoffTable` pushes the event's procedure over `LandKickoff`, so the event resolves with the
+ball in the air. A D3 is a D6 read 1-2 / 3-4 / 5-6 (`kickoff_events::d3`); "randomly selects a
+player" is `RequestedRoll::Pick(n)` over the candidates in id order (`fix_pick` in tests; the
+search enumerates it at 1/n). "Open" = Standing and not Marked (`GameState::is_open`), taken when
+the event starts. The decisions reuse existing actions, so the policy head is unchanged:
+
+- **Get the Ref (2):** a Bribe each. `Ejection` offers `UseSkill` / `DontUseSkill` while the team
+  has one; a D6 2+ keeps the player on with no turnover, a 1 loses the Bribe.
+- **Time-out! (3):** by the kicking team's marker.
+- **Solid Defence (4):** the kicker picks up to D3+3 Open players (`SelectPosition`, `EndPlayerTurn`
+  to stop); each is staged in the own end zone and `Setup::resetup` places them again.
+- **High Kick (5):** `SelectPosition` on an Open receiver puts them on the landing square (if it is
+  empty and in the receiving half), `EndPlayerTurn` declines.
+- **Cheering Fans (6), Brilliant Coaching (7), Dodgy Snack (11), Pitch Invasion (12):** `RollOff`
+  (Home's D6 first, + Cheerleaders / Assistant Coaches / — / Fan Factor from `TeamState`, ties go to
+  both). Cheering Fans: `TeamState::cheering_fans` → `GameInfo::cheering_fans_this_turn` when that
+  team's turn starts → `cheering_assist` on its first `StartBlock` (+1 attacker strength in
+  `blockdices`, both Frenzy blocks). Brilliant Coaching: `TeamState::drive_rerolls`, spent first.
+  Dodgy Snack: 2+ sets `FieldedPlayer::snack` and lowers `stats.ma` / `armour` by one
+  (`unfield_player` undoes it), 1 sends the player to `DugoutPlace::Heated`. Pitch Invasion: D3
+  random players Stunned.
+- **Changing Weather (8):** a new weather roll; Perfect Conditions scatters the ball 3.
+- **Quick Snap! (9):** up to D3+3 Open receivers: `SelectPosition` then `PlacePlayer` on an empty
+  adjacent square (either half), `EndPlayerTurn` ends it.
+- **Charge! (10):** `Charge` is a turn for the kicking team over up to D3+3 Open players —
+  `StartMove`, one `StartBlitz`, `EndTurn` to stop; `turn_team()` reads it, so team re-rolls work.
+  A player who falls or is knocked down ends it, the turnover flag is cleared.
+
+**The drive boundary is `Half::do_kickoff`:** it releases `Heated` players to the Reserves, clears
+`drive_rerolls` and unused Cheering Fans, and under Sweltering Heat pushes `SwelteringHeat` (one D3,
+that many random players of each team on the pitch to `Heated` for the next drive) before the pitch
+is cleared.
 
 ## Other key points
 

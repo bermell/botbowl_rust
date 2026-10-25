@@ -53,10 +53,13 @@ pub enum RollKind {
     Weather,
     /// The coin toss. Scripted.
     Coin,
+    /// A kick-off event's own roll: a roll-off or D3 (a raw D6 under no `Pass`), or a random
+    /// player (`Pick`). Enumerated face by face.
+    KickoffEvent,
 }
 
 impl RollKind {
-    pub const ALL: [RollKind; 17] = [
+    pub const ALL: [RollKind; 18] = [
         RollKind::Block,
         RollKind::PassFail,
         RollKind::PassFail2d6,
@@ -74,6 +77,7 @@ impl RollKind {
         RollKind::KickoffTable,
         RollKind::Weather,
         RollKind::Coin,
+        RollKind::KickoffEvent,
     ];
 
     /// Classify the roll `state` is paused on. Reads only the request and the procedure on top
@@ -83,7 +87,11 @@ impl RollKind {
         match req {
             RequestedRoll::BlockDice(_) => RollKind::Block,
             RequestedRoll::Coin => RollKind::Coin,
-            RequestedRoll::D6 => RollKind::PassRoll,
+            RequestedRoll::D6 => match state.proc_stack_peek() {
+                Some(AnyProc::Pass(_)) => RollKind::PassRoll,
+                _ => RollKind::KickoffEvent,
+            },
+            RequestedRoll::Pick(_) => RollKind::KickoffEvent,
             RequestedRoll::D6PassFail(_) => RollKind::PassFail,
             RequestedRoll::Sum2D6PassFail(_) => RollKind::PassFail2d6,
             RequestedRoll::D6ThreeOutcomes(..) | RequestedRoll::Sum2D6ThreeOutcomes(..) => RollKind::Injury,
@@ -130,6 +138,7 @@ impl RollKind {
             RollKind::KickoffTable => "kickoff_table",
             RollKind::Weather => "weather",
             RollKind::Coin => "coin",
+            RollKind::KickoffEvent => "kickoff_event",
         }
     }
 
@@ -229,7 +238,7 @@ mod tests {
     use botbowl_engine::core::table::{PosAT, SimpleAT};
 
     #[test]
-    fn a_failed_pickup_bounce_is_a_bounce_and_a_plain_d6_is_the_pass_roll() {
+    fn a_failed_pickup_bounce_is_a_bounce_and_a_plain_d6_is_a_kickoff_event() {
         let (start, ball) = (Position::new((4, 5)), Position::new((5, 5)));
         let mut s = GameStateBuilder::new()
             .add_home_player(start)
@@ -246,7 +255,9 @@ mod tests {
         // Off the bounce, a D8 is the weather's.
         let plain = GameStateBuilder::new().add_home_player(start).build();
         assert_eq!(RollKind::of(&plain, &RequestedRoll::D8), RollKind::D8Other);
-        assert_eq!(RollKind::of(&plain, &RequestedRoll::D6), RollKind::PassRoll);
+        // A raw D6 off a pass is a kick-off event's (a roll-off or a D3).
+        assert_eq!(RollKind::of(&plain, &RequestedRoll::D6), RollKind::KickoffEvent);
+        assert_eq!(RollKind::of(&plain, &RequestedRoll::Pick(3)), RollKind::KickoffEvent);
         assert_eq!(
             RollKind::of(&plain, &RequestedRoll::D6PassFail(D6Target::FourPlus)),
             RollKind::PassFail

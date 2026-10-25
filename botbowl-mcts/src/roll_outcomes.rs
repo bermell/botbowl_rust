@@ -159,6 +159,10 @@ pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel
             broken: target.is_success(a + b),
             ejected: a == b,
         }),
+        // A kick-off event's random player: each candidate a distinct child state.
+        RequestedRoll::Pick(n) => (0..*n)
+            .map(|i| BbAction::chance(RollResult::Pick(i), 1.0 / *n as f32))
+            .collect(),
         RequestedRoll::FoulInjury(ko, cas) => two_dice_outcomes(|a, b| RollResult::FoulInjury {
             outcome: if cas.is_success(a + b) {
                 InjuryOutcome::Casualty
@@ -946,6 +950,7 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
         // The kickoff-table roll: kickoffs are past every search horizon, so a constant is fine.
         RequestedRoll::Sum2D6 => RollResult::Sum2D6(Sum2D6::Two),
         RequestedRoll::Coin => RollResult::Coin(Coin::Heads),
+        RequestedRoll::Pick(_) => RollResult::Pick(0),
 
         RequestedRoll::D6PassFail(_)
         | RequestedRoll::Sum2D6PassFail(_)

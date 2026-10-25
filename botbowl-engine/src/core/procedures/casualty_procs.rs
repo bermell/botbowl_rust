@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::dices::{RequestedRoll, RollResult, RollTarget, Sum2D6Target};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6Target};
 use crate::core::gamestate::GameState;
-use crate::core::model::{BallState, FieldedPlayer, PlayerID};
+use crate::core::model::{Action, AvailableActions, BallState, FieldedPlayer, PlayerID};
 use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};
 use crate::core::model::{InjuryOutcome, ProcInput};
 use crate::core::procedures::ball_procs;
-use crate::core::table::Skill;
+use crate::core::table::{SimpleAT, Skill};
 
 use super::AnyProc;
 
@@ -115,14 +115,16 @@ impl Procedure for Armor {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Ejection {
     id: PlayerID,
+    /// The coach was asked about a Bribe (S3 Inducements: "When a player is Sent-off ... you may
+    /// use a Bribe"): no second offer.
+    #[serde(default)]
+    asked: bool,
 }
 impl Ejection {
     pub fn new(id: PlayerID) -> AnyProc {
-        AnyProc::Ejection(Ejection { id })
+        AnyProc::Ejection(Ejection { id, asked: false })
     }
-}
-impl Procedure for Ejection {
-    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
+    fn send_off(&self, game_state: &mut GameState) -> ProcState {
         let position = game_state.get_player_unsafe(self.id).position;
         let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
             game_state.set_ball(BallState::InAir(position));
@@ -135,6 +137,30 @@ impl Procedure for Ejection {
         };
         game_state.unfield_player(self.id, DugoutPlace::Ejected).unwrap();
         ret
+    }
+}
+impl Procedure for Ejection {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let team = game_state.get_player_unsafe(self.id).stats.team;
+        match input {
+            ProcInput::Nothing if !self.asked && game_state.get_team(team).bribes > 0 => {
+                self.asked = true;
+                let mut aa = AvailableActions::new(team);
+                aa.insert_simple(SimpleAT::UseSkill);
+                aa.insert_simple(SimpleAT::DontUseSkill);
+                ProcState::NeedAction(aa)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) => {
+                game_state.get_mut_team(team).bribes -= 1;
+                // "On a 2+, the player is not Sent-off (and no Turnover is caused)."
+                ProcState::NeedRoll(RequestedRoll::D6PassFail(D6Target::TwoPlus))
+            }
+            ProcInput::Roll(RollResult::Pass) => ProcState::Done,
+            ProcInput::Nothing
+            | ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill))
+            | ProcInput::Roll(RollResult::Fail) => self.send_off(game_state),
+            _ => panic!("Unexpected input {:?}", input),
+        }
     }
 }
 
@@ -246,7 +272,11 @@ mod tests {
     use crate::core::dices::D8;
     use crate::core::model::*;
     use crate::core::table::*;
-    use crate::core::{gamestate::GameStateBuilder, model::Position, table::PosAT};
+    use crate::core::{
+        gamestate::{GameState, GameStateBuilder},
+        model::Position,
+        table::PosAT,
+    };
     #[test]
     fn bounce_on_knockdown() -> Result<()> {
         let start_pos = Position::new((2, 2));
@@ -423,5 +453,66 @@ mod tests {
             state.away_to_act(),
             "ejecting the ball carrier must still cause a turnover"
         );
+    }
+
+    /// A fouler about to be ejected (armour doubles), the fouling team holding `bribes`.
+    fn ejecting_foul(bribes: u8) -> (GameState, PlayerID) {
+        let start_pos = Position::new((5, 5));
+        let foul_pos = start_pos + (2, 0);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(foul_pos)
+            .build();
+        state.home.bribes = bribes;
+        let fouler = state.get_player_id_at(start_pos).unwrap();
+        let victim_id = state.get_player_id_at(foul_pos).unwrap();
+        state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+        state.step_positional(PosAT::StartFoul, start_pos);
+        state.fix_d6(1); //armor: doubles -> ejected, sum too low to break armor
+        state.fix_d6(1); //armor
+        state.step_positional(PosAT::Foul, foul_pos);
+        (state, fouler)
+    }
+
+    /// S3 Inducements, Bribes: "When a Bribe is used, roll a D6. On a 2+, the player is not
+    /// Sent-off (and no Turnover is caused)."
+    #[test]
+    fn a_bribe_on_a_two_plus_keeps_the_fouler_on_the_pitch_without_a_turnover() {
+        let (mut state, fouler) = ejecting_foul(1);
+        assert!(state.home_to_act());
+        let offered = state.get_all_actions();
+        assert!(offered.contains(&Action::Simple(SimpleAT::UseSkill)), "{offered:?}");
+        assert!(offered.contains(&Action::Simple(SimpleAT::DontUseSkill)));
+        state.fix_d6(2);
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.home.bribes, 0);
+        assert!(state.get_player(fouler).is_ok(), "the fouler stays");
+        assert!(state.get_dugout().next().is_none());
+        assert!(state.home_to_act(), "no turnover");
+    }
+
+    /// "On a natural 1, the referee pockets the Bribe but sends the player off anyway."
+    #[test]
+    fn a_bribe_on_a_one_is_lost_and_the_fouler_is_sent_off() {
+        let (mut state, _) = ejecting_foul(2);
+        state.fix_d6(1);
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.home.bribes, 1);
+        assert!(matches!(
+            state.get_dugout().next(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Ejected,
+                ..
+            })
+        ));
+        assert!(state.away_to_act(), "turnover");
+    }
+
+    #[test]
+    fn a_declined_bribe_is_kept_and_the_fouler_is_sent_off() {
+        let (mut state, _) = ejecting_foul(1);
+        state.step_simple(SimpleAT::DontUseSkill);
+        assert_eq!(state.home.bribes, 1);
+        assert!(state.away_to_act(), "turnover");
     }
 }

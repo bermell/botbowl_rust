@@ -3,6 +3,7 @@ pub mod ball_procs;
 pub mod block_procs;
 pub mod casualty_procs;
 pub mod game_procs;
+pub mod kickoff_events;
 pub mod kickoff_procs;
 pub mod movement_procs;
 pub mod procedure_tools;

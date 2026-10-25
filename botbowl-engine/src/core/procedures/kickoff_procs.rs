@@ -9,6 +9,7 @@ use crate::core::model::{
     PlayerID, Position, ProcState, Procedure, TeamType, Weather,
 };
 use crate::core::procedures::ball_procs;
+use crate::core::procedures::kickoff_events::{self, RollOffEvent};
 use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
@@ -72,16 +73,16 @@ impl Procedure for KickoffTable {
             ProcInput::Roll(RollResult::Sum2D6(kickoff_roll)) => kickoff_roll,
             _ => panic!("Unexpected input {:?}", input),
         };
-        let mut procs: Vec<AnyProc> = vec![LandKickoff::new()]; //TODO: this should be added
-                                                                //by the kickoff procedure
+        // The event resolves first (pushed last), then the ball lands.
+        let mut procs: Vec<AnyProc> = vec![LandKickoff::new()];
         match kickoff_roll {
             Sum2D6::Two => {
-                //get the ref
+                // Get the Ref: a free Bribe each (`casualty_procs::Ejection` spends them).
                 game_state.home.bribes += 1;
                 game_state.away.bribes += 1;
             }
             Sum2D6::Three => {
-                // Time-out (BB2020): if the *kicking* team's turn marker is on turn 6, 7 or 8 both
+                // Time-out!: if the *kicking* team's turn marker is on turn 6, 7 or 8 both
                 // markers move one space back, otherwise both move one space forward. Reading
                 // Home's marker instead moved them the wrong way when Away kicked on 6 with Home
                 // on 5 (plan 065; `tests/kickoff_table.rs`).
@@ -97,33 +98,15 @@ impl Procedure for KickoffTable {
                     game_state.info.home_turn -= 1;
                 }
             }
-            Sum2D6::Four => {
-                //solid defense
-            }
-            Sum2D6::Five => {
-                //High Kick
-            }
-            Sum2D6::Six => {
-                //Cheering fans
-            }
-            Sum2D6::Seven => {
-                //Brilliant coaching
-            }
-            Sum2D6::Eight => {
-                procs.push(ChangingWeather::new());
-            }
-            Sum2D6::Nine => {
-                //Quick snap
-            }
-            Sum2D6::Ten => {
-                //Blitz!
-            }
-            Sum2D6::Eleven => {
-                //Officious ref
-            }
-            Sum2D6::Twelve => {
-                //Pitch invasion
-            }
+            Sum2D6::Four => procs.push(kickoff_events::SolidDefence::new()),
+            Sum2D6::Five => procs.push(kickoff_events::HighKick::new()),
+            Sum2D6::Six => procs.push(kickoff_events::RollOff::new(RollOffEvent::CheeringFans)),
+            Sum2D6::Seven => procs.push(kickoff_events::RollOff::new(RollOffEvent::BrilliantCoaching)),
+            Sum2D6::Eight => procs.push(ChangingWeather::new()),
+            Sum2D6::Nine => procs.push(kickoff_events::QuickSnap::new()),
+            Sum2D6::Ten => procs.push(kickoff_events::Charge::new(game_state.info.kicking_this_drive)),
+            Sum2D6::Eleven => procs.push(kickoff_events::RollOff::new(RollOffEvent::DodgySnack)),
+            Sum2D6::Twelve => procs.push(kickoff_events::RollOff::new(RollOffEvent::PitchInvasion)),
         }
 
         ProcState::from(procs)
@@ -477,7 +460,7 @@ pub fn auto_setup(game_state: &mut GameState, formation: Formation) {
 
 /// Setup placement order: linemen first, throwers last. Also the tie-break the
 /// formations use when a wanted role is off the bench.
-fn role_rank(role: PlayerRole) -> u8 {
+pub(crate) fn role_rank(role: PlayerRole) -> u8 {
     match role {
         PlayerRole::Lineman => 0,
         PlayerRole::Blitzer => 1,
@@ -516,7 +499,7 @@ fn reserve_square(dims: &BoardDims, team: TeamType, occupied: &HashSet<Position>
 /// Squares to park the players waiting to be placed on: the team's own
 /// endzone column, top to bottom, spilling one column forward at a time if
 /// the roster outgrows it.
-fn staging_squares(dims: BoardDims, team: TeamType) -> impl Iterator<Item = Position> {
+pub(crate) fn staging_squares(dims: BoardDims, team: TeamType) -> impl Iterator<Item = Position> {
     let x0 = dims.own_endzone_x(team);
     let inward = if team == TeamType::Home { -1 } else { 1 };
     (0..dims.width / 2 - 1)
@@ -568,6 +551,21 @@ impl Setup {
             queue: Vec::new(),
             placed: 0,
             started: false,
+        })
+    }
+    /// Solid Defence: set up again the players `queue` names, already staged in the team's own
+    /// endzone and flagged `used` (`kickoff_events::SolidDefence`), against the rest of the
+    /// team's setup, which stays where it is.
+    pub fn resetup(game_state: &GameState, team: TeamType, queue: Vec<PlayerID>) -> AnyProc {
+        let placed = game_state
+            .get_players_on_pitch_in_team(team)
+            .filter(|p| !queue.contains(&p.id))
+            .count() as u8;
+        AnyProc::Setup(Setup {
+            team,
+            queue,
+            placed,
+            started: true,
         })
     }
     pub fn team(&self) -> TeamType {

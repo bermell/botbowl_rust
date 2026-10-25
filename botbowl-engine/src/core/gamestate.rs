@@ -369,6 +369,13 @@ pub struct GameInfo {
     #[serde(default)]
     pub pickup_this_activation: bool,
     pub blitz_this_activation: bool,
+    /// Cheering Fans: the team on turn still has the extra offensive assist for its first Block
+    /// Action this turn (taken from `TeamState::cheering_fans` when the turn starts).
+    #[serde(default)]
+    pub cheering_fans_this_turn: bool,
+    /// The active player's Block Action carries Cheering Fans' extra offensive assist.
+    #[serde(default)]
+    pub cheering_assist: bool,
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -393,6 +400,8 @@ impl GameInfo {
             turnover: false,
             pickup_this_activation: false,
             blitz_this_activation: false,
+            cheering_fans_this_turn: false,
+            cheering_assist: false,
         }
     }
 }
@@ -605,6 +614,7 @@ impl std::hash::Hash for GameState {
                     p.used.hash(h);
                     p.moves.hash(h);
                     p.used_skills.hash_unordered(h);
+                    p.snack.hash(h);
                 }
             }
         }
@@ -837,6 +847,11 @@ impl GameState {
     pub fn fix_d3(&mut self, value: u8) {
         self.fixes_mut().fix_d3(value);
     }
+    /// Pin the next random pick (`RequestedRoll::Pick`) to the 0-based `index`. Panics if the
+    /// current mode is not `DiceMode::FixedDice`.
+    pub fn fix_pick(&mut self, index: u8) {
+        self.fixes_mut().fix_pick(index);
+    }
     /// Push a `D6` value onto the fixed-dice queue. Panics if the
     /// current mode is not `DiceMode::FixedDice`.
     pub fn fix_d6(&mut self, value: u8) {
@@ -935,6 +950,8 @@ impl GameState {
     pub fn turn_team(&self) -> Option<TeamType> {
         self.proc_stack.iter().rev().find_map(|proc| match proc {
             AnyProc::Turn(turn) => Some(turn.team),
+            // Charge! activates the kicking team "exactly as if it was their team's Turn".
+            AnyProc::Charge(charge) => Some(charge.team()),
             _ => None,
         })
     }
@@ -1075,7 +1092,7 @@ impl GameState {
         self.blockdices(attacker, attacker_pos, defender, strength)
     }
 
-    fn blockdices(
+    pub(crate) fn blockdices(
         &self,
         attacker: PlayerID,
         attacker_pos: Position,
@@ -1104,6 +1121,10 @@ impl GameState {
                         || self.get_tz_on_except_from_id(attr_assister.id, defr.id) == 0)
             })
             .count() as u8;
+        // Cheering Fans: one more offensive assist on the team's first Block Action of the turn.
+        if self.info.cheering_assist {
+            attr_str += 1;
+        }
 
         defr_str += self
             .get_adj_players(attacker_pos)
@@ -1200,6 +1221,7 @@ impl GameState {
             used: false,
             moves: 0,
             used_skills: SkillSet::new(),
+            snack: false,
         });
         Ok(id)
     }
@@ -1212,7 +1234,17 @@ impl GameState {
             self.info.active_player = None;
         }
 
-        let FieldedPlayer { stats, position, .. } = self.fielded_players[id].take().unwrap();
+        let FieldedPlayer {
+            mut stats,
+            position,
+            snack,
+            ..
+        } = self.fielded_players[id].take().unwrap();
+        if snack {
+            // Dodgy Snack lasts for the drive, and a player who leaves the pitch is out of it.
+            stats.ma += 1;
+            stats.armour += 1;
+        }
 
         self.dugout_add_new_player(stats, place);
 
@@ -1798,8 +1830,13 @@ impl GameState {
         player.ag_test(sum)
     }
 
+    /// A Standing player no opponent Marks (the kick-off table's "Open player").
+    pub fn is_open(&self, player: &FieldedPlayer) -> bool {
+        player.status == PlayerStatus::Up && self.marking_opponents(player) == 0
+    }
+
     /// Standing opponents with a tackle zone next to `player`.
-    fn marking_opponents(&self, player: &FieldedPlayer) -> usize {
+    pub fn marking_opponents(&self, player: &FieldedPlayer) -> usize {
         let team = player.stats.team;
         self.get_adj_players(player.position)
             .filter(|adj| adj.stats.team != team && adj.has_tackle_zone())

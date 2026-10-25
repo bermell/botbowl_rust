@@ -259,6 +259,7 @@ pub fn requested_roll_to_proto(r: ed::RequestedRoll) -> pd::RequestedRoll {
             high: hi as u8,
         },
         ed::RequestedRoll::ThrowIn => pd::RequestedRoll::ThrowIn,
+        ed::RequestedRoll::Pick(of) => pd::RequestedRoll::Pick { of },
     }
 }
 
@@ -284,6 +285,7 @@ pub fn requested_roll_from_proto(r: pd::RequestedRoll) -> Result<ed::RequestedRo
             ed::RequestedRoll::Sum2D6ThreeOutcomes(sum2d6_target(low)?, sum2d6_target(high)?)
         }
         pd::RequestedRoll::ThrowIn => ed::RequestedRoll::ThrowIn,
+        pd::RequestedRoll::Pick { of } => ed::RequestedRoll::Pick(of),
     })
 }
 
@@ -317,6 +319,7 @@ pub fn roll_result_to_proto(r: ed::RollResult) -> pd::RollResult {
             direction: direction as u8,
             distance: distance as u8,
         },
+        ed::RollResult::Pick(index) => pd::RollResult::Pick { index },
     }
 }
 
@@ -355,6 +358,7 @@ pub fn roll_result_from_proto(r: &pd::RollResult) -> Result<ed::RollResult, Stri
             direction: d3(*direction)?,
             distance: sum2d6(*distance)?,
         },
+        pd::RollResult::Pick { index } => ed::RollResult::Pick(*index),
     })
 }
 
@@ -504,6 +508,7 @@ mod tests {
             R::Scatter,
             R::Sum2D6,
             R::ThrowIn,
+            R::Pick { of: 5 },
             R::D6PassFail { target: 4 },
             R::D6ThreeOutcomes { low: 2, high: 5 },
             R::FoulArmor { target: 9 },
@@ -567,6 +572,7 @@ mod tests {
                 direction: 2,
                 distance: 9,
             },
+            R::Pick { index: 3 },
         ];
         for outcome in [
             pd::InjuryOutcome::Stunned,
