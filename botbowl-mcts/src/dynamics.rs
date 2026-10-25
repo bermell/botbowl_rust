@@ -275,13 +275,6 @@ pub enum ChanceModel {
     #[default]
     Exact,
     Legacy,
-    /// Diagnostic: exact, except the pass roll stays scripted to a fumble.
-    ExactScriptedPass,
-    /// Diagnostic: exact rolls, but the horizon runs through half time.
-    ExactThroughHalf,
-    /// Diagnostic: only the injury roll is exact; passes fumble, fouls are harmless, and the
-    /// horizon runs through half time.
-    InjuryOnly,
 }
 
 impl ChanceModel {
@@ -289,16 +282,13 @@ impl ChanceModel {
     pub fn from_env() -> Self {
         match std::env::var("BLOOD_MCTS_CHANCE").ok().as_deref().map(str::trim) {
             Some("legacy") => ChanceModel::Legacy,
-            Some("exact_scripted_pass") => ChanceModel::ExactScriptedPass,
-            Some("exact_through_half") => ChanceModel::ExactThroughHalf,
-            Some("injury_only") => ChanceModel::InjuryOnly,
             _ => ChanceModel::Exact,
         }
     }
 
     /// Does the horizon end the search at half time under this model?
     pub fn stops_at_half(self) -> bool {
-        matches!(self, ChanceModel::Exact | ChanceModel::ExactScriptedPass)
+        self == ChanceModel::Exact
     }
 }
 
