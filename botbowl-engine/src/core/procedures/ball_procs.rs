@@ -907,6 +907,38 @@ mod tests {
         assert_eq!(state.ball, BallState::Carried(receiver));
     }
 
+    /// S3, Catch: "may re-roll any failed Agility Test when attempting to Catch" — not once per
+    /// turn like Dodge. A Catch player who fails, sees the ball bounce off a team-mate and back,
+    /// re-rolls the second catch too.
+    #[test]
+    fn the_catch_skill_rerolls_every_catch() {
+        let ball_pos = Position::new((5, 5));
+        let catcher_pos = ball_pos + Direction::up();
+        let team_mate_pos = catcher_pos + Direction::right();
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((1, 1)))
+            .add_home_player(catcher_pos)
+            .add_home_player(team_mate_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+        state.get_mut_team(TeamType::Home).rerolls = 0;
+        let catcher = state.get_player_id_at(catcher_pos).unwrap();
+        state.get_mut_player_unsafe(catcher).stats.give_skill(Skill::Catch);
+
+        state.step_positional(PosAT::StartMove, Position::new((1, 1)));
+        state.fix_d6(2); // fail pickup (3+)
+        state.fix_d8_direction(Direction::up()); // bounce onto the Catch player
+        state.fix_d6(1); // fail
+        state.fix_d6(1); // Catch re-roll fails
+        state.fix_d8_direction(Direction::right()); // bounce onto the team-mate
+        state.fix_d6(1); // fail
+        state.fix_d8_direction(Direction::left()); // back onto the Catch player
+        state.fix_d6(1); // fail
+        state.fix_d6(6); // Catch re-roll again
+        state.step_positional(PosAT::Move, ball_pos);
+        assert_eq!(state.ball, BallState::Carried(catcher));
+    }
+
     /// ... but catching a ball that has Bounced is -1: an AG 3 player then needs a 4+.
     #[test]
     fn a_bounced_catch_is_minus_one() {
@@ -1039,7 +1071,8 @@ mod tests {
         state.fix_d6(3); //succeed on reroll (3+)
         state.step_positional(PosAT::Move, Position::new((5, 5)));
 
-        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::SureHands));
+        // S3: Sure Hands is not once per turn (unlike Dodge and Sure Feet).
+        assert!(state.get_player(id).unwrap().can_use_skill(Skill::SureHands));
 
         match state.ball {
             BallState::Carried(id_carrier) if id_carrier == id => (),

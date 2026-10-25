@@ -936,6 +936,10 @@ impl Wrestle {
             if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
                 game_state.set_ball(BallState::InAir(position));
                 bounce = true;
+                // S3: the active team's ball carrier Placed Prone is a Turnover.
+                if id == attacker_id {
+                    game_state.info.turnover = true;
+                }
             }
         }
         if bounce {
@@ -1736,9 +1740,10 @@ mod tests {
         );
     }
 
-    /// A ball carrier placed prone drops the ball, and still no turnover.
+    /// S3, Turnover: "A player on the active team that is carrying the ball is Placed Prone" — a
+    /// blocker carrying the ball who is wrestled down drops it, and the turn is over.
     #[test]
-    fn a_wrestled_ball_carrier_drops_the_ball_without_a_turnover() {
+    fn a_wrestled_active_ball_carrier_is_a_turnover() {
         let attacker_pos = Position::new((5, 3));
         let defender_pos = Position::new((6, 3));
         let mut state = GameStateBuilder::new()
@@ -1756,10 +1761,7 @@ mod tests {
         state.fix_d8(1); //bounce
         state.step_simple(SimpleAT::UseSkill);
         assert!(matches!(state.ball, BallState::OnGround(_)));
-        assert!(
-            state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)),
-            "still Home's turn"
-        );
+        assert!(state.away_to_act(), "turnover");
     }
 
     /// A home blocker against an away Stand Firm defender, after the given die is selected.
