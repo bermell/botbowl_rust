@@ -31,6 +31,12 @@ thrown-in only), foul assists (must Mark, no Guard), crowd-push and Wrestle turn
 vs Frenzy / Strip Ball, Active skills (Stand Firm, Sidestep) need a Standing player, Catch /
 Sure Hands not once per turn, touchback to Standing players or an empty square, prone players
 fail catches, Changing Weather's Scatter (3), and throw-ins landing 2D6 - 1 squares out.
+Stalling (`game_procs::Stalling`): `Turn` notes an activated ball carrier who could score without a
+die (`could_score_without_dice`: a pathfinder route into the end zone with no event but the
+touchdown, no Bone Head / Wild Animal; one extra pathfinding per carrier declaration, behind an
+MA bound) and, if they still hold the ball standing when the activation ends, rolls the crowd's D6:
+at or above the team's turn number they are Knocked Down, a Turnover. Stunty: the Stunty Injury
+Table (KO 7+, Casualty 9+, on fouls and crowd injuries too) and dodges without Marking modifiers.
 
 ## Procedure-stack state machine
 

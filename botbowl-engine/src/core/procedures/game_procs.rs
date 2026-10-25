@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::model::{DugoutPlayerID, ProcInput};
+use crate::core::model::{DugoutPlayerID, PlayerID, ProcInput};
+use crate::core::pathing::{CustomIntoIter, PathFinder, PathingEvent, PositionOrEvent};
 
 use crate::core::dices::{RequestedRoll, RollResult};
 use crate::core::model::{
@@ -182,10 +183,14 @@ impl Procedure for TurnStunned {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Turn {
     pub team: TeamType,
+    /// The activated ball carrier who could score without rolling a die (S3 Stalling): if they
+    /// still hold the ball when the activation ends, the crowd may take action.
+    #[serde(default)]
+    stalling: Option<PlayerID>,
 }
 impl Turn {
     pub fn new(team: TeamType) -> AnyProc {
-        AnyProc::Turn(Turn { team })
+        AnyProc::Turn(Turn { team, stalling: None })
     }
     fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let mut aa = AvailableActions::new(self.team);
@@ -247,6 +252,14 @@ impl Procedure for Turn {
             return ProcState::NotDoneNew(ball_procs::Touchdown::new(id));
         }
 
+        if let Some(id) = self.stalling.take() {
+            let still_holding = game_state.ball == BallState::Carried(id)
+                && game_state.get_player(id).is_ok_and(|p| p.status == PlayerStatus::Up);
+            if still_holding && game_state.info.kickoff_by_team.is_none() {
+                return ProcState::NotDoneNew(Stalling::new(id));
+            }
+        }
+
         if game_state.info.kickoff_by_team.is_some() || game_state.info.turnover {
             return ProcState::Done;
         }
@@ -260,7 +273,11 @@ impl Procedure for Turn {
         }
 
         if let ProcInput::Action(Action::Positional(at, position)) = input {
-            game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
+            let id = game_state.get_player_id_at(position).unwrap();
+            game_state.set_active_player(id);
+            if could_score_without_dice(game_state, id) {
+                self.stalling = Some(id);
+            }
             let info = &mut game_state.info;
             info.player_action_type = Some(at);
             match at {
@@ -286,6 +303,68 @@ impl Procedure for Turn {
             ProcState::Done
         } else {
             unreachable!()
+        }
+    }
+}
+
+/// S3 Stalling: `id`, just activated, holds the ball and could score without rolling any die —
+/// no Dodge, Rush or activation roll (Bone Head, Wild Animal) on the way into the end zone.
+fn could_score_without_dice(game_state: &GameState, id: PlayerID) -> bool {
+    let player = game_state.get_player_unsafe(id);
+    if game_state.ball != BallState::Carried(id)
+        || player.status != PlayerStatus::Up
+        || player.has_skill(Skill::BoneHead)
+        || player.has_skill(Skill::WildAnimal)
+        // Cheap bound first: the end zone must be within the player's MA.
+        || (game_state.get_endzone_x(player.stats.team) - player.position.x).unsigned_abs() > player.stats.ma
+    {
+        return false;
+    }
+    let Ok(paths) = PathFinder::player_paths(game_state, id) else {
+        return false;
+    };
+    let endzone_x = game_state.get_endzone_x(player.stats.team);
+    let dice_free = paths.iter_position().filter(|(pos, _)| pos.x == endzone_x).any(|(_, node)| {
+        node.as_ref().is_some_and(|node| {
+            node.iter().all(|item| {
+                matches!(
+                    item,
+                    PositionOrEvent::Position(_) | PositionOrEvent::Event(PathingEvent::Touchdown(_))
+                )
+            })
+        })
+    });
+    dice_free
+}
+
+/// The crowd takes action against a Stalling player: on a D6 equal to or greater than their
+/// team's turn number they are Knocked Down, a Turnover.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Stalling {
+    id: PlayerID,
+}
+impl Stalling {
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::Stalling(Stalling { id })
+    }
+}
+impl Procedure for Stalling {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+            ProcInput::Roll(RollResult::D6(roll)) => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                let turn = match team {
+                    TeamType::Home => game_state.info.home_turn,
+                    TeamType::Away => game_state.info.away_turn,
+                };
+                if (roll as u8) < turn {
+                    return ProcState::Done;
+                }
+                game_state.info.turnover = true;
+                ProcState::DoneNew(block_procs::KnockDown::new(self.id))
+            }
+            _ => unreachable!(),
         }
     }
 }
@@ -460,6 +539,86 @@ mod tests {
         table::PosAT,
     };
     use crate::standard_state;
+
+    /// A ball carrier of the team to move, `squares` from its end zone with nobody around, at
+    /// that team's turn 3; `marker` adds an opponent marking the carrier's square.
+    fn stalling_state(squares: i8, marker: bool) -> (GameState, Position, Position) {
+        let mut builder = GameStateBuilder::new();
+        builder.set_state(BuilderState::Turn { turn: 3 });
+        let state = builder.build();
+        let team = state.info.team_turn;
+        let endzone_x = state.get_endzone_x(team);
+        let step = if endzone_x < state.get_endzone_x(other_team(team)) { -1 } else { 1 };
+        let carrier = Position::new((endzone_x - step * squares, 7));
+        let mut builder = GameStateBuilder::new();
+        builder.add_player_details(carrier, team, PlayerStats::new_lineman(team));
+        if marker {
+            builder.add_player_details(carrier + (0, 1), other_team(team), PlayerStats::new_lineman(other_team(team)));
+        }
+        let mut state = builder.add_ball_pos(carrier).set_state(BuilderState::Turn { turn: 3 }).build();
+        assert_eq!(state.info.team_turn, team);
+        let turn = if team == TeamType::Home { state.info.home_turn } else { state.info.away_turn };
+        assert_eq!(turn, 3);
+        state.step_positional(PosAT::StartMove, carrier);
+        (state, carrier, carrier + (-step, 0))
+    }
+
+    /// S3 Stalling: a ball carrier who could score without rolling a die but ends the activation
+    /// without scoring is pelted by the crowd on a D6 equal to or greater than the team's turn
+    /// number — Knocked Down, a Turnover.
+    #[test]
+    fn a_stalling_carrier_is_knocked_down_on_a_roll_at_or_above_the_turn_number() {
+        let (mut state, _, back) = stalling_state(4, false);
+        let team = state.info.team_turn;
+        state.step_positional(PosAT::Move, back);
+        let id = state.get_player_id_at(back).unwrap();
+        state.fix_d6(3); // the crowd: 3 >= turn 3
+        state.fix_d6(1); // armour
+        state.fix_d6(1);
+        state.fix_d8(D8::One as u8); // the ball bounces
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Down);
+        assert_ne!(state.ball, BallState::Carried(id));
+        assert_ne!(state.info.team_turn, team, "a turnover");
+    }
+
+    #[test]
+    fn a_stalling_carrier_stays_up_on_a_roll_under_the_turn_number() {
+        let (mut state, carrier, _) = stalling_state(4, false);
+        let team = state.info.team_turn;
+        let id = state.get_player_id_at(carrier).unwrap();
+        state.fix_d6(2);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Up);
+        assert_eq!(state.ball, BallState::Carried(id));
+        assert_eq!(state.info.team_turn, team);
+        assert!(!state.info.turnover);
+    }
+
+    /// "If a player needs to roll any dice in order to score, such as having to Dodge, Rush ...
+    /// then they are not said to be Stalling": no crowd roll (the fixed-dice queue is empty).
+    #[test]
+    fn no_stalling_when_scoring_needs_a_dodge_or_a_rush() {
+        for (squares, marker) in [(4, true), (8, false)] {
+            let (mut state, carrier, _) = stalling_state(squares, marker);
+            let team = state.info.team_turn;
+            let id = state.get_player_id_at(carrier).unwrap();
+            state.step_simple(SimpleAT::EndPlayerTurn);
+            assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Up);
+            assert_eq!(state.info.team_turn, team);
+        }
+    }
+
+    #[test]
+    fn a_carrier_who_scores_is_not_stalling() {
+        let (mut state, carrier, _) = stalling_state(1, false);
+        let team = state.info.team_turn;
+        let score = |state: &GameState| if team == TeamType::Home { state.home.score } else { state.away.score };
+        let before = score(&state);
+        // No crowd roll is queued: scoring ends the activation without one.
+        state.step_positional(PosAT::Move, Position::new((state.get_endzone_x(team), carrier.y)));
+        assert_eq!(score(&state), before + 1);
+    }
 
     #[test]
     fn turnover() {

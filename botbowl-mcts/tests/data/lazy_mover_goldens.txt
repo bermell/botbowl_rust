@@ -1,6 +1,6 @@
-arm=heuristic budget=200 state=0 pick=StartMove (9,1) root_value=Some(-1000) root_visits=160
+arm=heuristic budget=200 state=0 pick=StartMove (9,1) root_value=Some(-1000) root_visits=154
   StartMove (8,4) visits=5 q=Some(-521) prior=Some(1.0) solved=false terminal=false
-  StartMove (9,1) visits=124 q=Some(-1000) prior=Some(1.0) solved=false terminal=false
+  StartMove (9,1) visits=117 q=Some(-1000) prior=Some(1.0) solved=false terminal=false
   StartMove (11,6) visits=6 q=Some(-521) prior=Some(1.0) solved=false terminal=false
   StartBlitz (8,4) visits=5 q=Some(-521) prior=Some(1.0) solved=false terminal=false
   StartBlitz (9,1) visits=5 q=Some(-521) prior=Some(1.0) solved=false terminal=false
@@ -138,11 +138,11 @@ arm=heuristic budget=200 state=10 pick=StartBlock (6,2) root_value=Some(-516) ro
   StartBlock (4,2) visits=0 q=None prior=Some(1.0) solved=false terminal=false
   StartBlock (6,2) visits=22 q=Some(-516) prior=Some(1.0) solved=false terminal=false
   EndTurn visits=0 q=None prior=Some(0.2) solved=false terminal=false
-arm=heuristic budget=200 state=11 pick=StartMove (4,3) root_value=Some(4000) root_visits=163
+arm=heuristic budget=200 state=11 pick=StartMove (4,3) root_value=Some(4000) root_visits=125
   StartMove (1,1) visits=6 q=Some(3523) prior=Some(1.0) solved=false terminal=false
   StartMove (1,4) visits=6 q=Some(3523) prior=Some(1.0) solved=false terminal=false
   StartMove (1,6) visits=6 q=Some(3523) prior=Some(1.0) solved=false terminal=false
-  StartMove (4,3) visits=104 q=Some(4000) prior=Some(1.0) solved=false terminal=false
+  StartMove (4,3) visits=67 q=Some(4000) prior=Some(1.0) solved=false terminal=false
   StartBlitz (1,1) visits=5 q=Some(3523) prior=Some(1.0) solved=false terminal=false
   StartBlitz (1,4) visits=5 q=Some(3523) prior=Some(1.0) solved=false terminal=false
   StartBlitz (1,6) visits=5 q=Some(3523) prior=Some(1.0) solved=false terminal=false
@@ -176,11 +176,11 @@ arm=heuristic budget=200 state=13 pick=StartPass (11,3) root_value=Some(-122) ro
   StartBlock (11,3) visits=1 q=Some(-200) prior=Some(1.0) solved=false terminal=false
   StartBlock (13,4) visits=22 q=Some(-200) prior=Some(1.0) solved=false terminal=false
   EndTurn visits=0 q=None prior=Some(0.2) solved=false terminal=false
-arm=heuristic budget=200 state=14 pick=StartMove (6,4) root_value=Some(1000) root_visits=157
+arm=heuristic budget=200 state=14 pick=StartMove (6,4) root_value=Some(1000) root_visits=121
   StartMove (3,2) visits=2 q=Some(521) prior=Some(1.0) solved=false terminal=false
   StartMove (3,3) visits=2 q=Some(521) prior=Some(1.0) solved=false terminal=false
   StartMove (4,1) visits=2 q=Some(521) prior=Some(1.0) solved=false terminal=false
-  StartMove (6,4) visits=115 q=Some(1000) prior=Some(1.0) solved=false terminal=false
+  StartMove (6,4) visits=79 q=Some(1000) prior=Some(1.0) solved=false terminal=false
   StartBlitz (3,2) visits=1 q=Some(521) prior=Some(1.0) solved=false terminal=false
   StartBlitz (3,3) visits=1 q=Some(521) prior=Some(1.0) solved=false terminal=false
   StartBlitz (4,1) visits=1 q=Some(521) prior=Some(1.0) solved=false terminal=false
@@ -441,8 +441,8 @@ arm=heuristic budget=200 state=35 pick=StartBlock (9,4) root_value=Some(519) roo
   StartBlitz (9,4) visits=19 q=Some(519) prior=Some(1.0) solved=false terminal=false
   StartBlock (9,4) visits=22 q=Some(519) prior=Some(1.0) solved=false terminal=false
   EndTurn visits=3 q=Some(519) prior=Some(0.2) solved=false terminal=false
-arm=heuristic budget=200 state=36 pick=StartMove (9,7) root_value=Some(1000) root_visits=152
-  StartMove (9,7) visits=135 q=Some(1000) prior=Some(1.0) solved=false terminal=false
+arm=heuristic budget=200 state=36 pick=StartMove (9,7) root_value=Some(1000) root_visits=180
+  StartMove (9,7) visits=163 q=Some(1000) prior=Some(1.0) solved=false terminal=false
   StartMove (13,7) visits=2 q=Some(1479) prior=Some(1.0) solved=false terminal=false
   StartBlitz (9,7) visits=1 q=Some(1479) prior=Some(1.0) solved=false terminal=false
   StartBlitz (13,7) visits=1 q=Some(1479) prior=Some(1.0) solved=false terminal=false

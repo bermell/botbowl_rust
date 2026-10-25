@@ -10,7 +10,7 @@ use crate::core::procedures::block_procs::{
 };
 use crate::core::procedures::casualty_procs::{Armor, Ejection, EjectionTurnover, Injury};
 use crate::core::procedures::game_procs::{
-    ChooseKickReceive, CoinToss, GameOver, Half, KOWakeUp, Turn, TurnStunned, TurnoverIfPossessionLost,
+    ChooseKickReceive, CoinToss, GameOver, Half, KOWakeUp, Stalling, Turn, TurnStunned, TurnoverIfPossessionLost,
 };
 use crate::core::procedures::kickoff_events::{
     Charge, DodgySnack, HighKick, PitchInvasion, QuickSnap, RollOff, SolidDefence, SwelteringHeat,
@@ -114,4 +114,5 @@ any_proc! {
     QuickSnap(QuickSnap),
     SolidDefence(SolidDefence),
     Charge(Charge),
+    Stalling(Stalling),
 }
