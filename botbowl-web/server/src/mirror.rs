@@ -431,7 +431,7 @@ pub fn skill_label(s: et::Skill) -> &'static str {
         et::Skill::Accurate => "Accurate",
         et::Skill::NervesOfSteel => "Nerves of Steel",
         et::Skill::OnTheBall => "On the Ball",
-        et::Skill::Pass => "Pass",
+        et::Skill::SafePass => "Safe Pass",
         et::Skill::ArmBar => "Arm Bar",
         et::Skill::Brawler => "Brawler",
         et::Skill::BreakTackle => "Break Tackle",
@@ -443,7 +443,7 @@ pub fn skill_label(s: et::Skill) -> &'static str {
         et::Skill::BoneHead => "Bone Head",
         et::Skill::Loner => "Loner",
         et::Skill::Stunty => "Stunty",
-        et::Skill::Throw => "Throw",
+        et::Skill::Pass => "Pass",
         et::Skill::WildAnimal => "Wild Animal",
         et::Skill::KickOffReturn => "Kick-Off Return",
     }

@@ -43,7 +43,11 @@ pub fn skills() -> Vec<SkillInfo> {
 }
 
 pub fn skill_from_label(label: &str) -> Option<Skill> {
-    Skill::ALL.into_iter().find(|s| mirror::skill_label(*s) == label)
+    Skill::ALL
+        .into_iter()
+        .find(|s| mirror::skill_label(*s) == label)
+        // Saved before the pre-S3 `Throw` was folded into `Pass`.
+        .or_else(|| (label == "Throw").then_some(Skill::Pass))
 }
 
 /// The engine stats for a position. Errors on a skill label the engine does not know.

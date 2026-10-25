@@ -832,7 +832,7 @@ impl PlayerStats {
             ag: 3,
             av: 8,
             team,
-            skills: SkillSet::from([Skill::SureHands, Skill::Throw]),
+            skills: SkillSet::from([Skill::SureHands, Skill::Pass]),
             role: PlayerRole::Thrower,
             pass: D6Target::TwoPlus,
         }

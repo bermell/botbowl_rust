@@ -96,7 +96,9 @@ pub enum Skill {
     Accurate,
     NervesOfSteel,
     OnTheBall,
-    Pass,
+    /// S3 (not implemented yet). Holds index 24, `Pass`'s until the pre-S3 `Throw` was folded
+    /// into `Pass` — see `Pass`.
+    SafePass,
     // Strength Skills
     ArmBar,
     Brawler,
@@ -110,7 +112,12 @@ pub enum Skill {
     BoneHead,
     Loner,
     Stunty,
-    Throw,
+    /// S3 Pass (re-roll a failed Passing Ability Test). Sits at index 36, where the pre-S3
+    /// `Throw` was: `Throw` was the stock Thrower's skill and did nothing, `Pass` (index 24) was
+    /// on no roster, so the stock Thrower lights the NN plane it always lit and every trained
+    /// net reads the same input. A stored `"Throw"` loads as `Pass`.
+    #[serde(alias = "Throw")]
+    Pass,
     WildAnimal,
     KickOffReturn,
 }
@@ -150,7 +157,7 @@ impl Skill {
         Skill::Accurate,
         Skill::NervesOfSteel,
         Skill::OnTheBall,
-        Skill::Pass,
+        Skill::SafePass,
         // Strength Skills
         Skill::ArmBar,
         Skill::Brawler,
@@ -164,7 +171,7 @@ impl Skill {
         Skill::BoneHead,
         Skill::Loner,
         Skill::Stunty,
-        Skill::Throw,
+        Skill::Pass,
         Skill::WildAnimal,
         Skill::KickOffReturn,
         // Appended, not grouped with General, so every earlier index (and NN skill plane) keeps
@@ -206,7 +213,7 @@ impl Skill {
             Skill::Accurate => 21,
             Skill::NervesOfSteel => 22,
             Skill::OnTheBall => 23,
-            Skill::Pass => 24,
+            Skill::SafePass => 24,
             Skill::ArmBar => 25,
             Skill::Brawler => 26,
             Skill::BreakTackle => 27,
@@ -218,7 +225,7 @@ impl Skill {
             Skill::BoneHead => 33,
             Skill::Loner => 34,
             Skill::Stunty => 35,
-            Skill::Throw => 36,
+            Skill::Pass => 36,
             Skill::WildAnimal => 37,
             Skill::KickOffReturn => 38,
             Skill::StripBall => 39,

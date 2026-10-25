@@ -226,7 +226,7 @@ pub fn builtin_teams() -> Vec<TeamDef> {
                     3,
                     2,
                     8,
-                    &["Sure Hands", "Throw"],
+                    &["Sure Hands", "Pass"],
                     "hthrower1",
                     2,
                 ),
