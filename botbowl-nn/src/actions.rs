@@ -65,6 +65,9 @@ pub fn pos_at_index(at: PosAT) -> usize {
         // Hidden (Throw / Kick Team-mate, `AvailableActions::insert_hidden_positional`): never
         // listed among a state's legal actions — no channel, no schema change.
         PosAT::ThrowTeamMate => unreachable!("PosAT::ThrowTeamMate is hidden from bots and has no policy channel"),
+        // A hidden action (`AvailableActions::hidden_positional`), like `SimpleAT::PassSquare`:
+        // never listed, so it never reaches the policy — no channel, no schema change.
+        PosAT::Jump => unreachable!("PosAT::Jump is hidden from bots and has no policy channel"),
     }
 }
 

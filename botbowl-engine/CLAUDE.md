@@ -84,6 +84,26 @@ needs `u32` (and moves `tests/state_size.rs`).
   Prone (automatic) — Falls Over: Prone, armour roll, a turnover only if they held the ball.
 - Not implemented: Swoop, Bullseye, Strong Arm, Always Hungry, Lethal Flight, Disturbing
   Presence, Distracted (the engine has no such state).
+Jumping over Players and Leap (see "Jumps in paths" below).
+
+## Jumps in paths (S3 Jumping over Players, Leap)
+
+A Jump is a path step (`PathingEvent::Jump { to, target }`, after any Rush `GFI` events, before a
+Pick-up / Touchdown in `to`): the node has no `Position` step, `JumpProc` moves the player. Its roll
+is `D6ThreeOutcomes(2+, target)`: `Pass` lands Standing, `MiddleOutcome` falls in `to`, `Fail` (the
+natural 1) falls in place; a failed Rush falls in place too (the player has not moved yet). Team
+re-roll only. Modifier = -max(marking on the start square, on `to`); Leap: any square two away,
+negative modifier reduced by 1 to no better than -1, no once-per-activation limit (none in the text).
+Allowed in every action's movement (S3: they all include a Move Action).
+- **Toggle:** `GameState::jump_paths` (`set_jump_paths`, process default `BLOOD_JUMP_PATHS=0` off),
+  in neither `PartialEq` nor `Hash`, not serialised. Off removes jumps from paths only.
+- **Pruning** (`pathing.rs`): candidates only next to the per-search `downed` list (empty → no
+  cost), or the 16-square ring for a Leap player; a jump with a free waypoint (unmarked empty square
+  adjacent to both ends) is dominated by walking and never built. `tests/jump_paths.rs`
+  `bench_jump_paths` (`--release -- --ignored`): ~1.00x nobody down, ~1.1x four down, ~1.4-1.5x for
+  a Leap mover.
+- **Humans:** hidden `PosAT::Jump` at a target (`PathFinder::jump_targets` / `jump_path`), offered
+  by `MoveAction` whenever a jump is legal from where the player stands, toggle or not.
 
 ## Procedure-stack state machine
 

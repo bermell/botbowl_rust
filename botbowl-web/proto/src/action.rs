@@ -67,11 +67,15 @@ pub enum PosAT {
     /// Throw / Kick Team-mate, every step of it: the declaration on the thrower, the team-mate
     /// to pick up, the target square. Offered to humans only (the engine hides it from bots).
     ThrowTeamMate,
+    /// During a move: one Jump over a Prone/Stunned player (or a Leap) from where the active
+    /// player stands into this square. A hidden engine action: offered to humans only.
+    Jump,
 }
 
 impl PosAT {
-    /// All variants, in policy-channel order.
-    pub const ALL: [PosAT; 17] = [
+    /// All variants, in policy-channel order (the hidden `ThrowTeamMate` and `Jump`, last, have
+    /// no channel: bots never see them).
+    pub const ALL: [PosAT; 18] = [
         PosAT::StartMove,
         PosAT::StartBlitz,
         PosAT::StartPass,
@@ -89,6 +93,7 @@ impl PosAT {
         PosAT::PlacePlayer,
         PosAT::StartSecureBall,
         PosAT::ThrowTeamMate,
+        PosAT::Jump,
     ];
 
     /// The variant's own name, sentence-cased — `StartMove` is "Start move"
@@ -115,13 +120,14 @@ impl PosAT {
             PosAT::PlacePlayer => "Place player",
             PosAT::StartSecureBall => "Start secure ball",
             PosAT::ThrowTeamMate => "Throw team mate",
+            PosAT::Jump => "Jump",
         }
     }
 
     /// Sprite path relative to the `/img/` asset mount, when one fits.
     pub fn icon(self) -> Option<&'static str> {
         match self {
-            PosAT::StartMove | PosAT::Move | PosAT::StartSecureBall => Some("icons/actions/move.gif"),
+            PosAT::StartMove | PosAT::Move | PosAT::StartSecureBall | PosAT::Jump => Some("icons/actions/move.gif"),
             PosAT::StartBlitz => Some("icons/actions/blitz.gif"),
             PosAT::StartBlock | PosAT::Block => Some("icons/actions/block.gif"),
             PosAT::StartPass | PosAT::Pass | PosAT::ThrowTeamMate => Some("icons/actions/pass.gif"),

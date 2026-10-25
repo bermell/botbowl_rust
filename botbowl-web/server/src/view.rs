@@ -70,6 +70,7 @@ fn event_label(event: &PathingEvent) -> String {
         PathingEvent::StandUp => "Stand up".to_string(),
         PathingEvent::StandUpRoll(t) => format!("Stand up {}+", *t as u8),
         PathingEvent::SecureBall(t) => format!("Secure the ball {}+", *t as u8),
+        PathingEvent::Jump { to, target } => format!("Jump {}+ to ({}, {})", *target as u8, to.x, to.y),
     }
 }
 
@@ -207,6 +208,8 @@ fn route_between(steps: &[GameState], from: Position, to: Position) -> Vec<Posit
             .iter()
             .filter_map(|e| match e {
                 PositionOrEvent::Position(p) => Some(p),
+                // A jump lands with no `Position` step of its own.
+                PositionOrEvent::Event(PathingEvent::Jump { to, .. }) => Some(to),
                 PositionOrEvent::Event(_) => None,
             })
             .collect();
@@ -269,7 +272,13 @@ fn node_info(node: &std::sync::Arc<Node>) -> (f32, Option<botbowl_web_proto::dic
     for item in node.iter() {
         match item {
             PositionOrEvent::Position(p) => steps.push(mirror::position_to_proto(p)),
-            PositionOrEvent::Event(e) => rolls.push(event_label(&e)),
+            PositionOrEvent::Event(e) => {
+                // A jump lands with no `Position` step of its own.
+                if let PathingEvent::Jump { to, .. } = e {
+                    steps.push(mirror::position_to_proto(to));
+                }
+                rolls.push(event_label(&e))
+            }
         }
     }
     (

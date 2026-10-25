@@ -94,6 +94,10 @@ impl RollKind {
             RequestedRoll::Pick(_) => RollKind::KickoffEvent,
             RequestedRoll::D6PassFail(_) => RollKind::PassFail,
             RequestedRoll::Sum2D6PassFail(_) => RollKind::PassFail2d6,
+            // A Jump's Agility Test: pass / fail / natural 1 (S3, Jumping over Players).
+            RequestedRoll::D6ThreeOutcomes(..) if matches!(state.proc_stack_peek(), Some(AnyProc::JumpProc(_))) => {
+                RollKind::PassFail
+            }
             RequestedRoll::D6ThreeOutcomes(..) | RequestedRoll::Sum2D6ThreeOutcomes(..) => RollKind::Injury,
             RequestedRoll::FoulArmor(_) => RollKind::FoulArmor,
             RequestedRoll::FoulInjury(..) => RollKind::FoulInjury,

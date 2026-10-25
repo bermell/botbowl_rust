@@ -32,6 +32,12 @@ pub enum PosAT {
     /// offers it. Which step it is depends on the procedure asking. See
     /// `procedures/team_mate_procs.rs`.
     ThrowTeamMate,
+    /// During a Move (or the movement of any action): one Jump over a Prone/Stunned player, or
+    /// a Leap, from where the player stands to this square (S3, Jumping over Players; Leap).
+    /// **Hidden** (`AvailableActions::hidden_positional`): legal but never listed, so bots,
+    /// the search and the NN never see it (no policy channel) — the paths carry jumps for them;
+    /// a human UI offers it for fine control.
+    Jump,
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
@@ -401,7 +407,7 @@ impl<'de> Deserialize<'de> for SkillSet {
 }
 
 impl PosAT {
-    pub const COUNT: usize = 17;
+    pub const COUNT: usize = 18;
     /// The listed (non-hidden) variants are `ALL[..LISTED]`, the only ones a `PosATSet` holds;
     /// the rest are hidden actions, kept out of the set so it stays two bytes a square.
     pub const LISTED: usize = 16;
@@ -425,6 +431,7 @@ impl PosAT {
         PosAT::PlacePlayer,
         PosAT::StartSecureBall,
         PosAT::ThrowTeamMate,
+        PosAT::Jump,
     ];
     pub const fn index(self) -> usize {
         match self {
@@ -445,6 +452,7 @@ impl PosAT {
             PosAT::PlacePlayer => 14,
             PosAT::StartSecureBall => 15,
             PosAT::ThrowTeamMate => 16,
+            PosAT::Jump => 17,
         }
     }
 }

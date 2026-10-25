@@ -58,6 +58,7 @@ pub fn pos_at_to_proto(at: et::PosAT) -> pa::PosAT {
         et::PosAT::PlacePlayer => pa::PosAT::PlacePlayer,
         et::PosAT::StartSecureBall => pa::PosAT::StartSecureBall,
         et::PosAT::ThrowTeamMate => pa::PosAT::ThrowTeamMate,
+        et::PosAT::Jump => pa::PosAT::Jump,
     }
 }
 
@@ -80,6 +81,7 @@ pub fn pos_at_from_proto(at: pa::PosAT) -> et::PosAT {
         pa::PosAT::PlacePlayer => et::PosAT::PlacePlayer,
         pa::PosAT::StartSecureBall => et::PosAT::StartSecureBall,
         pa::PosAT::ThrowTeamMate => et::PosAT::ThrowTeamMate,
+        pa::PosAT::Jump => et::PosAT::Jump,
     }
 }
 

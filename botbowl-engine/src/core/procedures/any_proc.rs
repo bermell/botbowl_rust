@@ -16,7 +16,7 @@ use crate::core::procedures::kickoff_events::{
     Charge, DodgySnack, HighKick, PitchInvasion, QuickSnap, RollOff, SolidDefence, SwelteringHeat,
 };
 use crate::core::procedures::kickoff_procs::{ChangingWeather, Kickoff, KickoffTable, LandKickoff, Setup};
-use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp, StandUpRoll};
+use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, JumpProc, MoveAction, StandUp, StandUpRoll};
 
 use crate::core::procedures::procedure_tools::SimpleProcContainer;
 use crate::core::procedures::team_mate_procs::{TeamMateLanding, ThrowTeamMate, ThrownPlayerFlight};
@@ -120,4 +120,5 @@ any_proc! {
     ThrownPlayerFlight(ThrownPlayerFlight),
     TeamMateLanding(SimpleProcContainer<TeamMateLanding>),
     SecureBallProc(SimpleProcContainer<SecureBallProc>),
+    JumpProc(JumpProc),
 }

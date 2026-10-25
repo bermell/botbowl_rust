@@ -231,6 +231,7 @@ impl GameStateBuilder {
             log: Vec::new(),
             print_log: false,
             next_input: None,
+            jump_paths: jump_paths_default(),
         }
     }
     pub fn build(&mut self) -> GameState {
@@ -552,6 +553,26 @@ pub struct GameState {
     log: Vec<String>,
     #[derivative(PartialEq = "ignore")]
     print_log: bool,
+    /// Whether the pathfinder puts Jumps and Leaps into paths (S3, Jumping over Players): a
+    /// toggle to price them and switch them off (`BLOOD_JUMP_PATHS=0`, `set_jump_paths`). The
+    /// hidden `PosAT::Jump` action is offered either way. Constant for a game, so it is in
+    /// neither `PartialEq` nor `Hash` (both or neither); not serialised — a loaded state takes
+    /// the process default.
+    #[serde(skip, default = "jump_paths_default")]
+    #[derivative(PartialEq = "ignore")]
+    jump_paths: bool,
+}
+
+/// The process default of `GameState::jump_paths`: on, unless `BLOOD_JUMP_PATHS` is `0`,
+/// `false` or `off`. Read once.
+pub fn jump_paths_default() -> bool {
+    static DEFAULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEFAULT.get_or_init(|| {
+        !matches!(
+            std::env::var("BLOOD_JUMP_PATHS").as_deref().map(str::trim),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    })
 }
 
 impl Eq for GameState {}
@@ -589,6 +610,7 @@ impl Clone for GameState {
             rng: self.rng.clone(),
             log: self.log.clone(),
             print_log: self.print_log,
+            jump_paths: self.jump_paths,
         }
     }
 }
@@ -599,7 +621,7 @@ impl Clone for GameState {
 // compares is merely slow — the extra candidates are rejected by `PartialEq` — while hashing more
 // is a correctness bug: two *equal* states would land in different buckets, and the MCTS registry
 // would silently split one DAG node into several, breaking recombination. So the ignored fields
-// (`path_buffer`, `registered_roll`, `next_input`, `rng`, `log`, `print_log`) must stay out, and
+// (`path_buffer`, `registered_roll`, `next_input`, `rng`, `log`, `print_log`, `jump_paths`) must stay out, and
 // everything else must stay in.
 //
 // This used to hash a hand-picked subset: most of `GameInfo`, scores only from the team states,
@@ -1499,6 +1521,16 @@ impl GameState {
                  (handled inline in micro_step) — never as a direct call"
             ),
         }
+    }
+
+    /// Whether paths include Jumps and Leaps; see the field.
+    pub fn jump_paths(&self) -> bool {
+        self.jump_paths
+    }
+    /// Switch Jumps and Leaps in paths on or off for this game (a benchmark's toggle). Takes
+    /// effect at the next path computation.
+    pub fn set_jump_paths(&mut self, on: bool) {
+        self.jump_paths = on;
     }
 
     pub fn is_legal_action(&self, action: &Action) -> bool {

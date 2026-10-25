@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use crate::core::dices::{RequestedRoll, RollResult};
 use crate::core::model::ProcInput;
-use crate::core::model::{Action, AvailableActions, FieldedPlayer, PlayerID, PlayerStatus, ProcState, Procedure};
+use crate::core::model::{
+    Action, AvailableActions, FieldedPlayer, PlayerID, PlayerStatus, Position, ProcState, Procedure,
+};
 use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, DodgeMarkers, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
 };
@@ -172,6 +175,81 @@ impl SimpleProc for DodgeProc {
         self.id
     }
 }
+/// S3, Jumping over Players (and Leap): the Agility Test of a Jump into `to`, after any Rushes.
+/// Passed: the player is placed Standing in `to` and the activation goes on. Failed: placed in
+/// `to`, they Fall Over. A natural 1: they Fall Over where they are. Either fall is a turnover.
+/// The roll is a `D6ThreeOutcomes` (2+ / `target`): `Pass`, `MiddleOutcome` = failed, `Fail` =
+/// the natural 1. A team re-roll may re-roll it; no skill does (Dodge is for Dodging).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct JumpProc {
+    id: PlayerID,
+    to: Position,
+    target: D6Target,
+    /// The failed result while the coach is asked about a team re-roll.
+    failed: Option<RollResult>,
+    rerolled: bool,
+}
+impl JumpProc {
+    pub fn new(id: PlayerID, to: Position, target: D6Target) -> AnyProc {
+        AnyProc::JumpProc(JumpProc {
+            id,
+            to,
+            target,
+            failed: None,
+            rerolled: false,
+        })
+    }
+    fn roll(&self) -> ProcState {
+        ProcState::NeedRoll(RequestedRoll::D6ThreeOutcomes(D6Target::TwoPlus, self.target))
+    }
+    fn land(&self, game_state: &mut GameState) {
+        game_state.move_player(self.id, self.to).unwrap();
+        crate::game_log!(game_state, "Jumped to {:?}", self.to);
+        game_state.get_mut_player_unsafe(self.id).add_move(2);
+    }
+    fn fall(&self, game_state: &mut GameState, result: RollResult) -> ProcState {
+        if result == RollResult::MiddleOutcome {
+            self.land(game_state);
+        }
+        game_state.info.turnover = true;
+        ProcState::DoneNew(block_procs::KnockDown::new(self.id))
+    }
+}
+impl Procedure for JumpProc {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => self.roll(),
+            ProcInput::Roll(RollResult::Pass) => {
+                self.land(game_state);
+                ProcState::Done
+            }
+            ProcInput::Roll(result @ (RollResult::MiddleOutcome | RollResult::Fail)) => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                if !self.rerolled && game_state.may_use_team_reroll(team) {
+                    self.failed = Some(result);
+                    let mut aa = AvailableActions::new(team);
+                    aa.insert_simple(SimpleAT::UseReroll);
+                    aa.insert_simple(SimpleAT::DontUseReroll);
+                    return ProcState::NeedAction(aa);
+                }
+                self.fall(game_state, result)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                game_state.get_mut_team(team).use_reroll();
+                self.rerolled = true;
+                self.failed = None;
+                self.roll()
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
+                let result = self.failed.take().expect("a failed jump awaiting the re-roll question");
+                self.fall(game_state, result)
+            }
+            input => panic!("Illegal input for JumpProc: {:?}", input),
+        }
+    }
+}
+
 fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
     match roll {
         PathingEvent::Dodge(target, markers) => vec![DodgeProc::new(active_player, target, markers)],
@@ -188,6 +266,7 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
         PathingEvent::StandUp => vec![StandUp::new(active_player)],
         PathingEvent::StandUpRoll(target) => vec![StandUpRoll::new(active_player, target)],
         PathingEvent::Pass { to, pass, modifer } => vec![ball_procs::Pass::new(to, pass, modifer)],
+        PathingEvent::Jump { to, target } => vec![JumpProc::new(active_player, to, target)],
     }
 }
 
@@ -277,6 +356,11 @@ impl MoveAction {
                     .insert_hidden_positional(PosAT::ThrowTeamMate, pos);
             }
         }
+        // One specific Jump or Leap from where the player stands, for a human's fine control —
+        // hidden like `PassSquare`. Offered whether or not the paths carry jumps.
+        for to in PathFinder::jump_targets(game_state, self.player_id) {
+            game_state.available_actions.insert_hidden_positional(PosAT::Jump, to);
+        }
     }
 }
 impl Procedure for MoveAction {
@@ -314,7 +398,7 @@ impl Procedure for MoveAction {
                 let kick = game_state.info.kick_team_mate_this_activation;
                 ProcState::NotDoneNew(team_mate_procs::ThrowTeamMate::new(self.player_id, thrown, kick))
             }
-            (ProcInput::Action(Action::Positional(_, position)), MoveActionState::SelectPath) => {
+            (ProcInput::Action(Action::Positional(action_type, position)), MoveActionState::SelectPath) => {
                 // Selecting a move action consumes any pickup-bonus owed from a
                 // previous step this activation. (When this very action is the
                 // one that picks up the ball, the flag is false here and gets
@@ -328,7 +412,12 @@ impl Procedure for MoveAction {
                 if game_state.info.player_action_type == Some(PosAT::StartMove) {
                     game_state.info.blitz_this_activation = false;
                 }
-                let mut path = game_state.take_path(position).unwrap().iter();
+                let node = if action_type == PosAT::Jump {
+                    PathFinder::jump_path(game_state, self.player_id, position).expect("a legal jump")
+                } else {
+                    game_state.take_path(position).unwrap()
+                };
+                let mut path = node.iter();
                 let proc_state = MoveAction::continue_along_path(&mut path, game_state);
                 if path.is_empty() {
                     self.state = MoveActionState::Init;
@@ -1700,3 +1789,7 @@ mod tests {
         assert!(!state.info.blitz_this_activation);
     }
 }
+
+#[cfg(test)]
+#[path = "jump_tests.rs"]
+mod jump_tests;
