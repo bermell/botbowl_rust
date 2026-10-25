@@ -1062,6 +1062,8 @@ mod tests {
         use crate::core::procedures::ball_procs::ThrowIn;
         use crate::core::procedures::AnyProc;
 
+        // Unscaled distances: the full pitch only.
+        crate::skip_if_board_smaller_than!(28, 17);
         let mut state = GameStateBuilder::new().build();
         assert_eq!(state.board_dims.scatter_divisor(), 1);
         let from = Position::new((1, 1));
