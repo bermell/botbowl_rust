@@ -110,10 +110,11 @@ impl Push {
         matches!(Push::get_push_squares(on, from, game_state), PushSquares::Crowd(_))
     }
 
-    /// The free squares a Sidestep player standing `on` may step into, if they have the skill
-    /// and any square next to them is free.
+    /// The free squares a Sidestep player standing `on` may step into, if they have the skill,
+    /// are Standing (an Active skill) and any square next to them is free.
     fn sidestep_squares(on: Position, game_state: &GameState) -> Option<Vec<Position>> {
-        if !game_state.get_player_at(on)?.has_skill(Skill::SideStep) {
+        let player = game_state.get_player_at(on)?;
+        if !player.has_skill(Skill::SideStep) || player.status != PlayerStatus::Up {
             return None;
         }
         let free = Push::free_squares_next_to(on, game_state);
@@ -170,6 +171,10 @@ impl Push {
         let (last_push_from, last_push_to) = self.moves_to_make.pop().unwrap();
         if game_state.is_out(last_push_to) {
             let id = game_state.get_player_id_at(last_push_to).unwrap();
+            // S3: a player of the active team Pushed into the Crowd is a Turnover.
+            if game_state.turn_team() == Some(game_state.get_player_unsafe(id).stats.team) {
+                game_state.info.turnover = true;
+            }
             if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
                 game_state.set_ball(BallState::InAir(last_push_from));
                 procs.push(ball_procs::ThrowIn::new(last_push_from));
@@ -201,19 +206,6 @@ impl Push {
         ProcState::from(procs)
     }
 
-    /// Stand Firm stopped the push. Strip Ball still works: the carrier drops the ball in their
-    /// own square, and it bounces.
-    fn strip_in_place(&self, game_state: &mut GameState) -> ProcState {
-        match self.strip_ball {
-            Some(id) if game_state.ball == BallState::Carried(id) => {
-                let position = game_state.get_player_unsafe(id).position;
-                game_state.set_ball(BallState::InAir(position));
-                ProcState::DoneNew(ball_procs::Bounce::new())
-            }
-            _ => ProcState::Done,
-        }
-    }
-
     /// Ask the pushed player's coach about `skill`.
     fn ask(&mut self, skill: PushSkill, game_state: &GameState) -> ProcState {
         self.questions.pending = Some(skill);
@@ -229,11 +221,15 @@ impl Push {
         let opposing = pushed.stats.team != attacker.stats.team;
         // Stand Firm: the pushed player's coach may refuse the push — the blocked player's, or
         // any a chain push reaches. Then nobody is pushed at all, so there is no follow-up; a
-        // knockdown (queued under this proc) still happens, in place.
+        // knockdown (queued under this proc) still happens, in place. Strip Ball needs the carrier
+        // Pushed Back, so it does nothing then.
         if !self.questions.stand_firm_asked {
             self.questions.stand_firm_asked = true;
-            // Not against a Juggernaut blitzer.
-            if pushed.has_skill(Skill::StandFirm) && !(opposing && juggernaut_blitz(game_state)) {
+            // Not against a Juggernaut blitzer, and only while Standing (an Active skill).
+            if pushed.has_skill(Skill::StandFirm)
+                && pushed.status == PlayerStatus::Up
+                && !(opposing && juggernaut_blitz(game_state))
+            {
                 return self.ask(PushSkill::StandFirm, game_state);
             }
         }
@@ -291,7 +287,7 @@ impl Procedure for Push {
             ProcInput::Action(Action::Simple(answer @ (SimpleAT::UseSkill | SimpleAT::DontUseSkill))) => {
                 let used = answer == SimpleAT::UseSkill;
                 match self.questions.pending.take() {
-                    Some(PushSkill::StandFirm) if used => self.strip_in_place(game_state),
+                    Some(PushSkill::StandFirm) if used => ProcState::Done,
                     Some(PushSkill::StandFirm) => self.calculate_next_state(game_state),
                     Some(PushSkill::SideStep) => {
                         self.questions.sidestep = Some(used);
@@ -742,10 +738,7 @@ impl Block {
 
         // Frenzy: once the push, follow-up and any knockdown have resolved, block again.
         if push && !self.frenzy_second && game_state.get_player_unsafe(attacker_id).has_skill(Skill::Frenzy) {
-            procs.push(FrenzyBlock::new(
-                self.defender,
-                game_state.get_player_unsafe(self.defender).position,
-            ));
+            procs.push(FrenzyBlock::new(self.defender));
         }
 
         //if attacker is knocked down it's a turnover
@@ -983,15 +976,14 @@ impl Procedure for Wrestle {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct FrenzyBlock {
     defender: PlayerID,
-    /// Where the defender stood when blocked: no second block unless they were pushed off it.
-    from: Position,
     rushed: bool,
 }
 impl FrenzyBlock {
-    pub fn new(defender: PlayerID, from: Position) -> AnyProc {
+    /// Queued only after a push result: the target is blocked again if still Standing next to
+    /// the blocker — also when they stood firm (S3, Stand Firm).
+    pub fn new(defender: PlayerID) -> AnyProc {
         AnyProc::FrenzyBlock(FrenzyBlock {
             defender,
-            from,
             rushed: false,
         })
     }
@@ -1005,10 +997,9 @@ impl Procedure for FrenzyBlock {
         let Ok(defender) = game_state.get_player(self.defender) else {
             return ProcState::Done; // pushed off the pitch
         };
-        // One who stood firm was not pushed at all; one who used Fend is no longer adjacent.
+        // One who used Fend is no longer adjacent.
         if attacker.status != PlayerStatus::Up
             || defender.status != PlayerStatus::Up
-            || defender.position == self.from
             || attacker.position.distance_to(&defender.position) > 1
         {
             return ProcState::Done;
@@ -1580,9 +1571,9 @@ mod tests {
     /// `get_active_player().unwrap()` panicked), a finished activation has no second block.
     #[test]
     fn frenzy_block_without_an_active_player_is_done() {
-        let (mut state, _, defender, defender_pos) = frenzy_block();
+        let (mut state, _, defender, _) = frenzy_block();
         assert!(state.get_active_player().is_none());
-        let super::AnyProc::FrenzyBlock(mut proc) = super::FrenzyBlock::new(defender, defender_pos) else {
+        let super::AnyProc::FrenzyBlock(mut proc) = super::FrenzyBlock::new(defender) else {
             unreachable!()
         };
         assert!(matches!(proc.step(&mut state, ProcInput::Nothing), ProcState::Done));
@@ -1830,12 +1821,65 @@ mod tests {
         assert_eq!((player.position, player.status), (defender_pos, PlayerStatus::Down));
     }
 
-    /// Frenzy blocks again only after a push: a defender who stood firm was not pushed.
+    /// S3, Stand Firm: "Using this Skill will not prevent a player with the Frenzy Skill from
+    /// performing a second Block Action, so long as this player is still Standing."
     #[test]
-    fn frenzy_does_not_block_again_when_the_target_stands_firm() {
+    fn frenzy_blocks_again_when_the_target_stands_firm() {
         let (mut state, _, _, _) = block_stand_firm(BlockDice::Push, true);
+        state.fix_blockdice(BlockDice::Pow);
         state.step_simple(SimpleAT::UseSkill);
-        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::SelectPow)), "second block");
+    }
+
+    /// S3, Active skills need a Standing player: a prone player reached by a chain push can
+    /// neither Stand Firm nor Sidestep.
+    #[test]
+    fn a_prone_player_in_a_chain_push_cannot_stand_firm_or_sidestep() {
+        for skill in [Skill::StandFirm, Skill::SideStep] {
+            let attacker_pos = Position::new((5, 3));
+            let defender_pos = Position::new((6, 3));
+            let mut state = GameStateBuilder::new()
+                .add_home_player(attacker_pos)
+                .add_away_player(defender_pos)
+                .add_away_players(&[(7, 2), (7, 3), (7, 4)])
+                .build();
+            let prone = state.get_player_id_at(Position::new((7, 3))).unwrap();
+            state.get_mut_player_unsafe(prone).stats.give_skill(skill);
+            state.get_mut_player_unsafe(prone).status = PlayerStatus::Down;
+            state.step_positional(PosAT::StartBlock, attacker_pos);
+            state.fix_blockdice(BlockDice::Push);
+            state.step_positional(PosAT::Block, defender_pos);
+            state.step_simple(SimpleAT::SelectPush);
+            state.step_positional(PosAT::Push, Position::new((7, 3)));
+            assert!(!state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)), "{skill:?}");
+            assert_eq!(state.get_available_actions().team, Some(TeamType::Home), "{skill:?}");
+        }
+    }
+
+    /// S3: "if a player on the active team is Pushed into the Crowd then a Turnover is caused" —
+    /// here the blocker's own team-mate, at the end of a chain push.
+    #[test]
+    fn a_chain_push_of_an_active_player_into_the_crowd_is_a_turnover() {
+        let attacker_pos = Position::new((5, 2));
+        let defender_pos = Position::new((6, 2));
+        let team_mate_pos = Position::new((7, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(attacker_pos)
+            .add_away_player(defender_pos)
+            .add_home_player(team_mate_pos)
+            .add_away_players(&[(7, 2), (7, 3), (8, 1)])
+            .build();
+        let team_mate = state.get_player_id_at(team_mate_pos).unwrap();
+        state.step_positional(PosAT::StartBlock, attacker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, defender_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, team_mate_pos); // the team-mate goes into the crowd
+        state.fix_d6(1); //crowd injury
+        state.fix_d6(1);
+        state.step_positional(PosAT::FollowUp, attacker_pos);
+        assert!(state.get_player(team_mate).is_err(), "in the crowd");
+        assert!(state.away_to_act(), "turnover");
     }
 
     /// A home blocker pushes an away Fend defender one square straight back.
@@ -2389,10 +2433,10 @@ mod tests {
         assert_eq!(ball, BallState::Carried(carrier), "Sure Hands");
     }
 
-    /// Strip Ball works on a Stand Firm carrier too: they are not pushed, but still drop the
-    /// ball in their own square, and it bounces.
+    /// S3, Strip Ball: the carrier drops the ball "in the square they are Pushed Back into" — one
+    /// who stands firm is not Pushed Back, and keeps it.
     #[test]
-    fn strip_ball_works_on_a_carrier_who_stands_firm() {
+    fn strip_ball_does_nothing_to_a_carrier_who_stands_firm() {
         let attacker_pos = Position::new((5, 3));
         let defender_pos = Position::new((6, 3));
         let mut state = GameStateBuilder::new()
@@ -2408,16 +2452,15 @@ mod tests {
         state.fix_blockdice(BlockDice::Push);
         state.step_positional(PosAT::Block, defender_pos);
         state.step_simple(SimpleAT::SelectPush);
-        state.fix_d8_direction(Direction::up()); //bounce to an empty square
         state.step_simple(SimpleAT::UseSkill);
         assert_eq!(state.get_player_unsafe(defender).position, defender_pos);
-        assert_eq!(state.ball, BallState::OnGround(defender_pos + Direction::up()));
+        assert_eq!(state.ball, BallState::Carried(defender));
     }
 
-    /// ... and when a player further down a chain push stands firm: nobody moves, but the
-    /// carrier still loses the ball.
+    /// ... nor when a player further down a chain push stands firm: nobody moves, so the carrier
+    /// was not Pushed Back either.
     #[test]
-    fn strip_ball_works_when_a_chain_push_is_stopped_by_stand_firm() {
+    fn strip_ball_does_nothing_when_a_chain_push_is_stopped_by_stand_firm() {
         let attacker_pos = Position::new((5, 3));
         let defender_pos = Position::new((6, 3));
         let mut state = GameStateBuilder::new()
@@ -2436,10 +2479,9 @@ mod tests {
         state.step_positional(PosAT::Block, defender_pos);
         state.step_simple(SimpleAT::SelectPush);
         state.step_positional(PosAT::Push, Position::new((7, 3)));
-        state.fix_d8_direction(Direction::up()); //bounce to an empty square
         state.step_simple(SimpleAT::UseSkill);
         assert_eq!(state.get_player_unsafe(defender).position, defender_pos);
-        assert_eq!(state.ball, BallState::OnGround(defender_pos + Direction::up()));
+        assert_eq!(state.ball, BallState::Carried(defender));
     }
 
     /// A Stumble the defender's Dodge turns into a push is a push: the carrier loses the ball.
