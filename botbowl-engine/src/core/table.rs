@@ -20,6 +20,24 @@ pub enum PosAT {
     /// Setup: put the player being placed (`info.active_player`) on this
     /// square of our own half. See `Setup` in `procedures/kickoff_procs.rs`.
     PlacePlayer,
+    /// S3 Secure the Ball: declare it on this player (a free Move that must end on the loose
+    /// ball, which is then picked up on a D6 2+). See `Turn::secure_ball_positions`.
+    StartSecureBall,
+    // Hidden actions only from here on (`PosAT::LISTED`): offered through
+    // `AvailableActions::insert_hidden_positional`, never in a `PosATSet`.
+    /// Throw / Kick Team-mate (S3), every step of it: declaring the action on the thrower (or
+    /// kicker), picking up the adjacent Right Stuff team-mate on their square, then the target
+    /// square. **Hidden** (`AvailableActions::insert_hidden_positional`): legal, never listed,
+    /// so bots, the search and the NN never see it (and it has no policy channel); a human UI
+    /// offers it. Which step it is depends on the procedure asking. See
+    /// `procedures/team_mate_procs.rs`.
+    ThrowTeamMate,
+    /// During a Move (or the movement of any action): one Jump over a Prone/Stunned player, or
+    /// a Leap, from where the player stands to this square (S3, Jumping over Players; Leap).
+    /// **Hidden** (`AvailableActions::hidden_positional`): legal but never listed, so bots,
+    /// the search and the NN never see it (no policy channel) — the paths carry jumps for them;
+    /// a human UI offers it for fine control.
+    Jump,
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
@@ -46,6 +64,11 @@ pub enum SimpleAT {
     /// is the procedure on top of the stack.
     UseSkill,
     DontUseSkill,
+    /// During a Pass action: pass to any square in range instead of a team-mate (S3 allows
+    /// it), from where the passer stands. **Hidden**: offered through
+    /// `AvailableActions::hidden`, which `get_all_actions` never lists, so bots, the search and
+    /// the NN never see it (and it has no policy channel); a human UI offers it.
+    PassSquare,
 }
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
@@ -96,7 +119,9 @@ pub enum Skill {
     Accurate,
     NervesOfSteel,
     OnTheBall,
-    Pass,
+    /// S3 (not implemented yet). Holds index 24, `Pass`'s until the pre-S3 `Throw` was folded
+    /// into `Pass` — see `Pass`.
+    SafePass,
     // Strength Skills
     ArmBar,
     Brawler,
@@ -110,9 +135,22 @@ pub enum Skill {
     BoneHead,
     Loner,
     Stunty,
-    Throw,
+    /// S3 Pass (re-roll a failed Passing Ability Test). Sits at index 36, where the pre-S3
+    /// `Throw` was: `Throw` was the stock Thrower's skill and did nothing, `Pass` (index 24) was
+    /// on no roster, so the stock Thrower lights the NN plane it always lit and every trained
+    /// net reads the same input. A stored `"Throw"` loads as `Pass`.
+    #[serde(alias = "Throw")]
+    Pass,
     WildAnimal,
     KickOffReturn,
+    // Appended after `StripBall` (index 39), so every earlier index keeps its place. Beyond
+    // `botbowl-nn`'s `ENCODED_SKILLS`: no NN plane, no schema change.
+    /// S3 trait: may declare a Throw Team-mate Action.
+    ThrowTeamMate,
+    /// S3 trait: can be thrown (or kicked) by a team-mate, even if Prone.
+    RightStuff,
+    /// S3 trait: may declare a Kick Team-mate Special Action (one per team per turn).
+    KickTeamMate,
 }
 impl Skill {
     /// Every skill variant, in declaration order. This is the canonical
@@ -150,7 +188,7 @@ impl Skill {
         Skill::Accurate,
         Skill::NervesOfSteel,
         Skill::OnTheBall,
-        Skill::Pass,
+        Skill::SafePass,
         // Strength Skills
         Skill::ArmBar,
         Skill::Brawler,
@@ -164,16 +202,19 @@ impl Skill {
         Skill::BoneHead,
         Skill::Loner,
         Skill::Stunty,
-        Skill::Throw,
+        Skill::Pass,
         Skill::WildAnimal,
         Skill::KickOffReturn,
         // Appended, not grouped with General, so every earlier index (and NN skill plane) keeps
         // its place.
         Skill::StripBall,
+        Skill::ThrowTeamMate,
+        Skill::RightStuff,
+        Skill::KickTeamMate,
     ];
 
     /// Number of skill variants.
-    pub const COUNT: usize = 40;
+    pub const COUNT: usize = 43;
 
     /// Dense index of a skill within [`Skill::ALL`].
     ///
@@ -206,7 +247,7 @@ impl Skill {
             Skill::Accurate => 21,
             Skill::NervesOfSteel => 22,
             Skill::OnTheBall => 23,
-            Skill::Pass => 24,
+            Skill::SafePass => 24,
             Skill::ArmBar => 25,
             Skill::Brawler => 26,
             Skill::BreakTackle => 27,
@@ -218,10 +259,13 @@ impl Skill {
             Skill::BoneHead => 33,
             Skill::Loner => 34,
             Skill::Stunty => 35,
-            Skill::Throw => 36,
+            Skill::Pass => 36,
             Skill::WildAnimal => 37,
             Skill::KickOffReturn => 38,
             Skill::StripBall => 39,
+            Skill::ThrowTeamMate => 40,
+            Skill::RightStuff => 41,
+            Skill::KickTeamMate => 42,
         }
     }
 
@@ -363,7 +407,14 @@ impl<'de> Deserialize<'de> for SkillSet {
 }
 
 impl PosAT {
-    pub const COUNT: usize = 15;
+    pub const COUNT: usize = 18;
+    /// The listed (non-hidden) variants are `ALL[..LISTED]`, the only ones a `PosATSet` holds;
+    /// the rest are hidden actions, kept out of the set so it stays two bytes a square.
+    pub const LISTED: usize = 16;
+}
+// The hidden variants come after every listed one: a new listed variant goes before them.
+const _: () = assert!(PosAT::ThrowTeamMate.index() == PosAT::LISTED && PosAT::Jump.index() == PosAT::LISTED + 1);
+impl PosAT {
     /// Every variant, in `index` order. `index` is an exhaustive match, so a new variant fails to
     /// compile until it is numbered, and `pos_at_all_matches_index` checks it was added here too.
     pub const ALL: [PosAT; PosAT::COUNT] = [
@@ -382,6 +433,9 @@ impl PosAT {
         PosAT::StartBlock,
         PosAT::Block,
         PosAT::PlacePlayer,
+        PosAT::StartSecureBall,
+        PosAT::ThrowTeamMate,
+        PosAT::Jump,
     ];
     pub const fn index(self) -> usize {
         match self {
@@ -400,12 +454,15 @@ impl PosAT {
             PosAT::StartBlock => 12,
             PosAT::Block => 13,
             PosAT::PlacePlayer => 14,
+            PosAT::StartSecureBall => 15,
+            PosAT::ThrowTeamMate => 16,
+            PosAT::Jump => 17,
         }
     }
 }
 
 impl SimpleAT {
-    pub const COUNT: usize = 17;
+    pub const COUNT: usize = 18;
     /// Every variant, in `index` order; see `PosAT::ALL`.
     pub const ALL: [SimpleAT; SimpleAT::COUNT] = [
         SimpleAT::SelectBothDown,
@@ -425,6 +482,7 @@ impl SimpleAT {
         SimpleAT::BenchPlayer,
         SimpleAT::UseSkill,
         SimpleAT::DontUseSkill,
+        SimpleAT::PassSquare,
     ];
     pub const fn index(self) -> usize {
         match self {
@@ -445,6 +503,7 @@ impl SimpleAT {
             SimpleAT::BenchPlayer => 14,
             SimpleAT::UseSkill => 15,
             SimpleAT::DontUseSkill => 16,
+            SimpleAT::PassSquare => 17,
         }
     }
 }
@@ -454,12 +513,16 @@ impl SimpleAT {
 /// sequence of variants so stored corpora read back unchanged.
 macro_rules! enum_bitset {
     ($(#[$attr:meta])* $set:ident, $enum:ident, $bits:ty) => {
+        enum_bitset!($(#[$attr])* $set, $enum, $bits, $enum::COUNT);
+    };
+    // `$members`: the set holds `ALL[..$members]` only (`PosAT`'s hidden variants stay out).
+    ($(#[$attr:meta])* $set:ident, $enum:ident, $bits:ty, $members:expr) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
         pub struct $set($bits);
 
         const _: () = assert!(
-            $enum::COUNT <= <$bits>::BITS as usize,
+            $members <= <$bits>::BITS as usize,
             concat!(stringify!($set), " holds one bit per variant")
         );
 
@@ -468,26 +531,32 @@ macro_rules! enum_bitset {
                 Self(0)
             }
 
-            const fn bit(v: $enum) -> $bits {
-                1 << v.index()
+            /// `None` for a variant the set cannot hold.
+            const fn bit(v: $enum) -> Option<$bits> {
+                if v.index() < $members {
+                    Some(1 << v.index())
+                } else {
+                    None
+                }
             }
 
-            /// Adds `v`; returns whether it was absent (as `HashSet::insert`).
+            /// Adds `v`; returns whether it was absent (as `HashSet::insert`). Panics on a
+            /// variant the set cannot hold.
             pub fn insert(&mut self, v: $enum) -> bool {
                 let absent = !self.contains(&v);
-                self.0 |= Self::bit(v);
+                self.0 |= Self::bit(v).unwrap_or_else(|| panic!("{v:?} cannot be in a {}", stringify!($set)));
                 absent
             }
 
             /// Removes `v`; returns whether it was present (as `HashSet::remove`).
             pub fn remove(&mut self, v: &$enum) -> bool {
                 let present = self.contains(v);
-                self.0 &= !Self::bit(*v);
+                self.0 &= !Self::bit(*v).unwrap_or(0);
                 present
             }
 
             pub fn contains(&self, v: &$enum) -> bool {
-                self.0 & Self::bit(*v) != 0
+                Self::bit(*v).is_some_and(|bit| self.0 & bit != 0)
             }
 
             pub fn clear(&mut self) {
@@ -544,7 +613,14 @@ macro_rules! enum_bitset {
 
         impl<'de> Deserialize<'de> for $set {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                Ok(Vec::<$enum>::deserialize(deserializer)?.into_iter().collect())
+                let mut set = Self::new();
+                for v in Vec::<$enum>::deserialize(deserializer)? {
+                    let bit = Self::bit(v).ok_or_else(|| {
+                        serde::de::Error::custom(format!("{v:?} cannot be in a {}", stringify!($set)))
+                    })?;
+                    set.0 |= bit;
+                }
+                Ok(set)
             }
         }
     };
@@ -557,7 +633,8 @@ enum_bitset!(
     /// `Copy` array and an `AvailableActions` clone is a memcpy.
     PosATSet,
     PosAT,
-    u16
+    u16,
+    PosAT::LISTED
 );
 
 enum_bitset!(
@@ -671,6 +748,15 @@ mod skill_set_tests {
             let back: HashSet<Skill> = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
             assert_eq!(back, hs);
         }
+    }
+
+    /// A hidden `PosAT` in stored data is a load error, not a panic.
+    #[test]
+    fn a_hidden_pos_at_does_not_deserialize_into_a_set() {
+        use super::{PosAT, PosATSet};
+        let ok: PosATSet = serde_json::from_str(r#"["Move","StartSecureBall"]"#).unwrap();
+        assert!(ok.contains(&PosAT::StartSecureBall));
+        assert!(serde_json::from_str::<PosATSet>(r#"["Move","Jump"]"#).is_err());
     }
 
     #[test]

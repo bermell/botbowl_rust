@@ -1,13 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+use crate::core::dices::{RequestedRoll, RollResult};
 use crate::core::model::ProcInput;
-use crate::core::model::{Action, AvailableActions, FieldedPlayer, PlayerID, PlayerStatus, ProcState, Procedure};
+use crate::core::model::{
+    Action, AvailableActions, FieldedPlayer, PlayerID, PlayerStatus, Position, ProcState, Procedure,
+};
 use crate::core::pathing::{
     event_ends_player_action, CustomIntoIter, DodgeMarkers, NodeIterator, PathFinder, PathingEvent, PositionOrEvent,
 };
 use crate::core::procedures::casualty_procs::Blow;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
-use crate::core::procedures::{ball_procs, block_procs, game_procs};
+use crate::core::procedures::{ball_procs, block_procs, game_procs, team_mate_procs};
 use crate::core::table::*;
 
 use crate::core::model::{other_team, TeamType, Weather};
@@ -67,6 +70,50 @@ pub fn standup_cost(player: &FieldedPlayer) -> u8 {
         3
     }
 }
+/// S3, Standing Up: a player with MA 2 or less ("regardless of any modifiers") must roll a 4+
+/// to stand up. Jump Up stands up for free, roll-free.
+pub fn standup_roll(player: &FieldedPlayer) -> Option<D6Target> {
+    (player.stats.ma <= 2 && !player.has_skill(Skill::JumpUp)).then_some(D6Target::FourPlus)
+}
+
+/// The stand-up roll (`standup_roll`): on a success the player stands, using their whole
+/// Movement Allowance; on a failure they stay Prone and their activation ends — no turnover.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct StandUpRoll {
+    target: D6Target,
+    id: PlayerID,
+}
+impl StandUpRoll {
+    pub fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        AnyProc::StandUpRoll(SimpleProcContainer::new(StandUpRoll { target, id }))
+    }
+}
+impl SimpleProc for StandUpRoll {
+    fn d6_target(&self) -> D6Target {
+        self.target
+    }
+
+    fn reroll_skill(&self) -> Option<Skill> {
+        None
+    }
+
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
+        let player = game_state.get_mut_player_unsafe(self.id);
+        player.status = PlayerStatus::Up;
+        player.add_move(player.moves_left());
+        Vec::new()
+    }
+
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
+        game_state.get_mut_player_unsafe(self.id).used = true;
+        Vec::new()
+    }
+
+    fn player_id(&self) -> PlayerID {
+        self.id
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct StandUp {
     id: PlayerID,
@@ -128,11 +175,96 @@ impl SimpleProc for DodgeProc {
         self.id
     }
 }
+/// S3, Jumping over Players (and Leap): the Agility Test of a Jump into `to`, after any Rushes.
+/// Passed: the player is placed Standing in `to` and the activation goes on. Failed: placed in
+/// `to`, they Fall Over. A natural 1: they Fall Over where they are. Either fall is a turnover.
+/// The roll is a `D6ThreeOutcomes` (2+ / `target`): `Pass`, `MiddleOutcome` = failed, `Fail` =
+/// the natural 1. A team re-roll may re-roll it; no skill does (Dodge is for Dodging).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct JumpProc {
+    id: PlayerID,
+    to: Position,
+    target: D6Target,
+    /// The failed result while the coach is asked about a team re-roll.
+    failed: Option<RollResult>,
+    rerolled: bool,
+}
+impl JumpProc {
+    pub fn new(id: PlayerID, to: Position, target: D6Target) -> AnyProc {
+        AnyProc::JumpProc(JumpProc {
+            id,
+            to,
+            target,
+            failed: None,
+            rerolled: false,
+        })
+    }
+    fn roll(&self) -> ProcState {
+        ProcState::NeedRoll(RequestedRoll::D6ThreeOutcomes(D6Target::TwoPlus, self.target))
+    }
+    fn land(&self, game_state: &mut GameState) {
+        game_state.move_player(self.id, self.to).unwrap();
+        crate::game_log!(game_state, "Jumped to {:?}", self.to);
+        game_state.get_mut_player_unsafe(self.id).add_move(2);
+    }
+    fn fall(&self, game_state: &mut GameState, result: RollResult) -> ProcState {
+        // Arm Bar marks the square jumped away from — the one the player is still in.
+        let player = game_state.get_player_unsafe(self.id);
+        let arm_bar = game_state.get_adj_players(player.position).any(|p| {
+            p.stats.team != player.stats.team && p.has_tackle_zone() && p.has_skill(Skill::ArmBar)
+        });
+        if result == RollResult::MiddleOutcome {
+            self.land(game_state);
+        }
+        game_state.info.turnover = true;
+        let blow = Blow {
+            mighty_blow: arm_bar,
+            ..Blow::default()
+        };
+        ProcState::DoneNew(block_procs::KnockDown::new_with_blow(self.id, blow))
+    }
+}
+impl Procedure for JumpProc {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => self.roll(),
+            ProcInput::Roll(RollResult::Pass) => {
+                self.land(game_state);
+                ProcState::Done
+            }
+            ProcInput::Roll(result @ (RollResult::MiddleOutcome | RollResult::Fail)) => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                if !self.rerolled && game_state.may_use_team_reroll(team) {
+                    self.failed = Some(result);
+                    let mut aa = AvailableActions::new(team);
+                    aa.insert_simple(SimpleAT::UseReroll);
+                    aa.insert_simple(SimpleAT::DontUseReroll);
+                    return ProcState::NeedAction(aa);
+                }
+                self.fall(game_state, result)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                game_state.get_mut_team(team).use_reroll();
+                self.rerolled = true;
+                self.failed = None;
+                self.roll()
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) => {
+                let result = self.failed.take().expect("a failed jump awaiting the re-roll question");
+                self.fall(game_state, result)
+            }
+            input => panic!("Illegal input for JumpProc: {:?}", input),
+        }
+    }
+}
+
 fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
     match roll {
         PathingEvent::Dodge(target, markers) => vec![DodgeProc::new(active_player, target, markers)],
         PathingEvent::GFI(target) => vec![GfiProc::new(active_player, target)],
         PathingEvent::Pickup(target) => vec![ball_procs::PickupProc::new(active_player, target)],
+        PathingEvent::SecureBall(target) => vec![ball_procs::SecureBallProc::new(active_player, target)],
         PathingEvent::Block(id, dices) => vec![block_procs::Block::new(dices, id)],
         PathingEvent::Handoff(id, target) => vec![
             game_procs::TurnoverIfPossessionLost::new(),
@@ -141,7 +273,21 @@ fn proc_from_roll(roll: PathingEvent, active_player: PlayerID) -> Vec<AnyProc> {
         PathingEvent::Touchdown(id) => vec![ball_procs::Touchdown::new(id)],
         PathingEvent::Foul(victim, target) => vec![casualty_procs::Armor::new_foul(victim, target, active_player)],
         PathingEvent::StandUp => vec![StandUp::new(active_player)],
+        PathingEvent::StandUpRoll(target) => vec![StandUpRoll::new(active_player, target)],
         PathingEvent::Pass { to, pass, modifer } => vec![ball_procs::Pass::new(to, pass, modifer)],
+        PathingEvent::Jump { to, target } => vec![JumpProc::new(active_player, to, target)],
+    }
+}
+
+/// S3 Secure the Ball: "this Move Action must finish on a square containing a ball otherwise a
+/// Turnover is caused". Called when a Secure the Ball activation ends without a turnover; the
+/// pick-up itself (`SecureBallProc`) ends it holding the ball, anything else (ending the move
+/// elsewhere, a failed stand-up) is a turnover.
+fn secure_ball_turnover_if_off_ball(game_state: &mut GameState, id: PlayerID) {
+    if game_state.info.player_action_type == Some(PosAT::StartSecureBall)
+        && game_state.ball != crate::core::model::BallState::Carried(id)
+    {
+        game_state.info.turnover = true;
     }
 }
 
@@ -202,6 +348,28 @@ impl MoveAction {
         game_state.available_actions.team = Some(team);
         game_state.available_actions.has_paths = true;
         game_state.available_actions.insert_simple(SimpleAT::EndPlayerTurn);
+        // S3 lets a pass target any square in range; the paths only reach team-mates. Passing
+        // to a square is hidden from bots (rare, and not worth a branch in every pass decision).
+        if game_state.info.player_action_type == Some(PosAT::StartPass)
+            && game_state.ball == crate::core::model::BallState::Carried(self.player_id)
+        {
+            game_state.available_actions.insert_hidden_simple(SimpleAT::PassSquare);
+        }
+        // Throw / Kick Team-mate: after the free Move Action, pick up an adjacent Right Stuff
+        // team-mate (hidden, like the declaration).
+        if game_state.info.player_action_type == Some(PosAT::ThrowTeamMate) {
+            let thrower = game_state.get_player_unsafe(self.player_id);
+            for pos in team_mate_procs::throwable_team_mates(game_state, thrower) {
+                game_state
+                    .available_actions
+                    .insert_hidden_positional(PosAT::ThrowTeamMate, pos);
+            }
+        }
+        // One specific Jump or Leap from where the player stands, for a human's fine control —
+        // hidden like `PassSquare`. Offered whether or not the paths carry jumps.
+        for to in PathFinder::jump_targets(game_state, self.player_id) {
+            game_state.available_actions.insert_hidden_positional(PosAT::Jump, to);
+        }
     }
 }
 impl Procedure for MoveAction {
@@ -212,7 +380,10 @@ impl Procedure for MoveAction {
         }
 
         match game_state.get_player(self.player_id) {
-            Ok(player) if player.used => return ProcState::Done,
+            Ok(player) if player.used => {
+                secure_ball_turnover_if_off_ball(game_state, self.player_id);
+                return ProcState::Done;
+            }
             Err(_) => return ProcState::Done, // player not on field anymore
             _ => (),
         }
@@ -230,7 +401,13 @@ impl Procedure for MoveAction {
                 }
                 proc_state
             }
-            (ProcInput::Action(Action::Positional(_, position)), MoveActionState::SelectPath) => {
+            (ProcInput::Action(Action::Positional(PosAT::ThrowTeamMate, position)), MoveActionState::SelectPath) => {
+                self.state = MoveActionState::Init;
+                let thrown = game_state.get_player_id_at(position).unwrap();
+                let kick = game_state.info.kick_team_mate_this_activation;
+                ProcState::NotDoneNew(team_mate_procs::ThrowTeamMate::new(self.player_id, thrown, kick))
+            }
+            (ProcInput::Action(Action::Positional(action_type, position)), MoveActionState::SelectPath) => {
                 // Selecting a move action consumes any pickup-bonus owed from a
                 // previous step this activation. (When this very action is the
                 // one that picks up the ball, the flag is false here and gets
@@ -244,7 +421,12 @@ impl Procedure for MoveAction {
                 if game_state.info.player_action_type == Some(PosAT::StartMove) {
                     game_state.info.blitz_this_activation = false;
                 }
-                let mut path = game_state.take_path(position).unwrap().iter();
+                let node = if action_type == PosAT::Jump {
+                    PathFinder::jump_path(game_state, self.player_id, position).expect("a legal jump")
+                } else {
+                    game_state.take_path(position).unwrap()
+                };
+                let mut path = node.iter();
                 let proc_state = MoveAction::continue_along_path(&mut path, game_state);
                 if path.is_empty() {
                     self.state = MoveActionState::Init;
@@ -255,7 +437,12 @@ impl Procedure for MoveAction {
             }
             (ProcInput::Action(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
+                secure_ball_turnover_if_off_ball(game_state, self.player_id);
                 ProcState::Done
+            }
+            (ProcInput::Action(Action::Simple(SimpleAT::PassSquare)), MoveActionState::SelectPath) => {
+                self.state = MoveActionState::Init;
+                ProcState::NotDoneNew(ball_procs::PassToSquare::new(self.player_id))
             }
             (input, _) => panic!("Illegal input for MoveAction: {:?}", input),
         }
@@ -297,10 +484,13 @@ mod tests {
 
         state.fix_d6(4); //succeed first reroll
         state.fix_d6(1); //fail next dodge
-        state.fix_d6(1); //armor
-        state.fix_d6(1); //armor
-
         state.step_simple(SimpleAT::UseReroll);
+
+        // S3: the team may use another re-roll in the same turn.
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        state.fix_d6(1); //armor
+        state.fix_d6(1); //armor
+        state.step_simple(SimpleAT::DontUseReroll);
 
         assert_eq!(state.get_player_at(target_pos).unwrap().status, PlayerStatus::Down);
 
@@ -394,7 +584,6 @@ mod tests {
         let player = state.get_player(id).unwrap();
         assert!(!state.is_legal_action(&Action::Positional(PosAT::Move, Position::new((9, 2)))));
         assert_eq!(state.get_player_id_at_coord(9, 1).unwrap(), id);
-        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll());
         assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2);
         // assert_eq!(state.get_legal_positions(PosAT::Move).len(), 0);
         assert_eq!(player.total_movement_left(), 0);
@@ -467,7 +656,7 @@ mod tests {
                 .build();
             state.get_mut_team(TeamType::Home).rerolls = 0;
             let id = state.get_player_id_at(start_pos).unwrap();
-            state.get_mut_player_unsafe(id).stats.av = 8;
+            state.get_mut_player_unsafe(id).stats.armour = 9; // AV 9+
             let marker = state.get_player_id_at(Position::new((4, 3))).unwrap();
             if arm_bar {
                 state.get_mut_player_unsafe(marker).stats.give_skill(Skill::ArmBar);
@@ -518,7 +707,6 @@ mod tests {
         state.step_simple(SimpleAT::UseReroll);
 
         assert_eq!(state.get_player_id_at_coord(3, 3).unwrap(), id);
-        assert!(!state.get_team_from_player(id).unwrap().can_use_reroll());
         assert_eq!(state.get_team_from_player(id).unwrap().rerolls, 2);
         assert_eq!(state.get_mut_player(id).unwrap().total_movement_left(), 6);
         assert_eq!(state.get_mut_player(id).unwrap().gfis_left(), 2);
@@ -785,14 +973,10 @@ mod tests {
         let (mut state, _, target_pos, _) = setup_simple_pass(true, 4);
         let bounce_dir = Direction::up();
         state.fix_d6(6); // pass
-        state.fix_d6(1); // deflect fails
-        state.step_positional(PosAT::Pass, target_pos);
-
-        state.fix_d6(1); // target fails the catch
-        state.step_simple(SimpleAT::DontUseReroll); // decline the deflect reroll
-
+        state.fix_d6(1); // deflect fails (no team re-roll outside the interceptor's own turn)
+        state.fix_d6(1); // target fails the catch (the team has no re-rolls)
         state.fix_d8_direction(bounce_dir);
-        state.step_simple(SimpleAT::DontUseReroll); // decline the catch reroll
+        state.step_positional(PosAT::Pass, target_pos);
 
         assert_eq!(
             state.ball,
@@ -856,6 +1040,15 @@ mod tests {
         assert_eq!(state.get_player_unsafe(id).position.distance_to(&target_pos), 1);
     }
     fn setup_simple_pass(interceptor: bool, distance: i8) -> (GameState, Position, Position, Position) {
+        setup_simple_pass_with(interceptor, distance, |_, _| ())
+    }
+    /// `prepare` edits the state (weather, the passer's skills) before the pass action starts —
+    /// the pass targets and their modifiers are computed then.
+    fn setup_simple_pass_with(
+        interceptor: bool,
+        distance: i8,
+        prepare: impl FnOnce(&mut GameState, PlayerID),
+    ) -> (GameState, Position, Position, Position) {
         assert!(distance > 1);
         let start_pos = Position::new((3, 3));
         let target_pos = Position::new((3 + distance, 3));
@@ -869,10 +1062,13 @@ mod tests {
             builder.add_away_player(away_player);
         }
         let mut state = builder.build();
+        // No team re-roll questions unless a test asks for them.
+        state.get_mut_team(TeamType::Home).rerolls = 0;
 
         //make sure player does not move
         let id = state.get_player_id_at(start_pos).unwrap();
         state.get_mut_player_unsafe(id).moves = state.get_player_unsafe(id).total_movement_left();
+        prepare(&mut state, id);
 
         state.step_positional(PosAT::StartPass, start_pos);
         (state, start_pos, target_pos, away_player)
@@ -891,8 +1087,7 @@ mod tests {
         state.step_positional(PosAT::StartPass, start_pos);
         state.fix_d6(6); //Pass
         state.step_positional(PosAT::Pass, target_pos);
-        state.fix_d6(6); //deflect
-        state.fix_d6(6); //Catch
+        state.fix_d6(6); //interception: possession at once, no catch
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
         state.step_positional(PosAT::SelectPosition, deflect_pos);
         let carrier_id = state.get_player_id_at(deflect_pos).unwrap();
@@ -915,34 +1110,78 @@ mod tests {
         assert_eq!(interceptor, Position::new((5, 3)));
         let interceptor_id = state.get_player_id_at(interceptor).unwrap();
         state.fix_d6(6); //Pass
-        state.fix_d6(6); //deflect
-        state.fix_d6(6); //Catch
+        state.fix_d6(6); //interception (a natural 6): possession at once, no catch
         state.step_positional(PosAT::Pass, target_pos);
         assert_eq!(state.ball, BallState::Carried(interceptor_id));
-        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away, "turnover");
     }
+    /// S3, Interceptions: -3 against an Accurate Pass, so an AG 3 interceptor needs a 6 — a 5
+    /// fails and the target catches.
     #[test]
-    fn pass_successful_deflect_failed_catch() {
-        let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
-        assert_eq!(interceptor, Position::new((5, 3)));
+    fn intercepting_an_accurate_pass_is_minus_three() {
+        let (mut state, _, target_pos, _) = setup_simple_pass(true, 4);
         state.fix_d6(6); //Pass
-        state.fix_d6(6); //deflect
-        state.fix_d6(1); //Catch
+        state.fix_d6(5); //interception fails
+        state.fix_d6(3); //Catch (3+, no modifier)
         state.step_positional(PosAT::Pass, target_pos);
-        state.fix_d8_direction(Direction::up()); //Catch
-        state.step_simple(SimpleAT::DontUseReroll);
-        assert_eq!(state.ball, BallState::OnGround(interceptor + Direction::up()));
-        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Home);
+    }
+    /// Stunty (Skills and Traits): "this player applies a -1 modifier to the Agility Test when
+    /// attempting to Intercept the ball". An AG 2+ interceptor intercepts an Accurate Pass on a 5
+    /// (-3), a Stunty one only on a 6.
+    #[test]
+    fn a_stunty_interceptor_takes_an_extra_minus_one() {
+        let intercepted = |stunty: bool| {
+            let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
+            let interceptor_id = state.get_player_id_at(interceptor).unwrap();
+            let player = state.get_mut_player_unsafe(interceptor_id);
+            player.stats.agility = 2;
+            if stunty {
+                player.stats.give_skill(Skill::Stunty);
+            }
+            state.fix_d6(6); //Pass
+            state.fix_d6(5); //interception
+            if stunty {
+                state.fix_d6(3); //Catch
+            }
+            state.step_positional(PosAT::Pass, target_pos);
+            state.ball == BallState::Carried(interceptor_id)
+        };
+        assert!(intercepted(false));
+        assert!(!intercepted(true));
+    }
+    /// ... and -2 against an Inaccurate one: an AG 3 interceptor then needs a 5. The pass to a
+    /// square 7 away (a Long Pass, 6+ for a 4+ passer) fails on a 4, scatters back onto the
+    /// interceptor's line and is intercepted on a 5.
+    #[test]
+    fn intercepting_an_inaccurate_pass_is_minus_two() {
+        let (mut state, _, target_pos, _) = setup_simple_pass(false, 7);
+        let interceptor_pos = Position::new((7, 3));
+        let mut extra = state.clone();
+        let _ = &mut extra;
+        state
+            .add_new_player_to_field(crate::core::model::PlayerStats::new_lineman(TeamType::Away), interceptor_pos)
+            .unwrap();
+        let interceptor_id = state.get_player_id_at(interceptor_pos).unwrap();
+        state.fix_d6(4); //Pass: inaccurate
+        state.fix_d8_direction(Direction::left()); //Scatter
+        state.fix_d8_direction(Direction::up()); //Scatter
+        state.fix_d8_direction(Direction::down()); //Scatter: lands one left of the target
+        state.fix_d6(5); //interception (5+)
+        state.step_positional(PosAT::Pass, target_pos);
+        assert_eq!(state.ball, BallState::Carried(interceptor_id));
     }
     #[test]
     fn pass_failed_deflect() {
         let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
         assert_eq!(interceptor, Position::new((5, 3)));
         state.fix_d6(6); //Pass
-        state.fix_d6(1); //deflect
-        state.step_positional(PosAT::Pass, target_pos);
+        state.fix_d6(1); //deflect, failed: the interceptor's team is not the active team, so no
+                         //team re-roll is offered (S3, Team Re-rolls)
         state.fix_d6(6); //Catch
-        state.step_simple(SimpleAT::DontUseReroll);
+        state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Home);
@@ -970,41 +1209,227 @@ mod tests {
         assert_eq!(state.ball, BallState::OnGround(target_pos + 4 * bounce_direction));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
     }
+    /// S3: "If the Passing Ability Test is a 1 after modifiers ... it will be a Fumbled Pass" (the
+    /// pre-S3 Wildly Inaccurate pass is gone). A Long Bomb (-3) rolled as a 2 bounces from the
+    /// passer.
     #[test]
-    fn pass_wildly_inaccurate_turnover() {
+    fn a_pass_that_is_a_one_after_modifiers_is_fumbled() {
         let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 10);
-        let deviate_direction = Direction::down();
         let bounce_direction = Direction::right();
-        let passer_id = state.get_player_id_at(start_pos).unwrap();
-        let deviate_distance = 3;
-        state.fix_d6(2); //Pass failed
-        state.fix_d8_direction(deviate_direction); //Scatter
-        state.fix_d8_direction(bounce_direction); //Scatter
-        state.fix_d6(deviate_distance as u8);
-        state.step_positional(PosAT::Pass, target_pos);
-        let expected_ball_pos =
-            state.get_player_unsafe(passer_id).position + deviate_distance * deviate_direction + bounce_direction;
-        assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
-        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
-    }
-    #[test]
-    fn pass_wildly_inaccurate_out_of_bounds() {
-        let (mut state, _start_pos, target_pos, _) = setup_simple_pass(false, 10);
-        let deviate_direction = Direction::up();
-        let bounce_direction = Direction::right();
-        let out_of_bounds_pos = Position::new((3, 1));
-        let deviate_distance = 6;
-        state.fix_d6(2); //Pass failed
-        state.fix_d8_direction(deviate_direction);
-        state.fix_d6(deviate_distance as u8);
-        state.fix_d6(3); //throw in length
-        state.fix_d6(2); //throw in length
-        state.fix_d3(2); //throw in direction: down
+        state.fix_d6(2); //Pass: 2 - 3 = -1
         state.fix_d8_direction(bounce_direction);
         state.step_positional(PosAT::Pass, target_pos);
-        let expected_ball_pos = out_of_bounds_pos + Direction::down() * (3 + 2) + bounce_direction;
-        assert_eq!(state.ball, BallState::OnGround(expected_ball_pos));
+        assert_eq!(state.ball, BallState::OnGround(start_pos + bounce_direction));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
+    }
+    /// An Inaccurate Pass scattering off the pitch is thrown in from the last square it was on.
+    #[test]
+    fn an_inaccurate_pass_scattering_off_the_pitch_is_thrown_in() {
+        // Unscaled throw-in distance: the full pitch only.
+        crate::skip_if_board_smaller_than!(28, 17);
+        let (mut state, _, target_pos, _) = setup_simple_pass(false, 7);
+        let last_on_pitch = Position::new((target_pos.x, 1));
+        state.fix_d6(4); //Pass: inaccurate
+        state.fix_d8_direction(Direction::up()); //Scatter
+        state.fix_d8_direction(Direction::up()); //Scatter
+        state.fix_d8_direction(Direction::up()); //Scatter: off the pitch
+        state.fix_d6(3); //throw in length
+        state.fix_d6(3); //throw in length: 2D6 = 6 lands 5 squares in
+        state.fix_d3(2); //throw in direction: down
+        state.fix_d8_direction(Direction::right()); //bounce
+        state.step_positional(PosAT::Pass, target_pos);
+        let expected = last_on_pitch + Direction::down() * 5 + Direction::right();
+        assert_eq!(state.ball, BallState::OnGround(expected));
+        assert_eq!(state.available_actions.team.unwrap(), TeamType::Away);
+    }
+    /// A failed Passing Ability Test may be re-rolled with a team re-roll ...
+    #[test]
+    fn a_failed_pass_may_be_team_rerolled() {
+        let (mut state, _, target_pos, _) = setup_simple_pass(false, 2);
+        state.get_mut_team(TeamType::Home).rerolls = 1;
+        state.fix_d6(1); //Pass: fumble
+        state.step_positional(PosAT::Pass, target_pos);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        state.fix_d6(6); //re-rolled: accurate
+        state.fix_d6(6); //Catch
+        state.step_simple(SimpleAT::UseReroll);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+        assert_eq!(state.get_team(TeamType::Home).rerolls, 0);
+    }
+    /// ... or with the Pass skill, but only once: a re-rolled test stands.
+    #[test]
+    fn the_pass_skill_rerolls_a_failed_pass_once() {
+        let (mut state, start_pos, target_pos, _) = setup_simple_pass(false, 2);
+        state.get_mut_team(TeamType::Home).rerolls = 1;
+        let passer = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(passer).stats.give_skill(Skill::Pass);
+        state.fix_d6(1); //Pass: fumble
+        state.fix_d6(1); //Pass skill re-roll: fumble again, and it stands
+        state.fix_d8_direction(Direction::right()); //bounce
+        state.step_positional(PosAT::Pass, target_pos);
+        assert_eq!(state.ball, BallState::OnGround(start_pos + Direction::right()));
+        assert_eq!(state.get_team(TeamType::Home).rerolls, 1, "no team re-roll on top");
+    }
+    /// Very Sunny: -1 to the Passing Ability Test. A Quick Pass by a 4+ passer then needs a 5.
+    #[test]
+    fn very_sunny_is_minus_one_to_pass() {
+        let (mut state, _, target_pos, _) =
+            setup_simple_pass_with(false, 2, |state, _| state.info.weather = Weather::Sunny);
+        state.fix_d6(4); //Pass: inaccurate in the sun
+        state.fix_d8_direction(Direction::up()); //Scatter
+        state.fix_d8_direction(Direction::down()); //Scatter
+        state.fix_d8_direction(Direction::up()); //Scatter: one above the target
+        state.fix_d8_direction(Direction::up()); //bounce
+        state.step_positional(PosAT::Pass, target_pos);
+        assert_eq!(state.ball, BallState::OnGround(target_pos + Direction::up() * 2));
+    }
+    /// Blizzard: only a Quick or a Short Pass.
+    #[test]
+    fn a_blizzard_allows_only_quick_and_short_passes() {
+        let start_pos = Position::new((3, 3));
+        let short = Position::new((8, 3));
+        let long = Position::new((11, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(short)
+            .add_home_player(long)
+            .add_ball_pos(start_pos)
+            .build();
+        state.info.weather = Weather::Blizzard;
+        // The passer throws from where they stand.
+        let id = state.get_player_id_at(start_pos).unwrap();
+        state.get_mut_player_unsafe(id).moves = state.get_player_unsafe(id).total_movement_left();
+        state.step_positional(PosAT::StartPass, start_pos);
+        let passes: Vec<Position> = state
+            .get_all_actions()
+            .into_iter()
+            .filter_map(|a| match a {
+                Action::Positional(PosAT::Pass, pos) => Some(pos),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(passes, vec![short]);
+    }
+    /// AG 1+ is better than AG 2+ under modifiers: dodging into a square two opponents mark
+    /// (-2), AG 1+ passes on anything but a natural 1 (the modified score never drops below 1)
+    /// and AG 2+ needs a 4+, so a 2 tells them apart.
+    #[test]
+    fn ag_one_plus_dodges_better_than_ag_two_plus_under_modifiers() {
+        let start_pos = Position::new((5, 5));
+        let dodge_to = Position::new((6, 5));
+        let dodge_with = |agility: u8| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                // Team-mates on every other square around: the direct dodge is the only route.
+                .add_home_players(&[(4, 4), (6, 4), (4, 5), (4, 6), (5, 6), (6, 6)])
+                .add_away_player(Position::new((5, 4))) // marks the start and the destination
+                .add_away_player(Position::new((7, 6))) // marks the destination
+                .build();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            let id = state.get_player_id_at(start_pos).unwrap();
+            state.get_mut_player_unsafe(id).stats.agility = agility;
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fix_d6(2); //dodge
+            if agility > 1 {
+                state.fix_d6(1); //armour
+                state.fix_d6(1);
+            }
+            state.step_positional(PosAT::Move, dodge_to);
+            state.get_player_unsafe(id).status
+        };
+        assert_eq!(dodge_with(1), PlayerStatus::Up, "AG 1+ at -2 dodges on a 2");
+        assert_eq!(dodge_with(2), PlayerStatus::Down, "AG 2+ at -2 needs a 4");
+    }
+
+    /// S3 lets a pass target any square in range. That is a hidden action: legal, but never
+    /// listed, so bots and the NN never see it.
+    #[test]
+    fn pass_square_is_legal_but_hidden_from_bots() {
+        let (state, _, _, _) = setup_simple_pass(false, 2);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::PassSquare)));
+        assert!(!state.get_all_actions().contains(&Action::Simple(SimpleAT::PassSquare)));
+    }
+    /// Passing to an empty square: the passer stays put, an accurate pass lands there and
+    /// bounces, and with no team-mate catching it the turn is over.
+    #[test]
+    fn passing_to_an_empty_square() {
+        let (mut state, start_pos, _, _) = setup_simple_pass(false, 2);
+        state.step_simple(SimpleAT::PassSquare);
+        let empty = start_pos + (0, 3);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Pass, empty)));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Pass, start_pos)));
+        state.fix_d6(6); //Pass: accurate
+        state.fix_d8_direction(Direction::up()); //bounce from the empty square
+        state.step_positional(PosAT::Pass, empty);
+        assert_eq!(state.ball, BallState::OnGround(empty + Direction::up()));
+        assert!(state.away_to_act(), "no team-mate caught it: turnover");
+    }
+    /// Only during a Pass action, by the ball carrier.
+    #[test]
+    fn pass_square_is_only_offered_to_a_passing_ball_carrier() {
+        let start_pos = Position::new((3, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        state.step_positional(PosAT::StartMove, start_pos);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::PassSquare)));
+    }
+    /// The test is the passer's PA (pathing used to read the receiver's): a PA 2+ passer's Long
+    /// Pass (-2) succeeds on a 4, where the 4+ receiver would need a 6.
+    #[test]
+    fn a_pass_tests_the_passers_passing_ability() {
+        let (mut state, _, target_pos, _) = setup_simple_pass_with(false, 7, |state, passer| {
+            state.get_mut_player_unsafe(passer).stats.passing = 2
+        });
+        state.fix_d6(4); //Pass: accurate
+        state.fix_d6(3); //Catch
+        state.step_positional(PosAT::Pass, target_pos);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
+    }
+    /// PA 1+ is stored and tested like AG 1+, but a pass that is "a 1 after modifiers" is
+    /// Fumbled (S3, Fumbled Pass), and that takes precedence over a PA 1+ passing the test on a
+    /// modified 1. So on a Long Pass (-2) PA 1+ throws exactly like PA 2+: a 3 fumbles, a 4 is
+    /// accurate.
+    #[test]
+    fn pa_one_plus_still_fumbles_on_a_modified_one() {
+        let pass_with = |passing: u8, roll: u8| {
+            let (mut state, start_pos, target_pos, _) = setup_simple_pass_with(false, 7, |state, passer| {
+                state.get_mut_player_unsafe(passer).stats.passing = passing
+            });
+            state.fix_d6(roll); //Pass
+            if roll == 3 {
+                state.fix_d8_direction(Direction::up()); //the fumble bounces from the passer
+            } else {
+                state.fix_d6(3); //Catch
+            }
+            state.step_positional(PosAT::Pass, target_pos);
+            if state.ball == BallState::OnGround(start_pos + Direction::up()) {
+                "fumble"
+            } else if state.ball == BallState::Carried(state.get_player_id_at(target_pos).unwrap()) {
+                "accurate"
+            } else {
+                "other"
+            }
+        };
+        for passing in [1, 2] {
+            assert_eq!(pass_with(passing, 3), "fumble", "PA {passing}+ at -2 on a 3");
+            assert_eq!(pass_with(passing, 4), "accurate", "PA {passing}+ at -2 on a 4");
+        }
+    }
+    /// Accurate: +1 to a Quick or a Short Pass. A 4+ passer's Short Pass (5+) succeeds on a 4.
+    #[test]
+    fn accurate_helps_a_short_pass() {
+        let (mut state, _, target_pos, _) = setup_simple_pass_with(false, 5, |state, passer| {
+            state.get_mut_player_unsafe(passer).stats.give_skill(Skill::Accurate)
+        });
+        state.fix_d6(4); //Pass: accurate with Accurate
+        state.fix_d6(3); //Catch
+        state.step_positional(PosAT::Pass, target_pos);
+        let carrier_id = state.get_player_id_at(target_pos).unwrap();
+        assert_eq!(state.ball, BallState::Carried(carrier_id));
     }
 
     #[test]
@@ -1087,78 +1512,81 @@ mod tests {
 
         assert_eq!(state.get_player_unsafe(id).position, foul_from_pos);
     }
-    /// Guard assists a foul too: the assister next to the prone victim is marked by another away
-    /// player, so only Guard lets it count. AV 8 needs a 9 to break; the assist makes an 8 do.
+    /// S3: Guard works "when a player performs a Block Action" — not for a foul (that is Put the
+    /// Boot In). The assister next to the prone victim is marked by another away player, so it
+    /// does not assist even with Guard: an 8 does not break AV 8.
     #[test]
-    fn guard_assists_a_foul_while_marked() {
+    fn guard_does_not_assist_a_foul_while_marked() {
         let fouler_pos = Position::new((5, 3));
         let victim_pos = Position::new((6, 3));
         let assister_pos = Position::new((7, 2));
-        let foul_with = |guard: bool| {
-            let mut state = GameStateBuilder::new()
-                .add_home_player(fouler_pos)
-                .add_home_player(assister_pos)
-                .add_away_player(victim_pos)
-                .add_away_player(Position::new((8, 1)))
-                .build();
-            let victim = state.get_player_id_at(victim_pos).unwrap();
-            state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
-            state.get_mut_player_unsafe(victim).stats.av = 8;
-            if guard {
-                let assister = state.get_player_id_at(assister_pos).unwrap();
-                state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
-            }
-            state.step_positional(PosAT::StartFoul, fouler_pos);
-            state.fix_d6(5); //armor
-            state.fix_d6(3); //armor
-            if guard {
-                state.fix_d6(1); //injury: stunned
-                state.fix_d6(2); //injury
-            }
-            state.step_positional(PosAT::Foul, victim_pos);
-            state.get_player_unsafe(victim).status
-        };
-        assert_eq!(
-            foul_with(false),
-            PlayerStatus::Down,
-            "an 8 does not break AV 8 unassisted"
-        );
-        assert_eq!(foul_with(true), PlayerStatus::Stunned);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(fouler_pos)
+            .add_home_player(assister_pos)
+            .add_away_player(victim_pos)
+            .add_away_player(Position::new((8, 1)))
+            .build();
+        let victim = state.get_player_id_at(victim_pos).unwrap();
+        state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
+        let assister = state.get_player_id_at(assister_pos).unwrap();
+        state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+        state.step_positional(PosAT::StartFoul, fouler_pos);
+        state.fix_d6(5); //armor
+        state.fix_d6(3); //armor
+        state.step_positional(PosAT::Foul, victim_pos);
+        assert_eq!(state.get_player_unsafe(victim).status, PlayerStatus::Down);
     }
 
-    /// And a defensive foul assist: the victim's team-mate next to the fouler is marked by
-    /// another home player. AV 8 breaks on a 9 unless the Guard assist makes it need a 10.
+    /// Nor a defensive foul assist: the victim's marked Guard team-mate next to the fouler does
+    /// not stop a 9 breaking AV 8.
     #[test]
-    fn guard_defends_a_foul_while_marked() {
+    fn guard_does_not_defend_a_foul_while_marked() {
         let fouler_pos = Position::new((5, 3));
         let victim_pos = Position::new((6, 3));
         let assister_pos = Position::new((4, 2));
-        let foul_with = |guard: bool| {
-            let mut state = GameStateBuilder::new()
-                .add_home_player(fouler_pos)
-                .add_home_player(Position::new((3, 1)))
-                .add_away_player(victim_pos)
-                .add_away_player(assister_pos)
-                .build();
-            let victim = state.get_player_id_at(victim_pos).unwrap();
-            state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
-            state.get_mut_player_unsafe(victim).stats.av = 8;
-            if guard {
-                let assister = state.get_player_id_at(assister_pos).unwrap();
-                state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
-            }
-            state.step_positional(PosAT::StartFoul, fouler_pos);
-            state.fix_d6(5); //armor
-            state.fix_d6(4); //armor
-            if !guard {
-                state.fix_d6(1); //injury: stunned
-                state.fix_d6(2); //injury
-            }
-            state.step_positional(PosAT::Foul, victim_pos);
-            state.get_player_unsafe(victim).status
-        };
-        assert_eq!(foul_with(false), PlayerStatus::Stunned, "a 9 breaks AV 8 unassisted");
-        assert_eq!(foul_with(true), PlayerStatus::Down);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(fouler_pos)
+            .add_home_player(Position::new((3, 1)))
+            .add_away_player(victim_pos)
+            .add_away_player(assister_pos)
+            .build();
+        let victim = state.get_player_id_at(victim_pos).unwrap();
+        state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
+        let assister = state.get_player_id_at(assister_pos).unwrap();
+        state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
+        state.step_positional(PosAT::StartFoul, fouler_pos);
+        state.fix_d6(5); //armor
+        state.fix_d6(4); //armor
+        state.fix_d6(1); //injury: stunned
+        state.fix_d6(2); //injury
+        state.step_positional(PosAT::Foul, victim_pos);
+        assert_eq!(state.get_player_unsafe(victim).status, PlayerStatus::Stunned);
+    }
+
+    /// An offensive foul assist must Mark the victim, so a prone team-mate next to it adds
+    /// nothing: an 8 does not break AV 8.
+    #[test]
+    fn a_prone_teammate_does_not_assist_a_foul() {
+        let fouler_pos = Position::new((5, 3));
+        let victim_pos = Position::new((6, 3));
+        let assister_pos = Position::new((7, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(fouler_pos)
+            .add_home_player(assister_pos)
+            .add_away_player(victim_pos)
+            .build();
+        let victim = state.get_player_id_at(victim_pos).unwrap();
+        state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
+        let assister = state.get_player_id_at(assister_pos).unwrap();
+        state.get_mut_player_unsafe(assister).status = PlayerStatus::Down;
+        state.step_positional(PosAT::StartFoul, fouler_pos);
+        state.fix_d6(5); //armor
+        state.fix_d6(3); //armor
+        state.step_positional(PosAT::Foul, victim_pos);
+        assert_eq!(state.get_player_unsafe(victim).status, PlayerStatus::Down);
     }
 
     #[test]
@@ -1217,6 +1645,74 @@ mod tests {
 
         state.step_simple(SimpleAT::EndPlayerTurn);
         assert!(state.get_player_unsafe(id).used);
+    }
+
+    /// A prone home player with MA `ma` (and `skill`), the team without re-rolls unless given.
+    fn prone_player(ma: u8, skill: Option<Skill>, rerolls: u8) -> (GameState, PlayerID, Position) {
+        let start_pos = Position::new((5, 4));
+        let mut state = GameStateBuilder::new().add_home_player(start_pos).build();
+        state.get_mut_team(TeamType::Home).rerolls = rerolls;
+        let id = state.get_player_id_at(start_pos).unwrap();
+        let player = state.get_mut_player_unsafe(id);
+        player.stats.ma = ma;
+        player.status = PlayerStatus::Down;
+        if let Some(skill) = skill {
+            player.stats.give_skill(skill);
+        }
+        (state, id, start_pos)
+    }
+
+    /// S3, Standing Up: a player with MA 2 or less rolls a D6 to stand up; on a 4+ they stand,
+    /// using their whole Movement Allowance (Rushes are still theirs).
+    #[test]
+    fn a_ma_two_player_stands_up_on_a_four() {
+        let (mut state, id, start_pos) = prone_player(2, None, 0);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fix_d6(4);
+        state.step_positional(PosAT::Move, start_pos);
+        let player = state.get_player_unsafe(id);
+        assert_eq!(player.status, PlayerStatus::Up);
+        assert_eq!(player.moves_left(), 0);
+        assert_eq!(player.gfis_left(), 2);
+        assert!(!player.used);
+    }
+
+    /// ... on a 1-3 they stay Prone and the activation ends — not a turnover.
+    #[test]
+    fn a_ma_two_player_failing_to_stand_up_stays_prone() {
+        let (mut state, id, start_pos) = prone_player(2, None, 0);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fix_d6(3);
+        state.step_positional(PosAT::Move, start_pos);
+        let player = state.get_player_unsafe(id);
+        assert_eq!(player.status, PlayerStatus::Down);
+        assert!(player.used);
+        assert!(state.home_to_act(), "no turnover");
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::EndTurn)));
+    }
+
+    /// The roll may be team re-rolled.
+    #[test]
+    fn a_failed_stand_up_roll_may_be_team_rerolled() {
+        let (mut state, id, start_pos) = prone_player(1, None, 1);
+        state.step_positional(PosAT::StartMove, start_pos);
+        state.fix_d6(1);
+        state.step_positional(PosAT::Move, start_pos);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        state.fix_d6(6);
+        state.step_simple(SimpleAT::UseReroll);
+        assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Up);
+    }
+
+    /// MA 3 stands up without a roll (3 squares), and Jump Up stands up for free, roll or not.
+    #[test]
+    fn no_stand_up_roll_at_ma_three_or_with_jump_up() {
+        for (ma, skill) in [(3, None), (2, Some(Skill::JumpUp))] {
+            let (mut state, id, start_pos) = prone_player(ma, skill, 0);
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.step_positional(PosAT::Move, start_pos);
+            assert_eq!(state.get_player_unsafe(id).status, PlayerStatus::Up, "MA {ma} {skill:?}");
+        }
     }
 
     #[test]
@@ -1326,3 +1822,7 @@ mod tests {
         assert!(!state.info.blitz_this_activation);
     }
 }
+
+#[cfg(test)]
+#[path = "jump_tests.rs"]
+mod jump_tests;

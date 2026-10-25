@@ -36,6 +36,18 @@ pub enum PathingEvent {
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
+    /// S3: a player with MA 2 or less stands up only on this roll (4+), spending their whole
+    /// Movement Allowance; a failure ends the activation. Last, so the other variants keep
+    /// their postcard index.
+    StandUpRoll(D6Target),
+    /// S3 Secure the Ball's pick-up: a plain D6 (2+), no Agility Test; it ends the activation.
+    /// Last, so the other variants keep their postcard index.
+    SecureBall(D6Target),
+    /// S3, Jumping over Players (and Leap): from the square the player is in, over the adjacent
+    /// square, into `to`, two squares of Movement Allowance (any Rushes come first, as `GFI`
+    /// events). `target` is the Agility Test's; `JumpProc` moves the player — a jump node has no
+    /// `Position` step of its own. Last, so the other variants keep their postcard index.
+    Jump { to: Position, target: D6Target },
 }
 
 pub fn event_ends_player_action(event: &PathingEvent) -> bool {
@@ -48,7 +60,10 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::Pickup(_) => false,
         PathingEvent::Block(_, _) => false,
         PathingEvent::StandUp => false,
+        PathingEvent::StandUpRoll(_) => false,
         PathingEvent::Pass { .. } => true,
+        PathingEvent::SecureBall(_) => true,
+        PathingEvent::Jump { .. } => false,
     }
 }
 
@@ -228,17 +243,25 @@ impl Node {
         if self.parent.is_none() {
             return false;
         }
+        // A jump node's move is the `JumpProc`'s (after its Rushes and the Agility Test); its
+        // last event may be a later Pick-up or Touchdown.
+        if self.events.iter().any(|e| matches!(e, PathingEvent::Jump { .. })) {
+            return false;
+        }
         if let Some(event) = self.events.last() {
             match event {
                 PathingEvent::Block(_, _) => false,
                 PathingEvent::Handoff(_, _) => false,
                 PathingEvent::Foul(_, _) => false,
                 PathingEvent::StandUp => false,
+                PathingEvent::StandUpRoll(_) => false,
                 PathingEvent::Dodge(..) => true,
                 PathingEvent::GFI(_) => true,
                 PathingEvent::Pickup(_) => true,
+                PathingEvent::SecureBall(_) => true,
                 PathingEvent::Touchdown(_) => true,
                 PathingEvent::Pass { .. } => false,
+                PathingEvent::Jump { .. } => false,
             }
         } else {
             true
@@ -295,6 +318,10 @@ impl Node {
         self.prob *= target.success_prob();
         self.events.push_back(PathingEvent::Pickup(target));
     }
+    fn apply_secure_ball(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
+        self.events.push_back(PathingEvent::SecureBall(target));
+    }
 
     fn apply_handoff(&mut self, id: PlayerID, target: D6Target) {
         // TODO: concider catch (remember the intercep too!)
@@ -339,10 +366,18 @@ impl Node {
     }
     fn apply_standup(&mut self, cost: u8) {
         self.events.push_back(PathingEvent::StandUp);
-        // Real rules: standing up costs 3 squares (nothing with Jump Up), but a
-        // player with MA < 3 just spends their whole movement allowance rather
-        // than going negative (reachable once `BoardDims::ma_cap` allows MA < 3).
+        // Standing up costs 3 squares (nothing with Jump Up). MA 2 or less rolls instead
+        // (`apply_standup_roll`); the saturation only guards a capped MA below 3.
         self.moves_left = self.moves_left.saturating_sub(cost);
+    }
+    fn apply_jump(&mut self, to: Position, target: D6Target) {
+        self.prob *= target.success_prob();
+        self.events.push_back(PathingEvent::Jump { to, target });
+    }
+    fn apply_standup_roll(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
+        self.events.push_back(PathingEvent::StandUpRoll(target));
+        self.moves_left = 0;
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -397,6 +432,64 @@ impl Node {
     }
 }
 
+/// A square a walk passes through for free — on the pitch, empty, unmarked, not where a path
+/// stops (the ball, the carrier's end zone): a waypoint of `GameInfo::jump_is_dominated`.
+fn is_free_waypoint(game_state: &GameState, tzones: &FullPitch<i8>, ball: &PathingBallState, pos: Position) -> bool {
+    !game_state.is_out(pos)
+        && tzones[pos] == 0
+        && game_state.get_player_id_at(pos).is_none()
+        && match *ball {
+            PathingBallState::OnGround(ball_pos) => ball_pos != pos,
+            PathingBallState::IsCarrier(endzone_x) => pos.x != endzone_x,
+            PathingBallState::NotRelevant => true,
+        }
+}
+
+/// Every square a player at `from` may Jump into (S3, Jumping over Players): on the pitch,
+/// unoccupied, adjacent to a Prone or Stunned player in `downed` that is adjacent to `from`, and
+/// not adjacent to `from` — so exactly two squares away. With `leap` (Leap: "over a single
+/// adjacent square regardless of what is in the square") any unoccupied square two away: a
+/// square adjacent to both always exists on the pitch. `downed` may hold squares not adjacent
+/// to `from`; they are skipped. `keep` filters the candidates before the board is read.
+fn jump_targets_from(
+    game_state: &GameState,
+    from: Position,
+    leap: bool,
+    downed: &[Position],
+    keep: impl Fn(Position) -> bool,
+) -> smallvec::SmallVec<[Position; 16]> {
+    let mut out = smallvec::SmallVec::new();
+    let mut seen = 0u32;
+    let mut push = |to: Position| {
+        let (dx, dy) = (to.x - from.x, to.y - from.y);
+        if dx.abs().max(dy.abs()) != 2 {
+            return;
+        }
+        let bit = 1u32 << ((dx + 2) * 5 + (dy + 2));
+        if seen & bit != 0 {
+            return;
+        }
+        seen |= bit;
+        if keep(to) && !game_state.is_out(to) && game_state.get_player_id_at(to).is_none() {
+            out.push(to);
+        }
+    };
+    if leap {
+        for dx in -2..=2 {
+            for dy in -2..=2 {
+                push(from + (dx, dy));
+            }
+        }
+    } else {
+        for &over in downed.iter().filter(|d| d.distance_to(&from) == 1) {
+            for &dir in Direction::all_directions_iter() {
+                push(over + dir);
+            }
+        }
+    }
+    out
+}
+
 pub struct PathFinder<'a> {
     nodes: FullPitch<OptRcNode>,
     locked_nodes: FullPitch<OptRcNode>,
@@ -439,11 +532,28 @@ struct GameInfo<'a> {
     /// therefore treat the two teams' mirror-image situations differently.
     /// See `Direction::all_directions_toward`.
     dir_order: &'static [Direction; 8],
-    dodge_target: D6Target,
+    /// The mover's AG target: dodge and pick-up tests sum their modifiers onto it once
+    /// (`ag_test_target`).
+    agility: u8,
+    /// Stunty: a dodge ignores the Marking modifiers.
+    stunty: bool,
     gfi_target: D6Target,
-    pickup_target: D6Target,
+    /// The pick-up's modifier before marking (-1 in rain).
+    pickup_modifier: i8,
 
     id: PlayerID,
+    /// Jumps and Leaps in paths (`GameState::jump_paths`).
+    jump_paths: bool,
+    /// The mover has Leap: any of the 16 squares two away is a jump target.
+    leap: bool,
+    /// Prone and Stunned players' squares, both teams — the only squares a player without Leap
+    /// jumps over. Collected once per search, and only when `jump_paths && !leap`; empty (no
+    /// allocation) when nobody is down, which turns the jump pass off at the cost of one check
+    /// per expanded node.
+    downed: Vec<Position>,
+    /// `is_free_waypoint` for every square, filled once per search for a Leap player (whose
+    /// jump pass asks about every node's neighbours); others ask `is_free_waypoint` directly.
+    free: FullPitch<bool>,
 }
 impl<'a> GameInfo<'a> {
     fn tackles_zones_at(&self, position: Position) -> i8 {
@@ -451,13 +561,9 @@ impl<'a> GameInfo<'a> {
     }
 
     fn new(game_state: &'a GameState, player: &FieldedPlayer) -> GameInfo<'a> {
-        let dodge_target = *player.ag_target().add_modifer(1);
+        let agility = player.stats.agility;
         let gfi_target = crate::core::procedures::movement_procs::rush_target(game_state);
-        let mut pickup_target = *player.ag_target().add_modifer(1);
-
-        if game_state.info.weather == Weather::Rain {
-            pickup_target.add_modifer(-1);
-        }
+        let pickup_modifier = if game_state.info.weather == Weather::Rain { -1 } else { 0 };
 
         let team = player.stats.team;
         let mut tzones: FullPitch<i8> = Default::default();
@@ -474,6 +580,27 @@ impl<'a> GameInfo<'a> {
             }
             _ => PathingBallState::NotRelevant,
         };
+        let jump_paths = game_state.jump_paths();
+        let leap = player.has_skill(Skill::Leap);
+        let downed = if jump_paths && !leap {
+            game_state
+                .get_players_on_pitch()
+                .filter(|p| p.status != PlayerStatus::Up && p.id != player.id)
+                .map(|p| p.position)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut free: FullPitch<bool> = Default::default();
+        if jump_paths && leap {
+            let dims = game_state.board_dims;
+            for x in 1..dims.width - 1 {
+                for y in 1..dims.height - 1 {
+                    let pos = Position { x, y };
+                    free[pos] = is_free_waypoint(game_state, &tzones, &ball, pos);
+                }
+            }
+        }
         let mut player_action = game_state.info.player_action_type.unwrap_or(PosAT::StartMove);
         let mut catch_mods: FullPitch<Option<D6Target>> = Default::default();
         if player_action == PosAT::StartHandoff || player_action == PosAT::StartPass {
@@ -483,7 +610,7 @@ impl<'a> GameInfo<'a> {
                     .get_players_on_pitch()
                     .filter(|p| p.stats.team == team)
                     .filter(|p| p.can_catch())
-                    .for_each(|p| catch_mods[p.position] = Some(game_state.get_catch_target(p.id).unwrap()));
+                    .for_each(|p| catch_mods[p.position] = Some(game_state.get_catch_target(p.id, 0).unwrap()));
                 catch_mods[player.position] = None; // can't handoff or pass to self
             } else {
                 // If not ball carrier we don't care about handoff or pass
@@ -495,9 +622,10 @@ impl<'a> GameInfo<'a> {
             tzones,
             ball,
             start_pos: player.position,
-            dodge_target,
+            agility,
+            stunty: player.has_skill(Skill::Stunty),
             gfi_target,
-            pickup_target,
+            pickup_modifier,
             game_state,
             team: player.stats.team,
             dir_order: Direction::all_directions_toward(
@@ -506,6 +634,77 @@ impl<'a> GameInfo<'a> {
             player_action,
             id: player.id,
             teammate_catch_mod: catch_mods,
+            jump_paths,
+            leap,
+            downed,
+            free,
+        }
+    }
+
+    /// The Agility Test of a Jump (or Leap) from `from` into `to` (S3, Jumping over Players):
+    /// -1 per opposition player Marking `from` or `to`, whichever is more; Leap reduces that by
+    /// one, to no better than -1.
+    fn jump_target(&self, from: Position, to: Position) -> D6Target {
+        let mut modifier = -self.tzones[from].max(self.tzones[to]);
+        if self.leap && modifier <= -2 {
+            modifier += 1;
+        }
+        ag_test_target(self.agility, modifier)
+    }
+
+    /// The node for a Jump from `parent` into `to`, or `None` without two squares of movement
+    /// left. Rushes first (`GFI`), then the Agility Test, then any Pick-up / Touchdown in `to`.
+    /// The caller has checked that `to` is a legal target.
+    fn jump_node(&self, parent: &Arc<Node>, to: Position) -> Option<Node> {
+        if parent.remaining_movement() < 2 {
+            return None;
+        }
+        let rushes = 2 - parent.moves_left.min(2);
+        let mut next_node = Node::new(
+            Some(parent.clone()),
+            to,
+            parent.moves_left.saturating_sub(2),
+            parent.gfis_left - rushes,
+        );
+        for _ in 0..rushes {
+            next_node.apply_gfi(self.gfi_target);
+        }
+        next_node.apply_jump(to, self.jump_target(parent.position, to));
+        match self.ball {
+            PathingBallState::OnGround(ball_pos) if ball_pos == to && self.player_action == PosAT::StartSecureBall => {
+                next_node.apply_secure_ball(D6Target::TwoPlus);
+            }
+            PathingBallState::OnGround(ball_pos) if ball_pos == to => {
+                next_node.apply_pickup(ag_test_target(self.agility, self.pickup_modifier - self.tzones[to]));
+            }
+            PathingBallState::IsCarrier(endzone_x) if to.x == endzone_x => {
+                next_node.apply_touchdown(self.id);
+            }
+            _ => (),
+        }
+        Some(next_node)
+    }
+
+    /// Whether a Jump from `from` into `to` can never beat walking there. A Jump costs two
+    /// squares — exactly a two-step walk through a square adjacent to both — and takes one
+    /// Agility Test at a modifier of 0 or worse. Through a free waypoint (unmarked) the walk
+    /// takes at most one roll: the Dodge out of `from`, if marked, into an unmarked square — the
+    /// unmodified Agility Test — and none out of the waypoint. Same movement, same Rushes, same
+    /// square at the end, at least the Jump's probability: the walk dominates, and the search
+    /// would only build the Jump to throw it away. This prunes every Jump or Leap with an open
+    /// square beside it — nearly all Leaps.
+    fn jump_is_dominated(&self, from: Position, to: Position) -> bool {
+        // The waypoints: squares adjacent to both, i.e. offsets from `from` within one of
+        // `to`'s (two away on at least one axis, so never `from` itself).
+        let span = |d: Coord| if d.abs() == 2 { d / 2..=d / 2 } else { (d - 1).max(-1)..=(d + 1).min(1) };
+        let (dx, dy) = (to.x - from.x, to.y - from.y);
+        span(dx).any(|wx| span(dy).any(|wy| self.is_free(from + (wx, wy))))
+    }
+    fn is_free(&self, pos: Position) -> bool {
+        if self.leap {
+            self.free[pos]
+        } else {
+            is_free_waypoint(self.game_state, &self.tzones, &self.ball, pos)
         }
     }
     fn can_continue_expanding(&self, node: &Arc<Node>) -> bool {
@@ -544,7 +743,8 @@ impl<'a> GameInfo<'a> {
             Some(player) if self.teammate_catch_mod[to].is_some() => {
                 // handoff or pass
                 match self.player_action {
-                    PosAT::StartPass => self.expand_pass_to(to, player.id, parent_node, prev),
+                    // The Passing Ability Test is the passer's, not the receiver's.
+                    PosAT::StartPass => self.expand_pass_to(to, self.id, parent_node, prev),
                     PosAT::StartHandoff => self.expand_handoff_to(to, player.id, parent_node, prev),
                     _ => unreachable!("very wrong!"),
                 }
@@ -614,14 +814,17 @@ impl<'a> GameInfo<'a> {
         let victim = self.game_state.get_player_unsafe(victim_id);
         let mut target = victim.armor_target();
 
+        // Foul assists work as a block's (S3, Performing a Foul Action): the assister Marks the
+        // victim (offensive) or the fouler (defensive) and no other opponent Marks the assister.
+        // Guard does not apply — it is for a Block Action only.
         target.add_modifer(
             self.game_state
                 .get_adj_players(victim.position)
                 .filter(|adj_player| {
                     adj_player.id != self.id
                         && adj_player.stats.team == self.team
-                        // Guard assists however many opponents mark the assister.
-                        && (adj_player.has_skill(Skill::Guard) || self.game_state.get_tz_on(adj_player.id) == 0)
+                        && adj_player.has_tackle_zone()
+                        && self.game_state.get_tz_on(adj_player.id) == 0
                 })
                 .count() as i8,
         );
@@ -632,8 +835,7 @@ impl<'a> GameInfo<'a> {
                 .filter(|adj_player| {
                     adj_player.stats.team != self.team
                         && adj_player.has_tackle_zone()
-                        && (adj_player.has_skill(Skill::Guard)
-                            || self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0)
+                        && self.game_state.get_tz_on_except_from_id(adj_player.id, self.id) == 0
                 })
                 .count() as i8),
         );
@@ -714,7 +916,15 @@ impl<'a> GameInfo<'a> {
         let catch_target = self.teammate_catch_mod[to].unwrap();
         let best_intercept = self
             .game_state
-            .get_intercepters(other_team(self.team), parent_node.position, to)
+            // The estimate assumes the pass is accurate (S3: -3 to intercept it).
+            .get_intercepters(
+                other_team(self.team),
+                parent_node.position,
+                to,
+                crate::core::procedures::ball_procs::interception_modifier(
+                    crate::core::procedures::ball_procs::PassResult::Accurate,
+                ),
+            )
             .iter()
             .map(|(_, target)| *target)
             .max_by(|target_a, target_b| {
@@ -766,12 +976,17 @@ impl<'a> GameInfo<'a> {
                 tackle: marked_by(Skill::Tackle),
                 arm_bar: marked_by(Skill::ArmBar),
             };
-            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]), markers);
+            let marked = if self.stunty { 0 } else { self.tzones[to] };
+            next_node.apply_dodge(ag_test_target(self.agility, -marked), markers);
         }
         match self.ball {
+            PathingBallState::OnGround(ball_pos) if ball_pos == to && self.player_action == PosAT::StartSecureBall => {
+                // S3 Secure the Ball: a D6 2+, whatever the AG, weather or marking.
+                next_node.apply_secure_ball(D6Target::TwoPlus);
+            }
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
                 // touchdown by pickup is handled by the pickup procedure
-                next_node.apply_pickup(*self.pickup_target.clone().add_modifer(-self.tzones[to]));
+                next_node.apply_pickup(ag_test_target(self.agility, self.pickup_modifier - self.tzones[to]));
             }
             PathingBallState::IsCarrier(endzone_x) if to.x == endzone_x => {
                 next_node.apply_touchdown(self.id);
@@ -867,7 +1082,10 @@ impl<'a> PathFinder<'a> {
         if standing_up {
             assert!(player.moves_left() == player.stats.ma);
             debug_assert!(matches!(player.status, PlayerStatus::Down));
-            root_node.apply_standup(crate::core::procedures::movement_procs::standup_cost(player));
+            match crate::core::procedures::movement_procs::standup_roll(player) {
+                Some(target) => root_node.apply_standup_roll(target),
+                None => root_node.apply_standup(crate::core::procedures::movement_procs::standup_cost(player)),
+            }
         }
 
         let root_node = Arc::new(root_node);
@@ -924,6 +1142,87 @@ impl<'a> PathFinder<'a> {
             out[start_pos] = Some(root_node);
         }
         Ok(())
+    }
+
+    /// The squares `id` may Jump or Leap into from where they stand, now: Standing, with two
+    /// squares of movement (Rushes included) left. What the hidden `PosAT::Jump` offers —
+    /// whether or not paths carry jumps (`GameState::jump_paths`).
+    pub fn jump_targets(game_state: &GameState, id: PlayerID) -> smallvec::SmallVec<[Position; 16]> {
+        let player = game_state.get_player_unsafe(id);
+        if player.status != PlayerStatus::Up || player.total_movement_left() < 2 {
+            return smallvec::SmallVec::new();
+        }
+        let from = player.position;
+        let downed: smallvec::SmallVec<[Position; 8]> = game_state
+            .get_adj_players(from)
+            .filter(|p| p.status != PlayerStatus::Up)
+            .map(|p| p.position)
+            .collect();
+        jump_targets_from(game_state, from, player.has_skill(Skill::Leap), &downed, |_| true)
+    }
+
+    /// The one-step path of a Jump (or Leap) by `id` from where they stand into `to` — its
+    /// Rushes, the Agility Test and any Pick-up / Touchdown — or `None` if that jump is not
+    /// legal (`jump_targets`). The hidden `PosAT::Jump` action runs it.
+    pub fn jump_path(game_state: &GameState, id: PlayerID, to: Position) -> Option<Arc<Node>> {
+        if !Self::jump_targets(game_state, id).contains(&to) {
+            return None;
+        }
+        let player = game_state.get_player_unsafe(id);
+        let info = GameInfo::new(game_state, player);
+        let root = Arc::new(Node::new(None, player.position, player.moves_left(), player.gfis_left()));
+        info.jump_node(&root, to).map(Arc::new)
+    }
+
+    /// Whether a Move by `id` (as declared at a `Turn` decision) can end in the empty square
+    /// `target` — `player_paths(..)[target].is_some()`, without building the paths. A walk
+    /// enters only empty squares, any of them, each square one of MA + Rushes after any stand-up,
+    /// so a breadth-first search over empty squares decides it. Jumps fall back to the
+    /// pathfinder (they need a downed player or Leap, and the paths may carry them).
+    pub fn can_reach(game_state: &GameState, id: PlayerID, target: Position) -> bool {
+        let player = game_state.get_player_unsafe(id);
+        let start = player.position;
+        if player.status == PlayerStatus::Stunned || game_state.is_out(target) || game_state.get_player_at(target).is_some()
+        {
+            return false;
+        }
+        let mut budget = player.moves_left() + player.gfis_left();
+        if player.status != PlayerStatus::Up {
+            budget = match crate::core::procedures::movement_procs::standup_roll(player) {
+                Some(_) => player.gfis_left(),
+                None => budget.saturating_sub(crate::core::procedures::movement_procs::standup_cost(player)),
+            };
+        }
+        if start.distance_to(&target) as u32 > budget as u32 {
+            return false;
+        }
+        if game_state.jump_paths()
+            && (player.has_skill(Skill::Leap)
+                || game_state.get_players_on_pitch().any(|p| p.status != PlayerStatus::Up))
+        {
+            return matches!(Self::player_paths(game_state, id), Ok(paths) if paths[target].is_some());
+        }
+        let mut seen: FullPitch<bool> = Default::default();
+        seen[start] = true;
+        let mut frontier = vec![start];
+        for _ in 0..budget {
+            let mut next = Vec::new();
+            for pos in frontier {
+                for dir in Direction::all_directions_iter() {
+                    let to = pos + *dir;
+                    if game_state.is_out(to) || seen[to] || game_state.get_player_at(to).is_some() {
+                        continue;
+                    }
+                    if to == target {
+                        return true;
+                    }
+                    seen[to] = true;
+                    next.push(to);
+                }
+            }
+            frontier = next;
+        }
+        false
     }
 
     /// Returns the best path from `id`'s current position to `target`, or None if no path exists.
@@ -991,10 +1290,12 @@ impl<'a> PathFinder<'a> {
             .iter()
             .map(|direction| node.position + *direction)
             .filter(|to_pos| !self.info.game_state.is_out(*to_pos))
+            // Skip squares the parent reaches in one step itself. `>= 2`, not `== 2`: a jump
+            // node's parent is two squares away, so everything beyond it is new.
             .filter(|to_pos| {
                 parent_pos_and_in_tz
                     .map(|(parent_pos, parent_in_tz)| {
-                        parent_pos.distance_to(to_pos) == 2 || (parent_in_tz && 0 < self.info.tzones[*to_pos])
+                        parent_pos.distance_to(to_pos) >= 2 || (parent_in_tz && 0 < self.info.tzones[*to_pos])
                     })
                     .unwrap_or(true)
             })
@@ -1011,6 +1312,14 @@ impl<'a> PathFinder<'a> {
                 }
                 NodeType::NoNode => (),
             });
+
+        //handle jumping (S3, Jumping over Players; Leap)
+        if self.info.jump_paths
+            && (self.info.leap || !self.info.downed.is_empty())
+            && node.remaining_movement() >= 2
+        {
+            self.expand_jumps(&node);
+        }
 
         //handle passing
         if self.info.player_action == PosAT::StartPass && matches!(self.info.ball, PathingBallState::IsCarrier(_)) {
@@ -1035,6 +1344,38 @@ impl<'a> PathFinder<'a> {
                     }
                     NodeType::NoNode => (),
                 });
+        }
+    }
+}
+
+impl<'a> PathFinder<'a> {
+    /// Jump / Leap expansions from `node`. A jump always takes an Agility Test, so its node is
+    /// always a risky one (lower probability than its parent) and goes to the risky batches.
+    /// Candidates: without Leap only squares beyond a downed player adjacent to `node` (the
+    /// precomputed `downed` list, usually empty); with Leap the 16 squares two away. Both drop a
+    /// jump a free walk dominates (`jump_is_dominated`) — for a Leap player in open play that
+    /// is nearly all of them, so Leaps are only built next to tackle zones and crowds.
+    fn expand_jumps(&mut self, node: &Arc<Node>) {
+        let from = node.position;
+        let info = &self.info;
+        // Every square two away has its waypoints among `from`'s neighbours: with all of them
+        // free, every jump from here is dominated.
+        if info.leap && Direction::all_directions_iter().all(|&d| info.free[from + d]) {
+            return;
+        }
+        let targets = jump_targets_from(info.game_state, from, info.leap, &info.downed, |to| {
+            !info.jump_is_dominated(from, to)
+        });
+        for to in targets {
+            let Some(new_node) = self.info.jump_node(node, to) else {
+                continue;
+            };
+            if let Some(locked) = &self.locked_nodes[to] {
+                if locked.is_dominant_over(&new_node) {
+                    continue;
+                }
+            }
+            self.risky_sets.insert_node(Arc::new(new_node));
         }
     }
 }
@@ -1255,10 +1596,8 @@ mod tests {
         );
     }
 
-    /// A player with MA < 3 (possible on narrow eval boards, see
-    /// `BoardDims::ma_cap`) still costs 3 squares to stand up in real rules —
-    /// it just uses up the whole movement allowance instead of going
-    /// negative. The naive `moves_left -= 3` panics on underflow instead.
+    /// A player with MA 2 or less (S3 rosters; also narrow eval boards, see `BoardDims::ma_cap`)
+    /// stands up on a 4+ (S3, Standing Up): the path in place is that roll alone, at 1/2.
     #[test]
     fn downed_player_with_ma_below_3_can_stand_up_without_moving() {
         let start = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
@@ -1281,10 +1620,11 @@ mod tests {
         let items: Vec<PositionOrEvent> = path.iter().collect();
         assert_eq!(
             items,
-            vec![PositionOrEvent::Event(PathingEvent::StandUp)],
-            "stand-up-in-place path should contain only the StandUp event, no move, got {:?}",
+            vec![PositionOrEvent::Event(PathingEvent::StandUpRoll(D6Target::FourPlus))],
+            "stand-up-in-place path should contain only the stand-up roll, no move, got {:?}",
             items
         );
+        assert!((path.prob - 0.5).abs() < 1e-6, "prob {}", path.prob);
     }
 
     /// Board reconstructed from a web-UI screenshot where hovering (2,1) showed
@@ -1325,7 +1665,7 @@ mod tests {
         crate::skip_if_board_smaller_than!(14, 7);
 
         let mut mover_stats = PlayerStats::new_catcher(TeamType::Home);
-        mover_stats.ag = 3; // roster value observed in the screenshot's tooltip (Dodge 3+).
+        mover_stats.agility = 3; // AG 3+: the tooltip in the screenshot read Dodge 3+.
         let start = Position::new((8, 6));
         let target = Position::new((2, 1));
 
@@ -1375,5 +1715,40 @@ mod tests {
             "expected the single dodge's 2/3, got {}",
             node.prob
         );
+    }
+
+    /// S3 Stunty: "When this player attempts to Dodge, they do not suffer any negative modifiers
+    /// to their Agility Test for being Marked by opposition players."
+    #[test]
+    fn a_stunty_player_dodges_without_marking_modifiers() {
+        for (stunty, want) in [(false, D6Target::FivePlus), (true, D6Target::ThreePlus)] {
+            let mut mover_stats = PlayerStats::new_lineman(TeamType::Home);
+            mover_stats.agility = 3;
+            if stunty {
+                mover_stats.give_skill(Skill::Stunty);
+            }
+            let start = Position::new((5, 5));
+            let target = Position::new((4, 5));
+            let mut state = GameStateBuilder::new()
+                .add_player_details(start, TeamType::Home, mover_stats)
+                .add_away_player(Position::new((6, 5)))
+                .add_away_player(Position::new((3, 4)))
+                .add_away_player(Position::new((3, 6)))
+                .set_state(BuilderState::Turn { turn: 1 })
+                .build();
+            if state.info.team_turn != TeamType::Home {
+                state.step_simple(SimpleAT::EndTurn);
+            }
+            let id = state.get_player_id_at(start).unwrap();
+            let node = PathFinder::safest_path_to(&state, id, target).unwrap().unwrap();
+            let dodges: Vec<D6Target> = node
+                .iter()
+                .filter_map(|item| match item {
+                    PositionOrEvent::Event(PathingEvent::Dodge(t, _)) => Some(t),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(dodges, vec![want], "stunty {stunty}");
+        }
     }
 }

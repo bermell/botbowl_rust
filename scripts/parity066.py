@@ -206,7 +206,10 @@ def cmd_compare(args) -> int:
     fa = np.memmap(args.a, dtype="<f4", mode="r")
     fb = np.memmap(args.b, dtype="<f4", mode="r")
     assert fa.shape == fb.shape, f"sizes differ: {fa.shape} vs {fb.shape}"
-    a_ch = 32
+    sys.path.insert(0, str(REPO / "train" / "src"))
+    from bbnn.model import POLICY_CHANNELS
+
+    a_ch = POLICY_CHANNELS
     o = 0
     tot = defaultdict(int)
     by = defaultdict(lambda: defaultdict(int))  # (path, bucket) -> counters

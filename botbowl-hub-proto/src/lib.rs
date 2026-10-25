@@ -60,7 +60,10 @@ pub use botbowl_play::mc_label::LabelConfig;
 // beside plan 067; renumbered when both merged.)
 // v23 (plan 070): `MctsConfig.backprop` (`fixed` backs up the parent of a spliced-in twin), inside
 // `SearchConfig.config`.
-pub const PROTOCOL_VERSION: u32 = 23;
+// v24 (S3 rules): `PosAT::StartSecureBall`, `PathingEvent::SecureBall`, `AnyProc::SecureBallProc` and
+// `GameInfo::secure_ball_available` (S3 Secure the Ball), inside trajectories and game states;
+// NN schema v10. (Developed as v21 beside plans 067-070; renumbered at the merge.)
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.

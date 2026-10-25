@@ -64,8 +64,8 @@ pub enum BounceModel {
     Catch,
 }
 
-/// Plan 061 (b): how an inaccurate pass's scatter and a wildly inaccurate pass's deviate are
-/// modelled.
+/// Plan 061 (b): how an inaccurate pass's scatter is modelled. (S3 has no wildly inaccurate
+/// pass, so a pass no longer deviates.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PassScatterModel {
@@ -106,16 +106,7 @@ pub fn enumerate_with(state: &GameState, req: &RequestedRoll, model: ChanceModel
 /// [`enumerate_with`] plus plan 061's [`RollModel`] for bounces, pass scatter/deviate and
 /// throw-ins.
 pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel, rolls: RollModel) -> Vec<BbAction> {
-    let scripted = match model {
-        ChanceModel::Exact | ChanceModel::ExactThroughHalf => false,
-        ChanceModel::Legacy => true,
-        ChanceModel::ExactScriptedPass => matches!(req, RequestedRoll::D6),
-        ChanceModel::InjuryOnly => !matches!(
-            req,
-            RequestedRoll::D6ThreeOutcomes(..) | RequestedRoll::Sum2D6ThreeOutcomes(..)
-        ),
-    };
-    if scripted {
+    if model == ChanceModel::Legacy {
         if let Some(r) = legacy_result(req) {
             return vec![BbAction::chance(r, 1.0)];
         }
@@ -140,7 +131,7 @@ pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel
             ThrowInModel::Scripted => vec![throw_in_outcome(state)],
             ThrowInModel::Grouped => throw_in_grouped(state),
         },
-        RequestedRoll::Scatter | RequestedRoll::Deviate
+        RequestedRoll::Scatter
             if rolls.pass_scatter == PassScatterModel::Grouped
                 && matches!(state.proc_stack_peek(), Some(AnyProc::Pass(_))) =>
         {
@@ -149,8 +140,8 @@ pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel
         RequestedRoll::BlockDice(n) => block_outcomes(state, *n),
         RequestedRoll::D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
         RequestedRoll::Sum2D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
-        // A raw D6 is read face by face by its proc (the pass: accurate / inaccurate / wildly
-        // inaccurate / fumble, depending on the passer's target and modifier), so every face is
+        // A raw D6 is read face by face by its proc (the pass: accurate / inaccurate / fumble,
+        // depending on the passer's target and modifier), so every face is
         // its own child. Faces the proc treats alike recombine into one node.
         RequestedRoll::D6 => (1..=6u8)
             .map(|f| BbAction::chance(RollResult::D6(D6::try_from(f).unwrap()), 1.0 / 6.0))
@@ -159,6 +150,10 @@ pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel
             broken: target.is_success(a + b),
             ejected: a == b,
         }),
+        // A kick-off event's random player: each candidate a distinct child state.
+        RequestedRoll::Pick(n) => (0..*n)
+            .map(|i| BbAction::chance(RollResult::Pick(i), 1.0 / *n as f32))
+            .collect(),
         RequestedRoll::FoulInjury(ko, cas) => two_dice_outcomes(|a, b| RollResult::FoulInjury {
             outcome: if cas.is_success(a + b) {
                 InjuryOutcome::Casualty
@@ -462,15 +457,16 @@ fn throw_in_outcome(state: &GameState) -> BbAction {
         // constant short throw.
         return scripted(D3::One, Sum2D6::Two);
     };
-    // Shortest distance that **moves the ball** first. On a board whose narrow axis is 5 squares
-    // or less the engine divides the 2D6 by `scatter_divisor() >= 3`, so 2D6 = 2 (and on 8x3,
-    // 2D6 = 3) carries 0 squares: the ball lands back on the square it was thrown from, on the
+    // Shortest distance that **moves the ball** first. The ball lands 2D6 - 1 squares out (S3
+    // counts the origin as the first square), and on a board whose narrow axis is 5 squares or
+    // less the engine also divides that by `scatter_divisor() >= 3`, so the short throws carry
+    // 0 squares: the ball lands back on the square it was thrown from, on the
     // edge, bounces out again and is thrown in again. In the real game that is a 1-in-36 detour;
     // as the search's one modelled throw-in it is an endless chain of chance nodes
     // (`bounce_squares` grows each lap, so no state repeats and the cycle guard never fires),
     // one lap deeper per descent, whose chance nodes never get a value (plan 060 §6). A throw of
     // one square straight in exists on every legal board (the divisor is at most 4, the playable
-    // cross-axis at least 3), so `Four` is always enough; the larger distances are a guard.
+    // cross-axis at least 3), so `Five` is always enough; `Six` is a guard.
     let origin = throw_in.origin();
     for distance in [Sum2D6::Two, Sum2D6::Three, Sum2D6::Four, Sum2D6::Five, Sum2D6::Six] {
         let pick = [D3::One, D3::Two, D3::Three]
@@ -687,18 +683,17 @@ fn grouped_landing_children(
     out
 }
 
-/// Plan 061 (b): an inaccurate pass's scatter (three D8 from the target square) or a wildly
-/// inaccurate pass's deviate (D8 direction x D6 squares from the passer), at the exact landing
-/// distribution the `Pass` proc produces — every one of the 512 (scatter) or 48 (deviate) dice
-/// combinations walked with the engine's rule that a step out of bounds stops the walk and the
-/// ball is thrown in from the last square on the pitch — then grouped by consequence
+/// Plan 061 (b): an inaccurate pass's scatter (three D8 from the target square), at the exact
+/// landing distribution the `Pass` proc produces — every one of the 512 dice combinations walked
+/// with the engine's rule that a step out of bounds stops the walk and the ball is thrown in from
+/// the last square on the pitch — then grouped by consequence
 /// ([`grouped_landing_children`]): a player on the landing square attempts the catch
 /// (`DeflectOrResolve` gives every player there a `Catch`), out of bounds is a throw-in, an empty
 /// square a bounce. Each child carries the dice of one combination producing it.
 ///
 /// Off a `Pass` proc (a kickoff's deviate) the caller keeps the scripted result.
 fn pass_landing_grouped(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
-    let (Some(AnyProc::Pass(pass)), Some(from)) = (state.proc_stack_peek(), state.get_ball_position()) else {
+    let Some(AnyProc::Pass(pass)) = state.proc_stack_peek() else {
         return vec![BbAction::chance(scripted_result(req), 1.0)];
     };
     let f = Frame::of(state);
@@ -729,21 +724,6 @@ fn pass_landing_grouped(state: &GameState, req: &RequestedRoll) -> Vec<BbAction>
                 let key = f.dir_rank(a) * 64 + f.dir_rank(b) * 8 + f.dir_rank(c);
                 let r = RollResult::Scatter(D8::from(a), D8::from(b), D8::from(c));
                 items.push((class, sq, r, key));
-            }
-        }
-        RequestedRoll::Deviate => {
-            for n in 1..=6u8 {
-                for d in dirs {
-                    let landing = walk(from, &mut std::iter::repeat(d).take(n as usize));
-                    let (class, sq) = classify(landing);
-                    let key = n as u32 * 8 + f.dir_rank(d);
-                    items.push((
-                        class,
-                        sq,
-                        RollResult::Deviate(D6::try_from(n).unwrap(), D8::from(d)),
-                        key,
-                    ));
-                }
             }
         }
         _ => return vec![BbAction::chance(scripted_result(req), 1.0)],
@@ -961,6 +941,7 @@ fn scripted_result(req: &RequestedRoll) -> RollResult {
         // The kickoff-table roll: kickoffs are past every search horizon, so a constant is fine.
         RequestedRoll::Sum2D6 => RollResult::Sum2D6(Sum2D6::Two),
         RequestedRoll::Coin => RollResult::Coin(Coin::Heads),
+        RequestedRoll::Pick(_) => RollResult::Pick(0),
 
         RequestedRoll::D6PassFail(_)
         | RequestedRoll::Sum2D6PassFail(_)
@@ -1896,7 +1877,7 @@ mod tests {
         assert!((p(RollResult::Pass) - 2.0 / 6.0).abs() < 1e-5);
     }
 
-    // The pass roll is a raw D6 (accurate / inaccurate / wildly inaccurate / fumble are decided
+    // The pass roll is a raw D6 (accurate / inaccurate / fumble are decided
     // by the proc from the face). A scripted 1 made every pass a fumble inside the search.
     #[test]
     fn a_raw_d6_offers_every_face() {
@@ -1981,23 +1962,6 @@ mod tests {
             enumerate_with(&dummy_state(), &req, ChanceModel::Legacy),
             enumerate_with(&dummy_state(), &req, ChanceModel::Exact)
         );
-    }
-
-    /// The diagnostic variants each script exactly the rolls they name.
-    #[test]
-    fn diagnostic_models_script_only_what_they_name() {
-        let n = |req: RequestedRoll, m: ChanceModel| enumerate_with(&dummy_state(), &req, m).len();
-        let injury = || RequestedRoll::Sum2D6ThreeOutcomes(Sum2D6Target::EightPlus, Sum2D6Target::TenPlus);
-        let foul = || RequestedRoll::FoulArmor(Sum2D6Target::SevenPlus);
-        assert_eq!(n(RequestedRoll::D6, ChanceModel::ExactScriptedPass), 1);
-        assert_eq!(n(injury(), ChanceModel::ExactScriptedPass), 3);
-        assert_eq!(n(RequestedRoll::D6, ChanceModel::ExactThroughHalf), 6);
-        assert_eq!(n(injury(), ChanceModel::InjuryOnly), 3);
-        assert_eq!(n(RequestedRoll::D6, ChanceModel::InjuryOnly), 1);
-        assert_eq!(n(foul(), ChanceModel::InjuryOnly), 1);
-        assert!(ChanceModel::ExactScriptedPass.stops_at_half());
-        assert!(!ChanceModel::ExactThroughHalf.stops_at_half());
-        assert!(!ChanceModel::InjuryOnly.stops_at_half());
     }
 
     #[test]

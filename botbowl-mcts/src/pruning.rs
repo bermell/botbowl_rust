@@ -15,7 +15,7 @@
 //! | `Simple(EndPlayerTurn)`     | P1                     |
 //! | `Positional(StartHandoff)`  | P7                     |
 //! | `Positional(StartFoul)`     | P9                     |
-//! | `Positional(Move)`          | P2/P3, P4, P5, P8      |
+//! | `Positional(Move)`          | P2/P3, P4, P5, P8, P10 |
 //! | everything else             | *(none)*               |
 
 use botbowl_engine::core::gamestate::GameState;
@@ -55,6 +55,19 @@ fn prune_move_action(state: &GameState, pos: Position) -> bool {
         || prune_move_action_when_ball_carrier_if_start_handoff_pass(state)
         || prune_move_when_blitzing(state, pos)
         || prune_redundant_move_after_first(state)
+        || prune_off_ball_when_securing(state, pos)
+}
+
+/// **P10** — after `StartSecureBall` the only move worth searching is the one onto the ball:
+/// the engine offers every reachable square (it stays rules-general), but an activation that
+/// ends anywhere else is a turnover. Pure on `(state, dest)`: `player_action_type` and the ball
+/// are fields of `state`. With no loose ball left every move is pruned (and `search_actions`
+/// falls back to the full list should that leave nothing).
+fn prune_off_ball_when_securing(state: &GameState, dest: Position) -> bool {
+    if state.info.player_action_type != Some(PosAT::StartSecureBall) {
+        return false;
+    }
+    !matches!(state.ball, BallState::OnGround(ball) if ball == dest)
 }
 /// **P1** — disallow ending a player's turn immediately after activating
 /// them, before any movement has been made. Without this the search wastes
@@ -494,6 +507,26 @@ mod tests {
         assert!(!should_prune(&state, &start_blitz_action));
         state.get_mut_player_at_unsafe(opp_pos).status = PlayerStatus::Down;
         assert!(should_prune(&state, &start_blitz_action));
+    }
+
+    // --- P10: Secure the Ball goes straight to the ball -----------------
+
+    /// After `StartSecureBall` the search considers exactly one action: the move onto the ball.
+    /// Every other square ends the activation off the ball (a turnover), and `EndPlayerTurn`
+    /// before moving is P1's no-op.
+    #[test]
+    fn secure_the_ball_searches_only_the_move_onto_the_ball() {
+        let home_pos = Position::new((2, 5));
+        let ball_pos = Position::new((5, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(home_pos)
+            .add_away_player(Position::new((14, 9)))
+            .add_ball_pos(ball_pos)
+            .build();
+        check_prune_and_step(&mut state, EA::Positional(PosAT::StartSecureBall, home_pos));
+        assert!(state.get_all_actions().len() > 2, "the engine offers every reachable square");
+        assert_is_pruned_positional(&state, PosAT::Move, Position::new((3, 5)));
+        assert_eq!(search_actions(&state), vec![EA::Positional(PosAT::Move, ball_pos)]);
     }
 
     fn check_prune_and_step(state: &mut GameState, action: EA) {

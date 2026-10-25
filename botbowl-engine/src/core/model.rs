@@ -767,13 +767,23 @@ pub enum PlayerStatus {
     Stunned,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A player's characteristics, as the S3 rules print them: MA and ST are plain numbers, AG, PA
+/// and AV are target numbers (AG 3+, PA 4+, AV 9+).
+///
+/// Serialised as `agility` / `passing` / `armour`. JSON written before S3 storage holds the
+/// classic `ag` / `av` numbers (AG 3, AV 8) and PA as a `D6Target` (`"pass": "FourPlus"`)
+/// instead, and loads converted (`from_legacy_ag` / `from_legacy_av`); a binary format
+/// (postcard) has exactly the derived layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlayerStats {
     pub str_: u8,
     pub ma: u8,
-    pub ag: u8,
-    pub pass: D6Target,
-    pub av: u8,
+    /// Agility, an S3 target number (`3` = AG 3+); `1..=6`.
+    pub agility: u8,
+    /// Passing Ability, an S3 target number (`4` = PA 4+); `1..=6`.
+    pub passing: u8,
+    /// Armour Value, an S3 target number (`9` = AV 9+).
+    pub armour: u8,
     pub team: TeamType,
     pub skills: SkillSet,
     pub role: PlayerRole,
@@ -789,8 +799,13 @@ impl PlayerStats {
     /// Raise one and the encoder's normalisers follow automatically.
     pub const MAX_ST: u8 = 8;
     pub const MAX_MA: u8 = 10;
-    /// AG is a D6 target number, so 6 is the worst possible and also the cap.
+    /// AG is a D6 target number: 1+ the best, 6+ the worst.
+    pub const MIN_AG: u8 = 1;
     pub const MAX_AG: u8 = 6;
+    /// PA is a D6 target number: 1+ the best, 6+ the worst.
+    pub const MIN_PA: u8 = 1;
+    pub const MAX_PA: u8 = 6;
+    /// AV is a 2D6 target number; 12+ the hardest that can still break.
     pub const MAX_AV: u8 = 12;
     /// `FieldedPlayer::total_movement_left` is `ma + 2` before the player
     /// moves — the two Go-For-It steps are movement the plane has to hold.
@@ -800,52 +815,168 @@ impl PlayerStats {
         PlayerStats {
             str_: 3,
             ma: 6,
-            ag: 3,
-            av: 8,
+            agility: 3,
+            armour: 9,
             team,
             skills: SkillSet::new(),
             role: PlayerRole::Lineman,
-            pass: D6Target::FourPlus,
+            passing: 4,
         }
     }
     pub fn new_blitzer(team: TeamType) -> PlayerStats {
         PlayerStats {
             str_: 3,
             ma: 7,
-            ag: 3,
-            av: 9,
+            agility: 3,
+            armour: 10,
             team,
             skills: SkillSet::from([Skill::Block]),
             role: PlayerRole::Blitzer,
-            pass: D6Target::FourPlus,
+            passing: 4,
         }
     }
     pub fn new_catcher(team: TeamType) -> PlayerStats {
         PlayerStats {
             str_: 2,
             ma: 8,
-            ag: 3,
-            av: 8,
+            agility: 3,
+            armour: 9,
             team,
             skills: SkillSet::from([Skill::Dodge, Skill::Catch]),
             role: PlayerRole::Catcher,
-            pass: D6Target::FivePlus,
+            passing: 5,
         }
     }
     pub fn new_thrower(team: TeamType) -> PlayerStats {
         PlayerStats {
             str_: 3,
             ma: 6,
-            ag: 3,
-            av: 8,
+            agility: 3,
+            armour: 9,
             team,
-            skills: SkillSet::from([Skill::SureHands, Skill::Throw]),
+            skills: SkillSet::from([Skill::SureHands, Skill::Pass]),
             role: PlayerRole::Thrower,
-            pass: D6Target::TwoPlus,
+            passing: 2,
         }
     }
     pub fn give_skill(&mut self, skill: Skill) {
         self.skills.insert(skill);
+    }
+
+    /// The S3 Agility target a classic (pre-S3 storage) AG number plays as. The engine always
+    /// rolled `7 - AG` with a `+1` at every Agility test, so AG `n` was exactly AG `(6 - n)+`:
+    /// AG 3 is 3+, AG 4 is 2+, AG 1 is 5+. AG 6 (and 5, which rolled the same under the old
+    /// clamp) become 1+.
+    pub const fn from_legacy_ag(ag: u8) -> u8 {
+        let target = 6u8.saturating_sub(ag);
+        if target < Self::MIN_AG {
+            Self::MIN_AG
+        } else {
+            target
+        }
+    }
+    /// The classic AG number of an S3 Agility target (the inverse of `from_legacy_ag` on the
+    /// values it produces): what the NN's AG plane was trained on.
+    pub const fn legacy_ag(&self) -> u8 {
+        6u8.saturating_sub(self.agility)
+    }
+    /// The S3 Armour target of a classic AV number: broken on a roll above AV, so AV 8 is 9+.
+    pub const fn from_legacy_av(av: u8) -> u8 {
+        av + 1
+    }
+    /// The classic AV number of an S3 Armour target: what the NN's AV plane was trained on.
+    pub const fn legacy_av(&self) -> u8 {
+        self.armour.saturating_sub(1)
+    }
+}
+
+/// The target of an Agility (or Passing Ability) test by a player with `agility`+ and the summed
+/// `modifier`, as the roll that passes it. S3 (Modifying Dice Rolls, Natural Rolls): the
+/// modified score never goes below 1 or above 6, a natural 1 always fails and a natural 6 always
+/// passes. So a 1+ passes on anything but a natural 1 whatever the modifiers (2+), and any
+/// other target `t` passes on `t - modifier`, clamped to 2+..6+ once. Every modifier must be in
+/// the sum: a `D6Target` clamps at each `add_modifer`, so adding them one by one to an
+/// already-clamped target is wrong at the ends of the range.
+pub fn ag_test_target(agility: u8, modifier: i8) -> D6Target {
+    if agility <= 1 {
+        return D6Target::TwoPlus;
+    }
+    D6Target::try_from((agility as i8 - modifier).clamp(2, 6) as u8).unwrap()
+}
+
+impl<'de> Deserialize<'de> for PlayerStats {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        // A binary format has no field names: exactly the derived layout.
+        #[derive(Deserialize)]
+        struct Wire {
+            str_: u8,
+            ma: u8,
+            agility: u8,
+            passing: u8,
+            armour: u8,
+            team: TeamType,
+            skills: SkillSet,
+            role: PlayerRole,
+        }
+        // A self-describing one may be from before S3 storage: `ag` / `av` classic numbers.
+        #[derive(Deserialize)]
+        struct Json {
+            str_: u8,
+            ma: u8,
+            #[serde(default)]
+            agility: Option<u8>,
+            #[serde(default)]
+            ag: Option<u8>,
+            #[serde(default)]
+            passing: Option<u8>,
+            /// Pre-S3 storage: the PA target as a `D6Target` (`"FourPlus"`).
+            #[serde(default)]
+            pass: Option<D6Target>,
+            #[serde(default)]
+            armour: Option<u8>,
+            #[serde(default)]
+            av: Option<u8>,
+            team: TeamType,
+            skills: SkillSet,
+            role: PlayerRole,
+        }
+        let w = if deserializer.is_human_readable() {
+            let j = Json::deserialize(deserializer)?;
+            let agility = j
+                .agility
+                .or(j.ag.map(PlayerStats::from_legacy_ag))
+                .ok_or_else(|| serde::de::Error::missing_field("agility"))?;
+            let armour = j
+                .armour
+                .or(j.av.map(PlayerStats::from_legacy_av))
+                .ok_or_else(|| serde::de::Error::missing_field("armour"))?;
+            let passing = j
+                .passing
+                .or(j.pass.map(|t| t as u8))
+                .ok_or_else(|| serde::de::Error::missing_field("passing"))?;
+            Wire {
+                str_: j.str_,
+                ma: j.ma,
+                agility,
+                passing,
+                armour,
+                team: j.team,
+                skills: j.skills,
+                role: j.role,
+            }
+        } else {
+            Wire::deserialize(deserializer)?
+        };
+        Ok(PlayerStats {
+            str_: w.str_,
+            ma: w.ma,
+            agility: w.agility,
+            passing: w.passing,
+            armour: w.armour,
+            team: w.team,
+            skills: w.skills,
+            role: w.role,
+        })
     }
 }
 
@@ -874,6 +1005,10 @@ pub struct FieldedPlayer {
     pub used: bool,
     pub moves: u8,
     pub used_skills: SkillSet,
+    /// Dodgy Snack: MA and AV are one lower for the rest of the drive. The reduction is applied
+    /// to `stats` and undone when the player leaves the pitch (`GameState::unfield_player`).
+    #[serde(default)]
+    pub snack: bool,
 }
 
 
@@ -881,9 +1016,9 @@ impl std::hash::Hash for PlayerStats {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
         self.str_.hash(h);
         self.ma.hash(h);
-        self.ag.hash(h);
-        self.pass.hash(h);
-        self.av.hash(h);
+        self.agility.hash(h);
+        self.passing.hash(h);
+        self.armour.hash(h);
         self.team.hash(h);
         self.skills.hash_unordered(h);
         self.role.hash(h);
@@ -901,22 +1036,34 @@ impl std::hash::Hash for FieldedPlayer {
         // A Dodge or Block skill already spent this activation is a different situation from one
         // still in hand, and `PartialEq` agrees — so it has to move the hash.
         self.used_skills.hash_unordered(h);
+        self.snack.hash(h);
     }
 }
 
 impl FieldedPlayer {
+    /// The armour roll's target: the S3 AV target number.
     pub fn armor_target(&self) -> Sum2D6Target {
-        Sum2D6Target::try_from(self.stats.av + 1).unwrap()
+        Sum2D6Target::try_from(self.stats.armour.clamp(2, 12)).unwrap()
     }
 
-    /// The AG roll's target, `7 - AG`. There is no 1+ roll, so AG 6 (legal, e.g. on a custom web
-    /// team, though never generated for training) saturates at 2+, as does anything higher.
+    /// The Agility test's target with no modifier: the S3 AG target number (AG 1+ rolls as 2+,
+    /// a natural 1 always failing). See `ag_test` for a test with modifiers.
     pub fn ag_target(&self) -> D6Target {
-        D6Target::try_from(7u8.saturating_sub(self.stats.ag).clamp(2, 6)).unwrap()
+        self.ag_test(0)
     }
 
-    pub fn pass_target(&self) -> D6Target {
-        self.stats.pass
+    /// An Agility test with `modifier` (the sum of every modifier: negative is harder), as
+    /// `ag_test_target`: AG 1+ passes on a 2+ whatever the modifiers, where AG 2+ at -2 needs
+    /// a 4+.
+    pub fn ag_test(&self, modifier: i8) -> D6Target {
+        ag_test_target(self.stats.agility, modifier)
+    }
+
+    /// A Passing Ability test with the summed `modifier`, as for Agility (`ag_test_target`).
+    /// For a pass, the Fumble rule (a 1 after modifiers, `Pass::result_of`) takes precedence, so
+    /// PA 1+ throws exactly like PA 2+.
+    pub fn pa_test(&self, modifier: i8) -> D6Target {
+        ag_test_target(self.stats.passing, modifier)
     }
 
     pub fn can_catch(&self) -> bool {
@@ -987,11 +1134,22 @@ pub struct TeamState {
     #[serde(default = "default_rerolls_start")]
     pub rerolls_start: u8,
     pub rerolls: u8,
-    //ass_coaches: u8,
-    //cheerleaders: u8,
-    //fame: u8,
-    reroll_used: bool,
-    //time_violation: u8,
+    /// Fan Factor (Dedicated Fans + the pre-game D3), added to Pitch Invasion's roll.
+    #[serde(default)]
+    pub fan_factor: u8,
+    /// Cheerleaders on the roster, added to Cheering Fans' roll.
+    #[serde(default)]
+    pub cheerleaders: u8,
+    /// Assistant Coaches on the roster, added to Brilliant Coaching's roll.
+    #[serde(default)]
+    pub assistant_coaches: u8,
+    /// Brilliant Coaching's free team re-rolls: spent before `rerolls`, lost when the drive ends.
+    #[serde(default)]
+    pub drive_rerolls: u8,
+    /// Cheering Fans won: the first Block Action of this team's next turn gets an extra offensive
+    /// assist. Moved into `GameInfo::cheering_fans_this_turn` when that turn starts.
+    #[serde(default)]
+    pub cheering_fans: bool,
 }
 fn default_rerolls_start() -> u8 {
     3
@@ -1002,22 +1160,32 @@ impl TeamState {
         TeamState {
             rerolls_start: default_rerolls_start(),
             rerolls: default_rerolls_start(),
-            reroll_used: false,
             score: 0,
             bribes: 0,
+            fan_factor: 0,
+            cheerleaders: 0,
+            assistant_coaches: 0,
+            drive_rerolls: 0,
+            cheering_fans: false,
         }
-        //TeamState { bribes: 0, score: 0, turn: 0, rerolls_start: 3, rerolls: 3, fame: 3, reroll_used: false }
     }
+    /// The team has a re-roll left. S3 has no once-per-turn limit: a coach may use as many as
+    /// they have during their own turn (`GameState::may_use_team_reroll` adds the "own turn").
     pub fn can_use_reroll(&self) -> bool {
-        !self.reroll_used && self.rerolls > 0
+        self.rerolls > 0 || self.drive_rerolls > 0
     }
+    /// Spends Brilliant Coaching's drive re-roll first: it is lost at the end of the drive.
     pub fn use_reroll(&mut self) {
         assert!(self.can_use_reroll());
-        self.reroll_used = true;
-        self.rerolls -= 1;
+        if self.drive_rerolls > 0 {
+            self.drive_rerolls -= 1;
+        } else {
+            self.rerolls -= 1;
+        }
     }
-    pub fn reset_reroll_used(&mut self) {
-        self.reroll_used = false;
+    /// Every team re-roll available now, the drive's free ones included.
+    pub fn total_rerolls(&self) -> u8 {
+        self.rerolls + self.drive_rerolls
     }
     /// Half-time: the team gets its full reroll allowance back.
     pub fn restore_rerolls(&mut self) {
@@ -1130,6 +1298,17 @@ pub struct AvailableActions {
     // `GameState::micro_step`.
     #[serde(default)]
     pub(crate) has_paths: bool,
+    /// Legal actions that are **not listed** (`collect_non_path_actions` / `get_all_actions`
+    /// leave them out), so bots, the search and the NN never see them: rule-legal moves too
+    /// rare to be worth a branch, offered by a human UI through `collect_hidden_actions`
+    /// (`SimpleAT::PassSquare`). `is_legal_action` accepts them.
+    #[serde(default)]
+    hidden: SimpleATSet,
+    /// The positional ones, same contract. A list, not a `FullPitch`: almost always empty, and
+    /// inline so the search's state clones never allocate for it (a Jump is offered at every
+    /// move decision next to a downed player; a Leap's ring of 16 alone spills to the heap).
+    #[serde(default)]
+    hidden_positional: smallvec::SmallVec<[(PosAT, Position); 8]>,
 }
 
 impl std::fmt::Debug for AvailableActions {
@@ -1168,6 +1347,25 @@ impl AvailableActions {
     pub fn get_positional(&self) -> &Option<FullPitch<PosATSet>> {
         &self.positional
     }
+    /// The hidden simple actions (see the field): legal, never listed for bots.
+    pub fn get_hidden_simple(&self) -> &SimpleATSet {
+        &self.hidden
+    }
+    pub fn insert_hidden_simple(&mut self, action_type: SimpleAT) {
+        assert!(self.team.is_some());
+        self.hidden.insert(action_type);
+    }
+    pub fn insert_hidden_positional(&mut self, action_type: PosAT, pos: Position) {
+        assert!(self.team.is_some());
+        if !self.hidden_positional.contains(&(action_type, pos)) {
+            self.hidden_positional.push((action_type, pos));
+        }
+    }
+    /// Every hidden action (see the fields), simple and positional: a human UI's to offer.
+    pub fn collect_hidden_actions(&self, out: &mut Vec<Action>) {
+        out.extend(self.hidden_positional.iter().map(|&(at, pos)| Action::Positional(at, pos)));
+        out.extend(self.hidden.iter().map(Action::Simple));
+    }
     pub fn has_paths(&self) -> bool {
         self.has_paths
     }
@@ -1180,7 +1378,11 @@ impl AvailableActions {
         aa
     }
     pub fn is_empty(&self) -> bool {
-        self.simple.is_empty() && !self.has_paths && self.positional.is_none()
+        self.simple.is_empty()
+            && !self.has_paths
+            && self.positional.is_none()
+            && self.hidden.is_empty()
+            && self.hidden_positional.is_empty()
     }
     /// Collects every simple action and every positional action backed by
     /// `self.positional`. Path-style actions are NOT included — call
@@ -1228,6 +1430,12 @@ impl AvailableActions {
             simple: self.simple,
             positional,
             has_paths: false,
+            hidden: self.hidden,
+            hidden_positional: self
+                .hidden_positional
+                .iter()
+                .map(|&(at, pos)| (at, Position::new((width - 1 - pos.x, pos.y))))
+                .collect(),
         }
     }
 
@@ -1248,6 +1456,12 @@ impl AvailableActions {
             simple: self.simple,
             positional,
             has_paths: self.has_paths,
+            hidden: self.hidden,
+            hidden_positional: self
+                .hidden_positional
+                .iter()
+                .map(|&(at, pos)| (at, Position::new((pos.x, height - 1 - pos.y))))
+                .collect(),
         }
     }
 
@@ -1275,13 +1489,10 @@ impl AvailableActions {
     /// using `path_buffer`.
     pub fn is_legal_non_path_action(&self, action: Action) -> bool {
         match action {
-            Action::Simple(at) => self.simple.contains(&at),
+            Action::Simple(at) => self.simple.contains(&at) || self.hidden.contains(&at),
             Action::Positional(at, pos) => {
-                if let Some(allowed_at) = self.positional.as_ref().map(|positions| &positions[pos]) {
-                    allowed_at.contains(&at)
-                } else {
-                    false
-                }
+                self.positional.as_ref().is_some_and(|positions| positions[pos].contains(&at))
+                    || self.hidden_positional.contains(&(at, pos))
             }
         }
     }
@@ -1469,8 +1680,9 @@ mod player_stats_tests {
             ] {
                 assert!(stats.str_ <= PlayerStats::MAX_ST, "{:?} ST {}", stats.role, stats.str_);
                 assert!(stats.ma <= PlayerStats::MAX_MA, "{:?} MA {}", stats.role, stats.ma);
-                assert!(stats.ag <= PlayerStats::MAX_AG, "{:?} AG {}", stats.role, stats.ag);
-                assert!(stats.av <= PlayerStats::MAX_AV, "{:?} AV {}", stats.role, stats.av);
+                let ag = PlayerStats::MIN_AG..=PlayerStats::MAX_AG;
+                assert!(ag.contains(&stats.agility), "{:?} AG {}+", stats.role, stats.agility);
+                assert!(stats.armour <= PlayerStats::MAX_AV, "{:?} AV {}+", stats.role, stats.armour);
             }
         }
     }
@@ -1482,9 +1694,9 @@ mod ag_target_tests {
     use crate::core::gamestate::GameStateBuilder;
     use crate::core::model::{PlayerStats, Position, TeamType};
 
-    fn ag_target_for(ag: u8) -> D6Target {
+    fn ag_target_for(agility: u8) -> D6Target {
         let mut stats = PlayerStats::new_lineman(TeamType::Home);
-        stats.ag = ag;
+        stats.agility = agility;
         let pos = Position::new((5, 5));
         let state = GameStateBuilder::new()
             .add_player_details(pos, TeamType::Home, stats)
@@ -1492,17 +1704,99 @@ mod ag_target_tests {
         state.get_player_at(pos).unwrap().ag_target()
     }
 
-    /// AG is stored the classic way (target = 7 - AG). An AG 6 player is legal (a custom web team
-    /// can field one) but there is no 1+ roll: the target saturates at 2+ instead of panicking.
+    /// AG is stored as the S3 target (AG 3+). With no modifier AG 1+ rolls as 2+ (a natural 1
+    /// always fails) ...
     #[test]
-    fn ag_six_saturates_at_two_plus() {
-        assert_eq!(ag_target_for(6), D6Target::TwoPlus);
+    fn ag_one_plus_without_modifiers_rolls_as_two_plus() {
+        assert_eq!(ag_target_for(1), D6Target::TwoPlus);
+    }
+
+    /// ... and stays one under any modifier: the modified score never drops below 1 (S3,
+    /// Modifying Dice Rolls), so AG 1+ passes on anything but a natural 1, where AG 2+ at -2
+    /// needs a 4+. Every other target takes its modifiers as one sum, clamped once.
+    #[test]
+    fn ag_one_plus_passes_on_a_two_whatever_the_modifiers() {
+        use crate::core::model::ag_test_target;
+        assert_eq!(ag_test_target(1, -2), D6Target::TwoPlus);
+        assert_eq!(ag_test_target(1, -5), D6Target::TwoPlus);
+        assert_eq!(ag_test_target(2, -2), D6Target::FourPlus);
+        assert_eq!(ag_test_target(3, 1 - 1), D6Target::ThreePlus, "a +1 and a -1 cancel");
+        assert_eq!(ag_test_target(6, -1), D6Target::SixPlus, "a natural 6 always passes");
+        assert_eq!(ag_test_target(6, 1), D6Target::FivePlus);
     }
 
     #[test]
-    fn the_usual_range_is_unchanged() {
-        assert_eq!(ag_target_for(1), D6Target::SixPlus);
-        assert_eq!(ag_target_for(3), D6Target::FourPlus);
-        assert_eq!(ag_target_for(5), D6Target::TwoPlus);
+    fn the_target_is_the_characteristic() {
+        assert_eq!(ag_target_for(2), D6Target::TwoPlus);
+        assert_eq!(ag_target_for(3), D6Target::ThreePlus);
+        assert_eq!(ag_target_for(5), D6Target::FivePlus);
+    }
+
+    /// Classic AG `n` played as AG `(6 - n)+` (the engine rolled `7 - AG` with `+1` at every
+    /// Agility test) and AV `n` as AV `(n + 1)+`; the conversions round-trip.
+    #[test]
+    fn legacy_characteristics_convert_both_ways() {
+        for ag in 1..=5u8 {
+            let mut stats = PlayerStats::new_lineman(TeamType::Home);
+            stats.agility = PlayerStats::from_legacy_ag(ag);
+            assert_eq!(stats.legacy_ag(), ag);
+        }
+        assert_eq!(PlayerStats::from_legacy_ag(3), 3);
+        assert_eq!(PlayerStats::from_legacy_ag(4), 2);
+        assert_eq!(PlayerStats::from_legacy_ag(6), 1);
+        assert_eq!(PlayerStats::from_legacy_av(8), 9);
+        let mut stats = PlayerStats::new_lineman(TeamType::Home);
+        stats.armour = 9;
+        assert_eq!(stats.legacy_av(), 8);
+    }
+
+    /// JSON written before S3 storage (`ag` / `av` classic numbers) loads converted; the new
+    /// form round-trips.
+    #[test]
+    fn legacy_json_loads_converted() {
+        let stats = PlayerStats::new_lineman(TeamType::Home);
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"agility\":3") && json.contains("\"armour\":9"), "{json}");
+        assert_eq!(serde_json::from_str::<PlayerStats>(&json).unwrap(), stats);
+        let legacy = json.replace("\"agility\":3", "\"ag\":4").replace("\"armour\":9", "\"av\":7");
+        let old: PlayerStats = serde_json::from_str(&legacy).unwrap();
+        assert_eq!((old.agility, old.armour), (2, 8));
+        // PA was stored as a `D6Target`.
+        assert!(json.contains("\"passing\":4"), "{json}");
+        let legacy_pa = legacy.replace("\"passing\":4", "\"pass\":\"FivePlus\"");
+        let old: PlayerStats = serde_json::from_str(&legacy_pa).unwrap();
+        assert_eq!(old.passing, 5);
+    }
+}
+
+#[cfg(test)]
+mod hidden_action_tests {
+    use super::*;
+
+    /// A hidden positional action (a human's Jump or Throw Team-mate) is legal but never
+    /// listed with the bot's actions, and follows the board through the mirror and the y-flip.
+    #[test]
+    fn hidden_positional_actions_are_legal_unlisted_and_mirrored() {
+        let mut aa = AvailableActions::new(TeamType::Home);
+        let target = Position::new((3, 2));
+        aa.insert_hidden_positional(PosAT::Move, target);
+        assert!(!aa.is_empty());
+        assert!(aa.is_legal_non_path_action(Action::Positional(PosAT::Move, target)));
+        assert!(!aa.is_legal_non_path_action(Action::Positional(PosAT::Move, Position::new((3, 3)))));
+
+        let mut listed = Vec::new();
+        aa.collect_non_path_actions(&mut listed);
+        assert!(listed.is_empty());
+
+        let mut hidden = Vec::new();
+        aa.collect_hidden_actions(&mut hidden);
+        assert_eq!(hidden, vec![Action::Positional(PosAT::Move, target)]);
+
+        let mut mirrored = Vec::new();
+        aa.mirrored(10).collect_hidden_actions(&mut mirrored);
+        assert_eq!(mirrored, vec![Action::Positional(PosAT::Move, Position::new((6, 2)))]);
+        let mut flipped = Vec::new();
+        aa.y_flipped(7).collect_hidden_actions(&mut flipped);
+        assert_eq!(flipped, vec![Action::Positional(PosAT::Move, Position::new((3, 4)))]);
     }
 }

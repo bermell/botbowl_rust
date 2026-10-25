@@ -20,11 +20,37 @@ def fixtures_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "botbowl-nn" / "tests" / "fixtures"
 
 
+# The schema the fixture nets are *drawn* at. Later schemas get them through `bbnn.migrate`, so a
+# policy-head bump keeps every old weight (and the tests that play the fixture net — policy-only
+# playouts in `mc_label` / `override_audit` — keep playing the same games): the v10 fixture is
+# the v9 seed net with Secure the Ball's zero channel inserted.
+DRAWN_SCHEMA = 9
+
+
+def _drawn(**kwargs) -> BBNet:
+    """A `BBNet` drawn from the current RNG at `DRAWN_SCHEMA`'s policy width, migrated to today's."""
+    from .migrate import SCHEMAS
+
+    return BBNet(policy_ch=SCHEMAS[DRAWN_SCHEMA]["A"], schema_version=DRAWN_SCHEMA, **kwargs)
+
+
+def _migrated(old: BBNet) -> BBNet:
+    from .migrate import migrate, shape_of
+
+    # The migration's verifier builds nets (drawing init weights): keep the global RNG where the
+    # draw left it, so the parity inputs drawn next are the ones the old schema drew.
+    with torch.random.fork_rng():
+        sd, _, _ = migrate(old.state_dict(), log=lambda *_: None)
+        model = BBNet(**shape_of(sd))
+        model.load_state_dict(sd)
+    return model
+
+
 def build(out_dir: Path | None = None):
     out_dir = out_dir or fixtures_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(1234)
-    model = BBNet(width=16, blocks=2, global_embed=8, value_hidden=16)
+    model = _migrated(_drawn(width=16, blocks=2, global_embed=8, value_hidden=16))
     model.eval()
     export_onnx(model, out_dir / "tiny.onnx")
     dump_parity(model, out_dir)
@@ -43,13 +69,14 @@ def build_heads(out_dir: Path | None = None):
     out_dir = out_dir or fixtures_dir() / "heads"
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(4321)
-    model = BBNet(width=16, blocks=2, global_embed=8, value_conv=12, value_pool="meanmax", value_hidden=24, policy_conv=20)
+    model = _drawn(width=16, blocks=2, global_embed=8, value_conv=12, value_pool="meanmax", value_hidden=24, policy_conv=20)
     for m in model.modules():
         if isinstance(m, torch.nn.BatchNorm2d):
             m.running_mean.uniform_(-0.5, 0.5)
             m.running_var.uniform_(0.5, 2.0)
             m.weight.data.uniform_(0.5, 1.5)
             m.bias.data.uniform_(-0.5, 0.5)
+    model = _migrated(model)
     model.eval()
     export_onnx(model, out_dir / "tiny_heads.onnx")
     dump_parity(model, out_dir, sizes=HEADS_SIZES)

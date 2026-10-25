@@ -497,7 +497,8 @@ pub fn ascii(state: &GameState, marks: &[(Position, char)]) -> Vec<String> {
 /// the value is zero, so the net's `|ΔV|` for them is the noise floor of a one-cell edit.
 pub const PLACEBO_SKILLS: [botbowl_engine::core::table::Skill; 3] = [
     botbowl_engine::core::table::Skill::Leap,
-    botbowl_engine::core::table::Skill::Pass,
+    // Plane 24, the placebo `Pass` held before it took the old `Throw` plane and a rule.
+    botbowl_engine::core::table::Skill::SafePass,
     botbowl_engine::core::table::Skill::Kick,
 ];
 

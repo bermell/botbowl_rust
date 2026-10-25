@@ -62,11 +62,20 @@ pub enum PosAT {
     /// Setup: put the player being placed (`ViewState::active_player`) on
     /// this square of the own half.
     PlacePlayer,
+    /// S3 Secure the Ball: a free move onto the loose ball, picked up on a 2+.
+    StartSecureBall,
+    /// Throw / Kick Team-mate, every step of it: the declaration on the thrower, the team-mate
+    /// to pick up, the target square. Offered to humans only (the engine hides it from bots).
+    ThrowTeamMate,
+    /// During a move: one Jump over a Prone/Stunned player (or a Leap) from where the active
+    /// player stands into this square. A hidden engine action: offered to humans only.
+    Jump,
 }
 
 impl PosAT {
-    /// All variants, in policy-channel order.
-    pub const ALL: [PosAT; 15] = [
+    /// All variants, in policy-channel order (the hidden `ThrowTeamMate` and `Jump`, last, have
+    /// no channel: bots never see them).
+    pub const ALL: [PosAT; 18] = [
         PosAT::StartMove,
         PosAT::StartBlitz,
         PosAT::StartPass,
@@ -82,6 +91,9 @@ impl PosAT {
         PosAT::StartBlock,
         PosAT::Block,
         PosAT::PlacePlayer,
+        PosAT::StartSecureBall,
+        PosAT::ThrowTeamMate,
+        PosAT::Jump,
     ];
 
     /// The variant's own name, sentence-cased — `StartMove` is "Start move"
@@ -106,16 +118,19 @@ impl PosAT {
             PosAT::StartBlock => "Start block",
             PosAT::Block => "Block",
             PosAT::PlacePlayer => "Place player",
+            PosAT::StartSecureBall => "Start secure ball",
+            PosAT::ThrowTeamMate => "Throw team mate",
+            PosAT::Jump => "Jump",
         }
     }
 
     /// Sprite path relative to the `/img/` asset mount, when one fits.
     pub fn icon(self) -> Option<&'static str> {
         match self {
-            PosAT::StartMove | PosAT::Move => Some("icons/actions/move.gif"),
+            PosAT::StartMove | PosAT::Move | PosAT::StartSecureBall | PosAT::Jump => Some("icons/actions/move.gif"),
             PosAT::StartBlitz => Some("icons/actions/blitz.gif"),
             PosAT::StartBlock | PosAT::Block => Some("icons/actions/block.gif"),
-            PosAT::StartPass | PosAT::Pass => Some("icons/actions/pass.gif"),
+            PosAT::StartPass | PosAT::Pass | PosAT::ThrowTeamMate => Some("icons/actions/pass.gif"),
             PosAT::StartHandoff | PosAT::Handoff => Some("icons/actions/handoff.gif"),
             PosAT::StartFoul | PosAT::Foul => Some("icons/actions/foul.gif"),
             PosAT::Push | PosAT::FollowUp | PosAT::SelectPosition | PosAT::PlacePlayer => None,
@@ -133,6 +148,7 @@ impl PosAT {
                 | PosAT::StartFoul
                 | PosAT::StartHandoff
                 | PosAT::StartBlock
+                | PosAT::StartSecureBall
         )
     }
 }
@@ -161,10 +177,13 @@ pub enum SimpleAT {
     /// Use / don't use an optional skill (Wrestle, Stand Firm).
     UseSkill,
     DontUseSkill,
+    /// During a Pass action: pass to any square in range (offered to humans only — the engine
+    /// hides it from bots).
+    PassSquare,
 }
 
 impl SimpleAT {
-    pub const ALL: [SimpleAT; 17] = [
+    pub const ALL: [SimpleAT; 18] = [
         SimpleAT::SelectBothDown,
         SimpleAT::SelectPow,
         SimpleAT::SelectPush,
@@ -182,6 +201,7 @@ impl SimpleAT {
         SimpleAT::BenchPlayer,
         SimpleAT::UseSkill,
         SimpleAT::DontUseSkill,
+        SimpleAT::PassSquare,
     ];
 
     /// The variant's own name, sentence-cased — see [`PosAT::label`].
@@ -204,6 +224,7 @@ impl SimpleAT {
             SimpleAT::BenchPlayer => "Bench player",
             SimpleAT::UseSkill => "Use skill",
             SimpleAT::DontUseSkill => "Dont use skill",
+            SimpleAT::PassSquare => "Pass square",
         }
     }
 

@@ -109,6 +109,7 @@ fn sample_result(req: botbowl_engine::core::dices::RequestedRoll) -> Option<botb
         Req::Scatter => Res::Scatter(diag, diag, diag),
         Req::Sum2D6 => Res::Sum2D6(Sum2D6::Seven),
         Req::ThrowIn => return None, // D3 indexes a sideline-dependent table
+        Req::Pick(_) => Res::Pick(0), // candidates are listed by id, which mirroring keeps
     })
 }
 

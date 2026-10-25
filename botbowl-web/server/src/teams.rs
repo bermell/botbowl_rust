@@ -13,7 +13,6 @@
 
 use std::path::{Path, PathBuf};
 
-use botbowl_engine::core::dices::D6Target;
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{PlayerStats, TeamType};
 use botbowl_engine::core::table::Skill;
@@ -37,13 +36,20 @@ pub fn skills() -> Vec<SkillInfo> {
         .into_iter()
         .map(|s| SkillInfo {
             label: mirror::skill_label(s).to_string(),
-            implemented: good.contains(&s),
+            // Throw / Kick Team-mate are implemented but only a human can use them, so they are
+            // not in `good_skills` (the curriculum's sampling pool).
+            implemented: good.contains(&s)
+                || matches!(s, Skill::ThrowTeamMate | Skill::RightStuff | Skill::KickTeamMate),
         })
         .collect()
 }
 
 pub fn skill_from_label(label: &str) -> Option<Skill> {
-    Skill::ALL.into_iter().find(|s| mirror::skill_label(*s) == label)
+    Skill::ALL
+        .into_iter()
+        .find(|s| mirror::skill_label(*s) == label)
+        // Saved before the pre-S3 `Throw` was folded into `Pass`.
+        .or_else(|| (label == "Throw").then_some(Skill::Pass))
 }
 
 /// The engine stats for a position. Errors on a skill label the engine does not know.
@@ -52,9 +58,9 @@ pub fn stats_of(p: &PositionDef, team: TeamType) -> Result<PlayerStats, String> 
     stats.role = mirror::role_from_proto(p.role);
     stats.ma = p.ma;
     stats.str_ = p.st;
-    stats.ag = p.ag;
-    stats.av = p.av;
-    stats.pass = D6Target::try_from(p.pa.clamp(2, 6)).expect("2..=6 is a D6 target");
+    stats.agility = p.agility;
+    stats.armour = p.armour;
+    stats.passing = p.pa.clamp(PlayerStats::MIN_PA, PlayerStats::MAX_PA);
     stats.skills.clear();
     for label in &p.skills {
         let skill = skill_from_label(label).ok_or_else(|| format!("{}: unknown skill {label:?}", p.name))?;
@@ -119,13 +125,13 @@ impl Looks {
             .filter(|s| stats.skills.contains(s))
             .map(|s| mirror::skill_label(s).to_string())
             .collect();
-        def.position_of(role, stats.ma, stats.str_, stats.ag, stats.av, &skills)
+        def.position_of(role, stats.ma, stats.str_, stats.agility, stats.armour, &skills)
             // MA may have been capped ("no natural one-turn"): the same position with more.
             .or_else(|| {
                 def.positions.iter().find(|p| {
                     p.role == role
                         && p.ma >= stats.ma
-                        && (p.st, p.ag, p.av) == (stats.str_, stats.ag, stats.av)
+                        && (p.st, p.agility, p.armour) == (stats.str_, stats.agility, stats.armour)
                         && p.skills.iter().all(|s| skills.contains(s))
                         && p.skills.len() == skills.len()
                 })

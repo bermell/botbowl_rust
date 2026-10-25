@@ -68,6 +68,9 @@ fn event_label(event: &PathingEvent) -> String {
         PathingEvent::Touchdown(_) => "Touchdown!".to_string(),
         PathingEvent::Foul(_, t) => format!("Armour {}+", *t as u8),
         PathingEvent::StandUp => "Stand up".to_string(),
+        PathingEvent::StandUpRoll(t) => format!("Stand up {}+", *t as u8),
+        PathingEvent::SecureBall(t) => format!("Secure the ball {}+", *t as u8),
+        PathingEvent::Jump { to, target } => format!("Jump {}+ to ({}, {})", *target as u8, to.x, to.y),
     }
 }
 
@@ -122,8 +125,8 @@ fn player_view(state: &GameState, ctx: &DeriveCtx, p: &em::FieldedPlayer, has_ba
         sprite: ctx.looks.sprite(&p.stats, p.used && !active),
         st: p.stats.str_,
         ma: p.stats.ma,
-        ag: p.stats.ag,
-        av: p.stats.av,
+        agility: p.stats.agility,
+        armour: p.stats.armour,
         movement_left: p.total_movement_left(),
         has_ball,
         skills,
@@ -205,6 +208,8 @@ fn route_between(steps: &[GameState], from: Position, to: Position) -> Vec<Posit
             .iter()
             .filter_map(|e| match e {
                 PositionOrEvent::Position(p) => Some(p),
+                // A jump lands with no `Position` step of its own.
+                PositionOrEvent::Event(PathingEvent::Jump { to, .. }) => Some(to),
                 PositionOrEvent::Event(_) => None,
             })
             .collect();
@@ -267,7 +272,13 @@ fn node_info(node: &std::sync::Arc<Node>) -> (f32, Option<botbowl_web_proto::dic
     for item in node.iter() {
         match item {
             PositionOrEvent::Position(p) => steps.push(mirror::position_to_proto(p)),
-            PositionOrEvent::Event(e) => rolls.push(event_label(&e)),
+            PositionOrEvent::Event(e) => {
+                // A jump lands with no `Position` step of its own.
+                if let PathingEvent::Jump { to, .. } = e {
+                    steps.push(mirror::position_to_proto(to));
+                }
+                rolls.push(event_label(&e))
+            }
         }
     }
     (
@@ -303,14 +314,15 @@ fn annotate_paths(state: &GameState, squares: &mut [pv::SquareView]) {
     }
 }
 
-/// The six declarations, in policy-channel order.
-const STARTS: [et::PosAT; 6] = [
+/// The seven declarations, in policy-channel order.
+const STARTS: [et::PosAT; 7] = [
     et::PosAT::StartMove,
     et::PosAT::StartBlitz,
     et::PosAT::StartPass,
     et::PosAT::StartFoul,
     et::PosAT::StartHandoff,
     et::PosAT::StartBlock,
+    et::PosAT::StartSecureBall,
 ];
 
 /// Preview every declaration the side to act may make on the player at
@@ -369,10 +381,14 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
     let at = mirror::position_from_proto(pos);
     let player = state.get_player_at(at)?;
     let (team, id, carrier) = (player.stats.team, player.id, state.ball == BallState::Carried(player.id));
+    // Throw / Kick Team-mate is a hidden declaration (bots never see it): a human's, listed last.
     let starts: Vec<et::PosAT> = STARTS
         .into_iter()
+        .chain([et::PosAT::ThrowTeamMate])
         .filter(|s| state.is_legal_action(&em::Action::Positional(*s, at)))
         .collect();
+    let kick_team_mate = starts.contains(&et::PosAT::ThrowTeamMate)
+        && botbowl_engine::core::procedures::team_mate_procs::team_mate_declaration(state, player) == Some(true);
     if starts.is_empty() {
         return None;
     }
@@ -380,6 +396,10 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
     // Every (declaration, square, intent) the declarations would offer next.
     let mut offered: Vec<(et::PosAT, Position, pv::IntentView)> = Vec::new();
     for &start in &starts {
+        // Its moves are a Move action's; the team-mate to throw is picked after the move.
+        if start == et::PosAT::ThrowTeamMate {
+            continue;
+        }
         let mut preview = state.clone();
         // A declaration that rolls at once (Jump Up) pauses on the roll here
         // rather than drawing on anybody's dice: it then offers nothing.
@@ -430,7 +450,16 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
     let mut targets = Vec::new();
     for target in squares {
         let intent = match state.get_player_at(target) {
-            // An empty square, or the loose ball: walk there.
+            // The loose ball: walk there and pick it up, or Secure the Ball (a 2+ that ends the
+            // activation) when that is the likelier.
+            None if state.ball == BallState::OnGround(target) => {
+                let walk = find(et::PosAT::StartMove, target);
+                match (walk, find(et::PosAT::StartSecureBall, target)) {
+                    (Some(w), Some(sb)) => Some(if sb.prob.unwrap_or(0.0) > w.prob.unwrap_or(0.0) { sb } else { w }),
+                    (w, sb) => w.or(sb),
+                }
+            }
+            // An empty square: walk there.
             None => find(et::PosAT::StartMove, target),
             // The player's own square — offered only to a prone player: stand up
             // where they lie (a click on the selected player again).
@@ -463,6 +492,7 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
         player: pos,
         end_first: false,
         starts: starts.into_iter().map(mirror::pos_at_to_proto).collect(),
+        kick_team_mate,
         targets,
     })
 }
@@ -497,6 +527,9 @@ fn prompt(state: &GameState) -> Option<pv::PromptView> {
         AnyProc::DodgeProc(c) => player_pos(c.id()),
         AnyProc::GfiProc(c) => player_pos(c.id()),
         AnyProc::PickupProc(c) => player_pos(c.id()),
+        AnyProc::SecureBallProc(c) => player_pos(c.id()),
+        // The thrown player lands; the default arm would point at the thrower.
+        AnyProc::TeamMateLanding(c) => player_pos(c.id()),
         AnyProc::JumpUp(c) => player_pos(c.id()),
         AnyProc::Push(p) => Some(p.on()),
         // The dice go over the defender: that is what they are about.
@@ -530,8 +563,8 @@ fn scoreboard(state: &GameState) -> pv::Scoreboard {
         away_turn: info.away_turn,
         home_score: state.home.score,
         away_score: state.away.score,
-        home_rerolls: state.home.rerolls,
-        away_rerolls: state.away.rerolls,
+        home_rerolls: state.home.total_rerolls(),
+        away_rerolls: state.away.total_rerolls(),
         home_can_reroll: state.home.can_use_reroll(),
         away_can_reroll: state.away.can_use_reroll(),
         weather: mirror::weather_to_proto(&info.weather),
@@ -640,6 +673,27 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
                         at,
                         label: at.label().to_string(),
                         img: at.block_die_face().map(str::to_string),
+                    });
+                }
+            }
+        }
+        // Actions the engine hides from bots (`get_all_actions` leaves them out) are a human's
+        // to take: pass to any square in range.
+        let mut hidden = Vec::new();
+        state.get_available_actions().collect_hidden_actions(&mut hidden);
+        for action in hidden {
+            match action {
+                em::Action::Positional(at, pos) => {
+                    if let Some(index) = index_of(dims, pos) {
+                        squares[index].actions.push(mirror::pos_at_to_proto(at));
+                    }
+                }
+                em::Action::Simple(at) => {
+                    let at = mirror::simple_at_to_proto(at);
+                    simple_actions.push(pv::SimpleActionView {
+                        at,
+                        label: at.label().to_string(),
+                        img: None,
                     });
                 }
             }
@@ -1289,6 +1343,31 @@ mod tests {
         assert_eq!(view_of(&state), view_of(&a_position()));
     }
 
+    /// S3 Secure the Ball: with the loose ball clear of standing opponents the player may declare
+    /// it, and a click on the ball takes the likelier of a walk-and-pick-up and a secure (2+).
+    #[test]
+    fn a_clear_loose_ball_offers_secure_the_ball() {
+        let state = GameStateBuilder::new()
+            .with_board_dims(dims())
+            .add_home_players(&[(10, 4)])
+            .add_away_players(&[(2, 1)])
+            .add_ball((8, 4))
+            .build();
+        let sel = selection(&state, pa::Position::new(10, 4), 0).unwrap();
+        assert!(sel.starts.contains(&PosAT::StartSecureBall), "{:?}", sel.starts);
+        let ball = intent_at(&sel, 8, 4).expect("the loose ball's square");
+        // AG 3+ pick-up against a 2+: the secure is likelier.
+        assert_eq!((ball.start, ball.action), (PosAT::StartSecureBall, PosAT::Move));
+        assert!(
+            ball.route.as_ref().unwrap().rolls.iter().any(|r| r.starts_with("Secure the ball 2+")),
+            "{:?}",
+            ball.route
+        );
+        // Elsewhere a click still walks.
+        let walk = intent_at(&sel, 11, 4).expect("an empty square");
+        assert_eq!(walk.start, PosAT::StartMove);
+    }
+
     #[test]
     fn an_adjacent_opponent_is_a_block_and_a_distant_one_a_blitz() {
         let state = a_position();
@@ -1301,6 +1380,37 @@ mod tests {
         assert!(blitz.block_dice.is_some());
         // A team-mate, from a player without the ball, is not a target.
         assert!(intent_at(&sel, 8, 4).is_none());
+    }
+
+    /// Throw Team-mate is hidden from bots but a human's: the thrower's selection offers it as a
+    /// declaration (a Kick Team-mate kicker's says so), the team-mate to pick up and then every
+    /// target square carry it on the board.
+    #[test]
+    fn a_human_declares_throw_team_mate_and_picks_the_team_mate_and_the_square() {
+        use botbowl_engine::core::table::{PosAT as EPosAT, Skill};
+        let (thrower, mate) = (em::Position::new((10, 4)), em::Position::new((11, 4)));
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(dims())
+            .add_home_players(&[(10, 4), (11, 4)])
+            .add_away_players(&[(2, 1)])
+            .build();
+        state.get_mut_player_at_unsafe(thrower).stats.skills.insert(Skill::ThrowTeamMate);
+        state.get_mut_player_at_unsafe(mate).stats.skills.insert(Skill::RightStuff);
+        state.reask_turn_decision().unwrap();
+        let sel = selection(&state, pa::Position::new(10, 4), 0).unwrap();
+        assert_eq!(sel.starts.last(), Some(&PosAT::ThrowTeamMate));
+        assert!(!sel.kick_team_mate);
+        let on = |state: &GameState, x: i8, y: i8| {
+            view_of(state).squares[view_of(state).dims.index(pa::Position::new(x, y))]
+                .actions
+                .contains(&PosAT::ThrowTeamMate)
+        };
+        assert!(on(&state, 10, 4), "the declaration is on the thrower's square");
+        state.step_positional(EPosAT::ThrowTeamMate, thrower);
+        assert!(on(&state, 11, 4), "the team-mate to pick up");
+        state.step_positional(EPosAT::ThrowTeamMate, mate);
+        assert!(on(&state, 7, 4) && on(&state, 10, 1), "target squares");
+        assert!(!on(&state, 10, 4));
     }
 
     #[test]

@@ -76,11 +76,16 @@ OLD_INIT = {
 def test_default_init_draws_the_same_weights_as_before():
     """A fresh net at a seed is the net the old constructor built: the knobs register no module
     and draw nothing when off, so a from-scratch control arm is today's net exactly."""
+    # The pins were taken at schema v9 (policy width 32, `schema_version` 9 in the state_dict);
+    # schema v10 only widens the last layer, so the knobs are checked at the schema they were pinned at.
     for (width, blocks), want in OLD_INIT.items():
         torch.manual_seed(0)
-        assert _digest(BBNet(width=width, blocks=blocks).state_dict()) == want
+        assert _digest(BBNet(width=width, blocks=blocks, policy_ch=32, schema_version=9).state_dict()) == want
         torch.manual_seed(0)
-        explicit = BBNet(width=width, blocks=blocks, value_conv=32, value_hidden=64, value_pool="mean", policy_conv=0)
+        explicit = BBNet(
+            width=width, blocks=blocks, value_conv=32, value_hidden=64, value_pool="mean", policy_conv=0,
+            policy_ch=32, schema_version=9,
+        )
         assert _digest(explicit.state_dict()) == want
 
 

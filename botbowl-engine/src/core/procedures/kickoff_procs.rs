@@ -9,6 +9,7 @@ use crate::core::model::{
     PlayerID, Position, ProcState, Procedure, TeamType, Weather,
 };
 use crate::core::procedures::ball_procs;
+use crate::core::procedures::kickoff_events::{self, RollOffEvent};
 use crate::core::table::*;
 
 use crate::core::gamestate::GameState;
@@ -72,16 +73,16 @@ impl Procedure for KickoffTable {
             ProcInput::Roll(RollResult::Sum2D6(kickoff_roll)) => kickoff_roll,
             _ => panic!("Unexpected input {:?}", input),
         };
-        let mut procs: Vec<AnyProc> = vec![LandKickoff::new()]; //TODO: this should be added
-                                                                //by the kickoff procedure
+        // The event resolves first (pushed last), then the ball lands.
+        let mut procs: Vec<AnyProc> = vec![LandKickoff::new()];
         match kickoff_roll {
             Sum2D6::Two => {
-                //get the ref
+                // Get the Ref: a free Bribe each (`casualty_procs::Ejection` spends them).
                 game_state.home.bribes += 1;
                 game_state.away.bribes += 1;
             }
             Sum2D6::Three => {
-                // Time-out (BB2020): if the *kicking* team's turn marker is on turn 6, 7 or 8 both
+                // Time-out!: if the *kicking* team's turn marker is on turn 6, 7 or 8 both
                 // markers move one space back, otherwise both move one space forward. Reading
                 // Home's marker instead moved them the wrong way when Away kicked on 6 with Home
                 // on 5 (plan 065; `tests/kickoff_table.rs`).
@@ -97,33 +98,15 @@ impl Procedure for KickoffTable {
                     game_state.info.home_turn -= 1;
                 }
             }
-            Sum2D6::Four => {
-                //solid defense
-            }
-            Sum2D6::Five => {
-                //High Kick
-            }
-            Sum2D6::Six => {
-                //Cheering fans
-            }
-            Sum2D6::Seven => {
-                //Brilliant coaching
-            }
-            Sum2D6::Eight => {
-                procs.push(ChangingWeather::new());
-            }
-            Sum2D6::Nine => {
-                //Quick snap
-            }
-            Sum2D6::Ten => {
-                //Blitz!
-            }
-            Sum2D6::Eleven => {
-                //Officious ref
-            }
-            Sum2D6::Twelve => {
-                //Pitch invasion
-            }
+            Sum2D6::Four => procs.push(kickoff_events::SolidDefence::new()),
+            Sum2D6::Five => procs.push(kickoff_events::HighKick::new()),
+            Sum2D6::Six => procs.push(kickoff_events::RollOff::new(RollOffEvent::CheeringFans)),
+            Sum2D6::Seven => procs.push(kickoff_events::RollOff::new(RollOffEvent::BrilliantCoaching)),
+            Sum2D6::Eight => procs.push(ChangingWeather::new()),
+            Sum2D6::Nine => procs.push(kickoff_events::QuickSnap::new()),
+            Sum2D6::Ten => procs.push(kickoff_events::Charge::new(game_state.info.kicking_this_drive)),
+            Sum2D6::Eleven => procs.push(kickoff_events::RollOff::new(RollOffEvent::DodgySnack)),
+            Sum2D6::Twelve => procs.push(kickoff_events::RollOff::new(RollOffEvent::PitchInvasion)),
         }
 
         ProcState::from(procs)
@@ -144,15 +127,24 @@ impl Procedure for ChangingWeather {
             ProcInput::Roll(RollResult::Sum2D6(roll)) => {
                 game_state.info.weather = Weather::from(roll);
                 let ball_pos = game_state.get_ball_position().unwrap();
+                // S3: "If the new result is Perfect Conditions, the ball will Scatter (3) in the
+                // air before it lands."
                 if game_state.info.weather == Weather::Nice && !game_state.is_out(ball_pos) {
-                    ProcState::NeedRoll(RequestedRoll::D8)
+                    ProcState::NeedRoll(RequestedRoll::Scatter)
                 } else {
                     ProcState::Done
                 }
             }
-            ProcInput::Roll(RollResult::D8(d8)) => {
-                let scattered = game_state.get_ball_position().unwrap() + Direction::from(d8);
-                game_state.set_ball(BallState::InAir(scattered));
+            ProcInput::Roll(RollResult::Scatter(a, b, c)) => {
+                // Stop at the first square off the pitch: `LandKickoff` makes that a touchback.
+                let mut position = game_state.get_ball_position().unwrap();
+                for d8 in [a, b, c] {
+                    position = position + Direction::from(d8);
+                    if game_state.is_out(position) {
+                        break;
+                    }
+                }
+                game_state.set_ball(BallState::InAir(position));
                 ProcState::Done
             }
             _ => panic!("Unexpected input {:?}", input),
@@ -179,10 +171,12 @@ impl Procedure for LandKickoff {
             return ProcState::DoneNew(ball_procs::Touchback::new());
         }
 
-        match game_state.get_player_id_at(ball_position) {
-            Some(id) => ProcState::DoneNew(ball_procs::Catch::new_with_kick_arg(
-                id,
-                game_state.get_catch_target(id).unwrap(),
+        // A Prone or Stunned player in the square fails the catch automatically and the ball
+        // bounces, as from an empty square.
+        match game_state.get_player_at(ball_position).filter(|p| p.can_catch()) {
+            Some(player) => ProcState::DoneNew(ball_procs::Catch::new_with_kick_arg(
+                player.id,
+                game_state.get_catch_target(player.id, 0).unwrap(),
                 true,
             )),
             None => ProcState::DoneNew(ball_procs::Bounce::new_with_kick_arg(true)),
@@ -466,7 +460,7 @@ pub fn auto_setup(game_state: &mut GameState, formation: Formation) {
 
 /// Setup placement order: linemen first, throwers last. Also the tie-break the
 /// formations use when a wanted role is off the bench.
-fn role_rank(role: PlayerRole) -> u8 {
+pub(crate) fn role_rank(role: PlayerRole) -> u8 {
     match role {
         PlayerRole::Lineman => 0,
         PlayerRole::Blitzer => 1,
@@ -505,7 +499,7 @@ fn reserve_square(dims: &BoardDims, team: TeamType, occupied: &HashSet<Position>
 /// Squares to park the players waiting to be placed on: the team's own
 /// endzone column, top to bottom, spilling one column forward at a time if
 /// the roster outgrows it.
-fn staging_squares(dims: BoardDims, team: TeamType) -> impl Iterator<Item = Position> {
+pub(crate) fn staging_squares(dims: BoardDims, team: TeamType) -> impl Iterator<Item = Position> {
     let x0 = dims.own_endzone_x(team);
     let inward = if team == TeamType::Home { -1 } else { 1 };
     (0..dims.width / 2 - 1)
@@ -557,6 +551,21 @@ impl Setup {
             queue: Vec::new(),
             placed: 0,
             started: false,
+        })
+    }
+    /// Solid Defence: set up again the players `queue` names, already staged in the team's own
+    /// endzone and flagged `used` (`kickoff_events::SolidDefence`), against the rest of the
+    /// team's setup, which stays where it is.
+    pub fn resetup(game_state: &GameState, team: TeamType, queue: Vec<PlayerID>) -> AnyProc {
+        let placed = game_state
+            .get_players_on_pitch_in_team(team)
+            .filter(|p| !queue.contains(&p.id))
+            .count() as u8;
+        AnyProc::Setup(Setup {
+            team,
+            queue,
+            placed,
+            started: true,
         })
     }
     pub fn team(&self) -> TeamType {
@@ -1320,132 +1329,4 @@ mod tests {
             "raw roll 6 / scatter_divisor 2 == 3, not the unscaled 6"
         );
     }
-    // #[test]
-    // fn kickoff_solid_defence() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fix_d6(1);
-    //     state.fix_d6(3);
-    //
-    //     state.fix_d6(6); //fix number of re-arranged players (d3+3)
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    //
-    //     // TODO: haven't implemented the setup yet
-    // }
-    //
-    // #[test]
-    // fn kickoff_high_kick() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fix_d6(1);
-    //     state.fix_d6(4);
-    //
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    //
-    //     let ball_pos = state.get_ball_position().unwrap();
-    //     assert!(matches!(state.ball, BallState::InAir(_)));
-    //
-    //     assert!(state.home_to_act());
-    //     let legal_positions = [(2, 9), (7, 9)]; //Open players
-    //     for pos in legal_positions {
-    //         let action = Action::Positional(PosAT::SelectPosition, Position::new(pos));
-    //         assert!(state.available_actions.is_legal_action(action));
-    //     }
-    //
-    //     let catcher_start_pos = Position::new(legal_positions[0]);
-    //     let catcher_id = state.get_player_id_at(catcher_start_pos).unwrap();
-    //
-    //     state.fix_d6(6); // fix the roll for the catch
-    //     state.step_positional(PosAT::SelectPosition, Position::new(legal_positions[0]));
-    //
-    //     assert_eq!(state.get_player_id_at(ball_pos).unwrap(), catcher_id);
-    //     assert_eq!(state.get_player_id_at(catcher_start_pos), None);
-    //
-    //     match state.ball {
-    //         BallState::Carried(id) => {
-    //             assert_eq!(id, catcher_id);
-    //         }
-    //         _ => panic!("ball should be carried"),
-    //     }
-    //
-    //     assert!(state.home_to_act());
-    // }
-    //
-    // #[test]
-    // fn kickoff_cheering_fans() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fix_d6(1);
-    //     state.fix_d6(5);
-    //     // TODO: Implement prayers to nuffle...
-    //
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    // }
-    //
-    // #[test]
-    // fn kickoff_brilliant_coaching() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fix_d6(1);
-    //     state.fix_d6(1);
-    //
-    //     state.fix_d6(5); //fix home brilliant coaching roll
-    //     state.fix_d6(6); //fix away brilliant coaching roll
-    //
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    //
-    //     assert_eq!(state.away.rerolls, 4);
-    //     assert_eq!(state.home.rerolls, 3);
-    // }
-    // #[test]
-    // fn kickoff_changing_weather() {
-    //     let mut state: GameState = GameStateBuilder::new_at_kickoff();
-    //     // ball fixes
-    //     state.fix_d8_direction(Direction::up()); // scatter direction
-    //     state.fix_d6(5); // scatter length
-    //
-    //     // kickoff event fix
-    //     state.fix_d6(1);
-    //     state.fix_d6(1);
-    //
-    //     state.step_simple(SimpleAT::KickoffAimMiddle);
-    // }
-    // #[test]
-    // fn kickoff_after_td() {
-    //     let start_pos = Position::new((2, 5));
-    //     let mut state = GameStateBuilder::new()
-    //         .add_home_player(start_pos)
-    //         .add_ball_pos(start_pos)
-    //         .build();
-    //
-    //     state.step_positional(PosAT::StartMove, start_pos);
-    //     state.step_positional(PosAT::Move, Position::new((1, 5)));
-    //
-    //     assert_eq!(state.home.score, 1);
-    //     assert_eq!(state.away.score, 0);
-    //
-    //     assert!(state.home_to_act());
-    //     state.step_simple(SimpleAT::SetupLine);
-    //     state.step_simple(SimpleAT::EndSetup);
-    //
-    //     assert!(state.away_to_act());
-    //     state.step_simple(SimpleAT::SetupLine);
-    //     state.step_simple(SimpleAT::EndSetup);
-    // }
 }

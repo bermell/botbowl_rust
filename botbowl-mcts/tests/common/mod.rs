@@ -16,7 +16,6 @@ use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameSta
 use botbowl_engine::core::model::{
     other_team, Action as EngineAction, BallState, BoardDims, Direction, Position, TeamType,
 };
-use botbowl_engine::core::table::SimpleAT;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
@@ -104,7 +103,7 @@ pub fn mirror_playable(s: &GameState, dims: BoardDims) -> GameState {
     // The builder hands turn 1 to Home; the mirror's mover is the swap of
     // `s`'s, so pass the turn on when `s` had Home to move.
     if s.available_actions.team == Some(TeamType::Home) {
-        m.step_simple(SimpleAT::EndTurn);
+        m.pass_turn_unplayed();
     }
     m.info.home_turn = s.info.away_turn;
     m.info.away_turn = s.info.home_turn;
@@ -161,7 +160,7 @@ pub fn mirror_y_playable(s: &GameState, dims: BoardDims) -> GameState {
     m.set_logging_state(false);
     // No team swap here, so the mover is unchanged.
     if s.available_actions.team == Some(TeamType::Away) {
-        m.step_simple(SimpleAT::EndTurn);
+        m.pass_turn_unplayed();
     }
     m.info.home_turn = s.info.home_turn;
     m.info.away_turn = s.info.away_turn;

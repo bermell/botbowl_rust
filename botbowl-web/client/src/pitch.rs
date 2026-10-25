@@ -70,12 +70,14 @@ fn is_prompt_action(at: SimpleAT) -> bool {
 /// `Start blitz` reads as `Blitz` on a button that sits next to the player.
 fn declaration_label(at: PosAT) -> &'static str {
     match at {
+        PosAT::ThrowTeamMate => "Throw team-mate",
         PosAT::StartMove => "Move",
         PosAT::StartBlitz => "Blitz",
         PosAT::StartPass => "Pass",
         PosAT::StartFoul => "Foul",
         PosAT::StartHandoff => "Handoff",
         PosAT::StartBlock => "Block",
+        PosAT::StartSecureBall => "Secure ball",
         other => other.label(),
     }
 }
@@ -104,6 +106,7 @@ fn ActionBar() -> impl IntoView {
             .collect();
         let declare = selection.map(|sel| {
             let player = sel.player;
+            let kick_team_mate = sel.kick_team_mate;
             sel.starts
                 .iter()
                 .copied()
@@ -119,7 +122,11 @@ fn ActionBar() -> impl IntoView {
                             }
                         >
                             {at.icon().map(|icon| view! { <img src=format!("img/{icon}") alt="" /> })}
-                            {declaration_label(at)}
+                            {if at == PosAT::ThrowTeamMate && kick_team_mate {
+                                "Kick team-mate"
+                            } else {
+                                declaration_label(at)
+                            }}
                         </button>
                     }
                 })
@@ -370,7 +377,7 @@ fn target_kind(start: Option<PosAT>, action: PosAT) -> &'static str {
         (Some(PosAT::StartBlitz), _) => "blitz",
         (_, PosAT::Block) => "block",
         (_, PosAT::Handoff) => "handoff",
-        (_, PosAT::Pass) => "pass",
+        (_, PosAT::Pass | PosAT::ThrowTeamMate) => "pass",
         (_, PosAT::Foul) => "foul",
         _ => "move",
     }
@@ -633,7 +640,7 @@ fn tooltip(sq: &SquareView, selection: Option<&SelectionView>, threat: TeamType)
     let mut lines = Vec::new();
     if let Some(p) = &sq.player {
         lines.push(format!("{:?} {}", p.team, p.role.label()));
-        lines.push(format!("MA {} · ST {} · AG {} · AV {}", p.ma, p.st, p.ag, p.av));
+        lines.push(format!("MA {} · ST {} · AG {}+ · AV {}+", p.ma, p.st, p.agility, p.armour));
         if !p.skills.is_empty() {
             lines.push(format!("Skills: {}", p.skills.join(", ")));
         }

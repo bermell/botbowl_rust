@@ -25,11 +25,11 @@ from pathlib import Path
 
 import numpy as np
 
-# Mirrors botbowl-nn/src/actions.rs (PosAT -> 0..15, SimpleAT -> 15..30, schema v8).
+# Mirrors botbowl-nn/src/actions.rs (PosAT -> 0..16, SimpleAT -> 16..33, schema v10).
 POS_AT = [
     "StartMove", "StartBlitz", "StartPass", "StartFoul", "SelectPosition",
     "Push", "FollowUp", "StartHandoff", "Handoff", "Pass", "Move", "Foul",
-    "StartBlock", "Block", "PlacePlayer",
+    "StartBlock", "Block", "PlacePlayer", "StartSecureBall",
 ]
 SIMPLE_AT = [
     "SelectBothDown", "SelectPow", "SelectPush", "SelectPowPush", "SelectSkull",

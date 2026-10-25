@@ -27,17 +27,17 @@ impl Stat {
     /// The values a random-start player can actually have: the lineman's baseline (ST 3, MA 6,
     /// AG 3, AV 8) nudged by at most ±2 (`botbowl-curriculum` `add_random`, which then clamps to
     /// the wider `*_RANGE`s — those bounds are never reached). An improvement past it is an input
-    /// the net has never seen, so it is not probed — and AG 6 would not even be playable: the
-    /// engine's `ag_target` (7 - ag) has no 1+ target and panics. Higher is better for all four
-    /// in the engine's representation (AG: target = 7 - ag; AV: armour breaks on > av).
+    /// the net has never seen, so it is not probed. AG and AV are probed in the classic numbers
+    /// the net reads (`PlayerStats::legacy_ag` / `legacy_av`: AG 3, AV 8), where higher is
+    /// better for all four; the engine stores their S3 targets (AG 3+, AV 9+).
     pub fn training_range(self) -> (u8, u8) {
         let base = PlayerStats::new_lineman(TeamType::Home);
         let around = |v: u8| (v.saturating_sub(2).max(1), v + 2);
         match self {
             Stat::St => around(base.str_),
             Stat::Ma => around(base.ma),
-            Stat::Ag => around(base.ag),
-            Stat::Av => around(base.av),
+            Stat::Ag => around(base.legacy_ag()),
+            Stat::Av => around(base.legacy_av()),
         }
     }
 
@@ -45,8 +45,8 @@ impl Stat {
         match self {
             Stat::St => s.str_,
             Stat::Ma => s.ma,
-            Stat::Ag => s.ag,
-            Stat::Av => s.av,
+            Stat::Ag => s.legacy_ag(),
+            Stat::Av => s.legacy_av(),
         }
     }
 
@@ -54,8 +54,8 @@ impl Stat {
         match self {
             Stat::St => s.str_ = v,
             Stat::Ma => s.ma = v,
-            Stat::Ag => s.ag = v,
-            Stat::Av => s.av = v,
+            Stat::Ag => s.agility = PlayerStats::from_legacy_ag(v),
+            Stat::Av => s.armour = PlayerStats::from_legacy_av(v),
         }
     }
 }
@@ -304,7 +304,7 @@ pub(crate) mod tests {
                 for stat in Stat::ALL {
                     match bump_stat(&s, p.id, stat, 1) {
                         Ok(e) => {
-                            // Still a playable player: the engine's targets exist (AG 6 has none).
+                            // Still a playable player: the engine's targets exist.
                             let q = e.get_player_unsafe(p.id);
                             let _ = (q.ag_target(), q.armor_target());
                             let (cells, global) = encoding_diff(&s, &e);

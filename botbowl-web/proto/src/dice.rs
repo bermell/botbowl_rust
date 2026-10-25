@@ -124,6 +124,8 @@ pub enum RequestedRoll {
     Sum2D6PassFail { target: u8 },
     Sum2D6ThreeOutcomes { low: u8, high: u8 },
     ThrowIn,
+    /// One of `of` candidates at random (a kick-off event's random player).
+    Pick { of: u8 },
 }
 
 impl RequestedRoll {
@@ -146,6 +148,7 @@ impl RequestedRoll {
             RequestedRoll::Sum2D6PassFail { target } => format!("2D6 {target}+"),
             RequestedRoll::Sum2D6ThreeOutcomes { low, high } => format!("2D6 {low}+/{high}+"),
             RequestedRoll::ThrowIn => "Throw-in".into(),
+            RequestedRoll::Pick { of } => format!("Random pick of {of}"),
         }
     }
 }
@@ -193,6 +196,10 @@ pub enum RollResult {
     ThrowIn {
         direction: u8,
         distance: u8,
+    },
+    /// The 0-based index a `Pick` chose.
+    Pick {
+        index: u8,
     },
 }
 

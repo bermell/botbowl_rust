@@ -44,19 +44,25 @@ def v8_state_dict(seed=0, width=16, blocks=2):
     return sd
 
 
+def v9_state_dict(seed=0, width=16, blocks=2):
+    sd = _old_state_dict(61, 18, seed, width, blocks, a=32)
+    sd["schema_version"] = torch.tensor(9, dtype=torch.int32)
+    return sd
+
+
 def test_schema_is_detected_from_shapes_and_unknown_shapes_are_refused():
     sd = v6_state_dict()
     assert mig.detect_schema(sd) == 6
     assert mig.detect_schema(v7_state_dict()) == 7
-    assert mig.CURRENT == 9
-    assert mig.SCHEMAS[9] == {"C": SPATIAL_CHANNELS, "F": GLOBAL_FEATURES, "A": 32}
+    assert mig.CURRENT == 10
+    assert mig.SCHEMAS[10] == {"C": SPATIAL_CHANNELS, "F": GLOBAL_FEATURES, "A": 33}
     bad = dict(sd)
     bad["global_fc.weight"] = torch.zeros(8, 99)
     with pytest.raises(ValueError, match="no known unmarked schema"):
         mig.detect_schema(bad)
     # A fresh net says which schema it is at, and an unknown marker is refused.
     fresh = BBNet(width=16, blocks=1).state_dict()
-    assert mig.detect_schema(fresh) == 9
+    assert mig.detect_schema(fresh) == 10
     fresh["schema_version"] = torch.tensor(99)
     with pytest.raises(ValueError, match="unknown"):
         mig.detect_schema(fresh)
@@ -107,12 +113,12 @@ def test_migration_is_idempotent_at_the_target_and_refuses_downgrades():
     old = v6_state_dict()
     new, _, _ = mig.migrate(old, log=lambda *_: None)
     again, src, dst = mig.migrate(new, log=lambda *_: None)
-    assert (src, dst) == (9, 9)
+    assert (src, dst) == (10, 10)
     assert all(torch.equal(again[k], new[k]) for k in new)
     with pytest.raises(ValueError, match="downwards"):
         mig.path_to(8, 7)
     with pytest.raises(ValueError, match="no migration"):
-        mig.path_to(9, 10)
+        mig.path_to(10, 11)
 
 
 def test_v7_to_v8_relays_the_policy_head_and_keeps_every_retained_channel():
@@ -151,10 +157,10 @@ def test_v7_to_v8_relays_the_policy_head_and_keeps_every_retained_channel():
 
 def test_v8_to_v9_appends_two_zero_policy_channels():
     old = v8_state_dict()
-    new, src, dst = mig.migrate(old, log=lambda *_: None)
+    new, src, dst = mig.migrate(old, to=9, log=lambda *_: None)
     assert (src, dst) == (8, 9)
     assert int(new["schema_version"]) == 9
-    model = BBNet(**mig.shape_of(new))
+    model = BBNet(**mig.shape_of(new), schema_version=9)
     model.load_state_dict(new, strict=True)
     assert model.policy_head.weight.shape[0] == 32
 
@@ -167,6 +173,28 @@ def test_v8_to_v9_appends_two_zero_policy_channels():
     # UseSkill / DontUseSkill start level: an even prior over the two.
     assert torch.equal(nw[30:], torch.zeros_like(nw[30:])) and torch.equal(nb[30:], torch.zeros(2))
     assert mig.path_to(8, 9)[0].verify(old, new) < 1e-5
+
+
+def test_v9_to_v10_inserts_secure_the_ball_and_shifts_the_simple_channels():
+    old = v9_state_dict()
+    new, src, dst = mig.migrate(old, log=lambda *_: None)
+    assert (src, dst) == (9, 10)
+    assert int(new["schema_version"]) == 10
+    model = BBNet(**mig.shape_of(new))
+    model.load_state_dict(new, strict=True)
+    assert model.policy_head.weight.shape[0] == 33
+
+    for k, v in old.items():
+        if not k.startswith("policy_head.") and k != "schema_version":
+            assert torch.equal(v, new[k]), k
+    w, nw = old["policy_head.weight"], new["policy_head.weight"]
+    b, nb = old["policy_head.bias"], new["policy_head.bias"]
+    # Positional 0..14 in place, StartSecureBall (15) starts at zero, simple 15+i -> 16+i.
+    assert torch.equal(nw[:15], w[:15]) and torch.equal(nb[:15], b[:15])
+    assert torch.equal(nw[15], torch.zeros_like(nw[15])) and float(nb[15]) == 0.0
+    assert torch.equal(nw[16:], w[15:]) and torch.equal(nb[16:], b[15:])
+    assert mig.POLICY_MAP_9_TO_10[15] == (15, 16) and mig.POLICY_MAP_9_TO_10[-1] == (31, 32)
+    assert mig.path_to(9, 10)[0].verify(old, new) < 1e-5
 
 
 def test_a_v7_checkpoint_is_refused_by_the_production_loader_with_a_pointer_to_migrate():
@@ -200,8 +228,8 @@ def test_insert_zero_slices_keeps_the_old_columns_in_place():
 def test_cli_migrates_a_file_and_exports_onnx(tmp_path):
     src = tmp_path / "v6.pt"
     torch.save(v6_state_dict(), src)
-    out = tmp_path / "v9.pt"
-    onnx = tmp_path / "v9.onnx"
+    out = tmp_path / "v10.pt"
+    onnx = tmp_path / "v10.onnx"
     r = subprocess.run(
         [sys.executable, "-m", "bbnn.migrate", str(src), "--out", str(out), "--onnx", str(onnx)],
         capture_output=True,
@@ -210,7 +238,9 @@ def test_cli_migrates_a_file_and_exports_onnx(tmp_path):
     )
     assert r.returncode == 0, r.stderr
     assert "v6 -> v7" in r.stdout and "v7 -> v8" in r.stdout and "v8 -> v9" in r.stdout and "verified" in r.stdout
-    assert mig.detect_schema(torch.load(out)) == 9
+    assert "v9 -> v10" in r.stdout
+    assert mig.detect_schema(torch.load(out)) == 10
     assert onnx.exists() and onnx.stat().st_size > 0
     listing = subprocess.run([sys.executable, "-m", "bbnn.migrate", "--list"], capture_output=True, text=True)
     assert "v6 -> v7" in listing.stdout and "v7 -> v8" in listing.stdout and "v8 -> v9" in listing.stdout
+    assert "v9 -> v10" in listing.stdout

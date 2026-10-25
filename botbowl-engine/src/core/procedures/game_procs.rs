@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::model::{DugoutPlayerID, ProcInput};
+use crate::core::model::{DugoutPlayerID, PlayerID, ProcInput};
+use crate::core::pathing::{CustomIntoIter, PathFinder, PathingEvent, PositionOrEvent};
 
 use crate::core::dices::{RequestedRoll, RollResult};
 use crate::core::model::{
     other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position, ProcState, Procedure,
-    TeamType,
+    TeamType, Weather,
 };
-use crate::core::procedures::{ball_procs, block_procs, kickoff_procs, movement_procs};
+use crate::core::procedures::{ball_procs, block_procs, kickoff_events, kickoff_procs, movement_procs, team_mate_procs};
 use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
@@ -34,20 +35,28 @@ impl Half {
             kickoff: None,
         })
     }
+    /// The drive boundary: whatever lasted "for the drive" ends here, and the next one starts.
     fn do_kickoff(&mut self, kicking_team: TeamType, game_state: &mut GameState) -> ProcState {
-        //SCORING IN THE OPPONENT’S TURN
-        // In some rare cases a team will score a touchdown in the
-        // opponent’s turn. For example, a player holding the ball could be
-        // pushed into the End Zone by a block. If one of your players is
-        // holding the ball in the opposing team's End Zone at any point
-        // during your opponent's turn then your team scores a touchdown
-        // immediately, but must move their Turn marker one space along
-        // the Turn track to represent the extra time the players spend
-        // celebrating this unusual method of scoring!
-
+        // A touchdown scored in the opponent's turn has already moved the scorer's turn marker
+        // (`Touchdown`), so the next-team rule in `step` hands the drive's first turn to the
+        // conceding team.
         game_state.info.kicking_this_drive = kicking_team;
 
-        let procs: Vec<AnyProc> = vec![
+        // Out for the drive that just ended (Dodgy Snack's 1, Sweltering Heat): back in Reserves.
+        game_state
+            .get_dugout_mut()
+            .filter(|p| p.place == DugoutPlace::Heated)
+            .for_each(|p| p.place = DugoutPlace::Reserves);
+        for team in [TeamType::Home, TeamType::Away] {
+            let t = game_state.get_mut_team(team);
+            t.drive_rerolls = 0;
+            t.cheering_fans = false;
+        }
+        // A turn cut short by a turnover or touchdown can leave Cheering Fans in hand.
+        game_state.info.cheering_fans_this_turn = false;
+        game_state.info.cheering_assist = false;
+
+        let mut procs: Vec<AnyProc> = vec![
             kickoff_procs::Kickoff::new(),
             kickoff_procs::Setup::new(other_team(kicking_team)),
             kickoff_procs::Setup::new(kicking_team),
@@ -55,7 +64,13 @@ impl Half {
         ];
 
         game_state.set_ball(BallState::OffPitch);
-        game_state.unfield_all_players().unwrap();
+        let drive_ended = game_state.get_players_on_pitch().next().is_some();
+        if game_state.info.weather == Weather::Sweltering && drive_ended {
+            // It picks the fainting players among those on the pitch, then clears it.
+            procs.push(kickoff_events::SwelteringHeat::new());
+        } else {
+            game_state.unfield_all_players().unwrap();
+        }
 
         ProcState::NotDoneNewProcs(procs)
     }
@@ -106,13 +121,19 @@ impl Procedure for Half {
         }
 
         info.team_turn = next_team;
+        let next_team_state = match next_team {
+            TeamType::Home => &mut game_state.home,
+            TeamType::Away => &mut game_state.away,
+        };
+        info.cheering_fans_this_turn = std::mem::take(&mut next_team_state.cheering_fans);
         info.handoff_available = true;
         info.blitz_available = true;
         info.foul_available = true;
         info.pass_available = true;
+        info.throw_team_mate_available = true;
+        info.kick_team_mate_available = true;
+        info.secure_ball_available = true;
         info.turnover = false;
-
-        game_state.get_mut_team(next_team).reset_reroll_used();
 
         game_state.get_players_on_pitch_mut().for_each(|p| p.used = false);
 
@@ -165,10 +186,14 @@ impl Procedure for TurnStunned {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Turn {
     pub team: TeamType,
+    /// The activated ball carrier who could score without rolling a die (S3 Stalling): if they
+    /// still hold the ball when the activation ends, the crowd may take action.
+    #[serde(default)]
+    stalling: Option<PlayerID>,
 }
 impl Turn {
     pub fn new(team: TeamType) -> AnyProc {
-        AnyProc::Turn(Turn { team })
+        AnyProc::Turn(Turn { team, stalling: None })
     }
     fn available_actions(&mut self, game_state: &GameState) -> Box<AvailableActions> {
         let mut aa = AvailableActions::new(self.team);
@@ -216,10 +241,44 @@ impl Turn {
                 aa.insert_positional(PosAT::StartPass, positions.clone());
             }
 
+            // Throw / Kick Team-mate: hidden, a human's only.
+            team_mate_procs::offer_declarations(game_state, &positions, &mut aa);
+            let secure = Self::secure_ball_positions(game_state, self.team, &positions);
+            if !secure.is_empty() {
+                aa.insert_positional(PosAT::StartSecureBall, secure);
+            }
+
             aa.insert_positional(PosAT::StartMove, positions);
         }
         aa.insert_simple(SimpleAT::EndTurn);
         aa
+    }
+
+    /// S3 Secure the Ball: who among `candidates` (unused, not Stunned) may declare it. The ball
+    /// must be loose on the ground, no Standing opposition player within 2 squares of it, the
+    /// team must not have declared one this turn, and the player's free Move must be able to end
+    /// on the ball ("If this is not possible, a player cannot declare this Action").
+    ///
+    /// Not modelled (the engine has neither): Distracted opponents (who would not count) and the
+    /// Big Guy keyword / Unsteady trait (whose players may not declare it).
+    pub fn secure_ball_positions(game_state: &GameState, team: TeamType, candidates: &[Position]) -> Vec<Position> {
+        if !game_state.info.secure_ball_available {
+            return Vec::new();
+        }
+        let BallState::OnGround(ball) = game_state.ball else {
+            return Vec::new();
+        };
+        if game_state
+            .get_players_on_pitch_in_team(other_team(team))
+            .any(|p| p.status == PlayerStatus::Up && p.position.distance_to(&ball) <= 2)
+        {
+            return Vec::new();
+        }
+        candidates
+            .iter()
+            .copied()
+            .filter(|&pos| PathFinder::can_reach(game_state, game_state.get_player_at(pos).unwrap().id, ball))
+            .collect()
     }
 }
 impl Procedure for Turn {
@@ -230,6 +289,14 @@ impl Procedure for Turn {
             return ProcState::NotDoneNew(ball_procs::Touchdown::new(id));
         }
 
+        if let Some(id) = self.stalling.take() {
+            let still_holding = game_state.ball == BallState::Carried(id)
+                && game_state.get_player(id).is_ok_and(|p| p.status == PlayerStatus::Up);
+            if still_holding && game_state.info.kickoff_by_team.is_none() {
+                return ProcState::NotDoneNew(Stalling::new(id));
+            }
+        }
+
         if game_state.info.kickoff_by_team.is_some() || game_state.info.turnover {
             return ProcState::Done;
         }
@@ -237,17 +304,27 @@ impl Procedure for Turn {
         game_state.info.active_player = None;
         game_state.info.player_action_type = None;
         game_state.info.pickup_this_activation = false;
+        game_state.info.cheering_assist = false;
         if input == ProcInput::Nothing {
             return ProcState::NeedAction(self.available_actions(game_state));
         }
 
         if let ProcInput::Action(Action::Positional(at, position)) = input {
-            game_state.set_active_player(game_state.get_player_id_at(position).unwrap());
+            let id = game_state.get_player_id_at(position).unwrap();
+            game_state.set_active_player(id);
+            if could_score_without_dice(game_state, id) {
+                self.stalling = Some(id);
+            }
+            if at == PosAT::ThrowTeamMate {
+                team_mate_procs::declare(game_state, id);
+                return ProcState::NotDoneNew(movement_procs::MoveAction::new(id));
+            }
             let info = &mut game_state.info;
             info.player_action_type = Some(at);
             match at {
                 PosAT::StartMove => (),
                 PosAT::StartHandoff => info.handoff_available = false,
+                PosAT::StartSecureBall => info.secure_ball_available = false,
                 PosAT::StartPass => info.pass_available = false,
                 PosAT::StartFoul => info.foul_available = false,
                 PosAT::StartBlitz => {
@@ -263,11 +340,85 @@ impl Procedure for Turn {
                 }
                 _ => unreachable!(),
             }
-            ProcState::NotDoneNew(movement_procs::MoveAction::new(info.active_player.unwrap()))
+            ProcState::NotDoneNew(movement_procs::MoveAction::new(id))
         } else if let ProcInput::Action(Action::Simple(SimpleAT::EndTurn)) = input {
-            ProcState::Done
+            // Ending the turn forgoes every activation left — the carrier's too, and "this roll
+            // must still be taken if a Player Forgoes their Activation".
+            let forgoing_carrier = match game_state.ball {
+                BallState::Carried(id) => game_state
+                    .get_player(id)
+                    .is_ok_and(|p| p.stats.team == self.team && !p.used)
+                    .then_some(id),
+                _ => None,
+            };
+            match forgoing_carrier {
+                Some(id) if could_score_without_dice(game_state, id) => ProcState::DoneNew(Stalling::new(id)),
+                _ => ProcState::Done,
+            }
         } else {
             unreachable!()
+        }
+    }
+}
+
+/// S3 Stalling: `id`, just activated, holds the ball and could score without rolling any die —
+/// no Dodge, Rush or activation roll (Bone Head, Wild Animal) on the way into the end zone.
+fn could_score_without_dice(game_state: &GameState, id: PlayerID) -> bool {
+    let player = game_state.get_player_unsafe(id);
+    if game_state.ball != BallState::Carried(id)
+        || player.status != PlayerStatus::Up
+        || player.has_skill(Skill::BoneHead)
+        || player.has_skill(Skill::WildAnimal)
+        // Cheap bound first: the end zone must be within the player's MA.
+        || (game_state.get_endzone_x(player.stats.team) - player.position.x).unsigned_abs() > player.stats.ma
+    {
+        return false;
+    }
+    let Ok(paths) = PathFinder::player_paths(game_state, id) else {
+        return false;
+    };
+    let endzone_x = game_state.get_endzone_x(player.stats.team);
+    let dice_free = paths.iter_position().filter(|(pos, _)| pos.x == endzone_x).any(|(_, node)| {
+        node.as_ref().is_some_and(|node| {
+            node.iter().all(|item| {
+                matches!(
+                    item,
+                    PositionOrEvent::Position(_) | PositionOrEvent::Event(PathingEvent::Touchdown(_))
+                )
+            })
+        })
+    });
+    dice_free
+}
+
+/// The crowd takes action against a Stalling player: on a D6 equal to or greater than their
+/// team's turn number they are Knocked Down, a Turnover.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Stalling {
+    id: PlayerID,
+}
+impl Stalling {
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::Stalling(Stalling { id })
+    }
+}
+impl Procedure for Stalling {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+            ProcInput::Roll(RollResult::D6(roll)) => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                let turn = match team {
+                    TeamType::Home => game_state.info.home_turn,
+                    TeamType::Away => game_state.info.away_turn,
+                };
+                if (roll as u8) < turn {
+                    return ProcState::Done;
+                }
+                game_state.info.turnover = true;
+                ProcState::DoneNew(block_procs::KnockDown::new(self.id))
+            }
+            _ => unreachable!(),
         }
     }
 }
@@ -443,6 +594,116 @@ mod tests {
     };
     use crate::standard_state;
 
+    /// A ball carrier of the team to move, `squares` from its end zone with nobody around, at
+    /// that team's turn 3; `marker` adds an opponent marking the carrier's square.
+    fn stalling_state(squares: i8, marker: bool) -> (GameState, Position, Position) {
+        let (mut state, carrier, back) = stalling_board(squares, marker);
+        state.step_positional(PosAT::StartMove, carrier);
+        (state, carrier, back)
+    }
+
+    /// `stalling_state` before the carrier is activated.
+    fn stalling_board(squares: i8, marker: bool) -> (GameState, Position, Position) {
+        let mut builder = GameStateBuilder::new();
+        builder.set_state(BuilderState::Turn { turn: 3 });
+        let state = builder.build();
+        let team = state.info.team_turn;
+        let endzone_x = state.get_endzone_x(team);
+        let step = if endzone_x < state.get_endzone_x(other_team(team)) { -1 } else { 1 };
+        let carrier = Position::new((endzone_x - step * squares, 7));
+        let mut builder = GameStateBuilder::new();
+        builder.add_player_details(carrier, team, PlayerStats::new_lineman(team));
+        if marker {
+            builder.add_player_details(carrier + (0, 1), other_team(team), PlayerStats::new_lineman(other_team(team)));
+        }
+        let state = builder.add_ball_pos(carrier).set_state(BuilderState::Turn { turn: 3 }).build();
+        assert_eq!(state.info.team_turn, team);
+        let turn = if team == TeamType::Home { state.info.home_turn } else { state.info.away_turn };
+        assert_eq!(turn, 3);
+        (state, carrier, carrier + (-step, 0))
+    }
+
+    /// "This roll must still be taken if a Player Forgoes their Activation": ending the turn
+    /// forgoes the unused carrier's, so the crowd rolls then. Once activated, they are not
+    /// rolled for again at the end of the turn.
+    #[test]
+    fn a_carrier_who_forgoes_their_activation_is_stalling() {
+        let (mut state, carrier, _) = stalling_board(4, false);
+        let team = state.info.team_turn;
+        let id = state.get_player_id_at(carrier).unwrap();
+        state.fix_d6(4); // the crowd: 4 >= turn 3
+        state.fix_d6(1); // armour
+        state.fix_d6(1);
+        state.fix_d8(D8::One as u8); // the ball bounces
+        state.step_simple(SimpleAT::EndTurn);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Down);
+        assert_ne!(state.info.team_turn, team);
+
+        let (mut state, _, _) = stalling_state(4, false);
+        state.fix_d6(2); // the crowd at the end of the activation: under the turn number
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        state.step_simple(SimpleAT::EndTurn); // no second roll (the dice queue is empty)
+        assert_ne!(state.info.team_turn, team);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Up);
+    }
+
+    /// S3 Stalling: a ball carrier who could score without rolling a die but ends the activation
+    /// without scoring is pelted by the crowd on a D6 equal to or greater than the team's turn
+    /// number — Knocked Down, a Turnover.
+    #[test]
+    fn a_stalling_carrier_is_knocked_down_on_a_roll_at_or_above_the_turn_number() {
+        let (mut state, _, back) = stalling_state(4, false);
+        let team = state.info.team_turn;
+        state.step_positional(PosAT::Move, back);
+        let id = state.get_player_id_at(back).unwrap();
+        state.fix_d6(3); // the crowd: 3 >= turn 3
+        state.fix_d6(1); // armour
+        state.fix_d6(1);
+        state.fix_d8(D8::One as u8); // the ball bounces
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Down);
+        assert_ne!(state.ball, BallState::Carried(id));
+        assert_ne!(state.info.team_turn, team, "a turnover");
+    }
+
+    #[test]
+    fn a_stalling_carrier_stays_up_on_a_roll_under_the_turn_number() {
+        let (mut state, carrier, _) = stalling_state(4, false);
+        let team = state.info.team_turn;
+        let id = state.get_player_id_at(carrier).unwrap();
+        state.fix_d6(2);
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Up);
+        assert_eq!(state.ball, BallState::Carried(id));
+        assert_eq!(state.info.team_turn, team);
+        assert!(!state.info.turnover);
+    }
+
+    /// "If a player needs to roll any dice in order to score, such as having to Dodge, Rush ...
+    /// then they are not said to be Stalling": no crowd roll (the fixed-dice queue is empty).
+    #[test]
+    fn no_stalling_when_scoring_needs_a_dodge_or_a_rush() {
+        for (squares, marker) in [(4, true), (8, false)] {
+            let (mut state, carrier, _) = stalling_state(squares, marker);
+            let team = state.info.team_turn;
+            let id = state.get_player_id_at(carrier).unwrap();
+            state.step_simple(SimpleAT::EndPlayerTurn);
+            assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Up);
+            assert_eq!(state.info.team_turn, team);
+        }
+    }
+
+    #[test]
+    fn a_carrier_who_scores_is_not_stalling() {
+        let (mut state, carrier, _) = stalling_state(1, false);
+        let team = state.info.team_turn;
+        let score = |state: &GameState| if team == TeamType::Home { state.home.score } else { state.away.score };
+        let before = score(&state);
+        // No crowd roll is queued: scoring ends the activation without one.
+        state.step_positional(PosAT::Move, Position::new((state.get_endzone_x(team), carrier.y)));
+        assert_eq!(score(&state), before + 1);
+    }
+
     #[test]
     fn turnover() {
         let h1_pos = Position::new((5, 5));
@@ -534,31 +795,32 @@ mod tests {
         assert!(!state.get_player_unsafe(id).used);
     }
 
+    /// S3: "A Coach may use as many Team Re-rolls as they want during their turn".
     #[test]
-    fn reroll_available_again_next_turn() {
+    fn any_number_of_team_rerolls_per_turn() {
         let start_pos = Position::new((1, 1));
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
             .add_away_player(Position::new((1, 8)))
             .build();
         state.get_mut_team(TeamType::Home).rerolls = 2;
+        let id = state.get_player_id_at(start_pos).unwrap();
 
         state.step_positional(PosAT::StartMove, start_pos);
-        state.fix_d6(1); //fail gfi (2+)
+        state.fix_d6(1); //fail first gfi (2+)
         state.step_positional(PosAT::Move, start_pos + (7, 0));
         state.fix_d6(2); //succeed with team reroll
         state.step_simple(SimpleAT::UseReroll);
-
-        assert!(!state.get_team(TeamType::Home).can_use_reroll());
         assert_eq!(state.get_team(TeamType::Home).rerolls, 1);
 
-        state.step_simple(SimpleAT::EndPlayerTurn);
-        state.step_simple(SimpleAT::EndTurn);
-        assert!(state.away_to_act());
-        state.step_simple(SimpleAT::EndTurn);
+        state.fix_d6(1); //fail second gfi
+        state.step_positional(PosAT::Move, start_pos + (8, 0));
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseReroll)));
+        state.fix_d6(2); //succeed with the second team reroll
+        state.step_simple(SimpleAT::UseReroll);
 
-        assert!(state.home_to_act());
-        assert!(state.get_team(TeamType::Home).can_use_reroll());
+        assert_eq!(state.get_team(TeamType::Home).rerolls, 0);
+        assert_eq!(state.get_player_unsafe(id).position, start_pos + (8, 0));
     }
 
     #[test]
@@ -702,7 +964,10 @@ mod tests {
         state.fix_d6(2); // Nice weather
         state.fix_d6(5); // nice weather
 
-        state.fix_d8_direction(Direction::right()); // gust of wind
+        // S3: Perfect Conditions -> the ball Scatters (3) before it lands.
+        state.fix_d8_direction(Direction::right()); // scatter
+        state.fix_d8_direction(Direction::right()); // scatter
+        state.fix_d8_direction(Direction::right()); // scatter
         state.fix_d8_direction(Direction::right()); // bounce
 
         assert!(state.away_to_act());
@@ -710,7 +975,7 @@ mod tests {
 
         let ball_pos = state.get_ball_position().unwrap();
         assert!(matches!(state.ball, BallState::OnGround(_)));
-        assert_eq!(ball_pos, Position::new((22, 2)));
+        assert_eq!(ball_pos, Position::new((24, 2)));
     }
     #[test]
     fn turn_order() -> Result<()> {
@@ -862,6 +1127,38 @@ mod tests {
             Some(TeamType::Home),
             "the scoring team sets up (it kicks)"
         );
+        // S3: the team that scored in the opponent's turn skips its next turn, so the conceding
+        // team plays first after the kick-off (`Half` picks the team that is a turn behind).
+        assert_eq!((state.info.home_turn, state.info.away_turn), (2, 1));
+    }
+
+    /// Scoring in the opponent's last turn of the half: the skipped turn is past the end, so the
+    /// half is over.
+    #[test]
+    fn pushed_to_touchdown_in_the_last_turn_ends_the_half() {
+        let carrier_pos = Position::new((2, 5));
+        let blocker_pos = Position::new((3, 5));
+        let td_pos = carrier_pos + (carrier_pos - blocker_pos);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(carrier_pos)
+            .add_ball_pos(carrier_pos)
+            .add_away_player(blocker_pos)
+            .build();
+        // Home's turn 8; Away (the first-half kicker) plays the half's last turn next.
+        state.info.home_turn = super::TURNS_PER_HALF;
+        state.info.away_turn = super::TURNS_PER_HALF - 1;
+        assert_eq!(state.info.half, 1);
+
+        state.step_simple(SimpleAT::EndTurn);
+        state.step_positional(PosAT::StartBlock, blocker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, td_pos);
+        state.step_positional(PosAT::FollowUp, carrier_pos);
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.info.half, 2);
     }
 
     #[test]
@@ -1102,5 +1399,138 @@ mod tests {
         state.step_positional(PosAT::FollowUp, away_pos);
 
         // let direction = Direction::from(d8_fix);
+    }
+
+    use crate::core::dices::{RequestedRoll, RollResult, D6};
+    use crate::core::procedures::AnyProc;
+
+    fn mid_half() -> super::Half {
+        super::Half {
+            half: 1,
+            started: true,
+            kicking_this_half: TeamType::Home,
+            kickoff: None,
+        }
+    }
+
+    /// Whatever lasts "for the drive" ends at the next kickoff: Brilliant Coaching's re-roll,
+    /// Cheering Fans not yet used, and a player sitting the drive out (Dodgy Snack's 1).
+    #[test]
+    fn a_new_drive_clears_what_lasted_for_the_last_one() {
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(Position::new((9, 5)))
+            .build();
+        let id = state.get_player_id_at(Position::new((5, 5))).unwrap();
+        state.unfield_player(id, DugoutPlace::Heated).unwrap();
+        state.home.drive_rerolls = 1;
+        state.away.cheering_fans = true;
+        // A turn cut short by a turnover or touchdown can leave the assist in hand.
+        state.info.cheering_fans_this_turn = true;
+        state.info.cheering_assist = true;
+        let ProcState::NotDoneNewProcs(procs) = mid_half().do_kickoff(TeamType::Away, &mut state) else {
+            panic!("a kickoff pushes the drive's procedures")
+        };
+        assert!(procs.iter().all(|p| !matches!(p, AnyProc::SwelteringHeat(_))));
+        assert_eq!(state.home.drive_rerolls, 0);
+        assert!(!state.away.cheering_fans);
+        assert!(!state.info.cheering_fans_this_turn);
+        assert!(!state.info.cheering_assist);
+        assert!(state.get_dugout().all(|p| p.place == DugoutPlace::Reserves));
+        assert_eq!(state.get_players_on_pitch().count(), 0);
+    }
+
+    /// S3 Weather, Sweltering Heat: "At the end of each Drive ... one Coach rolls a D3 and each
+    /// Coach randomly selects that many of their players that were on the pitch when the Drive
+    /// ended. The selected players are placed in the Reserves Box and cannot be set up on the
+    /// pitch for the next Drive."
+    #[test]
+    fn sweltering_heat_benches_d3_players_of_each_team_for_the_next_drive() {
+        let mut builder = GameStateBuilder::new();
+        for y in 1..=3 {
+            builder.add_home_player(Position::new((5, y)));
+            builder.add_away_player(Position::new((9, y)));
+        }
+        let mut state = builder.build();
+        state.info.weather = Weather::Sweltering;
+        let ProcState::NotDoneNewProcs(mut procs) = mid_half().do_kickoff(TeamType::Away, &mut state) else {
+            panic!("a kickoff pushes the drive's procedures")
+        };
+        let Some(AnyProc::SwelteringHeat(mut heat)) = procs.pop() else {
+            panic!("Sweltering Heat runs first")
+        };
+        assert_eq!(state.get_players_on_pitch().count(), 6, "it picks among the players on the pitch");
+        assert!(matches!(
+            heat.step(&mut state, ProcInput::Nothing),
+            ProcState::NeedRoll(RequestedRoll::D6)
+        ));
+        let mut out = heat.step(&mut state, ProcInput::Roll(RollResult::D6(D6::Three))); // D3 = 2
+        let mut picks = 0;
+        while let ProcState::NeedRoll(RequestedRoll::Pick(n)) = out {
+            assert_eq!(n, 3 - (picks % 2), "picks without replacement");
+            picks += 1;
+            out = heat.step(&mut state, ProcInput::Roll(RollResult::Pick(0)));
+        }
+        assert!(matches!(out, ProcState::Done));
+        assert_eq!(picks, 4);
+        assert_eq!(state.get_players_on_pitch().count(), 0, "the pitch is cleared");
+        let heated = |state: &GameState, team| {
+            state
+                .get_dugout()
+                .filter(|p| p.place == DugoutPlace::Heated && p.stats.team == team)
+                .count()
+        };
+        assert_eq!((heated(&state, TeamType::Home), heated(&state, TeamType::Away)), (2, 2));
+
+        // Back for the drive after.
+        state.info.weather = Weather::Nice;
+        mid_half().do_kickoff(TeamType::Home, &mut state);
+        assert_eq!(heated(&state, TeamType::Home) + heated(&state, TeamType::Away), 0);
+    }
+
+    /// The first half's last drive ends at half-time: Sweltering Heat strikes before the second
+    /// half's kick-off too. Bribes last the whole game.
+    #[test]
+    fn sweltering_heat_strikes_at_half_time_and_bribes_are_kept() {
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(Position::new((9, 5)))
+            .build();
+        state.info.weather = Weather::Sweltering;
+        state.home.bribes = 1;
+        let AnyProc::Half(mut second) = super::Half::new(2) else {
+            unreachable!()
+        };
+        let ProcState::NotDoneNewProcs(procs) = second.step(&mut state, ProcInput::Nothing) else {
+            panic!("the second half kicks off")
+        };
+        assert!(matches!(procs.last(), Some(AnyProc::SwelteringHeat(_))));
+        assert_eq!(state.home.bribes, 1);
+    }
+
+    /// A D3 larger than the players left picks them all; Prone and Stunned players were on the
+    /// pitch when the drive ended, so they are candidates too.
+    #[test]
+    fn sweltering_heat_picks_among_every_player_on_the_pitch() {
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_home_player(Position::new((5, 7)))
+            .add_away_player(Position::new((9, 5)))
+            .build();
+        let down = state.get_player_id_at(Position::new((5, 7))).unwrap();
+        state.get_mut_player_unsafe(down).status = PlayerStatus::Stunned;
+        let AnyProc::SwelteringHeat(mut heat) = crate::core::procedures::kickoff_events::SwelteringHeat::new() else {
+            unreachable!()
+        };
+        heat.step(&mut state, ProcInput::Nothing);
+        let mut out = heat.step(&mut state, ProcInput::Roll(RollResult::D6(D6::Six))); // D3 = 3
+        let mut offered = Vec::new();
+        while let ProcState::NeedRoll(RequestedRoll::Pick(n)) = out {
+            offered.push(n);
+            out = heat.step(&mut state, ProcInput::Roll(RollResult::Pick(0)));
+        }
+        assert!(matches!(out, ProcState::Done));
+        assert_eq!(offered, vec![2, 1, 1], "Home's two (one Stunned), then Away's one");
+        assert_eq!(state.get_dugout().filter(|p| p.place == DugoutPlace::Heated).count(), 3);
     }
 }

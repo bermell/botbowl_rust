@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::dices::{RequestedRoll, RollResult, RollTarget, Sum2D6Target};
+use crate::core::dices::{D6Target, RequestedRoll, RollResult, RollTarget, Sum2D6Target};
 use crate::core::gamestate::GameState;
-use crate::core::model::{BallState, FieldedPlayer, PlayerID};
+use crate::core::model::{Action, AvailableActions, BallState, FieldedPlayer, PlayerID};
 use crate::core::model::{DugoutPlace, PlayerStatus, ProcState, Procedure};
 use crate::core::model::{InjuryOutcome, ProcInput};
 use crate::core::procedures::ball_procs;
-use crate::core::table::Skill;
+use crate::core::table::{SimpleAT, Skill};
 
 use super::AnyProc;
 
@@ -115,14 +115,16 @@ impl Procedure for Armor {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Ejection {
     id: PlayerID,
+    /// The coach was asked about a Bribe (S3 Inducements: "When a player is Sent-off ... you may
+    /// use a Bribe"): no second offer.
+    #[serde(default)]
+    asked: bool,
 }
 impl Ejection {
     pub fn new(id: PlayerID) -> AnyProc {
-        AnyProc::Ejection(Ejection { id })
+        AnyProc::Ejection(Ejection { id, asked: false })
     }
-}
-impl Procedure for Ejection {
-    fn step(&mut self, game_state: &mut GameState, _action: ProcInput) -> ProcState {
+    fn send_off(&self, game_state: &mut GameState) -> ProcState {
         let position = game_state.get_player_unsafe(self.id).position;
         let ret = if matches!(game_state.ball, BallState::Carried(carrier_id) if carrier_id == self.id) {
             game_state.set_ball(BallState::InAir(position));
@@ -135,6 +137,30 @@ impl Procedure for Ejection {
         };
         game_state.unfield_player(self.id, DugoutPlace::Ejected).unwrap();
         ret
+    }
+}
+impl Procedure for Ejection {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let team = game_state.get_player_unsafe(self.id).stats.team;
+        match input {
+            ProcInput::Nothing if !self.asked && game_state.get_team(team).bribes > 0 => {
+                self.asked = true;
+                let mut aa = AvailableActions::new(team);
+                aa.insert_simple(SimpleAT::UseSkill);
+                aa.insert_simple(SimpleAT::DontUseSkill);
+                ProcState::NeedAction(aa)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::UseSkill)) => {
+                game_state.get_mut_team(team).bribes -= 1;
+                // "On a 2+, the player is not Sent-off (and no Turnover is caused)."
+                ProcState::NeedRoll(RequestedRoll::D6PassFail(D6Target::TwoPlus))
+            }
+            ProcInput::Roll(RollResult::Pass) => ProcState::Done,
+            ProcInput::Nothing
+            | ProcInput::Action(Action::Simple(SimpleAT::DontUseSkill))
+            | ProcInput::Roll(RollResult::Fail) => self.send_off(game_state),
+            _ => panic!("Unexpected input {:?}", input),
+        }
     }
 }
 
@@ -163,6 +189,9 @@ pub struct Injury {
     /// +1 to the roll (Mighty Blow).
     #[serde(default)]
     mighty_blow: bool,
+    /// A Stunned result is a Knocked-out one (Kick Team-mate's Fumbled Throw).
+    #[serde(default)]
+    stunned_is_ko: bool,
 }
 impl Injury {
     pub fn new(id: PlayerID) -> AnyProc {
@@ -171,6 +200,20 @@ impl Injury {
             crowd: false,
             fouler: None,
             mighty_blow: false,
+            stunned_is_ko: false,
+        })
+    }
+
+    /// S3, Kick Team-mate: "if a Kick Team-mate Special Action results in a Fumbled Throw,
+    /// immediately make an Injury Roll for the team-mate being kicked, treating any result of
+    /// Stunned as Knocked Out."
+    pub fn new_stunned_is_ko(id: PlayerID) -> AnyProc {
+        AnyProc::Injury(Injury {
+            id,
+            crowd: false,
+            fouler: None,
+            mighty_blow: false,
+            stunned_is_ko: true,
         })
     }
 
@@ -180,6 +223,7 @@ impl Injury {
             crowd: true,
             fouler: None,
             mighty_blow: false,
+            stunned_is_ko: false,
         })
     }
     pub fn new_pure(id: PlayerID) -> Injury {
@@ -188,6 +232,7 @@ impl Injury {
             crowd: false,
             fouler: None,
             mighty_blow: false,
+            stunned_is_ko: false,
         }
     }
 }
@@ -196,14 +241,16 @@ impl Procedure for Injury {
         let mut procs: Vec<AnyProc> = Vec::new();
 
         let injury_outcome = match input {
-            ProcInput::Nothing if self.fouler.is_some() => {
-                return ProcState::NeedRoll(RequestedRoll::FoulInjury(
-                    Sum2D6Target::EightPlus,
-                    Sum2D6Target::TenPlus,
-                ));
-            }
             ProcInput::Nothing => {
+                // The Stunty Injury Table is the standard one a band lower: KO 7+, Casualty 9+.
                 let (mut ko, mut cas) = (Sum2D6Target::EightPlus, Sum2D6Target::TenPlus);
+                if game_state.get_player_unsafe(self.id).has_skill(Skill::Stunty) {
+                    ko.add_modifer(1);
+                    cas.add_modifer(1);
+                }
+                if self.fouler.is_some() {
+                    return ProcState::NeedRoll(RequestedRoll::FoulInjury(ko, cas));
+                }
                 if self.mighty_blow {
                     ko.add_modifer(1);
                     cas.add_modifer(1);
@@ -227,6 +274,7 @@ impl Procedure for Injury {
             InjuryOutcome::Casualty => Some(DugoutPlace::Injuried),
             InjuryOutcome::KO => Some(DugoutPlace::KnockOut),
             InjuryOutcome::Stunned if self.crowd => Some(DugoutPlace::Reserves),
+            InjuryOutcome::Stunned if self.stunned_is_ko => Some(DugoutPlace::KnockOut),
             InjuryOutcome::Stunned => {
                 game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
                 None
@@ -246,7 +294,11 @@ mod tests {
     use crate::core::dices::D8;
     use crate::core::model::*;
     use crate::core::table::*;
-    use crate::core::{gamestate::GameStateBuilder, model::Position, table::PosAT};
+    use crate::core::{
+        gamestate::{GameState, GameStateBuilder},
+        model::Position,
+        table::PosAT,
+    };
     #[test]
     fn bounce_on_knockdown() -> Result<()> {
         let start_pos = Position::new((2, 2));
@@ -277,6 +329,54 @@ mod tests {
         assert_eq!(state.ball, BallState::OnGround(move_to + direction));
 
         Ok(())
+    }
+
+    /// S3 Stunty Injury Table: 2-6 Stunned, 7-8 Knocked-out, 9 Badly Hurt and 10-12 Casualty
+    /// (both a Casualty here), where the standard table is Stunned to 7, KO 8-9, Casualty 10+.
+    #[test]
+    fn a_stunty_player_is_injured_on_the_stunty_table() {
+        for (stunty, (d1, d2), expected) in [
+            (true, (3, 3), Some(PlayerStatus::Stunned)),
+            (true, (3, 4), None),
+            (true, (4, 5), None),
+            (false, (3, 4), Some(PlayerStatus::Stunned)),
+            (false, (4, 5), None),
+        ] {
+            let start_pos = Position::new((5, 5));
+            let foul_pos = start_pos + (2, 0);
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(foul_pos)
+                .build();
+            let victim_id = state.get_player_id_at(foul_pos).unwrap();
+            let victim = state.get_mut_player_unsafe(victim_id);
+            victim.status = PlayerStatus::Down;
+            if stunty {
+                victim.stats.give_skill(Skill::Stunty);
+            }
+            state.step_positional(PosAT::StartFoul, start_pos);
+            state.fix_d6(5); //armor
+            state.fix_d6(6); //armor
+            state.fix_d6(d1); //injury
+            state.fix_d6(d2); //injury
+            state.step_positional(PosAT::Foul, foul_pos);
+
+            let case = format!("stunty {stunty}, injury {d1}+{d2}");
+            let ejected = d1 == d2;
+            if ejected {
+                // The doubles send the fouler off; answer the Bribe question if one is asked.
+                assert_eq!(state.get_player(victim_id).unwrap().status, PlayerStatus::Stunned, "{case}");
+                continue;
+            }
+            assert_eq!(state.get_player(victim_id).ok().map(|p| p.status), expected, "{case}");
+            let place = state.get_dugout().find(|p| p.stats.team == TeamType::Away).map(|p| p.place);
+            let want = match (stunty, d1 + d2) {
+                (true, 7) | (false, 9) => Some(DugoutPlace::KnockOut),
+                (true, 9) => Some(DugoutPlace::Injuried),
+                _ => None,
+            };
+            assert_eq!(place, want, "{case}");
+        }
     }
 
     #[test]
@@ -423,5 +523,94 @@ mod tests {
             state.away_to_act(),
             "ejecting the ball carrier must still cause a turnover"
         );
+    }
+
+    /// A fouler about to be ejected (armour doubles), the fouling team holding `bribes`.
+    fn ejecting_foul(bribes: u8) -> (GameState, PlayerID) {
+        let start_pos = Position::new((5, 5));
+        let foul_pos = start_pos + (2, 0);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(foul_pos)
+            .build();
+        state.home.bribes = bribes;
+        let fouler = state.get_player_id_at(start_pos).unwrap();
+        let victim_id = state.get_player_id_at(foul_pos).unwrap();
+        state.get_mut_player_unsafe(victim_id).status = PlayerStatus::Down;
+        state.step_positional(PosAT::StartFoul, start_pos);
+        state.fix_d6(1); //armor: doubles -> ejected, sum too low to break armor
+        state.fix_d6(1); //armor
+        state.step_positional(PosAT::Foul, foul_pos);
+        (state, fouler)
+    }
+
+    /// S3 Inducements, Bribes: "When a Bribe is used, roll a D6. On a 2+, the player is not
+    /// Sent-off (and no Turnover is caused)."
+    #[test]
+    fn a_bribe_on_a_two_plus_keeps_the_fouler_on_the_pitch_without_a_turnover() {
+        let (mut state, fouler) = ejecting_foul(1);
+        assert!(state.home_to_act());
+        let offered = state.get_all_actions();
+        assert!(offered.contains(&Action::Simple(SimpleAT::UseSkill)), "{offered:?}");
+        assert!(offered.contains(&Action::Simple(SimpleAT::DontUseSkill)));
+        state.fix_d6(2);
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.home.bribes, 0);
+        assert!(state.get_player(fouler).is_ok(), "the fouler stays");
+        assert!(state.get_dugout().next().is_none());
+        assert!(state.home_to_act(), "no turnover");
+    }
+
+    /// "On a natural 1, the referee pockets the Bribe but sends the player off anyway."
+    #[test]
+    fn a_bribe_on_a_one_is_lost_and_the_fouler_is_sent_off() {
+        let (mut state, _) = ejecting_foul(2);
+        state.fix_d6(1);
+        state.step_simple(SimpleAT::UseSkill);
+        assert_eq!(state.home.bribes, 1);
+        assert!(matches!(
+            state.get_dugout().next(),
+            Some(DugoutPlayer {
+                place: DugoutPlace::Ejected,
+                ..
+            })
+        ));
+        assert!(state.away_to_act(), "turnover");
+    }
+
+    /// Doubles on the injury roll send the fouler off as well; a Bribe is offered there too.
+    #[test]
+    fn a_bribe_is_offered_on_injury_roll_doubles() {
+        let start_pos = Position::new((5, 5));
+        let foul_pos = start_pos + (2, 0);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(foul_pos)
+            .build();
+        state.home.bribes = 1;
+        let fouler = state.get_player_id_at(start_pos).unwrap();
+        let victim = state.get_player_id_at(foul_pos).unwrap();
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
+        state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+        state.step_positional(PosAT::StartFoul, start_pos);
+        state.fix_d6(5); // armour 11, no doubles: broken
+        state.fix_d6(6);
+        state.fix_d6(1); // injury 2, doubles: Stunned, and the fouler is ejected
+        state.fix_d6(1);
+        state.step_positional(PosAT::Foul, foul_pos);
+        assert_eq!(state.get_player_unsafe(victim).status, PlayerStatus::Stunned);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+        state.fix_d6(4);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.get_player(fouler).is_ok(), "bribed");
+        assert!(state.home_to_act(), "no turnover");
+    }
+
+    #[test]
+    fn a_declined_bribe_is_kept_and_the_fouler_is_sent_off() {
+        let (mut state, _) = ejecting_foul(1);
+        state.step_simple(SimpleAT::DontUseSkill);
+        assert_eq!(state.home.bribes, 1);
+        assert!(state.away_to_act(), "turnover");
     }
 }

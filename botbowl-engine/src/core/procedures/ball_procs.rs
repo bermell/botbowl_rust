@@ -6,8 +6,9 @@ use crate::core::model::ProcInput;
 use crate::core::model::{
     other_team, Action, AvailableActions, BoardDims, Coord, Direction, Position, ProcState, Procedure,
 };
-use crate::core::model::{BallState, PlayerID};
-use crate::core::table::{PosAT, Skill};
+use crate::core::model::{BallState, PlayerID, TeamType};
+use crate::core::procedures::game_procs::TURNS_PER_HALF;
+use crate::core::table::{PosAT, SimpleAT, Skill};
 
 use crate::core::procedures::any_proc::AnyProc;
 
@@ -40,6 +41,48 @@ impl SimpleProc for PickupProc {
         // path at the ball, so they need a fresh carrier-routed path to run).
         // See the field doc on `GameInfo::pickup_this_activation`.
         game_state.info.pickup_this_activation = true;
+        let player = game_state.get_player_unsafe(self.id);
+        if player.position.x == game_state.get_endzone_x(player.stats.team) {
+            game_state.info.handle_td_by = Some(self.id);
+        }
+        Vec::new()
+    }
+
+    fn apply_failure(&mut self, game_state: &mut GameState) -> Vec<AnyProc> {
+        game_state.get_mut_player(self.id).unwrap().used = true;
+        game_state.info.turnover = true;
+        vec![Bounce::new()]
+    }
+
+    fn player_id(&self) -> PlayerID {
+        self.id
+    }
+}
+/// S3 Secure the Ball's pick-up: no Agility Test, a plain D6 2+ (`PathingEvent::SecureBall`).
+/// Success picks the ball up and ends the activation (the path event already marked the player
+/// used); a 1 is a turnover and the ball bounces from the player's square. A team re-roll may
+/// re-roll it; Sure Hands may not ("though not when making a Secure the Ball Action").
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SecureBallProc {
+    target: D6Target,
+    id: PlayerID,
+}
+impl SecureBallProc {
+    pub fn new(id: PlayerID, target: D6Target) -> AnyProc {
+        AnyProc::SecureBallProc(SimpleProcContainer::new(SecureBallProc { target, id }))
+    }
+}
+impl SimpleProc for SecureBallProc {
+    fn d6_target(&self) -> D6Target {
+        self.target
+    }
+
+    fn reroll_skill(&self) -> Option<Skill> {
+        None
+    }
+
+    fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
+        game_state.set_ball(BallState::Carried(self.id));
         let player = game_state.get_player_unsafe(self.id);
         if player.position.x == game_state.get_endzone_x(player.stats.team) {
             game_state.info.handle_td_by = Some(self.id);
@@ -114,9 +157,10 @@ impl Procedure for Bounce {
                 // which keeps recurring bounce states distinct for the
                 // MCTS search graph.)
                 game_state.set_ball(BallState::InAir(new_pos));
+                // -1: catching a ball that has Bounced.
                 ProcState::DoneNew(Catch::new_with_kick_arg(
                     catcher_id,
-                    game_state.get_catch_target(catcher_id).unwrap(),
+                    game_state.get_catch_target(catcher_id, -1).unwrap(),
                     self.kick,
                 ))
             } else {
@@ -177,16 +221,24 @@ impl ThrowIn {
     }
 
     /// The square this throw-in roll would land on (before occupancy is
-    /// considered): `from + direction * min(distance / scatter_divisor,
-    /// max_scatter)`. Pure, and must mirror `step`'s arithmetic exactly.
+    /// considered): `from + direction * throw_in_length(distance)`. Pure, and must mirror
+    /// `step`'s arithmetic exactly.
     /// Used by the MCTS scripted-outcome picker to choose a roll that keeps
     /// the ball in bounds — an out-of-bounds landing re-requests the roll,
     /// which under a deterministic scripted pick can loop forever on small
     /// boards.
     pub fn target_square(&self, direction: D3, distance: Sum2D6, dims: BoardDims) -> Position {
         let dir = self.get_throw_in_direction(direction, dims);
-        let length = ((distance as i8) / dims.scatter_divisor()).min(dims.max_scatter());
-        self.from + dir * length
+        self.from + dir * Self::throw_in_length(distance, dims)
+    }
+
+    /// How many squares from `from` the ball lands. S3: the ball travels 2D6 squares "counting
+    /// the square underneath the Blood Bowl logo" — `from`, the last square it occupied — "as
+    /// the first square", so it lands 2D6 - 1 squares away. Scaled down on narrow boards (a
+    /// no-op on the full pitch) so a throw-in rarely lands out of bounds again, then capped at
+    /// half the board width as a final safety net.
+    fn throw_in_length(distance: Sum2D6, dims: BoardDims) -> Coord {
+        ((distance as Coord - 1) / dims.scatter_divisor()).min(dims.max_scatter())
     }
 }
 impl Procedure for ThrowIn {
@@ -196,13 +248,10 @@ impl Procedure for ThrowIn {
                 return ProcState::NeedRoll(RequestedRoll::ThrowIn);
             }
             ProcInput::Roll(RollResult::ThrowIn { direction, distance }) => {
-                // Scale distance down on narrow boards (no-op on the full
-                // pitch) so a throw-in rarely lands out of bounds again, then
-                // cap at half the board width as a final safety net.
                 let dims = game_state.board_dims;
                 (
                     self.get_throw_in_direction(direction, dims),
-                    ((distance as i8) / dims.scatter_divisor()).min(dims.max_scatter()),
+                    Self::throw_in_length(distance, dims),
                 )
             }
             _ => panic!("Unexpected input {:?} for ThrowIn", input),
@@ -224,7 +273,9 @@ impl Procedure for ThrowIn {
                     // the catcher's square for the attempt, so a failed
                     // catch bounces from there.
                     game_state.set_ball(BallState::InAir(target));
-                    ProcState::DoneNew(Catch::new(catcher_id, game_state.get_catch_target(catcher_id).unwrap()))
+                    // -1: catching a ball that has been Thrown-in.
+                    let target = game_state.get_catch_target(catcher_id, -1).unwrap();
+                    ProcState::DoneNew(Catch::new(catcher_id, target))
                 }
                 _ => {
                     game_state.set_ball(BallState::InAir(target));
@@ -301,25 +352,26 @@ impl Touchback {
 impl Procedure for Touchback {
     fn step(&mut self, game_state: &mut GameState, action: ProcInput) -> ProcState {
         if let ProcInput::Action(Action::Positional(_, position)) = action {
-            game_state.set_ball(BallState::Carried(game_state.get_player_id_at(position).unwrap()));
+            game_state.set_ball(match game_state.get_player_id_at(position) {
+                Some(id) => BallState::Carried(id),
+                None => BallState::OnGround(position),
+            });
             ProcState::Done
         } else {
+            // S3, Touchbacks: the receiving coach gives the ball to one of their Standing players,
+            // or, with none, places it on any unoccupied square in their half.
             let team = other_team(game_state.info.kicking_this_drive);
-            let positions: Vec<_> = game_state
+            let mut positions: Vec<_> = game_state
                 .get_players_on_pitch_in_team(team)
+                .filter(|p| p.status == crate::core::model::PlayerStatus::Up)
                 .map(|p| p.position)
                 .collect();
             if positions.is_empty() {
-                // Nobody can take the touchback (all receivers off the
-                // pitch — routine in 2-player small-board games). An empty
-                // `NeedAction` would deadlock every consumer, so drop the
-                // ball in the middle of the receiving half and let it
-                // bounce from there.
-                // `get_best_kickoff_aim_for` takes the *kicking* team; `team` here is
-                // the receiver, so passing it aimed at the wrong half (plan 023 B1).
-                let aim = game_state.get_best_kickoff_aim_for(game_state.info.kicking_this_drive);
-                game_state.set_ball(BallState::InAir(aim));
-                return ProcState::DoneNew(Bounce::new());
+                let dims = game_state.board_dims;
+                positions = Position::all_positions()
+                    .filter(|&pos| !dims.is_out(pos) && dims.is_on_team_side(pos, team))
+                    .filter(|&pos| game_state.get_player_at(pos).is_none())
+                    .collect();
             }
             let mut aa = AvailableActions::new(team);
             aa.insert_positional(PosAT::SelectPosition, positions);
@@ -347,7 +399,19 @@ impl Procedure for Touchdown {
                 // the conceding team makes scoring self-reinforcing (the scorer
                 // receives again), which compounds any per-kickoff edge into a
                 // large win-rate gap — plan 023 B2.
-                game_state.info.kickoff_by_team = Some(game_state.get_player_unsafe(self.id).stats.team);
+                let scorer = game_state.get_player_unsafe(self.id).stats.team;
+                game_state.info.kickoff_by_team = Some(scorer);
+                // S3, Scoring in the Opponent's Turn: the scoring team skips its next turn, so the
+                // conceding team plays first after the kick-off. `Half` gives the next turn to the
+                // team that is behind on the turn track; a skip past the half's last turn ends it.
+                if game_state.turn_team() != Some(scorer) {
+                    let info = &mut game_state.info;
+                    let turn = match scorer {
+                        TeamType::Home => &mut info.home_turn,
+                        TeamType::Away => &mut info.away_turn,
+                    };
+                    *turn = (*turn + 1).min(TURNS_PER_HALF);
+                }
             }
         }
 
@@ -355,56 +419,110 @@ impl Procedure for Touchdown {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PassResult {
     Accurate,
     Inaccurate,
+    /// Pre-S3 (a modified 1 deviated D8 x D6 from the passer). Never produced any more; kept so
+    /// stored states that hold it still load.
     WildlyInaccurate,
     Fumble,
 }
 
+/// S3, Pass Actions: a Passing Ability Test (the target with the range, marking, weather and
+/// skill modifiers already applied, `modifier` their sum). Success or a natural 6 is
+/// Accurate: the ball heads for the target square. A natural 1, or a 1 after modifiers, is a
+/// Fumble: it bounces from the passer and the turn is over. Anything else is Inaccurate: the
+/// ball Scatters (3) from the target square. A failed test (Inaccurate or Fumble) may be
+/// re-rolled once, with the Pass skill or a team re-roll.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Pass {
     pos: Position,
     pass: D6Target,
     modifier: i8,
+    /// The test has been re-rolled: its next result stands.
+    #[serde(default)]
+    rerolled: bool,
+    /// A failed result waiting on the passer's coach's team re-roll decision.
+    #[serde(default)]
+    failed: Option<PassResult>,
 }
 impl Pass {
     pub fn new(pos: Position, pass: D6Target, modifier: i8) -> AnyProc {
-        AnyProc::Pass(Pass { pos, pass, modifier })
+        AnyProc::Pass(Pass {
+            pos,
+            pass,
+            modifier,
+            rerolled: false,
+            failed: None,
+        })
     }
     /// The square the pass is aimed at: an inaccurate pass scatters from here. Public so MCTS's
     /// chance model can enumerate where the ball lands (plan 061).
     pub fn target(&self) -> Position {
         self.pos
     }
-}
-impl Procedure for Pass {
-    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        match input {
-            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
-            ProcInput::Roll(RollResult::D6(roll)) if self.pass.is_success(roll) => {
-                // ACCURATE PASS
+
+    fn result_of(&self, roll: D6) -> PassResult {
+        if roll == D6::One || (roll as i8) + self.modifier <= 1 {
+            PassResult::Fumble
+        } else if self.pass.is_success(roll) {
+            PassResult::Accurate
+        } else {
+            PassResult::Inaccurate
+        }
+    }
+
+    fn resolve(&self, result: PassResult, game_state: &mut GameState) -> ProcState {
+        match result {
+            PassResult::Accurate => {
                 let from = game_state.get_ball_position().unwrap();
                 ProcState::DoneNewProcs(vec![
                     TurnoverIfPossessionLost::new(),
                     DeflectOrResolve::new(from, self.pos, PassResult::Accurate, None),
                 ])
             }
-            ProcInput::Roll(RollResult::D6(D6::One)) => {
-                // FUMBLE
+            PassResult::Fumble => {
                 game_state.info.turnover = true;
                 ProcState::DoneNew(Bounce::new())
             }
-            ProcInput::Roll(RollResult::D6(roll)) if roll + self.modifier == D6::One => {
-                // WILDLY INACCURATE PASSES
-                //  deviate (d8 * d6) from the square occupied by the player performing the Pass
-                ProcState::NeedRoll(RequestedRoll::Deviate)
+            PassResult::Inaccurate => ProcState::NeedRoll(RequestedRoll::Scatter),
+            PassResult::WildlyInaccurate => unreachable!("not an S3 result"),
+        }
+    }
+}
+impl Procedure for Pass {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+            ProcInput::Roll(RollResult::D6(roll)) => {
+                let result = self.result_of(roll);                if result != PassResult::Accurate && !self.rerolled {
+                    let passer = game_state.get_active_player().unwrap();
+                    let team = passer.stats.team;
+                    if passer.has_skill(Skill::Pass) {
+                        self.rerolled = true;
+                        return ProcState::NeedRoll(RequestedRoll::D6);
+                    }
+                    if game_state.may_use_team_reroll(team) {
+                        self.failed = Some(result);
+                        let mut aa = AvailableActions::new(team);
+                        aa.insert_simple(SimpleAT::UseReroll);
+                        aa.insert_simple(SimpleAT::DontUseReroll);
+                        return ProcState::NeedAction(aa);
+                    }
+                }
+                self.resolve(result, game_state)
             }
-            ProcInput::Roll(RollResult::D6(_)) => {
-                //INACCURATE PASSES
-                // scatter (d8 + d8 + d8) from the target square before landing.
-                ProcState::NeedRoll(RequestedRoll::Scatter)
+            ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) if self.failed.is_some() => {
+                let team = game_state.get_active_player().unwrap().stats.team;
+                game_state.get_mut_team(team).use_reroll();
+                self.failed = None;
+                self.rerolled = true;
+                ProcState::NeedRoll(RequestedRoll::D6)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) if self.failed.is_some() => {
+                let result = self.failed.take().unwrap();
+                self.resolve(result, game_state)
             }
             ProcInput::Roll(RollResult::Scatter(r1, r2, r3)) => {
                 let from = game_state.get_ball_position().unwrap(); //or just acive plater...
@@ -423,30 +541,60 @@ impl Procedure for Pass {
                     DeflectOrResolve::new(from, target, PassResult::Inaccurate, throwin_pos),
                 ])
             }
-            ProcInput::Roll(RollResult::Deviate(distance, direction)) => {
-                let from = game_state.get_ball_position().unwrap();
-                let mut target = from; // + Direction::from(direction) * distance as i8;
-                let mut throwin_pos = None;
-                let dir = Direction::from(direction);
-                for _ in 0..(distance as i8) {
-                    let new_target = target + dir;
-                    if game_state.is_out(new_target) {
-                        throwin_pos = Some(target);
-                        break;
-                    }
-                    target = new_target;
-                }
-
-                ProcState::DoneNewProcs(vec![
-                    TurnoverIfPossessionLost::new(),
-                    DeflectOrResolve::new(from, target, PassResult::WildlyInaccurate, throwin_pos),
-                ])
-            }
-            ProcInput::Action(_) => todo!(),
             _ => panic!("Unexpected input {:?} for Pass", input),
         }
     }
 }
+/// `SimpleAT::PassSquare`: the passer, where they stand, picks any square in range (S3, Declare
+/// Target Square — it need not hold a team-mate), and the pass is thrown there. Only reachable
+/// through that hidden action, so bots never meet it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct PassToSquare {
+    id: PlayerID,
+}
+impl PassToSquare {
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::PassToSquare(PassToSquare { id })
+    }
+
+    /// Every square on the pitch in passing range of `from` (not `from` itself).
+    pub fn squares_in_range(game_state: &GameState, id: PlayerID, from: Position) -> Vec<Position> {
+        let dims = game_state.board_dims;
+        Position::all_positions()
+            .filter(|&to| !dims.is_out(to) && to != from)
+            .filter(|&to| game_state.get_pass_modifier(id, from, to).is_some())
+            .collect()
+    }
+}
+impl Procedure for PassToSquare {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let from = game_state.get_player_unsafe(self.id).position;
+        match input {
+            ProcInput::Action(Action::Positional(PosAT::Pass, to)) => {
+                game_state.get_mut_player_unsafe(self.id).used = true;
+                let target = game_state.get_pass_target(self.id, from, to).unwrap();
+                let modifier = game_state.get_pass_modifier(self.id, from, to).unwrap();
+                ProcState::DoneNew(Pass::new(to, target, modifier))
+            }
+            _ => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                let mut aa = AvailableActions::new(team);
+                aa.insert_positional(PosAT::Pass, Self::squares_in_range(game_state, self.id, from));
+                ProcState::NeedAction(aa)
+            }
+        }
+    }
+}
+
+/// S3, Interceptions: the Agility Test is -3 against an Accurate Pass, -2 against an Inaccurate
+/// one (summed with the marking and weather modifiers by `GameState::get_intercepters`).
+pub fn interception_modifier(result: PassResult) -> i8 {
+    match result {
+        PassResult::Accurate => -3,
+        _ => -2,
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct DeflectOrResolve {
     from: Position,
@@ -472,7 +620,8 @@ impl Procedure for DeflectOrResolve {
         let deflect_team = other_team(active_team);
         let interceptor: Option<(Position, D6Target)> = match input {
             ProcInput::Nothing => {
-                self.intercepters = game_state.get_intercepters(deflect_team, self.from, self.to);
+                self.intercepters =
+                    game_state.get_intercepters(deflect_team, self.from, self.to, interception_modifier(self.result));
                 if self.intercepters.is_empty() {
                     None
                 } else if self.intercepters.len() == 1 {
@@ -498,28 +647,19 @@ impl Procedure for DeflectOrResolve {
                 debug_assert!(!game_state.is_out(throw_in_pos));
                 ThrowIn::new(throw_in_pos)
             } else {
+                // The catch has no modifier for the pass (S3, Catching the Ball). A Prone or
+                // Stunned player in the square fails it automatically: the ball bounces from
+                // there, as from an empty square.
                 match game_state.get_player_at(self.to) {
-                    Some(player) => {
-                        let mut target = game_state.get_catch_target(player.id).unwrap();
-                        target.add_modifer(match self.result {
-                            PassResult::Accurate => 0,
-                            PassResult::Inaccurate => -1,
-                            PassResult::WildlyInaccurate => -2,
-                            PassResult::Fumble => -3,
-                        });
-                        Catch::new(player.id, target)
+                    Some(player) if player.can_catch() => {
+                        Catch::new(player.id, game_state.get_catch_target(player.id, 0).unwrap())
                     }
-                    None => Bounce::new(),
+                    _ => Bounce::new(),
                 }
             }
         };
-        if let Some((pos, mut target)) = interceptor {
-            target.add_modifer(match self.result {
-                PassResult::Accurate => 0,
-                PassResult::Inaccurate => -1,
-                PassResult::WildlyInaccurate => -2,
-                PassResult::Fumble => -3,
-            });
+        // The interceptor's target already holds the -3 / -2 (`get_intercepters`).
+        if let Some((pos, target)) = interceptor {
             let id = game_state.get_player_id_at(pos).unwrap();
             ProcState::DoneNew(Deflect::new(id, target, failed_deflect_proc))
         } else {
@@ -576,12 +716,22 @@ impl SimpleProc for Deflect {
         self.id
     }
 
+    /// S3: a successful interception gains possession at once — no catch follows. The pass
+    /// below (`TurnoverIfPossessionLost`) turns it over. An interceptor standing in the end zone
+    /// they score in scores in the opponent's turn.
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
-        game_state.set_ball(BallState::InAir(game_state.get_player_unsafe(self.id).position));
-        let mut catch_target = game_state.get_catch_target(self.id).unwrap();
-        vec![Catch::new(self.id, *catch_target.add_modifer(-1))]
+        game_state.set_ball(BallState::Carried(self.id));
+        let player = game_state.get_player_unsafe(self.id);
+        if player.position.x == game_state.get_endzone_x(player.stats.team) {
+            game_state.info.handle_td_by = Some(self.id);
+        }
+        Vec::new()
     }
 }
+#[cfg(test)]
+#[path = "secure_ball_tests.rs"]
+mod secure_ball_tests;
+
 #[cfg(test)]
 mod tests {
 
@@ -629,45 +779,126 @@ mod tests {
         );
     }
 
-    /// A touchback with no receiving player on the pitch (all injured/KO'd
-    /// — routine in 2-player small-board games) must not emit an empty
-    /// `NeedAction`: an action request with zero legal actions deadlocks
-    /// every consumer (bots, MCTS marks the node terminal). The ball is
-    /// dropped in the receiving half and bounces instead.
+    /// The squares a touchback offers.
+    fn touchback_offers(state: &mut crate::core::gamestate::GameState) -> (Option<TeamType>, Vec<Position>) {
+        use crate::core::procedures::ball_procs::Touchback;
+        let ProcState::NeedAction(aa) = (Touchback {}).step(state, ProcInput::Nothing) else {
+            panic!("a touchback asks the receiving coach");
+        };
+        let mut actions = Vec::new();
+        aa.collect_non_path_actions(&mut actions);
+        let squares = actions
+            .into_iter()
+            .map(|action| match action {
+                Action::Positional(PosAT::SelectPosition, pos) => pos,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        (aa.get_team(), squares)
+    }
+
+    /// S3, Touchbacks: with no Standing receiver, the receiving coach places the ball on any
+    /// unoccupied square in their half, where it stays (no bounce). This also keeps a touchback
+    /// with nobody on the pitch (routine in 2-player small-board games) from emitting an empty
+    /// `NeedAction`, which would deadlock every consumer.
     #[test]
-    fn touchback_with_no_receivers_drops_ball_in_receiving_half() {
-        use crate::core::procedures::ball_procs::{Bounce, Touchback};
+    fn touchback_with_no_standing_receivers_places_the_ball_in_the_receiving_half() {
+        use crate::core::procedures::ball_procs::Touchback;
+
+        // Home kicks, Away receives — and Away's only player is prone.
+        let prone_pos = Position::new((20, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((2, 2)))
+            .add_away_player(prone_pos)
+            .build();
+        state.info.kicking_this_drive = TeamType::Home;
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Down;
+
+        let (team, offered) = touchback_offers(&mut state);
+        assert_eq!(team, Some(TeamType::Away));
+        assert!(!offered.is_empty());
+        assert!(offered
+            .iter()
+            .all(|&pos| state.board_dims.is_on_team_side(pos, TeamType::Away) && state.get_player_at(pos).is_none()));
+
+        let square = offered[0];
+        let result = (Touchback {}).step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, square)),
+        );
+        assert!(matches!(result, ProcState::Done));
+        assert_eq!(state.ball, BallState::OnGround(square));
+    }
+
+    /// S3, Catching the Ball: "If a Prone or Stunned player ... is required to Catch a ball, they
+    /// will automatically fail ... and the ball will Bounce" — for a kick-off landing on them ...
+    #[test]
+    fn a_kickoff_landing_on_a_prone_player_bounces() {
+        use crate::core::procedures::kickoff_procs::LandKickoff;
         use crate::core::procedures::AnyProc;
 
-        // Home kicks, Away receives — and Away has nobody on the pitch.
-        let mut state = GameStateBuilder::new().add_home_player(Position::new((2, 2))).build();
-        state.info.kicking_this_drive = TeamType::Home;
+        let prone_pos = Position::new((20, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((2, 2)))
+            .add_away_player(prone_pos)
+            .build();
+        // The kick lands in the receiving half: kicked by the team whose half it is not.
+        state.info.kicking_this_drive = if state.board_dims.is_on_team_side(prone_pos, TeamType::Away) {
+            TeamType::Home
+        } else {
+            TeamType::Away
+        };
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Down;
+        state.set_ball(BallState::InAir(prone_pos));
 
-        let mut proc = Touchback {};
+        let result = (LandKickoff {}).step(&mut state, ProcInput::Nothing);
+        assert!(matches!(result, ProcState::DoneNew(AnyProc::Bounce(_))), "got {result:?}");
+    }
+
+    /// ... and for a pass landing on them.
+    #[test]
+    fn a_pass_landing_on_a_prone_player_bounces() {
+        use crate::core::procedures::ball_procs::{DeflectOrResolve, PassResult};
+        use crate::core::procedures::AnyProc;
+
+        let passer_pos = Position::new((5, 5));
+        let prone_pos = Position::new((8, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(passer_pos)
+            .add_home_player(prone_pos)
+            .add_ball_pos(passer_pos)
+            .build();
+        state.info.active_player = state.get_player_id_at(passer_pos);
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Down;
+
+        let AnyProc::DeflectOrResolve(mut proc) =
+            DeflectOrResolve::new(passer_pos, prone_pos, PassResult::Inaccurate, None)
+        else {
+            unreachable!()
+        };
         let result = proc.step(&mut state, ProcInput::Nothing);
+        assert!(matches!(result, ProcState::DoneNew(AnyProc::Bounce(_))), "got {result:?}");
+        assert_eq!(state.ball, BallState::InAir(prone_pos));
+    }
 
-        // Assert the *property* the test is named for. This previously computed
-        // its expectation as `get_best_kickoff_aim_for(TeamType::Away)` — the
-        // receiving team — which is the same argument mix-up the production code
-        // had (the function takes the *kicking* team), so it asserted the ball
-        // landed in the KICKING team's half while claiming to check the
-        // receiving one. See plan 023 B1.
-        let expected = state.get_best_kickoff_aim_for(TeamType::Home); // Home kicks
-        assert!(
-            matches!(state.ball, BallState::InAir(pos) if pos == expected),
-            "ball must be dropped at the receiving half's aim square ({expected:?}), got {:?}",
-            state.ball
-        );
-        assert!(
-            matches!(state.ball, BallState::InAir(pos) if state.board_dims.is_on_team_side(pos, TeamType::Away)),
-            "Away receives, so the ball must land in Away's half, got {:?}",
-            state.ball
-        );
-        assert!(
-            matches!(result, ProcState::DoneNew(AnyProc::Bounce(Bounce { .. }))),
-            "touchback must resolve into a bounce, got {:?}",
-            result
-        );
+    /// A Prone or Stunned receiver is not offered the touchback ball.
+    #[test]
+    fn touchback_goes_to_a_standing_receiver_only() {
+        let standing_pos = Position::new((20, 5));
+        let prone_pos = Position::new((20, 7));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((2, 2)))
+            .add_away_player(standing_pos)
+            .add_away_player(prone_pos)
+            .build();
+        state.info.kicking_this_drive = TeamType::Home;
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Stunned;
+
+        assert_eq!(touchback_offers(&mut state).1, vec![standing_pos]);
     }
 
     #[test]
@@ -789,6 +1020,84 @@ mod tests {
         );
     }
 
+    /// S3, Catching the Ball: an AG 3 player catches on a 3+; a hand-off has no modifier.
+    #[test]
+    fn a_handoff_catch_has_no_modifier() {
+        let start_pos = Position::new((2, 1));
+        let target_pos = Position::new((3, 1));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_home_player(target_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        let receiver = state.get_player_id_at(target_pos).unwrap();
+        state.step_positional(PosAT::StartHandoff, start_pos);
+        state.fix_d6(3);
+        state.step_positional(PosAT::Handoff, target_pos);
+        assert_eq!(state.ball, BallState::Carried(receiver));
+    }
+
+    /// S3, Catch: "may re-roll any failed Agility Test when attempting to Catch" — not once per
+    /// turn like Dodge. A Catch player who fails, sees the ball bounce off a team-mate and back,
+    /// re-rolls the second catch too.
+    #[test]
+    fn the_catch_skill_rerolls_every_catch() {
+        let ball_pos = Position::new((5, 5));
+        let catcher_pos = ball_pos + Direction::up();
+        let team_mate_pos = catcher_pos + Direction::right();
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((1, 1)))
+            .add_home_player(catcher_pos)
+            .add_home_player(team_mate_pos)
+            .add_ball_pos(ball_pos)
+            .build();
+        state.get_mut_team(TeamType::Home).rerolls = 0;
+        let catcher = state.get_player_id_at(catcher_pos).unwrap();
+        state.get_mut_player_unsafe(catcher).stats.give_skill(Skill::Catch);
+
+        state.step_positional(PosAT::StartMove, Position::new((1, 1)));
+        state.fix_d6(2); // fail pickup (3+)
+        state.fix_d8_direction(Direction::up()); // bounce onto the Catch player
+        state.fix_d6(1); // fail
+        state.fix_d6(1); // Catch re-roll fails
+        state.fix_d8_direction(Direction::right()); // bounce onto the team-mate
+        state.fix_d6(1); // fail
+        state.fix_d8_direction(Direction::left()); // back onto the Catch player
+        state.fix_d6(1); // fail
+        state.fix_d6(6); // Catch re-roll again
+        state.step_positional(PosAT::Move, ball_pos);
+        assert_eq!(state.ball, BallState::Carried(catcher));
+    }
+
+    /// ... but catching a ball that has Bounced is -1: an AG 3 player then needs a 4+.
+    #[test]
+    fn a_bounced_catch_is_minus_one() {
+        let ball_pos = Position::new((5, 5));
+        let start_pos = Position::new((1, 1));
+        let dir = Direction::from(D8::One);
+        let catcher_pos = ball_pos + dir;
+        let catch_with = |roll: u8| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_home_player(catcher_pos)
+                .add_ball_pos(ball_pos)
+                .build();
+            let catcher = state.get_player_id_at(catcher_pos).unwrap();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fix_d6(2); // fail pickup (3+)
+            state.fix_d8(D8::One as u8); // bounce onto the standing team-mate
+            state.fix_d6(roll);
+            if roll < 4 {
+                state.fix_d8(D8::One as u8); // the failed catch bounces on
+            }
+            state.step_positional(PosAT::Move, ball_pos);
+            state.ball == BallState::Carried(catcher)
+        };
+        assert!(!catch_with(3));
+        assert!(catch_with(4));
+    }
+
     /// Same rule for a throw-in that lands on a player: the ball is in
     /// their square for the catch attempt, and a failed catch bounces
     /// from there.
@@ -797,8 +1106,8 @@ mod tests {
         let ball_pos = Position::new((5, 1)); // on the top edge
         let start_pos = Position::new((5, 4));
         let up = Direction::up();
-        // ThrowIn from y==1 with D3::One goes direction (1,1); distance is
-        // capped 2d6 — fix 1+1 = 2 → lands at ball_pos + (2,2).
+        // ThrowIn from y==1 with D3::One goes direction (1,1); 2D6 - 1 squares
+        // (S3 counts the origin as the first) — fix 1+2 = 3 → lands at ball_pos + (2,2).
         let catcher_pos = ball_pos + (2, 2);
         let mut state = GameStateBuilder::new()
             .add_home_player(start_pos)
@@ -813,7 +1122,7 @@ mod tests {
         state.fix_d8(D8::from(up) as u8); // bounce over the edge — out of bounds
         state.fix_d3(1); // throw-in direction (1,1)
         state.fix_d6(1); // throw-in distance...
-        state.fix_d6(1); // ...1+1 = 2 → lands on the catcher
+        state.fix_d6(2); // ...1+2 = 3 → lands on the catcher
         state.fix_d6(1); // catcher fails the catch
         state.step_simple(SimpleAT::DontUseReroll); // decline the pickup reroll
 
@@ -865,9 +1174,35 @@ mod tests {
         };
         assert_eq!(
             pos,
-            from + Direction::right() * 6,
-            "raw distance 12 / scatter_divisor 2 == 6, not the unscaled 12"
+            from + Direction::right() * 5,
+            "(raw distance 12 - 1) / scatter_divisor 2 == 5, not the unscaled 11"
         );
+    }
+
+    /// S3, Throw-ins: 2D6 squares counting the square the ball left from as the first, so a 2
+    /// lands on the next square in.
+    #[test]
+    fn a_throw_in_counts_its_origin_as_the_first_square() {
+        use crate::core::dices::{RollResult, Sum2D6, D3};
+        use crate::core::procedures::ball_procs::ThrowIn;
+        use crate::core::procedures::AnyProc;
+
+        // Unscaled distances: the full pitch only.
+        crate::skip_if_board_smaller_than!(28, 17);
+        let mut state = GameStateBuilder::new().build();
+        assert_eq!(state.board_dims.scatter_divisor(), 1);
+        let from = Position::new((1, 1));
+        let AnyProc::ThrowIn(mut throw_in) = ThrowIn::new(from) else {
+            unreachable!()
+        };
+        throw_in.step(
+            &mut state,
+            ProcInput::Roll(RollResult::ThrowIn {
+                direction: D3::One,
+                distance: Sum2D6::Two,
+            }),
+        );
+        assert_eq!(state.ball, BallState::InAir(from + Direction::right()));
     }
 
     #[test]
@@ -892,7 +1227,8 @@ mod tests {
         state.fix_d6(3); //succeed on reroll (3+)
         state.step_positional(PosAT::Move, Position::new((5, 5)));
 
-        assert!(!state.get_player(id).unwrap().can_use_skill(Skill::SureHands));
+        // S3: Sure Hands is not once per turn (unlike Dodge and Sure Feet).
+        assert!(state.get_player(id).unwrap().can_use_skill(Skill::SureHands));
 
         match state.ball {
             BallState::Carried(id_carrier) if id_carrier == id => (),
@@ -961,7 +1297,7 @@ mod tests {
         state.fix_d6(1); //armor
         state.fix_d3(2); //throw in direction down
         state.fix_d6(1); //throw in length
-        state.fix_d6(1); //throw in length
+        state.fix_d6(2); //throw in length: 2D6 = 3 lands 2 squares in (S3)
         state.fix_d8(2); //bounce direction down
 
         state.step_positional(PosAT::FollowUp, carrier_pos);
@@ -1012,7 +1348,7 @@ mod tests {
         // out of bounce throw-in
         state.fix_d3(2); // throw-in direction down
         state.fix_d6(1); // throw in length
-        state.fix_d6(1); // throw in length
+        state.fix_d6(2); // throw in length: 2D6 = 3 lands 2 squares in (S3)
         state.fix_d8_direction(Direction::right()); // final bounce
 
         state.step_simple(SimpleAT::SelectBothDown);

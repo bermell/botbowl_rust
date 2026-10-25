@@ -104,7 +104,9 @@ def test_training_runs_with_loader_workers(tmp_path, capsys):
 # reductions depend on the thread count (the digest differs between 1, 2 and 8 threads, for the old
 # code exactly as for the new), so the test pins torch to one thread rather than inherit
 # OMP_NUM_THREADS / the core count.
-OLD_RUNS = "ecd03d1b46830e1a601bacfdbcdf4f2bbf6b62e1a2d9d3e16dbc56ba22773c84"
+# Re-pinned at NN schema v10 (33 policy channels: the head's shape, so its seeded init, changed;
+# the v9 digest was ecd03d1b…22773c84).
+OLD_RUNS = "75ef2c1c2e4b6a0e8777886ebdcf695372a8d10c44e5522846fea57e001cc6d6"
 
 
 @pytest.mark.skipif(not torch.__version__.startswith("2.13."), reason="digest pinned at torch 2.13")

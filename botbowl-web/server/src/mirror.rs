@@ -56,6 +56,9 @@ pub fn pos_at_to_proto(at: et::PosAT) -> pa::PosAT {
         et::PosAT::StartBlock => pa::PosAT::StartBlock,
         et::PosAT::Block => pa::PosAT::Block,
         et::PosAT::PlacePlayer => pa::PosAT::PlacePlayer,
+        et::PosAT::StartSecureBall => pa::PosAT::StartSecureBall,
+        et::PosAT::ThrowTeamMate => pa::PosAT::ThrowTeamMate,
+        et::PosAT::Jump => pa::PosAT::Jump,
     }
 }
 
@@ -76,6 +79,9 @@ pub fn pos_at_from_proto(at: pa::PosAT) -> et::PosAT {
         pa::PosAT::StartBlock => et::PosAT::StartBlock,
         pa::PosAT::Block => et::PosAT::Block,
         pa::PosAT::PlacePlayer => et::PosAT::PlacePlayer,
+        pa::PosAT::StartSecureBall => et::PosAT::StartSecureBall,
+        pa::PosAT::ThrowTeamMate => et::PosAT::ThrowTeamMate,
+        pa::PosAT::Jump => et::PosAT::Jump,
     }
 }
 
@@ -98,6 +104,7 @@ pub fn simple_at_to_proto(at: et::SimpleAT) -> pa::SimpleAT {
         et::SimpleAT::BenchPlayer => pa::SimpleAT::BenchPlayer,
         et::SimpleAT::UseSkill => pa::SimpleAT::UseSkill,
         et::SimpleAT::DontUseSkill => pa::SimpleAT::DontUseSkill,
+        et::SimpleAT::PassSquare => pa::SimpleAT::PassSquare,
     }
 }
 
@@ -120,6 +127,7 @@ pub fn simple_at_from_proto(at: pa::SimpleAT) -> et::SimpleAT {
         pa::SimpleAT::BenchPlayer => et::SimpleAT::BenchPlayer,
         pa::SimpleAT::UseSkill => et::SimpleAT::UseSkill,
         pa::SimpleAT::DontUseSkill => et::SimpleAT::DontUseSkill,
+        pa::SimpleAT::PassSquare => et::SimpleAT::PassSquare,
     }
 }
 
@@ -257,6 +265,7 @@ pub fn requested_roll_to_proto(r: ed::RequestedRoll) -> pd::RequestedRoll {
             high: hi as u8,
         },
         ed::RequestedRoll::ThrowIn => pd::RequestedRoll::ThrowIn,
+        ed::RequestedRoll::Pick(of) => pd::RequestedRoll::Pick { of },
     }
 }
 
@@ -282,6 +291,7 @@ pub fn requested_roll_from_proto(r: pd::RequestedRoll) -> Result<ed::RequestedRo
             ed::RequestedRoll::Sum2D6ThreeOutcomes(sum2d6_target(low)?, sum2d6_target(high)?)
         }
         pd::RequestedRoll::ThrowIn => ed::RequestedRoll::ThrowIn,
+        pd::RequestedRoll::Pick { of } => ed::RequestedRoll::Pick(of),
     })
 }
 
@@ -315,6 +325,7 @@ pub fn roll_result_to_proto(r: ed::RollResult) -> pd::RollResult {
             direction: direction as u8,
             distance: distance as u8,
         },
+        ed::RollResult::Pick(index) => pd::RollResult::Pick { index },
     }
 }
 
@@ -353,6 +364,7 @@ pub fn roll_result_from_proto(r: &pd::RollResult) -> Result<ed::RollResult, Stri
             direction: d3(*direction)?,
             distance: sum2d6(*distance)?,
         },
+        pd::RollResult::Pick { index } => ed::RollResult::Pick(*index),
     })
 }
 
@@ -431,7 +443,7 @@ pub fn skill_label(s: et::Skill) -> &'static str {
         et::Skill::Accurate => "Accurate",
         et::Skill::NervesOfSteel => "Nerves of Steel",
         et::Skill::OnTheBall => "On the Ball",
-        et::Skill::Pass => "Pass",
+        et::Skill::SafePass => "Safe Pass",
         et::Skill::ArmBar => "Arm Bar",
         et::Skill::Brawler => "Brawler",
         et::Skill::BreakTackle => "Break Tackle",
@@ -443,9 +455,12 @@ pub fn skill_label(s: et::Skill) -> &'static str {
         et::Skill::BoneHead => "Bone Head",
         et::Skill::Loner => "Loner",
         et::Skill::Stunty => "Stunty",
-        et::Skill::Throw => "Throw",
+        et::Skill::Pass => "Pass",
         et::Skill::WildAnimal => "Wild Animal",
         et::Skill::KickOffReturn => "Kick-Off Return",
+        et::Skill::ThrowTeamMate => "Throw Team-mate",
+        et::Skill::RightStuff => "Right Stuff",
+        et::Skill::KickTeamMate => "Kick Team-mate",
     }
 }
 
@@ -464,9 +479,9 @@ mod tests {
             assert_eq!(simple_at_to_proto(simple_at_from_proto(at)), at);
         }
         // ...and the engine side is covered by the same identity, because the
-        // maps are bijections between enums of the same size (15 positional, 17 simple).
-        assert_eq!(pa::PosAT::ALL.len(), 15);
-        assert_eq!(pa::SimpleAT::ALL.len(), 17);
+        // maps are bijections between enums of the same size.
+        assert_eq!(pa::PosAT::ALL.len(), et::PosAT::COUNT);
+        assert_eq!(pa::SimpleAT::ALL.len(), et::SimpleAT::COUNT);
     }
 
     #[test]
@@ -502,6 +517,7 @@ mod tests {
             R::Scatter,
             R::Sum2D6,
             R::ThrowIn,
+            R::Pick { of: 5 },
             R::D6PassFail { target: 4 },
             R::D6ThreeOutcomes { low: 2, high: 5 },
             R::FoulArmor { target: 9 },
@@ -565,6 +581,7 @@ mod tests {
                 direction: 2,
                 distance: 9,
             },
+            R::Pick { index: 3 },
         ];
         for outcome in [
             pd::InjuryOutcome::Stunned,

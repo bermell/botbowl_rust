@@ -15,7 +15,7 @@ use super::{
     bb_errors::{IllegalMovePosition, InvalidPlayerId},
     dices::{
         resolve_from_fixes, resolve_with_rng, BlockDice, Coin, D6Target, DicePolicy, FixedDice, RequestedRoll,
-        RollResult, RollTarget,
+        RollResult,
     },
     procedures::{auto_setup, AnyProc, Formation, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT, Skill, SkillSet},
@@ -231,6 +231,7 @@ impl GameStateBuilder {
             log: Vec::new(),
             print_log: false,
             next_input: None,
+            jump_paths: jump_paths_default(),
         }
     }
     pub fn build(&mut self) -> GameState {
@@ -309,19 +310,22 @@ impl GameStateBuilder {
                 .expect("add_player_details: could not field the player");
         }
 
-        if let Some(pos) = self.ball_pos {
-            state.set_ball(match state.get_player_at(pos) {
-                None => BallState::OnGround(pos),
-                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id),
-                _ => panic!(),
-            })
-        }
         // decrease turn counter before calling endturn twice
         // (need to call end turn here to refresh available actions)
         state.step_simple(SimpleAT::EndTurn);
         state.step_simple(SimpleAT::EndTurn);
         state.info.home_turn -= 1;
         state.info.away_turn -= 1;
+        // The ball goes on after those turns end: a carrier who forgoes an activation by the
+        // end of the turn could be Stalling (and roll for it).
+        if let Some(pos) = self.ball_pos {
+            state.set_ball(match state.get_player_at(pos) {
+                None => BallState::OnGround(pos),
+                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id),
+                _ => panic!(),
+            });
+            state.reask_turn_decision().expect("the built state is at a Turn decision");
+        }
 
         state.set_logging_state(true);
         state
@@ -369,6 +373,33 @@ pub struct GameInfo {
     #[serde(default)]
     pub pickup_this_activation: bool,
     pub blitz_this_activation: bool,
+    /// Cheering Fans: the team on turn still has the extra offensive assist for the first block it
+    /// rolls this turn, in a Block or a Blitz (taken from `TeamState::cheering_fans` when the turn
+    /// starts).
+    #[serde(default)]
+    pub cheering_fans_this_turn: bool,
+    /// The active player's blocks carry Cheering Fans' extra offensive assist (taken from
+    /// `cheering_fans_this_turn` by the first block rolled; cleared when the activation ends).
+    #[serde(default)]
+    pub cheering_assist: bool,
+    /// S3: "Only a single Throw Team-mate Action can be declared each Turn" — not yet declared.
+    #[serde(default = "serde_true")]
+    pub throw_team_mate_available: bool,
+    /// S3, Kick Team-mate: "only one player can declare this Special Action each Turn", and it
+    /// does not count as the team's Throw Team-mate Action — not yet declared.
+    #[serde(default = "serde_true")]
+    pub kick_team_mate_available: bool,
+    /// The active player's `PosAT::ThrowTeamMate` activation is a Kick Team-mate (the kicked
+    /// team-mate's Fumbled Throw is an injury roll). Cleared at activation start.
+    #[serde(default)]
+    pub kick_team_mate_this_activation: bool,
+    /// S3: the team on turn has not declared its one Secure the Ball Action this turn. Reset at
+    /// the start of every team turn, like the other once-per-turn declarations.
+    #[serde(default = "serde_true")]
+    pub secure_ball_available: bool,
+}
+fn serde_true() -> bool {
+    true
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -393,6 +424,12 @@ impl GameInfo {
             turnover: false,
             pickup_this_activation: false,
             blitz_this_activation: false,
+            cheering_fans_this_turn: false,
+            cheering_assist: false,
+            throw_team_mate_available: true,
+            kick_team_mate_available: true,
+            kick_team_mate_this_activation: false,
+            secure_ball_available: true,
         }
     }
 }
@@ -519,6 +556,26 @@ pub struct GameState {
     log: Vec<String>,
     #[derivative(PartialEq = "ignore")]
     print_log: bool,
+    /// Whether the pathfinder puts Jumps and Leaps into paths (S3, Jumping over Players): a
+    /// toggle to price them and switch them off (`BLOOD_JUMP_PATHS=0`, `set_jump_paths`). The
+    /// hidden `PosAT::Jump` action is offered either way. Constant for a game, so it is in
+    /// neither `PartialEq` nor `Hash` (both or neither); not serialised — a loaded state takes
+    /// the process default.
+    #[serde(skip, default = "jump_paths_default")]
+    #[derivative(PartialEq = "ignore")]
+    jump_paths: bool,
+}
+
+/// The process default of `GameState::jump_paths`: on, unless `BLOOD_JUMP_PATHS` is `0`,
+/// `false` or `off`. Read once.
+pub fn jump_paths_default() -> bool {
+    static DEFAULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEFAULT.get_or_init(|| {
+        !matches!(
+            std::env::var("BLOOD_JUMP_PATHS").as_deref().map(str::trim),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    })
 }
 
 impl Eq for GameState {}
@@ -533,8 +590,8 @@ impl Eq for GameState {}
 /// methods it calls, must be in here**: the pathfinder, its `GameInfo::new` and its expansion
 /// helpers (`get_player_at`, `get_adj_players`, `get_tz_on*`, `get_catch_target`,
 /// `get_pass_target`/`get_pass_modifier`/`get_intercepters`, `get_blockdices_from`, `is_out`,
-/// `get_endzone_x`, `rush_target`) read `board`, `fielded_players`, `info`, `ball` and
-/// `board_dims`; the team states are in too, for safety. A field read but missing would hand back
+/// `get_endzone_x`, `rush_target`, the jump/Leap expansion) read `board`, `fielded_players`, `info`,
+/// `ball`, `board_dims` and the `jump_paths` toggle; the team states are in too, for safety. A field read but missing would hand back
 /// another state's paths. Debug builds recompute on every hit and compare
 /// (`PathFinder::fill_player_paths`).
 #[derive(Clone)]
@@ -546,6 +603,8 @@ pub(crate) struct PathInputs {
     home: TeamState,
     away: TeamState,
     board_dims: BoardDims,
+    /// Not state (outside `PartialEq`), but the pathfinder's jump/Leap expansion reads it.
+    jump_paths: bool,
 }
 
 // Hand-rolled Clone instead of derived: `path_buffer` is reusable scratch
@@ -581,6 +640,7 @@ impl Clone for GameState {
             rng: self.rng.clone(),
             log: self.log.clone(),
             print_log: self.print_log,
+            jump_paths: self.jump_paths,
         }
     }
 }
@@ -591,7 +651,7 @@ impl Clone for GameState {
 // compares is merely slow — the extra candidates are rejected by `PartialEq` — while hashing more
 // is a correctness bug: two *equal* states would land in different buckets, and the MCTS registry
 // would silently split one DAG node into several, breaking recombination. So the ignored fields
-// (`path_buffer`, `registered_roll`, `next_input`, `rng`, `log`, `print_log`) must stay out, and
+// (`path_buffer`, `registered_roll`, `next_input`, `rng`, `log`, `print_log`, `jump_paths`) must stay out, and
 // everything else must stay in.
 //
 // This used to hash a hand-picked subset: most of `GameInfo`, scores only from the team states,
@@ -609,7 +669,7 @@ impl std::hash::Hash for GameState {
         // Whole-struct hashes where the struct is small and every field can move during a search.
         // `GameInfo` in full rather than a hand-picked field list: `player_action_type` alone was
         // 27% of the old collisions, and a hand-maintained subset is exactly how that drift
-        // happened. The team states carry rerolls and `reroll_used`, which the old hash missed.
+        // happened. The team states carry rerolls, which the old hash missed.
         self.info.hash(h);
         self.home.hash(h);
         self.away.hash(h);
@@ -630,6 +690,7 @@ impl std::hash::Hash for GameState {
                     p.used.hash(h);
                     p.moves.hash(h);
                     p.used_skills.hash_unordered(h);
+                    p.snack.hash(h);
                 }
             }
         }
@@ -773,6 +834,7 @@ impl GameState {
         // Fresh activation — clear any pickup-bonus owed to a prior activation.
         self.info.pickup_this_activation = false;
         self.info.blitz_this_activation = false;
+        self.info.kick_team_mate_this_activation = false;
     }
 
     pub fn get_active_player(&self) -> Option<&FieldedPlayer> {
@@ -861,6 +923,11 @@ impl GameState {
     /// current mode is not `DiceMode::FixedDice`.
     pub fn fix_d3(&mut self, value: u8) {
         self.fixes_mut().fix_d3(value);
+    }
+    /// Pin the next random pick (`RequestedRoll::Pick`) to the 0-based `index`. Panics if the
+    /// current mode is not `DiceMode::FixedDice`.
+    pub fn fix_pick(&mut self, index: u8) {
+        self.fixes_mut().fix_pick(index);
     }
     /// Push a `D6` value onto the fixed-dice queue. Panics if the
     /// current mode is not `DiceMode::FixedDice`.
@@ -955,6 +1022,34 @@ impl GameState {
         self.available_actions.get_team()
     }
 
+    /// The team whose turn is in progress: the team of the `Turn` procedure on the stack. `None`
+    /// outside a team turn (setup, the kick-off, between drives).
+    pub fn turn_team(&self) -> Option<TeamType> {
+        self.proc_stack.iter().rev().find_map(|proc| match proc {
+            AnyProc::Turn(turn) => Some(turn.team),
+            // Charge! activates the kicking team "exactly as if it was their team's Turn".
+            AnyProc::Charge(charge) => Some(charge.team()),
+            _ => None,
+        })
+    }
+
+    /// The active team is acting in a Charge! (kick-off event), not in a turn of its own.
+    pub fn in_charge(&self) -> bool {
+        matches!(
+            self.proc_stack
+                .iter()
+                .rev()
+                .find(|p| matches!(p, AnyProc::Turn(_) | AnyProc::Charge(_))),
+            Some(AnyProc::Charge(_))
+        )
+    }
+
+    /// `team` may use a team re-roll now: only while it is the active team (S3, Team Re-rolls:
+    /// "can only be used when the team is active"), as many per turn as it has left.
+    pub fn may_use_team_reroll(&self, team: TeamType) -> bool {
+        self.turn_team() == Some(team) && self.get_team(team).can_use_reroll()
+    }
+
     // The board lookups are inlined: the pathfinder makes one per neighbour of every node it
     // expands, and the calls were ~4% of the search's instructions (plan 069 §1b).
     #[inline]
@@ -1020,21 +1115,19 @@ impl GameState {
             None => Err(Box::new(InvalidPlayerId { id })),
         }
     }
-    pub fn get_catch_target(&self, id: PlayerID) -> Result<D6Target> {
+    /// The Agility Test to catch a ball (S3, Catching the Ball): AG, -1 per marking opponent
+    /// (ignored with Nerves of Steel), -1 in rain, plus the caller's `modifier` (-1 for a ball
+    /// that Bounced or was Thrown-in, else 0). One sum on the raw AG (`ag_test`).
+    pub fn get_catch_target(&self, id: PlayerID, modifier: i8) -> Result<D6Target> {
         let player = self.get_player(id)?;
-        let mut target = player.ag_target();
-        let team = player.stats.team;
-        target.add_modifer(
-            -(self
-                .get_adj_players(player.position)
-                .filter(|player_| player_.stats.team != team && player_.has_tackle_zone())
-                .count() as i8),
-        );
-
-        if let Weather::Rain = self.info.weather {
-            target.add_modifer(-1);
+        let mut sum = modifier;
+        if !player.has_skill(Skill::NervesOfSteel) {
+            sum -= self.marking_opponents(player) as i8;
         }
-        Ok(target)
+        if let Weather::Rain = self.info.weather {
+            sum -= 1;
+        }
+        Ok(player.ag_test(sum))
     }
 
     /// Sets the ball state while maintaining `bounce_squares`. Every
@@ -1096,7 +1189,7 @@ impl GameState {
         self.blockdices(attacker, attacker_pos, defender, strength)
     }
 
-    fn blockdices(
+    pub(crate) fn blockdices(
         &self,
         attacker: PlayerID,
         attacker_pos: Position,
@@ -1125,6 +1218,11 @@ impl GameState {
                         || self.get_tz_on_except_from_id(attr_assister.id, defr.id) == 0)
             })
             .count() as u8;
+        // Cheering Fans: one more offensive assist on the team's first block of the turn — still
+        // in hand, or taken by this activation's block (`Block::step`).
+        if self.info.cheering_assist || self.info.cheering_fans_this_turn {
+            attr_str += 1;
+        }
 
         defr_str += self
             .get_adj_players(attacker_pos)
@@ -1221,6 +1319,7 @@ impl GameState {
             used: false,
             moves: 0,
             used_skills: SkillSet::new(),
+            snack: false,
         });
         Ok(id)
     }
@@ -1233,7 +1332,17 @@ impl GameState {
             self.info.active_player = None;
         }
 
-        let FieldedPlayer { stats, position, .. } = self.fielded_players[id].take().unwrap();
+        let FieldedPlayer {
+            mut stats,
+            position,
+            snack,
+            ..
+        } = self.fielded_players[id].take().unwrap();
+        if snack {
+            // Dodgy Snack lasts for the drive, and a player who leaves the pitch is out of it.
+            stats.ma += 1;
+            stats.armour += 1;
+        }
 
         self.dugout_add_new_player(stats, place);
 
@@ -1453,6 +1562,16 @@ impl GameState {
         }
     }
 
+    /// Whether paths include Jumps and Leaps; see the field.
+    pub fn jump_paths(&self) -> bool {
+        self.jump_paths
+    }
+    /// Switch Jumps and Leaps in paths on or off for this game (a benchmark's toggle). Takes
+    /// effect at the next path computation.
+    pub fn set_jump_paths(&mut self, on: bool) {
+        self.jump_paths = on;
+    }
+
     pub fn is_legal_action(&self, action: &Action) -> bool {
         if self.available_actions.is_legal_non_path_action(*action) {
             return true;
@@ -1477,13 +1596,15 @@ impl GameState {
             home: self.home,
             away: self.away,
             board_dims: self.board_dims,
+            jump_paths: self.jump_paths,
         }
     }
 
     /// Whether `self` agrees with `key` on every field the pathfinder reads, compared with the
     /// fields' own `PartialEq` (the one `GameState`'s is made of), cheapest rejections first.
     pub(crate) fn path_inputs_match(&self, key: &PathInputs) -> bool {
-        self.board == key.board
+        self.jump_paths == key.jump_paths
+            && self.board == key.board
             && self.info == key.info
             && self.ball == key.ball
             && self.fielded_players == key.fielded_players
@@ -1676,6 +1797,18 @@ impl GameState {
     /// ask), so the call refuses them, and a pending roll, and leaves the state untouched.
     ///
     /// Analysis helper (plan 064's position probes) — nothing in the play path calls it.
+    /// `EndTurn` at a `Turn` decision as scaffolding — handing the move to the other team while
+    /// building a position, not a turn anyone played. A real `EndTurn` makes an unused ball
+    /// carrier who could score forgo their activation and roll for Stalling; here the ball is
+    /// lifted off for the step and put back, and the new decision re-asked with it.
+    pub fn pass_turn_unplayed(&mut self) {
+        let ball = self.ball;
+        self.set_ball(BallState::OffPitch);
+        self.step(Action::Simple(SimpleAT::EndTurn)).expect("EndTurn at a Turn decision");
+        self.set_ball(ball);
+        self.reask_turn_decision().expect("the other team's Turn decision");
+    }
+
     pub fn reask_turn_decision(&mut self) -> std::result::Result<(), String> {
         if !matches!(self.proc_stack_peek(), Some(AnyProc::Turn(_))) {
             return Err(format!("not a Turn decision (top: {:?})", self.proc_stack_top()));
@@ -1695,6 +1828,17 @@ impl GameState {
             MicroStepState::NeedAction => Ok(()),
             other => panic!("re-asking a Turn decision did not ask: {other:?}"),
         }
+    }
+
+    /// Tests: run `proc` on top of the stack from here, up to its first decision.
+    #[cfg(test)]
+    pub(crate) fn start_proc(&mut self, proc: AnyProc) {
+        if self.available_actions.has_paths {
+            self.clear_path_buffer();
+        }
+        *self.available_actions = AvailableActions::default();
+        self.proc_stack.push(proc);
+        self.step(Action::Simple(SimpleAT::EndTurn)).unwrap();
     }
 
     /// Gather every legal action — simple, positional, and path-style. Sorts
@@ -1852,25 +1996,61 @@ impl GameState {
             && pos != to
     }
 
-    /// `team`'s players who can intercept a pass `from` → `to`, with their catch targets, in
+    /// The interception Agility Test: the pass's own `modifier` (`interception_modifier`: -3
+    /// accurate, -2 inaccurate), -1 per opponent Marking the interceptor, -1 in rain — one sum
+    /// on the raw AG (`ag_test`). An interception is not a catch, so Nerves of Steel does not
+    /// help.
+    fn get_interception_target(&self, player: &FieldedPlayer, modifier: i8) -> D6Target {
+        let mut sum = modifier - self.marking_opponents(player) as i8;
+        if let Weather::Rain = self.info.weather {
+            sum -= 1;
+        }
+        if player.has_skill(Skill::Stunty) {
+            sum -= 1;
+        }
+        player.ag_test(sum)
+    }
+
+    /// A Standing player no opponent Marks (the kick-off table's "Open player").
+    pub fn is_open(&self, player: &FieldedPlayer) -> bool {
+        player.status == PlayerStatus::Up && self.marking_opponents(player) == 0
+    }
+
+    /// Standing opponents with a tackle zone next to `player`.
+    pub fn marking_opponents(&self, player: &FieldedPlayer) -> usize {
+        let team = player.stats.team;
+        self.get_adj_players(player.position)
+            .filter(|adj| adj.stats.team != team && adj.has_tackle_zone())
+            .count()
+    }
+
+    /// Who of `team` may intercept a pass from `from` landing on `to`, and each one's target
+    /// with the pass's `modifier` (`ball_procs::interception_modifier`) included, in
     /// [`get_interception_positions`](Self::get_interception_positions) order (x, then y).
     ///
     /// Tests each of `team`'s fielded players against the corridor instead of scanning every
     /// square of its bounding box: the pathfinder asks once per pass target per node it expands,
     /// and the scan was ~6% of the search's instructions (plan 069 §1b).
-    pub fn get_intercepters(&self, team: TeamType, from: Position, to: Position) -> Vec<(Position, D6Target)> {
+    pub fn get_intercepters(
+        &self,
+        team: TeamType,
+        from: Position,
+        to: Position,
+        modifier: i8,
+    ) -> Vec<(Position, D6Target)> {
         let mut out: Vec<(Position, D6Target)> = self
             .get_players_on_pitch()
             .filter(|p| p.stats.team == team && p.can_catch())
             .filter(|p| GameState::is_interception_position(from, to, p.position))
-            .filter_map(|p| self.get_catch_target(p.id).ok().map(|target| (p.position, target)))
+            .map(|p| (p.position, self.get_interception_target(p, modifier)))
             .collect();
         out.sort_unstable_by_key(|(pos, _)| (pos.x, pos.y));
         out
     }
 
-    pub fn get_pass_modifier(&self, id: usize, from: Position, to: Position) -> Option<i8> {
-        // TODO: move this whole function to pathing and cache it there.
+    /// The Range Ruler section `to` falls in from `from`: 0 Quick, 1 Short, 2 Long, 3 Long Bomb,
+    /// `None` beyond it. Panics on `from == to`.
+    pub fn pass_range(from: Position, to: Position) -> Option<i8> {
         const MATRIX: [[i8; 14]; 14] = [
             [8, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3],
             [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3],
@@ -1896,23 +2076,46 @@ impl GameState {
 
         let delta = to - from;
         let (dx, dy) = (delta.dx.unsigned_abs() as usize, delta.dy.unsigned_abs() as usize);
-        let distance_modifier = MATRIX.get(dx)?.get(dy)?;
-        if *distance_modifier == 8 {
+        let distance_modifier = *MATRIX.get(dx)?.get(dy)?;
+        if distance_modifier == 8 {
             panic!("Passing to oneself is not possible: from {} to {}", from, to);
-        } else if *distance_modifier == 9 {
+        } else if distance_modifier == 9 {
+            return None;
+        }
+        Some(distance_modifier)
+    }
+
+    pub fn get_pass_modifier(&self, id: usize, from: Position, to: Position) -> Option<i8> {
+        // TODO: move this whole function to pathing and cache it there.
+        let distance_modifier = &GameState::pass_range(from, to)?;
+
+        // S3: in a Blizzard only a Quick or a Short Pass.
+        if self.info.weather == Weather::Blizzard && *distance_modifier >= 2 {
             return None;
         }
 
-        let Some(team) = self.get_player(id).ok().map(|p| p.stats.team) else {
+        let Some(passer) = self.get_player(id).ok() else {
             //return None;
             panic!("Player not found");
         };
-        let tackle_zones = self
-            .get_adj_players(from)
-            .filter(|adj_p| adj_p.stats.team != team && adj_p.has_tackle_zone())
-            .count() as i8;
-        // TODO: weather effect
-        let sum_modifiers = -tackle_zones - *distance_modifier;
+        let team = passer.stats.team;
+        // -1 per opponent Marking the passer, unless Nerves of Steel.
+        let tackle_zones = if passer.has_skill(Skill::NervesOfSteel) {
+            0
+        } else {
+            self.get_adj_players(from)
+                .filter(|adj_p| adj_p.stats.team != team && adj_p.has_tackle_zone())
+                .count() as i8
+        };
+        let mut sum_modifiers = -tackle_zones - *distance_modifier;
+        // Very Sunny: -1 to every Passing Ability Test.
+        if self.info.weather == Weather::Sunny {
+            sum_modifiers -= 1;
+        }
+        // Accurate: +1 to a Quick or a Short Pass.
+        if passer.has_skill(Skill::Accurate) && *distance_modifier <= 1 {
+            sum_modifiers += 1;
+        }
         Some(sum_modifiers)
     }
     pub fn get_pass_target(&self, id: usize, from: Position, to: Position) -> Option<D6Target> {
@@ -1920,10 +2123,8 @@ impl GameState {
             //return None;
             panic!("Player not found");
         };
-        let mut target = player.pass_target();
         let modifiers = self.get_pass_modifier(id, from, to)?;
-        target.add_modifer(modifiers);
-        Some(target)
+        Some(player.pa_test(modifiers))
     }
 }
 
@@ -2415,6 +2616,24 @@ mod gamestate_tests {
         state.step_positional(PosAT::StartMove, start_pos);
         state.step_positional(PosAT::Move, td_pos);
         assert_eq!(state.home.score, 1);
+    }
+
+    /// A Jump's three-outcome Agility Test is pinned like a dodge: at or easier than the
+    /// threshold it passes; a failure is the ordinary one (not the natural 1) while its 2+ is.
+    #[test]
+    fn succeed_at_or_easier_pins_a_jump() {
+        use crate::core::dices::{BlockDicePolicy, D6Target, DicePolicy, RequestedRoll, Sum2D6Target};
+        let mut policy = DicePolicy::SucceedAtOrEasier {
+            d6: D6Target::ThreePlus,
+            sum2d6: Sum2D6Target::SevenPlus,
+            block_dice: BlockDicePolicy::Default,
+        };
+        let mut rng = <rand_chacha::ChaCha8Rng as rand::SeedableRng>::seed_from_u64(0);
+        let jump = |t| RequestedRoll::D6ThreeOutcomes(D6Target::TwoPlus, t);
+        for _ in 0..20 {
+            assert_eq!(policy.resolve(jump(D6Target::ThreePlus), &mut rng), RollResult::Pass);
+            assert_eq!(policy.resolve(jump(D6Target::FourPlus), &mut rng), RollResult::MiddleOutcome);
+        }
     }
 
     #[test]

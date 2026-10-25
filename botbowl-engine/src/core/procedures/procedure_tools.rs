@@ -107,10 +107,18 @@ where
             _ => panic!("Unexpected input: {:?}", input),
         };
 
+        // S3: Dodge and Sure Feet re-roll once per turn; Catch and Sure Hands every failed roll.
+        let once_per_turn = |skill| matches!(skill, Skill::Dodge | Skill::SureFeet);
         match self.proc.reroll_skill() {
             Some(skill)
-                if game_state.get_player_unsafe(self.id()).can_use_skill(skill)
-                    && self.state != RollProcState::SkillReRollDenied =>
+                if self.state != RollProcState::SkillReRollDenied && {
+                    let player = game_state.get_player_unsafe(self.id());
+                    if once_per_turn(skill) {
+                        player.can_use_skill(skill)
+                    } else {
+                        player.has_skill(skill)
+                    }
+                } =>
             {
                 if self.state == RollProcState::Init {
                     if let Some(team) = self.proc.skill_reroll_contested_by(game_state) {
@@ -121,15 +129,17 @@ where
                         return ProcState::NeedAction(aa);
                     }
                 }
-                game_state.get_mut_player_unsafe(self.id()).use_skill(skill);
+                if once_per_turn(skill) {
+                    game_state.get_mut_player_unsafe(self.id()).use_skill(skill);
+                }
                 self.state = RollProcState::RerollUsed;
                 return ProcState::NeedRoll(RequestedRoll::D6PassFail(self.proc.d6_target()));
             }
             _ => (),
         }
 
-        if game_state.get_team_from_player(self.id()).unwrap().can_use_reroll() {
-            let team = game_state.get_player_unsafe(self.id()).stats.team;
+        let team = game_state.get_player_unsafe(self.id()).stats.team;
+        if game_state.may_use_team_reroll(team) {
             let mut aa = AvailableActions::new(team);
             aa.insert_simple(SimpleAT::UseReroll);
             aa.insert_simple(SimpleAT::DontUseReroll);
