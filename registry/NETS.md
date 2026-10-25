@@ -83,6 +83,17 @@ shards 4, 7; samples with fewer than two children dropped from gen04's training 
 | gen48 (96x8 + heads) | gen47 | gen46-48 | 0f27dd1 | cq 100, vw 0.36 | step 20928, ep 3 (0.8100); 24 min | −0.0002 / +0.0024 / +0.0005 / +0.0022 / −0.0006 | 0.175, +0.019 (+0.5%); 20x11 bench: 0.182, +0.012 (+1.7%) | on gen49: +0.001/+0.002/+0.005/+0.009 MONOTONE; 0.67; 0.159, −0.001; drives vs d1k: 16x9 0.593, 20x11 **0.710** (MATCHES) |
 | gen49 (96x8 + heads) | gen48 | gen47-49 | 0f27dd1 | cq 100, vw 0.36 | step 5000, ep 0 (0.8101); 33 min | −0.0021 / −0.0013 / −0.0009 / +0.0031 / +0.0009 | old benches 0.177 (+0.8%) / 20x11 0.181 (−0.7%); **re-frozen (gen48 truth): 20x11 0.157 (−0.8% vs gen48), 16x9 0.137 (−1.9%)** | |
 
+### S3 rules and schema v10 (2026-10-25, a7d917e)
+
+The engine moved to the 2025 Season 3 rules (origin's 28 commits, merged as a7d917e). Every v9 net in
+`models/az_v7/` (68: the loop's gen01-55, the shadow lineage, the arms) was migrated in place to
+schema v10 with `python -m bbnn.migrate X.pt --out X.pt --onnx X.onnx` (v9→v10: `StartSecureBall`
+inserted at policy channel 15, zero-initialised; verified exact, max |diff| 0 on every net), and its
+`.ts` deleted (re-exported on load). **The v9 originals (.pt/.onnx/.ts) are in `models/az_v7/v9/`.**
+Same names, so the drive reference (gen48) and the loop's champion keep their paths. Numbers above
+gen55 are under S3 rules: value benches, net checks and drives are not comparable with the rows above
+without saying so.
+
 ### Re-frozen value benches (2026-10-21, MC truth under gen48)
 
 The old benches' truth is playouts under old policies (`v9_gen01_val`: g056 gen04; `v9_20x11_val`: gen43), so a net that learns

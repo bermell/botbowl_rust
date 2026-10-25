@@ -85,6 +85,20 @@ visit targets and root values are poor; every other board is unaffected (byte-id
 Per-generation corpus statistics (TD rates, skill use, setups) are in plan 058 §6;
 `scripts/corpus_skills_setup.py runs/loopmix16x9v9 --gens N` recomputes them.
 
+### S3 rules switch (2026-10-25, a7d917e)
+
+- gen54-55 (and older) corpora were generated under the pre-S3 rules. `prepare` encodes their stored
+  states as they are, so they stay in the training window; **replaying them diverges under S3**
+  (mc-label, value-bench and override-audit rebuild states by replay), so they cannot be (re)labelled.
+- gen56's generate (old rules, gen55 net, unlabelled) was cut short at the switch and moved to
+  `runs/loopmix16x9v9/gen56_oldrules_unlabelled/`; gen56 is regenerated under S3.
+- The frozen value benches `v9_{16x9,20x11}_gen49_val.jsonl` rebuild states by replay: under S3 only
+  489/1478 (16x9) and 750/3023 (20x11) states replay, a biased subset with pre-S3 MC truth. Treat
+  loop value-bench numbers from gen56 on as indicative only; re-freeze under S3 once the loop has
+  S3-labelled held-out shards.
+- The contested drive sets store seeds and bias, so the engine rebuilds them under S3 (screened
+  under the old rules, so "contested" is approximate).
+
 ## Frozen benchmark sets
 
 | file | what | built by | settings |
