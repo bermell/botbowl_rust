@@ -1156,6 +1156,36 @@ mod tests {
             .collect();
         assert_eq!(passes, vec![short]);
     }
+    /// AG 1+ is better than AG 2+ under modifiers: dodging into a square two opponents mark
+    /// (-2), AG 1+ needs a 3+ and AG 2+ a 4+, so a 3 tells them apart.
+    #[test]
+    fn ag_one_plus_dodges_better_than_ag_two_plus_under_modifiers() {
+        let start_pos = Position::new((5, 5));
+        let dodge_to = Position::new((6, 5));
+        let dodge_with = |agility: u8| {
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                // Team-mates on every other square around: the direct dodge is the only route.
+                .add_home_players(&[(4, 4), (6, 4), (4, 5), (4, 6), (5, 6), (6, 6)])
+                .add_away_player(Position::new((5, 4))) // marks the start and the destination
+                .add_away_player(Position::new((7, 6))) // marks the destination
+                .build();
+            state.get_mut_team(TeamType::Home).rerolls = 0;
+            let id = state.get_player_id_at(start_pos).unwrap();
+            state.get_mut_player_unsafe(id).stats.agility = agility;
+            state.step_positional(PosAT::StartMove, start_pos);
+            state.fix_d6(3); //dodge
+            if agility > 1 {
+                state.fix_d6(1); //armour
+                state.fix_d6(1);
+            }
+            state.step_positional(PosAT::Move, dodge_to);
+            state.get_player_unsafe(id).status
+        };
+        assert_eq!(dodge_with(1), PlayerStatus::Up, "AG 1+ at -2 dodges on a 3");
+        assert_eq!(dodge_with(2), PlayerStatus::Down, "AG 2+ at -2 needs a 4");
+    }
+
     /// S3 lets a pass target any square in range. That is a hidden action: legal, but never
     /// listed, so bots and the NN never see it.
     #[test]

@@ -193,7 +193,7 @@ impl Procedure for LandKickoff {
         match game_state.get_player_at(ball_position).filter(|p| p.can_catch()) {
             Some(player) => ProcState::DoneNew(ball_procs::Catch::new_with_kick_arg(
                 player.id,
-                game_state.get_catch_target(player.id).unwrap(),
+                game_state.get_catch_target(player.id, 0).unwrap(),
                 true,
             )),
             None => ProcState::DoneNew(ball_procs::Bounce::new_with_kick_arg(true)),

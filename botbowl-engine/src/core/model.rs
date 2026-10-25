@@ -878,6 +878,14 @@ impl PlayerStats {
     }
 }
 
+/// The target of an Agility test by a player with AG `agility`+ and the summed `modifier`:
+/// `agility - modifier`, clamped to 2+..6+ once (a natural 1 always fails, a natural 6 always
+/// passes). Every modifier must be in the sum: a `D6Target` clamps at each `add_modifer`, so
+/// adding them one by one to an already-clamped target is wrong at the ends of the range.
+pub fn ag_test_target(agility: u8, modifier: i8) -> D6Target {
+    D6Target::try_from((agility as i8 - modifier).clamp(2, 6) as u8).unwrap()
+}
+
 impl<'de> Deserialize<'de> for PlayerStats {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         // A binary format has no field names: exactly the derived layout.
@@ -1007,11 +1015,17 @@ impl FieldedPlayer {
         Sum2D6Target::try_from(self.stats.armour.clamp(2, 12)).unwrap()
     }
 
-    /// The Agility test's target before modifiers: the S3 AG target number. A natural 1 always
-    /// fails, so AG 1+ starts from 2+ (as the classic AG 5 always did — the modifiers then apply
-    /// to that).
+    /// The Agility test's target with no modifier: the S3 AG target number (AG 1+ rolls as 2+,
+    /// a natural 1 always failing). See `ag_test` for a test with modifiers.
     pub fn ag_target(&self) -> D6Target {
-        D6Target::try_from(self.stats.agility.clamp(2, 6)).unwrap()
+        self.ag_test(0)
+    }
+
+    /// An Agility test with `modifier` (the sum of every modifier: negative is harder). The sum
+    /// is applied to the raw AG target before clamping, so AG 1+ at -2 needs a 3+ where AG 2+
+    /// needs a 4+ — clamping AG 1+ to 2+ first would lose that.
+    pub fn ag_test(&self, modifier: i8) -> D6Target {
+        ag_test_target(self.stats.agility, modifier)
     }
 
     pub fn pass_target(&self) -> D6Target {
@@ -1600,10 +1614,24 @@ mod ag_target_tests {
         state.get_player_at(pos).unwrap().ag_target()
     }
 
-    /// AG is stored as the S3 target (AG 3+). There is no 1+ roll: AG 1+ starts from 2+.
+    /// AG is stored as the S3 target (AG 3+). With no modifier AG 1+ rolls as 2+ (a natural 1
+    /// always fails) ...
     #[test]
-    fn ag_one_plus_starts_from_two_plus() {
+    fn ag_one_plus_without_modifiers_rolls_as_two_plus() {
         assert_eq!(ag_target_for(1), D6Target::TwoPlus);
+    }
+
+    /// ... but the modifiers apply to the 1+, not to a clamped 2+: at -2 AG 1+ needs a 3+ where
+    /// AG 2+ needs a 4+, and a +1 then a -1 cancel instead of clamping in between.
+    #[test]
+    fn modifiers_apply_to_the_raw_agility_before_clamping() {
+        use crate::core::model::ag_test_target;
+        assert_eq!(ag_test_target(1, -2), D6Target::ThreePlus);
+        assert_eq!(ag_test_target(2, -2), D6Target::FourPlus);
+        assert_eq!(ag_test_target(1, -1), D6Target::TwoPlus);
+        assert_eq!(ag_test_target(1, 1 - 1), D6Target::TwoPlus);
+        assert_eq!(ag_test_target(6, -1), D6Target::SixPlus, "a natural 6 always passes");
+        assert_eq!(ag_test_target(6, 1), D6Target::FivePlus);
     }
 
     #[test]

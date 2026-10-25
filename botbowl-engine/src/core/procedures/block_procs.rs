@@ -519,7 +519,7 @@ pub struct JumpUp {
 impl JumpUp {
     pub fn new(game_state: &GameState, id: PlayerID) -> AnyProc {
         // S3, Jump Up: "an Agility Test, applying a +1 modifier".
-        let target = *game_state.get_player_unsafe(id).ag_target().add_modifer(1);
+        let target = game_state.get_player_unsafe(id).ag_test(1);
         AnyProc::JumpUp(SimpleProcContainer::new(JumpUp { id, target }))
     }
 }

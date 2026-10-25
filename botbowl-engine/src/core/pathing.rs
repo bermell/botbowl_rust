@@ -444,9 +444,12 @@ struct GameInfo<'a> {
     /// therefore treat the two teams' mirror-image situations differently.
     /// See `Direction::all_directions_toward`.
     dir_order: &'static [Direction; 8],
-    dodge_target: D6Target,
+    /// The mover's AG target: dodge and pick-up tests sum their modifiers onto it once
+    /// (`ag_test_target`).
+    agility: u8,
     gfi_target: D6Target,
-    pickup_target: D6Target,
+    /// The pick-up's modifier before marking (-1 in rain).
+    pickup_modifier: i8,
 
     id: PlayerID,
 }
@@ -456,14 +459,9 @@ impl<'a> GameInfo<'a> {
     }
 
     fn new(game_state: &'a GameState, player: &FieldedPlayer) -> GameInfo<'a> {
-        // Agility tests, before the marking modifiers applied per square.
-        let dodge_target = player.ag_target();
+        let agility = player.stats.agility;
         let gfi_target = crate::core::procedures::movement_procs::rush_target(game_state);
-        let mut pickup_target = player.ag_target();
-
-        if game_state.info.weather == Weather::Rain {
-            pickup_target.add_modifer(-1);
-        }
+        let pickup_modifier = if game_state.info.weather == Weather::Rain { -1 } else { 0 };
 
         let team = player.stats.team;
         let mut tzones: FullPitch<i8> = Default::default();
@@ -489,7 +487,7 @@ impl<'a> GameInfo<'a> {
                     .get_players_on_pitch()
                     .filter(|p| p.stats.team == team)
                     .filter(|p| p.can_catch())
-                    .for_each(|p| catch_mods[p.position] = Some(game_state.get_catch_target(p.id).unwrap()));
+                    .for_each(|p| catch_mods[p.position] = Some(game_state.get_catch_target(p.id, 0).unwrap()));
                 catch_mods[player.position] = None; // can't handoff or pass to self
             } else {
                 // If not ball carrier we don't care about handoff or pass
@@ -501,9 +499,9 @@ impl<'a> GameInfo<'a> {
             tzones,
             ball,
             start_pos: player.position,
-            dodge_target,
+            agility,
             gfi_target,
-            pickup_target,
+            pickup_modifier,
             game_state,
             team: player.stats.team,
             dir_order: Direction::all_directions_toward(
@@ -723,16 +721,17 @@ impl<'a> GameInfo<'a> {
         let catch_target = self.teammate_catch_mod[to].unwrap();
         let best_intercept = self
             .game_state
-            .get_intercepters(other_team(self.team), parent_node.position, to)
-            .iter()
             // The estimate assumes the pass is accurate (S3: -3 to intercept it).
-            .map(|(_, target)| {
-                *target
-                    .clone()
-                    .add_modifer(crate::core::procedures::ball_procs::interception_modifier(
-                        crate::core::procedures::ball_procs::PassResult::Accurate,
-                    ))
-            })
+            .get_intercepters(
+                other_team(self.team),
+                parent_node.position,
+                to,
+                crate::core::procedures::ball_procs::interception_modifier(
+                    crate::core::procedures::ball_procs::PassResult::Accurate,
+                ),
+            )
+            .iter()
+            .map(|(_, target)| *target)
             .max_by(|target_a, target_b| {
                 target_a
                     .success_prob()
@@ -782,12 +781,12 @@ impl<'a> GameInfo<'a> {
                 tackle: marked_by(Skill::Tackle),
                 arm_bar: marked_by(Skill::ArmBar),
             };
-            next_node.apply_dodge(*self.dodge_target.clone().add_modifer(-self.tzones[to]), markers);
+            next_node.apply_dodge(ag_test_target(self.agility, -self.tzones[to]), markers);
         }
         match self.ball {
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
                 // touchdown by pickup is handled by the pickup procedure
-                next_node.apply_pickup(*self.pickup_target.clone().add_modifer(-self.tzones[to]));
+                next_node.apply_pickup(ag_test_target(self.agility, self.pickup_modifier - self.tzones[to]));
             }
             PathingBallState::IsCarrier(endzone_x) if to.x == endzone_x => {
                 next_node.apply_touchdown(self.id);

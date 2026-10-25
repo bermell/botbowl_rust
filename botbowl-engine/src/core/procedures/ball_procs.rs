@@ -118,7 +118,7 @@ impl Procedure for Bounce {
                 // -1: catching a ball that has Bounced.
                 ProcState::DoneNew(Catch::new_with_kick_arg(
                     catcher_id,
-                    *game_state.get_catch_target(catcher_id).unwrap().add_modifer(-1),
+                    game_state.get_catch_target(catcher_id, -1).unwrap(),
                     self.kick,
                 ))
             } else {
@@ -232,7 +232,7 @@ impl Procedure for ThrowIn {
                     // catch bounces from there.
                     game_state.set_ball(BallState::InAir(target));
                     // -1: catching a ball that has been Thrown-in.
-                    let target = *game_state.get_catch_target(catcher_id).unwrap().add_modifer(-1);
+                    let target = game_state.get_catch_target(catcher_id, -1).unwrap();
                     ProcState::DoneNew(Catch::new(catcher_id, target))
                 }
                 _ => {
@@ -545,7 +545,7 @@ impl Procedure for PassToSquare {
 }
 
 /// S3, Interceptions: the Agility Test is -3 against an Accurate Pass, -2 against an Inaccurate
-/// one (on top of the marking and weather modifiers in `GameState::get_intercepters`).
+/// one (summed with the marking and weather modifiers by `GameState::get_intercepters`).
 pub fn interception_modifier(result: PassResult) -> i8 {
     match result {
         PassResult::Accurate => -3,
@@ -578,7 +578,8 @@ impl Procedure for DeflectOrResolve {
         let deflect_team = other_team(active_team);
         let interceptor: Option<(Position, D6Target)> = match input {
             ProcInput::Nothing => {
-                self.intercepters = game_state.get_intercepters(deflect_team, self.from, self.to);
+                self.intercepters =
+                    game_state.get_intercepters(deflect_team, self.from, self.to, interception_modifier(self.result));
                 if self.intercepters.is_empty() {
                     None
                 } else if self.intercepters.len() == 1 {
@@ -609,15 +610,14 @@ impl Procedure for DeflectOrResolve {
                 // there, as from an empty square.
                 match game_state.get_player_at(self.to) {
                     Some(player) if player.can_catch() => {
-                        Catch::new(player.id, game_state.get_catch_target(player.id).unwrap())
+                        Catch::new(player.id, game_state.get_catch_target(player.id, 0).unwrap())
                     }
                     _ => Bounce::new(),
                 }
             }
         };
-        if let Some((pos, mut target)) = interceptor {
-            // S3, Interceptions: -3 against an Accurate Pass, -2 against an Inaccurate one.
-            target.add_modifer(interception_modifier(self.result));
+        // The interceptor's target already holds the -3 / -2 (`get_intercepters`).
+        if let Some((pos, target)) = interceptor {
             let id = game_state.get_player_id_at(pos).unwrap();
             ProcState::DoneNew(Deflect::new(id, target, failed_deflect_proc))
         } else {

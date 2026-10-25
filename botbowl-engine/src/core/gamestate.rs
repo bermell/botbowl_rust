@@ -1002,19 +1002,18 @@ impl GameState {
         }
     }
     /// The Agility Test to catch a ball (S3, Catching the Ball): AG, -1 per marking opponent
-    /// (ignored with Nerves of Steel), -1 in rain. A ball that Bounced or was Thrown-in is a
-    /// further -1, applied by the caller.
-    pub fn get_catch_target(&self, id: PlayerID) -> Result<D6Target> {
+    /// (ignored with Nerves of Steel), -1 in rain, plus the caller's `modifier` (-1 for a ball
+    /// that Bounced or was Thrown-in, else 0). One sum on the raw AG (`ag_test`).
+    pub fn get_catch_target(&self, id: PlayerID, modifier: i8) -> Result<D6Target> {
         let player = self.get_player(id)?;
-        let mut target = player.ag_target();
+        let mut sum = modifier;
         if !player.has_skill(Skill::NervesOfSteel) {
-            target.add_modifer(-(self.marking_opponents(player) as i8));
+            sum -= self.marking_opponents(player) as i8;
         }
-
         if let Weather::Rain = self.info.weather {
-            target.add_modifer(-1);
+            sum -= 1;
         }
-        Ok(target)
+        Ok(player.ag_test(sum))
     }
 
     /// Sets the ball state while maintaining `bounce_squares`. Every
@@ -1787,16 +1786,16 @@ impl GameState {
             .filter(move |pos| *pos != from && *pos != to)
     }
 
-    /// The interception Agility Test before the pass's own modifier (`interception_modifier`):
-    /// -1 per opponent Marking the interceptor, -1 in rain. An interception is not a catch, so
-    /// Nerves of Steel does not help.
-    fn get_interception_target(&self, player: &FieldedPlayer) -> D6Target {
-        let mut target = player.ag_target();
-        target.add_modifer(-(self.marking_opponents(player) as i8));
+    /// The interception Agility Test: the pass's own `modifier` (`interception_modifier`: -3
+    /// accurate, -2 inaccurate), -1 per opponent Marking the interceptor, -1 in rain — one sum
+    /// on the raw AG (`ag_test`). An interception is not a catch, so Nerves of Steel does not
+    /// help.
+    fn get_interception_target(&self, player: &FieldedPlayer, modifier: i8) -> D6Target {
+        let mut sum = modifier - self.marking_opponents(player) as i8;
         if let Weather::Rain = self.info.weather {
-            target.add_modifer(-1);
+            sum -= 1;
         }
-        target
+        player.ag_test(sum)
     }
 
     /// Standing opponents with a tackle zone next to `player`.
@@ -1807,13 +1806,20 @@ impl GameState {
             .count()
     }
 
-    pub fn get_intercepters(&self, team: TeamType, from: Position, to: Position) -> Vec<(Position, D6Target)> {
-        // TODO: thos function needs tests!!!
+    /// Who of `team` may intercept a pass from `from` landing on `to`, and each one's target
+    /// with the pass's `modifier` (`ball_procs::interception_modifier`) included.
+    pub fn get_intercepters(
+        &self,
+        team: TeamType,
+        from: Position,
+        to: Position,
+        modifier: i8,
+    ) -> Vec<(Position, D6Target)> {
         GameState::get_interception_positions(from, to)
             .filter_map(|pos| {
                 self.get_player_at(pos)
                     .filter(|p| p.stats.team == team && p.can_catch())
-                    .map(|p| self.get_interception_target(p))
+                    .map(|p| self.get_interception_target(p, modifier))
                     .map(|target| (pos, target))
             })
             .collect::<Vec<(Position, D6Target)>>()
