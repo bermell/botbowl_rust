@@ -508,6 +508,34 @@ mod tests {
         assert!(state.away_to_act(), "turnover");
     }
 
+    /// Doubles on the injury roll send the fouler off as well; a Bribe is offered there too.
+    #[test]
+    fn a_bribe_is_offered_on_injury_roll_doubles() {
+        let start_pos = Position::new((5, 5));
+        let foul_pos = start_pos + (2, 0);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_away_player(foul_pos)
+            .build();
+        state.home.bribes = 1;
+        let fouler = state.get_player_id_at(start_pos).unwrap();
+        let victim = state.get_player_id_at(foul_pos).unwrap();
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
+        state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
+        state.step_positional(PosAT::StartFoul, start_pos);
+        state.fix_d6(5); // armour 11, no doubles: broken
+        state.fix_d6(6);
+        state.fix_d6(1); // injury 2, doubles: Stunned, and the fouler is ejected
+        state.fix_d6(1);
+        state.step_positional(PosAT::Foul, foul_pos);
+        assert_eq!(state.get_player_unsafe(victim).status, PlayerStatus::Stunned);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::UseSkill)));
+        state.fix_d6(4);
+        state.step_simple(SimpleAT::UseSkill);
+        assert!(state.get_player(fouler).is_ok(), "bribed");
+        assert!(state.home_to_act(), "no turnover");
+    }
+
     #[test]
     fn a_declined_bribe_is_kept_and_the_fouler_is_sent_off() {
         let (mut state, _) = ejecting_foul(1);

@@ -129,8 +129,9 @@ the event starts. The decisions reuse existing actions, so the policy head is un
 - **Cheering Fans (6), Brilliant Coaching (7), Dodgy Snack (11), Pitch Invasion (12):** `RollOff`
   (Home's D6 first, + Cheerleaders / Assistant Coaches / — / Fan Factor from `TeamState`, ties go to
   both). Cheering Fans: `TeamState::cheering_fans` → `GameInfo::cheering_fans_this_turn` when that
-  team's turn starts → `cheering_assist` on its first `StartBlock` (+1 attacker strength in
-  `blockdices`, both Frenzy blocks). Brilliant Coaching: `TeamState::drive_rerolls`, spent first.
+  team's turn starts → `cheering_assist` when its first block is rolled (`Block::step`; a Blitz's
+  block counts, S3 Declaring vs Performing) — +1 attacker strength in `blockdices` while either
+  flag is set, so both Frenzy blocks get it. Brilliant Coaching: `TeamState::drive_rerolls`, spent first.
   Dodgy Snack: 2+ sets `FieldedPlayer::snack` and lowers `stats.ma` / `armour` by one
   (`unfield_player` undoes it), 1 sends the player to `DugoutPlace::Heated`. Pitch Invasion: D3
   random players Stunned.
@@ -139,10 +140,12 @@ the event starts. The decisions reuse existing actions, so the policy head is un
   adjacent square (either half), `EndPlayerTurn` ends it.
 - **Charge! (10):** `Charge` is a turn for the kicking team over up to D3+3 Open players —
   `StartMove`, one `StartBlitz`, `EndTurn` to stop; `turn_team()` reads it, so team re-rolls work.
-  A player who falls or is knocked down ends it, the turnover flag is cleared.
+  Only the activated player Falling Over or being Knocked Down ends it (a turnover with that
+  player off their feet; Placed Prone by Wrestle is not), and the turnover flag is cleared; a
+  team-mate pushed into the crowd is no turnover during a Charge. `team_turn` is restored after.
 
 **The drive boundary is `Half::do_kickoff`:** it releases `Heated` players to the Reserves, clears
-`drive_rerolls` and unused Cheering Fans, and under Sweltering Heat pushes `SwelteringHeat` (one D3,
+`drive_rerolls` and unused Cheering Fans (`cheering_assist` too), and under Sweltering Heat pushes `SwelteringHeat` (one D3,
 that many random players of each team on the pitch to `Heated` for the next drive) before the pitch
 is cleared.
 

@@ -369,11 +369,13 @@ pub struct GameInfo {
     #[serde(default)]
     pub pickup_this_activation: bool,
     pub blitz_this_activation: bool,
-    /// Cheering Fans: the team on turn still has the extra offensive assist for its first Block
-    /// Action this turn (taken from `TeamState::cheering_fans` when the turn starts).
+    /// Cheering Fans: the team on turn still has the extra offensive assist for the first block it
+    /// rolls this turn, in a Block or a Blitz (taken from `TeamState::cheering_fans` when the turn
+    /// starts).
     #[serde(default)]
     pub cheering_fans_this_turn: bool,
-    /// The active player's Block Action carries Cheering Fans' extra offensive assist.
+    /// The active player's blocks carry Cheering Fans' extra offensive assist (taken from
+    /// `cheering_fans_this_turn` by the first block rolled; cleared when the activation ends).
     #[serde(default)]
     pub cheering_assist: bool,
 }
@@ -956,6 +958,17 @@ impl GameState {
         })
     }
 
+    /// The active team is acting in a Charge! (kick-off event), not in a turn of its own.
+    pub fn in_charge(&self) -> bool {
+        matches!(
+            self.proc_stack
+                .iter()
+                .rev()
+                .find(|p| matches!(p, AnyProc::Turn(_) | AnyProc::Charge(_))),
+            Some(AnyProc::Charge(_))
+        )
+    }
+
     /// `team` may use a team re-roll now: only while it is the active team (S3, Team Re-rolls:
     /// "can only be used when the team is active"), as many per turn as it has left.
     pub fn may_use_team_reroll(&self, team: TeamType) -> bool {
@@ -1121,8 +1134,9 @@ impl GameState {
                         || self.get_tz_on_except_from_id(attr_assister.id, defr.id) == 0)
             })
             .count() as u8;
-        // Cheering Fans: one more offensive assist on the team's first Block Action of the turn.
-        if self.info.cheering_assist {
+        // Cheering Fans: one more offensive assist on the team's first block of the turn — still
+        // in hand, or taken by this activation's block (`Block::step`).
+        if self.info.cheering_assist || self.info.cheering_fans_this_turn {
             attr_str += 1;
         }
 
@@ -1680,6 +1694,17 @@ impl GameState {
             MicroStepState::NeedAction => Ok(()),
             other => panic!("re-asking a Turn decision did not ask: {other:?}"),
         }
+    }
+
+    /// Tests: run `proc` on top of the stack from here, up to its first decision.
+    #[cfg(test)]
+    pub(crate) fn start_proc(&mut self, proc: AnyProc) {
+        if self.available_actions.has_paths {
+            self.clear_path_buffer();
+        }
+        *self.available_actions = AvailableActions::default();
+        self.proc_stack.push(proc);
+        self.step(Action::Simple(SimpleAT::EndTurn)).unwrap();
     }
 
     /// Gather every legal action — simple, positional, and path-style. Sorts

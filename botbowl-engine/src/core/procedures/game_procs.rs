@@ -51,7 +51,9 @@ impl Half {
             t.drive_rerolls = 0;
             t.cheering_fans = false;
         }
+        // A turn cut short by a turnover or touchdown can leave Cheering Fans in hand.
         game_state.info.cheering_fans_this_turn = false;
+        game_state.info.cheering_assist = false;
 
         let mut procs: Vec<AnyProc> = vec![
             kickoff_procs::Kickoff::new(),
@@ -271,9 +273,6 @@ impl Procedure for Turn {
                     info.blitz_this_activation = true;
                 }
                 PosAT::StartBlock => {
-                    // Cheering Fans' assist goes to the turn's first Block Action (both blocks of
-                    // a Frenzy included); a Blitz is not a Block Action.
-                    info.cheering_assist = std::mem::take(&mut info.cheering_fans_this_turn);
                     let id = info.active_player.unwrap();
                     if game_state.get_player_unsafe(id).status == PlayerStatus::Down {
                         return ProcState::NotDoneNew(block_procs::JumpUp::new(game_state, id));
@@ -1183,12 +1182,17 @@ mod tests {
         state.unfield_player(id, DugoutPlace::Heated).unwrap();
         state.home.drive_rerolls = 1;
         state.away.cheering_fans = true;
+        // A turn cut short by a turnover or touchdown can leave the assist in hand.
+        state.info.cheering_fans_this_turn = true;
+        state.info.cheering_assist = true;
         let ProcState::NotDoneNewProcs(procs) = mid_half().do_kickoff(TeamType::Away, &mut state) else {
             panic!("a kickoff pushes the drive's procedures")
         };
         assert!(procs.iter().all(|p| !matches!(p, AnyProc::SwelteringHeat(_))));
         assert_eq!(state.home.drive_rerolls, 0);
         assert!(!state.away.cheering_fans);
+        assert!(!state.info.cheering_fans_this_turn);
+        assert!(!state.info.cheering_assist);
         assert!(state.get_dugout().all(|p| p.place == DugoutPlace::Reserves));
         assert_eq!(state.get_players_on_pitch().count(), 0);
     }
@@ -1239,5 +1243,51 @@ mod tests {
         state.info.weather = Weather::Nice;
         mid_half().do_kickoff(TeamType::Home, &mut state);
         assert_eq!(heated(&state, TeamType::Home) + heated(&state, TeamType::Away), 0);
+    }
+
+    /// The first half's last drive ends at half-time: Sweltering Heat strikes before the second
+    /// half's kick-off too. Bribes last the whole game.
+    #[test]
+    fn sweltering_heat_strikes_at_half_time_and_bribes_are_kept() {
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_away_player(Position::new((9, 5)))
+            .build();
+        state.info.weather = Weather::Sweltering;
+        state.home.bribes = 1;
+        let AnyProc::Half(mut second) = super::Half::new(2) else {
+            unreachable!()
+        };
+        let ProcState::NotDoneNewProcs(procs) = second.step(&mut state, ProcInput::Nothing) else {
+            panic!("the second half kicks off")
+        };
+        assert!(matches!(procs.last(), Some(AnyProc::SwelteringHeat(_))));
+        assert_eq!(state.home.bribes, 1);
+    }
+
+    /// A D3 larger than the players left picks them all; Prone and Stunned players were on the
+    /// pitch when the drive ended, so they are candidates too.
+    #[test]
+    fn sweltering_heat_picks_among_every_player_on_the_pitch() {
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((5, 5)))
+            .add_home_player(Position::new((5, 7)))
+            .add_away_player(Position::new((9, 5)))
+            .build();
+        let down = state.get_player_id_at(Position::new((5, 7))).unwrap();
+        state.get_mut_player_unsafe(down).status = PlayerStatus::Stunned;
+        let AnyProc::SwelteringHeat(mut heat) = crate::core::procedures::kickoff_events::SwelteringHeat::new() else {
+            unreachable!()
+        };
+        heat.step(&mut state, ProcInput::Nothing);
+        let mut out = heat.step(&mut state, ProcInput::Roll(RollResult::D6(D6::Six))); // D3 = 3
+        let mut offered = Vec::new();
+        while let ProcState::NeedRoll(RequestedRoll::Pick(n)) = out {
+            offered.push(n);
+            out = heat.step(&mut state, ProcInput::Roll(RollResult::Pick(0)));
+        }
+        assert!(matches!(out, ProcState::Done));
+        assert_eq!(offered, vec![2, 1, 1], "Home's two (one Stunned), then Away's one");
+        assert_eq!(state.get_dugout().filter(|p| p.place == DugoutPlace::Heated).count(), 3);
     }
 }

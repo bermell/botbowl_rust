@@ -445,15 +445,20 @@ impl Procedure for SolidDefence {
 
 /// Charge!: up to D3+3 of the kicking team's Open players (Open when the event happens) are
 /// activated one at a time, exactly as in a turn of theirs, for a free Move Action — one of them
-/// may Blitz instead (Throw / Kick Team-mate do not exist here). A player who Falls Over or is
-/// Knocked Down ends the Charge, with no turnover. `EndTurn` ends it early. The ball is in the
-/// air, so nobody can pick it up, hand it off or pass it.
+/// may Blitz instead (Throw / Kick Team-mate do not exist here). The activated player Falling
+/// Over or being Knocked Down ends the Charge, with no turnover; nothing else does (a team-mate
+/// pushed into the crowd is no turnover here, see `GameState::in_charge`). `EndTurn` ends it
+/// early. The ball is in the air, so nobody can pick it up, hand it off or pass it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Charge {
     team: TeamType,
     left: u8,
     eligible: Vec<PlayerID>,
     started: bool,
+    /// The player activated last, until their activation has ended.
+    current: Option<PlayerID>,
+    /// `GameInfo::team_turn` before the Charge, put back after it.
+    team_turn: TeamType,
 }
 impl Charge {
     pub fn new(team: TeamType) -> AnyProc {
@@ -462,28 +467,35 @@ impl Charge {
             left: 0,
             eligible: Vec::new(),
             started: false,
+            current: None,
+            team_turn: team,
         })
     }
     pub fn team(&self) -> TeamType {
         self.team
     }
-    fn end(game_state: &mut GameState) -> ProcState {
+    fn end(&self, game_state: &mut GameState) -> ProcState {
         let info = &mut game_state.info;
+        info.team_turn = self.team_turn;
         info.turnover = false;
         info.active_player = None;
         info.player_action_type = None;
         info.blitz_this_activation = false;
         info.pickup_this_activation = false;
         info.blitz_available = false;
+        info.cheering_assist = false;
         ProcState::Done
     }
-    fn offer(&self, game_state: &mut GameState) -> ProcState {
+    fn offer(&mut self, game_state: &mut GameState) -> ProcState {
         let info = &mut game_state.info;
         info.active_player = None;
         info.player_action_type = None;
         info.pickup_this_activation = false;
+        info.cheering_assist = false;
+        // One pushed into the crowd is gone.
+        self.eligible.retain(|&id| game_state.get_player(id).is_ok());
         if self.left == 0 || self.eligible.is_empty() {
-            return Self::end(game_state);
+            return self.end(game_state);
         }
         let positions = positions_of(game_state, &self.eligible);
         let mut aa = AvailableActions::new(self.team);
@@ -506,6 +518,7 @@ impl Procedure for Charge {
                 self.left = d3(d6) + 3;
                 self.eligible = open_players(game_state, self.team);
                 let info = &mut game_state.info;
+                self.team_turn = info.team_turn;
                 info.team_turn = self.team;
                 info.turnover = false;
                 info.blitz_available = true;
@@ -514,11 +527,18 @@ impl Procedure for Charge {
                 info.foul_available = false;
                 self.offer(game_state)
             }
-            // An activation has ended.
+            // An activation has ended. "If a selected player Falls Over or is Knocked Down during
+            // their activation ... the Charge ends": a turnover that left them off their feet (or
+            // the pitch). Placed Prone (Wrestle) is no turnover and goes on.
             ProcInput::Nothing => {
-                if game_state.info.turnover {
-                    return Self::end(game_state);
+                let floored = self
+                    .current
+                    .take()
+                    .is_some_and(|id| game_state.get_player(id).map_or(true, |p| p.status != PlayerStatus::Up));
+                if game_state.info.turnover && floored {
+                    return self.end(game_state);
                 }
+                game_state.info.turnover = false;
                 self.offer(game_state)
             }
             ProcInput::Action(Action::Positional(at @ (PosAT::StartMove | PosAT::StartBlitz), pos)) => {
@@ -532,9 +552,10 @@ impl Procedure for Charge {
                 }
                 self.eligible.retain(|&e| e != id);
                 self.left -= 1;
+                self.current = Some(id);
                 ProcState::NotDoneNew(MoveAction::new(id))
             }
-            ProcInput::Action(Action::Simple(SimpleAT::EndTurn)) => Self::end(game_state),
+            ProcInput::Action(Action::Simple(SimpleAT::EndTurn)) => self.end(game_state),
             _ => panic!("Unexpected input {:?}", input),
         }
     }

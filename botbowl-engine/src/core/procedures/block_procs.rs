@@ -171,8 +171,9 @@ impl Push {
         let (last_push_from, last_push_to) = self.moves_to_make.pop().unwrap();
         if game_state.is_out(last_push_to) {
             let id = game_state.get_player_id_at(last_push_to).unwrap();
-            // S3: a player of the active team Pushed into the Crowd is a Turnover.
-            if game_state.turn_team() == Some(game_state.get_player_unsafe(id).stats.team) {
+            // S3: a player of the active team Pushed into the Crowd is a Turnover — but not in a
+            // Charge!, which only the activated player falling or being knocked down ends.
+            if game_state.turn_team() == Some(game_state.get_player_unsafe(id).stats.team) && !game_state.in_charge() {
                 game_state.info.turnover = true;
             }
             if matches!(game_state.ball, BallState::Carried(carrier) if carrier == id) {
@@ -782,6 +783,11 @@ impl Procedure for Block {
         }
         match input {
             ProcInput::Nothing => {
+                // Cheering Fans: the turn's first block rolled takes the extra assist, for the
+                // rest of this activation (a Frenzy's second block). S3 counts a Blitz's block
+                // as a Block Action performed.
+                let info = &mut game_state.info;
+                info.cheering_assist |= std::mem::take(&mut info.cheering_fans_this_turn);
                 // Dauntless against a stronger defender: a D6 plus strength beating theirs
                 // matches it for this block. No roll when no D6 can.
                 let attacker = game_state.get_active_player().unwrap();
