@@ -144,15 +144,24 @@ impl Procedure for ChangingWeather {
             ProcInput::Roll(RollResult::Sum2D6(roll)) => {
                 game_state.info.weather = Weather::from(roll);
                 let ball_pos = game_state.get_ball_position().unwrap();
+                // S3: "If the new result is Perfect Conditions, the ball will Scatter (3) in the
+                // air before it lands."
                 if game_state.info.weather == Weather::Nice && !game_state.is_out(ball_pos) {
-                    ProcState::NeedRoll(RequestedRoll::D8)
+                    ProcState::NeedRoll(RequestedRoll::Scatter)
                 } else {
                     ProcState::Done
                 }
             }
-            ProcInput::Roll(RollResult::D8(d8)) => {
-                let scattered = game_state.get_ball_position().unwrap() + Direction::from(d8);
-                game_state.set_ball(BallState::InAir(scattered));
+            ProcInput::Roll(RollResult::Scatter(a, b, c)) => {
+                // Stop at the first square off the pitch: `LandKickoff` makes that a touchback.
+                let mut position = game_state.get_ball_position().unwrap();
+                for d8 in [a, b, c] {
+                    position = position + Direction::from(d8);
+                    if game_state.is_out(position) {
+                        break;
+                    }
+                }
+                game_state.set_ball(BallState::InAir(position));
                 ProcState::Done
             }
             _ => panic!("Unexpected input {:?}", input),

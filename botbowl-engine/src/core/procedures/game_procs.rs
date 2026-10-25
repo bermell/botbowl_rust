@@ -694,7 +694,10 @@ mod tests {
         state.fix_d6(2); // Nice weather
         state.fix_d6(5); // nice weather
 
-        state.fix_d8_direction(Direction::right()); // gust of wind
+        // S3: Perfect Conditions -> the ball Scatters (3) before it lands.
+        state.fix_d8_direction(Direction::right()); // scatter
+        state.fix_d8_direction(Direction::right()); // scatter
+        state.fix_d8_direction(Direction::right()); // scatter
         state.fix_d8_direction(Direction::right()); // bounce
 
         assert!(state.away_to_act());
@@ -702,7 +705,7 @@ mod tests {
 
         let ball_pos = state.get_ball_position().unwrap();
         assert!(matches!(state.ball, BallState::OnGround(_)));
-        assert_eq!(ball_pos, Position::new((22, 2)));
+        assert_eq!(ball_pos, Position::new((24, 2)));
     }
     #[test]
     fn turn_order() -> Result<()> {
