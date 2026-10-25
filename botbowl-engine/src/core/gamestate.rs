@@ -15,7 +15,7 @@ use super::{
     bb_errors::{IllegalMovePosition, InvalidPlayerId},
     dices::{
         resolve_from_fixes, resolve_with_rng, BlockDice, Coin, D6Target, DicePolicy, FixedDice, RequestedRoll,
-        RollResult, RollTarget,
+        RollResult,
     },
     procedures::{auto_setup, AnyProc, Formation, GameOver, Half},
     table::{NumBlockDices, PosAT, SimpleAT, Skill, SkillSet},
@@ -1893,10 +1893,8 @@ impl GameState {
             //return None;
             panic!("Player not found");
         };
-        let mut target = player.pass_target();
         let modifiers = self.get_pass_modifier(id, from, to)?;
-        target.add_modifer(modifiers);
-        Some(target)
+        Some(player.pa_test(modifiers))
     }
 }
 

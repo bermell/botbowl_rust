@@ -185,7 +185,7 @@ pub fn TeamEditor() -> impl IntoView {
                             <th>"MA"</th>
                             <th>"ST"</th>
                             <th>"AG+"</th>
-                            <th>"PA"</th>
+                            <th>"PA+"</th>
                             <th>"AV+"</th>
                             <th>"Max"</th>
                             <th>"Skills"</th>
@@ -322,7 +322,7 @@ fn PositionRow(i: usize, p: PositionDef, draft: RwSignal<TeamDef>, picking: RwSi
             {stat_cell(draft, i, p.ma, 1, team::MAX_MA, |p, v| p.ma = v)}
             {stat_cell(draft, i, p.st, 1, team::MAX_ST, |p, v| p.st = v)}
             {stat_cell(draft, i, p.agility, team::MIN_AG, team::MAX_AG, |p, v| p.agility = v)}
-            {stat_cell(draft, i, p.pa, 2, 6, |p, v| p.pa = v)}
+            {stat_cell(draft, i, p.pa, team::MIN_PA, team::MAX_PA, |p, v| p.pa = v)}
             {stat_cell(draft, i, p.armour, team::MIN_AV, team::MAX_AV, |p, v| p.armour = v)}
             {stat_cell(draft, i, p.max, 0, 16, |p, v| p.max = v)}
             <td class="skills">

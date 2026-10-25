@@ -763,16 +763,18 @@ pub enum PlayerStatus {
 /// A player's characteristics, as the S3 rules print them: MA and ST are plain numbers, AG, PA
 /// and AV are target numbers (AG 3+, PA 4+, AV 9+).
 ///
-/// Serialised as `agility` / `armour`. JSON written before S3 storage holds the classic `ag` /
-/// `av` numbers (AG 3, AV 8) instead, and loads converted (`from_legacy_ag` / `from_legacy_av`);
-/// a binary format (postcard) has exactly the derived layout.
+/// Serialised as `agility` / `passing` / `armour`. JSON written before S3 storage holds the
+/// classic `ag` / `av` numbers (AG 3, AV 8) and PA as a `D6Target` (`"pass": "FourPlus"`)
+/// instead, and loads converted (`from_legacy_ag` / `from_legacy_av`); a binary format
+/// (postcard) has exactly the derived layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlayerStats {
     pub str_: u8,
     pub ma: u8,
     /// Agility, an S3 target number (`3` = AG 3+); `1..=6`.
     pub agility: u8,
-    pub pass: D6Target,
+    /// Passing Ability, an S3 target number (`4` = PA 4+); `1..=6`.
+    pub passing: u8,
     /// Armour Value, an S3 target number (`9` = AV 9+).
     pub armour: u8,
     pub team: TeamType,
@@ -793,6 +795,9 @@ impl PlayerStats {
     /// AG is a D6 target number: 1+ the best, 6+ the worst.
     pub const MIN_AG: u8 = 1;
     pub const MAX_AG: u8 = 6;
+    /// PA is a D6 target number: 1+ the best, 6+ the worst.
+    pub const MIN_PA: u8 = 1;
+    pub const MAX_PA: u8 = 6;
     /// AV is a 2D6 target number; 12+ the hardest that can still break.
     pub const MAX_AV: u8 = 12;
     /// `FieldedPlayer::total_movement_left` is `ma + 2` before the player
@@ -808,7 +813,7 @@ impl PlayerStats {
             team,
             skills: SkillSet::new(),
             role: PlayerRole::Lineman,
-            pass: D6Target::FourPlus,
+            passing: 4,
         }
     }
     pub fn new_blitzer(team: TeamType) -> PlayerStats {
@@ -820,7 +825,7 @@ impl PlayerStats {
             team,
             skills: SkillSet::from([Skill::Block]),
             role: PlayerRole::Blitzer,
-            pass: D6Target::FourPlus,
+            passing: 4,
         }
     }
     pub fn new_catcher(team: TeamType) -> PlayerStats {
@@ -832,7 +837,7 @@ impl PlayerStats {
             team,
             skills: SkillSet::from([Skill::Dodge, Skill::Catch]),
             role: PlayerRole::Catcher,
-            pass: D6Target::FivePlus,
+            passing: 5,
         }
     }
     pub fn new_thrower(team: TeamType) -> PlayerStats {
@@ -844,7 +849,7 @@ impl PlayerStats {
             team,
             skills: SkillSet::from([Skill::SureHands, Skill::Pass]),
             role: PlayerRole::Thrower,
-            pass: D6Target::TwoPlus,
+            passing: 2,
         }
     }
     pub fn give_skill(&mut self, skill: Skill) {
@@ -878,11 +883,17 @@ impl PlayerStats {
     }
 }
 
-/// The target of an Agility test by a player with AG `agility`+ and the summed `modifier`:
-/// `agility - modifier`, clamped to 2+..6+ once (a natural 1 always fails, a natural 6 always
-/// passes). Every modifier must be in the sum: a `D6Target` clamps at each `add_modifer`, so
-/// adding them one by one to an already-clamped target is wrong at the ends of the range.
+/// The target of an Agility (or Passing Ability) test by a player with `agility`+ and the summed
+/// `modifier`, as the roll that passes it. S3 (Modifying Dice Rolls, Natural Rolls): the
+/// modified score never goes below 1 or above 6, a natural 1 always fails and a natural 6 always
+/// passes. So a 1+ passes on anything but a natural 1 whatever the modifiers (2+), and any
+/// other target `t` passes on `t - modifier`, clamped to 2+..6+ once. Every modifier must be in
+/// the sum: a `D6Target` clamps at each `add_modifer`, so adding them one by one to an
+/// already-clamped target is wrong at the ends of the range.
 pub fn ag_test_target(agility: u8, modifier: i8) -> D6Target {
+    if agility <= 1 {
+        return D6Target::TwoPlus;
+    }
     D6Target::try_from((agility as i8 - modifier).clamp(2, 6) as u8).unwrap()
 }
 
@@ -894,7 +905,7 @@ impl<'de> Deserialize<'de> for PlayerStats {
             str_: u8,
             ma: u8,
             agility: u8,
-            pass: D6Target,
+            passing: u8,
             armour: u8,
             team: TeamType,
             skills: SkillSet,
@@ -909,7 +920,11 @@ impl<'de> Deserialize<'de> for PlayerStats {
             agility: Option<u8>,
             #[serde(default)]
             ag: Option<u8>,
-            pass: D6Target,
+            #[serde(default)]
+            passing: Option<u8>,
+            /// Pre-S3 storage: the PA target as a `D6Target` (`"FourPlus"`).
+            #[serde(default)]
+            pass: Option<D6Target>,
             #[serde(default)]
             armour: Option<u8>,
             #[serde(default)]
@@ -928,11 +943,15 @@ impl<'de> Deserialize<'de> for PlayerStats {
                 .armour
                 .or(j.av.map(PlayerStats::from_legacy_av))
                 .ok_or_else(|| serde::de::Error::missing_field("armour"))?;
+            let passing = j
+                .passing
+                .or(j.pass.map(|t| t as u8))
+                .ok_or_else(|| serde::de::Error::missing_field("passing"))?;
             Wire {
                 str_: j.str_,
                 ma: j.ma,
                 agility,
-                pass: j.pass,
+                passing,
                 armour,
                 team: j.team,
                 skills: j.skills,
@@ -945,7 +964,7 @@ impl<'de> Deserialize<'de> for PlayerStats {
             str_: w.str_,
             ma: w.ma,
             agility: w.agility,
-            pass: w.pass,
+            passing: w.passing,
             armour: w.armour,
             team: w.team,
             skills: w.skills,
@@ -987,7 +1006,7 @@ impl std::hash::Hash for PlayerStats {
         self.str_.hash(h);
         self.ma.hash(h);
         self.agility.hash(h);
-        self.pass.hash(h);
+        self.passing.hash(h);
         self.armour.hash(h);
         self.team.hash(h);
         self.skills.hash_unordered(h);
@@ -1021,15 +1040,18 @@ impl FieldedPlayer {
         self.ag_test(0)
     }
 
-    /// An Agility test with `modifier` (the sum of every modifier: negative is harder). The sum
-    /// is applied to the raw AG target before clamping, so AG 1+ at -2 needs a 3+ where AG 2+
-    /// needs a 4+ — clamping AG 1+ to 2+ first would lose that.
+    /// An Agility test with `modifier` (the sum of every modifier: negative is harder), as
+    /// `ag_test_target`: AG 1+ passes on a 2+ whatever the modifiers, where AG 2+ at -2 needs
+    /// a 4+.
     pub fn ag_test(&self, modifier: i8) -> D6Target {
         ag_test_target(self.stats.agility, modifier)
     }
 
-    pub fn pass_target(&self) -> D6Target {
-        self.stats.pass
+    /// A Passing Ability test with the summed `modifier`, as for Agility (`ag_test_target`).
+    /// For a pass, the Fumble rule (a 1 after modifiers, `Pass::result_of`) takes precedence, so
+    /// PA 1+ throws exactly like PA 2+.
+    pub fn pa_test(&self, modifier: i8) -> D6Target {
+        ag_test_target(self.stats.passing, modifier)
     }
 
     pub fn can_catch(&self) -> bool {
@@ -1621,15 +1643,16 @@ mod ag_target_tests {
         assert_eq!(ag_target_for(1), D6Target::TwoPlus);
     }
 
-    /// ... but the modifiers apply to the 1+, not to a clamped 2+: at -2 AG 1+ needs a 3+ where
-    /// AG 2+ needs a 4+, and a +1 then a -1 cancel instead of clamping in between.
+    /// ... and stays one under any modifier: the modified score never drops below 1 (S3,
+    /// Modifying Dice Rolls), so AG 1+ passes on anything but a natural 1, where AG 2+ at -2
+    /// needs a 4+. Every other target takes its modifiers as one sum, clamped once.
     #[test]
-    fn modifiers_apply_to_the_raw_agility_before_clamping() {
+    fn ag_one_plus_passes_on_a_two_whatever_the_modifiers() {
         use crate::core::model::ag_test_target;
-        assert_eq!(ag_test_target(1, -2), D6Target::ThreePlus);
+        assert_eq!(ag_test_target(1, -2), D6Target::TwoPlus);
+        assert_eq!(ag_test_target(1, -5), D6Target::TwoPlus);
         assert_eq!(ag_test_target(2, -2), D6Target::FourPlus);
-        assert_eq!(ag_test_target(1, -1), D6Target::TwoPlus);
-        assert_eq!(ag_test_target(1, 1 - 1), D6Target::TwoPlus);
+        assert_eq!(ag_test_target(3, 1 - 1), D6Target::ThreePlus, "a +1 and a -1 cancel");
         assert_eq!(ag_test_target(6, -1), D6Target::SixPlus, "a natural 6 always passes");
         assert_eq!(ag_test_target(6, 1), D6Target::FivePlus);
     }
@@ -1670,5 +1693,10 @@ mod ag_target_tests {
         let legacy = json.replace("\"agility\":3", "\"ag\":4").replace("\"armour\":9", "\"av\":7");
         let old: PlayerStats = serde_json::from_str(&legacy).unwrap();
         assert_eq!((old.agility, old.armour), (2, 8));
+        // PA was stored as a `D6Target`.
+        assert!(json.contains("\"passing\":4"), "{json}");
+        let legacy_pa = legacy.replace("\"passing\":4", "\"pass\":\"FivePlus\"");
+        let old: PlayerStats = serde_json::from_str(&legacy_pa).unwrap();
+        assert_eq!(old.passing, 5);
     }
 }

@@ -1157,7 +1157,8 @@ mod tests {
         assert_eq!(passes, vec![short]);
     }
     /// AG 1+ is better than AG 2+ under modifiers: dodging into a square two opponents mark
-    /// (-2), AG 1+ needs a 3+ and AG 2+ a 4+, so a 3 tells them apart.
+    /// (-2), AG 1+ passes on anything but a natural 1 (the modified score never drops below 1)
+    /// and AG 2+ needs a 4+, so a 2 tells them apart.
     #[test]
     fn ag_one_plus_dodges_better_than_ag_two_plus_under_modifiers() {
         let start_pos = Position::new((5, 5));
@@ -1174,7 +1175,7 @@ mod tests {
             let id = state.get_player_id_at(start_pos).unwrap();
             state.get_mut_player_unsafe(id).stats.agility = agility;
             state.step_positional(PosAT::StartMove, start_pos);
-            state.fix_d6(3); //dodge
+            state.fix_d6(2); //dodge
             if agility > 1 {
                 state.fix_d6(1); //armour
                 state.fix_d6(1);
@@ -1182,7 +1183,7 @@ mod tests {
             state.step_positional(PosAT::Move, dodge_to);
             state.get_player_unsafe(id).status
         };
-        assert_eq!(dodge_with(1), PlayerStatus::Up, "AG 1+ at -2 dodges on a 3");
+        assert_eq!(dodge_with(1), PlayerStatus::Up, "AG 1+ at -2 dodges on a 2");
         assert_eq!(dodge_with(2), PlayerStatus::Down, "AG 2+ at -2 needs a 4");
     }
 
@@ -1225,13 +1226,43 @@ mod tests {
     #[test]
     fn a_pass_tests_the_passers_passing_ability() {
         let (mut state, _, target_pos, _) = setup_simple_pass_with(false, 7, |state, passer| {
-            state.get_mut_player_unsafe(passer).stats.pass = D6Target::TwoPlus
+            state.get_mut_player_unsafe(passer).stats.passing = 2
         });
         state.fix_d6(4); //Pass: accurate
         state.fix_d6(3); //Catch
         state.step_positional(PosAT::Pass, target_pos);
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
+    }
+    /// PA 1+ is stored and tested like AG 1+, but a pass that is "a 1 after modifiers" is
+    /// Fumbled (S3, Fumbled Pass), and that takes precedence over a PA 1+ passing the test on a
+    /// modified 1. So on a Long Pass (-2) PA 1+ throws exactly like PA 2+: a 3 fumbles, a 4 is
+    /// accurate.
+    #[test]
+    fn pa_one_plus_still_fumbles_on_a_modified_one() {
+        let pass_with = |passing: u8, roll: u8| {
+            let (mut state, start_pos, target_pos, _) = setup_simple_pass_with(false, 7, |state, passer| {
+                state.get_mut_player_unsafe(passer).stats.passing = passing
+            });
+            state.fix_d6(roll); //Pass
+            if roll == 3 {
+                state.fix_d8_direction(Direction::up()); //the fumble bounces from the passer
+            } else {
+                state.fix_d6(3); //Catch
+            }
+            state.step_positional(PosAT::Pass, target_pos);
+            if state.ball == BallState::OnGround(start_pos + Direction::up()) {
+                "fumble"
+            } else if state.ball == BallState::Carried(state.get_player_id_at(target_pos).unwrap()) {
+                "accurate"
+            } else {
+                "other"
+            }
+        };
+        for passing in [1, 2] {
+            assert_eq!(pass_with(passing, 3), "fumble", "PA {passing}+ at -2 on a 3");
+            assert_eq!(pass_with(passing, 4), "accurate", "PA {passing}+ at -2 on a 4");
+        }
     }
     /// Accurate: +1 to a Quick or a Short Pass. A 4+ passer's Short Pass (5+) succeeds on a 4.
     #[test]

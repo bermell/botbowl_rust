@@ -22,6 +22,9 @@ pub const MAX_ST: u8 = 8;
 /// AG is a target number: 1+ the best, 6+ the worst.
 pub const MIN_AG: u8 = 1;
 pub const MAX_AG: u8 = 6;
+/// PA is a target number: 1+ the best, 6+ the worst.
+pub const MIN_PA: u8 = 1;
+pub const MAX_PA: u8 = 6;
 /// AV is a 2D6 target number.
 pub const MIN_AV: u8 = 3;
 pub const MAX_AV: u8 = 12;
@@ -38,7 +41,7 @@ pub struct PositionDef {
     pub st: u8,
     /// Agility target, `1..=6` (AG 3+).
     pub agility: u8,
-    /// Pass target, `2..=6`.
+    /// Passing Ability target, `1..=6` (PA 4+).
     pub pa: u8,
     /// Armour target (AV 9+).
     pub armour: u8,
@@ -155,7 +158,7 @@ impl TeamDef {
             p.ma = p.ma.clamp(1, MAX_MA);
             p.st = p.st.clamp(1, MAX_ST);
             p.agility = p.agility.clamp(MIN_AG, MAX_AG);
-            p.pa = p.pa.clamp(2, 6);
+            p.pa = p.pa.clamp(MIN_PA, MAX_PA);
             p.armour = p.armour.clamp(MIN_AV, MAX_AV);
             p.skills.sort();
             p.skills.dedup();

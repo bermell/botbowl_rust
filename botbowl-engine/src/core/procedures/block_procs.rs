@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::core::dices::{BlockDice, D6Target, RequestedRoll, RollResult, RollTarget};
+use crate::core::dices::{BlockDice, D6Target, RequestedRoll, RollResult};
 use crate::core::gamestate::GameState;
 use crate::core::model::{
     other_team, Action, AvailableActions, Direction, PlayerStatus, Position, ProcState, Procedure,

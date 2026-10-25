@@ -13,7 +13,6 @@
 
 use std::path::{Path, PathBuf};
 
-use botbowl_engine::core::dices::D6Target;
 use botbowl_engine::core::gamestate::GameState;
 use botbowl_engine::core::model::{PlayerStats, TeamType};
 use botbowl_engine::core::table::Skill;
@@ -58,7 +57,7 @@ pub fn stats_of(p: &PositionDef, team: TeamType) -> Result<PlayerStats, String> 
     stats.str_ = p.st;
     stats.agility = p.agility;
     stats.armour = p.armour;
-    stats.pass = D6Target::try_from(p.pa.clamp(2, 6)).expect("2..=6 is a D6 target");
+    stats.passing = p.pa.clamp(PlayerStats::MIN_PA, PlayerStats::MAX_PA);
     stats.skills.clear();
     for label in &p.skills {
         let skill = skill_from_label(label).ok_or_else(|| format!("{}: unknown skill {label:?}", p.name))?;

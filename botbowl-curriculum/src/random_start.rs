@@ -18,7 +18,6 @@
 //!   quadratic growth of far-away area. A global temperature sharpens or
 //!   flattens the final distribution.
 
-use botbowl_engine::core::dices::D6Target;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::{other_team, BoardDims, Coord, Direction, PlayerStats, Position, TeamType};
 use botbowl_engine::core::table::{SimpleAT, Skill};
@@ -261,8 +260,7 @@ fn sample_player(rng: &mut ChaCha8Rng, team: TeamType) -> PlayerStats {
         stats.armour = PlayerStats::from_legacy_av(add_random(rng, stats.legacy_av(), LEGACY_AV_RANGE));
     }
     if rng.gen::<f32>() < MOD_PASS_PROB {
-        let pass = add_random(rng, stats.pass as u8, PASS_RANGE);
-        stats.pass = D6Target::try_from(pass).expect("pass target kept inside PASS_RANGE");
+        stats.passing = add_random(rng, stats.passing, PASS_RANGE);
     }
 
     let mut pool = Skill::good_skills();
@@ -484,7 +482,7 @@ mod tests {
                 ma.insert(p.stats.ma);
                 ag.insert(p.stats.agility);
                 av.insert(p.stats.armour);
-                pass.insert(p.stats.pass as u8);
+                pass.insert(p.stats.passing);
                 if !p.stats.skills.is_empty() {
                     skilled += 1;
                 }
@@ -529,7 +527,7 @@ mod tests {
                 assert!((MA_RANGE.0..=MA_RANGE.1).contains(&st.ma), "ma {}", st.ma);
                 assert!((1..=5).contains(&st.agility), "AG {}+", st.agility);
                 assert!((4..=12).contains(&st.armour), "AV {}+", st.armour);
-                let pass = st.pass as u8;
+                let pass = st.passing;
                 assert!((PASS_RANGE.0..=PASS_RANGE.1).contains(&pass), "pass {pass}");
             }
         }
