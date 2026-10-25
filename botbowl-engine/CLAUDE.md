@@ -8,9 +8,9 @@ The reference is the S3 rulebook (the user's copy: `~/repos/blood/rules/*.html`,
 `~/repos/blood/rules/md/*.md` — grep these; kept out of the repo, it is Games Workshop text), not BB2020 or
 the 2016 rules the Python botbowl followed (the user, 2026-10-25). Cite it in a new rule's test.
 The engine is not fully converted yet. Still on the old rules: the kicker's choice of target
-square (only `KickoffAimMiddle`), and no Throw / Kick Team-mate, Argue the Call or Apothecary.
+square (only `KickoffAimMiddle`), and no Argue the Call or Apothecary.
 Converted (2026-10-25):
-the whole kick-off table (`procedures/kickoff_events.rs`, below), characteristics as S3 prints
+Throw Team-mate and Kick Team-mate (below), the whole kick-off table (`procedures/kickoff_events.rs`, below), characteristics as S3 prints
 them (`PlayerStats.agility` / `passing` / `armour` are target numbers; a test sums its modifiers
 onto the target and clamps to 2+..6+, so AG/PA 1+ passes on any 2 whatever the modifiers — a
 modified 1 is still a fumble on a pass; JSON with the classic `ag` / `av` or a `D6Target` `pass`
@@ -37,6 +37,43 @@ touchdown, no Bone Head / Wild Animal; one extra pathfinding per carrier declara
 MA bound) and, if they still hold the ball standing when the activation ends, rolls the crowd's D6:
 at or above the team's turn number they are Knocked Down, a Turnover. Stunty: the Stunty Injury
 Table (KO 7+, Casualty 9+, on fouls and crowd injuries too) and dodges without Marking modifiers.
+
+## Throw / Kick Team-mate (S3, `procedures/team_mate_procs.rs`)
+
+**A human's only.** Every decision is the hidden `PosAT::ThrowTeamMate`
+(`insert_hidden_positional`: legal, never listed, no NN policy channel, `unreachable!` in
+`botbowl-nn/src/actions.rs`), so bots, the search and the NN never meet it; the web UI offers it.
+The traits `ThrowTeamMate`, `RightStuff`, `KickTeamMate` are appended to `Skill` past
+`ENCODED_SKILLS` (no NN plane) and are not in `good_skills` (the curriculum never draws them).
+`PosAT::ThrowTeamMate` is the 16th `PosAT`, which fills `PosATSet`'s `u16`: one more variant
+needs `u32` (and moves `tests/state_size.rs`).
+
+- **Declare** on the thrower in `Turn` (or `Charge`): a Throw if the player has Throw Team-mate and
+  `GameInfo::throw_team_mate_available`, else a Kick if Kick Team-mate and
+  `kick_team_mate_available` (one each per turn, separately; a player with both throws while it
+  is available). `player_action_type = ThrowTeamMate`, `kick_team_mate_this_activation` says
+  which; the activation is a `MoveAction` (moves only).
+- **Pick up** (in `MoveAction`, after any moving): the hidden action on an adjacent team-mate with
+  Right Stuff, Standing or Prone (not Stunned); the thrower must be Standing. Pushes `ThrowTeamMate`.
+- **Target**: any pitch square in Quick or Short range (`GameState::pass_range` 0/1) but the two
+  players' own. The thrower is `used`. PA test (`RequestedRoll::D6`): -1 Short, -1 per marker (no
+  Nerves of Steel: it is for passing the ball), -1 Very Sunny; natural 1 or modified ≤ 1
+  Fumbled, pass or natural 6 Superb, else Subpar; a team re-roll may re-roll a non-Superb
+  result (the Pass skill does not: it is for a Pass Action).
+- **Flight** (`ThrownPlayerFlight`): Superb and Subpar Scatter (3) from the target (no Bullseye),
+  a Throw's Fumble Bounces once from the thrower's square; a Kick's Fumble is an injury roll for
+  the kicked player with Stunned read as KO (`Injury::new_stunned_is_ko`), the ball Bouncing from
+  their square and a turnover if they held it. Each occupied square (not the thrown player's own,
+  they were lifted from it) is a crash: its player is Knocked Down after the thrown player is down
+  (Standing → Prone, Prone/Stunned stay; armour roll; their ball Bounces; a turnover if they are
+  the active team's), and the thrown player Bounces on. Off the pitch at any step: crowd injury,
+  a turnover, a held ball thrown in from the last square on the pitch.
+- **Landing** (`TeamMateLanding`, team re-roll allowed): AG test -1 Subpar, -1 Fumbled, -1 per
+  marker of the square. Passed: Standing, `used` unchanged (may still activate), a carrier in the
+  end zone scores, a loose ball under them Bounces. Failed — or after a crash, or thrown while
+  Prone (automatic) — Falls Over: Prone, armour roll, a turnover only if they held the ball.
+- Not implemented: Swoop, Bullseye, Strong Arm, Always Hungry, Lethal Flight, Disturbing
+  Presence, Distracted (the engine has no such state).
 
 ## Procedure-stack state machine
 
@@ -146,7 +183,7 @@ the event starts. The decisions reuse existing actions, so the policy head is un
 - **Quick Snap! (9):** up to D3+3 Open receivers: `SelectPosition` then `PlacePlayer` on an empty
   adjacent square (either half), `EndPlayerTurn` ends it.
 - **Charge! (10):** `Charge` is a turn for the kicking team over up to D3+3 Open players —
-  `StartMove`, one `StartBlitz`, `EndTurn` to stop; `turn_team()` reads it, so team re-rolls work.
+  `StartMove`, one `StartBlitz`, one hidden Throw and one hidden Kick Team-mate, `EndTurn` to stop; `turn_team()` reads it, so team re-rolls work.
   Only the activated player Falling Over or being Knocked Down ends it (a turnover with that
   player off their feet; Placed Prone by Wrestle is not), and the turnover flag is cleared; a
   team-mate pushed into the crowd is no turnover during a Charge. `team_turn` is restored after.

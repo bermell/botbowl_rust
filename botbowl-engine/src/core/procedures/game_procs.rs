@@ -8,7 +8,7 @@ use crate::core::model::{
     other_team, Action, AvailableActions, BallState, DugoutPlace, PlayerStatus, Position, ProcState, Procedure,
     TeamType, Weather,
 };
-use crate::core::procedures::{ball_procs, block_procs, kickoff_events, kickoff_procs, movement_procs};
+use crate::core::procedures::{ball_procs, block_procs, kickoff_events, kickoff_procs, movement_procs, team_mate_procs};
 use crate::core::table::*;
 
 use crate::core::{dices::D6Target, gamestate::GameState};
@@ -130,6 +130,8 @@ impl Procedure for Half {
         info.blitz_available = true;
         info.foul_available = true;
         info.pass_available = true;
+        info.throw_team_mate_available = true;
+        info.kick_team_mate_available = true;
         info.turnover = false;
 
         game_state.get_players_on_pitch_mut().for_each(|p| p.used = false);
@@ -238,6 +240,8 @@ impl Turn {
                 aa.insert_positional(PosAT::StartPass, positions.clone());
             }
 
+            // Throw / Kick Team-mate: hidden, a human's only.
+            team_mate_procs::offer_declarations(game_state, &positions, &mut aa);
             aa.insert_positional(PosAT::StartMove, positions);
         }
         aa.insert_simple(SimpleAT::EndTurn);
@@ -278,6 +282,10 @@ impl Procedure for Turn {
             if could_score_without_dice(game_state, id) {
                 self.stalling = Some(id);
             }
+            if at == PosAT::ThrowTeamMate {
+                team_mate_procs::declare(game_state, id);
+                return ProcState::NotDoneNew(movement_procs::MoveAction::new(id));
+            }
             let info = &mut game_state.info;
             info.player_action_type = Some(at);
             match at {
@@ -298,7 +306,7 @@ impl Procedure for Turn {
                 }
                 _ => unreachable!(),
             }
-            ProcState::NotDoneNew(movement_procs::MoveAction::new(info.active_player.unwrap()))
+            ProcState::NotDoneNew(movement_procs::MoveAction::new(id))
         } else if let ProcInput::Action(Action::Simple(SimpleAT::EndTurn)) = input {
             ProcState::Done
         } else {

@@ -302,7 +302,7 @@ pub fn builtin_teams() -> Vec<TeamDef> {
             vec![
                 pos("Lineman", Lineman, 5, 3, 3, 4, 9, &[], "olineman1", 16),
                 pos("Blitzer", Blitzer, 6, 3, 3, 4, 9, &["Block"], "oblitzer1", 4),
-                pos("Goblin", Catcher, 6, 2, 3, 4, 7, &["Dodge", "Stunty"], "goblin1", 4),
+                pos("Goblin", Catcher, 6, 2, 3, 4, 7, &["Dodge", "Right Stuff", "Stunty"], "goblin1", 4),
                 pos(
                     "Thrower",
                     Thrower,
@@ -316,6 +316,19 @@ pub fn builtin_teams() -> Vec<TeamDef> {
                     2,
                 ),
                 pos("Black Orc", Lineman, 4, 4, 2, 6, 9, &[], "oblackorc1", 4),
+                // Untrained Troll, cut to what the engine has: throws the Goblins.
+                pos(
+                    "Troll",
+                    Lineman,
+                    4,
+                    5,
+                    1,
+                    5,
+                    9,
+                    &["Loner", "Mighty Blow", "Throw Team-mate"],
+                    "troll1",
+                    1,
+                ),
             ],
         ),
         team(

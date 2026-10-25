@@ -19,6 +19,7 @@ use crate::core::procedures::kickoff_procs::{ChangingWeather, Kickoff, KickoffTa
 use crate::core::procedures::movement_procs::{DodgeProc, GfiProc, MoveAction, StandUp, StandUpRoll};
 
 use crate::core::procedures::procedure_tools::SimpleProcContainer;
+use crate::core::procedures::team_mate_procs::{TeamMateLanding, ThrowTeamMate, ThrownPlayerFlight};
 
 /// Define `AnyProc` and its `Debug`, `name`, `Procedure::step` impls from a
 /// single source of truth so each new procedure only has to be added once.
@@ -115,4 +116,7 @@ any_proc! {
     SolidDefence(SolidDefence),
     Charge(Charge),
     Stalling(Stalling),
+    ThrowTeamMate(ThrowTeamMate),
+    ThrownPlayerFlight(ThrownPlayerFlight),
+    TeamMateLanding(SimpleProcContainer<TeamMateLanding>),
 }

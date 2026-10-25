@@ -59,6 +59,9 @@ pub fn pos_at_index(at: PosAT) -> usize {
         // Schema v8: per-player setup (the setup used to be a handful of
         // whole-team formation actions the net could not tell apart).
         PosAT::PlacePlayer => 14,
+        // Hidden (Throw / Kick Team-mate, `AvailableActions::insert_hidden_positional`): never
+        // listed among a state's legal actions — no channel, no schema change.
+        PosAT::ThrowTeamMate => unreachable!("PosAT::ThrowTeamMate is hidden from bots and has no policy channel"),
     }
 }
 

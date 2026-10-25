@@ -378,6 +378,20 @@ pub struct GameInfo {
     /// `cheering_fans_this_turn` by the first block rolled; cleared when the activation ends).
     #[serde(default)]
     pub cheering_assist: bool,
+    /// S3: "Only a single Throw Team-mate Action can be declared each Turn" — not yet declared.
+    #[serde(default = "serde_true")]
+    pub throw_team_mate_available: bool,
+    /// S3, Kick Team-mate: "only one player can declare this Special Action each Turn", and it
+    /// does not count as the team's Throw Team-mate Action — not yet declared.
+    #[serde(default = "serde_true")]
+    pub kick_team_mate_available: bool,
+    /// The active player's `PosAT::ThrowTeamMate` activation is a Kick Team-mate (the kicked
+    /// team-mate's Fumbled Throw is an injury roll). Cleared at activation start.
+    #[serde(default)]
+    pub kick_team_mate_this_activation: bool,
+}
+fn serde_true() -> bool {
+    true
 }
 impl GameInfo {
     fn new() -> GameInfo {
@@ -404,6 +418,9 @@ impl GameInfo {
             blitz_this_activation: false,
             cheering_fans_this_turn: false,
             cheering_assist: false,
+            throw_team_mate_available: true,
+            kick_team_mate_available: true,
+            kick_team_mate_this_activation: false,
         }
     }
 }
@@ -760,6 +777,7 @@ impl GameState {
         // Fresh activation — clear any pickup-bonus owed to a prior activation.
         self.info.pickup_this_activation = false;
         self.info.blitz_this_activation = false;
+        self.info.kick_team_mate_this_activation = false;
     }
 
     pub fn get_active_player(&self) -> Option<&FieldedPlayer> {
@@ -1887,8 +1905,9 @@ impl GameState {
             .collect::<Vec<(Position, D6Target)>>()
     }
 
-    pub fn get_pass_modifier(&self, id: usize, from: Position, to: Position) -> Option<i8> {
-        // TODO: move this whole function to pathing and cache it there.
+    /// The Range Ruler section `to` falls in from `from`: 0 Quick, 1 Short, 2 Long, 3 Long Bomb,
+    /// `None` beyond it. Panics on `from == to`.
+    pub fn pass_range(from: Position, to: Position) -> Option<i8> {
         const MATRIX: [[i8; 14]; 14] = [
             [8, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3],
             [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3],
@@ -1914,12 +1933,18 @@ impl GameState {
 
         let delta = to - from;
         let (dx, dy) = (delta.dx.unsigned_abs() as usize, delta.dy.unsigned_abs() as usize);
-        let distance_modifier = MATRIX.get(dx)?.get(dy)?;
-        if *distance_modifier == 8 {
+        let distance_modifier = *MATRIX.get(dx)?.get(dy)?;
+        if distance_modifier == 8 {
             panic!("Passing to oneself is not possible: from {} to {}", from, to);
-        } else if *distance_modifier == 9 {
+        } else if distance_modifier == 9 {
             return None;
         }
+        Some(distance_modifier)
+    }
+
+    pub fn get_pass_modifier(&self, id: usize, from: Position, to: Position) -> Option<i8> {
+        // TODO: move this whole function to pathing and cache it there.
+        let distance_modifier = &GameState::pass_range(from, to)?;
 
         // S3: in a Blizzard only a Quick or a Short Pass.
         if self.info.weather == Weather::Blizzard && *distance_modifier >= 2 {

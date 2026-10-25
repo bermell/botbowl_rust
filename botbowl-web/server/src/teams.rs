@@ -36,7 +36,10 @@ pub fn skills() -> Vec<SkillInfo> {
         .into_iter()
         .map(|s| SkillInfo {
             label: mirror::skill_label(s).to_string(),
-            implemented: good.contains(&s),
+            // Throw / Kick Team-mate are implemented but only a human can use them, so they are
+            // not in `good_skills` (the curriculum's sampling pool).
+            implemented: good.contains(&s)
+                || matches!(s, Skill::ThrowTeamMate | Skill::RightStuff | Skill::KickTeamMate),
         })
         .collect()
 }

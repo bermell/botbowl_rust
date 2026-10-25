@@ -62,11 +62,14 @@ pub enum PosAT {
     /// Setup: put the player being placed (`ViewState::active_player`) on
     /// this square of the own half.
     PlacePlayer,
+    /// Throw / Kick Team-mate, every step of it: the declaration on the thrower, the team-mate
+    /// to pick up, the target square. Offered to humans only (the engine hides it from bots).
+    ThrowTeamMate,
 }
 
 impl PosAT {
     /// All variants, in policy-channel order.
-    pub const ALL: [PosAT; 15] = [
+    pub const ALL: [PosAT; 16] = [
         PosAT::StartMove,
         PosAT::StartBlitz,
         PosAT::StartPass,
@@ -82,6 +85,7 @@ impl PosAT {
         PosAT::StartBlock,
         PosAT::Block,
         PosAT::PlacePlayer,
+        PosAT::ThrowTeamMate,
     ];
 
     /// The variant's own name, sentence-cased — `StartMove` is "Start move"
@@ -106,6 +110,7 @@ impl PosAT {
             PosAT::StartBlock => "Start block",
             PosAT::Block => "Block",
             PosAT::PlacePlayer => "Place player",
+            PosAT::ThrowTeamMate => "Throw team mate",
         }
     }
 
@@ -115,7 +120,7 @@ impl PosAT {
             PosAT::StartMove | PosAT::Move => Some("icons/actions/move.gif"),
             PosAT::StartBlitz => Some("icons/actions/blitz.gif"),
             PosAT::StartBlock | PosAT::Block => Some("icons/actions/block.gif"),
-            PosAT::StartPass | PosAT::Pass => Some("icons/actions/pass.gif"),
+            PosAT::StartPass | PosAT::Pass | PosAT::ThrowTeamMate => Some("icons/actions/pass.gif"),
             PosAT::StartHandoff | PosAT::Handoff => Some("icons/actions/handoff.gif"),
             PosAT::StartFoul | PosAT::Foul => Some("icons/actions/foul.gif"),
             PosAT::Push | PosAT::FollowUp | PosAT::SelectPosition | PosAT::PlacePlayer => None,

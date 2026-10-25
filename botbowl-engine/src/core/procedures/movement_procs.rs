@@ -7,7 +7,7 @@ use crate::core::pathing::{
 };
 use crate::core::procedures::casualty_procs::Blow;
 use crate::core::procedures::procedure_tools::{SimpleProc, SimpleProcContainer};
-use crate::core::procedures::{ball_procs, block_procs, game_procs};
+use crate::core::procedures::{ball_procs, block_procs, game_procs, team_mate_procs};
 use crate::core::table::*;
 
 use crate::core::model::{other_team, TeamType, Weather};
@@ -254,6 +254,16 @@ impl MoveAction {
         {
             game_state.available_actions.insert_hidden_simple(SimpleAT::PassSquare);
         }
+        // Throw / Kick Team-mate: after the free Move Action, pick up an adjacent Right Stuff
+        // team-mate (hidden, like the declaration).
+        if game_state.info.player_action_type == Some(PosAT::ThrowTeamMate) {
+            let thrower = game_state.get_player_unsafe(self.player_id);
+            for pos in team_mate_procs::throwable_team_mates(game_state, thrower) {
+                game_state
+                    .available_actions
+                    .insert_hidden_positional(PosAT::ThrowTeamMate, pos);
+            }
+        }
     }
 }
 impl Procedure for MoveAction {
@@ -281,6 +291,12 @@ impl Procedure for MoveAction {
                     self.state = MoveActionState::Init;
                 }
                 proc_state
+            }
+            (ProcInput::Action(Action::Positional(PosAT::ThrowTeamMate, position)), MoveActionState::SelectPath) => {
+                self.state = MoveActionState::Init;
+                let thrown = game_state.get_player_id_at(position).unwrap();
+                let kick = game_state.info.kick_team_mate_this_activation;
+                ProcState::NotDoneNew(team_mate_procs::ThrowTeamMate::new(self.player_id, thrown, kick))
             }
             (ProcInput::Action(Action::Positional(_, position)), MoveActionState::SelectPath) => {
                 // Selecting a move action consumes any pickup-bonus owed from a

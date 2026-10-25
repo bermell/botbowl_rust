@@ -16,6 +16,7 @@ use crate::core::model::{
 };
 use crate::core::procedures::kickoff_procs::{role_rank, staging_squares, Setup};
 use crate::core::procedures::movement_procs::MoveAction;
+use crate::core::procedures::team_mate_procs;
 use crate::core::table::*;
 
 use super::AnyProc;
@@ -445,7 +446,8 @@ impl Procedure for SolidDefence {
 
 /// Charge!: up to D3+3 of the kicking team's Open players (Open when the event happens) are
 /// activated one at a time, exactly as in a turn of theirs, for a free Move Action — one of them
-/// may Blitz instead (Throw / Kick Team-mate do not exist here). The activated player Falling
+/// may Blitz instead, one may Throw a Team-mate and one Kick a Team-mate (hidden declarations,
+/// `team_mate_procs`: only a human takes them). The activated player Falling
 /// Over or being Knocked Down ends the Charge, with no turnover; nothing else does (a team-mate
 /// pushed into the crowd is no turnover here, see `GameState::in_charge`). `EndTurn` ends it
 /// early. The ball is in the air, so nobody can pick it up, hand it off or pass it.
@@ -483,6 +485,9 @@ impl Charge {
         info.blitz_this_activation = false;
         info.pickup_this_activation = false;
         info.blitz_available = false;
+        info.throw_team_mate_available = false;
+        info.kick_team_mate_available = false;
+        info.kick_team_mate_this_activation = false;
         info.cheering_assist = false;
         ProcState::Done
     }
@@ -502,6 +507,9 @@ impl Charge {
         if game_state.info.blitz_available {
             aa.insert_positional(PosAT::StartBlitz, positions.clone());
         }
+        // "... one may perform a free Throw Team-mate Action, and one may perform a free Kick
+        // Team-mate Action": hidden, a human's only.
+        team_mate_procs::offer_declarations(game_state, &positions, &mut aa);
         aa.insert_positional(PosAT::StartMove, positions);
         aa.insert_simple(SimpleAT::EndTurn);
         ProcState::NeedAction(aa)
@@ -522,6 +530,8 @@ impl Procedure for Charge {
                 info.team_turn = self.team;
                 info.turnover = false;
                 info.blitz_available = true;
+                info.throw_team_mate_available = true;
+                info.kick_team_mate_available = true;
                 info.handoff_available = false;
                 info.pass_available = false;
                 info.foul_available = false;
@@ -541,9 +551,12 @@ impl Procedure for Charge {
                 game_state.info.turnover = false;
                 self.offer(game_state)
             }
-            ProcInput::Action(Action::Positional(at @ (PosAT::StartMove | PosAT::StartBlitz), pos)) => {
+            ProcInput::Action(Action::Positional(at @ (PosAT::StartMove | PosAT::StartBlitz | PosAT::ThrowTeamMate), pos)) => {
                 let id = game_state.get_player_id_at(pos).unwrap();
                 game_state.set_active_player(id);
+                if at == PosAT::ThrowTeamMate {
+                    team_mate_procs::declare(game_state, id);
+                }
                 let info = &mut game_state.info;
                 info.player_action_type = Some(at);
                 if at == PosAT::StartBlitz {

@@ -20,6 +20,13 @@ pub enum PosAT {
     /// Setup: put the player being placed (`info.active_player`) on this
     /// square of our own half. See `Setup` in `procedures/kickoff_procs.rs`.
     PlacePlayer,
+    /// Throw / Kick Team-mate (S3), every step of it: declaring the action on the thrower (or
+    /// kicker), picking up the adjacent Right Stuff team-mate on their square, then the target
+    /// square. **Hidden** (`AvailableActions::insert_hidden_positional`): legal, never listed,
+    /// so bots, the search and the NN never see it (and it has no policy channel); a human UI
+    /// offers it. Which step it is depends on the procedure asking. See
+    /// `procedures/team_mate_procs.rs`.
+    ThrowTeamMate,
 }
 
 #[derive(Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
@@ -125,6 +132,14 @@ pub enum Skill {
     Pass,
     WildAnimal,
     KickOffReturn,
+    // Appended after `StripBall` (index 39), so every earlier index keeps its place. Beyond
+    // `botbowl-nn`'s `ENCODED_SKILLS`: no NN plane, no schema change.
+    /// S3 trait: may declare a Throw Team-mate Action.
+    ThrowTeamMate,
+    /// S3 trait: can be thrown (or kicked) by a team-mate, even if Prone.
+    RightStuff,
+    /// S3 trait: may declare a Kick Team-mate Special Action (one per team per turn).
+    KickTeamMate,
 }
 impl Skill {
     /// Every skill variant, in declaration order. This is the canonical
@@ -182,10 +197,13 @@ impl Skill {
         // Appended, not grouped with General, so every earlier index (and NN skill plane) keeps
         // its place.
         Skill::StripBall,
+        Skill::ThrowTeamMate,
+        Skill::RightStuff,
+        Skill::KickTeamMate,
     ];
 
     /// Number of skill variants.
-    pub const COUNT: usize = 40;
+    pub const COUNT: usize = 43;
 
     /// Dense index of a skill within [`Skill::ALL`].
     ///
@@ -234,6 +252,9 @@ impl Skill {
             Skill::WildAnimal => 37,
             Skill::KickOffReturn => 38,
             Skill::StripBall => 39,
+            Skill::ThrowTeamMate => 40,
+            Skill::RightStuff => 41,
+            Skill::KickTeamMate => 42,
         }
     }
 
@@ -375,7 +396,7 @@ impl<'de> Deserialize<'de> for SkillSet {
 }
 
 impl PosAT {
-    pub const COUNT: usize = 15;
+    pub const COUNT: usize = 16;
     /// Every variant, in `index` order. `index` is an exhaustive match, so a new variant fails to
     /// compile until it is numbered, and `pos_at_all_matches_index` checks it was added here too.
     pub const ALL: [PosAT; PosAT::COUNT] = [
@@ -394,6 +415,7 @@ impl PosAT {
         PosAT::StartBlock,
         PosAT::Block,
         PosAT::PlacePlayer,
+        PosAT::ThrowTeamMate,
     ];
     pub const fn index(self) -> usize {
         match self {
@@ -412,6 +434,7 @@ impl PosAT {
             PosAT::StartBlock => 12,
             PosAT::Block => 13,
             PosAT::PlacePlayer => 14,
+            PosAT::ThrowTeamMate => 15,
         }
     }
 }

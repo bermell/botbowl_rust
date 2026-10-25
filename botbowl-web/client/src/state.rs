@@ -12,7 +12,7 @@ use botbowl_web_proto::msg::{GameSpec, LobbyInfo, StepMode};
 use botbowl_web_proto::search::{NodeExpansion, SearchReport};
 use botbowl_web_proto::team::TeamDef;
 use botbowl_web_proto::view::{SelectionView, ViewState};
-use botbowl_web_proto::{Action, Position, TeamType};
+use botbowl_web_proto::{Action, PosAT, Position, TeamType};
 use leptos::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -375,7 +375,13 @@ pub fn click_target(app: &App, pos: Position) -> Click {
             return Click::Nothing;
         }
     }
-    let (starts, others): (Vec<_>, Vec<_>) = actions.into_iter().partition(|at| at.is_start());
+    // Throw / Kick Team-mate on a player who may also be declared otherwise is a declaration
+    // (picked from the action bar once selected); anywhere else it is the team-mate to pick up
+    // or the square to throw at.
+    let declarable = actions.iter().any(|at| at.is_start());
+    let (starts, others): (Vec<_>, Vec<_>) = actions
+        .into_iter()
+        .partition(|at| at.is_start() || (declarable && *at == PosAT::ThrowTeamMate));
     match (others.len(), starts.is_empty()) {
         (1, _) => Click::Send(Action::Positional(others[0], pos)),
         (n, _) if n > 1 => Click::OpenMenu(Menu { pos, actions: others }),

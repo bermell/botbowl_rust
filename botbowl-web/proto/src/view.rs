@@ -375,6 +375,9 @@ pub struct SelectionView {
     pub end_first: bool,
     /// Declarations offered on the player, in [`PosAT::ALL`] order.
     pub starts: Vec<PosAT>,
+    /// `PosAT::ThrowTeamMate` among `starts` declares a Kick Team-mate, not a Throw.
+    #[serde(default)]
+    pub kick_team_mate: bool,
     pub targets: Vec<IntentView>,
 }
 

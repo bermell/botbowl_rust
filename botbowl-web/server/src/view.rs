@@ -370,10 +370,14 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
     let at = mirror::position_from_proto(pos);
     let player = state.get_player_at(at)?;
     let (team, id, carrier) = (player.stats.team, player.id, state.ball == BallState::Carried(player.id));
+    // Throw / Kick Team-mate is a hidden declaration (bots never see it): a human's, listed last.
     let starts: Vec<et::PosAT> = STARTS
         .into_iter()
+        .chain([et::PosAT::ThrowTeamMate])
         .filter(|s| state.is_legal_action(&em::Action::Positional(*s, at)))
         .collect();
+    let kick_team_mate = starts.contains(&et::PosAT::ThrowTeamMate)
+        && botbowl_engine::core::procedures::team_mate_procs::team_mate_declaration(state, player) == Some(true);
     if starts.is_empty() {
         return None;
     }
@@ -381,6 +385,10 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
     // Every (declaration, square, intent) the declarations would offer next.
     let mut offered: Vec<(et::PosAT, Position, pv::IntentView)> = Vec::new();
     for &start in &starts {
+        // Its moves are a Move action's; the team-mate to throw is picked after the move.
+        if start == et::PosAT::ThrowTeamMate {
+            continue;
+        }
         let mut preview = state.clone();
         // A declaration that rolls at once (Jump Up) pauses on the roll here
         // rather than drawing on anybody's dice: it then offers nothing.
@@ -464,6 +472,7 @@ fn selection_now(state: &GameState, pos: botbowl_web_proto::Position, seq: u64) 
         player: pos,
         end_first: false,
         starts: starts.into_iter().map(mirror::pos_at_to_proto).collect(),
+        kick_team_mate,
         targets,
     })
 }
@@ -1323,6 +1332,37 @@ mod tests {
         assert!(blitz.block_dice.is_some());
         // A team-mate, from a player without the ball, is not a target.
         assert!(intent_at(&sel, 8, 4).is_none());
+    }
+
+    /// Throw Team-mate is hidden from bots but a human's: the thrower's selection offers it as a
+    /// declaration (a Kick Team-mate kicker's says so), the team-mate to pick up and then every
+    /// target square carry it on the board.
+    #[test]
+    fn a_human_declares_throw_team_mate_and_picks_the_team_mate_and_the_square() {
+        use botbowl_engine::core::table::{PosAT as EPosAT, Skill};
+        let (thrower, mate) = (em::Position::new((10, 4)), em::Position::new((11, 4)));
+        let mut state = GameStateBuilder::new()
+            .with_board_dims(dims())
+            .add_home_players(&[(10, 4), (11, 4)])
+            .add_away_players(&[(2, 1)])
+            .build();
+        state.get_mut_player_at_unsafe(thrower).stats.skills.insert(Skill::ThrowTeamMate);
+        state.get_mut_player_at_unsafe(mate).stats.skills.insert(Skill::RightStuff);
+        state.reask_turn_decision().unwrap();
+        let sel = selection(&state, pa::Position::new(10, 4), 0).unwrap();
+        assert_eq!(sel.starts.last(), Some(&PosAT::ThrowTeamMate));
+        assert!(!sel.kick_team_mate);
+        let on = |state: &GameState, x: i8, y: i8| {
+            view_of(state).squares[view_of(state).dims.index(pa::Position::new(x, y))]
+                .actions
+                .contains(&PosAT::ThrowTeamMate)
+        };
+        assert!(on(&state, 10, 4), "the declaration is on the thrower's square");
+        state.step_positional(EPosAT::ThrowTeamMate, thrower);
+        assert!(on(&state, 11, 4), "the team-mate to pick up");
+        state.step_positional(EPosAT::ThrowTeamMate, mate);
+        assert!(on(&state, 7, 4) && on(&state, 10, 1), "target squares");
+        assert!(!on(&state, 10, 4));
     }
 
     #[test]

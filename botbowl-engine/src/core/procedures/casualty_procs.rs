@@ -189,6 +189,9 @@ pub struct Injury {
     /// +1 to the roll (Mighty Blow).
     #[serde(default)]
     mighty_blow: bool,
+    /// A Stunned result is a Knocked-out one (Kick Team-mate's Fumbled Throw).
+    #[serde(default)]
+    stunned_is_ko: bool,
 }
 impl Injury {
     pub fn new(id: PlayerID) -> AnyProc {
@@ -197,6 +200,20 @@ impl Injury {
             crowd: false,
             fouler: None,
             mighty_blow: false,
+            stunned_is_ko: false,
+        })
+    }
+
+    /// S3, Kick Team-mate: "if a Kick Team-mate Special Action results in a Fumbled Throw,
+    /// immediately make an Injury Roll for the team-mate being kicked, treating any result of
+    /// Stunned as Knocked Out."
+    pub fn new_stunned_is_ko(id: PlayerID) -> AnyProc {
+        AnyProc::Injury(Injury {
+            id,
+            crowd: false,
+            fouler: None,
+            mighty_blow: false,
+            stunned_is_ko: true,
         })
     }
 
@@ -206,6 +223,7 @@ impl Injury {
             crowd: true,
             fouler: None,
             mighty_blow: false,
+            stunned_is_ko: false,
         })
     }
     pub fn new_pure(id: PlayerID) -> Injury {
@@ -214,6 +232,7 @@ impl Injury {
             crowd: false,
             fouler: None,
             mighty_blow: false,
+            stunned_is_ko: false,
         }
     }
 }
@@ -255,6 +274,7 @@ impl Procedure for Injury {
             InjuryOutcome::Casualty => Some(DugoutPlace::Injuried),
             InjuryOutcome::KO => Some(DugoutPlace::KnockOut),
             InjuryOutcome::Stunned if self.crowd => Some(DugoutPlace::Reserves),
+            InjuryOutcome::Stunned if self.stunned_is_ko => Some(DugoutPlace::KnockOut),
             InjuryOutcome::Stunned => {
                 game_state.get_mut_player_unsafe(self.id).status = PlayerStatus::Stunned;
                 None
