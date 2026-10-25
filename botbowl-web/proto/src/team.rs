@@ -5,9 +5,10 @@
 //! the chosen defs (`server/src/teams.rs`), and the view draws each player with its position's
 //! picture. Custom teams are saved as JSON under `~/.config/botbowl/teams/`.
 //!
-//! Stats are in the **engine's** terms, which are LRB6 values: `ag` is the old agility value
-//! (higher is better; the roll target is `7 - ag`), `pa` is a pass *target* (`2..=6`, i.e.
-//! `2+..6+`). Skills are carried by their display label ([`SkillInfo::label`]), so a saved team
+//! Stats are in S3 terms, as the engine stores them: MA and ST are numbers, `agility`, `pa` and
+//! `armour` are target numbers (AG 3+, PA 4+, AV 9+). A team saved before that holds the
+//! classic `ag` / `av` numbers (AG 3, AV 8) and loads converted. The built-in rosters are LRB6
+//! rosters, written in their classic numbers and converted (`pos`). Skills are carried by their display label ([`SkillInfo::label`]), so a saved team
 //! is readable by hand; the server rejects a label it does not know.
 
 use serde::{Deserialize, Serialize};
@@ -18,11 +19,16 @@ use crate::view::PlayerRole;
 /// The engine's stat ceilings (`PlayerStats::MAX_*`), mirrored so the editor can clamp.
 pub const MAX_MA: u8 = 10;
 pub const MAX_ST: u8 = 8;
+/// AG is a target number: 1+ the best, 6+ the worst.
+pub const MIN_AG: u8 = 1;
 pub const MAX_AG: u8 = 6;
+/// AV is a 2D6 target number.
+pub const MIN_AV: u8 = 3;
 pub const MAX_AV: u8 = 12;
 
 /// One position on a roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PositionDefJson")]
 pub struct PositionDef {
     /// "Blitzer", "Gutter Runner", ...
     pub name: String,
@@ -30,10 +36,12 @@ pub struct PositionDef {
     pub role: PlayerRole,
     pub ma: u8,
     pub st: u8,
-    pub ag: u8,
+    /// Agility target, `1..=6` (AG 3+).
+    pub agility: u8,
     /// Pass target, `2..=6`.
     pub pa: u8,
-    pub av: u8,
+    /// Armour target (AV 9+).
+    pub armour: u8,
     /// Display labels, e.g. `"Sure Hands"`.
     pub skills: Vec<String>,
     /// A sprite stem under `img/iconssmall/` (`"oblitzer1"`, drawn in the team's colourway and
@@ -42,6 +50,58 @@ pub struct PositionDef {
     /// The most of this position a roster may field. The **first** position is the filler and
     /// takes whatever slots the others leave, whatever its count says.
     pub max: u8,
+}
+
+/// `PositionDef` as JSON: the S3 `agility` / `armour`, or a team saved before them with the
+/// classic `ag` / `av` (AG 3 is AG 3+, AG 4 is 2+; AV 8 is AV 9+ — the engine's own
+/// `PlayerStats::from_legacy_ag` / `from_legacy_av`).
+#[derive(Deserialize)]
+struct PositionDefJson {
+    name: String,
+    role: PlayerRole,
+    ma: u8,
+    st: u8,
+    #[serde(default)]
+    agility: Option<u8>,
+    #[serde(default)]
+    ag: Option<u8>,
+    pa: u8,
+    #[serde(default)]
+    armour: Option<u8>,
+    #[serde(default)]
+    av: Option<u8>,
+    skills: Vec<String>,
+    picture: String,
+    max: u8,
+}
+
+impl TryFrom<PositionDefJson> for PositionDef {
+    type Error = String;
+    fn try_from(j: PositionDefJson) -> Result<Self, String> {
+        Ok(PositionDef {
+            agility: j
+                .agility
+                .or(j.ag.map(agility_of_classic))
+                .ok_or("a position needs `agility` (or a classic `ag`)")?,
+            armour: j
+                .armour
+                .or(j.av.map(|av| av + 1))
+                .ok_or("a position needs `armour` (or a classic `av`)")?,
+            name: j.name,
+            role: j.role,
+            ma: j.ma,
+            st: j.st,
+            pa: j.pa,
+            skills: j.skills,
+            picture: j.picture,
+            max: j.max,
+        })
+    }
+}
+
+/// The S3 Agility target of a classic AG number (`PlayerStats::from_legacy_ag`).
+fn agility_of_classic(ag: u8) -> u8 {
+    6u8.saturating_sub(ag).max(MIN_AG)
 }
 
 /// A roster.
@@ -94,9 +154,9 @@ impl TeamDef {
             p.name = p.name.trim().chars().take(40).collect();
             p.ma = p.ma.clamp(1, MAX_MA);
             p.st = p.st.clamp(1, MAX_ST);
-            p.ag = p.ag.clamp(1, MAX_AG);
+            p.agility = p.agility.clamp(MIN_AG, MAX_AG);
             p.pa = p.pa.clamp(2, 6);
-            p.av = p.av.clamp(3, MAX_AV);
+            p.armour = p.armour.clamp(MIN_AV, MAX_AV);
             p.skills.sort();
             p.skills.dedup();
         }
@@ -110,12 +170,12 @@ impl TeamDef {
         role: PlayerRole,
         ma: u8,
         st: u8,
-        ag: u8,
-        av: u8,
+        agility: u8,
+        armour: u8,
         skills: &[String],
     ) -> Option<&PositionDef> {
         self.positions.iter().find(|p| {
-            p.role == role && p.ma == ma && p.st == st && p.ag == ag && p.av == av && {
+            p.role == role && p.ma == ma && p.st == st && p.agility == agility && p.armour == armour && {
                 let mut a = p.skills.clone();
                 a.sort();
                 let mut b = skills.to_vec();
@@ -163,6 +223,8 @@ pub fn slug(name: &str) -> String {
     s.trim_matches('-').to_string()
 }
 
+/// A position from an LRB6 roster, in its classic numbers (`ag` higher-is-better, `av` broken
+/// on a roll above it), stored as S3 targets.
 #[allow(clippy::too_many_arguments)]
 fn pos(
     name: &str,
@@ -181,9 +243,9 @@ fn pos(
         role,
         ma,
         st,
-        ag,
+        agility: agility_of_classic(ag),
         pa,
-        av,
+        armour: av + 1,
         skills: {
             let mut v: Vec<String> = skills.iter().map(|s| s.to_string()).collect();
             v.sort();
@@ -445,6 +507,25 @@ pub fn builtin_teams() -> Vec<TeamDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A team saved before S3 storage (classic `ag` / `av`) loads as S3 targets; a new save
+    /// round-trips.
+    #[test]
+    fn a_team_saved_with_classic_numbers_loads_converted() {
+        let legacy = r#"{"name":"Lineman","role":"Lineman","ma":6,"st":3,"ag":4,"pa":4,"av":8,
+            "skills":[],"picture":"hlineman1","max":16}"#;
+        let p: PositionDef = serde_json::from_str(legacy).unwrap();
+        assert_eq!((p.agility, p.armour), (2, 9), "AG 4 is AG 2+, AV 8 is AV 9+");
+        let again: PositionDef = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(again, p);
+    }
+
+    /// The built-in Human lineman is the engine's: AG 3+, AV 9+.
+    #[test]
+    fn builtin_rosters_are_in_s3_targets() {
+        let human = builtin_teams().into_iter().find(|t| t.name == DEFAULT_TEAM).unwrap();
+        assert_eq!((human.positions[0].agility, human.positions[0].armour), (3, 9));
+    }
 
     #[test]
     fn a_roster_fills_every_slot_with_the_engine_split() {

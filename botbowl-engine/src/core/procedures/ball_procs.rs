@@ -503,6 +503,47 @@ impl Procedure for Pass {
         }
     }
 }
+/// `SimpleAT::PassSquare`: the passer, where they stand, picks any square in range (S3, Declare
+/// Target Square — it need not hold a team-mate), and the pass is thrown there. Only reachable
+/// through that hidden action, so bots never meet it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct PassToSquare {
+    id: PlayerID,
+}
+impl PassToSquare {
+    pub fn new(id: PlayerID) -> AnyProc {
+        AnyProc::PassToSquare(PassToSquare { id })
+    }
+
+    /// Every square on the pitch in passing range of `from` (not `from` itself).
+    pub fn squares_in_range(game_state: &GameState, id: PlayerID, from: Position) -> Vec<Position> {
+        let dims = game_state.board_dims;
+        Position::all_positions()
+            .filter(|&to| !dims.is_out(to) && to != from)
+            .filter(|&to| game_state.get_pass_modifier(id, from, to).is_some())
+            .collect()
+    }
+}
+impl Procedure for PassToSquare {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        let from = game_state.get_player_unsafe(self.id).position;
+        match input {
+            ProcInput::Action(Action::Positional(PosAT::Pass, to)) => {
+                game_state.get_mut_player_unsafe(self.id).used = true;
+                let target = game_state.get_pass_target(self.id, from, to).unwrap();
+                let modifier = game_state.get_pass_modifier(self.id, from, to).unwrap();
+                ProcState::DoneNew(Pass::new(to, target, modifier))
+            }
+            _ => {
+                let team = game_state.get_player_unsafe(self.id).stats.team;
+                let mut aa = AvailableActions::new(team);
+                aa.insert_positional(PosAT::Pass, Self::squares_in_range(game_state, self.id, from));
+                ProcState::NeedAction(aa)
+            }
+        }
+    }
+}
+
 /// S3, Interceptions: the Agility Test is -3 against an Accurate Pass, -2 against an Inaccurate
 /// one (on top of the marking and weather modifiers in `GameState::get_intercepters`).
 pub fn interception_modifier(result: PassResult) -> i8 {

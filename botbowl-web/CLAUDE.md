@@ -341,7 +341,9 @@ at `img/custom/`).
   and player ids are reassigned whenever a player moves between dugout and pitch. `Looks` matches
   (team, role, stats, skills) against the team's positions and falls back to the first position
   of the role. Two positions identical in all of those share a picture.
-- `ag` is the engine's LRB6 value (roll `7 - ag`), `pa` a pass target. The role is not cosmetic:
+- Stats are S3, as the engine stores them: `agility`, `pa` and `armour` are target numbers (AG 3+,
+  PA 4+, AV 9+). A team saved with the classic `ag` / `av` (AG 3, AV 8) loads converted, and
+  the built-in LRB6 rosters are written in classic numbers and converted by `pos`. The role is not cosmetic:
   the scripted kickoff setup ranks players by role.
 - Skills are carried by label; a label the engine does not know is refused. The editor marks
   skills outside `Skill::good_skills()` as "no rules yet" — they exist in the enum (and the net's

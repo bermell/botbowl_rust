@@ -456,9 +456,10 @@ impl<'a> GameInfo<'a> {
     }
 
     fn new(game_state: &'a GameState, player: &FieldedPlayer) -> GameInfo<'a> {
-        let dodge_target = *player.ag_target().add_modifer(1);
+        // Agility tests, before the marking modifiers applied per square.
+        let dodge_target = player.ag_target();
         let gfi_target = crate::core::procedures::movement_procs::rush_target(game_state);
-        let mut pickup_target = *player.ag_target().add_modifer(1);
+        let mut pickup_target = player.ag_target();
 
         if game_state.info.weather == Weather::Rain {
             pickup_target.add_modifer(-1);
@@ -1257,7 +1258,7 @@ mod tests {
         crate::skip_if_board_smaller_than!(14, 7);
 
         let mut mover_stats = PlayerStats::new_catcher(TeamType::Home);
-        mover_stats.ag = 3; // roster value observed in the screenshot's tooltip (Dodge 3+).
+        mover_stats.agility = 3; // AG 3+: the tooltip in the screenshot read Dodge 3+.
         let start = Position::new((8, 6));
         let target = Position::new((2, 1));
 

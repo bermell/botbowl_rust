@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::model::Procedure;
 use crate::core::procedures::ball_procs::{
-    Bounce, Catch, Deflect, DeflectOrResolve, Pass, PickupProc, ThrowIn, Touchback, Touchdown,
+    Bounce, Catch, Deflect, DeflectOrResolve, Pass, PassToSquare, PickupProc, ThrowIn, Touchback, Touchdown,
 };
 
 use crate::core::procedures::block_procs::{
@@ -102,4 +102,5 @@ any_proc! {
     Wrestle(Wrestle),
     // Appended out of order so every earlier variant keeps its postcard index.
     StandUpRoll(SimpleProcContainer<StandUpRoll>),
+    PassToSquare(PassToSquare),
 }

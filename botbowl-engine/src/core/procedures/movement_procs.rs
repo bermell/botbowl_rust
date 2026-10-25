@@ -247,6 +247,13 @@ impl MoveAction {
         game_state.available_actions.team = Some(team);
         game_state.available_actions.has_paths = true;
         game_state.available_actions.insert_simple(SimpleAT::EndPlayerTurn);
+        // S3 lets a pass target any square in range; the paths only reach team-mates. Passing
+        // to a square is hidden from bots (rare, and not worth a branch in every pass decision).
+        if game_state.info.player_action_type == Some(PosAT::StartPass)
+            && game_state.ball == crate::core::model::BallState::Carried(self.player_id)
+        {
+            game_state.available_actions.insert_hidden_simple(SimpleAT::PassSquare);
+        }
     }
 }
 impl Procedure for MoveAction {
@@ -301,6 +308,10 @@ impl Procedure for MoveAction {
             (ProcInput::Action(Action::Simple(SimpleAT::EndPlayerTurn)), _) => {
                 game_state.get_mut_player_unsafe(self.player_id).used = true;
                 ProcState::Done
+            }
+            (ProcInput::Action(Action::Simple(SimpleAT::PassSquare)), MoveActionState::SelectPath) => {
+                self.state = MoveActionState::Init;
+                ProcState::NotDoneNew(ball_procs::PassToSquare::new(self.player_id))
             }
             (input, _) => panic!("Illegal input for MoveAction: {:?}", input),
         }
@@ -514,7 +525,7 @@ mod tests {
                 .build();
             state.get_mut_team(TeamType::Home).rerolls = 0;
             let id = state.get_player_id_at(start_pos).unwrap();
-            state.get_mut_player_unsafe(id).stats.av = 8;
+            state.get_mut_player_unsafe(id).stats.armour = 9; // AV 9+
             let marker = state.get_player_id_at(Position::new((4, 3))).unwrap();
             if arm_bar {
                 state.get_mut_player_unsafe(marker).stats.give_skill(Skill::ArmBar);
@@ -1145,6 +1156,40 @@ mod tests {
             .collect();
         assert_eq!(passes, vec![short]);
     }
+    /// S3 lets a pass target any square in range. That is a hidden action: legal, but never
+    /// listed, so bots and the NN never see it.
+    #[test]
+    fn pass_square_is_legal_but_hidden_from_bots() {
+        let (state, _, _, _) = setup_simple_pass(false, 2);
+        assert!(state.is_legal_action(&Action::Simple(SimpleAT::PassSquare)));
+        assert!(!state.get_all_actions().contains(&Action::Simple(SimpleAT::PassSquare)));
+    }
+    /// Passing to an empty square: the passer stays put, an accurate pass lands there and
+    /// bounces, and with no team-mate catching it the turn is over.
+    #[test]
+    fn passing_to_an_empty_square() {
+        let (mut state, start_pos, _, _) = setup_simple_pass(false, 2);
+        state.step_simple(SimpleAT::PassSquare);
+        let empty = start_pos + (0, 3);
+        assert!(state.is_legal_action(&Action::Positional(PosAT::Pass, empty)));
+        assert!(!state.is_legal_action(&Action::Positional(PosAT::Pass, start_pos)));
+        state.fix_d6(6); //Pass: accurate
+        state.fix_d8_direction(Direction::up()); //bounce from the empty square
+        state.step_positional(PosAT::Pass, empty);
+        assert_eq!(state.ball, BallState::OnGround(empty + Direction::up()));
+        assert!(state.away_to_act(), "no team-mate caught it: turnover");
+    }
+    /// Only during a Pass action, by the ball carrier.
+    #[test]
+    fn pass_square_is_only_offered_to_a_passing_ball_carrier() {
+        let start_pos = Position::new((3, 3));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(start_pos)
+            .add_ball_pos(start_pos)
+            .build();
+        state.step_positional(PosAT::StartMove, start_pos);
+        assert!(!state.is_legal_action(&Action::Simple(SimpleAT::PassSquare)));
+    }
     /// The test is the passer's PA (pathing used to read the receiver's): a PA 2+ passer's Long
     /// Pass (-2) succeeds on a 4, where the 4+ receiver would need a 6.
     #[test]
@@ -1267,7 +1312,7 @@ mod tests {
             .build();
         let victim = state.get_player_id_at(victim_pos).unwrap();
         state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
-        state.get_mut_player_unsafe(victim).stats.av = 8;
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
         let assister = state.get_player_id_at(assister_pos).unwrap();
         state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
         state.step_positional(PosAT::StartFoul, fouler_pos);
@@ -1292,7 +1337,7 @@ mod tests {
             .build();
         let victim = state.get_player_id_at(victim_pos).unwrap();
         state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
-        state.get_mut_player_unsafe(victim).stats.av = 8;
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
         let assister = state.get_player_id_at(assister_pos).unwrap();
         state.get_mut_player_unsafe(assister).stats.give_skill(Skill::Guard);
         state.step_positional(PosAT::StartFoul, fouler_pos);
@@ -1318,7 +1363,7 @@ mod tests {
             .build();
         let victim = state.get_player_id_at(victim_pos).unwrap();
         state.get_mut_player_unsafe(victim).status = PlayerStatus::Down;
-        state.get_mut_player_unsafe(victim).stats.av = 8;
+        state.get_mut_player_unsafe(victim).stats.armour = 9; // AV 9+
         let assister = state.get_player_id_at(assister_pos).unwrap();
         state.get_mut_player_unsafe(assister).status = PlayerStatus::Down;
         state.step_positional(PosAT::StartFoul, fouler_pos);

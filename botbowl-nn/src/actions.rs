@@ -87,6 +87,9 @@ pub fn simple_at_index(at: SimpleAT) -> usize {
         // Schema v9: optional skills (Wrestle, Stand Firm, ...), appended.
         SimpleAT::UseSkill => 15,
         SimpleAT::DontUseSkill => 16,
+        // A hidden action (`AvailableActions::hidden`): never listed among a state's legal
+        // actions, so it never reaches the policy — no channel, no schema change.
+        SimpleAT::PassSquare => unreachable!("SimpleAT::PassSquare is hidden from bots and has no policy channel"),
     }
 }
 

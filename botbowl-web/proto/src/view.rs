@@ -173,8 +173,10 @@ pub struct PlayerView {
     pub sprite: String,
     pub st: u8,
     pub ma: u8,
-    pub ag: u8,
-    pub av: u8,
+    /// Agility target (AG 3+).
+    pub agility: u8,
+    /// Armour target (AV 9+).
+    pub armour: u8,
     /// Movement (including GFIs) still available this activation.
     pub movement_left: u8,
     pub has_ball: bool,

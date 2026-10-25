@@ -142,8 +142,12 @@ const C_DIST_SIDELINE: usize = SHARED_BASE + 11;
 const MOVE_NORM: f32 = PlayerStats::MAX_MOVEMENT as f32;
 const ST_NORM: f32 = PlayerStats::MAX_ST as f32;
 const MA_NORM: f32 = PlayerStats::MAX_MA as f32;
-const AG_NORM: f32 = PlayerStats::MAX_AG as f32;
-const AV_NORM: f32 = PlayerStats::MAX_AV as f32;
+// AG and AV planes hold the *classic* numbers the nets were trained on (AG 3, AV 8), not the
+// S3 targets the engine stores: `PlayerStats::legacy_ag` / `legacy_av` translate back exactly
+// (S3 AG t+ is classic AG 6 - t, AV t+ is AV t - 1), so a net sees the same input for the same
+// player. The divisors are the classic caps (AG 6, AV 12).
+const AG_NORM: f32 = 6.0;
+const AV_NORM: f32 = 12.0;
 /// Full `u8` range: path probabilities are a fraction, not a characteristic.
 const PATH_PROB_NORM: f32 = 255.0;
 // Geometry normalisers (plan 042): the full 26x15/11 pitch reads as 1.0, so
@@ -338,8 +342,8 @@ pub fn encode_raw(state: &GameState) -> EncodedRaw {
         set(P_MOVEMENT, p.total_movement_left());
         set(P_ST, p.stats.str_);
         set(P_MA, p.stats.ma);
-        set(P_AG, p.stats.ag);
-        set(P_AV, p.stats.av);
+        set(P_AG, p.stats.legacy_ag());
+        set(P_AV, p.stats.legacy_av());
         for sk in SKILL_PLANES {
             spatial[idx(SKILL_BASE + sk.index(), pos)] = p.has_skill(sk) as u8;
         }
@@ -906,8 +910,8 @@ mod tests {
         let mut stats = PlayerStats::new_lineman(TeamType::Home);
         stats.ma = PlayerStats::MAX_MA;
         stats.str_ = PlayerStats::MAX_ST;
-        stats.ag = PlayerStats::MAX_AG;
-        stats.av = PlayerStats::MAX_AV;
+        stats.agility = PlayerStats::MIN_AG; // the largest classic AG
+        stats.armour = PlayerStats::MAX_AV;
         let pos = Position::new((5, 5));
         let mut builder = GameStateBuilder::new();
         builder.add_player_details(pos, TeamType::Home, stats);

@@ -54,8 +54,12 @@ const ADD_SKILL_PROB: f32 = 0.5;
 /// `sampling_ranges_stay_under_the_engine_caps`.
 const STR_RANGE: (u8, u8) = (1, 6);
 const MA_RANGE: (u8, u8) = (1, 9);
-const AG_RANGE: (u8, u8) = (1, PlayerStats::MAX_AG);
-const AV_RANGE: (u8, u8) = (3, 11);
+/// AG and AV are drawn on the classic scale (AG 3, AV 8) and stored as their S3 targets
+/// (`PlayerStats::from_legacy_ag` / `from_legacy_av`): the same draws for the same seed, so a
+/// regenerated drive start still matches the one a corpus recorded (`replay_to` checks it).
+/// Classic AG 1..=5 is S3 AG 5+..=1+; classic AV 3..=11 is AV 4+..=12+.
+const LEGACY_AG_RANGE: (u8, u8) = (1, 5);
+const LEGACY_AV_RANGE: (u8, u8) = (3, 11);
 const PASS_RANGE: (u8, u8) = (2, 6);
 
 /// Bias weights for [`generate_random_start`].
@@ -251,10 +255,10 @@ fn sample_player(rng: &mut ChaCha8Rng, team: TeamType) -> PlayerStats {
         stats.ma = add_random(rng, stats.ma, MA_RANGE);
     }
     if rng.gen::<f32>() < MOD_AGI_PROB {
-        stats.ag = add_random(rng, stats.ag, AG_RANGE);
+        stats.agility = PlayerStats::from_legacy_ag(add_random(rng, stats.legacy_ag(), LEGACY_AG_RANGE));
     }
     if rng.gen::<f32>() < MOD_ARMOR_PROB {
-        stats.av = add_random(rng, stats.av, AV_RANGE);
+        stats.armour = PlayerStats::from_legacy_av(add_random(rng, stats.legacy_av(), LEGACY_AV_RANGE));
     }
     if rng.gen::<f32>() < MOD_PASS_PROB {
         let pass = add_random(rng, stats.pass as u8, PASS_RANGE);
@@ -478,8 +482,8 @@ mod tests {
                 total += 1;
                 str_.insert(p.stats.str_);
                 ma.insert(p.stats.ma);
-                ag.insert(p.stats.ag);
-                av.insert(p.stats.av);
+                ag.insert(p.stats.agility);
+                av.insert(p.stats.armour);
                 pass.insert(p.stats.pass as u8);
                 if !p.stats.skills.is_empty() {
                     skilled += 1;
@@ -523,8 +527,8 @@ mod tests {
                 let st = &p.stats;
                 assert!((STR_RANGE.0..=STR_RANGE.1).contains(&st.str_), "str {}", st.str_);
                 assert!((MA_RANGE.0..=MA_RANGE.1).contains(&st.ma), "ma {}", st.ma);
-                assert!((AG_RANGE.0..=AG_RANGE.1).contains(&st.ag), "ag {}", st.ag);
-                assert!((AV_RANGE.0..=AV_RANGE.1).contains(&st.av), "av {}", st.av);
+                assert!((1..=5).contains(&st.agility), "AG {}+", st.agility);
+                assert!((4..=12).contains(&st.armour), "AV {}+", st.armour);
                 let pass = st.pass as u8;
                 assert!((PASS_RANGE.0..=PASS_RANGE.1).contains(&pass), "pass {pass}");
             }
@@ -549,8 +553,9 @@ mod tests {
     fn sampling_ranges_stay_under_the_engine_caps() {
         assert!(STR_RANGE.1 <= PlayerStats::MAX_ST);
         assert!(MA_RANGE.1 <= PlayerStats::MAX_MA);
-        assert!(AG_RANGE.1 <= PlayerStats::MAX_AG);
-        assert!(AV_RANGE.1 <= PlayerStats::MAX_AV);
+        assert!(PlayerStats::from_legacy_ag(LEGACY_AG_RANGE.1) >= PlayerStats::MIN_AG);
+        assert!(PlayerStats::from_legacy_ag(LEGACY_AG_RANGE.0) <= PlayerStats::MAX_AG);
+        assert!(PlayerStats::from_legacy_av(LEGACY_AV_RANGE.1) <= PlayerStats::MAX_AV);
     }
 
     /// A config with every mechanism switched off.

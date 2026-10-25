@@ -633,7 +633,7 @@ fn tooltip(sq: &SquareView, selection: Option<&SelectionView>, threat: TeamType)
     let mut lines = Vec::new();
     if let Some(p) = &sq.player {
         lines.push(format!("{:?} {}", p.team, p.role.label()));
-        lines.push(format!("MA {} · ST {} · AG {} · AV {}", p.ma, p.st, p.ag, p.av));
+        lines.push(format!("MA {} · ST {} · AG {}+ · AV {}+", p.ma, p.st, p.agility, p.armour));
         if !p.skills.is_empty() {
             lines.push(format!("Skills: {}", p.skills.join(", ")));
         }

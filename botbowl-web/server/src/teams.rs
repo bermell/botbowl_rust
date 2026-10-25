@@ -56,8 +56,8 @@ pub fn stats_of(p: &PositionDef, team: TeamType) -> Result<PlayerStats, String> 
     stats.role = mirror::role_from_proto(p.role);
     stats.ma = p.ma;
     stats.str_ = p.st;
-    stats.ag = p.ag;
-    stats.av = p.av;
+    stats.agility = p.agility;
+    stats.armour = p.armour;
     stats.pass = D6Target::try_from(p.pa.clamp(2, 6)).expect("2..=6 is a D6 target");
     stats.skills.clear();
     for label in &p.skills {
@@ -123,13 +123,13 @@ impl Looks {
             .filter(|s| stats.skills.contains(s))
             .map(|s| mirror::skill_label(s).to_string())
             .collect();
-        def.position_of(role, stats.ma, stats.str_, stats.ag, stats.av, &skills)
+        def.position_of(role, stats.ma, stats.str_, stats.agility, stats.armour, &skills)
             // MA may have been capped ("no natural one-turn"): the same position with more.
             .or_else(|| {
                 def.positions.iter().find(|p| {
                     p.role == role
                         && p.ma >= stats.ma
-                        && (p.st, p.ag, p.av) == (stats.str_, stats.ag, stats.av)
+                        && (p.st, p.agility, p.armour) == (stats.str_, stats.agility, stats.armour)
                         && p.skills.iter().all(|s| skills.contains(s))
                         && p.skills.len() == skills.len()
                 })

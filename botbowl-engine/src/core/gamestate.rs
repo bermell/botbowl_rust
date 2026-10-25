@@ -1003,12 +1003,10 @@ impl GameState {
     }
     /// The Agility Test to catch a ball (S3, Catching the Ball): AG, -1 per marking opponent
     /// (ignored with Nerves of Steel), -1 in rain. A ball that Bounced or was Thrown-in is a
-    /// further -1, applied by the caller. The `+1` turns the classic stored AG (`ag_target` =
-    /// 7 - AG) into the S3 test (AG 3 → 3+), as for dodge and pick-up.
+    /// further -1, applied by the caller.
     pub fn get_catch_target(&self, id: PlayerID) -> Result<D6Target> {
         let player = self.get_player(id)?;
         let mut target = player.ag_target();
-        target.add_modifer(1);
         if !player.has_skill(Skill::NervesOfSteel) {
             target.add_modifer(-(self.marking_opponents(player) as i8));
         }
@@ -1794,7 +1792,6 @@ impl GameState {
     /// Nerves of Steel does not help.
     fn get_interception_target(&self, player: &FieldedPlayer) -> D6Target {
         let mut target = player.ag_target();
-        target.add_modifer(1);
         target.add_modifer(-(self.marking_opponents(player) as i8));
         if let Weather::Rain = self.info.weather {
             target.add_modifer(-1);

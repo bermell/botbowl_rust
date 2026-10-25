@@ -161,10 +161,13 @@ pub enum SimpleAT {
     /// Use / don't use an optional skill (Wrestle, Stand Firm).
     UseSkill,
     DontUseSkill,
+    /// During a Pass action: pass to any square in range (offered to humans only — the engine
+    /// hides it from bots).
+    PassSquare,
 }
 
 impl SimpleAT {
-    pub const ALL: [SimpleAT; 17] = [
+    pub const ALL: [SimpleAT; 18] = [
         SimpleAT::SelectBothDown,
         SimpleAT::SelectPow,
         SimpleAT::SelectPush,
@@ -182,6 +185,7 @@ impl SimpleAT {
         SimpleAT::BenchPlayer,
         SimpleAT::UseSkill,
         SimpleAT::DontUseSkill,
+        SimpleAT::PassSquare,
     ];
 
     /// The variant's own name, sentence-cased — see [`PosAT::label`].
@@ -204,6 +208,7 @@ impl SimpleAT {
             SimpleAT::BenchPlayer => "Bench player",
             SimpleAT::UseSkill => "Use skill",
             SimpleAT::DontUseSkill => "Dont use skill",
+            SimpleAT::PassSquare => "Pass square",
         }
     }
 

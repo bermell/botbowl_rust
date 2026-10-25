@@ -46,6 +46,11 @@ pub enum SimpleAT {
     /// is the procedure on top of the stack.
     UseSkill,
     DontUseSkill,
+    /// During a Pass action: pass to any square in range instead of a team-mate (S3 allows
+    /// it), from where the passer stands. **Hidden**: offered through
+    /// `AvailableActions::hidden`, which `get_all_actions` never lists, so bots, the search and
+    /// the NN never see it (and it has no policy channel); a human UI offers it.
+    PassSquare,
 }
 
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
@@ -412,7 +417,7 @@ impl PosAT {
 }
 
 impl SimpleAT {
-    pub const COUNT: usize = 17;
+    pub const COUNT: usize = 18;
     /// Every variant, in `index` order; see `PosAT::ALL`.
     pub const ALL: [SimpleAT; SimpleAT::COUNT] = [
         SimpleAT::SelectBothDown,
@@ -432,6 +437,7 @@ impl SimpleAT {
         SimpleAT::BenchPlayer,
         SimpleAT::UseSkill,
         SimpleAT::DontUseSkill,
+        SimpleAT::PassSquare,
     ];
     pub const fn index(self) -> usize {
         match self {
@@ -452,6 +458,7 @@ impl SimpleAT {
             SimpleAT::BenchPlayer => 14,
             SimpleAT::UseSkill => 15,
             SimpleAT::DontUseSkill => 16,
+            SimpleAT::PassSquare => 17,
         }
     }
 }

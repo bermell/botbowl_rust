@@ -6,10 +6,16 @@ Pure Blood Bowl rules library (Rust rewrite of [njustesen/botbowl](https://githu
 
 The reference is the S3 rulebook (the user's copy: `~/repos/blood/rules/*.html`), not BB2020 or
 the 2016 rules the Python botbowl followed (the user, 2026-10-25). Cite it in a new rule's test.
-The engine is not fully converted yet. Still on the old rules: characteristics stored as numbers
-(`ag_target` = 7 - AG, with the S3 `+1` applied at the dodge / pick-up / catch / interception
-call sites; PA is already a target), most of the kick-off table, the kicker's choice of target
-square, and passes only to a team-mate (S3 allows any square in range). Converted (2026-10-25):
+The engine is not fully converted yet. Still on the old rules: most of the kick-off table and the
+kicker's choice of target square. Converted (2026-10-25):
+characteristics as S3 prints them (`PlayerStats.agility` / `armour` are target numbers like PA;
+JSON with the classic `ag` / `av` loads converted, `from_legacy_ag` = 6 - AG, `from_legacy_av` =
+AV + 1; the NN encoder feeds the net the classic numbers back through `legacy_ag` / `legacy_av`,
+so trained nets read identical inputs; random starts draw on the classic scale so a seed still
+regenerates the recorded players), passing to any square in range (`SimpleAT::PassSquare`, a
+**hidden** action: `AvailableActions::hidden` is legal but never listed by `get_all_actions`, so
+bots, the search and the NN never see it — the web UI offers it), one passing skill (`Pass` took
+the pre-S3 `Throw`'s index and NN plane; a stored `"Throw"` loads as `Pass`),
 passing (Quick/Short/Long/Bomb 0/-1/-2/-3, a modified 1 is a fumble — no wildly inaccurate pass;
 interception is one AG test at -3 accurate / -2 inaccurate and gains possession; no catch
 modifier; the PA test may be re-rolled with Pass or a team re-roll; Very Sunny, Blizzard,

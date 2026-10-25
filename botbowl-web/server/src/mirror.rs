@@ -98,6 +98,7 @@ pub fn simple_at_to_proto(at: et::SimpleAT) -> pa::SimpleAT {
         et::SimpleAT::BenchPlayer => pa::SimpleAT::BenchPlayer,
         et::SimpleAT::UseSkill => pa::SimpleAT::UseSkill,
         et::SimpleAT::DontUseSkill => pa::SimpleAT::DontUseSkill,
+        et::SimpleAT::PassSquare => pa::SimpleAT::PassSquare,
     }
 }
 
@@ -120,6 +121,7 @@ pub fn simple_at_from_proto(at: pa::SimpleAT) -> et::SimpleAT {
         pa::SimpleAT::BenchPlayer => et::SimpleAT::BenchPlayer,
         pa::SimpleAT::UseSkill => et::SimpleAT::UseSkill,
         pa::SimpleAT::DontUseSkill => et::SimpleAT::DontUseSkill,
+        pa::SimpleAT::PassSquare => et::SimpleAT::PassSquare,
     }
 }
 
@@ -464,9 +466,9 @@ mod tests {
             assert_eq!(simple_at_to_proto(simple_at_from_proto(at)), at);
         }
         // ...and the engine side is covered by the same identity, because the
-        // maps are bijections between enums of the same size (15 positional, 17 simple).
+        // maps are bijections between enums of the same size (15 positional, 18 simple).
         assert_eq!(pa::PosAT::ALL.len(), 15);
-        assert_eq!(pa::SimpleAT::ALL.len(), 17);
+        assert_eq!(pa::SimpleAT::ALL.len(), 18);
     }
 
     #[test]

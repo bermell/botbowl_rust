@@ -518,6 +518,7 @@ pub struct JumpUp {
 }
 impl JumpUp {
     pub fn new(game_state: &GameState, id: PlayerID) -> AnyProc {
+        // S3, Jump Up: "an Agility Test, applying a +1 modifier".
         let target = *game_state.get_player_unsafe(id).ag_target().add_modifer(1);
         AnyProc::JumpUp(SimpleProcContainer::new(JumpUp { id, target }))
     }
@@ -1066,15 +1067,15 @@ mod tests {
         assert!(!state.is_legal_action(&Action::Positional(PosAT::StartBlock, blocker)));
     }
 
-    /// Jump Up: a prone player may declare a Block, standing up on an Agility test at +1 (AG 3
-    /// needs a 3+ instead of a 4+). Once up they must block — the action cannot be abandoned.
+    /// Jump Up: a prone player may declare a Block, standing up on an Agility test at +1 (AG 3+
+    /// needs a 2+). Once up they must block — the action cannot be abandoned.
     #[test]
     fn jump_up_blocks_from_prone_on_an_agility_test() {
         let (mut state, blocker, target) = prone_blocker(true);
         let id = state.get_player_id_at(blocker).unwrap();
-        assert_eq!(state.get_player_unsafe(id).stats.ag, 3);
+        assert_eq!(state.get_player_unsafe(id).stats.agility, 3);
 
-        state.fix_d6(3);
+        state.fix_d6(2);
         state.step_positional(PosAT::StartBlock, blocker);
         assert!(state.is_legal_action(&Action::Positional(PosAT::Block, target)));
         assert!(
@@ -1095,7 +1096,7 @@ mod tests {
         let (mut state, blocker, _) = prone_blocker(true);
         let id = state.get_player_id_at(blocker).unwrap();
 
-        state.fix_d6(2);
+        state.fix_d6(1); // a natural 1 always fails
         state.step_positional(PosAT::StartBlock, blocker);
 
         let player = state.get_player_unsafe(id);
@@ -1262,11 +1263,11 @@ mod tests {
     /// Returns where the defender ended up: on the pitch with a status, or in the dugout.
     fn pow_on_av8(mighty_blow: bool, armour: (u8, u8), injury: Option<(u8, u8)>) -> Option<PlayerStatus> {
         let skills: &[Skill] = if mighty_blow { &[Skill::MightyBlow] } else { &[] };
-        pow_on(8, skills, armour, injury)
+        pow_on(9, skills, armour, injury)
     }
 
-    /// Pow by a blocker with `skills` on a defender with `av`; see `pow_on_av8`.
-    fn pow_on(av: u8, skills: &[Skill], armour: (u8, u8), injury: Option<(u8, u8)>) -> Option<PlayerStatus> {
+    /// Pow by a blocker with `skills` on a defender with AV `av_target`+; see `pow_on_av8`.
+    fn pow_on(av_target: u8, skills: &[Skill], armour: (u8, u8), injury: Option<(u8, u8)>) -> Option<PlayerStatus> {
         let attacker_pos = Position::new((5, 3));
         let defender_pos = Position::new((6, 3));
         let mut state = GameStateBuilder::new()
@@ -1275,7 +1276,7 @@ mod tests {
             .build();
         let attacker = state.get_player_id_at(attacker_pos).unwrap();
         let defender = state.get_player_id_at(defender_pos).unwrap();
-        state.get_mut_player_unsafe(defender).stats.av = av;
+        state.get_mut_player_unsafe(defender).stats.armour = av_target;
         for &skill in skills {
             state.get_mut_player_unsafe(attacker).stats.give_skill(skill);
         }
@@ -1312,9 +1313,9 @@ mod tests {
     /// Claws: a natural 8 breaks any armour ...
     #[test]
     fn claws_breaks_any_armour_on_a_natural_8() {
-        assert_eq!(pow_on(10, &[], (4, 4), None), Some(PlayerStatus::Down));
+        assert_eq!(pow_on(11, &[], (4, 4), None), Some(PlayerStatus::Down));
         assert_eq!(
-            pow_on(10, &[Skill::Claws], (4, 4), Some((3, 4))),
+            pow_on(11, &[Skill::Claws], (4, 4), Some((3, 4))),
             Some(PlayerStatus::Stunned)
         );
     }
@@ -1322,14 +1323,14 @@ mod tests {
     /// ... but nothing less does.
     #[test]
     fn claws_needs_a_natural_8() {
-        assert_eq!(pow_on(10, &[Skill::Claws], (4, 3), None), Some(PlayerStatus::Down));
+        assert_eq!(pow_on(11, &[Skill::Claws], (4, 3), None), Some(PlayerStatus::Down));
     }
 
     /// Armour Claws breaks leaves Mighty Blow's +1 for the injury roll: a 7 becomes an 8, KO.
     #[test]
     fn claws_leaves_mighty_blow_for_injury() {
         let skills = [Skill::Claws, Skill::MightyBlow];
-        assert_eq!(pow_on(9, &skills, (4, 4), Some((4, 3))), None, "knocked out");
+        assert_eq!(pow_on(10, &skills, (4, 4), Some((4, 3))), None, "knocked out");
     }
 
     /// A defender's Claws counts against a blocker the block knocks down.
@@ -1343,7 +1344,7 @@ mod tests {
             .build();
         let attacker = state.get_player_id_at(attacker_pos).unwrap();
         let defender = state.get_player_id_at(defender_pos).unwrap();
-        state.get_mut_player_unsafe(attacker).stats.av = 10;
+        state.get_mut_player_unsafe(attacker).stats.armour = 11; // AV 11+
         state.get_mut_player_unsafe(defender).stats.give_skill(Skill::Claws);
         state.step_positional(PosAT::StartBlock, attacker_pos);
         state.fix_blockdice(BlockDice::Skull);
@@ -1368,7 +1369,7 @@ mod tests {
             .build();
         let attacker = state.get_player_id_at(attacker_pos).unwrap();
         let defender = state.get_player_id_at(defender_pos).unwrap();
-        state.get_mut_player_unsafe(attacker).stats.av = 8;
+        state.get_mut_player_unsafe(attacker).stats.armour = 9; // AV 9+
         state
             .get_mut_player_unsafe(attacker)
             .stats
@@ -1397,7 +1398,7 @@ mod tests {
                 .build();
             let attacker = state.get_player_id_at(attacker_pos).unwrap();
             let defender = state.get_player_id_at(defender_pos).unwrap();
-            state.get_mut_player_unsafe(attacker).stats.av = 8;
+            state.get_mut_player_unsafe(attacker).stats.armour = 9; // AV 9+
             state
                 .get_mut_player_unsafe(defender)
                 .stats

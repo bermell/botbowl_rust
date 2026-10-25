@@ -123,8 +123,8 @@ fn player_view(state: &GameState, ctx: &DeriveCtx, p: &em::FieldedPlayer, has_ba
         sprite: ctx.looks.sprite(&p.stats, p.used && !active),
         st: p.stats.str_,
         ma: p.stats.ma,
-        ag: p.stats.ag,
-        av: p.stats.av,
+        agility: p.stats.agility,
+        armour: p.stats.armour,
         movement_left: p.total_movement_left(),
         has_ball,
         skills,
@@ -644,6 +644,16 @@ pub fn derive(state: &GameState, ctx: &DeriveCtx) -> pv::ViewState {
                     });
                 }
             }
+        }
+        // Actions the engine hides from bots (`get_all_actions` leaves them out) are a human's
+        // to take: pass to any square in range.
+        for at in state.get_available_actions().get_hidden_simple().iter() {
+            let at = mirror::simple_at_to_proto(at);
+            simple_actions.push(pv::SimpleActionView {
+                at,
+                label: at.label().to_string(),
+                img: None,
+            });
         }
         annotate_paths(state, &mut squares);
     }

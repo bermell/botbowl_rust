@@ -35,9 +35,9 @@ fn blank_position() -> PositionDef {
         role: PlayerRole::Lineman,
         ma: 6,
         st: 3,
-        ag: 3,
+        agility: 3,
         pa: 4,
-        av: 8,
+        armour: 9,
         skills: Vec::new(),
         picture: "hlineman1".into(),
         max: 16,
@@ -184,9 +184,9 @@ pub fn TeamEditor() -> impl IntoView {
                             <th>"Role"</th>
                             <th>"MA"</th>
                             <th>"ST"</th>
-                            <th>"AG"</th>
+                            <th>"AG+"</th>
                             <th>"PA"</th>
-                            <th>"AV"</th>
+                            <th>"AV+"</th>
                             <th>"Max"</th>
                             <th>"Skills"</th>
                             <th></th>
@@ -321,9 +321,9 @@ fn PositionRow(i: usize, p: PositionDef, draft: RwSignal<TeamDef>, picking: RwSi
             </td>
             {stat_cell(draft, i, p.ma, 1, team::MAX_MA, |p, v| p.ma = v)}
             {stat_cell(draft, i, p.st, 1, team::MAX_ST, |p, v| p.st = v)}
-            {stat_cell(draft, i, p.ag, 1, team::MAX_AG, |p, v| p.ag = v)}
+            {stat_cell(draft, i, p.agility, team::MIN_AG, team::MAX_AG, |p, v| p.agility = v)}
             {stat_cell(draft, i, p.pa, 2, 6, |p, v| p.pa = v)}
-            {stat_cell(draft, i, p.av, 3, team::MAX_AV, |p, v| p.av = v)}
+            {stat_cell(draft, i, p.armour, team::MIN_AV, team::MAX_AV, |p, v| p.armour = v)}
             {stat_cell(draft, i, p.max, 0, 16, |p, v| p.max = v)}
             <td class="skills">
                 {skills
