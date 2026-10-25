@@ -659,7 +659,8 @@ pub enum DicePolicy {
     /// than the configured threshold. A request with a D6 target ≤ `d6`
     /// returns `Pass`; otherwise `Fail`. 2D6 pass/fail rolls use `sum2d6`
     /// analogously. Block-dice rolls consult `block_dice`. Non-pass/fail,
-    /// non-block-dice rolls (raw D6/D8/scatter/coin) always fall through.
+    /// non-block-dice rolls (raw D6/D8/scatter/coin) always fall through. A Jump's
+    /// `D6ThreeOutcomes` passes on its test, else fails ordinarily (not the natural 1).
     SucceedAtOrEasier {
         d6: D6Target,
         sum2d6: Sum2D6Target,
@@ -687,6 +688,16 @@ impl DicePolicy {
                 RequestedRoll::Sum2D6PassFail(target) => {
                     if (target as u8) <= (sum2d6 as u8) {
                         RollResult::Pass
+                    } else {
+                        RollResult::Fail
+                    }
+                }
+                // A Jump's Agility Test (`low` is its natural-1 floor, `high` the test).
+                RequestedRoll::D6ThreeOutcomes(low, high) => {
+                    if (high as u8) <= (d6 as u8) {
+                        RollResult::Pass
+                    } else if (low as u8) <= (d6 as u8) {
+                        RollResult::MiddleOutcome
                     } else {
                         RollResult::Fail
                     }

@@ -277,14 +277,7 @@ impl Turn {
         candidates
             .iter()
             .copied()
-            .filter(|&pos| {
-                let player = game_state.get_player_at(pos).unwrap();
-                // Cheap bound before the pathfinder: every square costs at least one of MA + Rushes.
-                if pos.distance_to(&ball) as i32 > (player.moves_left() + player.gfis_left()) as i32 {
-                    return false;
-                }
-                matches!(PathFinder::player_paths(game_state, player.id), Ok(paths) if paths[ball].is_some())
-            })
+            .filter(|&pos| PathFinder::can_reach(game_state, game_state.get_player_at(pos).unwrap().id, ball))
             .collect()
     }
 }
@@ -349,7 +342,19 @@ impl Procedure for Turn {
             }
             ProcState::NotDoneNew(movement_procs::MoveAction::new(id))
         } else if let ProcInput::Action(Action::Simple(SimpleAT::EndTurn)) = input {
-            ProcState::Done
+            // Ending the turn forgoes every activation left — the carrier's too, and "this roll
+            // must still be taken if a Player Forgoes their Activation".
+            let forgoing_carrier = match game_state.ball {
+                BallState::Carried(id) => game_state
+                    .get_player(id)
+                    .is_ok_and(|p| p.stats.team == self.team && !p.used)
+                    .then_some(id),
+                _ => None,
+            };
+            match forgoing_carrier {
+                Some(id) if could_score_without_dice(game_state, id) => ProcState::DoneNew(Stalling::new(id)),
+                _ => ProcState::Done,
+            }
         } else {
             unreachable!()
         }
@@ -592,6 +597,13 @@ mod tests {
     /// A ball carrier of the team to move, `squares` from its end zone with nobody around, at
     /// that team's turn 3; `marker` adds an opponent marking the carrier's square.
     fn stalling_state(squares: i8, marker: bool) -> (GameState, Position, Position) {
+        let (mut state, carrier, back) = stalling_board(squares, marker);
+        state.step_positional(PosAT::StartMove, carrier);
+        (state, carrier, back)
+    }
+
+    /// `stalling_state` before the carrier is activated.
+    fn stalling_board(squares: i8, marker: bool) -> (GameState, Position, Position) {
         let mut builder = GameStateBuilder::new();
         builder.set_state(BuilderState::Turn { turn: 3 });
         let state = builder.build();
@@ -604,12 +616,35 @@ mod tests {
         if marker {
             builder.add_player_details(carrier + (0, 1), other_team(team), PlayerStats::new_lineman(other_team(team)));
         }
-        let mut state = builder.add_ball_pos(carrier).set_state(BuilderState::Turn { turn: 3 }).build();
+        let state = builder.add_ball_pos(carrier).set_state(BuilderState::Turn { turn: 3 }).build();
         assert_eq!(state.info.team_turn, team);
         let turn = if team == TeamType::Home { state.info.home_turn } else { state.info.away_turn };
         assert_eq!(turn, 3);
-        state.step_positional(PosAT::StartMove, carrier);
         (state, carrier, carrier + (-step, 0))
+    }
+
+    /// "This roll must still be taken if a Player Forgoes their Activation": ending the turn
+    /// forgoes the unused carrier's, so the crowd rolls then. Once activated, they are not
+    /// rolled for again at the end of the turn.
+    #[test]
+    fn a_carrier_who_forgoes_their_activation_is_stalling() {
+        let (mut state, carrier, _) = stalling_board(4, false);
+        let team = state.info.team_turn;
+        let id = state.get_player_id_at(carrier).unwrap();
+        state.fix_d6(4); // the crowd: 4 >= turn 3
+        state.fix_d6(1); // armour
+        state.fix_d6(1);
+        state.fix_d8(D8::One as u8); // the ball bounces
+        state.step_simple(SimpleAT::EndTurn);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Down);
+        assert_ne!(state.info.team_turn, team);
+
+        let (mut state, _, _) = stalling_state(4, false);
+        state.fix_d6(2); // the crowd at the end of the activation: under the turn number
+        state.step_simple(SimpleAT::EndPlayerTurn);
+        state.step_simple(SimpleAT::EndTurn); // no second roll (the dice queue is empty)
+        assert_ne!(state.info.team_turn, team);
+        assert_eq!(state.get_player(id).unwrap().status, PlayerStatus::Up);
     }
 
     /// S3 Stalling: a ball carrier who could score without rolling a die but ends the activation

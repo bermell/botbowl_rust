@@ -109,6 +109,37 @@ fn a_natural_one_falls_over_in_the_start_square() {
     assert!(state.away_to_act(), "turnover");
 }
 
+/// Arm Bar (Skills and Traits): "If an opposing player Falls Over as a result of attempting to
+/// Dodge, Leap or Jump away from a square in this player's Tackle Zone", +1 to the armour or
+/// injury roll — whether the jumper falls in the target square or, on a natural 1, in place. An
+/// 8 breaks AV 9+ only with it.
+#[test]
+fn arm_bar_hits_a_player_falling_from_a_jump_out_of_its_zone() {
+    let fall = |arm_bar: bool, jump_roll: u8| {
+        let mut state = jump_state(2, true, PlayerStatus::Down, &[(2, 3)]);
+        let id = mover(&state);
+        state.get_mut_player_unsafe(id).stats.armour = 9;
+        if arm_bar {
+            let marker = state.get_player_id_at(Position::new((2, 3))).unwrap();
+            state.get_mut_player_unsafe(marker).stats.give_skill(Skill::ArmBar);
+        }
+        state.step_positional(PosAT::StartMove, MOVER);
+        state.fix_d6(jump_roll); // the Jump (AG 3+, -1 for the marker: 4+) fails
+        state.fix_d6(5); // armour: 8
+        state.fix_d6(3);
+        if arm_bar {
+            state.fix_d6(1); // injury: Stunned
+            state.fix_d6(2);
+        }
+        state.step_positional(PosAT::Move, BEYOND);
+        state.get_player_unsafe(id).status
+    };
+    for jump_roll in [1, 3] {
+        assert_eq!(fall(false, jump_roll), PlayerStatus::Down);
+        assert_eq!(fall(true, jump_roll), PlayerStatus::Stunned);
+    }
+}
+
 /// A failed Jump may be re-rolled with a team re-roll (no skill re-rolls it: Dodge is for
 /// Dodging only).
 #[test]
@@ -332,22 +363,4 @@ fn a_jump_onto_the_ball_secures_it_in_a_secure_the_ball_action() {
             PositionOrEvent::Event(PathingEvent::SecureBall(D6Target::TwoPlus)),
         ]
     );
-}
-
-/// Without downed players or Leap the jump pass adds nothing: the paths are identical with the
-/// toggle on and off.
-#[test]
-fn without_downed_players_paths_are_unchanged() {
-    let mut state = crate::standard_state();
-    let start = Position::new((3, 1));
-    state.step_positional(PosAT::StartMove, start);
-    let id = state.get_player_id_at(start).unwrap();
-    let on = PathFinder::player_paths(&state, id).unwrap();
-    state.set_jump_paths(false);
-    let off = PathFinder::player_paths(&state, id).unwrap();
-    for (a, b) in on.iter().zip(off.iter()) {
-        let a: Option<Vec<PositionOrEvent>> = a.as_ref().map(|n| n.iter().collect());
-        let b: Option<Vec<PositionOrEvent>> = b.as_ref().map(|n| n.iter().collect());
-        assert_eq!(a, b);
-    }
 }

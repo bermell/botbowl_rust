@@ -1298,9 +1298,10 @@ pub struct AvailableActions {
     #[serde(default)]
     hidden: SimpleATSet,
     /// The positional ones, same contract. A list, not a `FullPitch`: almost always empty, and
-    /// an empty `Vec` costs nothing to clone.
+    /// inline so the search's state clones never allocate for it (a Jump is offered at every
+    /// move decision next to a downed player; a Leap's ring of 16 alone spills to the heap).
     #[serde(default)]
-    hidden_positional: Vec<(PosAT, Position)>,
+    hidden_positional: smallvec::SmallVec<[(PosAT, Position); 8]>,
 }
 
 impl std::fmt::Debug for AvailableActions {

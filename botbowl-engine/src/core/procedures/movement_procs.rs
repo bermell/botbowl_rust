@@ -208,11 +208,20 @@ impl JumpProc {
         game_state.get_mut_player_unsafe(self.id).add_move(2);
     }
     fn fall(&self, game_state: &mut GameState, result: RollResult) -> ProcState {
+        // Arm Bar marks the square jumped away from — the one the player is still in.
+        let player = game_state.get_player_unsafe(self.id);
+        let arm_bar = game_state.get_adj_players(player.position).any(|p| {
+            p.stats.team != player.stats.team && p.has_tackle_zone() && p.has_skill(Skill::ArmBar)
+        });
         if result == RollResult::MiddleOutcome {
             self.land(game_state);
         }
         game_state.info.turnover = true;
-        ProcState::DoneNew(block_procs::KnockDown::new(self.id))
+        let blow = Blow {
+            mighty_blow: arm_bar,
+            ..Blow::default()
+        };
+        ProcState::DoneNew(block_procs::KnockDown::new_with_blow(self.id, blow))
     }
 }
 impl Procedure for JumpProc {
@@ -1118,6 +1127,30 @@ mod tests {
         let carrier_id = state.get_player_id_at(target_pos).unwrap();
         assert_eq!(state.ball, BallState::Carried(carrier_id));
         assert_eq!(state.available_actions.team.unwrap(), TeamType::Home);
+    }
+    /// Stunty (Skills and Traits): "this player applies a -1 modifier to the Agility Test when
+    /// attempting to Intercept the ball". An AG 2+ interceptor intercepts an Accurate Pass on a 5
+    /// (-3), a Stunty one only on a 6.
+    #[test]
+    fn a_stunty_interceptor_takes_an_extra_minus_one() {
+        let intercepted = |stunty: bool| {
+            let (mut state, _, target_pos, interceptor) = setup_simple_pass(true, 4);
+            let interceptor_id = state.get_player_id_at(interceptor).unwrap();
+            let player = state.get_mut_player_unsafe(interceptor_id);
+            player.stats.agility = 2;
+            if stunty {
+                player.stats.give_skill(Skill::Stunty);
+            }
+            state.fix_d6(6); //Pass
+            state.fix_d6(5); //interception
+            if stunty {
+                state.fix_d6(3); //Catch
+            }
+            state.step_positional(PosAT::Pass, target_pos);
+            state.ball == BallState::Carried(interceptor_id)
+        };
+        assert!(intercepted(false));
+        assert!(!intercepted(true));
     }
     /// ... and -2 against an Inaccurate one: an AG 3 interceptor then needs a 5. The pass to a
     /// square 7 away (a Long Pass, 6+ for a 4+ passer) fails on a 4, scatters back onto the

@@ -310,19 +310,22 @@ impl GameStateBuilder {
                 .expect("add_player_details: could not field the player");
         }
 
-        if let Some(pos) = self.ball_pos {
-            state.set_ball(match state.get_player_at(pos) {
-                None => BallState::OnGround(pos),
-                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id),
-                _ => panic!(),
-            })
-        }
         // decrease turn counter before calling endturn twice
         // (need to call end turn here to refresh available actions)
         state.step_simple(SimpleAT::EndTurn);
         state.step_simple(SimpleAT::EndTurn);
         state.info.home_turn -= 1;
         state.info.away_turn -= 1;
+        // The ball goes on after those turns end: a carrier who forgoes an activation by the
+        // end of the turn could be Stalling (and roll for it).
+        if let Some(pos) = self.ball_pos {
+            state.set_ball(match state.get_player_at(pos) {
+                None => BallState::OnGround(pos),
+                Some(p) if p.status == PlayerStatus::Up => BallState::Carried(p.id),
+                _ => panic!(),
+            });
+            state.reask_turn_decision().expect("the built state is at a Turn decision");
+        }
 
         state.set_logging_state(true);
         state
@@ -1730,6 +1733,18 @@ impl GameState {
     /// ask), so the call refuses them, and a pending roll, and leaves the state untouched.
     ///
     /// Analysis helper (plan 064's position probes) — nothing in the play path calls it.
+    /// `EndTurn` at a `Turn` decision as scaffolding — handing the move to the other team while
+    /// building a position, not a turn anyone played. A real `EndTurn` makes an unused ball
+    /// carrier who could score forgo their activation and roll for Stalling; here the ball is
+    /// lifted off for the step and put back, and the new decision re-asked with it.
+    pub fn pass_turn_unplayed(&mut self) {
+        let ball = self.ball;
+        self.set_ball(BallState::OffPitch);
+        self.step(Action::Simple(SimpleAT::EndTurn)).expect("EndTurn at a Turn decision");
+        self.set_ball(ball);
+        self.reask_turn_decision().expect("the other team's Turn decision");
+    }
+
     pub fn reask_turn_decision(&mut self) -> std::result::Result<(), String> {
         if !matches!(self.proc_stack_peek(), Some(AnyProc::Turn(_))) {
             return Err(format!("not a Turn decision (top: {:?})", self.proc_stack_top()));
@@ -1905,6 +1920,9 @@ impl GameState {
     fn get_interception_target(&self, player: &FieldedPlayer, modifier: i8) -> D6Target {
         let mut sum = modifier - self.marking_opponents(player) as i8;
         if let Weather::Rain = self.info.weather {
+            sum -= 1;
+        }
+        if player.has_skill(Skill::Stunty) {
             sum -= 1;
         }
         player.ag_test(sum)
@@ -2485,6 +2503,24 @@ mod gamestate_tests {
         state.step_positional(PosAT::StartMove, start_pos);
         state.step_positional(PosAT::Move, td_pos);
         assert_eq!(state.home.score, 1);
+    }
+
+    /// A Jump's three-outcome Agility Test is pinned like a dodge: at or easier than the
+    /// threshold it passes; a failure is the ordinary one (not the natural 1) while its 2+ is.
+    #[test]
+    fn succeed_at_or_easier_pins_a_jump() {
+        use crate::core::dices::{BlockDicePolicy, D6Target, DicePolicy, RequestedRoll, Sum2D6Target};
+        let mut policy = DicePolicy::SucceedAtOrEasier {
+            d6: D6Target::ThreePlus,
+            sum2d6: Sum2D6Target::SevenPlus,
+            block_dice: BlockDicePolicy::Default,
+        };
+        let mut rng = <rand_chacha::ChaCha8Rng as rand::SeedableRng>::seed_from_u64(0);
+        let jump = |t| RequestedRoll::D6ThreeOutcomes(D6Target::TwoPlus, t);
+        for _ in 0..20 {
+            assert_eq!(policy.resolve(jump(D6Target::ThreePlus), &mut rng), RollResult::Pass);
+            assert_eq!(policy.resolve(jump(D6Target::FourPlus), &mut rng), RollResult::MiddleOutcome);
+        }
     }
 
     #[test]

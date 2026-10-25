@@ -54,7 +54,7 @@ pub enum RollKind {
     /// The coin toss. Scripted.
     Coin,
     /// A kick-off event's own roll: a roll-off or D3 (a raw D6 under no `Pass`), or a random
-    /// player (`Pick`). Enumerated face by face.
+    /// player (`Pick`), and the Stalling crowd roll (a raw D6 too). Enumerated face by face.
     KickoffEvent,
 }
 

@@ -108,6 +108,8 @@ pub fn first_drives<'a>(metas: impl IntoIterator<Item = &'a TrajectoryMeta>) -> 
 pub fn replay_all(traj: &Trajectory, first: Option<&Trajectory>) -> Result<Vec<GameState>, String> {
     let seed = traj.meta.seed.ok_or("trajectory has no seed")?;
     let mut state = position_state(&bias_of(&traj.meta)?, traj.meta.board_dims, seed);
+    // Path as the generator did, whatever this process's `BLOOD_JUMP_PATHS`; clones inherit it.
+    state.set_jump_paths(traj.meta.jump_paths());
     if drive_of(&traj.meta) > 1 {
         let first = first.ok_or("a next-drive record without its first drive in the shard")?;
         if first.meta.seed != traj.meta.seed || drive_of(&first.meta) != 1 {

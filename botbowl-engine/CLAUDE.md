@@ -34,7 +34,8 @@ fail catches, Changing Weather's Scatter (3), and throw-ins landing 2D6 - 1 squa
 Secure the Ball (`PosAT::StartSecureBall`, `Turn::secure_ball_positions`): offered while the ball
 is loose on the ground with no Standing opponent within 2 squares, once per team turn
 (`GameInfo::secure_ball_available`, off during a Charge), only to players whose free Move can reach
-the ball (the pathfinder is asked, behind a distance bound). The move squares stay rules-general:
+the ball (`PathFinder::can_reach`: a BFS over empty squares, the pathfinder only when a jump could
+matter; `tests/jump_paths.rs` checks it against the pathfinder over random games). The move squares stay rules-general:
 the ball square carries `PathingEvent::SecureBall(2+)` → `SecureBallProc` (no AG test or modifiers,
 team re-roll yes, Sure Hands no; 2+ picks up and ends the activation, a 1 is a turnover and a
 bounce); ending the activation anywhere else is a turnover (`secure_ball_turnover_if_off_ball`).
@@ -45,8 +46,14 @@ Stalling (`game_procs::Stalling`): `Turn` notes an activated ball carrier who co
 die (`could_score_without_dice`: a pathfinder route into the end zone with no event but the
 touchdown, no Bone Head / Wild Animal; one extra pathfinding per carrier declaration, behind an
 MA bound) and, if they still hold the ball standing when the activation ends, rolls the crowd's D6:
-at or above the team's turn number they are Knocked Down, a Turnover. Stunty: the Stunty Injury
-Table (KO 7+, Casualty 9+, on fouls and crowd injuries too) and dodges without Marking modifiers.
+at or above the team's turn number they are Knocked Down, a Turnover. A voluntary `EndTurn` forgoes
+an unused carrier's activation, so it rolls for them too ("this roll must still be taken if a
+Player Forgoes their Activation"). **Scaffolding that hands the turn over while building a
+position uses `GameState::pass_turn_unplayed`**, not a bare `EndTurn` (random starts, the mirror
+helpers; `GameStateBuilder` places the ball after its own `EndTurn`s), or a carrier near the end
+zone rolls for Stalling. Stunty: the Stunty Injury
+Table (KO 7+, Casualty 9+, on fouls and crowd injuries too), dodges without Marking modifiers, and
+-1 to intercept.
 
 ## Throw / Kick Team-mate (S3, `procedures/team_mate_procs.rs`)
 
@@ -96,7 +103,10 @@ re-roll only. Modifier = -max(marking on the start square, on `to`); Leap: any s
 negative modifier reduced by 1 to no better than -1, no once-per-activation limit (none in the text).
 Allowed in every action's movement (S3: they all include a Move Action).
 - **Toggle:** `GameState::jump_paths` (`set_jump_paths`, process default `BLOOD_JUMP_PATHS=0` off),
-  in neither `PartialEq` nor `Hash`, not serialised. Off removes jumps from paths only.
+  in neither `PartialEq` nor `Hash`, not serialised. Off removes jumps from paths only. A corpus
+  generated with it off says so (`TrajectoryMeta::new` stamps `extra.jump_paths = off`), and
+  `mc_label::replay_all` replays with the corpus's setting, whatever its own environment.
+- A failed Jump takes Arm Bar's +1 from a marker of the square jumped away from.
 - **Pruning** (`pathing.rs`): candidates only next to the per-search `downed` list (empty → no
   cost), or the 16-square ring for a Leap player; a jump with a free waypoint (unmarked empty square
   adjacent to both ends) is dominated by walking and never built. `tests/jump_paths.rs`

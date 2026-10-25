@@ -271,4 +271,17 @@ fn pathing_reaches_the_ball_with_the_secure_event_only_under_secure_the_ball() {
     assert!(node
         .iter()
         .any(|e| matches!(e, PositionOrEvent::Event(PathingEvent::Pickup(_)))));
+    // Under Secure the Ball the same square carries the 2+ and no Agility Test.
+    let mut state = state;
+    state.step_positional(PosAT::StartSecureBall, pos(START));
+    let events: Vec<PathingEvent> = state.get_paths().unwrap()[pos(BALL)]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            PositionOrEvent::Event(e) => Some(e),
+            PositionOrEvent::Position(_) => None,
+        })
+        .collect();
+    assert_eq!(events, vec![PathingEvent::SecureBall(D6Target::TwoPlus)]);
 }

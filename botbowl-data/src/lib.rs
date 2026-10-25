@@ -434,6 +434,12 @@ impl TrajectoryMeta {
     /// board capacity, and wall-clock time. Fill in the rest with the
     /// builder-style setters.
     pub fn new(source: impl Into<String>, board_dims: BoardDims) -> Self {
+        let mut extra = BTreeMap::new();
+        // S3 jumps in paths are on unless the process turned them off (`BLOOD_JUMP_PATHS=0`);
+        // a replay must path the same way, so an off is recorded (on is the unstamped default).
+        if !botbowl_engine::core::gamestate::jump_paths_default() {
+            extra.insert("jump_paths".to_string(), "off".to_string());
+        }
         TrajectoryMeta {
             format_version: FORMAT_VERSION,
             git_commit: git_commit().to_string(),
@@ -445,8 +451,14 @@ impl TrajectoryMeta {
             away_bot: String::new(),
             seed: None,
             created_unix_secs: SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs()),
-            extra: BTreeMap::new(),
+            extra,
         }
+    }
+
+    /// Whether the record was generated with jumps in paths (`GameState::jump_paths`): a replay
+    /// sets its states to this before stepping.
+    pub fn jump_paths(&self) -> bool {
+        self.extra.get("jump_paths").map(String::as_str) != Some("off")
     }
 
     pub fn with_bots(mut self, home: impl Into<String>, away: impl Into<String>) -> Self {

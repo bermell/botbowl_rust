@@ -528,6 +528,8 @@ fn prompt(state: &GameState) -> Option<pv::PromptView> {
         AnyProc::GfiProc(c) => player_pos(c.id()),
         AnyProc::PickupProc(c) => player_pos(c.id()),
         AnyProc::SecureBallProc(c) => player_pos(c.id()),
+        // The thrown player lands; the default arm would point at the thrower.
+        AnyProc::TeamMateLanding(c) => player_pos(c.id()),
         AnyProc::JumpUp(c) => player_pos(c.id()),
         AnyProc::Push(p) => Some(p.on()),
         // The dice go over the defender: that is what they are about.

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use botbowl_engine::core::dices::resolve_with_rng;
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
-use botbowl_engine::core::model::{Action, MicroStepState, PlayerID, PlayerStatus, SomeProcInput};
+use botbowl_engine::core::model::{Action, BallState, MicroStepState, PlayerID, PlayerStatus, SomeProcInput};
 use botbowl_engine::core::pathing::{CustomIntoIter, PathFinder, PathingEvent, PositionOrEvent};
 use botbowl_engine::core::table::{PosAT, Skill};
 use rand::{Rng, SeedableRng};
@@ -96,6 +96,31 @@ fn random_games_with_jumps_play_through() {
     }
     assert!(counts.hidden_jumps > 0, "{counts:?}");
     assert!(counts.jump_rolls > counts.hidden_jumps, "jumps from paths too: {counts:?}");
+}
+
+/// `PathFinder::can_reach` (Secure the Ball's offer) answers exactly what the pathfinder does,
+/// for every player of the acting team on the loose ball, with jumps in the paths and without.
+#[test]
+fn can_reach_agrees_with_the_pathfinder() {
+    let mut compared = [0usize; 2];
+    let mut counts = Counts::default();
+    for seed in 0..4 {
+        play(7200 + seed, &mut counts, |state| {
+            let BallState::OnGround(ball) = state.ball else { return };
+            let team = state.available_actions.team.unwrap();
+            for jumps in [true, false] {
+                let mut state = state.clone();
+                state.set_jump_paths(jumps);
+                let ids: Vec<PlayerID> = state.get_players_on_pitch_in_team(team).filter(|p| !p.used).map(|p| p.id).collect();
+                for id in ids {
+                    let paths = PathFinder::player_paths(&state, id).unwrap();
+                    assert_eq!(PathFinder::can_reach(&state, id, ball), paths[ball].is_some(), "seed {seed} id {id}");
+                    compared[usize::from(paths[ball].is_some())] += 1;
+                }
+            }
+        });
+    }
+    assert!(compared[0] > 50 && compared[1] > 50, "{compared:?}");
 }
 
 /// A pathfinding sample: a state at a `Turn` decision and one of the acting team's players.

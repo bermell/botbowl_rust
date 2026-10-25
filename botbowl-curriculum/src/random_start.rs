@@ -20,7 +20,7 @@
 
 use botbowl_engine::core::gamestate::{BuilderState, DiceMode, GameState, GameStateBuilder};
 use botbowl_engine::core::model::{other_team, BoardDims, Coord, Direction, PlayerStats, Position, TeamType};
-use botbowl_engine::core::table::{SimpleAT, Skill};
+use botbowl_engine::core::table::Skill;
 use rand::{Rng, RngCore};
 use rand_chacha::ChaCha8Rng;
 
@@ -429,7 +429,7 @@ fn apply_game_context(state: &mut GameState, rng: &mut ChaCha8Rng) {
     if active == TeamType::Away {
         // Hand the turn to Away through the engine so available_actions,
         // team_turn and player flags are all regenerated consistently.
-        state.step_simple(SimpleAT::EndTurn);
+        state.pass_turn_unplayed();
     }
 
     let turn: u8 = rng.gen_range(1..=8);

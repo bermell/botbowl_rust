@@ -1122,6 +1122,57 @@ impl<'a> PathFinder<'a> {
         info.jump_node(&root, to).map(Arc::new)
     }
 
+    /// Whether a Move by `id` (as declared at a `Turn` decision) can end in the empty square
+    /// `target` — `player_paths(..)[target].is_some()`, without building the paths. A walk
+    /// enters only empty squares, any of them, each square one of MA + Rushes after any stand-up,
+    /// so a breadth-first search over empty squares decides it. Jumps fall back to the
+    /// pathfinder (they need a downed player or Leap, and the paths may carry them).
+    pub fn can_reach(game_state: &GameState, id: PlayerID, target: Position) -> bool {
+        let player = game_state.get_player_unsafe(id);
+        let start = player.position;
+        if player.status == PlayerStatus::Stunned || game_state.is_out(target) || game_state.get_player_at(target).is_some()
+        {
+            return false;
+        }
+        let mut budget = player.moves_left() + player.gfis_left();
+        if player.status != PlayerStatus::Up {
+            budget = match crate::core::procedures::movement_procs::standup_roll(player) {
+                Some(_) => player.gfis_left(),
+                None => budget.saturating_sub(crate::core::procedures::movement_procs::standup_cost(player)),
+            };
+        }
+        if start.distance_to(&target) as u32 > budget as u32 {
+            return false;
+        }
+        if game_state.jump_paths()
+            && (player.has_skill(Skill::Leap)
+                || game_state.get_players_on_pitch().any(|p| p.status != PlayerStatus::Up))
+        {
+            return matches!(Self::player_paths(game_state, id), Ok(paths) if paths[target].is_some());
+        }
+        let mut seen: FullPitch<bool> = Default::default();
+        seen[start] = true;
+        let mut frontier = vec![start];
+        for _ in 0..budget {
+            let mut next = Vec::new();
+            for pos in frontier {
+                for dir in Direction::all_directions_iter() {
+                    let to = pos + *dir;
+                    if game_state.is_out(to) || seen[to] || game_state.get_player_at(to).is_some() {
+                        continue;
+                    }
+                    if to == target {
+                        return true;
+                    }
+                    seen[to] = true;
+                    next.push(to);
+                }
+            }
+            frontier = next;
+        }
+        false
+    }
+
     /// Returns the best path from `id`'s current position to `target`, or None if no path exists.
     /// Safe to call for an unused fresh-turn player on the moving team — moves_left, gfis_left,
     /// and `player_action_type` default to sensible values (MA, 2, StartMove respectively).

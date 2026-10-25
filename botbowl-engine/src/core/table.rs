@@ -411,6 +411,10 @@ impl PosAT {
     /// The listed (non-hidden) variants are `ALL[..LISTED]`, the only ones a `PosATSet` holds;
     /// the rest are hidden actions, kept out of the set so it stays two bytes a square.
     pub const LISTED: usize = 16;
+}
+// The hidden variants come after every listed one: a new listed variant goes before them.
+const _: () = assert!(PosAT::ThrowTeamMate.index() == PosAT::LISTED && PosAT::Jump.index() == PosAT::LISTED + 1);
+impl PosAT {
     /// Every variant, in `index` order. `index` is an exhaustive match, so a new variant fails to
     /// compile until it is numbered, and `pos_at_all_matches_index` checks it was added here too.
     pub const ALL: [PosAT; PosAT::COUNT] = [
@@ -609,7 +613,14 @@ macro_rules! enum_bitset {
 
         impl<'de> Deserialize<'de> for $set {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                Ok(Vec::<$enum>::deserialize(deserializer)?.into_iter().collect())
+                let mut set = Self::new();
+                for v in Vec::<$enum>::deserialize(deserializer)? {
+                    let bit = Self::bit(v).ok_or_else(|| {
+                        serde::de::Error::custom(format!("{v:?} cannot be in a {}", stringify!($set)))
+                    })?;
+                    set.0 |= bit;
+                }
+                Ok(set)
             }
         }
     };
@@ -737,6 +748,15 @@ mod skill_set_tests {
             let back: HashSet<Skill> = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
             assert_eq!(back, hs);
         }
+    }
+
+    /// A hidden `PosAT` in stored data is a load error, not a panic.
+    #[test]
+    fn a_hidden_pos_at_does_not_deserialize_into_a_set() {
+        use super::{PosAT, PosATSet};
+        let ok: PosATSet = serde_json::from_str(r#"["Move","StartSecureBall"]"#).unwrap();
+        assert!(ok.contains(&PosAT::StartSecureBall));
+        assert!(serde_json::from_str::<PosATSet>(r#"["Move","Jump"]"#).is_err());
     }
 
     #[test]
