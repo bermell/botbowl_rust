@@ -64,8 +64,8 @@ pub enum BounceModel {
     Catch,
 }
 
-/// Plan 061 (b): how an inaccurate pass's scatter and a wildly inaccurate pass's deviate are
-/// modelled.
+/// Plan 061 (b): how an inaccurate pass's scatter is modelled. (S3 has no wildly inaccurate
+/// pass, so a pass no longer deviates.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PassScatterModel {
@@ -140,7 +140,7 @@ pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel
             ThrowInModel::Scripted => vec![throw_in_outcome(state)],
             ThrowInModel::Grouped => throw_in_grouped(state),
         },
-        RequestedRoll::Scatter | RequestedRoll::Deviate
+        RequestedRoll::Scatter
             if rolls.pass_scatter == PassScatterModel::Grouped
                 && matches!(state.proc_stack_peek(), Some(AnyProc::Pass(_))) =>
         {
@@ -149,8 +149,8 @@ pub fn enumerate_full(state: &GameState, req: &RequestedRoll, model: ChanceModel
         RequestedRoll::BlockDice(n) => block_outcomes(state, *n),
         RequestedRoll::D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
         RequestedRoll::Sum2D6ThreeOutcomes(low, high) => three_outcomes(low.success_prob(), high.success_prob()),
-        // A raw D6 is read face by face by its proc (the pass: accurate / inaccurate / wildly
-        // inaccurate / fumble, depending on the passer's target and modifier), so every face is
+        // A raw D6 is read face by face by its proc (the pass: accurate / inaccurate / fumble,
+        // depending on the passer's target and modifier), so every face is
         // its own child. Faces the proc treats alike recombine into one node.
         RequestedRoll::D6 => (1..=6u8)
             .map(|f| BbAction::chance(RollResult::D6(D6::try_from(f).unwrap()), 1.0 / 6.0))
@@ -688,18 +688,17 @@ fn grouped_landing_children(
     out
 }
 
-/// Plan 061 (b): an inaccurate pass's scatter (three D8 from the target square) or a wildly
-/// inaccurate pass's deviate (D8 direction x D6 squares from the passer), at the exact landing
-/// distribution the `Pass` proc produces — every one of the 512 (scatter) or 48 (deviate) dice
-/// combinations walked with the engine's rule that a step out of bounds stops the walk and the
-/// ball is thrown in from the last square on the pitch — then grouped by consequence
+/// Plan 061 (b): an inaccurate pass's scatter (three D8 from the target square), at the exact
+/// landing distribution the `Pass` proc produces — every one of the 512 dice combinations walked
+/// with the engine's rule that a step out of bounds stops the walk and the ball is thrown in from
+/// the last square on the pitch — then grouped by consequence
 /// ([`grouped_landing_children`]): a player on the landing square attempts the catch
 /// (`DeflectOrResolve` gives every player there a `Catch`), out of bounds is a throw-in, an empty
 /// square a bounce. Each child carries the dice of one combination producing it.
 ///
 /// Off a `Pass` proc (a kickoff's deviate) the caller keeps the scripted result.
 fn pass_landing_grouped(state: &GameState, req: &RequestedRoll) -> Vec<BbAction> {
-    let (Some(AnyProc::Pass(pass)), Some(from)) = (state.proc_stack_peek(), state.get_ball_position()) else {
+    let Some(AnyProc::Pass(pass)) = state.proc_stack_peek() else {
         return vec![BbAction::chance(scripted_result(req), 1.0)];
     };
     let f = Frame::of(state);
@@ -730,21 +729,6 @@ fn pass_landing_grouped(state: &GameState, req: &RequestedRoll) -> Vec<BbAction>
                 let key = f.dir_rank(a) * 64 + f.dir_rank(b) * 8 + f.dir_rank(c);
                 let r = RollResult::Scatter(D8::from(a), D8::from(b), D8::from(c));
                 items.push((class, sq, r, key));
-            }
-        }
-        RequestedRoll::Deviate => {
-            for n in 1..=6u8 {
-                for d in dirs {
-                    let landing = walk(from, &mut std::iter::repeat(d).take(n as usize));
-                    let (class, sq) = classify(landing);
-                    let key = n as u32 * 8 + f.dir_rank(d);
-                    items.push((
-                        class,
-                        sq,
-                        RollResult::Deviate(D6::try_from(n).unwrap(), D8::from(d)),
-                        key,
-                    ));
-                }
             }
         }
         _ => return vec![BbAction::chance(scripted_result(req), 1.0)],
@@ -1897,7 +1881,7 @@ mod tests {
         assert!((p(RollResult::Pass) - 2.0 / 6.0).abs() < 1e-5);
     }
 
-    // The pass roll is a raw D6 (accurate / inaccurate / wildly inaccurate / fumble are decided
+    // The pass roll is a raw D6 (accurate / inaccurate / fumble are decided
     // by the proc from the face). A scripted 1 made every pass a fumble inside the search.
     #[test]
     fn a_raw_d6_offers_every_face() {

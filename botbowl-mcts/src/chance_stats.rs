@@ -36,9 +36,10 @@ pub enum RollKind {
     Bounce,
     /// A D8 under `Bounce` with the kickoff flag: a kickoff bounce.
     KickBounce,
-    /// Any other D8 (the weather's scatter of a landed kickoff). Scripted.
+    /// Any other D8, and Changing Weather's Scatter (3) of a landed kickoff. Scripted.
     D8Other,
-    /// A wildly inaccurate pass's deviate. Scripted unless `PassScatterModel::Grouped`.
+    /// A pre-S3 wildly inaccurate pass's deviate. No longer requested (S3 has no wildly
+    /// inaccurate pass); kept so the counter names stay stable.
     PassDeviate,
     /// The kickoff's deviate. Scripted.
     KickoffDeviate,
@@ -97,7 +98,11 @@ impl RollKind {
                 Some(AnyProc::Pass(_)) => RollKind::PassDeviate,
                 _ => RollKind::KickoffDeviate,
             },
-            RequestedRoll::Scatter => RollKind::PassScatter,
+            RequestedRoll::Scatter => match state.proc_stack_peek() {
+                Some(AnyProc::Pass(_)) => RollKind::PassScatter,
+                // Changing Weather's Scatter (3) of a landed kick-off.
+                _ => RollKind::D8Other,
+            },
             RequestedRoll::ThrowIn => RollKind::ThrowIn,
             RequestedRoll::Sum2D6 => match state.proc_stack_top() {
                 Some("ChangingWeather") => RollKind::Weather,

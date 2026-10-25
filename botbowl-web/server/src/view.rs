@@ -68,6 +68,7 @@ fn event_label(event: &PathingEvent) -> String {
         PathingEvent::Touchdown(_) => "Touchdown!".to_string(),
         PathingEvent::Foul(_, t) => format!("Armour {}+", *t as u8),
         PathingEvent::StandUp => "Stand up".to_string(),
+        PathingEvent::StandUpRoll(t) => format!("Stand up {}+", *t as u8),
     }
 }
 

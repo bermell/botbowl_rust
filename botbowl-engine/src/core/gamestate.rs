@@ -1001,21 +1001,17 @@ impl GameState {
             None => Err(Box::new(InvalidPlayerId { id })),
         }
     }
-    /// The Agility Test to catch a ball (S3, Catching the Ball): AG, -1 per marking opponent,
-    /// -1 in rain. A ball that Bounced or was Thrown-in is a further -1, applied by the caller.
-    /// The `+1` turns the classic stored AG (`ag_target` = 7 - AG) into the S3 test (AG 3 → 3+),
-    /// as for dodge and pick-up.
+    /// The Agility Test to catch a ball (S3, Catching the Ball): AG, -1 per marking opponent
+    /// (ignored with Nerves of Steel), -1 in rain. A ball that Bounced or was Thrown-in is a
+    /// further -1, applied by the caller. The `+1` turns the classic stored AG (`ag_target` =
+    /// 7 - AG) into the S3 test (AG 3 → 3+), as for dodge and pick-up.
     pub fn get_catch_target(&self, id: PlayerID) -> Result<D6Target> {
         let player = self.get_player(id)?;
         let mut target = player.ag_target();
         target.add_modifer(1);
-        let team = player.stats.team;
-        target.add_modifer(
-            -(self
-                .get_adj_players(player.position)
-                .filter(|player_| player_.stats.team != team && player_.has_tackle_zone())
-                .count() as i8),
-        );
+        if !player.has_skill(Skill::NervesOfSteel) {
+            target.add_modifer(-(self.marking_opponents(player) as i8));
+        }
 
         if let Weather::Rain = self.info.weather {
             target.add_modifer(-1);
@@ -1793,16 +1789,34 @@ impl GameState {
             .filter(move |pos| *pos != from && *pos != to)
     }
 
+    /// The interception Agility Test before the pass's own modifier (`interception_modifier`):
+    /// -1 per opponent Marking the interceptor, -1 in rain. An interception is not a catch, so
+    /// Nerves of Steel does not help.
+    fn get_interception_target(&self, player: &FieldedPlayer) -> D6Target {
+        let mut target = player.ag_target();
+        target.add_modifer(1);
+        target.add_modifer(-(self.marking_opponents(player) as i8));
+        if let Weather::Rain = self.info.weather {
+            target.add_modifer(-1);
+        }
+        target
+    }
+
+    /// Standing opponents with a tackle zone next to `player`.
+    fn marking_opponents(&self, player: &FieldedPlayer) -> usize {
+        let team = player.stats.team;
+        self.get_adj_players(player.position)
+            .filter(|adj| adj.stats.team != team && adj.has_tackle_zone())
+            .count()
+    }
+
     pub fn get_intercepters(&self, team: TeamType, from: Position, to: Position) -> Vec<(Position, D6Target)> {
         // TODO: thos function needs tests!!!
         GameState::get_interception_positions(from, to)
             .filter_map(|pos| {
                 self.get_player_at(pos)
                     .filter(|p| p.stats.team == team && p.can_catch())
-                    .and_then(|p| self.get_catch_target(p.id).ok())
-                    // Pre-S3 interception (pass rules not converted yet): kept at the old
-                    // catch base, one harder than an S3 catch.
-                    .map(|mut target| *target.add_modifer(-1))
+                    .map(|p| self.get_interception_target(p))
                     .map(|target| (pos, target))
             })
             .collect::<Vec<(Position, D6Target)>>()
@@ -1842,16 +1856,33 @@ impl GameState {
             return None;
         }
 
-        let Some(team) = self.get_player(id).ok().map(|p| p.stats.team) else {
+        // S3: in a Blizzard only a Quick or a Short Pass.
+        if self.info.weather == Weather::Blizzard && *distance_modifier >= 2 {
+            return None;
+        }
+
+        let Some(passer) = self.get_player(id).ok() else {
             //return None;
             panic!("Player not found");
         };
-        let tackle_zones = self
-            .get_adj_players(from)
-            .filter(|adj_p| adj_p.stats.team != team && adj_p.has_tackle_zone())
-            .count() as i8;
-        // TODO: weather effect
-        let sum_modifiers = -tackle_zones - *distance_modifier;
+        let team = passer.stats.team;
+        // -1 per opponent Marking the passer, unless Nerves of Steel.
+        let tackle_zones = if passer.has_skill(Skill::NervesOfSteel) {
+            0
+        } else {
+            self.get_adj_players(from)
+                .filter(|adj_p| adj_p.stats.team != team && adj_p.has_tackle_zone())
+                .count() as i8
+        };
+        let mut sum_modifiers = -tackle_zones - *distance_modifier;
+        // Very Sunny: -1 to every Passing Ability Test.
+        if self.info.weather == Weather::Sunny {
+            sum_modifiers -= 1;
+        }
+        // Accurate: +1 to a Quick or a Short Pass.
+        if passer.has_skill(Skill::Accurate) && *distance_modifier <= 1 {
+            sum_modifiers += 1;
+        }
         Some(sum_modifiers)
     }
     pub fn get_pass_target(&self, id: usize, from: Position, to: Position) -> Option<D6Target> {

@@ -8,7 +8,7 @@ use crate::core::model::{
 };
 use crate::core::model::{BallState, PlayerID, TeamType};
 use crate::core::procedures::game_procs::TURNS_PER_HALF;
-use crate::core::table::{PosAT, Skill};
+use crate::core::table::{PosAT, SimpleAT, Skill};
 
 use crate::core::procedures::any_proc::AnyProc;
 
@@ -377,56 +377,110 @@ impl Procedure for Touchdown {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PassResult {
     Accurate,
     Inaccurate,
+    /// Pre-S3 (a modified 1 deviated D8 x D6 from the passer). Never produced any more; kept so
+    /// stored states that hold it still load.
     WildlyInaccurate,
     Fumble,
 }
 
+/// S3, Pass Actions: a Passing Ability Test (the target with the range, marking, weather and
+/// skill modifiers already applied, `modifier` their sum). Success or a natural 6 is
+/// Accurate: the ball heads for the target square. A natural 1, or a 1 after modifiers, is a
+/// Fumble: it bounces from the passer and the turn is over. Anything else is Inaccurate: the
+/// ball Scatters (3) from the target square. A failed test (Inaccurate or Fumble) may be
+/// re-rolled once, with the Pass skill or a team re-roll.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Pass {
     pos: Position,
     pass: D6Target,
     modifier: i8,
+    /// The test has been re-rolled: its next result stands.
+    #[serde(default)]
+    rerolled: bool,
+    /// A failed result waiting on the passer's coach's team re-roll decision.
+    #[serde(default)]
+    failed: Option<PassResult>,
 }
 impl Pass {
     pub fn new(pos: Position, pass: D6Target, modifier: i8) -> AnyProc {
-        AnyProc::Pass(Pass { pos, pass, modifier })
+        AnyProc::Pass(Pass {
+            pos,
+            pass,
+            modifier,
+            rerolled: false,
+            failed: None,
+        })
     }
     /// The square the pass is aimed at: an inaccurate pass scatters from here. Public so MCTS's
     /// chance model can enumerate where the ball lands (plan 061).
     pub fn target(&self) -> Position {
         self.pos
     }
-}
-impl Procedure for Pass {
-    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
-        match input {
-            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
-            ProcInput::Roll(RollResult::D6(roll)) if self.pass.is_success(roll) => {
-                // ACCURATE PASS
+
+    fn result_of(&self, roll: D6) -> PassResult {
+        if roll == D6::One || (roll as i8) + self.modifier <= 1 {
+            PassResult::Fumble
+        } else if self.pass.is_success(roll) {
+            PassResult::Accurate
+        } else {
+            PassResult::Inaccurate
+        }
+    }
+
+    fn resolve(&self, result: PassResult, game_state: &mut GameState) -> ProcState {
+        match result {
+            PassResult::Accurate => {
                 let from = game_state.get_ball_position().unwrap();
                 ProcState::DoneNewProcs(vec![
                     TurnoverIfPossessionLost::new(),
                     DeflectOrResolve::new(from, self.pos, PassResult::Accurate, None),
                 ])
             }
-            ProcInput::Roll(RollResult::D6(D6::One)) => {
-                // FUMBLE
+            PassResult::Fumble => {
                 game_state.info.turnover = true;
                 ProcState::DoneNew(Bounce::new())
             }
-            ProcInput::Roll(RollResult::D6(roll)) if roll + self.modifier == D6::One => {
-                // WILDLY INACCURATE PASSES
-                //  deviate (d8 * d6) from the square occupied by the player performing the Pass
-                ProcState::NeedRoll(RequestedRoll::Deviate)
+            PassResult::Inaccurate => ProcState::NeedRoll(RequestedRoll::Scatter),
+            PassResult::WildlyInaccurate => unreachable!("not an S3 result"),
+        }
+    }
+}
+impl Procedure for Pass {
+    fn step(&mut self, game_state: &mut GameState, input: ProcInput) -> ProcState {
+        match input {
+            ProcInput::Nothing => ProcState::NeedRoll(RequestedRoll::D6),
+            ProcInput::Roll(RollResult::D6(roll)) => {
+                let result = self.result_of(roll);                if result != PassResult::Accurate && !self.rerolled {
+                    let passer = game_state.get_active_player().unwrap();
+                    let team = passer.stats.team;
+                    if passer.has_skill(Skill::Pass) {
+                        self.rerolled = true;
+                        return ProcState::NeedRoll(RequestedRoll::D6);
+                    }
+                    if game_state.may_use_team_reroll(team) {
+                        self.failed = Some(result);
+                        let mut aa = AvailableActions::new(team);
+                        aa.insert_simple(SimpleAT::UseReroll);
+                        aa.insert_simple(SimpleAT::DontUseReroll);
+                        return ProcState::NeedAction(aa);
+                    }
+                }
+                self.resolve(result, game_state)
             }
-            ProcInput::Roll(RollResult::D6(_)) => {
-                //INACCURATE PASSES
-                // scatter (d8 + d8 + d8) from the target square before landing.
-                ProcState::NeedRoll(RequestedRoll::Scatter)
+            ProcInput::Action(Action::Simple(SimpleAT::UseReroll)) if self.failed.is_some() => {
+                let team = game_state.get_active_player().unwrap().stats.team;
+                game_state.get_mut_team(team).use_reroll();
+                self.failed = None;
+                self.rerolled = true;
+                ProcState::NeedRoll(RequestedRoll::D6)
+            }
+            ProcInput::Action(Action::Simple(SimpleAT::DontUseReroll)) if self.failed.is_some() => {
+                let result = self.failed.take().unwrap();
+                self.resolve(result, game_state)
             }
             ProcInput::Roll(RollResult::Scatter(r1, r2, r3)) => {
                 let from = game_state.get_ball_position().unwrap(); //or just acive plater...
@@ -445,30 +499,19 @@ impl Procedure for Pass {
                     DeflectOrResolve::new(from, target, PassResult::Inaccurate, throwin_pos),
                 ])
             }
-            ProcInput::Roll(RollResult::Deviate(distance, direction)) => {
-                let from = game_state.get_ball_position().unwrap();
-                let mut target = from; // + Direction::from(direction) * distance as i8;
-                let mut throwin_pos = None;
-                let dir = Direction::from(direction);
-                for _ in 0..(distance as i8) {
-                    let new_target = target + dir;
-                    if game_state.is_out(new_target) {
-                        throwin_pos = Some(target);
-                        break;
-                    }
-                    target = new_target;
-                }
-
-                ProcState::DoneNewProcs(vec![
-                    TurnoverIfPossessionLost::new(),
-                    DeflectOrResolve::new(from, target, PassResult::WildlyInaccurate, throwin_pos),
-                ])
-            }
-            ProcInput::Action(_) => todo!(),
             _ => panic!("Unexpected input {:?} for Pass", input),
         }
     }
 }
+/// S3, Interceptions: the Agility Test is -3 against an Accurate Pass, -2 against an Inaccurate
+/// one (on top of the marking and weather modifiers in `GameState::get_intercepters`).
+pub fn interception_modifier(result: PassResult) -> i8 {
+    match result {
+        PassResult::Accurate => -3,
+        _ => -2,
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct DeflectOrResolve {
     from: Position,
@@ -520,30 +563,20 @@ impl Procedure for DeflectOrResolve {
                 debug_assert!(!game_state.is_out(throw_in_pos));
                 ThrowIn::new(throw_in_pos)
             } else {
-                // A Prone or Stunned player in the square fails the catch automatically: the ball
-                // bounces from there, as from an empty square.
+                // The catch has no modifier for the pass (S3, Catching the Ball). A Prone or
+                // Stunned player in the square fails it automatically: the ball bounces from
+                // there, as from an empty square.
                 match game_state.get_player_at(self.to) {
                     Some(player) if player.can_catch() => {
-                        let mut target = game_state.get_catch_target(player.id).unwrap();
-                        target.add_modifer(match self.result {
-                            PassResult::Accurate => 0,
-                            PassResult::Inaccurate => -1,
-                            PassResult::WildlyInaccurate => -2,
-                            PassResult::Fumble => -3,
-                        });
-                        Catch::new(player.id, target)
+                        Catch::new(player.id, game_state.get_catch_target(player.id).unwrap())
                     }
                     _ => Bounce::new(),
                 }
             }
         };
         if let Some((pos, mut target)) = interceptor {
-            target.add_modifer(match self.result {
-                PassResult::Accurate => 0,
-                PassResult::Inaccurate => -1,
-                PassResult::WildlyInaccurate => -2,
-                PassResult::Fumble => -3,
-            });
+            // S3, Interceptions: -3 against an Accurate Pass, -2 against an Inaccurate one.
+            target.add_modifer(interception_modifier(self.result));
             let id = game_state.get_player_id_at(pos).unwrap();
             ProcState::DoneNew(Deflect::new(id, target, failed_deflect_proc))
         } else {
@@ -600,11 +633,16 @@ impl SimpleProc for Deflect {
         self.id
     }
 
+    /// S3: a successful interception gains possession at once — no catch follows. The pass
+    /// below (`TurnoverIfPossessionLost`) turns it over. An interceptor standing in the end zone
+    /// they score in scores in the opponent's turn.
     fn apply_success(&self, game_state: &mut GameState) -> Vec<AnyProc> {
-        game_state.set_ball(BallState::InAir(game_state.get_player_unsafe(self.id).position));
-        // Pre-S3 interception (pass rules not converted yet): the old catch base, then -1.
-        let mut catch_target = game_state.get_catch_target(self.id).unwrap();
-        vec![Catch::new(self.id, *catch_target.add_modifer(-2))]
+        game_state.set_ball(BallState::Carried(self.id));
+        let player = game_state.get_player_unsafe(self.id);
+        if player.position.x == game_state.get_endzone_x(player.stats.team) {
+            game_state.info.handle_td_by = Some(self.id);
+        }
+        Vec::new()
     }
 }
 #[cfg(test)]

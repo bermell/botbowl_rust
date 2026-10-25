@@ -6,11 +6,15 @@ Pure Blood Bowl rules library (Rust rewrite of [njustesen/botbowl](https://githu
 
 The reference is the S3 rulebook (the user's copy: `~/repos/blood/rules/*.html`), not BB2020 or
 the 2016 rules the Python botbowl followed (the user, 2026-10-25). Cite it in a new rule's test.
-The engine is not fully converted yet. Still on the old rules: passing (wildly inaccurate passes,
-deflect-then-catch interception — `get_intercepters` keeps the old catch base on purpose),
-characteristics stored as numbers (`ag_target` = 7 - AG, with the S3 `+1` applied at the dodge /
-pick-up / catch call sites), most of the kick-off table, the kicker's choice of target square, and
-Stand Up's 4+ roll for MA ≤ 2. Converted (2026-10-25): team re-rolls (any number per turn, only
+The engine is not fully converted yet. Still on the old rules: characteristics stored as numbers
+(`ag_target` = 7 - AG, with the S3 `+1` applied at the dodge / pick-up / catch / interception
+call sites; PA is already a target), most of the kick-off table, the kicker's choice of target
+square, and passes only to a team-mate (S3 allows any square in range). Converted (2026-10-25):
+passing (Quick/Short/Long/Bomb 0/-1/-2/-3, a modified 1 is a fumble — no wildly inaccurate pass;
+interception is one AG test at -3 accurate / -2 inaccurate and gains possession; no catch
+modifier; the PA test may be re-rolled with Pass or a team re-roll; Very Sunny, Blizzard,
+Accurate, Nerves of Steel; the procedures keep their old names, `Deflect` = the interception),
+Stand Up's 4+ roll for MA ≤ 2 (`StandUpRoll`), team re-rolls (any number per turn, only
 by the active team — `GameState::may_use_team_reroll`; a die is still never re-rolled twice), a
 touchdown in the opponent's turn skips the scorer's next turn, catch modifiers (-1 bounced /
 thrown-in only), foul assists (must Mark, no Guard), crowd-push and Wrestle turnovers, Stand Firm

@@ -3,8 +3,8 @@
 //! - `BounceModel::Catch`: a bounce onto a standing player is a catch attempt (the engine's
 //!   `Bounce` hands it to `Catch`), onto a player on the ground it bounces on; the old `Settle`
 //!   model dropped both whenever the ball could land.
-//! - `PassScatterModel::Grouped`: an inaccurate pass's scatter (3 D8) and a wildly inaccurate
-//!   pass's deviate (D6 x D8) at their exact landing distribution, grouped by consequence: one
+//! - `PassScatterModel::Grouped`: an inaccurate pass's scatter (3 D8; S3 has no wildly
+//!   inaccurate pass) at its exact landing distribution, grouped by consequence: one
 //!   child per player the ball lands on (a catch), one for "goes out" (a throw-in), and the empty
 //!   squares' mass carried by the most likely few.
 //! - `ThrowInModel::Grouped`: the same for a throw-in's 3 directions x 2D6, with a re-throw (and
@@ -241,7 +241,7 @@ fn kickoff_bounce_touchbacks_are_one_child() {
 // ---- (b) pass scatter / deviate ---------------------------------------------------------------
 
 /// A home thrower at `thrower` with the ball passes to the square `target`; the D6 is resolved to
-/// the first face that asks for `want` (Scatter or Deviate).
+/// the first face that asks for `want` (the Scatter).
 fn paused_on_pass_landing(
     dims: Option<BoardDims>,
     thrower: Position,
@@ -265,6 +265,9 @@ fn paused_on_pass_landing(
         set_status(&mut base, *p, *status);
     }
     pin(&mut base, thrower);
+    // A failed pass would ask about a team re-roll before it scatters.
+    base.get_mut_team(TeamType::Home).rerolls = 0;
+    base.get_mut_team(TeamType::Away).rerolls = 0;
     base.set_dice_mode(DiceMode::RegisterRolls);
     base.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::StartPass, thrower)));
     base.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::Pass, target)));
@@ -279,8 +282,8 @@ fn paused_on_pass_landing(
     panic!("no pass face asks for {want:?}")
 }
 
-/// No moves left: the pass is thrown from where the thrower stands, so its range (and the
-/// wildly-inaccurate face) is the test's to choose.
+/// No moves left: the pass is thrown from where the thrower stands, so its range is the test's
+/// to choose.
 fn pin(state: &mut GameState, thrower: Position) {
     let id = state.get_player_id_at(thrower).unwrap();
     let p = state.get_mut_player(id).unwrap();
@@ -404,28 +407,13 @@ fn a_scatter_near_the_sideline_has_one_out_of_bounds_child() {
     assert_eq!(outs, 1);
 }
 
-#[test]
-fn a_wildly_inaccurate_pass_deviates_at_its_exact_landing_odds() {
-    // A long pass (-2) from near the sideline: a 2 or 3 is wildly inaccurate.
-    let thrower = Position::new((5, 2));
-    let target = Position::new((12, 5));
-    let others = [
-        (target, TeamType::Home, PlayerStatus::Up),
-        (Position::new((6, 3)), TeamType::Home, PlayerStatus::Up),
-        (Position::new((5, 4)), TeamType::Home, PlayerStatus::Up),
-    ];
-    let state = paused_on_pass_landing(None, thrower, target, &others, RequestedRoll::Deviate);
-    assert_eq!(children(&state, RollModel::default()).len(), 1);
-    check_pass_landing(&state);
-}
-
 /// Mirror the whole setup (squares reflected, teams swapped): the enumerated landing squares and
 /// their probabilities must reflect too.
 #[test]
 fn pass_landing_children_mirror_with_the_board() {
     let dims = GameStateBuilder::new().build().board_dims;
     let flip = |p: Position| Position::new((dims.width - 1 - p.x, p.y));
-    for want in [RequestedRoll::Scatter, RequestedRoll::Deviate] {
+    for want in [RequestedRoll::Scatter] {
         let thrower = Position::new((6, 4));
         let target = Position::new((13, 2));
         let others = [
@@ -484,6 +472,9 @@ fn paused_on_pass_landing_away(
     }
     assert_eq!(base.info.team_turn, TeamType::Away);
     pin(&mut base, thrower);
+    // A failed pass would ask about a team re-roll before it scatters.
+    base.get_mut_team(TeamType::Home).rerolls = 0;
+    base.get_mut_team(TeamType::Away).rerolls = 0;
     base.set_dice_mode(DiceMode::RegisterRolls);
     base.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::StartPass, thrower)));
     base.step_with_roll_or_action(SomeProcInput::Action(Action::Positional(PosAT::Pass, target)));

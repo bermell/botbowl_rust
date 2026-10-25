@@ -33,9 +33,10 @@ pub fn purpose(proc: &str) -> String {
         "KOWakeUp" => "KO wake-up".into(),
         "ChangingWeather" => "Weather".into(),
         "JumpUp" => "Jump up".into(),
-        "StandUp" => "Stand up".into(),
+        "StandUp" | "StandUpRoll" => "Stand up".into(),
         "FrenzyBlock" => "Frenzy block".into(),
-        "DeflectOrResolve" => "Deflect".into(),
+        // S3 interceptions (the procedures keep their pre-S3 names).
+        "DeflectOrResolve" | "Deflect" => "Interception".into(),
         other => other.to_string(),
     }
 }

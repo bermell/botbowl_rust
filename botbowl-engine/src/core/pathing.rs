@@ -36,6 +36,10 @@ pub enum PathingEvent {
     Touchdown(PlayerID),
     Foul(PlayerID, Sum2D6Target),
     StandUp,
+    /// S3: a player with MA 2 or less stands up only on this roll (4+), spending their whole
+    /// Movement Allowance; a failure ends the activation. Last, so the other variants keep
+    /// their postcard index.
+    StandUpRoll(D6Target),
 }
 
 pub fn event_ends_player_action(event: &PathingEvent) -> bool {
@@ -48,6 +52,7 @@ pub fn event_ends_player_action(event: &PathingEvent) -> bool {
         PathingEvent::Pickup(_) => false,
         PathingEvent::Block(_, _) => false,
         PathingEvent::StandUp => false,
+        PathingEvent::StandUpRoll(_) => false,
         PathingEvent::Pass { .. } => true,
     }
 }
@@ -234,6 +239,7 @@ impl Node {
                 PathingEvent::Handoff(_, _) => false,
                 PathingEvent::Foul(_, _) => false,
                 PathingEvent::StandUp => false,
+                PathingEvent::StandUpRoll(_) => false,
                 PathingEvent::Dodge(..) => true,
                 PathingEvent::GFI(_) => true,
                 PathingEvent::Pickup(_) => true,
@@ -339,10 +345,14 @@ impl Node {
     }
     fn apply_standup(&mut self, cost: u8) {
         self.events.push_back(PathingEvent::StandUp);
-        // Real rules: standing up costs 3 squares (nothing with Jump Up), but a
-        // player with MA < 3 just spends their whole movement allowance rather
-        // than going negative (reachable once `BoardDims::ma_cap` allows MA < 3).
+        // Standing up costs 3 squares (nothing with Jump Up). MA 2 or less rolls instead
+        // (`apply_standup_roll`); the saturation only guards a capped MA below 3.
         self.moves_left = self.moves_left.saturating_sub(cost);
+    }
+    fn apply_standup_roll(&mut self, target: D6Target) {
+        self.prob *= target.success_prob();
+        self.events.push_back(PathingEvent::StandUpRoll(target));
+        self.moves_left = 0;
     }
 
     fn is_dominant_over(&self, othr: &Node) -> bool {
@@ -539,7 +549,8 @@ impl<'a> GameInfo<'a> {
             Some(player) if self.teammate_catch_mod[to].is_some() => {
                 // handoff or pass
                 match self.player_action {
-                    PosAT::StartPass => self.expand_pass_to(to, player.id, parent_node, prev),
+                    // The Passing Ability Test is the passer's, not the receiver's.
+                    PosAT::StartPass => self.expand_pass_to(to, self.id, parent_node, prev),
                     PosAT::StartHandoff => self.expand_handoff_to(to, player.id, parent_node, prev),
                     _ => unreachable!("very wrong!"),
                 }
@@ -713,7 +724,14 @@ impl<'a> GameInfo<'a> {
             .game_state
             .get_intercepters(other_team(self.team), parent_node.position, to)
             .iter()
-            .map(|(_, target)| *target)
+            // The estimate assumes the pass is accurate (S3: -3 to intercept it).
+            .map(|(_, target)| {
+                *target
+                    .clone()
+                    .add_modifer(crate::core::procedures::ball_procs::interception_modifier(
+                        crate::core::procedures::ball_procs::PassResult::Accurate,
+                    ))
+            })
             .max_by(|target_a, target_b| {
                 target_a
                     .success_prob()
@@ -824,7 +842,10 @@ impl<'a> PathFinder<'a> {
         if standing_up {
             assert!(player.moves_left() == player.stats.ma);
             debug_assert!(matches!(player.status, PlayerStatus::Down));
-            root_node.apply_standup(crate::core::procedures::movement_procs::standup_cost(player));
+            match crate::core::procedures::movement_procs::standup_roll(player) {
+                Some(target) => root_node.apply_standup_roll(target),
+                None => root_node.apply_standup(crate::core::procedures::movement_procs::standup_cost(player)),
+            }
         }
 
         let root_node = Arc::new(root_node);
@@ -1167,10 +1188,8 @@ mod tests {
         );
     }
 
-    /// A player with MA < 3 (possible on narrow eval boards, see
-    /// `BoardDims::ma_cap`) still costs 3 squares to stand up in real rules —
-    /// it just uses up the whole movement allowance instead of going
-    /// negative. The naive `moves_left -= 3` panics on underflow instead.
+    /// A player with MA 2 or less (S3 rosters; also narrow eval boards, see `BoardDims::ma_cap`)
+    /// stands up on a 4+ (S3, Standing Up): the path in place is that roll alone, at 1/2.
     #[test]
     fn downed_player_with_ma_below_3_can_stand_up_without_moving() {
         let start = Position::new((crate::core::model::WIDTH_ / 2, crate::core::model::HEIGHT_ / 2));
@@ -1193,10 +1212,11 @@ mod tests {
         let items: Vec<PositionOrEvent> = path.iter().collect();
         assert_eq!(
             items,
-            vec![PositionOrEvent::Event(PathingEvent::StandUp)],
-            "stand-up-in-place path should contain only the StandUp event, no move, got {:?}",
+            vec![PositionOrEvent::Event(PathingEvent::StandUpRoll(D6Target::FourPlus))],
+            "stand-up-in-place path should contain only the stand-up roll, no move, got {:?}",
             items
         );
+        assert!((path.prob - 0.5).abs() < 1e-6, "prob {}", path.prob);
     }
 
     /// Board reconstructed from a web-UI screenshot where hovering (2,1) showed
