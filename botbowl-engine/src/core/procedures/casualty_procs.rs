@@ -222,14 +222,16 @@ impl Procedure for Injury {
         let mut procs: Vec<AnyProc> = Vec::new();
 
         let injury_outcome = match input {
-            ProcInput::Nothing if self.fouler.is_some() => {
-                return ProcState::NeedRoll(RequestedRoll::FoulInjury(
-                    Sum2D6Target::EightPlus,
-                    Sum2D6Target::TenPlus,
-                ));
-            }
             ProcInput::Nothing => {
+                // The Stunty Injury Table is the standard one a band lower: KO 7+, Casualty 9+.
                 let (mut ko, mut cas) = (Sum2D6Target::EightPlus, Sum2D6Target::TenPlus);
+                if game_state.get_player_unsafe(self.id).has_skill(Skill::Stunty) {
+                    ko.add_modifer(1);
+                    cas.add_modifer(1);
+                }
+                if self.fouler.is_some() {
+                    return ProcState::NeedRoll(RequestedRoll::FoulInjury(ko, cas));
+                }
                 if self.mighty_blow {
                     ko.add_modifer(1);
                     cas.add_modifer(1);
@@ -307,6 +309,54 @@ mod tests {
         assert_eq!(state.ball, BallState::OnGround(move_to + direction));
 
         Ok(())
+    }
+
+    /// S3 Stunty Injury Table: 2-6 Stunned, 7-8 Knocked-out, 9 Badly Hurt and 10-12 Casualty
+    /// (both a Casualty here), where the standard table is Stunned to 7, KO 8-9, Casualty 10+.
+    #[test]
+    fn a_stunty_player_is_injured_on_the_stunty_table() {
+        for (stunty, (d1, d2), expected) in [
+            (true, (3, 3), Some(PlayerStatus::Stunned)),
+            (true, (3, 4), None),
+            (true, (4, 5), None),
+            (false, (3, 4), Some(PlayerStatus::Stunned)),
+            (false, (4, 5), None),
+        ] {
+            let start_pos = Position::new((5, 5));
+            let foul_pos = start_pos + (2, 0);
+            let mut state = GameStateBuilder::new()
+                .add_home_player(start_pos)
+                .add_away_player(foul_pos)
+                .build();
+            let victim_id = state.get_player_id_at(foul_pos).unwrap();
+            let victim = state.get_mut_player_unsafe(victim_id);
+            victim.status = PlayerStatus::Down;
+            if stunty {
+                victim.stats.give_skill(Skill::Stunty);
+            }
+            state.step_positional(PosAT::StartFoul, start_pos);
+            state.fix_d6(5); //armor
+            state.fix_d6(6); //armor
+            state.fix_d6(d1); //injury
+            state.fix_d6(d2); //injury
+            state.step_positional(PosAT::Foul, foul_pos);
+
+            let case = format!("stunty {stunty}, injury {d1}+{d2}");
+            let ejected = d1 == d2;
+            if ejected {
+                // The doubles send the fouler off; answer the Bribe question if one is asked.
+                assert_eq!(state.get_player(victim_id).unwrap().status, PlayerStatus::Stunned, "{case}");
+                continue;
+            }
+            assert_eq!(state.get_player(victim_id).ok().map(|p| p.status), expected, "{case}");
+            let place = state.get_dugout().find(|p| p.stats.team == TeamType::Away).map(|p| p.place);
+            let want = match (stunty, d1 + d2) {
+                (true, 7) | (false, 9) => Some(DugoutPlace::KnockOut),
+                (true, 9) => Some(DugoutPlace::Injuried),
+                _ => None,
+            };
+            assert_eq!(place, want, "{case}");
+        }
     }
 
     #[test]

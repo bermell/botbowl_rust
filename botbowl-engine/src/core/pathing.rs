@@ -447,6 +447,8 @@ struct GameInfo<'a> {
     /// The mover's AG target: dodge and pick-up tests sum their modifiers onto it once
     /// (`ag_test_target`).
     agility: u8,
+    /// Stunty: a dodge ignores the Marking modifiers.
+    stunty: bool,
     gfi_target: D6Target,
     /// The pick-up's modifier before marking (-1 in rain).
     pickup_modifier: i8,
@@ -500,6 +502,7 @@ impl<'a> GameInfo<'a> {
             ball,
             start_pos: player.position,
             agility,
+            stunty: player.has_skill(Skill::Stunty),
             gfi_target,
             pickup_modifier,
             game_state,
@@ -781,7 +784,8 @@ impl<'a> GameInfo<'a> {
                 tackle: marked_by(Skill::Tackle),
                 arm_bar: marked_by(Skill::ArmBar),
             };
-            next_node.apply_dodge(ag_test_target(self.agility, -self.tzones[to]), markers);
+            let marked = if self.stunty { 0 } else { self.tzones[to] };
+            next_node.apply_dodge(ag_test_target(self.agility, -marked), markers);
         }
         match self.ball {
             PathingBallState::OnGround(ball_pos) if ball_pos == to => {
@@ -1307,5 +1311,40 @@ mod tests {
             "expected the single dodge's 2/3, got {}",
             node.prob
         );
+    }
+
+    /// S3 Stunty: "When this player attempts to Dodge, they do not suffer any negative modifiers
+    /// to their Agility Test for being Marked by opposition players."
+    #[test]
+    fn a_stunty_player_dodges_without_marking_modifiers() {
+        for (stunty, want) in [(false, D6Target::FivePlus), (true, D6Target::ThreePlus)] {
+            let mut mover_stats = PlayerStats::new_lineman(TeamType::Home);
+            mover_stats.agility = 3;
+            if stunty {
+                mover_stats.give_skill(Skill::Stunty);
+            }
+            let start = Position::new((5, 5));
+            let target = Position::new((4, 5));
+            let mut state = GameStateBuilder::new()
+                .add_player_details(start, TeamType::Home, mover_stats)
+                .add_away_player(Position::new((6, 5)))
+                .add_away_player(Position::new((3, 4)))
+                .add_away_player(Position::new((3, 6)))
+                .set_state(BuilderState::Turn { turn: 1 })
+                .build();
+            if state.info.team_turn != TeamType::Home {
+                state.step_simple(SimpleAT::EndTurn);
+            }
+            let id = state.get_player_id_at(start).unwrap();
+            let node = PathFinder::safest_path_to(&state, id, target).unwrap().unwrap();
+            let dodges: Vec<D6Target> = node
+                .iter()
+                .filter_map(|item| match item {
+                    PositionOrEvent::Event(PathingEvent::Dodge(t, _)) => Some(t),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(dodges, vec![want], "stunty {stunty}");
+        }
     }
 }
