@@ -179,10 +179,12 @@ impl Procedure for LandKickoff {
             return ProcState::DoneNew(ball_procs::Touchback::new());
         }
 
-        match game_state.get_player_id_at(ball_position) {
-            Some(id) => ProcState::DoneNew(ball_procs::Catch::new_with_kick_arg(
-                id,
-                game_state.get_catch_target(id).unwrap(),
+        // A Prone or Stunned player in the square fails the catch automatically and the ball
+        // bounces, as from an empty square.
+        match game_state.get_player_at(ball_position).filter(|p| p.can_catch()) {
+            Some(player) => ProcState::DoneNew(ball_procs::Catch::new_with_kick_arg(
+                player.id,
+                game_state.get_catch_target(player.id).unwrap(),
                 true,
             )),
             None => ProcState::DoneNew(ball_procs::Bounce::new_with_kick_arg(true)),

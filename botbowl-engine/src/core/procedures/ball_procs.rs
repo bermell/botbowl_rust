@@ -305,25 +305,26 @@ impl Touchback {
 impl Procedure for Touchback {
     fn step(&mut self, game_state: &mut GameState, action: ProcInput) -> ProcState {
         if let ProcInput::Action(Action::Positional(_, position)) = action {
-            game_state.set_ball(BallState::Carried(game_state.get_player_id_at(position).unwrap()));
+            game_state.set_ball(match game_state.get_player_id_at(position) {
+                Some(id) => BallState::Carried(id),
+                None => BallState::OnGround(position),
+            });
             ProcState::Done
         } else {
+            // S3, Touchbacks: the receiving coach gives the ball to one of their Standing players,
+            // or, with none, places it on any unoccupied square in their half.
             let team = other_team(game_state.info.kicking_this_drive);
-            let positions: Vec<_> = game_state
+            let mut positions: Vec<_> = game_state
                 .get_players_on_pitch_in_team(team)
+                .filter(|p| p.status == crate::core::model::PlayerStatus::Up)
                 .map(|p| p.position)
                 .collect();
             if positions.is_empty() {
-                // Nobody can take the touchback (all receivers off the
-                // pitch — routine in 2-player small-board games). An empty
-                // `NeedAction` would deadlock every consumer, so drop the
-                // ball in the middle of the receiving half and let it
-                // bounce from there.
-                // `get_best_kickoff_aim_for` takes the *kicking* team; `team` here is
-                // the receiver, so passing it aimed at the wrong half (plan 023 B1).
-                let aim = game_state.get_best_kickoff_aim_for(game_state.info.kicking_this_drive);
-                game_state.set_ball(BallState::InAir(aim));
-                return ProcState::DoneNew(Bounce::new());
+                let dims = game_state.board_dims;
+                positions = Position::all_positions()
+                    .filter(|&pos| !dims.is_out(pos) && dims.is_on_team_side(pos, team))
+                    .filter(|&pos| game_state.get_player_at(pos).is_none())
+                    .collect();
             }
             let mut aa = AvailableActions::new(team);
             aa.insert_positional(PosAT::SelectPosition, positions);
@@ -514,8 +515,10 @@ impl Procedure for DeflectOrResolve {
                 debug_assert!(!game_state.is_out(throw_in_pos));
                 ThrowIn::new(throw_in_pos)
             } else {
+                // A Prone or Stunned player in the square fails the catch automatically: the ball
+                // bounces from there, as from an empty square.
                 match game_state.get_player_at(self.to) {
-                    Some(player) => {
+                    Some(player) if player.can_catch() => {
                         let mut target = game_state.get_catch_target(player.id).unwrap();
                         target.add_modifer(match self.result {
                             PassResult::Accurate => 0,
@@ -525,7 +528,7 @@ impl Procedure for DeflectOrResolve {
                         });
                         Catch::new(player.id, target)
                     }
-                    None => Bounce::new(),
+                    _ => Bounce::new(),
                 }
             }
         };
@@ -646,45 +649,126 @@ mod tests {
         );
     }
 
-    /// A touchback with no receiving player on the pitch (all injured/KO'd
-    /// — routine in 2-player small-board games) must not emit an empty
-    /// `NeedAction`: an action request with zero legal actions deadlocks
-    /// every consumer (bots, MCTS marks the node terminal). The ball is
-    /// dropped in the receiving half and bounces instead.
+    /// The squares a touchback offers.
+    fn touchback_offers(state: &mut crate::core::gamestate::GameState) -> (Option<TeamType>, Vec<Position>) {
+        use crate::core::procedures::ball_procs::Touchback;
+        let ProcState::NeedAction(aa) = (Touchback {}).step(state, ProcInput::Nothing) else {
+            panic!("a touchback asks the receiving coach");
+        };
+        let mut actions = Vec::new();
+        aa.collect_non_path_actions(&mut actions);
+        let squares = actions
+            .into_iter()
+            .map(|action| match action {
+                Action::Positional(PosAT::SelectPosition, pos) => pos,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        (aa.get_team(), squares)
+    }
+
+    /// S3, Touchbacks: with no Standing receiver, the receiving coach places the ball on any
+    /// unoccupied square in their half, where it stays (no bounce). This also keeps a touchback
+    /// with nobody on the pitch (routine in 2-player small-board games) from emitting an empty
+    /// `NeedAction`, which would deadlock every consumer.
     #[test]
-    fn touchback_with_no_receivers_drops_ball_in_receiving_half() {
-        use crate::core::procedures::ball_procs::{Bounce, Touchback};
+    fn touchback_with_no_standing_receivers_places_the_ball_in_the_receiving_half() {
+        use crate::core::procedures::ball_procs::Touchback;
+
+        // Home kicks, Away receives — and Away's only player is prone.
+        let prone_pos = Position::new((20, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((2, 2)))
+            .add_away_player(prone_pos)
+            .build();
+        state.info.kicking_this_drive = TeamType::Home;
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Down;
+
+        let (team, offered) = touchback_offers(&mut state);
+        assert_eq!(team, Some(TeamType::Away));
+        assert!(!offered.is_empty());
+        assert!(offered
+            .iter()
+            .all(|&pos| state.board_dims.is_on_team_side(pos, TeamType::Away) && state.get_player_at(pos).is_none()));
+
+        let square = offered[0];
+        let result = (Touchback {}).step(
+            &mut state,
+            ProcInput::Action(Action::Positional(PosAT::SelectPosition, square)),
+        );
+        assert!(matches!(result, ProcState::Done));
+        assert_eq!(state.ball, BallState::OnGround(square));
+    }
+
+    /// S3, Catching the Ball: "If a Prone or Stunned player ... is required to Catch a ball, they
+    /// will automatically fail ... and the ball will Bounce" — for a kick-off landing on them ...
+    #[test]
+    fn a_kickoff_landing_on_a_prone_player_bounces() {
+        use crate::core::procedures::kickoff_procs::LandKickoff;
         use crate::core::procedures::AnyProc;
 
-        // Home kicks, Away receives — and Away has nobody on the pitch.
-        let mut state = GameStateBuilder::new().add_home_player(Position::new((2, 2))).build();
-        state.info.kicking_this_drive = TeamType::Home;
+        let prone_pos = Position::new((20, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((2, 2)))
+            .add_away_player(prone_pos)
+            .build();
+        // The kick lands in the receiving half: kicked by the team whose half it is not.
+        state.info.kicking_this_drive = if state.board_dims.is_on_team_side(prone_pos, TeamType::Away) {
+            TeamType::Home
+        } else {
+            TeamType::Away
+        };
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Down;
+        state.set_ball(BallState::InAir(prone_pos));
 
-        let mut proc = Touchback {};
+        let result = (LandKickoff {}).step(&mut state, ProcInput::Nothing);
+        assert!(matches!(result, ProcState::DoneNew(AnyProc::Bounce(_))), "got {result:?}");
+    }
+
+    /// ... and for a pass landing on them.
+    #[test]
+    fn a_pass_landing_on_a_prone_player_bounces() {
+        use crate::core::procedures::ball_procs::{DeflectOrResolve, PassResult};
+        use crate::core::procedures::AnyProc;
+
+        let passer_pos = Position::new((5, 5));
+        let prone_pos = Position::new((8, 5));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(passer_pos)
+            .add_home_player(prone_pos)
+            .add_ball_pos(passer_pos)
+            .build();
+        state.info.active_player = state.get_player_id_at(passer_pos);
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Down;
+
+        let AnyProc::DeflectOrResolve(mut proc) =
+            DeflectOrResolve::new(passer_pos, prone_pos, PassResult::Inaccurate, None)
+        else {
+            unreachable!()
+        };
         let result = proc.step(&mut state, ProcInput::Nothing);
+        assert!(matches!(result, ProcState::DoneNew(AnyProc::Bounce(_))), "got {result:?}");
+        assert_eq!(state.ball, BallState::InAir(prone_pos));
+    }
 
-        // Assert the *property* the test is named for. This previously computed
-        // its expectation as `get_best_kickoff_aim_for(TeamType::Away)` — the
-        // receiving team — which is the same argument mix-up the production code
-        // had (the function takes the *kicking* team), so it asserted the ball
-        // landed in the KICKING team's half while claiming to check the
-        // receiving one. See plan 023 B1.
-        let expected = state.get_best_kickoff_aim_for(TeamType::Home); // Home kicks
-        assert!(
-            matches!(state.ball, BallState::InAir(pos) if pos == expected),
-            "ball must be dropped at the receiving half's aim square ({expected:?}), got {:?}",
-            state.ball
-        );
-        assert!(
-            matches!(state.ball, BallState::InAir(pos) if state.board_dims.is_on_team_side(pos, TeamType::Away)),
-            "Away receives, so the ball must land in Away's half, got {:?}",
-            state.ball
-        );
-        assert!(
-            matches!(result, ProcState::DoneNew(AnyProc::Bounce(Bounce { .. }))),
-            "touchback must resolve into a bounce, got {:?}",
-            result
-        );
+    /// A Prone or Stunned receiver is not offered the touchback ball.
+    #[test]
+    fn touchback_goes_to_a_standing_receiver_only() {
+        let standing_pos = Position::new((20, 5));
+        let prone_pos = Position::new((20, 7));
+        let mut state = GameStateBuilder::new()
+            .add_home_player(Position::new((2, 2)))
+            .add_away_player(standing_pos)
+            .add_away_player(prone_pos)
+            .build();
+        state.info.kicking_this_drive = TeamType::Home;
+        let prone = state.get_player_id_at(prone_pos).unwrap();
+        state.get_mut_player_unsafe(prone).status = PlayerStatus::Stunned;
+
+        assert_eq!(touchback_offers(&mut state).1, vec![standing_pos]);
     }
 
     #[test]
