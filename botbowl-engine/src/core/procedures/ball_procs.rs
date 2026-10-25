@@ -6,7 +6,8 @@ use crate::core::model::ProcInput;
 use crate::core::model::{
     other_team, Action, AvailableActions, BoardDims, Coord, Direction, Position, ProcState, Procedure,
 };
-use crate::core::model::{BallState, PlayerID};
+use crate::core::model::{BallState, PlayerID, TeamType};
+use crate::core::procedures::game_procs::TURNS_PER_HALF;
 use crate::core::table::{PosAT, Skill};
 
 use crate::core::procedures::any_proc::AnyProc;
@@ -347,7 +348,19 @@ impl Procedure for Touchdown {
                 // the conceding team makes scoring self-reinforcing (the scorer
                 // receives again), which compounds any per-kickoff edge into a
                 // large win-rate gap — plan 023 B2.
-                game_state.info.kickoff_by_team = Some(game_state.get_player_unsafe(self.id).stats.team);
+                let scorer = game_state.get_player_unsafe(self.id).stats.team;
+                game_state.info.kickoff_by_team = Some(scorer);
+                // S3, Scoring in the Opponent's Turn: the scoring team skips its next turn, so the
+                // conceding team plays first after the kick-off. `Half` gives the next turn to the
+                // team that is behind on the turn track; a skip past the half's last turn ends it.
+                if game_state.turn_team() != Some(scorer) {
+                    let info = &mut game_state.info;
+                    let turn = match scorer {
+                        TeamType::Home => &mut info.home_turn,
+                        TeamType::Away => &mut info.away_turn,
+                    };
+                    *turn = (*turn + 1).min(TURNS_PER_HALF);
+                }
             }
         }
 

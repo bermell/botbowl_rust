@@ -35,16 +35,9 @@ impl Half {
         })
     }
     fn do_kickoff(&mut self, kicking_team: TeamType, game_state: &mut GameState) -> ProcState {
-        //SCORING IN THE OPPONENT’S TURN
-        // In some rare cases a team will score a touchdown in the
-        // opponent’s turn. For example, a player holding the ball could be
-        // pushed into the End Zone by a block. If one of your players is
-        // holding the ball in the opposing team's End Zone at any point
-        // during your opponent's turn then your team scores a touchdown
-        // immediately, but must move their Turn marker one space along
-        // the Turn track to represent the extra time the players spend
-        // celebrating this unusual method of scoring!
-
+        // A touchdown scored in the opponent's turn has already moved the scorer's turn marker
+        // (`Touchdown`), so the next-team rule in `step` hands the drive's first turn to the
+        // conceding team.
         game_state.info.kicking_this_drive = kicking_team;
 
         let procs: Vec<AnyProc> = vec![
@@ -532,7 +525,6 @@ mod tests {
         assert!(!state.get_player_unsafe(id).used);
     }
 
-    #[test]
     /// S3: "A Coach may use as many Team Re-rolls as they want during their turn".
     #[test]
     fn any_number_of_team_rerolls_per_turn() {
@@ -862,6 +854,38 @@ mod tests {
             Some(TeamType::Home),
             "the scoring team sets up (it kicks)"
         );
+        // S3: the team that scored in the opponent's turn skips its next turn, so the conceding
+        // team plays first after the kick-off (`Half` picks the team that is a turn behind).
+        assert_eq!((state.info.home_turn, state.info.away_turn), (2, 1));
+    }
+
+    /// Scoring in the opponent's last turn of the half: the skipped turn is past the end, so the
+    /// half is over.
+    #[test]
+    fn pushed_to_touchdown_in_the_last_turn_ends_the_half() {
+        let carrier_pos = Position::new((2, 5));
+        let blocker_pos = Position::new((3, 5));
+        let td_pos = carrier_pos + (carrier_pos - blocker_pos);
+        let mut state = GameStateBuilder::new()
+            .add_home_player(carrier_pos)
+            .add_ball_pos(carrier_pos)
+            .add_away_player(blocker_pos)
+            .build();
+        // Home's turn 8; Away (the first-half kicker) plays the half's last turn next.
+        state.info.home_turn = super::TURNS_PER_HALF;
+        state.info.away_turn = super::TURNS_PER_HALF - 1;
+        assert_eq!(state.info.half, 1);
+
+        state.step_simple(SimpleAT::EndTurn);
+        state.step_positional(PosAT::StartBlock, blocker_pos);
+        state.fix_blockdice(BlockDice::Push);
+        state.step_positional(PosAT::Block, carrier_pos);
+        state.step_simple(SimpleAT::SelectPush);
+        state.step_positional(PosAT::Push, td_pos);
+        state.step_positional(PosAT::FollowUp, carrier_pos);
+
+        assert_eq!(state.home.score, 1);
+        assert_eq!(state.info.half, 2);
     }
 
     #[test]
