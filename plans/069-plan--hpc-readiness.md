@@ -320,6 +320,69 @@ client 7%, batcher thread 22% at batch 1.
    (enough to fill the GPU), both tuned in the suite (item 4). Playouts per sample then follow the spare
    GPU: exp078 (8 vs 16, plan 067's exact top-up) becomes an 8/16/32 sweep in the A/B phase. Needs the
    labelling CPU per forward (item 1) to size G and L.
+   **Built 2026-10-27 (branch `genlabel`, exp086, hub protocol v25).**
+   *Design.* (a) `job generate --mc-label-playouts N --mc-label-seed S --mc-label-out-dir D
+   [--mc-label-shards ..] [--mc-label-chunk-samples 32]` submits, beside the generate job, a linked
+   label job (`JobStatus.labels_job`) whose shards are *streaming*: `trajectory_done` pushes every record
+   into the shard's label state under the same lock that writes it, so in the file's order; the record is
+   compressed and read (the label reader's line rules and capacity check) in the websocket task before
+   the lock (`label::Prepared`). Its items are queued at once (follow-on records against the latest
+   drive 1 of their seed so far, or deferred when there is none). When a generate shard has all its games
+   its label shard is *sealed*: `first_drives` over the whole shard, as `job label` reads it, and any
+   record whose first drive changed (a seed's drive 1 twice, a follow-on before its first) is labelled
+   again (old items stale). Then the same `ShardWrite`. Which trajectories: every record written to a
+   labelled shard (both drives of a `--next-drive` game — the "2149/1200 games" in status.md is records
+   over games, not an overshoot: ~79% of drives score and write a second record); the loop labels its
+   train + val shards (all 8). (b) `botbowl-worker --label-streams L` (`Hello.label_streams`): G `game-*`
+   threads plus L `label-*` threads that take only label tasks. The hub keeps generate/eval tasks ≤ G and
+   gives label tasks the L streams, plus idle game streams only while no generate game waits — so
+   labels never take a stream the generation could use, and a label job alone (the old phase) still
+   uses every stream. Today (L = 0) label tasks shared the game streams round-robin. The in-process queue
+   counts the label threads' forwards (`label_samples=` in `NN_INPROC_STATS`). `train_loop.sh`:
+   `LABEL_STREAMING=1` (default 0 = today, command lines unchanged) adds the flags to generate (seed
+   56000+G, `mc/`, train+val shards, `LABEL_CHUNK_SAMPLES`) and `LABEL_STREAMS` (16) label streams to
+   the local generate worker; the mc-label phase is skipped when every shard is labelled, else labels the
+   missing ones (`job label`/`mc-label` skip written outputs). Slurm: `WORKER_LABEL_STREAMS`.
+   *Resume (item 5).* `--resume` + streamed labels rebuild the label state from the files: each streamed
+   shard is preloaded with the whole games the scan keeps (never the torn tail), a label output is kept
+   only when the job plays no game of its shard (else removed and relabelled), a shard whose games are all
+   on disk is sealed at submit. `job generate --wait` follows the labels; a hub restart during them
+   resubmits the resumable request, whose new job only labels. A label job's progress itself is not
+   persisted: a restart relabels the unwritten shards' lines (in the loop at most a shard or two, since
+   shards fill one after another). Test: a hub killed mid-generation (torn tail, partial shard, labels in
+   flight), the request resubmitted to a new hub → `mc-label`'s bytes for every shard.
+   *Equivalence (exp086).* Tract tests (`botbowl-ui/tests/mc_label_stream.rs`): fresh, appended with a
+   relabel, hub restart — byte-identical to `mc-label` and `job label`. GPU, gen58, 20x11 mix, 2x6 games:
+   deterministic (`BLOOD_NN_BUCKETS=1`, cuDNN deterministic) streamed == `job label` == `mc-label`
+   byte for byte (22 records, 900 samples); at the loop's settings (buckets to 64, 12+4 streams)
+   streamed == `job label` (953 samples, 0 labels differ) — batching can differ in last bits in general,
+   as between any two GPU label runs.
+   *Measured on the 1060 (exp086, GPU-bound).* One worker, 2x24 games (83 records, ~4.7k samples, 8
+   playouts): sequential (G = 24, then `job label` on the same streams) 696 + 500 = **1196 s**; streamed
+   G = 24 + L = 8 **1150 s** (−3.8%; last game at 1047 s, labels +103 s), L = 16 **1156 s** (−3.3%; games
+   1098 s, labels +58 s); GPU 94-97% in every phase, the same 3.71M forwards. Label forwards per generated
+   forward **r = 0.39** (exp080: 186/471 = 0.395). Steady state (`hpc/tune` `mix` mode = worker, 60 s
+   windows, CPU at 4.0 GHz): gen alone 16 streams 2,937 positions/s; label alone 16 streams 3,030; one
+   worker G16+L8 **3,244** (2,158 gen + 1,086 label; mean batch 11.9 vs 7.5 alone), G16+L16 3,187,
+   G24+L8 3,142, G24+L16 3,216; two processes G16+L8 3,013. **CPU per forward on the stream threads:
+   generation 271-285 µs, labelling 141-152 µs (ratio 1.9)**; batcher 41-48 µs per forward (shared),
+   CUDA threads ~5. Per-stream forward rates were equal for both kinds in every row (135/136, 99/100,
+   98/99, 80/81 per s): the GPU round trip, not the CPU, sets a stream's pace here.
+   *Sizing G and L on the cluster.* Let r = 0.39 × playouts/8 (label forwards per generated forward,
+   all shards labelled), c_g ≈ 2 c_l the stream CPU per forward (`mix` worker rows report both).
+   - GPU-bound (this box; §1's projection at fp32 and bf16): stream rates are equal, so **L ≈ r·G** keeps
+     the labels in step (8 playouts: L ≈ 0.4 G; 16: 0.8 G). Streaming then saves only the phase
+     boundary and the generation's tail (~4% here; more where the tail is long — gen58 took 358 min to
+     gen57's 262 with the same games), and more playouts cost GPU time 1:1.
+   - CPU-bound (if Grace shows §1's overhead): a stream's rate goes as 1/c, so L ≈ r·G·c_l/c_g ≈ 0.2 G
+     for 8 playouts, labels cost ~r·c_l/c_g ≈ 20% of the generation's CPU, and the spare GPU is what
+     buys playouts: with P the GPU's positions/s and R the generation's forwards/s, playouts up to
+     ~8·(P/R − 1)/0.39 fit in it (the user's "up from 8 almost for free").
+   - Check live: the streamed label job's pending items on the status page stay small through the
+     generation, and the label tail (generate job Done → labels Done, both in hub.log) stays a few
+     minutes. Too large an L only shifts GPU time from games to labels while both are pending (labels
+     never take game streams); too small leaves a tail.
+   On the GH200 pilot: `gh200.toml`'s new `mix` rows (mode = worker, G 256/512 × L 256/512/1024, fp16).
 5. **Orchestration:** the hub (and registry, web app for the community) on the persistent partition;
    workers as Slurm job arrays (one process per GPU, pinned to its superchip) dialling it; the trainer on
    its own GPU; corpora on the parallel file system; resume across walltime limits (the loop's markers

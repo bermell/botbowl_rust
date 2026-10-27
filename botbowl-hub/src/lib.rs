@@ -143,6 +143,9 @@ pub struct Hub {
     pub cfg: Arc<HubConfig>,
     pub inner: Arc<Mutex<Inner>>,
     pub changed: Arc<Notify>,
+    /// Plan 069 item 4b: a generate job with streamed labels was ever submitted, so results are
+    /// also compressed line by line before the lock ([`state::TrajectoryPayload::decode_for`]).
+    pub streams_labels: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Hub {
@@ -154,6 +157,7 @@ impl Hub {
             cfg: Arc::new(cfg),
             inner: Arc::new(Mutex::new(inner)),
             changed: Arc::new(Notify::new()),
+            streams_labels: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -274,15 +278,24 @@ impl Hub {
                         }
                     }
                 }
-                // Plan 069 item 5: a resume reads every shard (gigabytes on a parallel file system).
-                JobRequest::Generate(r) if r.resume => {
-                    let scans = resume::scan_generate(&r)?;
+                // Plan 069 item 5: a resume reads every shard (gigabytes on a parallel file system);
+                // plan 069 item 4b: so do streamed labels over a shard on disk. Both before the lock.
+                JobRequest::Generate(r) if r.resume || r.mc_label.is_some() => {
+                    let scans = r.resume.then(|| resume::scan_generate(&r)).transpose()?;
+                    let inputs = label::stream_inputs(&r, scans.as_deref())?;
+                    if r.mc_label.is_some() {
+                        self.streams_labels.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     let mut inner = self.inner.lock().unwrap();
                     match inner.attach(&key, &outputs)? {
                         Some(id) => id,
                         None => {
-                            let id = inner.submit_generate_scanned(r, Some(scans))?;
+                            let (id, writes) = inner.submit_generate_scanned(r, scans, inputs)?;
                             inner.set_key(id, key);
+                            drop(inner);
+                            for w in writes {
+                                self.spawn_write(w);
+                            }
                             id
                         }
                     }
@@ -345,6 +358,31 @@ impl Hub {
             self.spawn_write(w);
         }
         self.changed.notify_waiters();
+    }
+
+    /// One generate result. A streamed-label shard it completes is written on its own thread.
+    pub fn trajectory_done(
+        &self,
+        worker: state::WorkerId,
+        task: TaskId,
+        game: u32,
+        samples: u32,
+        payload: state::TrajectoryPayload,
+    ) {
+        let writes = self
+            .inner
+            .lock()
+            .unwrap()
+            .trajectory_done(worker, task, game, samples, payload);
+        for w in writes {
+            self.spawn_write(w);
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// Whether results should be compressed line by line before the lock (plan 069 item 4b).
+    pub fn per_line_zstd(&self) -> bool {
+        self.streams_labels.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn spawn_write(&self, w: label::ShardWrite) {

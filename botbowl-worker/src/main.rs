@@ -30,6 +30,11 @@ struct Cli {
     /// Concurrent games. Default: the hub sizes it from cores and RAM.
     #[arg(long)]
     parallel_games: Option<u16>,
+    /// Plan 069 item 4b: this many more streams that take only MC-label tasks, on top of the
+    /// game streams. The hub keeps game tasks to `--parallel-games` and lets label work fill any
+    /// idle stream, so G game + L label streams share one process (and one GPU's batch queue).
+    #[arg(long, default_value_t = 0)]
+    label_streams: u16,
     /// GPU sidecar socket (`scripts/nn_server.py`), for the worker on the
     /// training box only.
     #[arg(long)]
@@ -135,6 +140,7 @@ async fn main() {
         token,
         name: cli.name.unwrap_or_else(hostname),
         parallel_games: cli.parallel_games,
+        label_streams: cli.label_streams,
         nn_server: cli.nn_server,
         cache_dir: cli.cache_dir,
         mem_floor_mb: cli.mem_floor_mb,

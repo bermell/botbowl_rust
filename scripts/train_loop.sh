@@ -341,6 +341,16 @@ LABEL_VIA_HUB="${LABEL_VIA_HUB:-0}"
 LABEL_PARALLEL_GAMES="${LABEL_PARALLEL_GAMES:-$MC_LABEL_PARALLEL}"
 LABEL_SIDECARS="${LABEL_SIDECARS:-1}"
 LABEL_CHUNK_SAMPLES="${LABEL_CHUNK_SAMPLES:-32}"
+# Plan 069 item 4b: stream the MC labels inside the generate phase. The generate job queues every
+# train/val record for labelling the moment it is written (same net, playouts, seed, output dir and
+# items of LABEL_CHUNK_SAMPLES), and its labelled mc/ shard is written once the shard has all its
+# games, byte-identical to the separate phase's on the same backend. The local generate worker runs
+# GEN_PARALLEL_GAMES game streams plus LABEL_STREAMS label-only streams (label work also fills idle
+# game streams once the generation's games run out). The mc-label phase then only labels what is
+# missing (a shard whose streamed labels failed) and is skipped when every shard is labelled.
+# Needs MC_LABEL_PLAYOUTS > 0. 0 = the separate phase, exactly as before.
+LABEL_STREAMING="${LABEL_STREAMING:-0}"
+LABEL_STREAMS="${LABEL_STREAMS:-16}"
 # Plan 056 §2: score every new net's value head on a frozen MC benchmark (scripts/value_bench.sh,
 # seconds) next to its generator; the benchmark .jsonl path, or empty = off.
 VALUE_BENCH="${VALUE_BENCH:-}"
@@ -883,6 +893,17 @@ with_budget() {
 # One generation's games: a single job, or one job per GEN_SPLIT group side by side. Same seed
 # layout either way (shard K of gen G starts at SEED_BASE + G*1e6 + K*1e5), so a split corpus has
 # the seeds a single job would have had.
+# Plan 069 item 4b: `job generate`'s streamed-label flags for a job writing shards $1 (the train and
+# val ones among them are labelled), or nothing with LABEL_STREAMING=0. Same playouts, seed, output
+# dir and items as the mc-label phase; the net is the job's own --model, the phase's MC_NET.
+stream_label_args() {
+    local k ks=""
+    [ "$LABEL_STREAMING" = 1 ] && [ "$MC_LABEL_PLAYOUTS" -gt 0 ] || return 0
+    for k in $1; do case " $TRAIN_SHARDS $VAL_SHARDS " in *" $k "*) ks="$ks $k" ;; esac; done
+    [ -n "$ks" ] || return 0
+    ks="${ks# }"
+    echo "--mc-label-playouts $MC_LABEL_PLAYOUTS --mc-label-seed $((56000 + G)) --mc-label-out-dir $GEN_DIR/mc --mc-label-chunk-samples $LABEL_CHUNK_SAMPLES --mc-label-shards ${ks// /,}"
+}
 generate_jobs() {
     local gen_dir="$1" champ="$2" size_args="$3" group sizes iters shards games i=0 rc=0
     local -a pids=()
@@ -894,6 +915,7 @@ generate_jobs() {
             --mcts-iters "$MCTS_ITERS" --evaluator "$EVALUATOR" --model "$champ" \
             $size_args $EXPLORE_ARGS ${NEXT_DRIVE:+--next-drive} ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
             --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" --label "$GG generate" \
+            $(stream_label_args "$NN_SHARDS $HEUR_SHARDS") \
             $(gen_out_flag) $(job_wait_args) --out-dir "$gen_dir" --wait >> "$gen_dir/generate.log" 2>&1
         return $?
     fi
@@ -908,6 +930,7 @@ generate_jobs() {
             --mcts-iters "$iters" --evaluator "$EVALUATOR" --model "$champ" \
             --board-sizes "$sizes" --cells-per-player "$SIZE_CELLS_PER_PLAYER" $EXPLORE_ARGS ${NEXT_DRIVE:+--next-drive} ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
             --shards "$shards" --heuristic-shards "" --label "$GG generate ($sizes at $iters)" \
+            $(stream_label_args "${shards//,/ }") \
             $(gen_out_flag) $(job_wait_args) --out-dir "$gen_dir" --wait >> "$gen_dir/generate.$i.log" 2>&1 &
         pids+=($!)
         i=$((i + 1))
@@ -922,7 +945,7 @@ generate_jobs() {
     return $rc
 }
 worker_start() {
-    local extra="" mem="" share="$1" k=2 e
+    local extra="" mem="" share="$1" k=2 e labels="${3:-0}" lflag=
     if [ "$LOCAL_WORKER" = off ]; then
         log "no local worker (LOCAL_WORKER=off): the phase runs on the hub's other workers"
         return 0
@@ -931,14 +954,16 @@ worker_start() {
     # Plan 066: one worker, its nets in-process (NN_EXTRA is empty: no sidecars were started).
     [ "$NN_BACKEND" = inproc ] && extra="--nn-backend inproc"
     [ -n "$WORKER_MEM_FLOOR_MB" ] && mem="--mem-floor-mb $WORKER_MEM_FLOOR_MB"
+    # Plan 069 item 4b: label-only streams, on the first local worker only.
+    [ "$labels" -gt 0 ] && lflag="--label-streams $labels"
     # One worker per sidecar, the streams split evenly (the first takes the remainder).
     [ "${#NN_EXTRA[@]}" -gt 0 ] && share=$(($1 / (${#NN_EXTRA[@]} + 1)))
     # shellcheck disable=SC2086
     "$WORKER" --hub "ws://$HUB_HOST:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
-        --name "local" --parallel-games $(($1 - share * ${#NN_EXTRA[@]})) --cache-dir "$WORKER_CACHE" $extra $mem \
+        --name "local" --parallel-games $(($1 - share * ${#NN_EXTRA[@]})) --cache-dir "$WORKER_CACHE" $extra $mem $lflag \
         >> "$2" 2>&1 &
     WORKER_PID=$!
-    log "local worker started (pid $WORKER_PID, x$(($1 - share * ${#NN_EXTRA[@]}))${extra:+ ($extra)})"
+    log "local worker started (pid $WORKER_PID, x$(($1 - share * ${#NN_EXTRA[@]}))${lflag:+ + $labels label streams}${extra:+ ($extra)})"
     for e in "${NN_EXTRA[@]}"; do
         # shellcheck disable=SC2086
         "$WORKER" --hub "ws://$HUB_HOST:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE" \
@@ -1404,9 +1429,11 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # the hedge shards on the heuristic evaluator. `--nn-server` on the
         # worker is harmless if the server never came up (it falls back to
         # tract and warns once, in generate.worker.log).
-        worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
+        GEN_LABELS=0
+        [ -n "$(stream_label_args "$TRAIN_SHARDS $VAL_SHARDS")" ] && GEN_LABELS="$LABEL_STREAMS"
+        worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log" "$GEN_LABELS"
         SIZE_ARGS=$(size_gen_args)
-        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}: 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES$([ "${#NN_EXTRA[@]}" -gt 0 ] && echo " over $((${#NN_EXTRA[@]} + 1)) sidecars")$([ "$NN_BACKEND" = inproc ] && echo " in-process") + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
+        status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}$([ "$GEN_LABELS" -gt 0 ] && echo " with streamed MC labels ($MC_LABEL_PLAYOUTS playouts, +$LABEL_STREAMS label streams)"): 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES$([ "${#NN_EXTRA[@]}" -gt 0 ] && echo " over $((${#NN_EXTRA[@]} + 1)) sidecars")$([ "$NN_BACKEND" = inproc ] && echo " in-process") + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
         # Plan 069 item 5: shards already here are an interrupted phase's; the job resumes them.
         if [ "$GEN_RESUME" = on ] && ls "$GEN_DIR"/shard*.jsonl > /dev/null 2>&1; then
             status "$GG generate resumes: $(gen_progress "$GEN_DIR" $((GAMES_PER_SHARD * 8)))"
@@ -1434,7 +1461,14 @@ while [ "$G" -le "$MAX_GENS" ]; do
             [ -s "$GEN_DIR/shard$K.jsonl" ] || die "$GG shard$K.jsonl empty/missing — see generate.log"
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
-        status "$GG generate done ($GEN_MIN min): $(gen_progress "$GEN_DIR" $((GAMES_PER_SHARD * 8)))"
+        status "$GG generate done ($GEN_MIN min$([ "$GEN_LABELS" -gt 0 ] && echo ", labels streamed")): $(gen_progress "$GEN_DIR" $((GAMES_PER_SHARD * 8)))"
+        # Plan 069 item 4b: the streamed labels' summary lines, where the mc-label phase counts the
+        # unlabelled trajectories from (once: this block runs once per generation).
+        if [ "$GEN_LABELS" -gt 0 ]; then
+            # The last summary line per output (a resumed phase's log holds its earlier attempts).
+            grep -h '^mc-label: ' "$GEN_DIR"/generate.log | awk '{a[$4] = $0} END {for (k in a) print a[k]}' >> "$GEN_DIR/mc_label.log" 2>/dev/null
+            grep -h 'WARN: streamed labels' "$GEN_DIR"/generate.log | while read -r l; do status "WARN: $GG $l (the mc-label phase labels what is missing)"; done
+        fi
         # What the corpus actually contains, not just how much of it there is.
         # A drive that ends without a touchdown ran out of half, so this is
         # the share the bots converted — the generation-side twin of the TD/g
@@ -1485,7 +1519,13 @@ while [ "$G" -le "$MAX_GENS" ]; do
         # is what lets restore-on-combined see the value head improve (gen02 restored its init on a
         # flat val_policy and discarded the value progress).
         MC_IN=""; for K in $TRAIN_SHARDS $VAL_SHARDS; do MC_IN="$MC_IN $GEN_DIR/shard$K.jsonl"; done
-        if [ "$LABEL_VIA_HUB" = 1 ]; then
+        # Plan 069 item 4b: labels streamed with the generation leave nothing to do; any shard they
+        # missed is labelled below (the tools skip a shard whose output exists).
+        MC_MISSING=0; for K in $TRAIN_SHARDS $VAL_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || MC_MISSING=$((MC_MISSING + 1)); done
+        if [ "$LABEL_STREAMING" = 1 ] && [ "$MC_MISSING" -eq 0 ]; then
+            status "$GG mc-label: every train+val shard was labelled during generation (streamed)"
+            MC_RC=0
+        elif [ "$LABEL_VIA_HUB" = 1 ]; then
             # Plan 062: the same labels as a hub job — this box's worker on the sidecar(s) plus any
             # remote worker (tract). Same net, playouts, seed, output dir and summary lines.
             ensure_ts "$MC_NET"

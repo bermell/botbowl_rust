@@ -60,6 +60,7 @@ fn spawn_worker(url: &str, name: &str, parallel: u16) {
         token: TOKEN.into(),
         name: name.into(),
         parallel_games: Some(parallel),
+        label_streams: 0,
         nn_server: None,
         cache_dir: tmp(&format!("cache-{name}")),
         mem_floor_mb: 0,
@@ -105,6 +106,7 @@ fn gen_job(dir: &Path, next_drive: bool, truncate: bool, resume: bool) -> Genera
         batch: 2,
         label: None,
         resume,
+        mc_label: None,
     }
 }
 
@@ -350,6 +352,7 @@ fn a_result_for_another_hubs_task_is_never_written() {
         cores: 1,
         ram_mb: 1024,
         parallel_games: 1,
+        label_streams: 0,
         tx,
         known_models: Default::default(),
         named_models: Default::default(),

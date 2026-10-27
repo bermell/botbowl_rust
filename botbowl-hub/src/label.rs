@@ -18,6 +18,18 @@
 //! A shard whose output exists at submit is skipped, as locally, so a rerun of a phase that died
 //! half-way only labels what is missing.
 //!
+//! **Streaming** (plan 069 item 4b, [`LabelInput::streaming`]): a generate job asked to label its
+//! shards (`job generate --mc-label-playouts N`) owns a label job whose shards start empty and take
+//! each record the moment the generate shard writes it ([`LabelInput::push_line`]: the same line
+//! rules and capacity check as reading, the line as written, in the file's order), so the label
+//! items of a trajectory are queued while the generation is still playing. A follow-on record's
+//! first drive normally arrives in the same result, just before it. When the generate shard has
+//! all its games the label shard is sealed ([`LabelInput::seal`]): [`first_drives`] runs over the
+//! whole shard, exactly as reading would, and any record whose first drive differs from the one
+//! its items were cut with (a seed's first drive appearing twice, or a follow-on that arrived
+//! before it) is labelled again. The written file is then the one `job label` writes from the
+//! finished raw shard.
+//!
 //! **Top-up** (plan 067, [`LabelJobRequest::top_up`]): reading also finds the shard's labelling
 //! ([`shard_prior`], refused when there is none or two) and checks the net against it; a
 //! trajectory without a label gets no items and is written back as it is. Each shard's
@@ -39,10 +51,11 @@ use botbowl_play::mc_label::{
     split_items, topup_config, topup_records_path, LabelTag,
 };
 
-use crate::api::{JobId, LabelJobRequest};
+use crate::api::{GenerateJobRequest, JobId, LabelJobRequest};
+use crate::resume::ShardScan;
 
 /// zstd level for the lines the hub keeps and ships, as for trajectories from workers.
-const ZSTD_LEVEL: i32 = 3;
+pub const ZSTD_LEVEL: i32 = 3;
 
 /// One sample range of one trajectory: `(trajectory index, start, end)`.
 pub type Item = (usize, u32, u32);
@@ -71,11 +84,28 @@ pub struct LabelInput {
     /// has no items and is written back unchanged, counted as unlabelled).
     pub prior: Option<LabelTag>,
     pub untagged: Vec<bool>,
+    /// Plan 069 item 4b: a streaming shard's reading state; `None` once sealed (and always for a
+    /// shard read whole).
+    pub stream: Option<StreamState>,
+    /// Plan 069 item 4b: `out` exists but its shard gets more games; removed when the job starts.
+    pub stale_out: bool,
+}
+
+/// A streaming shard while lines still arrive.
+#[derive(Default)]
+pub struct StreamState {
+    /// Every line's metadata, for [`first_drives`] at the seal.
+    metas: Vec<TrajectoryMeta>,
+    /// The latest first drive (drive 1) of each seed so far.
+    first_by_seed: std::collections::HashMap<u64, usize>,
+    /// Follow-on records whose first drive had not arrived: no items until the seal.
+    deferred: Vec<usize>,
+    chunk_samples: u32,
 }
 
 /// What reading needs from a line, without building a `GameState` per sample.
 #[derive(Deserialize)]
-struct Lite {
+pub struct Lite {
     meta: TrajectoryMeta,
     samples: Vec<LiteSample>,
 }
@@ -89,6 +119,49 @@ struct LiteSample {
 
 fn invalid(what: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
+}
+
+/// Plan 069 item 4b: a record ready for a streaming shard — compressed and read — prepared off the
+/// hub's lock (`TrajectoryPayload::decode_for`): a 20x11 line is ~370 KB of JSON to scan.
+pub struct Prepared {
+    pub zstd: Vec<u8>,
+    /// [`read_lite`]'s verdict; the error without the shard's path, which is added on push.
+    pub lite: Result<Lite, String>,
+}
+
+impl Prepared {
+    /// `json` (one line, as the generate shard writes it), compressed at `ZSTD_LEVEL` and read.
+    pub fn of(json: &[u8]) -> io::Result<Self> {
+        Ok(Self::with_zstd(json, zstd::encode_all(json, ZSTD_LEVEL)?))
+    }
+
+    /// As [`Self::of`], with the compression already done.
+    pub fn with_zstd(json: &[u8], zstd: Vec<u8>) -> Self {
+        // The local tool reads lines with `BufRead::lines`, which drops a trailing CR.
+        let json = json.strip_suffix(b"\r").unwrap_or(json);
+        Prepared {
+            zstd,
+            lite: read_lite(Path::new(""), json).map_err(|e| e.to_string().trim_start_matches(": ").to_string()),
+        }
+    }
+}
+
+/// One line as the local tool reads it: a trajectory (as far as `Lite` goes), on a board this
+/// binary's capacity holds.
+pub fn read_lite(input: &Path, line: &[u8]) -> io::Result<Lite> {
+    let lite: Lite = serde_json::from_slice(line).map_err(|e| invalid(format!("{}: {e}", input.display())))?;
+    // Plan 065: any capacity the board fits replays it (`BoardCapacity::holds`); hub and workers
+    // share one capacity, so this is also what the workers can replay.
+    if !BoardCapacity::current().holds(lite.meta.board_dims) {
+        return Err(invalid(format!(
+            "{}: board {:?} (corpus capacity {:?}) does not fit this binary's capacity {:?}",
+            input.display(),
+            lite.meta.board_dims,
+            lite.meta.board_capacity,
+            BoardCapacity::current()
+        )));
+    }
+    Ok(lite)
 }
 
 /// What a label job asks of each of its shards.
@@ -131,6 +204,8 @@ pub fn load_input(name: &str, input: &Path, out: &Path, spec: &LabelSpec) -> io:
         tag: label_tag(&spec.cfg, &spec.model),
         prior: None,
         untagged: Vec::new(),
+        stream: None,
+        stale_out: false,
     };
     if shard.skipped {
         return Ok(shard);
@@ -144,18 +219,7 @@ pub fn load_input(name: &str, input: &Path, out: &Path, spec: &LabelSpec) -> io:
         if line.trim().is_empty() {
             continue;
         }
-        let lite: Lite = serde_json::from_str(&line).map_err(|e| invalid(format!("{}: {e}", input.display())))?;
-        // Plan 065: any capacity the board fits replays it (`BoardCapacity::holds`); hub and workers
-        // share one capacity, so this is also what the workers can replay.
-        if !BoardCapacity::current().holds(lite.meta.board_dims) {
-            return Err(invalid(format!(
-                "{}: board {:?} (corpus capacity {:?}) does not fit this binary's capacity {:?}",
-                input.display(),
-                lite.meta.board_dims,
-                lite.meta.board_capacity,
-                BoardCapacity::current()
-            )));
-        }
+        let lite = read_lite(input, line.as_bytes())?;
         shard.seeds.push(lite.meta.seed);
         shard.samples.push(lite.samples.len());
         if spec.top_up {
@@ -195,6 +259,136 @@ pub fn load_input(name: &str, input: &Path, out: &Path, spec: &LabelSpec) -> io:
     Ok(shard)
 }
 
+impl LabelInput {
+    /// Plan 069 item 4b: an empty shard that takes its lines as a generate shard writes them
+    /// ([`Self::push_line`]) until [`Self::seal`]. `spec` is a fresh labelling (no top-up).
+    pub fn streaming(name: &str, input: &Path, out: &Path, spec: &LabelSpec) -> Self {
+        assert!(!spec.top_up, "a streamed labelling is a fresh one");
+        LabelInput {
+            name: name.to_string(),
+            input: input.to_path_buf(),
+            out: out.to_path_buf(),
+            skipped: false,
+            lines: Arc::new(Vec::new()),
+            seeds: Vec::new(),
+            samples: Vec::new(),
+            firsts: Vec::new(),
+            items: Vec::new(),
+            cfg: spec.cfg,
+            tag: label_tag(&spec.cfg, &spec.model),
+            prior: None,
+            untagged: Vec::new(),
+            stream: Some(StreamState {
+                chunk_samples: spec.chunk_samples,
+                ..Default::default()
+            }),
+            stale_out: false,
+        }
+    }
+
+    /// A streaming shard's lines that are already on disk (a generate job appending to a shard,
+    /// e.g. one resumed): read as [`load_input`] reads them, then pushed in file order.
+    pub fn preload(&mut self, input: &Path, limit: Option<u64>) -> io::Result<()> {
+        let file = match File::open(input) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", input.display()))),
+        };
+        // A resume keeps the first `limit` bytes (whole games) and cuts the rest.
+        for line in BufReader::new(io::Read::take(file, limit.unwrap_or(u64::MAX))).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            self.push(Prepared::of(line.as_bytes())?)?;
+        }
+        Ok(())
+    }
+
+    /// One more record of a streaming shard, as written to the generate shard (`json`, and `zstd`
+    /// its compression). Returns the new items' indices: none when it is a follow-on whose first
+    /// drive has not arrived (deferred to the seal).
+    pub fn push_line(&mut self, json: &[u8], zstd: Vec<u8>) -> io::Result<std::ops::Range<u32>> {
+        self.push(Prepared::with_zstd(json, zstd))
+    }
+
+    /// [`Self::push_line`] for a record prepared off the lock.
+    pub fn push(&mut self, p: Prepared) -> io::Result<std::ops::Range<u32>> {
+        let st = self.stream.as_mut().expect("push on a sealed shard");
+        let lite = p
+            .lite
+            .map_err(|e| invalid(format!("{}: {e}", self.input.display())))?;
+        let zstd = p.zstd;
+        let t = self.seeds.len();
+        let n = lite.samples.len();
+        self.seeds.push(lite.meta.seed);
+        self.samples.push(n);
+        self.untagged.push(false);
+        let drive = botbowl_play::mc_label::drive_of(&lite.meta);
+        let first = match (lite.meta.seed, drive) {
+            (Some(seed), 1) => {
+                st.first_by_seed.insert(seed, t);
+                None
+            }
+            (Some(seed), _) => match st.first_by_seed.get(&seed) {
+                Some(&f) => Some(f),
+                None => {
+                    st.deferred.push(t);
+                    self.firsts.push(None);
+                    st.metas.push(lite.meta);
+                    Arc::make_mut(&mut self.lines).push(zstd);
+                    let at = self.items.len() as u32;
+                    return Ok(at..at);
+                }
+            },
+            (None, _) => None,
+        };
+        self.firsts.push(first);
+        st.metas.push(lite.meta);
+        Arc::make_mut(&mut self.lines).push(zstd);
+        let chunk = st.chunk_samples;
+        Ok(self.cut(t, chunk))
+    }
+
+    /// Cut trajectory `t` into items; their indices.
+    fn cut(&mut self, t: usize, chunk: u32) -> std::ops::Range<u32> {
+        let at = self.items.len() as u32;
+        for r in split_items(self.samples[t], chunk as usize) {
+            self.items.push((t, r.start as u32, r.end as u32));
+        }
+        at..self.items.len() as u32
+    }
+
+    /// No more lines: every record's first drive by the reading rule ([`first_drives`] over the
+    /// whole shard). Returns the trajectories whose items must be (re)cut — the deferred ones and
+    /// any whose first drive changed — after recording the final first drives; the caller stales
+    /// any old items of those and calls [`Self::recut`].
+    pub fn seal(&mut self) -> (Vec<usize>, u32) {
+        let Some(st) = self.stream.take() else {
+            return (Vec::new(), 0);
+        };
+        let fin = first_drives(&st.metas);
+        let mut redo: Vec<usize> = st.deferred.clone();
+        for (t, (&used, &f)) in self.firsts.iter().zip(&fin).enumerate() {
+            if used != f && !st.deferred.contains(&t) {
+                redo.push(t);
+            }
+        }
+        self.firsts = fin;
+        redo.sort_unstable();
+        (redo, st.chunk_samples)
+    }
+
+    /// New items for trajectory `t` after the seal (its first drive is final now).
+    pub fn recut(&mut self, t: usize, chunk: u32) -> std::ops::Range<u32> {
+        self.cut(t, chunk)
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.stream.is_some()
+    }
+}
+
 /// Every shard of a request, read in parallel (a generation is ~1.5 GB of JSON).
 pub fn load_inputs(req: &LabelJobRequest) -> io::Result<Vec<LabelInput>> {
     if req.shards.is_empty() {
@@ -218,6 +412,64 @@ pub fn load_inputs(req: &LabelJobRequest) -> io::Result<Vec<LabelInput>> {
             })
             .collect()
     })
+}
+
+/// Plan 069 item 4b: the streamed-label shards of a generate job, one per shard it names (off the
+/// hub's lock). Each starts empty — or, when the job appends to a shard already on disk (`--resume`,
+/// or neither `--resume` nor `--truncate`), with that shard's lines, read as [`load_input`] reads
+/// them (for a resume only the whole games the scan keeps: the rest is cut before the job starts).
+/// A label output that exists is stale once its shard gets more games: it is marked
+/// (`stale_out`) and removed under the lock when the job is created. It is kept (skipped, as `job
+/// label` would) only when the job plays no game of the shard: a resume that finds the shard whole.
+pub fn stream_inputs(req: &GenerateJobRequest, scans: Option<&[ShardScan]>) -> io::Result<Vec<LabelInput>> {
+    let Some(m) = &req.mc_label else {
+        return Ok(Vec::new());
+    };
+    if m.cfg.playouts == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--mc-label-playouts must be > 0",
+        ));
+    }
+    let spec = LabelSpec {
+        cfg: m.cfg,
+        model: m.model.clone(),
+        top_up: false,
+        chunk_samples: m.chunk_samples.max(1),
+    };
+    let mut out = Vec::new();
+    for (name, label_out) in &m.shards {
+        let Some(k) = req.shards.iter().position(|s| &s.name == name) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("--mc-label-shards: {name} is not a shard of this job"),
+            ));
+        };
+        let shard = &req.shards[k];
+        let scan = scans.and_then(|v| v.get(k));
+        // Games this job plays in the shard: a resume plays the ones not on disk.
+        let to_play = match scan {
+            Some(sc) => shard
+                .games
+                .saturating_sub(sc.done.iter().filter(|&&g| g < shard.games).count() as u32),
+            None => shard.games,
+        };
+        let mut input = LabelInput::streaming(name, &shard.out, label_out, &spec);
+        if label_out.exists() {
+            if to_play == 0 {
+                input.skipped = true;
+                input.stream = None;
+                out.push(input);
+                continue;
+            }
+            input.stale_out = true;
+        }
+        if !req.truncate {
+            input.preload(&shard.out, scan.map(|sc| sc.keep_len))?;
+        }
+        out.push(input);
+    }
+    Ok(out)
 }
 
 /// A shard whose every item is in, to be written off the hub's lock.
@@ -375,6 +627,51 @@ mod tests {
         // Once the output exists, a shard is skipped and not even read.
         let again = load_input("shard0", &input, &d.join("out/shard0.jsonl"), &spec(7)).unwrap();
         assert!(again.skipped && again.lines.is_empty());
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// Plan 069 item 4b: a streaming shard cuts each record as it arrives, defers a follow-on with
+    /// no first drive yet, and at the seal recuts exactly the records whose first drive is not the
+    /// one the reading rule picks over the whole shard — then reads like [`load_input`].
+    #[test]
+    fn a_streaming_shard_seals_to_what_reading_the_file_gives() {
+        let d = dir("stream");
+        let first = trajectory(51);
+        let mut next = trajectory(52);
+        next.meta.seed = first.meta.seed;
+        next.meta.extra.insert("drive".into(), "2".into());
+        let other = trajectory(53);
+        let line = |t: &Trajectory| serde_json::to_string(t).unwrap();
+        // follow-on (no first yet: deferred), first, follow-on (cut against line 1), other,
+        // first again (line 4 wins: lines 0 and 2 must be recut).
+        let order = [&next, &first, &next, &other, &first];
+        let input = d.join("shard0.jsonl");
+        let mut s = LabelInput::streaming("shard0", &input, &d.join("mc/shard0.jsonl"), &spec(4));
+        let mut cut = Vec::new();
+        for t in order {
+            let l = line(t);
+            cut.push(
+                s.push_line(l.as_bytes(), zstd::encode_all(l.as_bytes(), 3).unwrap())
+                    .unwrap(),
+            );
+        }
+        assert!(
+            cut[0].is_empty(),
+            "a follow-on without its first drive waits for the seal"
+        );
+        assert!(!cut[2].is_empty());
+        assert_eq!(s.firsts[2], Some(1));
+        assert!(s.is_open());
+        let (redo, chunk) = s.seal();
+        assert_eq!((redo, chunk), (vec![0, 2], 4));
+        assert!(!s.is_open());
+        std::fs::write(&input, order.map(|t| line(t) + "\n").concat()).unwrap();
+        let read = load_input("shard0", &input, &d.join("mc/x.jsonl"), &spec(4)).unwrap();
+        assert_eq!(s.firsts, read.firsts);
+        assert_eq!(s.firsts, vec![Some(4), None, Some(4), None, None]);
+        assert_eq!(s.seeds, read.seeds);
+        assert_eq!(s.samples, read.samples);
+        assert_eq!(*s.lines, *read.lines);
         std::fs::remove_dir_all(&d).ok();
     }
 

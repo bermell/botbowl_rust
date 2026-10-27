@@ -178,6 +178,7 @@ fn spawn_worker(url: &str, name: &str, parallel: u16) -> tokio::task::JoinHandle
         token: TOKEN.into(),
         name: name.into(),
         parallel_games: Some(parallel),
+        label_streams: 0,
         nn_server: None,
         cache_dir: tmp(&format!("cache-{name}")),
         mem_floor_mb: 0,
@@ -317,6 +318,7 @@ async fn a_vanishing_worker_gets_its_label_items_requeued() {
         ram_mb: 0,
         cached_models: vec![],
         parallel_games: Some(2),
+        label_streams: 0,
     };
     sink.send(Message::Binary(encode(&hello).into())).await.unwrap();
     let mut tasks = Vec::new();

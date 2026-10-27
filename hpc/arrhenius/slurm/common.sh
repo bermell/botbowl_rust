@@ -24,6 +24,7 @@ slurm_defaults() {
     CORES_PER_GPU="${CORES_PER_GPU:-72}"            # -c: one Grace CPU per task
     WORKERS_PER_GPU="${WORKERS_PER_GPU:-1}"
     WORKER_STREAMS="${WORKER_STREAMS:-64}"          # --parallel-games of each long-lived worker
+    WORKER_LABEL_STREAMS="${WORKER_LABEL_STREAMS:-0}"  # --label-streams (plan 069 item 4b; with LABEL_STREAMING=1)
     WORKER_MEM_FLOOR_MB="${WORKER_MEM_FLOOR_MB:-4096}"
     WORKER_EXTRA_ARGS="${WORKER_EXTRA_ARGS:-}"
     WORKER_RESTARTS="${WORKER_RESTARTS:-5}"
@@ -132,7 +133,7 @@ worker_cmd() {
     local name="$1"
     # shellcheck disable=SC2206
     W=("$BIN/botbowl-worker" --hub "ws://$HUB_HOST:$HUB_PORT/ws" --token-file "$HUB_TOKEN_FILE"
-        --name "$name" --parallel-games "$WORKER_STREAMS" --nn-backend inproc
+        --name "$name" --parallel-games "$WORKER_STREAMS" --label-streams "$WORKER_LABEL_STREAMS" --nn-backend inproc
         --cache-dir "$LOCAL_SCRATCH/botbowl-cache/${SLURM_JOB_ID:-dry}/$name"
         --mem-floor-mb "$WORKER_MEM_FLOOR_MB" $WORKER_EXTRA_ARGS)
 }

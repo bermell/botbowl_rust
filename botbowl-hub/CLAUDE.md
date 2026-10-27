@@ -26,6 +26,10 @@ botbowl-hub job generate --mode random-start --games 600 --mcts-iters 1000 --eva
 # label (plan 062; flag-compatible with `botbowl-ui mc-label`; one job = every shard of a generation):
 botbowl-hub job label --in gen12/shard0.jsonl gen12/shard4.jsonl --model X.onnx --playouts 8 \
     --seed 56012 --out-dir runs/<run>/gen12/mc --label "gen12 mc-label" --wait   # [--chunk-samples 32] [--batch 1]
+# generate AND label as it goes (plan 069 item 4b): the same mc/ shards, finished with the last game
+botbowl-hub job generate ... --model X.onnx --out-dir runs/<run>/gen12 --mc-label-playouts 8 --mc-label-seed 56012 \
+    --mc-label-out-dir runs/<run>/gen12/mc [--mc-label-shards 0,1,2,3,4,5,6,7] [--mc-label-chunk-samples 32] --wait
+botbowl-worker ... --parallel-games 48 --label-streams 16                    # G game + L label-only streams
 botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is the status page in a terminal
 # http://hub:7777/ is an index; http://hub:7777/status the status page: jobs by --label
 # (`job ... --label "gen03 generate"`), rungs and status lines shortened to how we name things
@@ -154,7 +158,7 @@ follow-on, SIGTERM, hub+client killed, a deadline, a worker straddling restarts)
   types, so no new frame was needed. **v5** added `BuildInfo.env_board` and `RejectReason::Board`.
   **v6** added `MctsConfig.budget_mode` and `SearchTelemetry.iterations`, which are fields inside
   re-exported types. **v10** (plan 051) added `Task::Eval.drives` (a drive rung's position set)
-  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. **v19** (plan 062) added `Task::Label` (`LabelItem`s: sample ranges of corpus trajectories, zstd) and `ToHub::LabelDone` (`LabelResult`), the distributed `mc-label`; both are appended variants, so older frames keep their tags. **v21** (plan 067) added `LabelConfig.skip` (the MC-label top-up). **v22** (plan 068) added `DriveRung.gate` (the divergence gate: bots seeded by role, every move fingerprinted) and `EvalGameLine.path` (the fingerprint, a trailing field always on the wire); the gate *mode* rides only in `EvalJobRequest.drive_gate`, since only the hub's fold needs it. **v23** (plan 070) added `MctsConfig.backprop`. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
+  and `EvalGameLine.attacker`. **v11** (plan 053) added `MctsConfig.gumbel_m` and `gumbel_scale`. **v14** added `ToWorker::ModelName`. **v15** (plan 047) re-laid `SimpleAT`/`PosAT` for per-player setup and added the setup knobs and `GenerateConfig.next_drive`; **v16** added `SimpleAT::UseSkill`/`DontUseSkill`. **v19** (plan 062) added `Task::Label` (`LabelItem`s: sample ranges of corpus trajectories, zstd) and `ToHub::LabelDone` (`LabelResult`), the distributed `mc-label`; both are appended variants, so older frames keep their tags. **v21** (plan 067) added `LabelConfig.skip` (the MC-label top-up). **v22** (plan 068) added `DriveRung.gate` (the divergence gate: bots seeded by role, every move fingerprinted) and `EvalGameLine.path` (the fingerprint, a trailing field always on the wire); the gate *mode* rides only in `EvalJobRequest.drive_gate`, since only the hub's fold needs it. **v23** (plan 070) added `MctsConfig.backprop`. **v25** (plan 069 item 4b) added `Hello.label_streams`. The current number and the full history are in `botbowl-hub-proto/src/lib.rs` (`PROTOCOL_VERSION`). Postcard is positional, so a new field anywhere in a type that crosses the
   wire changes the frame, even when no frame struct in proto is touched.
 - **The active board is checked, not just the capacity.** `capacity` is the compile-time ceiling;
   `BoardDims::from_env()` is what a task that names no board of its own actually plays. Two boxes
@@ -300,6 +304,39 @@ follow-on, SIGTERM, hub+client killed, a deadline, a worker straddling restarts)
   `ShardWrite` combines them with the prior labels read back from the lines (`apply_topup`) and
   writes `topup/<shard>` before the shard. `mc_label_hub.rs` pins hub == local bytes for a top-up
   too, and local top-up == a fresh `(n+K)` labelling.
+- **Streamed labels (plan 069 item 4b, protocol v25): output equals `job label`'s over the finished
+  shard.** `job generate --mc-label-playouts N ...` (`GenerateJobRequest.mc_label`) submits a second,
+  linked label job (`JobStatus.labels_job`; status page `<label> · mc-label (streamed)`) whose shards
+  are `LabelInput::streaming`: empty, or for a job that appends to a shard on disk, preloaded with
+  its lines (`label::stream_inputs`, off the lock). `trajectory_done` pushes every record it writes
+  into the shard's label shard **under the same lock, in the file's order**; the record is prepared
+  (zstd + the label reader's parse and capacity check, `label::Prepared`) in the websocket task
+  before the lock once the hub streams labels (`Hub::streams_labels`). A follow-on is cut against the
+  latest drive 1 of its seed so far, or deferred when there is none. When the generate shard has all
+  its games the label shard is **sealed**: `first_drives` over the whole shard, and any record whose
+  first drive is not the one its items used is labelled again (old items stale: dropped from the
+  queue, results ignored, `LabelShard.live`/`live_done` count only live ones). Then `ShardWrite` as
+  for `job label`. `mc_label_stream.rs` pins the bytes (fresh, appended, the relabel path). A label
+  output that exists is removed at submit unless the job adds no games to its shard (then skipped).
+  A failed generate job fails its label job; a failed label job leaves the generation alone, and
+  `job generate --wait` only warns (the loop's mc-label phase labels what is missing).
+  **With `--resume` (plan 069 item 5)** the label state is rebuilt from the files, never persisted:
+  each streamed shard is preloaded with the whole games the scan keeps (up to `keep_len`, never the
+  torn tail), an output whose shard the job plays no game of is kept (skipped), any other existing
+  output is removed under the lock (`LabelInput.stale_out`), and a shard whose games are all on disk
+  is sealed at submit. `attach` treats a generate job whose games are done but whose labels still run
+  as running (a resubmission follows it into the labels), and a drained generate job that gives way
+  takes its labels with it. `job --wait` follows `labels_job` inside `run_job`: a hub restart during
+  the labels resubmits the resumable request (its new job only labels), a non-resumable one warns.
+  `mc_label_stream.rs::a_hub_restart_mid_generation_resumes_and_labels_everything` pins it.
+- **Two stream pools per worker (plan 069 item 4b, `Hello.label_streams`).** `--parallel-games G
+  --label-streams L`: G `game-*` threads take any task (game tasks first), L `label-*` threads only
+  label tasks. `dispatch` keeps generate + eval tasks ≤ G, and gives label tasks the L streams plus
+  any idle game stream **only while no generate job has games waiting** — so a label job alone (the
+  mc-label phase) still uses every stream, streamed labels never take a stream the generation could
+  use, and a worker with L = 0 takes streamed labels only once the games run out. The in-process
+  queue counts the label threads' forwards (`batch_queue::set_thread_class`, `label_samples=` in
+  `NN_INPROC_STATS`); a game thread that borrows a label task counts as generation.
 - **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
   task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries
   `RungReq.board` → `Task::Eval.board`, and a multi-size ladder names rungs `opponent@14x7/4`
@@ -343,6 +380,10 @@ follow-on, SIGTERM, hub+client killed, a deadline, a worker straddling restarts)
 
 `cargo test -p botbowl-ui --test mc_label_hub`: a label job through the hub writes `mc-label`'s
 exact bytes, and a worker that vanishes mid-chunk loses and doubles nothing (plan 062).
+`--test mc_label_stream`: labels streamed by a generate job are `mc-label`'s and `job label`'s bytes
+(fresh shards; an appended shard with a stale output and a relabelled follow-on). `botbowl-hub
+--test dispatch_pools`: game tasks stay within G, labels fill L and idle streams only with no game
+waiting (plan 069 item 4b).
 `cargo test -p botbowl-hub`: hub + two in-process workers reproduce a single-process eval
 exactly (search-free bots so it is exact on any tier); a generate job writes each shard's seed
 set exactly once with `dataset`'s provenance labels, truncates or appends as asked; a worker

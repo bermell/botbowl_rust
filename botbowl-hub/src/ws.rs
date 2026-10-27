@@ -96,6 +96,7 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
         ram_mb,
         cached_models,
         parallel_games,
+        label_streams,
     }) = hello
     else {
         let _ = socket.close().await;
@@ -153,6 +154,7 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
         cores,
         ram_mb,
         parallel_games: parallel,
+        label_streams,
         tx,
         known_models: cached_models.into_iter().collect(),
         named_models: Default::default(),
@@ -193,12 +195,8 @@ pub async fn handle(mut socket: WebSocket, hub: Hub) {
                         zstd_json,
                     }) => {
                         // Inflate and peek before the lock (plan 069 item 6); the lock only writes.
-                        let payload = TrajectoryPayload::decode(&zstd_json);
-                        hub.inner
-                            .lock()
-                            .unwrap()
-                            .trajectory_done(wid, task, game, samples, payload);
-                        hub.changed.notify_waiters();
+                        let payload = TrajectoryPayload::decode_for(&zstd_json, hub.per_line_zstd());
+                        hub.trajectory_done(wid, task, game, samples, payload);
                     }
                     Ok(ToHub::TaskFailed { task, error }) => {
                         hub.inner.lock().unwrap().task_failed(wid, task, error);

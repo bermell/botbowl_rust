@@ -63,7 +63,10 @@ pub use botbowl_play::mc_label::LabelConfig;
 // v24 (S3 rules): `PosAT::StartSecureBall`, `PathingEvent::SecureBall`, `AnyProc::SecureBallProc` and
 // `GameInfo::secure_ball_available` (S3 Secure the Ball), inside trajectories and game states;
 // NN schema v10. (Developed as v21 beside plans 067-070; renumbered at the merge.)
-pub const PROTOCOL_VERSION: u32 = 24;
+// v25 (plan 069 item 4b): `Hello.label_streams` — a worker runs its `parallel_games` game streams
+// plus this many streams that only take label tasks (and label tasks may also fill idle game
+// streams). Generate jobs may stream MC labels (hub side only; no other frame changed).
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// A worker's model cache, `$HOME/.cache/botbowl/models`: `<id hex>.onnx`, plus a
 /// `<id hex>.json` [`ModelMeta`] once the hub has named it. The web play server reads it too.
@@ -319,6 +322,9 @@ pub enum ToHub {
         cached_models: Vec<ModelId>,
         /// Streams the worker will run; `None` lets the hub size it.
         parallel_games: Option<u16>,
+        /// Plan 069 item 4b: extra streams for label tasks only, on top of `parallel_games`
+        /// (`botbowl-worker --label-streams`). 0 = none: label tasks share the game streams.
+        label_streams: u16,
     },
     EvalGameDone {
         task: TaskId,
@@ -488,6 +494,7 @@ mod tests {
             ram_mb: 16_000,
             cached_models: vec![],
             parallel_games: None,
+            label_streams: 3,
         };
         let _: ToHub = decode(&encode(&hello)).unwrap();
     }

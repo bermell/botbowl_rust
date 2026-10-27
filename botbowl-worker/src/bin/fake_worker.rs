@@ -287,6 +287,7 @@ async fn connect_once(i: u32, sh: &Arc<Shared>, token: &str) -> End {
         ram_mb: 0,
         cached_models: Vec::new(),
         parallel_games: Some(cli.streams),
+        label_streams: 0,
     };
     if let Err(e) = sink.send(Message::Binary(encode(&hello).into())).await {
         return End::Lost(format!("hello: {e}"));

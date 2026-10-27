@@ -86,6 +86,7 @@ async fn frames_until_task(url: &str, cached: Vec<ModelId>) -> Vec<ToWorker> {
         ram_mb: 0,
         cached_models: cached,
         parallel_games: Some(1),
+        label_streams: 0,
     };
     sink.send(Message::Binary(encode(&hello).into())).await.unwrap();
     let mut out = Vec::new();
@@ -220,6 +221,7 @@ async fn the_startup_index_names_a_cache_without_any_job() {
         ram_mb: 0,
         cached_models: vec![id],
         parallel_games: Some(1),
+        label_streams: 0,
     };
     let named = |f: &ToWorker| matches!(f, ToWorker::ModelName { id: m, name, .. } if *m == id && name == "bbnet_14x7_gen23.onnx");
 
@@ -276,6 +278,7 @@ async fn a_large_torchscript_export_reaches_a_real_worker() {
         token: TOKEN.into(),
         name: "w".into(),
         parallel_games: Some(1),
+        label_streams: 0,
         nn_server: None,
         cache_dir: dir.join("cache"),
         mem_floor_mb: 0,
