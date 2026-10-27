@@ -127,6 +127,7 @@ fn job(dir: &PathBuf, truncate: bool) -> GenerateJobRequest {
         batch: 2,
         label: None,
         mc_label: None,
+        resume: false,
     }
 }
 

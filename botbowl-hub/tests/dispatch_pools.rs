@@ -86,6 +86,7 @@ fn generate(games: u32) -> GenerateJobRequest {
         batch: 1,
         label: None,
         mc_label: None,
+        resume: false,
     }
 }
 
@@ -133,7 +134,7 @@ fn games_stay_in_their_streams_and_labels_fill_the_rest() {
     // Alone, a label job takes every stream (and a worker without label streams all of its own).
     assert_eq!(sent.iter().filter(|t| t.1).count(), 3, "{sent:?}");
     assert_eq!(bare_sent.iter().filter(|t| t.1).count(), 2, "{bare_sent:?}");
-    inner.submit_generate(generate(10), Vec::new()).unwrap();
+    inner.submit_generate(generate(10)).unwrap();
     // Labels hold the streams until they finish: a label result frees one game stream, and the
     // generation takes it, since its games are waiting.
     for (rx, sent, wid) in [(&mut rx, &mut sent, w), (&mut bare_rx, &mut bare_sent, bare)] {

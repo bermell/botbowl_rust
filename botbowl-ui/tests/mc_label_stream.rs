@@ -7,7 +7,10 @@
 //! - a generation that appends to shards already on disk (a resumed one): the lines there are
 //!   labelled too, a stale label output is replaced, and a seed generated again moves its follow-on
 //!   record's first drive to the later line — the record is labelled again at the seal, as the
-//!   reading rule says.
+//!   reading rule says;
+//! - a hub that dies mid-generation (plan 069 item 5): the request submitted again with
+//!   `--resume` to a new hub keeps the shard already labelled, cuts the torn tail of the other,
+//!   plays its missing games and labels its lines — the label state rebuilt from the files.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -144,6 +147,7 @@ fn generate(dir: &Path, base: u64, shards: &[&str], labelled: &[&str], truncate:
             })
             .collect(),
         truncate,
+        resume: false,
         batch: 1,
         label: Some("test generate".into()),
         mc_label: Some(StreamLabelRequest {
@@ -309,4 +313,68 @@ async fn a_resumed_generation_labels_the_lines_already_on_disk_and_relabels_a_mo
     let l = run_streamed(&hub, again).await;
     assert!(matches!(&l.units[0].stats, Some(UnitStats::Label(s)) if s.skipped));
     assert_eq!(std::fs::read(dir.join("mc/shard0.jsonl")).unwrap(), before);
+}
+
+/// Plan 069 items 4b + 5: hub A dies with shard0 generated (its labels in flight or written) and
+/// shard1 started (and a torn line at its end); the same request with `--resume` on hub B ends with
+/// every trajectory of both shards labelled, the files `mc-label` writes from the final shards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hub_restart_mid_generation_resumes_and_labels_everything() {
+    let base = pair_seed() - 1;
+    let dir = tmp("restart");
+    let shards = ["shard0", "shard1"];
+    let req = generate(&dir, base, &shards, &shards, true);
+    {
+        let (hub, addr, task) = Hub::start(HubConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            token: TOKEN.into(),
+            allow_commit_mismatch: false,
+            allowed_commits: std::env::temp_dir().join("botbowl-hub-test-no-such-allowlist.toml"),
+            worker_timeout: Duration::from_secs(300),
+            run_dir: None,
+            allow_from: Vec::new(),
+            rate_interval: Duration::from_secs(300),
+            registry_dir: None,
+        })
+        .await
+        .unwrap();
+        let w = spawn_worker(&format!("ws://{addr}/ws"), "a", 1, 1);
+        hub.submit_generate(req.clone()).unwrap();
+        // Until shard1 has its first game (shard0, queued first, has all of its).
+        let shard1 = dir.join("shard1.jsonl");
+        tokio::time::timeout(Duration::from_secs(1800), async {
+            loop {
+                if std::fs::read_to_string(&shard1).map_or(0, |t| t.lines().count()) >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("shard1 started in time");
+        // The hub dies: no more results reach it (its worker is gone too), and a write was cut.
+        w.abort();
+        task.abort();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&shard1).unwrap();
+        std::io::Write::write_all(&mut f, b"{\"meta\":{\"seed\":").unwrap();
+    }
+    let labelled0 = std::fs::read(dir.join("mc/shard0.jsonl")).ok();
+    let (hub, url) = start_hub().await;
+    let _w = spawn_worker(&url, "b", 1, 1);
+    let mut again = req;
+    again.truncate = false;
+    again.resume = true;
+    let l = run_streamed(&hub, again).await;
+    // shard0's labels: kept when hub A wrote them (its shard gets no games), else made from disk.
+    if let Some(before) = labelled0 {
+        assert!(matches!(&l.units[0].stats, Some(UnitStats::Label(s)) if s.skipped), "{:?}", l.units[0]);
+        assert_eq!(std::fs::read(dir.join("mc/shard0.jsonl")).unwrap(), before);
+    }
+    let local = tmp("restart-local");
+    local_labels(&dir, &shards, &local);
+    assert_same_files(&dir.join("mc"), &local, &shards, "mc-label");
+    let raw1 = botbowl_data::read_trajectories(dir.join("shard1.jsonl")).unwrap();
+    let seeds: std::collections::BTreeSet<u64> = raw1.iter().filter_map(|t| t.meta.seed).collect();
+    assert_eq!(seeds.len(), GAMES as usize, "shard1 holds each of its games once");
 }

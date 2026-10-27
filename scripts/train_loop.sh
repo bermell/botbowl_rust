@@ -578,7 +578,24 @@ STOP_MARGIN_SECS="${STOP_MARGIN_SECS:-0}"
 #   PREPARED_ROOT  where prepared_train/prepared_val go (genNN/ under it; default the generation's
 #                  own dir). Set, a generation marked prepared whose dirs are missing (another
 #                  job's node-local disk) is prepared again instead of failing.
+#   GEN_RESUME     on|off. on: a generate phase resumes from the shards already in its gen dir
+#                  (`job generate --resume`: each shard's complete games are kept, a torn tail is cut,
+#                  only the missing seeds are played — the uninterrupted run's seed set), so a phase
+#                  cut by a deadline, a signal or a hub restart continues in the next launch instead
+#                  of starting over, and generate no longer has to fit in one job: STOP_PHASE_ESTIMATE
+#                  then asks it only for GEN_MIN_SLICE_SECS (+ PHASE_DRAIN_SECS) of the job. off:
+#                  `--truncate`, the phase starts over (the behaviour before plan 069 item 5).
+#   PHASE_DRAIN_SECS  with LOOP_DEADLINE: this long before the deadline (less STOP_MARGIN_SECS) a hub
+#                  job still running (generate, mc-label via the hub, the benchmark) is drained — no
+#                  new games start, the ones on workers finish and are written — and the loop exits 75;
+#                  the next launch resubmits it with what is on disk.
+#   HUB_LOST_SECS  a job client whose hub stays unreachable this long exits 75 (0: it waits for ever,
+#                  and resubmits a resumable job when a hub answers again).
 STOP_PHASE_ESTIMATE="${STOP_PHASE_ESTIMATE:-on}"
+GEN_RESUME="${GEN_RESUME:-on}"
+GEN_MIN_SLICE_SECS="${GEN_MIN_SLICE_SECS:-900}"
+PHASE_DRAIN_SECS="${PHASE_DRAIN_SECS:-300}"
+HUB_LOST_SECS="${HUB_LOST_SECS:-0}"
 PREPARED_ROOT="${PREPARED_ROOT:-}"
 LOOP_T0=$(date +%s)
 EXIT_ON_SIGNAL="${EXIT_ON_SIGNAL:-0}"
@@ -621,6 +638,8 @@ check_stop() {
     local need="$STOP_MARGIN_SECS" est
     if [ "$STOP_PHASE_ESTIMATE" = on ]; then
         est=$(phase_secs "${1##* }")
+        # A resumable generate phase spans jobs: it needs only a useful slice of this one.
+        [ "${1##* }" = generate ] && [ "$GEN_RESUME" = on ] && est=$((GEN_MIN_SLICE_SECS + PHASE_DRAIN_SECS))
         [ "$est" -gt "$need" ] && need="$est"
         if [ $((est * 4 / 5)) -gt $((LOOP_DEADLINE - LOOP_T0)) ]; then
             status "FATAL: the ${1##* } phase took $((est * 4 / 5 / 60)) min last time, longer than a whole job ($(((LOOP_DEADLINE - LOOP_T0) / 60)) min): raise the walltime or shrink the phase (GAMES_PER_SHARD, more nodes) — stopping the chain ($1)"
@@ -641,6 +660,32 @@ phase_secs() {
     echo $((${m:-0} * 75))
 }
 champion() { cat "$CHAMPION_FILE"; }
+# Plan 069 item 5: what every `job ... --wait` gets: the deadline (drain, then exit 75) and the
+# give-up time for a lost hub. Empty on the training box.
+job_wait_args() {
+    local a=""
+    [ -n "$LOOP_DEADLINE" ] && a="--deadline $((LOOP_DEADLINE - STOP_MARGIN_SECS)) --drain-secs $PHASE_DRAIN_SECS"
+    [ "$HUB_LOST_SECS" -gt 0 ] && a="$a --hub-lost-secs $HUB_LOST_SECS"
+    echo "$a"
+}
+# How a generate job treats shards already on disk: resume them, or start over.
+gen_out_flag() { if [ "$GEN_RESUME" = on ]; then echo --resume; else echo --truncate; fi; }
+# gen_progress DIR TARGET_GAMES: games (first records) and follow-on records on disk.
+gen_progress() {
+    local lines=0 follow=0 f
+    for f in "$1"/shard*.jsonl; do
+        [ -f "$f" ] || continue
+        lines=$((lines + $(wc -l < "$f")))
+        follow=$((follow + $(grep -c '"drive":"2"' "$f")))
+    done
+    echo "$((lines - follow))/$2 games (+$follow follow-on drives) on disk"
+}
+# A hub job client exited 75: the deadline drained it, or its hub was lost. Everything written is
+# kept; the next launch resubmits with what is on disk.
+resumable_exit() {
+    status "$1 stopped before the end (deadline or hub lost)${2:+: $2} — exiting cleanly; the next launch resumes it"
+    exit 75
+}
 # Free disk in GiB. `df -g` is macOS-only; -BG/-k are the portable GNU spellings.
 # Of the run dir's file system (the checkout's on the training box, where the run dir is in it).
 free_gb() {
@@ -871,26 +916,31 @@ generate_jobs() {
             $size_args $EXPLORE_ARGS ${NEXT_DRIVE:+--next-drive} ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
             --shards "$NN_SHARDS" --heuristic-shards "$HEUR_SHARDS" --label "$GG generate" \
             $(stream_label_args "$NN_SHARDS $HEUR_SHARDS") \
-            --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.log" 2>&1
+            $(gen_out_flag) $(job_wait_args) --out-dir "$gen_dir" --wait >> "$gen_dir/generate.log" 2>&1
         return $?
     fi
     IFS=';' read -ra groups <<< "$GEN_SPLIT"
     for group in "${groups[@]}"; do
         IFS='@' read -r sizes iters shards games <<< "$group"
         log "$GG generate group $i: $games/shard at $iters, shards $shards, boards $sizes"
-        # shellcheck disable=SC2086
-        with_budget "$GEN_BUDGET_MODE" "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+        # shellcheck disable=SC2086,SC2046
+        env ${GEN_BUDGET_MODE:+BLOOD_MCTS_BUDGET=$GEN_BUDGET_MODE} "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
             --mode random-start --games "$games" \
             --seed-base $((SEED_BASE + G * 1000000)) --shard-seed-stride 100000 \
             --mcts-iters "$iters" --evaluator "$EVALUATOR" --model "$champ" \
             --board-sizes "$sizes" --cells-per-player "$SIZE_CELLS_PER_PLAYER" $EXPLORE_ARGS ${NEXT_DRIVE:+--next-drive} ${GEN_BOT_CONFIG:+--bot-config "$GEN_BOT_CONFIG"} \
             --shards "$shards" --heuristic-shards "" --label "$GG generate ($sizes at $iters)" \
             $(stream_label_args "${shards//,/ }") \
-            --truncate --out-dir "$gen_dir" --wait > "$gen_dir/generate.$i.log" 2>&1 &
+            $(gen_out_flag) $(job_wait_args) --out-dir "$gen_dir" --wait >> "$gen_dir/generate.$i.log" 2>&1 &
         pids+=($!)
         i=$((i + 1))
     done
-    for p in "${pids[@]}"; do wait "$p" || rc=1; done
+    # 75 (drained at the deadline, or the hub lost) only when no group failed outright.
+    local r
+    for p in "${pids[@]}"; do
+        wait "$p"; r=$?
+        if [ "$r" -eq 75 ] && [ "$rc" -ne 1 ]; then rc=75; elif [ "$r" -ne 0 ]; then rc=1; fi
+    done
     cat "$gen_dir"/generate.[0-9]*.log > "$gen_dir/generate.log" 2>/dev/null
     return $rc
 }
@@ -934,7 +984,13 @@ worker_stop() {
     wait "$WORKER_PID" 2>/dev/null
     WORKER_PID=""
 }
-cleanup() { worker_stop; nn_server_stop; hub_stop; }
+# The benchmark's job clients too: a launch that ends takes its clients with it (the next launch
+# resubmits, and the hub attaches the same request to its running job).
+cleanup() {
+    local j
+    for j in ${EVAL_JOBS[@]+"${EVAL_JOBS[@]}"}; do kill "${j%% *}" 2> /dev/null; done
+    worker_stop; nn_server_stop; hub_stop
+}
 
 # ---- board-size flags (plan 042) --------------------------------------------
 # Generate: the distribution every game of this generation draws from. In
@@ -1089,14 +1145,18 @@ if [ ! -f "$(champion)" ]; then
         # SEED_BASE + K*1e5 + g (G=0 — disjoint from every gen), the layout
         # the per-shard processes used. Heuristic games need no sidecar.
         worker_start "$BOOTSTRAP_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log"
-        if ! "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+        # shellcheck disable=SC2046
+        "$HUB" job generate --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
                 --mode random-start --games "$BOOTSTRAP_GAMES_PER_SHARD" \
                 --seed-base "$SEED_BASE" --shard-seed-stride 100000 \
                 --mcts-iters "$MCTS_ITERS" --evaluator heuristic \
                 $(size_gen_args) ${NEXT_DRIVE:+--next-drive} \
                 --shards "$NN_SHARDS $HEUR_SHARDS" \
-                --truncate --out-dir "$GEN_DIR" --wait > "$GEN_DIR/generate.log" 2>&1; then
+                $(gen_out_flag) $(job_wait_args) --out-dir "$GEN_DIR" --wait >> "$GEN_DIR/generate.log" 2>&1
+        GEN_RC=$?
+        if [ "$GEN_RC" -ne 0 ]; then
             worker_stop
+            [ "$GEN_RC" -eq 75 ] && resumable_exit "gen00 generate" "$(gen_progress "$GEN_DIR" $((BOOTSTRAP_GAMES_PER_SHARD * 8)))"
             die "gen00 generate failed — see generate.log, hub.log and generate.worker.log"
         fi
         worker_stop
@@ -1105,7 +1165,7 @@ if [ ! -f "$(champion)" ]; then
             [ -s "$GEN_DIR/shard$K.jsonl" ] || die "gen00 shard$K.jsonl empty/missing — see generate.log"
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
-        status "gen00 generate done ($((SECONDS / 60)) min): $GAMES/$((BOOTSTRAP_GAMES_PER_SHARD * 8)) games"
+        status "gen00 generate done ($((SECONDS / 60)) min): $(gen_progress "$GEN_DIR" $((BOOTSTRAP_GAMES_PER_SHARD * 8)))"
         # Plan 042: the heuristic bootstrap corpus doubles as the per-board
         # TD-rate baseline the size curriculum measures the net against.
         "$PY" "$REPO/scripts/td_rate.py" "$GEN_DIR" --json "$GEN_DIR/td_rate.json" > /dev/null 2>&1 \
@@ -1180,12 +1240,22 @@ EVAL_T0=0
 eval_job() {
     local name="$1" dir="$2" label="$3"; shift 3
     [ -s "$dir/report.json" ] && return 0
-    mkdir -p "$dir"; rm -f "$dir/eval.games.jsonl"
-    # shellcheck disable=SC2086
-    with_budget "$EVAL_BUDGET_MODE" "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
+    mkdir -p "$dir"
+    # Plan 069 item 5: the games of an interrupted benchmark are kept (`--resume`) when it is
+    # submitted again with the same arguments; anything else starts the per-game file over.
+    local args="$label $EVALUATOR $EVAL_MCTS_ITERS $EVAL_GAMES $EVAL_BOT_CONFIG $EVAL_BUDGET_MODE $*"
+    if [ "$(cat "$dir/eval.args" 2>/dev/null)" != "$args" ]; then
+        rm -f "$dir/eval.games.jsonl"
+        echo "$args" > "$dir/eval.args"
+    fi
+    # `env`, not with_budget: a backgrounded function is a subshell, and the client must be this
+    # shell's own child — it stops when its parent goes, instead of resubmitting into a later run.
+    # shellcheck disable=SC2086,SC2046
+    env ${EVAL_BUDGET_MODE:+BLOOD_MCTS_BUDGET=$EVAL_BUDGET_MODE} "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
             --label "$label" --evaluator "$EVALUATOR" --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" \
             ${EVAL_BOT_CONFIG:+--bot-config "$EVAL_BOT_CONFIG" --vs-config "$EVAL_BOT_CONFIG"} \
-            "$@" --per-game-out "$dir/eval.games.jsonl" --out "$dir/report.json" --wait > "$dir/eval.log" 2>&1 &
+            "$@" --per-game-out "$dir/eval.games.jsonl" --out "$dir/report.json" --resume $(job_wait_args) \
+            --wait >> "$dir/eval.log" 2>&1 &
     EVAL_JOBS+=("$! $name $dir")
 }
 # genNN for the loop's own and the anchor's nets, else the file stem: what we call a net.
@@ -1266,10 +1336,13 @@ eval_finish() {
         fi
         status "$GG eval still running $((($(date +%s) - EVAL_T0) / 60)) min in; waiting for it"
     fi
+    local rc
     for j in "${EVAL_JOBS[@]}"; do
         read -r pid name dir <<< "$j"
-        if ! wait "$pid"; then
+        wait "$pid"; rc=$?
+        if [ "$rc" -ne 0 ]; then
             [ -n "$started" ] && { worker_stop; nn_server_stop; }
+            [ "$rc" -eq 75 ] && resumable_exit "$GG $name eval" "its games so far are in $dir/eval.games.jsonl"
             die "$GG $name eval failed — see $dir/eval.log and hub.log"
         fi
     done
@@ -1361,9 +1434,15 @@ while [ "$G" -le "$MAX_GENS" ]; do
         worker_start "$GEN_PARALLEL_GAMES" "$GEN_DIR/generate.worker.log" "$GEN_LABELS"
         SIZE_ARGS=$(size_gen_args)
         status "$GG generate${EXPLORE_ARGS:+ (explore: $EXPLORE_ARGS)}$([ "$GEN_LABELS" -gt 0 ] && echo " with streamed MC labels ($MC_LABEL_PLAYOUTS playouts, +$LABEL_STREAMS label streams)"): 8x$GAMES_PER_SHARD games ($EVALUATOR: $(basename "$CHAMP")${NN_SERVER_PID:+ via sidecar}${HEUR_SHARDS:+ + heuristic hedge}), local x$GEN_PARALLEL_GAMES$([ "${#NN_EXTRA[@]}" -gt 0 ] && echo " over $((${#NN_EXTRA[@]} + 1)) sidecars")$([ "$NN_BACKEND" = inproc ] && echo " in-process") + hub workers, disk free $(free_gb)${SIZE_ARGS:+, sizes: $(echo "$SIZE_ARGS" | tr -s ' \\\n' ' ')}"
-        if ! generate_jobs "$GEN_DIR" "$CHAMP" "$SIZE_ARGS"; then
+        # Plan 069 item 5: shards already here are an interrupted phase's; the job resumes them.
+        if [ "$GEN_RESUME" = on ] && ls "$GEN_DIR"/shard*.jsonl > /dev/null 2>&1; then
+            status "$GG generate resumes: $(gen_progress "$GEN_DIR" $((GAMES_PER_SHARD * 8)))"
+        fi
+        generate_jobs "$GEN_DIR" "$CHAMP" "$SIZE_ARGS"; GEN_RC=$?
+        if [ "$GEN_RC" -ne 0 ]; then
             worker_stop
             nn_server_stop
+            [ "$GEN_RC" -eq 75 ] && resumable_exit "$GG generate" "$(gen_progress "$GEN_DIR" $((GAMES_PER_SHARD * 8)))"
             die "$GG generate failed — see generate.log, hub.log and generate.worker.log"
         fi
         # A local worker that silently ran on tract all generation is the
@@ -1382,11 +1461,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
             [ -s "$GEN_DIR/shard$K.jsonl" ] || die "$GG shard$K.jsonl empty/missing — see generate.log"
             GAMES=$((GAMES + $(wc -l < "$GEN_DIR/shard$K.jsonl")))
         done
-        status "$GG generate done ($GEN_MIN min$([ "$GEN_LABELS" -gt 0 ] && echo ", labels streamed")): $GAMES/$((GAMES_PER_SHARD * 8)) games"
+        status "$GG generate done ($GEN_MIN min$([ "$GEN_LABELS" -gt 0 ] && echo ", labels streamed")): $(gen_progress "$GEN_DIR" $((GAMES_PER_SHARD * 8)))"
         # Plan 069 item 4b: the streamed labels' summary lines, where the mc-label phase counts the
         # unlabelled trajectories from (once: this block runs once per generation).
         if [ "$GEN_LABELS" -gt 0 ]; then
-            grep -h '^mc-label: ' "$GEN_DIR"/generate.log >> "$GEN_DIR/mc_label.log" 2>/dev/null
+            # The last summary line per output (a resumed phase's log holds its earlier attempts).
+            grep -h '^mc-label: ' "$GEN_DIR"/generate.log | awk '{a[$4] = $0} END {for (k in a) print a[k]}' >> "$GEN_DIR/mc_label.log" 2>/dev/null
             grep -h 'WARN: streamed labels' "$GEN_DIR"/generate.log | while read -r l; do status "WARN: $GG $l (the mc-label phase labels what is missing)"; done
         fi
         # What the corpus actually contains, not just how much of it there is.
@@ -1455,7 +1535,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
             # shellcheck disable=SC2086
             "$HUB" job label --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" --label "$GG mc-label" \
                 --corpus $MC_IN --model "$MC_NET" --playouts "$MC_LABEL_PLAYOUTS" --seed "$((56000 + G))" \
-                --chunk-samples "$LABEL_CHUNK_SAMPLES" --out-dir "$GEN_DIR/mc" --wait >> "$GEN_DIR/mc_label.log" 2>&1
+                --chunk-samples "$LABEL_CHUNK_SAMPLES" --out-dir "$GEN_DIR/mc" $(job_wait_args) --wait >> "$GEN_DIR/mc_label.log" 2>&1
             MC_RC=$?
             worker_stop
             backend_check "$GEN_DIR/mc_label.worker.log" "$GG mc-label (local worker)"
@@ -1472,6 +1552,7 @@ while [ "$G" -le "$MAX_GENS" ]; do
             backend_check "$GEN_DIR/mc_label.log" "$GG mc-label"
         fi
         nn_server_stop
+        [ "$MC_RC" -eq 75 ] && resumable_exit "$GG mc-label" "shards labelled so far are kept in $GEN_DIR/mc"
         [ "$MC_RC" -eq 0 ] || die "$GG mc-label failed — see $GEN_DIR/mc_label.log"
         for K in $TRAIN_SHARDS $VAL_SHARDS; do [ -s "$GEN_DIR/mc/shard$K.jsonl" ] || die "$GG mc/shard$K.jsonl missing"; done
         touch "$GEN_DIR/.mc_labelled"

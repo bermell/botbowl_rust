@@ -94,6 +94,59 @@ everyone, as before. It filters on the *peer* address (`ConnectInfo`, `allow_fro
 `lib.rs`). Binding cannot do this: a server can only bind to its own interfaces, and an office VPN
 address is the clients', not the box's.
 
+## Resume: a job survives its hub (plan 069 item 5, plan 041 phase 3)
+
+The hub keeps no job state across a restart and needs none: every accepted result is appended to
+a file and flushed under the one lock, so **the files are the record**. `job generate --resume`
+(exclusive with `--truncate`) and `job eval --resume` read their outputs at submit
+(`resume.rs`, before the lock) and play only what is missing:
+
+- **generate**: each line's `meta.seed` names its game (`g = seed - shard seed`), so a shard's
+  complete games are known exactly; the resumed job plays the other seeds — the uninterrupted run's
+  seed set, hence its corpus up to line order (and bit-identical per game where the search is
+  deterministic: heuristic or one-thread tract; batched GPU inference is not). Cut off at submit,
+  under the lock, after checking the file did not grow since the scan: bytes after the last newline
+  (a torn write), an unparsable last line, and a last game that is one scoring drive under
+  `--next-drive` (its follow-on may be what the cut lost; a score on a half's last turn looks the
+  same and is replayed too — one game). Refused, not resumed: a line from another seed range, a
+  duplicate seed, a `home_bot` other than this job's `budget_label` (another net or preset), an
+  unreadable line mid-file. Lines of games past `--games` are kept. Games-per-shard counts *games*;
+  a `--next-drive` game writes two records, so a shard has ~1.8x as many lines (the loop's "2149/1200").
+- **eval**: per-game lines are folded into the rows again in file order (an SPRT replays to the
+  state it had) and only the other games are played; lines of rungs not in the job stay as they are.
+- **label** needs nothing new: shards are written whole (`.partial` + rename) and a shard whose
+  output exists is skipped, so a resubmitted label job redoes only unwritten shards (in-shard
+  progress is lost).
+
+What makes resubmitting safe:
+- **The same request attaches.** A submit whose JSON equals a running job's returns that job's id
+  (and lifts a drain); a different request that writes any of its files gets **409**, unless that
+  job is drained with nothing in flight (abandoned), which it then supersedes (fails). So the loop,
+  an orphaned client of the run before and the next Slurm job can all resubmit without two writers.
+- **Results for a dead hub's tasks are dropped.** A worker reconnects and sends the results of games
+  it started for the old hub, under the old task ids. Task ids start at a random 63-bit point per
+  hub process (`Inner::new_instance`), so they name nothing here; and a generate result whose
+  `meta.seed` is not its game's is never written (the game is requeued). No frame changed: **no
+  protocol bump**. Those games are lost (played again by the resumed job).
+- **`serve` exits on SIGTERM/SIGINT holding the lock** (`Hub::shutdown`): no write is in progress
+  and none starts, so a hub stopped by Slurm or `train_loop.sh` leaves whole lines; `kill -9` may
+  leave a torn one, which the resume cuts.
+- **`job ... --wait` follows its job across restarts.** `JobStatus.hub_instance` / `Submitted.instance`
+  tell a restarted hub (job ids restart at 0) from the one it submitted to; on a 404 or another
+  instance a resumable request (`--resume`, any label job) is submitted again, anything else exits
+  1. Unreachable: retried, or exit 75 after `--hub-lost-secs`. A client whose parent process has
+  gone exits instead (no orphan resubmits into a later run). `--deadline T --drain-secs D`: at
+  `T - D` it calls `POST /api/jobs/{id}/drain` (no new games for the job; the ones on workers
+  finish and are written), exits 75 once nothing is in flight or at `T`; submitting the same
+  request later resumes it. `train_loop.sh` passes its `LOOP_DEADLINE` this way (`GEN_RESUME`,
+  `PHASE_DRAIN_SECS`, `HUB_LOST_SECS`).
+
+Tests: `resume.rs` unit tests (torn tails, follow-ons, refusals), `tests/resume_job.rs` (a cut
+generate job resumes to the uninterrupted corpus, game for game; a finished one plays nothing; eval
+resumes to the same report; attach, 409, drain, supersede; a stale result is never written), and
+`scripts/hub_resume_test.sh` end to end with the real binaries (kill -9 with a torn line and a lost
+follow-on, SIGTERM, hub+client killed, a deadline, a worker straddling restarts).
+
 ## Invariants
 
 - **Compatibility is exact commit + clean tree + board capacity + active board**
@@ -199,7 +252,8 @@ address is the clients', not the box's.
 - **Results are idempotent.** Hub dedupes on `(job, unit, game)` — a unit is a ladder rung or
   a corpus shard; a vanished worker's in-flight games are requeued at the front; a slow worker
   that reappears cannot double count. The worker's result channel outlives its socket, so
-  nothing finished is lost on a reconnect.
+  nothing finished is lost on a reconnect *to the same hub*; across a hub restart those results
+  are dropped (task ids are unique per hub process, see Resume).
 - **Liveness is the heartbeat, not the socket.** A worker whose *process* dies closes its
   socket and `ws.rs` requeues immediately; a worker whose *machine* leaves — a slept laptop, a
   dropped VPN — leaves an ESTABLISHED socket the hub cannot tell from a healthy one. Workers
@@ -346,12 +400,10 @@ labels and counts, not lines.
 
 ## Not yet (plan 041 phases 3-5)
 
-**Phase 3, still open:** hub restart recovery (`job.json`) — in-memory job state dies with the
-daemon, and there is no `job cancel`, so an orphaned job has to be cleared by restarting the hub.
-`Drain` is half done: the frame exists and the worker implements it fully, but the hub never sends
-it (Ctrl-C just drops the server), so a restart always costs the in-flight games. Both are worth
-more now that the worker reconnects indefinitely — a hub restart is a routine event, not an
-incident.
+**Phase 3: hub restart recovery — done by resubmission, not `job.json` (plan 069 item 5).** See
+"Resume" above. Still open: `job cancel` (an orphaned job is cleared by draining it and submitting a
+different request for its files, or by restarting the hub), and the hub never sends `Drain` to
+workers (that frame makes a worker *exit*, which a hub restart does not want).
 
 **Phase 4 (serving the worker binary, `Update`, self-update):** nothing exists. The per-commit
 allowlist is the cheap substitute for its main benefit — not having to rebuild every helper box

@@ -52,6 +52,7 @@ use botbowl_play::mc_label::{
 };
 
 use crate::api::{GenerateJobRequest, JobId, LabelJobRequest};
+use crate::resume::ShardScan;
 
 /// zstd level for the lines the hub keeps and ships, as for trajectories from workers.
 pub const ZSTD_LEVEL: i32 = 3;
@@ -86,6 +87,8 @@ pub struct LabelInput {
     /// Plan 069 item 4b: a streaming shard's reading state; `None` once sealed (and always for a
     /// shard read whole).
     pub stream: Option<StreamState>,
+    /// Plan 069 item 4b: `out` exists but its shard gets more games; removed when the job starts.
+    pub stale_out: bool,
 }
 
 /// A streaming shard while lines still arrive.
@@ -202,6 +205,7 @@ pub fn load_input(name: &str, input: &Path, out: &Path, spec: &LabelSpec) -> io:
         prior: None,
         untagged: Vec::new(),
         stream: None,
+        stale_out: false,
     };
     if shard.skipped {
         return Ok(shard);
@@ -278,18 +282,20 @@ impl LabelInput {
                 chunk_samples: spec.chunk_samples,
                 ..Default::default()
             }),
+            stale_out: false,
         }
     }
 
     /// A streaming shard's lines that are already on disk (a generate job appending to a shard,
     /// e.g. one resumed): read as [`load_input`] reads them, then pushed in file order.
-    pub fn preload(&mut self, input: &Path) -> io::Result<()> {
+    pub fn preload(&mut self, input: &Path, limit: Option<u64>) -> io::Result<()> {
         let file = match File::open(input) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", input.display()))),
         };
-        for line in BufReader::new(file).lines() {
+        // A resume keeps the first `limit` bytes (whole games) and cuts the rest.
+        for line in BufReader::new(io::Read::take(file, limit.unwrap_or(u64::MAX))).lines() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
@@ -409,11 +415,13 @@ pub fn load_inputs(req: &LabelJobRequest) -> io::Result<Vec<LabelInput>> {
 }
 
 /// Plan 069 item 4b: the streamed-label shards of a generate job, one per shard it names (off the
-/// hub's lock). Each starts empty — or, when the job appends (`truncate` off) to a shard already on
-/// disk (a resumed generation), with that shard's lines, read as [`load_input`] reads them. A label
-/// output that exists is stale once its shard gets more games, so it is removed and labelled
-/// afresh; it is kept (skipped, as `job label` would) only when the job adds no games to the shard.
-pub fn stream_inputs(req: &GenerateJobRequest) -> io::Result<Vec<LabelInput>> {
+/// hub's lock). Each starts empty — or, when the job appends to a shard already on disk (`--resume`,
+/// or neither `--resume` nor `--truncate`), with that shard's lines, read as [`load_input`] reads
+/// them (for a resume only the whole games the scan keeps: the rest is cut before the job starts).
+/// A label output that exists is stale once its shard gets more games: it is marked
+/// (`stale_out`) and removed under the lock when the job is created. It is kept (skipped, as `job
+/// label` would) only when the job plays no game of the shard: a resume that finds the shard whole.
+pub fn stream_inputs(req: &GenerateJobRequest, scans: Option<&[ShardScan]>) -> io::Result<Vec<LabelInput>> {
     let Some(m) = &req.mc_label else {
         return Ok(Vec::new());
     };
@@ -431,30 +439,33 @@ pub fn stream_inputs(req: &GenerateJobRequest) -> io::Result<Vec<LabelInput>> {
     };
     let mut out = Vec::new();
     for (name, label_out) in &m.shards {
-        let Some(shard) = req.shards.iter().find(|s| &s.name == name) else {
+        let Some(k) = req.shards.iter().position(|s| &s.name == name) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("--mc-label-shards: {name} is not a shard of this job"),
             ));
         };
+        let shard = &req.shards[k];
+        let scan = scans.and_then(|v| v.get(k));
+        // Games this job plays in the shard: a resume plays the ones not on disk.
+        let to_play = match scan {
+            Some(sc) => shard
+                .games
+                .saturating_sub(sc.done.iter().filter(|&&g| g < shard.games).count() as u32),
+            None => shard.games,
+        };
         let mut input = LabelInput::streaming(name, &shard.out, label_out, &spec);
         if label_out.exists() {
-            if shard.games == 0 {
+            if to_play == 0 {
                 input.skipped = true;
                 input.stream = None;
                 out.push(input);
                 continue;
             }
-            eprintln!(
-                "[hub] mc-label: {} is stale ({} gets {} more games): removing it, labelling afresh",
-                label_out.display(),
-                shard.out.display(),
-                shard.games
-            );
-            std::fs::remove_file(label_out)?;
+            input.stale_out = true;
         }
         if !req.truncate {
-            input.preload(&shard.out)?;
+            input.preload(&shard.out, scan.map(|sc| sc.keep_len))?;
         }
         out.push(input);
     }

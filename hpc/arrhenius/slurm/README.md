@@ -61,10 +61,16 @@ job outliving a phase:
 - `--signal=B:USR1@SIGNAL_SECS` is the backstop. On USR1, TERM (scancel, the walltime) or INT the
   batch script TERMs the step; task 0 TERMs the loop's process group, whose trap
   (`EXIT_ON_SIGNAL=1`) stops its hub and worker and exits 143; the workers stop; the hub requeues
-  nothing because it is gone too. What a cut phase loses: **a generate phase restarts from scratch**
-  (`--truncate`, the hub keeps no record of finished games across restarts); label shards already
-  written are kept (`job label` skips them); an in-flight benchmark is resubmitted; an interrupted
-  train retrains.
+  nothing because it is gone too. What a cut phase loses: **a generate phase resumes** — the
+  next job submits it with `--resume` and the hub plays only the seeds missing from the shards
+  (complete games kept, a torn line cut; `botbowl-hub/CLAUDE.md` "Resume"), so only the games in
+  flight at the cut are played again; the benchmark resumes the same way from `eval.games.jsonl`;
+  label shards already written are kept (`job label` skips them; the shard in progress is redone);
+  an interrupted train retrains.
+- **A generate phase longer than a job is fine** (`GEN_RESUME=on`, the default): `check_stop` asks
+  it only for `GEN_MIN_SLICE_SECS` + `PHASE_DRAIN_SECS` of the job, and the job client drains it
+  `PHASE_DRAIN_SECS` before `LOOP_DEADLINE - STOP_MARGIN_SECS` (no new games; those on workers finish
+  and are written) and the loop exits 75. The other phases still need to fit (exit 76 otherwise).
 - **Chain** (`submit.sh loop --chain N`): each job queues its successor first thing
   (`afterany` on itself), so it ages in the queue meanwhile. `--upfront` queues all N+1 at submit
   instead, for a centre that refuses `sbatch` from compute nodes. Each job writes
@@ -113,8 +119,9 @@ command of the loop and the first worker, the logs, and the env file. On the clu
    the task binding; `hub.log` (in RUN_DIR) `joined (64 streams, 72 cores, ...)` per worker — 72
    means the task sees exactly its superchip; each `worker-*.log` starts with
    `nets run in-process on cuda`.
-3. A deadline exit: `WALLTIME=0:30:00` with a generate phase that does not fit, to see exit 75/76
-   and the successor resume.
+3. A deadline exit: `WALLTIME=0:30:00` with a generate phase that does not fit, to see the drain
+   (`[hub] job N draining` in hub.log), exit 75, and the successor's `genNN generate resumes: ...`
+   status line and `[hub] shardK: resuming, X/Y games on disk` lines.
 
 ## Open questions for the centre
 

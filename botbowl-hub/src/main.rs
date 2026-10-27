@@ -212,6 +212,24 @@ struct ClientArgs {
     label: Option<String>,
 }
 
+/// How `job ... --wait` behaves when the hub goes away or time runs out (plan 069 item 5).
+#[derive(Args, Debug, Clone, Default)]
+struct WaitArgs {
+    /// Unix time this job must be off the hub by (a Slurm job's end). `--drain-secs` before it the
+    /// job is drained: no new games start, the ones on workers finish and are written; then (or at
+    /// the deadline) the client exits 75, and the same job submitted with `--resume` later plays
+    /// the rest. Needs `--wait`.
+    #[arg(long)]
+    deadline: Option<u64>,
+    /// With `--deadline`: how long before it to stop handing out games.
+    #[arg(long, default_value_t = 300)]
+    drain_secs: u64,
+    /// Exit 75 once the hub has been unreachable this long (0: keep trying for ever). A resumable
+    /// job (`--resume`, any label job) is submitted again when a hub answers, whatever this says.
+    #[arg(long, default_value_t = 0)]
+    hub_lost_secs: u64,
+}
+
 #[derive(Args, Debug)]
 struct StatusArgs {
     #[command(flatten)]
@@ -257,6 +275,8 @@ struct LabelJobArgs {
     /// Block until the job finishes; exit nonzero if it failed.
     #[arg(long, default_value_t = false)]
     wait: bool,
+    #[command(flatten)]
+    w: WaitArgs,
 }
 
 fn build_label_request(a: &LabelJobArgs, m: &ArgMatches) -> Result<LabelJobRequest, String> {
@@ -265,8 +285,14 @@ fn build_label_request(a: &LabelJobArgs, m: &ArgMatches) -> Result<LabelJobReque
         &[
             ("parallel", "workers size themselves (botbowl-worker --parallel-games)"),
             ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
-            ("nn_backend", "each worker picks its own backend (botbowl-worker --nn-backend)"),
-            ("nn_device", "each worker picks its own device (botbowl-worker --nn-device)"),
+            (
+                "nn_backend",
+                "each worker picks its own backend (botbowl-worker --nn-backend)",
+            ),
+            (
+                "nn_device",
+                "each worker picks its own device (botbowl-worker --nn-device)",
+            ),
         ],
     )?;
     let ml = &a.ml;
@@ -368,11 +394,17 @@ struct GenerateJobArgs {
     /// Games per task handed to a worker.
     #[arg(long, default_value_t = 4)]
     batch: u16,
+    /// Keep each shard's complete games and play only the missing seeds (a torn tail is cut off);
+    /// a missing shard starts empty. Excludes `--truncate`. See `botbowl_hub::resume`.
+    #[arg(long, default_value_t = false, conflicts_with = "truncate")]
+    resume: bool,
     /// Block until the job finishes; exit nonzero if it failed.
     #[arg(long, default_value_t = false)]
     wait: bool,
     #[command(flatten)]
     mc: StreamLabelArgs,
+    #[command(flatten)]
+    w: WaitArgs,
 }
 
 /// Plan 069 item 4b: label the shards while they are generated. Each record is queued for MC
@@ -439,8 +471,14 @@ fn build_generate_request(a: &GenerateJobArgs, m: &ArgMatches) -> Result<Generat
                 "workers size themselves (botbowl-worker --parallel-games)",
             ),
             ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
-            ("nn_backend", "each worker picks its own backend (botbowl-worker --nn-backend)"),
-            ("nn_device", "each worker picks its own device (botbowl-worker --nn-device)"),
+            (
+                "nn_backend",
+                "each worker picks its own backend (botbowl-worker --nn-backend)",
+            ),
+            (
+                "nn_device",
+                "each worker picks its own device (botbowl-worker --nn-device)",
+            ),
         ],
     )?;
     let ds = &a.ds;
@@ -566,6 +604,7 @@ fn build_generate_request(a: &GenerateJobArgs, m: &ArgMatches) -> Result<Generat
         batch: a.batch,
         label: a.client.label.clone(),
         mc_label,
+        resume: a.resume,
     })
 }
 
@@ -632,9 +671,15 @@ struct EvalJobArgs {
     /// Games per task handed to a worker.
     #[arg(long, default_value_t = 4)]
     batch: u16,
+    /// Keep the games already in `--per-game-out` (folded into the report in file order) and
+    /// play only the others. Without it the file is appended to as it is.
+    #[arg(long, default_value_t = false)]
+    resume: bool,
     /// Block until the job finishes; exit nonzero if it failed.
     #[arg(long, default_value_t = false)]
     wait: bool,
+    #[command(flatten)]
+    w: WaitArgs,
 }
 
 fn abs(p: &PathBuf) -> PathBuf {
@@ -654,8 +699,14 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
                 "workers size themselves (botbowl-worker --parallel-games)",
             ),
             ("nn_server", "each worker owns its sidecar (botbowl-worker --nn-server)"),
-            ("nn_backend", "each worker picks its own backend (botbowl-worker --nn-backend)"),
-            ("nn_device", "each worker picks its own device (botbowl-worker --nn-device)"),
+            (
+                "nn_backend",
+                "each worker picks its own backend (botbowl-worker --nn-backend)",
+            ),
+            (
+                "nn_device",
+                "each worker picks its own device (botbowl-worker --nn-device)",
+            ),
             ("trials", "the hub never runs the lecture battery"),
             ("skip_ladder", "a hub eval job is the ladder"),
             (
@@ -786,6 +837,7 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
         sprt: a.sprt,
         drive_gate: a.drive_gate,
         label: job.client.label.clone(),
+        resume: job.resume,
     })
 }
 
@@ -937,9 +989,14 @@ fn main() {
                         );
                     }
                 });
+                // SIGTERM is how Slurm (and train_loop.sh's cleanup) stop the hub: exit between two
+                // writes, never in one, so every shard ends on a whole line.
+                let mut term =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
                 tokio::select! {
                     _ = task => {}
-                    _ = tokio::signal::ctrl_c() => eprintln!("[hub] shutting down"),
+                    _ = tokio::signal::ctrl_c() => hub.shutdown("SIGINT"),
+                    _ = term.recv() => hub.shutdown("SIGTERM"),
                 }
             });
         }
@@ -968,7 +1025,7 @@ fn main() {
             }
         }
         Command::Job { job } => {
-            let (client, wait, req, what) = match &job {
+            let (client, wait, wait_args, req, what) = match &job {
                 JobCommand::Eval(a) => {
                     let req = build_request(a, job_matches.as_ref().expect("job matches")).unwrap_or_else(|e| {
                         eprintln!("{e}");
@@ -979,7 +1036,7 @@ fn main() {
                         req.rungs.len(),
                         req.rungs.iter().map(|r| r.games).sum::<u32>()
                     );
-                    (a.client.clone(), a.wait, JobRequest::Eval(req), what)
+                    (a.client.clone(), a.wait, a.w.clone(), JobRequest::Eval(req), what)
                 }
                 JobCommand::Generate(a) => {
                     let req =
@@ -992,7 +1049,7 @@ fn main() {
                         req.shards.len(),
                         req.shards.iter().map(|s| s.games).sum::<u32>()
                     );
-                    (a.client.clone(), a.wait, JobRequest::Generate(req), what)
+                    (a.client.clone(), a.wait, a.w.clone(), JobRequest::Generate(req), what)
                 }
                 JobCommand::Label(a) => {
                     let req = build_label_request(a, job_matches.as_ref().expect("job matches")).unwrap_or_else(|e| {
@@ -1005,104 +1062,229 @@ fn main() {
                         req.cfg.playouts,
                         if req.top_up { " (top-up)" } else { "" }
                     );
-                    (a.client.clone(), a.wait, JobRequest::Label(req), what)
+                    (a.client.clone(), a.wait, a.w.clone(), JobRequest::Label(req), what)
                 }
             };
             let token = read_token(&token_path(&client.token_file));
-            let body = serde_json::to_string(&req).unwrap();
-            // A label job reads its shards before it answers: give the submit time.
-            let id = match request_with_timeout(
-                "POST",
-                &format!("{}/api/jobs", client.hub),
-                &token,
-                Some(&body),
-                Duration::from_secs(600),
-            ) {
-                Ok((200, body)) => serde_json::from_str::<Submitted>(&body).expect("submit json").id,
-                Ok((code, body)) => {
-                    eprintln!("hub refused the job ({code}): {body}");
-                    std::process::exit(1)
-                }
-                Err(e) => {
-                    eprintln!("cannot reach hub at {}: {e}", client.hub);
-                    std::process::exit(1)
-                }
-            };
-            eprintln!("[hub job] submitted {what} (job {id})");
-            if !wait {
-                println!("{id}");
-                return;
-            }
-            let s = poll_until_done(&client.hub, &token, id);
-            match &s.state {
-                JobState::Done => match (&s.kind, &req) {
-                    (JobKind::Eval, JobRequest::Eval(r)) => {
-                        print_report_lines(&s);
-                        println!("wrote {}", r.report_out.display());
-                    }
-                    (JobKind::Label, JobRequest::Label(r)) => print_label_lines(&s, r.cfg.playouts),
-                    _ => print_generate_lines(&s),
-                },
-                JobState::Failed { error } => {
-                    eprintln!("[hub job] job {id} failed: {error}");
-                    std::process::exit(1);
-                }
-                JobState::Running => unreachable!("polled until done"),
-            }
-            // Plan 069 item 4b: the generation's streamed labels finish shortly after its last game.
-            if let (Some(lid), JobRequest::Generate(r)) = (s.labels_job, &req) {
-                let playouts = r.mc_label.as_ref().map_or(0, |m| m.cfg.playouts);
-                eprintln!("[hub job] waiting for the streamed labels (job {lid})");
-                let l = poll_until_done(&client.hub, &token, lid);
-                match &l.state {
-                    JobState::Done => print_label_lines(&l, playouts),
-                    // The generation is fine: its shards are on disk. A shard whose labels are not
-                    // is labelled by a separate `job label` / `mc-label` (it skips the written ones).
-                    JobState::Failed { error } => eprintln!(
-                        "[hub job] WARN: streamed labels (job {lid}) failed: {error}; label the shards without an output with `job label`"
+            run_job(&client, &token, wait, &wait_args, &req, &what);
+        }
+    }
+}
+
+/// Exit code for "stopped early, resumable": a deadline, or a hub gone too long (`EX_TEMPFAIL`,
+/// the code `train_loop.sh` already exits with at a deadline).
+const EXIT_RESUME: i32 = 75;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Submit; `Err` with whether the hub was unreachable (worth retrying) or refused the job.
+fn submit(client: &ClientArgs, token: &str, req: &JobRequest) -> Result<Submitted, (bool, String)> {
+    let body = serde_json::to_string(req).unwrap();
+    // A label job reads its shards before it answers, a resumed generate job too: give it time.
+    match request_with_timeout(
+        "POST",
+        &format!("{}/api/jobs", client.hub),
+        token,
+        Some(&body),
+        Duration::from_secs(600),
+    ) {
+        Ok((200, body)) => Ok(serde_json::from_str::<Submitted>(&body).expect("submit json")),
+        Ok((code, body)) => Err((false, format!("hub refused the job ({code}): {body}"))),
+        Err(e) => Err((true, format!("cannot reach hub at {}: {e}", client.hub))),
+    }
+}
+
+/// Submit `req` and, with `wait`, follow it to the end.
+///
+/// Plan 069 item 5: the hub may restart under a waiting client (a Slurm job cut, a redeploy).
+/// Polls that fail are retried; a hub that answers but no longer knows the job (404, or another
+/// [`Submitted::instance`]) gets the request again when it is resumable ([`JobRequest::resumable`]:
+/// `--resume`, or a label job) — the new hub reads the files and continues — and is an error
+/// otherwise, as before. A client whose parent has gone (an orphan of a loop that died) stops
+/// instead of resubmitting into whatever runs next. `--deadline` drains the job and exits 75.
+fn run_job(client: &ClientArgs, token: &str, wait: bool, w: &WaitArgs, req: &JobRequest, what: &str) {
+    let first = match submit(client, token, req) {
+        Ok(s) => s,
+        Err((_, e)) => {
+            eprintln!("{e}");
+            std::process::exit(1)
+        }
+    };
+    let (mut id, mut instance) = (first.id, first.instance);
+    eprintln!("[hub job] submitted {what} (job {id})");
+    if !wait {
+        println!("{id}");
+        return;
+    }
+    #[cfg(unix)]
+    let parent = std::os::unix::process::parent_id();
+    let mut idle_polls: u64 = 0;
+    let mut lost_since: Option<std::time::Instant> = None;
+    let mut drained = false;
+    // Plan 069 item 4b: a generate job with streamed labels is followed by its label job, `id`
+    // then names that job. Its playouts, for the summary lines.
+    let mut labels_phase = false;
+    let label_playouts = match req {
+        JobRequest::Generate(r) => r.mc_label.as_ref().map_or(0, |m| m.cfg.playouts),
+        _ => 0,
+    };
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        #[cfg(unix)]
+        if std::os::unix::process::parent_id() != parent {
+            eprintln!("[hub job] the process that started this client is gone; stopping (job {id} stays on the hub)");
+            std::process::exit(1);
+        }
+        let now = unix_now();
+        if let Some(deadline) = w.deadline {
+            if !drained && now + w.drain_secs >= deadline {
+                drained = true;
+                match request("POST", &format!("{}/api/jobs/{id}/drain", client.hub), token, None) {
+                    Ok((200, _)) => eprintln!(
+                        "[hub job] deadline in {} s: job {id} drained (no new games; the ones on workers finish)",
+                        deadline.saturating_sub(now)
                     ),
-                    JobState::Running => unreachable!("polled until done"),
+                    other => eprintln!("[hub job] deadline: drain of job {id} failed ({other:?})"),
                 }
+            }
+            if now >= deadline {
+                eprintln!("[hub job] deadline reached: stopping; submit again with --resume to continue job {id}");
+                std::process::exit(EXIT_RESUME);
+            }
+        }
+        let gone = match request("GET", &format!("{}/api/jobs/{id}", client.hub), token, None) {
+            Err(e) => {
+                let since = *lost_since.get_or_insert_with(std::time::Instant::now);
+                let secs = since.elapsed().as_secs();
+                if secs < 5 || secs % 60 < 5 {
+                    eprintln!("[hub job] poll failed ({e}); retrying ({secs} s so far)");
+                }
+                if w.hub_lost_secs > 0 && secs >= w.hub_lost_secs {
+                    eprintln!("[hub job] the hub has been unreachable for {secs} s: stopping (resumable)");
+                    std::process::exit(EXIT_RESUME);
+                }
+                continue;
+            }
+            Ok((404, _)) => true,
+            Ok((200, body)) => {
+                let s: JobStatus = serde_json::from_str(&body).expect("job json");
+                if s.hub_instance != instance && instance != 0 && s.hub_instance != 0 {
+                    true
+                } else {
+                    lost_since = None;
+                    match &s.state {
+                        JobState::Running => {
+                            if drained && s.in_flight == 0 {
+                                print_progress(&s);
+                                eprintln!(
+                                    "[hub job] deadline: job {id} drained; submit again with --resume to continue"
+                                );
+                                std::process::exit(EXIT_RESUME);
+                            }
+                            // A job with nobody to run it never fails on its
+                            // own; say so in the log rather than sit silent.
+                            if s.workers_connected == 0 {
+                                idle_polls += 1;
+                                if idle_polls % 12 == 1 {
+                                    eprintln!(
+                                        "[hub job] WARN: job {id} is running but no workers are connected ({}s idle so far)",
+                                        idle_polls * 5
+                                    );
+                                }
+                            } else {
+                                idle_polls = 0;
+                            }
+                        }
+                        JobState::Done if labels_phase => {
+                            print_label_lines(&s, label_playouts);
+                            return;
+                        }
+                        JobState::Done => {
+                            match (&s.kind, req) {
+                                (JobKind::Eval, JobRequest::Eval(r)) => {
+                                    print_report_lines(&s);
+                                    println!("wrote {}", r.report_out.display());
+                                }
+                                (JobKind::Label, JobRequest::Label(r)) => print_label_lines(&s, r.cfg.playouts),
+                                _ => print_generate_lines(&s),
+                            }
+                            // Plan 069 item 4b: the streamed labels finish shortly after the last game.
+                            let Some(lid) = s.labels_job else { return };
+                            eprintln!("[hub job] waiting for the streamed labels (job {lid})");
+                            (id, labels_phase, idle_polls) = (lid, true, 0);
+                        }
+                        // The generation is on disk whatever happened to its labels: a shard without
+                        // an output is labelled by `job label` / `mc-label` (they skip written ones).
+                        JobState::Failed { error } if labels_phase => {
+                            eprintln!(
+                                "[hub job] WARN: streamed labels (job {id}) failed: {error}; label the shards without an output with `job label`"
+                            );
+                            return;
+                        }
+                        JobState::Failed { error } => {
+                            eprintln!("[hub job] job {id} failed: {error}");
+                            std::process::exit(1);
+                        }
+                    }
+                    false
+                }
+            }
+            Ok((code, body)) => {
+                eprintln!("[hub job] hub returned {code}: {body}");
+                std::process::exit(1);
+            }
+        };
+        if !gone {
+            continue;
+        }
+        // The hub restarted: job `id` is not there any more.
+        lost_since = None;
+        // Plan 069 item 4b: the labels' state died with the hub, the corpus did not. Resubmitting a
+        // resumable generate request rebuilds it from the shards on disk: every game is there, so
+        // the new job only labels (the shards whose labelled output is not written yet).
+        if labels_phase && !req.resumable() {
+            eprintln!(
+                "[hub job] WARN: the hub restarted and the streamed labels (job {id}) are gone; label the shards without an output with `job label`"
+            );
+            return;
+        }
+        labels_phase = false;
+        if !req.resumable() {
+            eprintln!("[hub job] the hub restarted and job {id} is gone; it is not resumable (submit with --resume)");
+            std::process::exit(1);
+        }
+        if drained {
+            eprintln!("[hub job] the hub restarted during the drain before the deadline: stopping (resumable)");
+            std::process::exit(EXIT_RESUME);
+        }
+        match submit(client, token, req) {
+            Ok(s) => {
+                eprintln!(
+                    "[hub job] the hub restarted; submitted again with what is on disk (job {} was {id})",
+                    s.id
+                );
+                (id, instance) = (s.id, s.instance);
+            }
+            Err((true, e)) => eprintln!("[hub job] the hub restarted; resubmit failed ({e}); retrying"),
+            Err((false, e)) => {
+                eprintln!("[hub job] the hub restarted; {e}");
+                std::process::exit(1);
             }
         }
     }
 }
 
-/// Poll a job until it leaves `Running`; its final status. Exits on a hub error.
-fn poll_until_done(hub: &str, token: &str, id: u64) -> JobStatus {
-    let mut idle_polls: u64 = 0;
-    loop {
-        std::thread::sleep(Duration::from_secs(5));
-        let (code, body) = match request("GET", &format!("{hub}/api/jobs/{id}"), token, None) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[hub job] poll failed ({e}); retrying");
-                continue;
-            }
-        };
-        if code != 200 {
-            eprintln!("[hub job] hub returned {code}: {body}");
-            std::process::exit(1);
-        }
-        let s: JobStatus = serde_json::from_str(&body).expect("job json");
-        if s.state != JobState::Running {
-            return s;
-        }
-        // A job with nobody to run it never fails on its own; say so in the log rather than sit
-        // silent.
-        if s.workers_connected == 0 {
-            idle_polls += 1;
-            if idle_polls % 12 == 1 {
-                eprintln!(
-                    "[hub job] WARN: job {id} is running but no workers are connected ({}s idle so far)",
-                    idle_polls * 5
-                );
-            }
-        } else {
-            idle_polls = 0;
-        }
+/// Where a job stands, on stdout, when the client leaves it before the end (a deadline).
+fn print_progress(s: &JobStatus) {
+    for u in &s.units {
+        println!("  {:24} {:>5}/{:<5} done", u.name, u.done, u.total);
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1255,6 +1437,43 @@ mod tests {
         let bad = generate(&[&base[..], &flags[..8], &["--mc-label-shards", "9"]].concat());
         assert!(bad.is_err());
         assert!(generate(&[&base[..], &flags[..4]].concat()).is_err());
+    }
+
+    #[test]
+    fn resume_excludes_truncate_and_the_deadline_flags_parse() {
+        let req = generate(&[
+            "generate",
+            "--out-dir",
+            "/tmp/g",
+            "--resume",
+            "--wait",
+            "--deadline",
+            "1800000000",
+        ])
+        .unwrap();
+        assert!(req.resume && !req.truncate);
+        assert!(JobRequest::Generate(req).resumable());
+        let e = generate(&["generate", "--out-dir", "/tmp/g", "--resume", "--truncate"]).unwrap_err();
+        assert!(e.contains("--truncate") || e.contains("cannot be used"), "{e}");
+        let (j, _) = job(&[
+            "generate",
+            "--out-dir",
+            "/tmp/g",
+            "--deadline",
+            "7",
+            "--drain-secs",
+            "60",
+            "--hub-lost-secs",
+            "600",
+        ])
+        .unwrap();
+        let JobCommand::Generate(a) = j else { unreachable!() };
+        assert_eq!((a.w.deadline, a.w.drain_secs, a.w.hub_lost_secs), (Some(7), 60, 600));
+        let plain = generate(&["generate", "--out-dir", "/tmp/g", "--truncate"]).unwrap();
+        assert!(
+            !JobRequest::Generate(plain).resumable(),
+            "a truncating job must never be resubmitted"
+        );
     }
 
     #[test]

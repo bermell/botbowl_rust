@@ -23,6 +23,7 @@ pub mod label;
 pub mod page;
 pub mod rates;
 pub mod registry;
+pub mod resume;
 pub mod state;
 pub mod ws;
 
@@ -150,6 +151,7 @@ pub struct Hub {
 impl Hub {
     pub fn new(cfg: HubConfig) -> Self {
         let mut inner = Inner::default();
+        inner.new_instance();
         inner.ledger.bucket = cfg.rate_interval.max(Duration::from_secs(60));
         Hub {
             cfg: Arc::new(cfg),
@@ -185,7 +187,8 @@ impl Hub {
             .route("/ws", get(ws_upgrade))
             .route("/api/status", get(api_status))
             .route("/api/jobs", post(api_submit))
-            .route("/api/jobs/{id}", get(api_job));
+            .route("/api/jobs/{id}", get(api_job))
+            .route("/api/jobs/{id}/drain", post(api_drain));
         if let Some(play) = play {
             router = router
                 .route("/play", get(|| async { axum::response::Redirect::permanent("/play/") }))
@@ -247,34 +250,100 @@ impl Hub {
         })
     }
 
+    /// Queue a job, or return the running job this same request already made ([`Inner::attach`]).
+    /// Files are read before the lock is taken — label inputs, resume scans — and the attach check
+    /// is made again under it, since another submit may have won the race meanwhile.
     pub fn submit(&self, req: JobRequest) -> std::io::Result<JobId> {
-        let id = match req {
+        let key = serde_json::to_string(&req).map_err(std::io::Error::other)?;
+        let outputs = req.outputs();
+        let attached = self.inner.lock().unwrap().attach(&key, &outputs)?;
+        let id = match attached {
+            Some(id) => id,
             // Plan 062: a generation's shards are ~1.5 GB of JSON. Read and compress them before
             // taking the lock, so workers' results and the status page are not held up.
-            JobRequest::Label(r) => {
-                let inputs = label::load_inputs(&r)?;
-                let (id, writes) = self.inner.lock().unwrap().submit_label(r, inputs)?;
-                for w in writes {
-                    self.spawn_write(w);
+            None => match req {
+                JobRequest::Label(r) => {
+                    let inputs = label::load_inputs(&r)?;
+                    let mut inner = self.inner.lock().unwrap();
+                    match inner.attach(&key, &outputs)? {
+                        Some(id) => id,
+                        None => {
+                            let (id, writes) = inner.submit_label(r, inputs)?;
+                            inner.set_key(id, key);
+                            drop(inner);
+                            for w in writes {
+                                self.spawn_write(w);
+                            }
+                            id
+                        }
+                    }
                 }
-                id
-            }
-            // Plan 069 item 4b: a resumed shard's lines are read before the lock, as a label job's.
-            JobRequest::Generate(r) => {
-                let inputs = label::stream_inputs(&r)?;
-                if r.mc_label.is_some() {
-                    self.streams_labels.store(true, std::sync::atomic::Ordering::Relaxed);
+                // Plan 069 item 5: a resume reads every shard (gigabytes on a parallel file system);
+                // plan 069 item 4b: so do streamed labels over a shard on disk. Both before the lock.
+                JobRequest::Generate(r) if r.resume || r.mc_label.is_some() => {
+                    let scans = r.resume.then(|| resume::scan_generate(&r)).transpose()?;
+                    let inputs = label::stream_inputs(&r, scans.as_deref())?;
+                    if r.mc_label.is_some() {
+                        self.streams_labels.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let mut inner = self.inner.lock().unwrap();
+                    match inner.attach(&key, &outputs)? {
+                        Some(id) => id,
+                        None => {
+                            let (id, writes) = inner.submit_generate_scanned(r, scans, inputs)?;
+                            inner.set_key(id, key);
+                            drop(inner);
+                            for w in writes {
+                                self.spawn_write(w);
+                            }
+                            id
+                        }
+                    }
                 }
-                let (id, writes) = self.inner.lock().unwrap().submit_generate(r, inputs)?;
-                for w in writes {
-                    self.spawn_write(w);
+                JobRequest::Eval(r) if r.resume => {
+                    let scan = resume::scan_eval(&r.per_game_out)?;
+                    let mut inner = self.inner.lock().unwrap();
+                    match inner.attach(&key, &outputs)? {
+                        Some(id) => id,
+                        None => {
+                            let id = inner.submit_eval_scanned(r, Some(scan))?;
+                            inner.set_key(id, key);
+                            id
+                        }
+                    }
                 }
-                id
-            }
-            other => self.inner.lock().unwrap().submit(other)?,
+                other => self.inner.lock().unwrap().submit(other)?,
+            },
         };
         self.changed.notify_waiters();
         Ok(id)
+    }
+
+    /// Stop handing out a job's games ([`Inner::drain`]).
+    pub fn drain(&self, id: JobId) -> bool {
+        let ok = self.inner.lock().unwrap().drain(id);
+        self.changed.notify_waiters();
+        ok
+    }
+
+    /// End the process cleanly (`serve` on SIGTERM or SIGINT). Every result is written and flushed
+    /// under the lock, so taking it waits out a write in progress, and exiting while holding it
+    /// means none starts: no shard is left with half a line. Workers keep their games and
+    /// reconnect to the next hub, which drops those results (they name this hub's tasks); the
+    /// games are played again by the resumed job.
+    pub fn shutdown(&self, why: &str) -> ! {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.flush_all();
+        let running = inner.busy();
+        eprintln!(
+            "[hub] {why}: exiting{}",
+            if running {
+                " with jobs running; resubmit with --resume to continue them"
+            } else {
+                ""
+            }
+        );
+        std::process::exit(0)
     }
 
     pub fn submit_label(&self, req: LabelJobRequest) -> std::io::Result<JobId> {
@@ -427,7 +496,14 @@ async fn api_submit(State(hub): State<Hub>, headers: HeaderMap, Json(req): Json<
     // A label job reads its shards before it is queued (seconds): off the async workers.
     let submitter = hub.clone();
     match tokio::task::spawn_blocking(move || submitter.submit(req)).await {
-        Ok(Ok(id)) => Json(Submitted { id }).into_response(),
+        Ok(Ok(id)) => Json(Submitted {
+            id,
+            instance: hub.inner.lock().unwrap().instance,
+        })
+        .into_response(),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            (StatusCode::CONFLICT, e.to_string()).into_response()
+        }
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -440,6 +516,17 @@ async fn api_job(State(hub): State<Hub>, headers: HeaderMap, Path(id): Path<JobI
     match hub.job_status(id) {
         Some(s) => Json(s).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn api_drain(State(hub): State<Hub>, headers: HeaderMap, Path(id): Path<JobId>) -> impl IntoResponse {
+    if !authed(&hub, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if hub.drain(id) {
+        StatusCode::OK.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
     }
 }
 
