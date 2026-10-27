@@ -189,11 +189,26 @@ struct State {
     shutdown: bool,
 }
 
+thread_local! {
+    /// Plan 069 item 4b: the calling thread's request class ([`set_thread_class`]).
+    static CLASS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Plan 069 item 4b: count this thread's forwards as class `c` (1 = MC-label playouts; 0, the
+/// default, = everything else). A hub worker tags its label-only streams, so one process running
+/// generation and labelling side by side reports each one's positions (`label_samples=` in the
+/// stats line). Threads a tagged thread spawns are untagged.
+pub fn set_thread_class(c: u8) {
+    CLASS.with(|k| k.set(c));
+}
+
 /// Counters for the stats line.
 #[derive(Default)]
 struct Counters {
     batches: AtomicU64,
     samples: AtomicU64,
+    /// Requests made from threads tagged class 1 ([`set_thread_class`]).
+    class1: AtomicU64,
     padded: AtomicU64,
     device_ns: AtomicU64,
     queue_ns: AtomicU64,
@@ -228,6 +243,8 @@ pub struct QueueStats {
     /// Batches by size (index = n).
     pub hist: Vec<u64>,
     pub elapsed: Duration,
+    /// Plan 069 item 4b: requests from class-1 (label) threads, a part of `samples`.
+    pub class1: u64,
 }
 
 impl QueueStats {
@@ -257,7 +274,11 @@ impl QueueStats {
             self.queue.as_secs_f64() * 1e6 / s,
             self.samples as f64 / self.elapsed.as_secs_f64().max(1e-9),
             top.join(", ")
-        )
+        ) + &if self.class1 > 0 {
+            format!(" label_samples={}", self.class1)
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -336,6 +357,7 @@ impl BatchQueue {
             queue: Duration::from_nanos(c.queue_ns.load(Ordering::Relaxed)),
             hist: self.shared.hist.lock().unwrap().clone(),
             elapsed: self.shared.started.elapsed(),
+            class1: c.class1.load(Ordering::Relaxed),
         }
     }
 
@@ -366,6 +388,9 @@ impl BatchQueue {
                 geo.c * h * w,
                 geo.f
             ));
+        }
+        if CLASS.with(|k| k.get()) == 1 {
+            sh.counters.class1.fetch_add(1, Ordering::Relaxed);
         }
         // Claim a slot.
         let idx = {

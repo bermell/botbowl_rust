@@ -4,9 +4,13 @@
 //!
 //! - one tokio task reads hub frames: `Model` goes to the on-disk
 //!   [`ModelStore`], `Task` goes onto a queue, `Drain` closes the queue;
-//! - `parallel_games` **std** threads pull tasks off that queue and play
+//! - `parallel_games` **std** threads (`game-*`) pull tasks off that queue and play
 //!   them with `botbowl_play` — games are sync and `MctsBot` spawns its own
 //!   scoped threads, so they must not run on the async runtime;
+//! - plan 069 item 4b: `label_streams` more threads (`label-*`) take only label tasks, so one
+//!   worker per GPU runs G generation streams and L label streams sized apart (the hub keeps
+//!   game tasks to G and lets label tasks fill idle game streams too: a `game-*` thread takes a
+//!   label task when no game task is queued);
 //! - one tokio task drains a result channel to the socket.
 //!
 //! The result channel outlives a connection: games that finish while the
@@ -62,6 +66,8 @@ pub struct WorkerConfig {
     pub name: String,
     /// `None` lets the hub size it from cores and RAM.
     pub parallel_games: Option<u16>,
+    /// Plan 069 item 4b: streams that take label tasks only, on top of `parallel_games`.
+    pub label_streams: u16,
     /// GPU sidecar socket for the local worker (`botbowl-nn` remote mode).
     pub nn_server: Option<PathBuf>,
     /// Where `<model-id>.onnx` files live between runs.
@@ -297,9 +303,21 @@ pub fn make_bot(spec: &BotSpec, store: &ModelStore) -> io::Result<Box<dyn Bot>> 
 
 #[derive(Default)]
 struct QueueState {
-    tasks: VecDeque<Task>,
+    /// Generate and eval tasks: the `game-*` threads' work.
+    games: VecDeque<Task>,
+    /// Label tasks: the `label-*` threads' work, and a `game-*` thread's when `games` is empty.
+    labels: VecDeque<Task>,
     /// Set by `Drain` or disconnect: threads exit once the queue is empty.
     closed: bool,
+}
+
+/// Which tasks a game thread takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pool {
+    /// Any task, game tasks first.
+    Games,
+    /// Label tasks only.
+    Labels,
 }
 
 struct Queue {
@@ -315,20 +333,34 @@ impl Queue {
         }
     }
     fn push(&self, t: Task) {
-        self.state.lock().unwrap().tasks.push_back(t);
-        self.cv.notify_one();
+        let mut s = self.state.lock().unwrap();
+        match t {
+            Task::Label { .. } => s.labels.push_back(t),
+            _ => s.games.push_back(t),
+        }
+        // Either pool may be the one that can take it.
+        self.cv.notify_all();
     }
     fn close(&self) {
         let mut s = self.state.lock().unwrap();
         s.closed = true;
-        s.tasks.clear();
+        s.games.clear();
+        s.labels.clear();
         self.cv.notify_all();
     }
+    fn is_empty(&self) -> bool {
+        let s = self.state.lock().unwrap();
+        s.games.is_empty() && s.labels.is_empty()
+    }
     /// `None` once closed and empty.
-    fn pop(&self) -> Option<Task> {
+    fn pop(&self, pool: Pool) -> Option<Task> {
         let mut s = self.state.lock().unwrap();
         loop {
-            if let Some(t) = s.tasks.pop_front() {
+            let t = match pool {
+                Pool::Games => s.games.pop_front().or_else(|| s.labels.pop_front()),
+                Pool::Labels => s.labels.pop_front(),
+            };
+            if let Some(t) = t {
                 return Some(t);
             }
             if s.closed {
@@ -636,6 +668,7 @@ fn run_task(task: &Task, store: &ModelStore, out: &mpsc::UnboundedSender<ToHub>,
 
 fn spawn_game_threads(
     n: u16,
+    pool: Pool,
     queue: Arc<Queue>,
     store: Arc<ModelStore>,
     out: mpsc::UnboundedSender<ToHub>,
@@ -649,11 +682,20 @@ fn spawn_game_threads(
             let out = out.clone();
             let in_flight = Arc::clone(&in_flight);
             let governor = Arc::clone(&governor);
+            // The names are what `hpc/tune/tune.py` splits a worker's CPU by (gen vs label).
+            let name = match pool {
+                Pool::Games => format!("game-{i}"),
+                Pool::Labels => format!("label-{i}"),
+            };
             std::thread::Builder::new()
-                .name(format!("game-{i}"))
+                .name(name)
                 .stack_size(GAME_STACK_SIZE)
                 .spawn(move || {
-                    while let Some(task) = queue.pop() {
+                    if pool == Pool::Labels {
+                        // Their forwards are counted apart in the in-process queue's stats line.
+                        botbowl_nn::batch_queue::set_thread_class(1);
+                    }
+                    while let Some(task) = queue.pop(pool) {
                         in_flight.fetch_add(1, Ordering::Relaxed);
                         // A panic inside a game (an engine bug, a net whose
                         // schema does not match this binary) must reach the
@@ -697,6 +739,7 @@ fn hello(cfg: &WorkerConfig, store: &ModelStore) -> ToHub {
         ram_mb: total_ram_mb(),
         cached_models: store.cached_ids(),
         parallel_games: cfg.parallel_games,
+        label_streams: cfg.label_streams,
     }
 }
 
@@ -733,8 +776,14 @@ pub async fn run_once(
         other => return Ok(Ended::Lost(format!("no Welcome: {other:?}"))),
     };
     eprintln!(
-        "[worker] connected to {} as {:?}, {parallel} streams",
-        cfg.hub_url, cfg.name
+        "[worker] connected to {} as {:?}, {parallel} streams{}",
+        cfg.hub_url,
+        cfg.name,
+        if cfg.label_streams > 0 {
+            format!(" + {} label streams", cfg.label_streams)
+        } else {
+            String::new()
+        }
     );
 
     let queue = Arc::new(Queue::new());
@@ -743,14 +792,24 @@ pub async fn run_once(
     // exist — see `mem_governor` for why a static thread-pool size can't
     // track a variable board-size curriculum on its own.
     let governor = Arc::new(MemGovernor::new(cfg.mem_floor_mb, available_memory_mb()));
-    let threads = spawn_game_threads(
+    let mut threads = spawn_game_threads(
         parallel,
+        Pool::Games,
+        Arc::clone(&queue),
+        Arc::clone(&store),
+        results_tx.clone(),
+        Arc::clone(&in_flight),
+        Arc::clone(&governor),
+    );
+    threads.extend(spawn_game_threads(
+        cfg.label_streams,
+        Pool::Labels,
         Arc::clone(&queue),
         Arc::clone(&store),
         results_tx.clone(),
         Arc::clone(&in_flight),
         governor,
-    );
+    ));
 
     // Writer: results + heartbeats out. Owns the sink.
     let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel::<Message>();
@@ -832,7 +891,7 @@ pub async fn run_once(
             // While draining nothing else may arrive; poll for "all quiet".
             _ = tokio::time::sleep(Duration::from_millis(250)), if draining => {}
         }
-        if draining && in_flight.load(Ordering::Relaxed) == 0 && queue.state.lock().unwrap().tasks.is_empty() {
+        if draining && in_flight.load(Ordering::Relaxed) == 0 && queue.is_empty() {
             // Flush whatever the threads produced, then leave.
             while let Ok(msg) = results.try_recv() {
                 let _ = sink.send(Message::Binary(encode(&msg).into())).await;

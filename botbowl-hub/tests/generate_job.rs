@@ -77,6 +77,7 @@ fn worker_cfg(url: &str, name: &str, parallel: u16) -> WorkerConfig {
         token: TOKEN.into(),
         name: name.into(),
         parallel_games: Some(parallel),
+        label_streams: 0,
         nn_server: None,
         cache_dir: tmp(&format!("cache-{name}")),
         mem_floor_mb: 0,
@@ -125,6 +126,7 @@ fn job(dir: &PathBuf, truncate: bool) -> GenerateJobRequest {
         truncate,
         batch: 2,
         label: None,
+        mc_label: None,
     }
 }
 
@@ -316,6 +318,7 @@ async fn a_vanishing_worker_gets_its_seeds_requeued() {
         ram_mb: 0,
         cached_models: vec![],
         parallel_games: Some(2),
+        label_streams: 0,
     };
     sink.send(Message::Binary(encode(&hello).into())).await.unwrap();
     let mut tasks = 0;
@@ -372,6 +375,7 @@ async fn a_silent_worker_is_reaped_and_its_seeds_requeued() {
         ram_mb: 0,
         cached_models: vec![],
         parallel_games: Some(2),
+        label_streams: 0,
     };
     sink.send(Message::Binary(encode(&hello).into())).await.unwrap();
     let mut tasks = 0;

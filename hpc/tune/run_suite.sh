@@ -6,12 +6,13 @@
 #   hpc/tune/run_suite.sh hpc/tune/smoke.toml runs/hpc_tune/smoke            # this box's GTX 1060
 #   hpc/tune/run_suite.sh hpc/tune/gh200.toml $P/runs/hpc_tune/pilot1         # one GH200 (inside the image)
 #
-# Builds `botbowl-ui` (torch) and the `inproc_bench` example from THIS checkout at the capacity CAP
+# Builds `botbowl-ui`, `botbowl-hub` and `botbowl-worker` (torch) and the `inproc_bench` example from THIS checkout at the capacity CAP
 # (20x11/7) into CARGO_TARGET_DIR (default target/tune-<W>x<H>: never the loop's target/20x11 or
 # target/release), with BUILD_JOBS (3) jobs. Inside the image the checkout builds with the image's
 # toolchain and libtorch (its env sets BOTBOWL_TORCH_DIR / BOTBOWL_CUDA_NVCC_INCLUDE), offline from
 # the vendored crates when BOTBOWL_CARGO_VENDOR_CONFIG is set. BIN_UI and BIN_BENCH skip the build
-# (prebuilt binaries of the same commit). PY: the trainer's python (exports the net's fp16/bf16/-cl
+# (prebuilt binaries of the same commit; BIN_HUB / BIN_WORKER beside BIN_UI are used for `mix` rows
+# with `mode = "worker"`, plan 069 item 4b). PY: the trainer's python (exports the net's fp16/bf16/-cl
 # variants with this checkout's bbnn.export_ts; runs tune.py, which needs Python >= 3.11).
 set -euo pipefail
 export LC_ALL=C
@@ -41,9 +42,12 @@ if [ -z "${BIN_UI:-}" ] || [ -z "${BIN_BENCH:-}" ]; then
     C=(--release -j "${BUILD_JOBS:-3}")
     [ -n "${BOTBOWL_CARGO_VENDOR_CONFIG:-}" ] && C+=(--offline --config "$BOTBOWL_CARGO_VENDOR_CONFIG")
     echo "[$(date '+%H:%M:%S')] building into $CARGO_TARGET_DIR (capacity $CAP)"
-    (cd "$REPO" && cargo build "${C[@]}" -p botbowl-ui --features botbowl-ui/torch \
+    (cd "$REPO" && cargo build "${C[@]}" -p botbowl-ui -p botbowl-hub -p botbowl-worker \
+            --features botbowl-ui/torch,botbowl-worker/torch \
         && cargo build "${C[@]}" -p botbowl-nn --features torch --example inproc_bench) >> "$OUT/build.log" 2>&1 \
         || { echo "build failed, see $OUT/build.log" >&2; exit 1; }
     export BIN_UI="$CARGO_TARGET_DIR/release/botbowl-ui" BIN_BENCH="$CARGO_TARGET_DIR/release/examples/inproc_bench"
 fi
+# Plan 069 item 4b: the hub and worker built beside botbowl-ui, unless given.
+export BIN_HUB="${BIN_HUB:-$(dirname "$BIN_UI")/botbowl-hub}" BIN_WORKER="${BIN_WORKER:-$(dirname "$BIN_UI")/botbowl-worker}"
 exec "$PY" "$REPO/hpc/tune/tune.py" "$SPEC" "$OUT" "$@"

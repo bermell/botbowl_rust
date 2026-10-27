@@ -110,6 +110,29 @@ pub struct GenerateJobRequest {
     /// As [`EvalJobRequest::label`] (`gen03 generate`).
     #[serde(default)]
     pub label: Option<String>,
+    /// Plan 069 item 4b: MC-label the named shards while they are generated (`job generate
+    /// --mc-label-playouts N ...`). `None` = no labels, exactly as before.
+    #[serde(default)]
+    pub mc_label: Option<StreamLabelRequest>,
+}
+
+/// Plan 069 item 4b: the labelling a generate job streams. Its own label job (listed beside the
+/// generate job, `JobStatus::labels_job`) takes every record of each named shard as it is written,
+/// and writes `out` once the shard has all its games and every item is in: the file `job label`
+/// (and `botbowl-ui mc-label`) would write from the finished shard, byte for byte on one backend.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StreamLabelRequest {
+    /// `(generate shard name, labelled output)`; shards not named are not labelled.
+    pub shards: Vec<(String, PathBuf)>,
+    /// As [`LabelJobRequest::model_path`] / [`LabelJobRequest::model`].
+    pub model_path: PathBuf,
+    pub model: String,
+    pub cfg: LabelConfig,
+    pub chunk_samples: u32,
+    pub batch: u16,
+    /// The label job's name on the status page (`gen03 mc-label (streamed)`).
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// One input shard of a label job, labelled into `out` exactly as `botbowl-ui mc-label` would
@@ -301,12 +324,18 @@ pub struct JobStatus {
     /// This job's results over the last few minutes (the status page's rate and ETA).
     #[serde(default)]
     pub recent: Option<Rate>,
+    /// Plan 069 item 4b: a generate job's streamed-label job, if it has one.
+    #[serde(default)]
+    pub labels_job: Option<JobId>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerStatus {
     pub name: String,
     pub parallel_games: u16,
+    /// Plan 069 item 4b: streams for label tasks only, on top of `parallel_games`.
+    #[serde(default)]
+    pub label_streams: u16,
     pub tasks_in_flight: usize,
     pub games_done: u64,
     pub triple: String,

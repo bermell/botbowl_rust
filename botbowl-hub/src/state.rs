@@ -6,7 +6,8 @@
 //! round-robin over the running jobs (plan 047: a generation's eval shares the
 //! fleet with the next generation), a task is a small batch of games from one *unit* (a
 //! ladder rung of an eval job, a corpus shard of a generate job), a
-//! worker holds at most `parallel_games` tasks, and anything a departed
+//! worker holds at most `parallel_games` game tasks plus `label_streams` label tasks (label tasks
+//! may also fill idle game streams, plan 069 item 4b), and anything a departed
 //! worker had in flight goes back on the queue. Results are deduplicated
 //! on `(job, unit, game)` so a slow worker that reappears can never double
 //! count.
@@ -49,6 +50,8 @@ pub struct WorkerConn {
     pub cores: u16,
     pub ram_mb: u32,
     pub parallel_games: u16,
+    /// Plan 069 item 4b: streams that take label tasks only (`botbowl-worker --label-streams`).
+    pub label_streams: u16,
     pub tx: mpsc::UnboundedSender<ToWorker>,
     /// Models this worker is known to hold (reported cached, or sent by us).
     pub known_models: HashSet<ModelId>,
@@ -81,6 +84,8 @@ struct Shard {
     samples: u64,
     stats: GenStats,
     writer: io::BufWriter<std::fs::File>,
+    /// Plan 069 item 4b: this shard's unit in the job's streamed-label job, if it is labelled.
+    label_unit: Option<usize>,
 }
 
 /// Plan 062: one shard of a label job. Its "games" are work items ([`crate::label::Item`]).
@@ -96,6 +101,14 @@ struct LabelShard {
     writing: bool,
     written: bool,
     secs: f64,
+    /// Plan 069 item 4b: items superseded by a streaming shard's seal (their trajectory's first
+    /// drive changed); a result for one is dropped. Never pending, never counted.
+    stale: HashSet<u32>,
+    /// Items that count (all but the stale ones), and how many of those are in.
+    live: usize,
+    live_done: usize,
+    /// Samples counted into `labelled`, per trajectory (so a relabel can take them back).
+    counted: Vec<u64>,
 }
 
 impl LabelShard {
@@ -104,13 +117,56 @@ impl LabelShard {
             labels: input.samples.iter().map(|&n| vec![0.0; n]).collect(),
             // A top-up's untagged trajectories have no items: unlabelled from the start.
             unlabellable: input.untagged.clone(),
+            live: input.items.len(),
+            counted: vec![0; input.samples.len()],
             input,
             done: HashSet::new(),
             labelled: 0,
             writing: false,
             written: false,
             secs: 0.0,
+            stale: HashSet::new(),
+            live_done: 0,
         }
+    }
+
+    /// Plan 069 item 4b: one record of a streaming shard, as the generate shard wrote it. Returns
+    /// the items to queue.
+    fn push(&mut self, json: &[u8], zstd: Vec<u8>) -> io::Result<std::ops::Range<u32>> {
+        let new = self.input.push_line(json, zstd)?;
+        let n = *self.input.samples.last().expect("just pushed");
+        self.labels.push(vec![0.0; n]);
+        self.unlabellable.push(false);
+        self.counted.push(0);
+        self.live += new.len();
+        Ok(new)
+    }
+
+    /// Plan 069 item 4b: the generate shard has all its games. Returns the items to queue (the
+    /// deferred and relabelled trajectories') and the ones gone stale (to drop from the queue).
+    fn seal(&mut self) -> (Vec<u32>, HashSet<u32>) {
+        let (redo, chunk) = self.input.seal();
+        let mut fresh = Vec::new();
+        let mut staled = HashSet::new();
+        for t in redo {
+            for (i, it) in self.input.items.iter().enumerate() {
+                let i = i as u32;
+                if it.0 == t && self.stale.insert(i) {
+                    staled.insert(i);
+                    self.live -= 1;
+                    if self.done.contains(&i) {
+                        self.live_done -= 1;
+                    }
+                }
+            }
+            self.labels[t].iter_mut().for_each(|l| *l = 0.0);
+            self.unlabellable[t] = false;
+            self.labelled -= std::mem::take(&mut self.counted[t]);
+            let r = self.input.recut(t, chunk);
+            self.live += r.len();
+            fresh.extend(r);
+        }
+        (fresh, staled)
     }
 
     /// Nothing left to do: written, or skipped at submit.
@@ -120,7 +176,7 @@ impl LabelShard {
 
     /// The write, once every item is in (at most once).
     fn take_write(&mut self, job: JobId, unit: usize) -> Option<ShardWrite> {
-        if self.writing || self.input.skipped || self.done.len() < self.input.items.len() {
+        if self.writing || self.input.skipped || self.input.is_open() || self.live_done < self.live {
             return None;
         }
         self.writing = true;
@@ -178,6 +234,8 @@ enum Kind {
     },
     Generate {
         shards: Vec<Shard>,
+        /// Plan 069 item 4b: the label job its shards stream into.
+        labels: Option<JobId>,
     },
     /// Each shard carries its own `LabelConfig` and tag (`LabelInput.cfg` / `.tag`): a top-up
     /// continues every shard's own labelling (plan 067).
@@ -233,7 +291,7 @@ impl Job {
                     })),
                 })
                 .collect(),
-            Kind::Generate { shards } => shards
+            Kind::Generate { shards, .. } => shards
                 .iter()
                 .map(|s| UnitProgress {
                     name: s.name.clone(),
@@ -247,8 +305,8 @@ impl Job {
                 .iter()
                 .map(|s| UnitProgress {
                     name: s.input.name.clone(),
-                    done: s.done.len() as u32,
-                    total: s.input.items.len() as u32,
+                    done: s.live_done as u32,
+                    total: s.live as u32,
                     samples: s.labelled,
                     stats: Some(UnitStats::Label(s.stats())),
                 })
@@ -259,7 +317,7 @@ impl Job {
     fn unit_name(&self, unit: usize) -> &str {
         match &self.kind {
             Kind::Eval { rungs, .. } => &rungs[unit].name,
-            Kind::Generate { shards } => &shards[unit].name,
+            Kind::Generate { shards, .. } => &shards[unit].name,
             Kind::Label { shards, .. } => &shards[unit].input.name,
         }
     }
@@ -275,6 +333,14 @@ impl Job {
             .iter()
             .enumerate()
             .all(|(i, u)| u.done >= u.total || self.unit_decided(i))
+    }
+
+    /// Whether `(unit, game)` is still wanted: not a stale label item (plan 069 item 4b).
+    fn wants(&self, unit: usize, game: u32) -> bool {
+        match &self.kind {
+            Kind::Label { shards, .. } => !shards[unit].stale.contains(&game),
+            _ => true,
+        }
     }
 
     /// Plan 051: an eval rung whose SPRT has a verdict takes no more games.
@@ -308,6 +374,10 @@ impl Job {
             },
             by_worker: self.by_worker.clone(),
             recent: None,
+            labels_job: match &self.kind {
+                Kind::Generate { labels, .. } => *labels,
+                _ => None,
+            },
         }
     }
 
@@ -327,7 +397,7 @@ impl Job {
                 board: rungs[unit].board,
                 drives: rungs[unit].drives.clone(),
             },
-            Kind::Generate { shards } => {
+            Kind::Generate { shards, .. } => {
                 let s = &shards[unit];
                 Task::Generate {
                     id,
@@ -385,14 +455,40 @@ pub struct TrajectoryPayload {
     lines: Result<Vec<u8>, String>,
     /// `drive_summary` of each line, in order.
     summaries: Vec<Option<(String, u32)>>,
+    /// Plan 069 item 4b: each line zstd'd for a streamed label shard, when the hub streams labels
+    /// (done here, off the lock; the lock compresses any line that lacks it).
+    zstd_lines: Option<Vec<Vec<u8>>>,
 }
 
 impl TrajectoryPayload {
     pub fn decode(zstd_json: &[u8]) -> Self {
+        Self::decode_for(zstd_json, false)
+    }
+
+    /// [`Self::decode`], also compressing each line on its own when `per_line` (a hub with a
+    /// streamed-label job: the label shard keeps and ships lines one by one).
+    pub fn decode_for(zstd_json: &[u8], per_line: bool) -> Self {
+        let mut p = Self::decode_lines(zstd_json);
+        if per_line {
+            if let Ok(json) = &p.lines {
+                if !json.is_empty() {
+                    p.zstd_lines = json
+                        .split(|b| *b == b'\n')
+                        .map(|l| zstd::encode_all(l, crate::label::ZSTD_LEVEL))
+                        .collect::<io::Result<Vec<_>>>()
+                        .ok();
+                }
+            }
+        }
+        p
+    }
+
+    fn decode_lines(zstd_json: &[u8]) -> Self {
         if zstd_json.is_empty() {
             return TrajectoryPayload {
                 lines: Ok(Vec::new()),
                 summaries: Vec::new(),
+                zstd_lines: None,
             };
         }
         let json = match zstd::decode_all(zstd_json) {
@@ -401,6 +497,7 @@ impl TrajectoryPayload {
                 return TrajectoryPayload {
                     lines: Err(format!("zstd: {e}")),
                     summaries: Vec::new(),
+                    zstd_lines: None,
                 }
             }
         };
@@ -408,12 +505,14 @@ impl TrajectoryPayload {
             return TrajectoryPayload {
                 lines: Err("trajectory payload has an empty line".into()),
                 summaries: Vec::new(),
+                zstd_lines: None,
             };
         }
         let summaries = json.split(|b| *b == b'\n').map(drive_summary).collect();
         TrajectoryPayload {
             lines: Ok(json),
             summaries,
+            zstd_lines: None,
         }
     }
 
@@ -608,18 +707,28 @@ impl Inner {
     pub fn submit(&mut self, req: JobRequest) -> io::Result<JobId> {
         match req {
             JobRequest::Eval(r) => self.submit_eval(r),
-            JobRequest::Generate(r) => self.submit_generate(r),
+            JobRequest::Generate(r) => {
+                let inputs = crate::label::stream_inputs(&r)?;
+                let (id, writes) = self.submit_generate(r, inputs)?;
+                self.run_writes(writes);
+                Ok(id)
+            }
             // The synchronous path (a caller holding the lock): read and write inline.
             // `Hub::submit` reads the shards before taking the lock and writes on threads.
             JobRequest::Label(r) => {
                 let inputs = crate::label::load_inputs(&r)?;
                 let (id, writes) = self.submit_label(r, inputs)?;
-                for w in writes {
-                    let result = w.run();
-                    self.label_written(w.job, w.unit, result);
-                }
+                self.run_writes(writes);
                 Ok(id)
             }
+        }
+    }
+
+    /// The synchronous path's shard writes: inline, under the caller's lock.
+    pub fn run_writes(&mut self, writes: Vec<ShardWrite>) {
+        for w in writes {
+            let result = w.run();
+            self.label_written(w.job, w.unit, result);
         }
     }
 
@@ -692,13 +801,24 @@ impl Inner {
         Ok(self.insert_job(kind, label, batch, pending))
     }
 
-    pub fn submit_generate(&mut self, req: GenerateJobRequest) -> io::Result<JobId> {
+    /// A generate job; with `req.mc_label` (plan 069 item 4b) also its streamed-label job over
+    /// `labels` ([`crate::label::stream_inputs`], built before the lock). Returns the label writes
+    /// due at once (a labelled shard with no games to wait for); the caller runs them.
+    pub fn submit_generate(
+        &mut self,
+        req: GenerateJobRequest,
+        labels: Vec<LabelInput>,
+    ) -> io::Result<(JobId, Vec<ShardWrite>)> {
         if req.shards.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "generate job with no shards",
             ));
         }
+        let label_model = match &req.mc_label {
+            Some(m) => Some(self.load_model(&m.model_path)?),
+            None => None,
+        };
         let mut shards = Vec::new();
         let mut pending = VecDeque::new();
         for (i, s) in req.shards.iter().enumerate() {
@@ -730,10 +850,113 @@ impl Inner {
                 samples: 0,
                 stats: GenStats::default(),
                 writer: open_out(&s.out, req.truncate)?,
+                label_unit: labels.iter().position(|l| l.name == s.name),
             });
             pending.extend((0..s.games).map(|g| (i, g)));
         }
-        Ok(self.insert_job(Kind::Generate { shards }, req.label, req.batch, pending))
+        let mut writes = Vec::new();
+        let labels_job = match (label_model, req.mc_label) {
+            (Some(model), Some(m)) => {
+                let mut lpending = VecDeque::new();
+                for (u, l) in labels.iter().enumerate() {
+                    if l.skipped {
+                        eprintln!(
+                            "[hub] mc-label: {} exists and its shard gets no games, skipping",
+                            l.out.display()
+                        );
+                    } else {
+                        lpending.extend((0..l.items.len() as u32).map(|g| (u, g)));
+                    }
+                }
+                let lshards = labels.into_iter().map(LabelShard::new).collect();
+                let label = m
+                    .label
+                    .or_else(|| req.label.as_ref().map(|l| format!("{l} · mc-label (streamed)")));
+                let lid = self.insert_job(Kind::Label { shards: lshards, model }, label, m.batch, lpending);
+                let job = self.jobs.get_mut(&lid).expect("just inserted");
+                if job.all_done() {
+                    Self::finish(job);
+                }
+                Some(lid)
+            }
+            _ => None,
+        };
+        let id = self.insert_job(
+            Kind::Generate {
+                shards,
+                labels: labels_job,
+            },
+            req.label,
+            req.batch,
+            pending,
+        );
+        // A job with no games at all is done now (it would otherwise wait for a result forever).
+        let job = self.jobs.get_mut(&id).expect("just inserted");
+        if job.all_done() {
+            Self::finish(job);
+        }
+        // A labelled shard with no games to come is sealed now.
+        let empty: Vec<usize> = match &self.jobs[&id].kind {
+            Kind::Generate { shards, .. } => shards
+                .iter()
+                .filter(|s| s.total == 0)
+                .filter_map(|s| s.label_unit)
+                .collect(),
+            _ => Vec::new(),
+        };
+        if let Some(lid) = labels_job {
+            for unit in empty {
+                writes.extend(self.seal_label_shard(lid, unit));
+            }
+        }
+        Ok((id, writes))
+    }
+
+    /// Plan 069 item 4b: a streamed label shard gets no more lines. Queues its deferred and
+    /// relabelled items, drops stale ones from the queue, and returns its write if it is due.
+    fn seal_label_shard(&mut self, lid: JobId, unit: usize) -> Option<ShardWrite> {
+        let job = self.jobs.get_mut(&lid)?;
+        if job.state != JobState::Running {
+            return None;
+        }
+        let Kind::Label { shards, .. } = &mut job.kind else {
+            return None;
+        };
+        let s = &mut shards[unit];
+        if s.input.skipped {
+            return None;
+        }
+        let (fresh, staled) = s.seal();
+        if !staled.is_empty() {
+            eprintln!(
+                "[hub] {}: {} item(s) relabelled at the seal (a first drive changed)",
+                s.input.name,
+                fresh.len()
+            );
+        }
+        let write = s.take_write(lid, unit);
+        job.pending.retain(|&(u, g)| u != unit || !staled.contains(&g));
+        job.pending.extend(fresh.into_iter().map(|g| (unit, g)));
+        if job.all_done() {
+            Self::finish(job);
+        }
+        self.dispatch();
+        write
+    }
+
+    /// Plan 069 item 4b: a generate job that failed takes its streamed labels with it (its shards
+    /// would never seal).
+    fn propagate_failure(&mut self, id: JobId) {
+        let Some(job) = self.jobs.get(&id) else { return };
+        let (JobState::Failed { error }, Kind::Generate { labels: Some(lid), .. }) = (&job.state, &job.kind) else {
+            return;
+        };
+        let (error, lid) = (error.clone(), *lid);
+        if let Some(l) = self.jobs.get_mut(&lid) {
+            if l.state == JobState::Running {
+                l.fail(format!("its generate job {id} failed: {error}"));
+            }
+        }
     }
 
     fn insert_job(&mut self, kind: Kind, label: Option<String>, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
@@ -788,7 +1011,7 @@ impl Inner {
             .values()
             .map(|w| Live {
                 name: &w.name,
-                streams: w.parallel_games as u32,
+                streams: w.parallel_games as u32 + w.label_streams as u32,
                 busy: w.tasks.len() as u32,
             })
             .collect();
@@ -819,6 +1042,7 @@ impl Inner {
                 .map(|w| WorkerStatus {
                     name: w.name.clone(),
                     parallel_games: w.parallel_games,
+                    label_streams: w.label_streams,
                     tasks_in_flight: w.tasks.len(),
                     games_done: w.games_done,
                     triple: w.triple.clone(),
@@ -837,8 +1061,17 @@ impl Inner {
         let id = self.next_worker;
         self.next_worker += 1;
         eprintln!(
-            "[hub] worker {id} {:?} joined ({} streams, {} cores, {} MB, {})",
-            conn.name, conn.parallel_games, conn.cores, conn.ram_mb, conn.triple
+            "[hub] worker {id} {:?} joined ({} streams{}, {} cores, {} MB, {})",
+            conn.name,
+            conn.parallel_games,
+            if conn.label_streams > 0 {
+                format!(" + {} label streams", conn.label_streams)
+            } else {
+                String::new()
+            },
+            conn.cores,
+            conn.ram_mb,
+            conn.triple
         );
         self.ledger.joined(&conn.name, Instant::now());
         self.workers.insert(id, conn);
@@ -908,7 +1141,9 @@ impl Inner {
                 return;
             }
             for g in f.remaining {
-                job.pending.push_front((f.unit, g));
+                if job.wants(f.unit, g) {
+                    job.pending.push_front((f.unit, g));
+                }
             }
         }
     }
@@ -926,6 +1161,14 @@ impl Inner {
     /// 213 of its 300 games while the generation beside it managed 132 of 4800. While any generate
     /// game is waiting, eval tasks are therefore capped at [`EVAL_SHARE_DIVISOR`]⁻¹ of a
     /// worker's streams; generation is the critical path, the benchmark is not.
+    ///
+    /// **Two pools per worker (plan 069 item 4b).** A worker runs `parallel_games` game streams
+    /// and `label_streams` label-only streams. Generate and eval tasks never exceed
+    /// `parallel_games`. Label tasks fill the label streams and, **while no generate game is
+    /// waiting**, any idle game stream too — so a label job alone (the mc-label phase) uses every
+    /// stream as before, and labels streamed beside a generation use exactly the L streams sized
+    /// for them, never a stream the generation could use. A worker with no label streams (0, the
+    /// default) therefore takes a generation's streamed labels only once its games run out.
     pub fn dispatch(&mut self) {
         let job_ids: Vec<JobId> = self
             .jobs
@@ -940,32 +1183,46 @@ impl Inner {
         for wid in worker_ids {
             loop {
                 let w = &self.workers[&wid];
-                if w.tasks.len() >= w.parallel_games as usize {
+                let streams = w.parallel_games as usize + w.label_streams as usize;
+                if w.tasks.len() >= streams {
                     break;
                 }
-                // Labelling (plan 062) is on the loop's critical path too.
-                let generate_waiting = self.jobs.values().any(|j| {
-                    j.state == JobState::Running
-                        && matches!(j.kind, Kind::Generate { .. } | Kind::Label { .. })
-                        && !j.pending.is_empty()
+                let kind_of = |t: &TaskId| {
+                    self.in_flight
+                        .get(t)
+                        .and_then(|f| self.jobs.get(&f.job))
+                        .map(|j| match j.kind {
+                            Kind::Eval { .. } => 0,
+                            Kind::Generate { .. } => 1,
+                            Kind::Label { .. } => 2,
+                        })
+                };
+                let labels_here = w.tasks.iter().filter(|t| kind_of(t) == Some(2)).count();
+                let evals_here = w.tasks.iter().filter(|t| kind_of(t) == Some(0)).count();
+                let games_here = w.tasks.len() - labels_here;
+                // Plan 069 item 4b: the generation itself, not its streamed labels.
+                let gen_pending = self.jobs.values().any(|j| {
+                    j.state == JobState::Running && matches!(j.kind, Kind::Generate { .. }) && !j.pending.is_empty()
                 });
-                let evals_here = w
-                    .tasks
-                    .iter()
-                    .filter(|t| {
-                        self.in_flight
-                            .get(t)
-                            .and_then(|f| self.jobs.get(&f.job))
-                            .is_some_and(|j| matches!(j.kind, Kind::Eval { .. }))
-                    })
-                    .count();
+                // Labelling (plan 062) is on the loop's critical path too.
+                let generate_waiting = gen_pending
+                    || self.jobs.values().any(|j| {
+                        j.state == JobState::Running && matches!(j.kind, Kind::Label { .. }) && !j.pending.is_empty()
+                    });
                 let eval_capped =
                     generate_waiting && evals_here >= (w.parallel_games as usize / EVAL_SHARE_DIVISOR).max(1);
+                let game_ok = games_here < w.parallel_games as usize;
+                let label_ok = labels_here < w.label_streams as usize || !gen_pending;
                 let Some(job_id) = (0..job_ids.len())
                     .map(|k| job_ids[(self.next_share + k) % job_ids.len()])
                     .find(|id| {
                         self.jobs.get(id).is_some_and(|j| {
-                            !j.pending.is_empty() && !(eval_capped && matches!(j.kind, Kind::Eval { .. }))
+                            !j.pending.is_empty()
+                                && match j.kind {
+                                    Kind::Eval { .. } => game_ok && !eval_capped,
+                                    Kind::Generate { .. } => game_ok,
+                                    Kind::Label { .. } => label_ok,
+                                }
                         })
                     })
                 else {
@@ -1106,6 +1363,9 @@ impl Inner {
         self.dispatch();
     }
 
+    /// One game's records. Returns the streamed-label shard writes that became due (plan 069 item
+    /// 4b: a labelled shard whose last game this was, with nothing left to label); the caller runs
+    /// them off the lock and reports back to [`Inner::label_written`].
     pub fn trajectory_done(
         &mut self,
         worker: WorkerId,
@@ -1113,22 +1373,31 @@ impl Inner {
         game: u32,
         samples: u32,
         payload: TrajectoryPayload,
-    ) {
+    ) -> Vec<ShardWrite> {
         let name = self.worker_name(worker);
         let Some((job_id, unit)) = self.game_arrived(worker, task, game) else {
-            return;
+            return Vec::new();
         };
-        let Some(job) = self.jobs.get_mut(&job_id) else { return };
-        let Kind::Generate { shards } = &mut job.kind else {
-            return;
+        let Some(job) = self.jobs.get_mut(&job_id) else {
+            return Vec::new();
         };
+        let Kind::Generate { shards, labels } = &mut job.kind else {
+            return Vec::new();
+        };
+        let labels = *labels;
         let s = &mut shards[unit];
         let fresh = s.done.insert(game);
         let mut records = 0u64;
+        // Plan 069 item 4b: the records as written, for the shard's streamed labels.
+        let mut stream: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
         if fresh && !payload.nothing() {
             // One JSON line per record; a game that played the drive after its
             // score sends two (plan 047). Each is written as its own line.
-            let TrajectoryPayload { lines, summaries } = payload;
+            let TrajectoryPayload {
+                lines,
+                summaries,
+                zstd_lines,
+            } = payload;
             let written = lines
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
                 .and_then(|json| {
@@ -1136,10 +1405,11 @@ impl Inner {
                         s.writer.write_all(line)?;
                         s.writer.write_all(b"\n")?;
                     }
-                    s.writer.flush()
+                    s.writer.flush()?;
+                    Ok(json)
                 });
             match written {
-                Ok(()) => {
+                Ok(json) => {
                     s.samples += samples as u64;
                     // Page statistics only: a line the peek cannot read is still a valid
                     // corpus line, so it is written and just not counted here. The
@@ -1152,14 +1422,24 @@ impl Inner {
                             s.stats.add(board, tds, if i == 0 { samples as u64 } else { 0 });
                         }
                     }
+                    if s.label_unit.is_some() {
+                        let mut z = zstd_lines.map(Vec::into_iter);
+                        stream = json
+                            .split(|b| *b == b'\n')
+                            .map(|l| (l.to_vec(), z.as_mut().and_then(Iterator::next)))
+                            .collect();
+                    }
                 }
                 Err(e) => {
                     let msg = format!("writing {}: {e}", s.out.display());
                     job.fail(msg);
-                    return;
+                    self.propagate_failure(job_id);
+                    return Vec::new();
                 }
             }
         }
+        let label_unit = s.label_unit;
+        let shard_complete = fresh && s.done.len() as u32 >= s.total;
         if fresh {
             let c = Counts {
                 games: 1,
@@ -1173,7 +1453,48 @@ impl Inner {
         if job.all_done() {
             Self::finish(job);
         }
+        let mut writes = Vec::new();
+        if let (Some(lid), Some(lu)) = (labels, label_unit) {
+            if !stream.is_empty() {
+                self.stream_lines(lid, lu, stream);
+            }
+            if shard_complete {
+                writes.extend(self.seal_label_shard(lid, lu));
+            }
+        }
         self.dispatch();
+        writes
+    }
+
+    /// Plan 069 item 4b: records a generate shard just wrote, into its streamed-label shard (in
+    /// the file's order: called under the lock that wrote them). A line the label reader refuses
+    /// fails the label job, as `job label` would refuse the shard; the generation goes on.
+    fn stream_lines(&mut self, lid: JobId, unit: usize, lines: Vec<(Vec<u8>, Option<Vec<u8>>)>) {
+        let Some(job) = self.jobs.get_mut(&lid) else { return };
+        if job.state != JobState::Running {
+            return;
+        }
+        let Kind::Label { shards, .. } = &mut job.kind else {
+            return;
+        };
+        let s = &mut shards[unit];
+        if s.input.skipped || !s.input.is_open() {
+            return;
+        }
+        for (json, z) in lines {
+            let z = match z {
+                Some(z) => Ok(z),
+                None => zstd::encode_all(&json[..], crate::label::ZSTD_LEVEL),
+            };
+            match z.and_then(|z| s.push(&json, z)) {
+                Ok(new) => job.pending.extend(new.map(|g| (unit, g))),
+                Err(e) => {
+                    let msg = format!("{}: {e}", s.input.name);
+                    job.fail(msg);
+                    return;
+                }
+            }
+        }
     }
 
     /// Plan 062: one label item's result. Returns the shard's write when this was its last item;
@@ -1207,9 +1528,10 @@ impl Inner {
             job.fail(msg);
             return None;
         };
-        if !s.done.insert(item) {
+        if s.stale.contains(&item) || !s.done.insert(item) {
             return None;
         }
+        s.live_done += 1;
         let mut c = Counts {
             label_items: 1,
             ..Default::default()
@@ -1227,6 +1549,7 @@ impl Inner {
                 }
                 s.labels[t][start as usize..end as usize].copy_from_slice(&v);
                 s.labelled += v.len() as u64;
+                s.counted[t] += v.len() as u64;
                 c.label_samples = v.len() as u64;
             }
             LabelResult::Unlabellable(why) => {
@@ -1297,6 +1620,7 @@ impl Inner {
                     let n = *n;
                     let msg = format!("{} game {g} failed {n} times; last: {error}", job.unit_name(unit));
                     job.fail(msg);
+                    self.propagate_failure(job_id);
                     break;
                 }
             }
@@ -1353,7 +1677,7 @@ impl Inner {
                 }
                 *report = Some(r);
             }
-            Kind::Generate { shards } => {
+            Kind::Generate { shards, .. } => {
                 let mut err = None;
                 for s in shards.iter_mut() {
                     if let Err(e) = s.writer.flush() {

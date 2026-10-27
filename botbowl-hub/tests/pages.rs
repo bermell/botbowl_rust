@@ -276,6 +276,7 @@ async fn the_status_page_shows_each_workers_rate_and_its_history() {
             triple: "x86_64-unknown-linux-musl".into(),
             cores: 8,
             ram_mb: 16000,
+            label_streams: 0,
             parallel_games: 24,
             tx,
             known_models: Default::default(),

@@ -111,3 +111,14 @@ precision = "fp16"
 buckets = "to1024"
 pin = "split"
 mps = [false, true]
+
+# The real thing (one worker per GPU, G game + L label streams, one batch queue): what the loop
+# runs with LABEL_STREAMING=1. gen_cpu_us_per_forward / label_cpu_us_per_forward size G and L
+# (plan 069 item 4b, "sizing").
+[[mix]]
+mode = "worker"
+gen_streams = [256, 512]
+label_streams = [256, 512, 1024]
+precision = "fp16"
+buckets = "to1024"
+pin = "node"

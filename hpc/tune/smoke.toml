@@ -69,3 +69,10 @@ streams = 16
 gen_streams = 8
 label_streams = 8
 pin = ["node", "split"]
+
+# Plan 069 item 4b as it runs: one worker, G game + L label streams sharing one batch queue
+# (a private hub on [suite] hub_port, default 13500). Positions and CPU per forward split by kind.
+[[mix]]
+mode = "worker"
+gen_streams = [16, 24]
+label_streams = [8, 16]

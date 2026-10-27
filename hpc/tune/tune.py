@@ -19,8 +19,13 @@ cartesian product, except the lists a single process consumes: `micro.batches`, 
 * `gen` — the loop's generation: `botbowl-ui dataset --mode random-start --next-drive`, the C1 preset
   (`cfgs/chance_all_partial_gen.toml`), 1000 descents, the 20x11 size mix, S streams over P processes.
 * `label` — `botbowl-ui mc-label`, bare-policy playouts (8), S streams over P processes.
-* `mix` — plan 069 item 4b: one `gen` process (G streams) and one `label` process (L streams) on the
-  same GPU at once (optionally under MPS).
+* `mix` — plan 069 item 4b: G generation streams and L label streams on the same GPU at once.
+  `mode = "procs"` (the default): one `gen` process and one `label` process (optionally under MPS).
+  `mode = "worker"`: the real thing — a private `botbowl-hub serve` on a local port and ONE
+  `botbowl-worker --parallel-games G --label-streams L` (one batch queue for both), fed a `job
+  generate` (the gen workload) and a `job label` over `label_corpus` (always pending); the queue's
+  `label_samples=` count and the threads' names (`game-*` / `label-*`) split positions/s and CPU per
+  forward by kind.
 
 **What a row measures**, over a window after a warm-up (steady state, nothing runs out):
 
@@ -242,13 +247,16 @@ def threads_of(pid: int) -> dict[int, dict]:
         base = f"/proc/{pid}/task/{t}"
         try:
             comm = open(f"{base}/comm").read().strip()
+            # Plan 069 item 4b: a worker's stream threads (search threads inherit their creator's name).
+            sub = "gen" if comm.startswith("game-") else "label" if comm.startswith("label-") else None
             run_ns, wait_ns, _ = (int(x) for x in open(f"{base}/schedstat").read().split()[:3])
             st = open(f"{base}/status").read()
             vol = int(re.search(r"voluntary_ctxt_switches:\s+(\d+)", st).group(1))
             invol = int(re.search(r"nonvoluntary_ctxt_switches:\s+(\d+)", st).group(1))
         except (OSError, AttributeError, ValueError):
             continue
-        out[int(t)] = {"class": thread_class(comm), "run_ns": run_ns, "wait_ns": wait_ns, "vol": vol, "invol": invol}
+        out[int(t)] = {"class": thread_class(comm), "sub": sub, "run_ns": run_ns, "wait_ns": wait_ns, "vol": vol,
+                       "invol": invol}
     return out
 
 
@@ -371,6 +379,8 @@ class Window:
                 agg["invol"] += t["invol"] - p["invol"]
                 agg[f"{cls}_vol"] = agg.get(f"{cls}_vol", 0) + t["vol"] - p["vol"]
                 agg[f"{cls}_threads"] = agg.get(f"{cls}_threads", 0) + 1
+                if t.get("sub"):  # inside `rest`: a worker's gen / label stream threads
+                    agg[f"{t['sub']}_run_ns"] = agg.get(f"{t['sub']}_run_ns", 0) + t["run_ns"] - p["run_ns"]
                 for name, v in counters.get(tid, {}).items():
                     agg[name] = agg.get(name, 0.0) + v
                     agg[f"{cls}.{name}"] = agg.get(f"{cls}.{name}", 0.0) + v
@@ -461,6 +471,9 @@ def parse_stats(line: str) -> dict | None:
         if not m:
             return None
         out[k] = float(m.group(1))
+    # Plan 069 item 4b: forwards from a worker's label streams (absent = 0).
+    m = re.search(r"label_samples=(\d+)", line)
+    out["label_samples"] = float(m.group(1)) if m else 0.0
     return out
 
 
@@ -484,6 +497,7 @@ def stats_rates(stats: list[tuple[float, dict]], t0: float, t1: float) -> dict:
         "device_busy": dev_s / dt,
         "queue_us": (b["queue_us"] * b["samples"] - a["queue_us"] * a["samples"]) / ds,
         "stats_secs": dt,
+        "label_positions_per_s": (b.get("label_samples", 0.0) - a.get("label_samples", 0.0)) / dt,
     }
 
 
@@ -610,6 +624,9 @@ class Suite:
         self.spec, self.s, self.out, self.args = spec, spec.get("suite", {}), out, args
         self.ui = Path(os.environ.get("BIN_UI", "")) if os.environ.get("BIN_UI") else None
         self.bench = Path(os.environ.get("BIN_BENCH", "")) if os.environ.get("BIN_BENCH") else None
+        # Plan 069 item 4b: `mix` rows with `mode = "worker"`.
+        self.hub = Path(os.environ["BIN_HUB"]) if os.environ.get("BIN_HUB") else None
+        self.worker = Path(os.environ["BIN_WORKER"]) if os.environ.get("BIN_WORKER") else None
         self.py = os.environ.get("PY", sys.executable)
         self.machine = Machine(self.s)
         self.net = self._path(self.s.get("net", ""))
@@ -880,6 +897,12 @@ class Suite:
                 if vals:
                     rec[f"{kind}_{key}"] = round(sum(vals) / len(vals), 3)
         rec["positions_per_s"] = round(total)
+        if any(k == "worker" for k, _ in procs):
+            # Plan 069 item 4b: one worker, both kinds; the queue counts the label streams' forwards.
+            lab = sum(stats_rates(p.stats, t0, t1).get("label_positions_per_s", 0.0) for k, p in procs if k == "worker")
+            rec["label_positions_per_s"] = round(lab)
+            rec["gen_positions_per_s"] = round(total - lab)
+            w["gen_forwards_per_s"], w["label_forwards_per_s"] = total - lab, lab
         if outputs:
             # Records land when a drive ends, so a short window counts in whole drives: coarse.
             rec["gen_decisions_per_min"] = round(sum(d1[n] - d0[n] for n in outputs) * 60 / max(t1 - t0, 1e-9), 1)
@@ -914,6 +937,8 @@ class Suite:
             return self._steady(row, row_dir, procs, {})
 
     def run_mix(self, row, row_dir):
+        if row.get("mode", "procs") == "worker":
+            return self.run_mix_worker(row, row_dir)
         self.ts_for(row["precision"], row["channels_last"])
         G, L = int(row["gen_streams"]), int(row["label_streams"])
         # `split` gives each process cores in proportion to its expected CPU: a generated forward
@@ -926,6 +951,55 @@ class Suite:
             procs = [("gen", Proc("gen0", gcmd, self.env_for(row, G), row_dir)),
                      ("label", Proc("label0", lcmd, self.env_for(row, L), row_dir))]
             return self._steady(row, row_dir, procs, {"gen0": out})
+
+    def run_mix_worker(self, row, row_dir):
+        """Plan 069 item 4b as it runs: a private hub and one worker with G game + L label streams."""
+        if not (self.hub and self.hub.exists() and self.worker and self.worker.exists()):
+            raise RuntimeError("mode = worker needs BIN_HUB and BIN_WORKER (hpc/tune/run_suite.sh builds them)")
+        self.ts_for(row["precision"], row["channels_last"])
+        G, L = int(row["gen_streams"]), int(row["label_streams"])
+        d = self.scratch(row)
+        port = int(self.s.get("hub_port", 13500))
+        token, url = d / "hub.token", f"http://127.0.0.1:{port}"
+        (d / "noindex").mkdir(exist_ok=True)
+        env = self.env_for(row, G + L)
+        hub = Proc("hub", [str(self.hub), "serve", "--bind", f"127.0.0.1:{port}", "--token-file", str(token),
+                           "--no-play", "--model-index-dir", str(d / "noindex"), "--registry-dir", str(d / "noindex"),
+                           "--allowed-commits", str(d / "no-allowlist.toml")], env, row_dir)
+        procs = [("hub", hub)]
+        try:
+            end = time.monotonic() + 60
+            while not token.exists() or not hub.wait_line("[hub] listening", 1):
+                if time.monotonic() > end or not hub.alive():
+                    raise RuntimeError(f"hub did not start: {tail(row_dir / 'hub.log')}")
+            worker = Proc("worker", self.machine.prefix(row["pin"], 0, 1) + [
+                str(self.worker), "--hub", f"ws://127.0.0.1:{port}/ws", "--token-file", str(token), "--name", "tune",
+                "--parallel-games", str(G), "--label-streams", str(L), "--nn-backend", "inproc", "--nn-device", "cuda:0",
+                "--cache-dir", str(d / "cache"), "--mem-floor-mb", "512"], env, row_dir)
+            procs.append(("worker", worker))
+            client = [str(self.hub), "job"]
+            auth = ["--hub", url, "--token-file", str(token)]
+            out = d / "gen" / "shard0.jsonl"
+            gen = client + ["generate", *auth, "--mode", "random-start", "--next-drive", "--games", str(max(64, G * 50)),
+                            "--seed-base", str(self.s.get("seed", 69400)), "--bot-config",
+                            str(self._path(self.s.get("config", "cfgs/chance_all_partial_gen.toml"))),
+                            "--mcts-iters", str(self.s.get("iters", 1000)), "--evaluator", "nn", "--model", str(self.net),
+                            *self.size_args(), "--shards", "0", "--out-dir", str(d / "gen"), "--truncate", "--batch", "1"]
+            labels = self.label_cmd(L, int(row["playouts"]), row, "mix")  # its corpus links and settings
+            corpus = labels[labels.index("--corpus") + 1:labels.index("--model")]
+            lab = client + ["label", *auth, "--corpus", *corpus, "--model", str(self.net), "--playouts", str(row["playouts"]),
+                            "--seed", str(self.s.get("seed", 69400)), "--out-dir", str(d / "labels")]
+            for cmd in (gen, lab):
+                r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=900)
+                (row_dir / "jobs.log").open("a").write(" ".join(cmd) + "\n" + r.stdout + r.stderr + "\n")
+                if r.returncode != 0:
+                    raise RuntimeError(f"job submit failed: {r.stderr.strip()[-300:]}")
+            # `_steady` waits for the worker's net to load; the hub never loads one.
+            hub.loaded.set()
+            return self._steady(row, row_dir, procs, {"gen0": out})
+        finally:
+            for _, p in procs:
+                p.stop()
 
     def mps(self, row: dict, row_dir: Path):
         return Mps(row_dir, self.machine.gpu) if row.get("mps") else _Null()
@@ -995,6 +1069,12 @@ def per_forward(w: dict, positions_per_s: float) -> dict:
     for k in ("instr_u", "cycles_u", "instr_k", "cycles_k"):
         if k in w:
             out[f"{k}_per_forward"] = round(w[k] / pf)
+    # Plan 069 item 4b (a `mix` row in worker mode): each kind's stream threads per its own forward.
+    for kind in ("gen", "label"):
+        fwd = w.get(f"{kind}_forwards_per_s", 0.0) * secs
+        if f"{kind}_run_ns" in w and fwd > 0:
+            out[f"{kind}_cpu_us_per_forward"] = round(w[f"{kind}_run_ns"] / 1e3 / fwd, 1)
+            out[f"{kind}_cores_busy"] = round(w[f"{kind}_run_ns"] / 1e9 / secs, 2)
     if "instr_u" in w and w.get("cycles_u"):
         out["ipc_u"] = round(w["instr_u"] / w["cycles_u"], 2)
     cycles = w.get("cycles_u", 0) + w.get("cycles_k", 0)
@@ -1050,9 +1130,10 @@ TABLE_COLS = {
     "label": ["precision", "channels_last", "lanes", "buckets", "streams", "processes", "pin", "positions_per_s",
               "label_mean_batch", "label_device_busy", "cpu_cores_busy", "cpu_us_per_forward", "batcher_cpu_us_per_forward",
               "instr_u_per_forward", "eff_ghz", "gpu_util", "status"],
-    "mix": ["precision", "lanes", "buckets", "gen_streams", "label_streams", "pin", "mps", "gen_positions_per_s",
+    "mix": ["mode", "precision", "lanes", "buckets", "gen_streams", "label_streams", "pin", "mps", "gen_positions_per_s",
             "label_positions_per_s", "positions_per_s", "gen_decisions_per_min", "cpu_cores_busy", "cpu_us_per_forward",
-            "gpu_util", "status"],
+            "gen_cpu_us_per_forward", "label_cpu_us_per_forward", "gen_cores_busy", "label_cores_busy",
+            "batcher_cpu_us_per_forward", "cpu_freq_ghz", "gpu_util", "status"],
 }
 
 
