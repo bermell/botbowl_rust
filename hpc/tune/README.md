@@ -6,7 +6,7 @@ markdown tables to paste into plan 069.
 
 | file | what |
 |---|---|
-| `run_suite.sh` | builds `botbowl-ui` (torch) and `examples/inproc_bench` from this checkout (own target dir, capacity 20x11/7), then runs `tune.py` |
+| `run_suite.sh` | builds `botbowl-ui`, `botbowl-hub`, `botbowl-worker` (torch) and `examples/inproc_bench` from this checkout (own target dir, capacity 20x11/7), then runs `tune.py` |
 | `tune.py` | the driver: expands a spec into rows, runs each, measures, writes `results.csv` / `results.md` / `meta.json`; resumes |
 | `gh200.toml` | the pilot sweep for one superchip (~2.5 h on one GPU, ~40 min over a node's four with `--shard`) |
 | `smoke.toml` | the same at toy sizes for the training box's GTX 1060 (~15 min) |
@@ -22,7 +22,7 @@ markdown tables to paste into plan 069.
 | `queue` | `inproc_bench --mode queue`: N threads calling the batch queue with no search | clients (streams), buckets, lanes |
 | `gen` | `botbowl-ui dataset` as the loop generates: random-start `--next-drive`, `cfgs/chance_all_partial_gen.toml`, 1000 descents, the 20x11 mix | streams, processes per GPU, lanes, bucket list, precision, pinning, MPS |
 | `label` | `botbowl-ui mc-label --playouts 8` (bare policy) | the same |
-| `mix` | one `gen` + one `label` process on one GPU (item 4b: G + L streams) | G, L, pinning, MPS |
+| `mix` | item 4b, G generation + L label streams on one GPU. `mode = "procs"` (default): one `gen` + one `label` process. `mode = "worker"`: what the loop runs with `LABEL_STREAMING=1` — a private `botbowl-hub serve` (port `[suite] hub_port`, default 13500) and one `botbowl-worker --parallel-games G --label-streams L` (one batch queue), fed a `job generate` and a `job label` over `label_corpus`; positions/s per kind from the queue's `label_samples=` and CPU per forward per kind from the `game-*` / `label-*` threads (`gen_cpu_us_per_forward`, `label_cpu_us_per_forward`; batcher and CUDA threads are shared and reported whole) | G, L, pinning, MPS |
 
 Each `gen`/`label`/`mix` row: wait for the net to load and capture, `warm` seconds, then a `window`
 (default 60 + 90 s). Measured over the window, per process and summed:
