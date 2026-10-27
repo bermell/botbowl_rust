@@ -118,6 +118,31 @@ fn invalid(what: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
+/// Plan 069 item 4b: a record ready for a streaming shard — compressed and read — prepared off the
+/// hub's lock (`TrajectoryPayload::decode_for`): a 20x11 line is ~370 KB of JSON to scan.
+pub struct Prepared {
+    pub zstd: Vec<u8>,
+    /// [`read_lite`]'s verdict; the error without the shard's path, which is added on push.
+    pub lite: Result<Lite, String>,
+}
+
+impl Prepared {
+    /// `json` (one line, as the generate shard writes it), compressed at `ZSTD_LEVEL` and read.
+    pub fn of(json: &[u8]) -> io::Result<Self> {
+        Ok(Self::with_zstd(json, zstd::encode_all(json, ZSTD_LEVEL)?))
+    }
+
+    /// As [`Self::of`], with the compression already done.
+    pub fn with_zstd(json: &[u8], zstd: Vec<u8>) -> Self {
+        // The local tool reads lines with `BufRead::lines`, which drops a trailing CR.
+        let json = json.strip_suffix(b"\r").unwrap_or(json);
+        Prepared {
+            zstd,
+            lite: read_lite(Path::new(""), json).map_err(|e| e.to_string().trim_start_matches(": ").to_string()),
+        }
+    }
+}
+
 /// One line as the local tool reads it: a trajectory (as far as `Lite` goes), on a board this
 /// binary's capacity holds.
 pub fn read_lite(input: &Path, line: &[u8]) -> io::Result<Lite> {
@@ -269,8 +294,7 @@ impl LabelInput {
             if line.trim().is_empty() {
                 continue;
             }
-            let z = zstd::encode_all(line.as_bytes(), ZSTD_LEVEL)?;
-            self.push_line(line.as_bytes(), z)?;
+            self.push(Prepared::of(line.as_bytes())?)?;
         }
         Ok(())
     }
@@ -279,10 +303,16 @@ impl LabelInput {
     /// its compression). Returns the new items' indices: none when it is a follow-on whose first
     /// drive has not arrived (deferred to the seal).
     pub fn push_line(&mut self, json: &[u8], zstd: Vec<u8>) -> io::Result<std::ops::Range<u32>> {
-        let st = self.stream.as_mut().expect("push_line on a sealed shard");
-        // The local tool reads lines with `BufRead::lines`: a trailing CR is dropped there.
-        let json = json.strip_suffix(b"\r").unwrap_or(json);
-        let lite = read_lite(&self.input, json)?;
+        self.push(Prepared::with_zstd(json, zstd))
+    }
+
+    /// [`Self::push_line`] for a record prepared off the lock.
+    pub fn push(&mut self, p: Prepared) -> io::Result<std::ops::Range<u32>> {
+        let st = self.stream.as_mut().expect("push on a sealed shard");
+        let lite = p
+            .lite
+            .map_err(|e| invalid(format!("{}: {e}", self.input.display())))?;
+        let zstd = p.zstd;
         let t = self.seeds.len();
         let n = lite.samples.len();
         self.seeds.push(lite.meta.seed);

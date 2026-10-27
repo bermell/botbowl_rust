@@ -132,8 +132,8 @@ impl LabelShard {
 
     /// Plan 069 item 4b: one record of a streaming shard, as the generate shard wrote it. Returns
     /// the items to queue.
-    fn push(&mut self, json: &[u8], zstd: Vec<u8>) -> io::Result<std::ops::Range<u32>> {
-        let new = self.input.push_line(json, zstd)?;
+    fn push(&mut self, line: crate::label::Prepared) -> io::Result<std::ops::Range<u32>> {
+        let new = self.input.push(line)?;
         let n = *self.input.samples.last().expect("just pushed");
         self.labels.push(vec![0.0; n]);
         self.unlabellable.push(false);
@@ -455,9 +455,9 @@ pub struct TrajectoryPayload {
     lines: Result<Vec<u8>, String>,
     /// `drive_summary` of each line, in order.
     summaries: Vec<Option<(String, u32)>>,
-    /// Plan 069 item 4b: each line zstd'd for a streamed label shard, when the hub streams labels
-    /// (done here, off the lock; the lock compresses any line that lacks it).
-    zstd_lines: Option<Vec<Vec<u8>>>,
+    /// Plan 069 item 4b: each line compressed and read for a streamed label shard, when the hub
+    /// streams labels (done here, off the lock; the lock prepares any line that lacks it).
+    prepared: Option<Vec<crate::label::Prepared>>,
 }
 
 impl TrajectoryPayload {
@@ -472,9 +472,9 @@ impl TrajectoryPayload {
         if per_line {
             if let Ok(json) = &p.lines {
                 if !json.is_empty() {
-                    p.zstd_lines = json
+                    p.prepared = json
                         .split(|b| *b == b'\n')
-                        .map(|l| zstd::encode_all(l, crate::label::ZSTD_LEVEL))
+                        .map(crate::label::Prepared::of)
                         .collect::<io::Result<Vec<_>>>()
                         .ok();
                 }
@@ -488,7 +488,7 @@ impl TrajectoryPayload {
             return TrajectoryPayload {
                 lines: Ok(Vec::new()),
                 summaries: Vec::new(),
-                zstd_lines: None,
+                prepared: None,
             };
         }
         let json = match zstd::decode_all(zstd_json) {
@@ -497,7 +497,7 @@ impl TrajectoryPayload {
                 return TrajectoryPayload {
                     lines: Err(format!("zstd: {e}")),
                     summaries: Vec::new(),
-                    zstd_lines: None,
+                    prepared: None,
                 }
             }
         };
@@ -505,14 +505,14 @@ impl TrajectoryPayload {
             return TrajectoryPayload {
                 lines: Err("trajectory payload has an empty line".into()),
                 summaries: Vec::new(),
-                zstd_lines: None,
+                prepared: None,
             };
         }
         let summaries = json.split(|b| *b == b'\n').map(drive_summary).collect();
         TrajectoryPayload {
             lines: Ok(json),
             summaries,
-            zstd_lines: None,
+            prepared: None,
         }
     }
 
@@ -1389,14 +1389,14 @@ impl Inner {
         let fresh = s.done.insert(game);
         let mut records = 0u64;
         // Plan 069 item 4b: the records as written, for the shard's streamed labels.
-        let mut stream: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+        let mut stream: Vec<io::Result<crate::label::Prepared>> = Vec::new();
         if fresh && !payload.nothing() {
             // One JSON line per record; a game that played the drive after its
             // score sends two (plan 047). Each is written as its own line.
             let TrajectoryPayload {
                 lines,
                 summaries,
-                zstd_lines,
+                prepared,
             } = payload;
             let written = lines
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -1423,11 +1423,11 @@ impl Inner {
                         }
                     }
                     if s.label_unit.is_some() {
-                        let mut z = zstd_lines.map(Vec::into_iter);
-                        stream = json
-                            .split(|b| *b == b'\n')
-                            .map(|l| (l.to_vec(), z.as_mut().and_then(Iterator::next)))
-                            .collect();
+                        // Prepared before the lock when the hub knew it streams labels; else here.
+                        stream = match prepared {
+                            Some(p) => p.into_iter().map(Ok).collect(),
+                            None => json.split(|b| *b == b'\n').map(crate::label::Prepared::of).collect(),
+                        };
                     }
                 }
                 Err(e) => {
@@ -1469,7 +1469,7 @@ impl Inner {
     /// Plan 069 item 4b: records a generate shard just wrote, into its streamed-label shard (in
     /// the file's order: called under the lock that wrote them). A line the label reader refuses
     /// fails the label job, as `job label` would refuse the shard; the generation goes on.
-    fn stream_lines(&mut self, lid: JobId, unit: usize, lines: Vec<(Vec<u8>, Option<Vec<u8>>)>) {
+    fn stream_lines(&mut self, lid: JobId, unit: usize, lines: Vec<io::Result<crate::label::Prepared>>) {
         let Some(job) = self.jobs.get_mut(&lid) else { return };
         if job.state != JobState::Running {
             return;
@@ -1481,12 +1481,8 @@ impl Inner {
         if s.input.skipped || !s.input.is_open() {
             return;
         }
-        for (json, z) in lines {
-            let z = match z {
-                Some(z) => Ok(z),
-                None => zstd::encode_all(&json[..], crate::label::ZSTD_LEVEL),
-            };
-            match z.and_then(|z| s.push(&json, z)) {
+        for p in lines {
+            match p.and_then(|p| s.push(p)) {
                 Ok(new) => job.pending.extend(new.map(|g| (unit, g))),
                 Err(e) => {
                     let msg = format!("{}: {e}", s.input.name);
