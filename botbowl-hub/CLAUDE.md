@@ -320,6 +320,15 @@ follow-on, SIGTERM, hub+client killed, a deadline, a worker straddling restarts)
   output that exists is removed at submit unless the job adds no games to its shard (then skipped).
   A failed generate job fails its label job; a failed label job leaves the generation alone, and
   `job generate --wait` only warns (the loop's mc-label phase labels what is missing).
+  **With `--resume` (plan 069 item 5)** the label state is rebuilt from the files, never persisted:
+  each streamed shard is preloaded with the whole games the scan keeps (up to `keep_len`, never the
+  torn tail), an output whose shard the job plays no game of is kept (skipped), any other existing
+  output is removed under the lock (`LabelInput.stale_out`), and a shard whose games are all on disk
+  is sealed at submit. `attach` treats a generate job whose games are done but whose labels still run
+  as running (a resubmission follows it into the labels), and a drained generate job that gives way
+  takes its labels with it. `job --wait` follows `labels_job` inside `run_job`: a hub restart during
+  the labels resubmits the resumable request (its new job only labels), a non-resumable one warns.
+  `mc_label_stream.rs::a_hub_restart_mid_generation_resumes_and_labels_everything` pins it.
 - **Two stream pools per worker (plan 069 item 4b, `Hello.label_streams`).** `--parallel-games G
   --label-streams L`: G `game-*` threads take any task (game tasks first), L `label-*` threads only
   label tasks. `dispatch` keeps generate + eval tasks ≤ G, and gives label tasks the L streams plus
