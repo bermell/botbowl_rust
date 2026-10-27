@@ -124,6 +124,9 @@ struct GameCfg {
     /// A wide game whose rosters are full of Throw / Kick Team-mate and Right Stuff and whose
     /// players take a hidden (human-only) action three decisions in ten.
     tag_team: bool,
+    /// A wide game built to run the rosters out: soft armour, Mighty Blow, Claws and Dirty Player
+    /// all over, so setups with too few players and empty benches come up.
+    brutal: bool,
     jump_paths: bool,
     replay: bool,
 }
@@ -176,6 +179,7 @@ fn game_cfg(seed: u64, k: &Knobs) -> GameCfg {
         },
         wide_skills,
         tag_team: wide_skills && rng.gen_bool(0.2),
+        brutal: wide_skills && rng.gen_bool(0.2),
         jump_paths: rng.gen_bool(0.85),
         replay: rng.gen_bool(k.replay_share),
     }
@@ -189,7 +193,21 @@ fn wide_skill(rng: &mut ChaCha8Rng) -> Skill {
     Skill::ALL[rng.gen_range(0..Skill::ALL.len())]
 }
 
-fn widen_stats(stats: &mut botbowl_engine::core::model::PlayerStats, tag_team: bool, rng: &mut ChaCha8Rng) {
+fn widen_stats(stats: &mut botbowl_engine::core::model::PlayerStats, cfg: &GameCfg, rng: &mut ChaCha8Rng) {
+    let tag_team = cfg.tag_team;
+    if cfg.brutal {
+        stats.armour = stats.armour.min(rng.gen_range(3..=7));
+        for (skill, p) in [
+            (Skill::MightyBlow, 0.5),
+            (Skill::Claws, 0.4),
+            (Skill::DirtyPlayer, 0.4),
+            (Skill::PileDriver, 0.2),
+        ] {
+            if rng.gen_bool(p) {
+                stats.give_skill(skill);
+            }
+        }
+    }
     if tag_team {
         for (skill, p) in [
             (Skill::ThrowTeamMate, 0.3),
@@ -206,7 +224,11 @@ fn widen_stats(stats: &mut botbowl_engine::core::model::PlayerStats, tag_team: b
         stats.str_ = rng.gen_range(1..=6);
         stats.agility = rng.gen_range(1..=6);
         stats.passing = rng.gen_range(1..=6);
-        stats.armour = rng.gen_range(6..=11);
+        stats.armour = if cfg.brutal {
+            rng.gen_range(3..=7)
+        } else {
+            rng.gen_range(6..=11)
+        };
     }
     while rng.gen_bool(0.55) && stats.skills.len() < 6 {
         stats.give_skill(wide_skill(rng));
@@ -246,12 +268,12 @@ fn build_start(cfg: &GameCfg) -> GameState {
     if cfg.wide_skills {
         widen_teams(&mut state, &mut rng);
         for p in state.get_dugout_mut() {
-            widen_stats(&mut p.stats, cfg.tag_team, &mut rng);
+            widen_stats(&mut p.stats, cfg, &mut rng);
         }
         let ids: Vec<_> = state.get_players_on_pitch().map(|p| p.id).collect();
         for id in ids {
             let mut s = state.get_player_unsafe(id).stats.clone();
-            widen_stats(&mut s, cfg.tag_team, &mut rng);
+            widen_stats(&mut s, cfg, &mut rng);
             state.get_mut_player_unsafe(id).stats = s;
         }
         if state.proc_stack_top() == Some("Turn") {
@@ -591,6 +613,17 @@ fn check_always(state: &GameState, prev: &Prev, coarse: bool) -> Check {
 
 /// At a `Turn` decision the position is "quiet": no procedure is mid-way.
 fn check_quiet(state: &GameState) -> Check {
+    for t in [&state.home, &state.away] {
+        if t.rerolls > t.rerolls_start {
+            return fail(
+                "counters",
+                format!(
+                    "{} team re-rolls, {} at the start of the half",
+                    t.rerolls, t.rerolls_start
+                ),
+            );
+        }
+    }
     for p in state.get_players_on_pitch() {
         if state.is_out(p.position) {
             return fail(
@@ -616,6 +649,14 @@ fn check_quiet(state: &GameState) -> Check {
             let p = state.get_player_unsafe(id);
             if p.status != PlayerStatus::Up {
                 return fail("ball", format!("carrier {id} is {:?} at a Turn decision", p.status));
+            }
+            // S3: a standing carrier in the end zone they attack scores, at once, in either
+            // team's turn.
+            if p.position.x == state.board_dims.endzone_x(p.stats.team) {
+                return fail(
+                    "rules",
+                    format!("carrier {id} stands in the end zone at {:?}, no touchdown", p.position),
+                );
             }
         }
         BallState::OnGround(pos) => {
@@ -811,6 +852,101 @@ fn check_serde(state: &GameState) -> Check {
             return fail("hash", "y-flipped twice differs at a Turn decision".into());
         }
     }
+    // The trainer encodes corpus states, the search live ones: they must see the same tensors.
+    let (live, stored) = (encode(state), encode(&back));
+    if live.spatial != stored.spatial || live.global != stored.global {
+        return fail("nn", "a JSON round trip encodes differently".into());
+    }
+    if state.proc_stack_top() == Some("Turn") {
+        // Mover-centric: the mirrored position (sides swapped) is the same position for the
+        // other side to move, so it must encode identically.
+        let m = encode(&state.mirrored());
+        if m.spatial != live.spatial {
+            let plane = live.h * live.w;
+            let i = (0..live.spatial.len())
+                .find(|&i| m.spatial[i] != live.spatial[i])
+                .unwrap();
+            return fail(
+                "nn",
+                format!("the mirror encodes differently: spatial channel {}", i / plane),
+            );
+        }
+        if let Some(g) = (0..live.global.len()).find(|&g| m.global[g] != live.global[g]) {
+            return fail("nn", format!("the mirror encodes differently: global feature {g}"));
+        }
+        // The y-flip is a symmetry: every plane flipped along y, the globals unchanged.
+        let y = encode(&state.y_flipped());
+        let (h, w) = (live.h, live.w);
+        for c in 0..live.spatial.len() / (h * w) {
+            for yy in 0..h {
+                for x in 0..w {
+                    if y.spatial[c * h * w + (h - 1 - yy) * w + x] != live.spatial[c * h * w + yy * w + x] {
+                        return fail("nn", format!("the y-flip encodes differently: spatial channel {c}"));
+                    }
+                }
+            }
+        }
+        if let Some(g) = (0..live.global.len()).find(|&g| y.global[g] != live.global[g]) {
+            return fail("nn", format!("the y-flip encodes differently: global feature {g}"));
+        }
+    }
+    Ok(())
+}
+
+/// The search's chance children at a roll, under the shipped roll models and the loop's
+/// (`cfgs/chance_all_partial*.toml`: bounces with catches, grouped pass scatter and throw-ins):
+/// each a result the roll can take, probabilities in [0, 1] summing to 1, and each one applies.
+fn check_chance(state: &GameState, req: RequestedRoll) -> Check {
+    use botbowl_mcts::roll_outcomes::{enumerate_full, BounceModel, PassScatterModel, RollModel, ThrowInModel};
+    let loop_models = RollModel {
+        bounce: BounceModel::Catch,
+        pass_scatter: PassScatterModel::Grouped,
+        throw_in: ThrowInModel::Grouped,
+    };
+    for (name, model) in [("shipped", RollModel::default()), ("loop", loop_models)] {
+        let children = panic::catch_unwind(AssertUnwindSafe(|| {
+            enumerate_full(state, &req, botbowl_mcts::dynamics::ChanceModel::Exact, model)
+        }))
+        .map_err(|_| {
+            (
+                "chance",
+                format!("{name} enumeration of {req:?} panicked: {}", take_panic_msg()),
+            )
+        })?;
+        if children.is_empty() {
+            return fail("chance", format!("{name}: no outcome for {req:?}"));
+        }
+        let mut total = 0.0f64;
+        for c in &children {
+            let botbowl_mcts::BbAction::Chance { result, .. } = *c else {
+                return fail("chance", format!("{name}: a player action among {req:?}'s outcomes"));
+            };
+            let p = c.prob_f32().unwrap_or(f32::NAN);
+            if !(0.0..=1.0 + 1e-6).contains(&p) {
+                return fail("chance", format!("{name}: {req:?} -> {result:?} with probability {p}"));
+            }
+            total += p as f64;
+            if !req.is_compatible(result) {
+                return fail("chance", format!("{name}: {req:?} -> incompatible {result:?}"));
+            }
+            let mut c = state.clone();
+            let out = panic::catch_unwind(AssertUnwindSafe(|| {
+                c.step_with_roll_or_action(SomeProcInput::Roll(result))
+            }));
+            if out.is_err() {
+                return fail(
+                    "chance",
+                    format!("{name}: applying {req:?} -> {result:?} panicked: {}", take_panic_msg()),
+                );
+            }
+        }
+        if (total - 1.0).abs() > 1e-3 {
+            return fail(
+                "chance",
+                format!("{name}: {req:?}'s {} outcomes sum to {total}", children.len()),
+            );
+        }
+    }
     Ok(())
 }
 
@@ -876,6 +1012,9 @@ struct Stats {
     hidden_taken: u64,
     game_overs: u64,
     touchdowns: u64,
+    /// Kicks with a side fielding fewer than `team_size` (a run-out roster), and with nobody.
+    short_kickoffs: u64,
+    empty_kickoffs: u64,
     /// Micro-steps at which each procedure was on top: what the games reached.
     procs: BTreeMap<&'static str, u64>,
     /// Decisions by listed action type.
@@ -896,6 +1035,8 @@ impl Stats {
         self.hidden_taken += o.hidden_taken;
         self.game_overs += o.game_overs;
         self.touchdowns += o.touchdowns;
+        self.short_kickoffs += o.short_kickoffs;
+        self.empty_kickoffs += o.empty_kickoffs;
         for (k, v) in &o.procs {
             *self.procs.entry(k).or_default() += v;
         }
@@ -950,6 +1091,7 @@ fn play_game(cfg: &GameCfg, shared: &Shared, stats: &mut Stats, dump: &mut Optio
     let mut players = Players::new(cfg.seed, shared);
     let mut dice_rng = ChaCha8Rng::seed_from_u64(cfg.seed ^ 0xD1CE_D1CE);
     let mut prev = Prev::of(&state);
+    let mut last_turn: Option<(u8, TeamType, u8, u8)> = None;
     let mut record = Record {
         inputs: Vec::new(),
         hashes: Vec::new(),
@@ -989,6 +1131,11 @@ fn play_game(cfg: &GameCfg, shared: &Shared, stats: &mut Stats, dump: &mut Optio
             progress.step += 1;
             let input = if let Some(req) = state.pending_roll {
                 local.rolls += 1;
+                if k.apply_every > 0 && local.rolls % k.apply_every == 0 {
+                    if let Err((class, msg)) = check_chance(&state, req) {
+                        return Some(failure(cfg, Some(&state), &progress, class, msg));
+                    }
+                }
                 SomeProcInput::Roll(roll(req, cfg.dice, &mut dice_rng))
             } else {
                 progress.decision += 1;
@@ -1015,6 +1162,23 @@ fn play_game(cfg: &GameCfg, shared: &Shared, stats: &mut Stats, dump: &mut Optio
                     if let Err((class, msg)) = check_decision(&state, &actions) {
                         return Some(failure(cfg, Some(&state), &progress, class, msg));
                     }
+                    // The first `Turn` decision of a team turn: nobody of that team has acted yet.
+                    if state.proc_stack_top() == Some("Turn") && state.info.active_player.is_none() {
+                        let team = state.turn_team().unwrap();
+                        let key = (state.info.half, team, state.info.home_turn, state.info.away_turn);
+                        if last_turn != Some(key) {
+                            last_turn = Some(key);
+                            if let Some(p) = state.get_players_on_pitch_in_team(team).find(|p| p.used) {
+                                return Some(failure(
+                                    cfg,
+                                    Some(&state),
+                                    &progress,
+                                    "rules",
+                                    format!("player {} is already `used` as {team:?}'s turn starts", p.id),
+                                ));
+                            }
+                        }
+                    }
                     if let Err((class, msg)) = check_nn(&state, &actions) {
                         return Some(failure(cfg, Some(&state), &progress, class, msg));
                     }
@@ -1028,6 +1192,13 @@ fn play_game(cfg: &GameCfg, shared: &Shared, stats: &mut Stats, dump: &mut Optio
                         local.applied += 1;
                         if let Err((class, msg)) = check_apply(&state, &actions) {
                             return Some(failure(cfg, Some(&state), &progress, class, msg));
+                        }
+                    }
+                    if actions.contains(&Action::Simple(SimpleAT::KickoffAimMiddle)) {
+                        for t in [TeamType::Home, TeamType::Away] {
+                            let n = state.get_players_on_pitch_in_team(t).count();
+                            local.short_kickoffs += (n < state.board_dims.team_size) as u64;
+                            local.empty_kickoffs += (n == 0) as u64;
                         }
                     }
                     for a in &actions {
@@ -1416,4 +1587,104 @@ pub fn run(args: FuzzArgs) -> io::Result<()> {
         eprintln!("  {c:<12} x{n:<6} first seed {s:<10} {m}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn knobs(boards: &str) -> Knobs {
+        Knobs {
+            boards: boards_from(boards).unwrap(),
+            start: None,
+            policy: None,
+            replay_share: 1.0,
+            rolldice_share: 0.25,
+            wide_share: 0.5,
+            flat_share: 0.5,
+            hidden_prob: 0.05,
+            mcts_prob: 0.0,
+            nn_prob: 0.0,
+            apply_every: 2,
+            serde_every: 4,
+            max_steps: 400_000,
+        }
+    }
+
+    fn shared(boards: &str) -> Shared {
+        Shared {
+            knobs: knobs(boards),
+            mcts_iters: None,
+            mcts_config: botbowl_mcts::MctsConfig::new(),
+            nn: None,
+        }
+    }
+
+    /// A handful of games over the loop's mix pass every check, and replay.
+    #[test]
+    fn a_few_games_pass_every_check() {
+        install_panic_hook();
+        let sh = shared("loop");
+        let mut stats = Stats::default();
+        for seed in 0..12 {
+            let cfg = game_cfg(seed, &sh.knobs);
+            if let Some(f) = play_game(&cfg, &sh, &mut stats, &mut None) {
+                panic!("{}", serde_json::to_string_pretty(&f).unwrap());
+            }
+        }
+        assert_eq!(stats.games, 12);
+        assert_eq!(stats.game_overs, 12);
+        assert_eq!(stats.replays, 12);
+    }
+
+    /// The checks see a corrupted state: they are not vacuous.
+    #[test]
+    fn the_checks_catch_corruption() {
+        let sh = shared("loop");
+        let cfg = game_cfg(3, &sh.knobs);
+        let state = build_start(&GameCfg {
+            start: Start::Random,
+            ..cfg
+        });
+        let prev = Prev::of(&state);
+        assert!(check_always(&state, &prev, false).is_ok());
+
+        // A carrier who is not on the pitch.
+        let mut s = state.clone();
+        let id = s
+            .get_players_on_pitch()
+            .map(|p| p.id)
+            .find(|&i| s.ball != BallState::Carried(i))
+            .unwrap();
+        s.unfield_player(id, botbowl_engine::core::model::DugoutPlace::Reserves)
+            .unwrap();
+        s.ball = BallState::Carried(id);
+        assert_eq!(check_always(&s, &prev, false).unwrap_err().0, "ball");
+
+        let mut s = state.clone();
+        s.ball = BallState::OnGround(Position::new((0, 0)));
+        assert_eq!(check_always(&s, &prev, false).unwrap_err().0, "ball");
+
+        let mut s = state.clone();
+        s.info.half = prev.half + 1;
+        s.info.home_turn = 9;
+        assert_eq!(check_always(&s, &prev, false).unwrap_err().0, "counters");
+
+        let mut later = state.clone();
+        later.home.score += 1;
+        let prev_later = Prev::of(&later);
+        assert_eq!(check_always(&state, &prev_later, false).unwrap_err().0, "counters");
+
+        let mut s = state.clone();
+        let id = s
+            .get_players_on_pitch()
+            .map(|p| p.id)
+            .find(|&i| s.ball != BallState::Carried(i))
+            .unwrap();
+        s.unfield_player(id, botbowl_engine::core::model::DugoutPlace::Reserves)
+            .unwrap();
+        let moved = Prev::of(&s);
+        assert!(check_always(&s, &moved, false).is_ok(), "unfielding keeps the roster");
+        assert_eq!(moved.roster, prev.roster);
+    }
 }
