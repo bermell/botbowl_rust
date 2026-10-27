@@ -68,6 +68,7 @@ fn job(dir: &std::path::Path, model: PathBuf) -> EvalJobRequest {
         sprt: None,
         drive_gate: None,
         label: None,
+        resume: false,
     }
 }
 

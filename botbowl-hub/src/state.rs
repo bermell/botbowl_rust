@@ -32,6 +32,7 @@ use crate::api::{
 };
 use crate::label::{LabelInput, ShardWrite};
 use crate::rates::{Ledger, Live};
+use crate::resume::{EvalScan, ShardScan};
 
 pub type WorkerId = u64;
 
@@ -208,6 +209,12 @@ pub struct Job {
     ended: Option<Instant>,
     /// Accepted results per worker name: each worker's share of the job.
     by_worker: BTreeMap<String, Counts>,
+    /// The request as submitted (JSON): the same request submitted while this job runs attaches
+    /// to it ([`Inner::attach`]) instead of starting a second writer on its files.
+    key: Option<String>,
+    /// `POST /api/jobs/{id}/drain`: hand out no more of its games (a deadline is near); results
+    /// for games already out are still taken. Cleared when the same request is submitted again.
+    draining: bool,
 }
 
 impl Job {
@@ -253,6 +260,15 @@ impl Job {
                     stats: Some(UnitStats::Label(s.stats())),
                 })
                 .collect(),
+        }
+    }
+
+    /// Every file this job writes.
+    fn outputs(&self) -> Vec<&Path> {
+        match &self.kind {
+            Kind::Eval { req, .. } => vec![req.per_game_out.as_path(), req.report_out.as_path()],
+            Kind::Generate { shards } => shards.iter().map(|s| s.out.as_path()).collect(),
+            Kind::Label { shards, .. } => shards.iter().map(|s| s.input.out.as_path()).collect(),
         }
     }
 
@@ -308,6 +324,9 @@ impl Job {
             },
             by_worker: self.by_worker.clone(),
             recent: None,
+            hub_instance: 0,
+            draining: self.draining,
+            in_flight: 0,
         }
     }
 
@@ -385,6 +404,8 @@ pub struct TrajectoryPayload {
     lines: Result<Vec<u8>, String>,
     /// `drive_summary` of each line, in order.
     summaries: Vec<Option<(String, u32)>>,
+    /// `meta.seed` of each line, in order (`None` when unreadable or absent).
+    seeds: Vec<Option<u64>>,
 }
 
 impl TrajectoryPayload {
@@ -393,6 +414,7 @@ impl TrajectoryPayload {
             return TrajectoryPayload {
                 lines: Ok(Vec::new()),
                 summaries: Vec::new(),
+                seeds: Vec::new(),
             };
         }
         let json = match zstd::decode_all(zstd_json) {
@@ -401,6 +423,7 @@ impl TrajectoryPayload {
                 return TrajectoryPayload {
                     lines: Err(format!("zstd: {e}")),
                     summaries: Vec::new(),
+                    seeds: Vec::new(),
                 }
             }
         };
@@ -408,12 +431,14 @@ impl TrajectoryPayload {
             return TrajectoryPayload {
                 lines: Err("trajectory payload has an empty line".into()),
                 summaries: Vec::new(),
+                seeds: Vec::new(),
             };
         }
-        let summaries = json.split(|b| *b == b'\n').map(drive_summary).collect();
+        let (summaries, seeds) = json.split(|b| *b == b'\n').map(peek_line).unzip();
         TrajectoryPayload {
             lines: Ok(json),
             summaries,
+            seeds,
         }
     }
 
@@ -426,10 +451,18 @@ impl TrajectoryPayload {
 /// The board and the drive's own touchdowns, read from a trajectory line without keeping its
 /// samples. `outcome` is the absolute scoreline; a random-start drive begins at
 /// `meta.extra.start_score`, so its touchdowns are the difference (`td_rate.py`'s rule).
+#[cfg(test)]
 fn drive_summary(json: &[u8]) -> Option<(String, u32)> {
+    peek_line(json).0
+}
+
+/// [`drive_summary`], and the line's `meta.seed` (which game it is), in one parse.
+fn peek_line(json: &[u8]) -> (Option<(String, u32)>, Option<u64>) {
     #[derive(serde::Deserialize)]
     struct Meta {
         board_dims: BoardDims,
+        #[serde(default)]
+        seed: Option<u64>,
         #[serde(default)]
         extra: BTreeMap<String, String>,
     }
@@ -443,7 +476,9 @@ fn drive_summary(json: &[u8]) -> Option<(String, u32)> {
         meta: Meta,
         outcome: Outcome,
     }
-    let p: Peek = serde_json::from_slice(json).ok()?;
+    let Ok(p) = serde_json::from_slice::<Peek>(json) else {
+        return (None, None);
+    };
     let start = p
         .meta
         .extra
@@ -452,7 +487,10 @@ fn drive_summary(json: &[u8]) -> Option<(String, u32)> {
         .and_then(|(h, a)| Some(h.parse::<u32>().ok()? + a.parse::<u32>().ok()?))
         .unwrap_or(0);
     let end = p.outcome.home_score as u32 + p.outcome.away_score as u32;
-    Some((board_label(p.meta.board_dims), end.saturating_sub(start)))
+    (
+        Some((board_label(p.meta.board_dims), end.saturating_sub(start))),
+        p.meta.seed,
+    )
 }
 
 fn open_out(path: &Path, truncate: bool) -> io::Result<io::BufWriter<std::fs::File>> {
@@ -526,9 +564,25 @@ pub struct Inner {
     next_share: usize,
     /// Every accepted result, for the status page's rates and the hub.log rate line.
     pub ledger: Ledger,
+    /// Random, fixed for the process's life ([`Inner::new_instance`]): what tells a client that
+    /// the hub it polls is not the one it submitted to.
+    pub instance: u64,
 }
 
 impl Inner {
+    /// Give this hub process its own identity: a random `instance`, and task ids starting at a
+    /// random point. A worker that reconnects after a hub restart still sends the results of
+    /// games it started for the old hub, under the old hub's task ids; numbered from 0 again,
+    /// those ids would name *this* hub's tasks, and a trajectory of one seed would be written
+    /// into another shard as another game. From a random 63-bit start they name nothing here
+    /// and are dropped like any unknown task (and `trajectory_done` checks the seed anyway).
+    pub fn new_instance(&mut self) {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        self.instance = rng.gen_range(1..u64::MAX >> 1);
+        self.next_task = rng.gen_range(0..u64::MAX >> 1);
+    }
+
     // -- models ------------------------------------------------------------
 
     /// Read an ONNX file, hash it, keep the bytes for shipping.
@@ -540,10 +594,13 @@ impl Inner {
         self.model_paths.entry(id).or_insert_with(|| path.to_path_buf());
         // Plan 066: ship the TorchScript export with it when there is one (beside the path, or
         // beside the file it links to), read again on every load so a later export is picked up.
-        let ts = [Some(path.with_extension("ts")), path.canonicalize().ok().map(|p| p.with_extension("ts"))]
-            .into_iter()
-            .flatten()
-            .find(|p| p.is_file());
+        let ts = [
+            Some(path.with_extension("ts")),
+            path.canonicalize().ok().map(|p| p.with_extension("ts")),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|p| p.is_file());
         if let Some(ts) = ts {
             let b = std::fs::read(&ts).map_err(|e| io::Error::new(e.kind(), format!("model {}: {e}", ts.display())))?;
             self.torchscripts.insert(id, Arc::new(b));
@@ -605,12 +662,25 @@ impl Inner {
 
     // -- jobs --------------------------------------------------------------
 
+    /// The synchronous path (a caller holding the lock): every file is read inline. `Hub::submit`
+    /// reads label inputs and resume scans before taking the lock and writes labels on threads.
     pub fn submit(&mut self, req: JobRequest) -> io::Result<JobId> {
-        match req {
-            JobRequest::Eval(r) => self.submit_eval(r),
-            JobRequest::Generate(r) => self.submit_generate(r),
-            // The synchronous path (a caller holding the lock): read and write inline.
-            // `Hub::submit` reads the shards before taking the lock and writes on threads.
+        let key = serde_json::to_string(&req).map_err(io::Error::other)?;
+        if let Some(id) = self.attach(&key, &req.outputs())? {
+            return Ok(id);
+        }
+        let id = match req {
+            JobRequest::Eval(r) => {
+                let scan = r
+                    .resume
+                    .then(|| crate::resume::scan_eval(&r.per_game_out))
+                    .transpose()?;
+                self.submit_eval_scanned(r, scan)?
+            }
+            JobRequest::Generate(r) => {
+                let scans = r.resume.then(|| crate::resume::scan_generate(&r)).transpose()?;
+                self.submit_generate_scanned(r, scans)?
+            }
             JobRequest::Label(r) => {
                 let inputs = crate::label::load_inputs(&r)?;
                 let (id, writes) = self.submit_label(r, inputs)?;
@@ -618,7 +688,89 @@ impl Inner {
                     let result = w.run();
                     self.label_written(w.job, w.unit, result);
                 }
-                Ok(id)
+                id
+            }
+        };
+        self.set_key(id, key);
+        Ok(id)
+    }
+
+    /// Before a job is created: the same request (`key`, its JSON) already running is that job —
+    /// its id is returned, and a drain on it is lifted (the submitter is back for it). Otherwise a
+    /// running job that writes any of `outputs` refuses this one: two writers would interleave in
+    /// one file, and a resume would cut the other's line in progress.
+    ///
+    /// This is what makes resubmission safe. After a hub restart `job --wait` submits its request
+    /// again, and so may the loop that launched it, an orphaned client of the run before, or the
+    /// next Slurm job's loop against a persistent hub: all of them end up on one job.
+    pub fn attach(&mut self, key: &str, outputs: &[PathBuf]) -> io::Result<Option<JobId>> {
+        let same = self
+            .jobs
+            .values()
+            .find(|j| j.state == JobState::Running && j.key.as_deref() == Some(key))
+            .map(|j| j.id);
+        if let Some(id) = same {
+            let job = self.jobs.get_mut(&id).expect("found");
+            if std::mem::take(&mut job.draining) {
+                eprintln!("[hub] job {id} submitted again: no longer draining");
+                self.dispatch();
+            } else {
+                eprintln!("[hub] job {id} submitted again: attached");
+            }
+            return Ok(Some(id));
+        }
+        for j in self.jobs.values().filter(|j| j.state == JobState::Running) {
+            if let Some(o) = j.outputs().into_iter().find(|o| outputs.iter().any(|p| p == o)) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("job {} (another request) is already writing {}", j.id, o.display()),
+                ));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Record the request a new job was made from (see [`Inner::attach`]).
+    pub fn set_key(&mut self, id: JobId, key: String) {
+        if let Some(j) = self.jobs.get_mut(&id) {
+            j.key = Some(key);
+        }
+    }
+
+    /// Stop handing out a running job's games (`POST /api/jobs/{id}/drain`): `job --wait
+    /// --deadline` calls it shortly before a Slurm job's end, so the games already on workers can
+    /// finish and be written while nothing new starts that the walltime would cut. `false` for a
+    /// job that is not running.
+    pub fn drain(&mut self, id: JobId) -> bool {
+        let Some(job) = self.jobs.get_mut(&id) else {
+            return false;
+        };
+        if job.state != JobState::Running {
+            return false;
+        }
+        if !job.draining {
+            job.draining = true;
+            eprintln!(
+                "[hub] job {id} draining: {} game(s) not handed out are left for a resume",
+                job.pending.len()
+            );
+        }
+        true
+    }
+
+    /// Flush every open output, for a clean exit (`serve` on SIGTERM/SIGINT). Every write is
+    /// already flushed per result, under this lock; holding it while the process exits is what
+    /// guarantees no line is cut halfway.
+    pub fn flush_all(&mut self) {
+        for job in self.jobs.values_mut() {
+            match &mut job.kind {
+                Kind::Generate { shards } => shards.iter_mut().for_each(|s| {
+                    let _ = s.writer.flush();
+                }),
+                Kind::Eval { per_game, .. } => {
+                    let _ = per_game.flush();
+                }
+                Kind::Label { .. } => {}
             }
         }
     }
@@ -657,10 +809,17 @@ impl Inner {
     }
 
     pub fn submit_eval(&mut self, req: EvalJobRequest) -> io::Result<JobId> {
+        self.submit(JobRequest::Eval(req))
+    }
+
+    /// An eval job, resumed from `scan` (its per-game file as read, [`crate::resume::scan_eval`])
+    /// when there is one: the lines are cut to whole ones and folded into the rows in file order,
+    /// so each row — its SPRT included — is what it was when the file was last written.
+    pub fn submit_eval_scanned(&mut self, req: EvalJobRequest, scan: Option<EvalScan>) -> io::Result<JobId> {
         let candidate = self.resolve_bot(&req.candidate)?;
         let mut rungs = Vec::new();
         let mut pending = VecDeque::new();
-        for (i, r) in req.rungs.iter().enumerate() {
+        for r in req.rungs.iter() {
             let opponent = self.resolve_bot(&r.opponent)?;
             let gate = r.drives.as_ref().and(req.drive_gate);
             let mut row = LadderRow::new(&r.name).with_sprt(req.sprt).with_gate(gate);
@@ -674,7 +833,39 @@ impl Inner {
                 row,
                 done: HashSet::new(),
             });
-            pending.extend((0..r.games).map(|g| (i, g)));
+        }
+        if let Some(scan) = &scan {
+            crate::resume::cut(&req.per_game_out, scan.file_len, scan.keep_len)?;
+            let (mut kept, mut other) = (0u32, 0u32);
+            for line in &scan.lines {
+                match rungs.iter_mut().find(|r| r.name == line.rung && line.game < r.total) {
+                    Some(r) if !r.done.contains(&line.game) => {
+                        r.done.insert(line.game);
+                        r.row.record(line);
+                        kept += 1;
+                    }
+                    _ => other += 1,
+                }
+            }
+            eprintln!(
+                "[hub] eval resume from {}: {kept} game(s) on disk{}{}",
+                req.per_game_out.display(),
+                if other > 0 {
+                    format!(", {other} line(s) of no rung of this job left as they are")
+                } else {
+                    String::new()
+                },
+                if scan.cut.is_empty() {
+                    String::new()
+                } else {
+                    format!(", cut off: {}", scan.cut.join("; "))
+                }
+            );
+        }
+        for (i, r) in rungs.iter().enumerate() {
+            if !r.row.decided() {
+                pending.extend((0..r.total).filter(|g| !r.done.contains(g)).map(|g| (i, g)));
+            }
         }
         if let Some(dir) = req.report_out.parent() {
             std::fs::create_dir_all(dir)?;
@@ -689,10 +880,26 @@ impl Inner {
             per_game,
             report: None,
         };
-        Ok(self.insert_job(kind, label, batch, pending))
+        Ok(self.insert_finishing(kind, label, batch, pending))
     }
 
     pub fn submit_generate(&mut self, req: GenerateJobRequest) -> io::Result<JobId> {
+        self.submit(JobRequest::Generate(req))
+    }
+
+    /// A generate job, resumed from `scans` (one per shard, [`crate::resume::scan_generate`]) when
+    /// there are any: each shard is cut to its whole games and only the missing games are queued.
+    pub fn submit_generate_scanned(
+        &mut self,
+        req: GenerateJobRequest,
+        scans: Option<Vec<ShardScan>>,
+    ) -> io::Result<JobId> {
+        if req.resume && req.truncate {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--resume and --truncate exclude each other",
+            ));
+        }
         if req.shards.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -718,6 +925,29 @@ impl Inner {
                     format!("{}: curriculum mode requires a lecture", s.name),
                 ));
             }
+            let mut done = HashSet::new();
+            if let Some(scan) = scans.as_ref().and_then(|v| v.get(i)) {
+                crate::resume::cut(&s.out, scan.file_len, scan.keep_len)?;
+                done.extend(scan.done.iter().copied());
+                eprintln!(
+                    "[hub] {}: resuming, {}/{} games on disk ({} records){}{}",
+                    s.name,
+                    done.len(),
+                    s.games,
+                    scan.lines,
+                    if scan.beyond > 0 {
+                        format!(", {} game(s) beyond the target kept", scan.beyond)
+                    } else {
+                        String::new()
+                    },
+                    if scan.cut.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", cut off: {}", scan.cut.join("; "))
+                    }
+                );
+            }
+            pending.extend((0..s.games).filter(|g| !done.contains(g)).map(|g| (i, g)));
             shards.push(Shard {
                 name: s.name.clone(),
                 out: s.out.clone(),
@@ -725,15 +955,30 @@ impl Inner {
                 total: s.games,
                 cfg: s.cfg.clone(),
                 model,
-                done: HashSet::new(),
+                done,
                 written: 0,
                 samples: 0,
                 stats: GenStats::default(),
                 writer: open_out(&s.out, req.truncate)?,
             });
-            pending.extend((0..s.games).map(|g| (i, g)));
         }
-        Ok(self.insert_job(Kind::Generate { shards }, req.label, req.batch, pending))
+        Ok(self.insert_finishing(Kind::Generate { shards }, req.label, req.batch, pending))
+    }
+
+    /// [`Inner::insert_job`], finished at once when a resume found nothing left to play.
+    fn insert_finishing(
+        &mut self,
+        kind: Kind,
+        label: Option<String>,
+        batch: u16,
+        pending: VecDeque<(usize, u32)>,
+    ) -> JobId {
+        let id = self.insert_job(kind, label, batch, pending);
+        let job = self.jobs.get_mut(&id).expect("just inserted");
+        if job.all_done() {
+            Self::finish(job);
+        }
+        id
     }
 
     fn insert_job(&mut self, kind: Kind, label: Option<String>, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
@@ -750,6 +995,8 @@ impl Inner {
             started: Instant::now(),
             ended: None,
             by_worker: BTreeMap::new(),
+            key: None,
+            draining: false,
         };
         eprintln!(
             "[hub] job {id} submitted: {}",
@@ -772,6 +1019,13 @@ impl Inner {
     /// it started), for the page's rate and ETA.
     fn job_status_of(&self, j: &Job, now: Instant) -> JobStatus {
         let mut s = j.status(self.workers.len());
+        s.hub_instance = self.instance;
+        s.in_flight = self
+            .in_flight
+            .values()
+            .filter(|f| f.job == j.id)
+            .map(|f| f.remaining.len() as u32)
+            .sum();
         if j.state == JobState::Running {
             s.recent = Some(
                 self.ledger
@@ -930,7 +1184,7 @@ impl Inner {
         let job_ids: Vec<JobId> = self
             .jobs
             .values()
-            .filter(|j| j.state == JobState::Running && !j.pending.is_empty())
+            .filter(|j| j.state == JobState::Running && !j.draining && !j.pending.is_empty())
             .map(|j| j.id)
             .collect();
         if job_ids.is_empty() {
@@ -946,6 +1200,7 @@ impl Inner {
                 // Labelling (plan 062) is on the loop's critical path too.
                 let generate_waiting = self.jobs.values().any(|j| {
                     j.state == JobState::Running
+                        && !j.draining
                         && matches!(j.kind, Kind::Generate { .. } | Kind::Label { .. })
                         && !j.pending.is_empty()
                 });
@@ -965,7 +1220,9 @@ impl Inner {
                     .map(|k| job_ids[(self.next_share + k) % job_ids.len()])
                     .find(|id| {
                         self.jobs.get(id).is_some_and(|j| {
-                            !j.pending.is_empty() && !(eval_capped && matches!(j.kind, Kind::Eval { .. }))
+                            !j.draining
+                                && !j.pending.is_empty()
+                                && !(eval_capped && matches!(j.kind, Kind::Eval { .. }))
                         })
                     })
                 else {
@@ -1123,12 +1380,27 @@ impl Inner {
             return;
         };
         let s = &mut shards[unit];
+        // Every record of game `g` is seed `seed + g`. Anything else is a result that reached the
+        // wrong task (it cannot, with task ids unique per hub process — this is the check that
+        // says so): not written, and the game goes back on the queue if it still needs playing.
+        let expected = s.seed + game as u64;
+        if let Some(wrong) = payload.seeds.iter().flatten().find(|&&x| x != expected) {
+            eprintln!(
+                "[hub] job {job_id} {}: a result for game {game} (seed {expected}) holds seed {wrong}; dropped",
+                s.name
+            );
+            if !s.done.contains(&game) && job.state == JobState::Running {
+                job.pending.push_front((unit, game));
+            }
+            self.dispatch();
+            return;
+        }
         let fresh = s.done.insert(game);
         let mut records = 0u64;
         if fresh && !payload.nothing() {
             // One JSON line per record; a game that played the drive after its
             // score sends two (plan 047). Each is written as its own line.
-            let TrajectoryPayload { lines, summaries } = payload;
+            let TrajectoryPayload { lines, summaries, .. } = payload;
             let written = lines
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
                 .and_then(|json| {
