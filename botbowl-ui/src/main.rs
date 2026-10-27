@@ -3,6 +3,7 @@ mod curriculum;
 mod dataset;
 mod drive_agree;
 mod eval;
+mod fuzz;
 mod live;
 
 mod override_audit;
@@ -41,5 +42,6 @@ fn main() -> io::Result<()> {
         cli::Command::RollCensus(args) => roll_census::run(args),
         cli::Command::Probe(args) => probe::run(args),
         cli::Command::DriveAgree(args) => drive_agree::run(args),
+        cli::Command::Fuzz(args) => fuzz::run(args),
     }
 }

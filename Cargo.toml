@@ -75,3 +75,12 @@ opt-level = 2
 [profile.profiling]
 inherits = "release"
 debug = 2
+
+# `cargo build --profile fuzz` — release speed with debug assertions and overflow checks on, for
+# `botbowl-ui fuzz` (plan 069 item 7): a `debug_assert!` or an integer overflow the loop's release
+# build would let pass (wrapping silently) is a failure there. Own `target/fuzz/` directory.
+[profile.fuzz]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+debug = "line-tables-only"

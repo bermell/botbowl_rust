@@ -84,3 +84,15 @@ scripts/value_bench.sh runs/value_bench/g05_gen06.jsonl runs/value_bench/OUT ref
   pairs every net against the first).
 - **Don't score a net trained on the benchmark's corpus** (g05's is `loopmix16x9g/gen06`, d1k
   gen04's is `gen01`): it has seen one outcome of every state.
+
+## `fuzz` (plan 069 item 7, `src/fuzz.rs`)
+
+Seeded, parallel random games with invariant checks after every micro-step (panics, mask, encoder
+and policy cells, Hash/PartialEq, players, ball, counters, setups, chance children, termination,
+replay); run it through `scripts/fuzz_s3.sh` (`CAP=20x11/7 MINUTES=30`), which builds the `fuzz`
+profile (release + debug assertions + overflow checks) in its own target dir. A game is a pure
+function of its seed: reproduce a `failures.jsonl` line with `fuzz --only-seed S [--dump-from STEP]`
+and the run's `--boards/--start/--policy` flags. When a check fires on legal play, the check is
+wrong: encode the rule in the check (with a comment) rather than loosening it wholesale — the
+existing exceptions (crowd-pushed player on the border during `Push`, Time-out, Throw Team-mate's
+hidden-only decisions) are examples.

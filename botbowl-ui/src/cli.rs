@@ -64,6 +64,87 @@ pub enum Command {
     /// choose differently (and whether cheap prescreens predict it). Summarise with
     /// `scripts/drive_agree_summary.py`.
     DriveAgree(DriveAgreeArgs),
+    /// Plan 069 item 7: seeded, parallel random-game fuzzing of the engine with invariant checks
+    /// after every micro-step (panics, the action mask, Hash/PartialEq, players, ball, counters,
+    /// termination, replay, the NN encoder and policy cells). Writes `failures.jsonl` and
+    /// `summary.json` to `--out`. `scripts/fuzz_s3.sh` runs it per board capacity.
+    Fuzz(FuzzArgs),
+}
+
+/// `fuzz` (plan 069 item 7). See `fuzz.rs` for every check.
+#[derive(clap::Args, Debug, Clone)]
+pub struct FuzzArgs {
+    /// Games to play (0 = until `--minutes` runs out). Game `i` has seed `--seed + i`.
+    #[arg(long, default_value_t = 1000)]
+    pub games: u64,
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Stop starting games after this many minutes (0 = no limit).
+    #[arg(long, default_value_t = 0.0)]
+    pub minutes: f64,
+    /// Worker threads (0 = every core).
+    #[arg(long, default_value_t = 0)]
+    pub threads: usize,
+    /// `loop` (the loop's size mix centred on this binary's capacity: area 70..capacity, T 0.3,
+    /// floor 0.2, aspect 1.5-2.8, 26 cells a player), `full` (the capacity board only) or a
+    /// `--board-sizes` list (`20x11,16x9:2`).
+    #[arg(long, default_value = "loop")]
+    pub boards: String,
+    /// `full` (coin toss to game over), `random` (a random-start drive played on to game over) or
+    /// `mix` (half each).
+    #[arg(long, default_value = "mix")]
+    pub start: String,
+    /// `uniform`, `typed` (uniform over action types, then squares), `scripted` (the scripted bot
+    /// with a typed move one decision in five) or `mix` (per game: 10% / 40% / 50%).
+    #[arg(long, default_value = "mix")]
+    pub policy: String,
+    /// Share of games replayed from their seed and inputs, every state compared by hash.
+    #[arg(long, default_value_t = 0.25)]
+    pub replay_share: f64,
+    /// Share of games played under `DiceMode::RollDice` + `GameState::step` (the production path)
+    /// instead of `RegisterRolls` with the fuzzer's dice.
+    #[arg(long, default_value_t = 0.25)]
+    pub rolldice_share: f64,
+    /// Share of games whose rosters get random stats, skills from every `Skill` and random team
+    /// resources (re-rolls, bribes, fan factor, cheerleaders, coaches).
+    #[arg(long, default_value_t = 0.5)]
+    pub wide_skills_share: f64,
+    /// Share of `RegisterRolls` games with flattened dice (pass/fail 50/50, 2D6 uniform).
+    #[arg(long, default_value_t = 0.5)]
+    pub flat_dice_share: f64,
+    /// Per decision: take a hidden (human-only) action when one is offered.
+    #[arg(long, default_value_t = 0.03)]
+    pub hidden_prob: f64,
+    /// Per decision: let a small MCTS search (`--mcts-config`, heuristic leaves) choose.
+    #[arg(long, default_value_t = 0.0)]
+    pub mcts_prob: f64,
+    #[arg(long, default_value_t = 32)]
+    pub mcts_iters: usize,
+    /// The search preset for `--mcts-prob` (default: `MctsConfig::new()`).
+    #[arg(long)]
+    pub mcts_config: Option<std::path::PathBuf>,
+    /// An ONNX net (tract, CPU) whose bare policy chooses with probability `--nn-prob`.
+    #[arg(long)]
+    pub model: Option<String>,
+    #[arg(long, default_value_t = 0.5)]
+    pub nn_prob: f64,
+    /// Every k-th decision, apply every listed and hidden action to a clone (0 = never).
+    #[arg(long, default_value_t = 4)]
+    pub apply_every: u64,
+    /// Every k-th decision, check a JSON round trip (and a double mirror at `Turn`) (0 = never).
+    #[arg(long, default_value_t = 8)]
+    pub serde_every: u64,
+    /// Micro-steps a game may take before it counts as non-terminating.
+    #[arg(long, default_value_t = 400_000)]
+    pub max_steps: u64,
+    #[arg(long, default_value = "fuzz_out")]
+    pub out: String,
+    /// Play only this seed, on one thread, and print its failure.
+    #[arg(long)]
+    pub only_seed: Option<u64>,
+    /// With `--only-seed`: write every state from this micro-step on to `seed{S}.states.jsonl`.
+    #[arg(long)]
+    pub dump_from: Option<u64>,
 }
 
 /// `drive-agree` (plan 068 §1). See `drive_agree.rs`.
