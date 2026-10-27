@@ -535,6 +535,10 @@ client 7%, batcher thread 22% at batch 1.
    in parallel to choose the main configuration — net size (96x8 → 128x10 → 192x12), descents in
    generation (1000 vs 4000), label playouts (exp078 at 8/16/32), τ, value weight; ~60% the main 20x11
    run from the current champion; ~10% slack. Human-level evaluation is the user's community step.
+   **Superseded 2026-10-27 by `plans/071-plan--hpc-from-scratch-experiments.md`:** the run starts from
+   random weights (the user, 2026-10-27), so the split is shakedown 200 / bootstrap with two net sizes
+   300 / A/Bs 750 / main run 3,250 / slack 500 GPU-h, with the cost model, the curve and the operations
+   there.
 
 ## 3. The box meanwhile
 
