@@ -19,6 +19,27 @@ pub enum JobRequest {
     Label(LabelJobRequest),
 }
 
+impl JobRequest {
+    /// Every file the job writes. Two running jobs never share one ([`crate::state::Inner::attach`]).
+    pub fn outputs(&self) -> Vec<PathBuf> {
+        match self {
+            JobRequest::Eval(r) => vec![r.per_game_out.clone(), r.report_out.clone()],
+            JobRequest::Generate(r) => r.shards.iter().map(|s| s.out.clone()).collect(),
+            JobRequest::Label(r) => r.shards.iter().map(|s| s.out.clone()).collect(),
+        }
+    }
+
+    /// Whether submitting it again after a hub restart continues it rather than starting over or
+    /// duplicating it: `job --wait` resubmits only these. Label jobs skip shards already written.
+    pub fn resumable(&self) -> bool {
+        match self {
+            JobRequest::Eval(r) => r.resume,
+            JobRequest::Generate(r) => r.resume,
+            JobRequest::Label(_) => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BotReq {
     Random,
@@ -81,6 +102,11 @@ pub struct EvalJobRequest {
     /// page. `None` falls back to the job kind.
     #[serde(default)]
     pub label: Option<String>,
+    /// Resume from `per_game_out` (`job eval --resume`, [`crate::resume`]): its lines are folded
+    /// into the rows again, in file order, and only the other games are played. Otherwise the
+    /// file is appended to as it is.
+    #[serde(default)]
+    pub resume: bool,
 }
 
 /// One corpus shard of a generate job: `games` trajectories with seeds
@@ -110,6 +136,11 @@ pub struct GenerateJobRequest {
     /// As [`EvalJobRequest::label`] (`gen03 generate`).
     #[serde(default)]
     pub label: Option<String>,
+    /// Resume from the shards on disk (`job generate --resume`, [`crate::resume`]): each shard's
+    /// complete games are kept, a torn tail is cut, and only the missing seeds are played.
+    /// Exclusive with `truncate`.
+    #[serde(default)]
+    pub resume: bool,
 }
 
 /// One input shard of a label job, labelled into `out` exactly as `botbowl-ui mc-label` would
@@ -301,6 +332,16 @@ pub struct JobStatus {
     /// This job's results over the last few minutes (the status page's rate and ETA).
     #[serde(default)]
     pub recent: Option<Rate>,
+    /// The hub process that holds this job ([`Submitted::instance`]): a client that sees another
+    /// instance knows the hub restarted and its job is gone.
+    #[serde(default)]
+    pub hub_instance: u64,
+    /// `POST /api/jobs/{id}/drain` was called: no new games are handed out for it.
+    #[serde(default)]
+    pub draining: bool,
+    /// Games (label items) of this job on workers right now.
+    #[serde(default)]
+    pub in_flight: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -432,4 +473,8 @@ pub struct Throughput {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Submitted {
     pub id: JobId,
+    /// A random number fixed for the hub process's life. Job ids start again at 0 when a hub
+    /// restarts, so an id alone cannot tell "my job" from "a new job with my number".
+    #[serde(default)]
+    pub instance: u64,
 }

@@ -123,6 +123,7 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
         sprt: None,
         drive_gate: None,
         label: None,
+        resume: false,
     }
 }
 
@@ -445,6 +446,7 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
         sprt: None,
         drive_gate: None,
         label: None,
+        resume: false,
     };
     let id = hub.submit_eval(req).unwrap();
     let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
