@@ -89,8 +89,12 @@ export VALUE_BLEND=1.0 MC_LABEL_PLAYOUTS=8 MC_LABEL_PARALLEL=96 NEXT_DRIVE=1 DRI
 # (memory stalls ~1/3 of the time, labels at ~90 samples/min); 48 streams for the label worker.
 export LABEL_PARALLEL_GAMES=48
 export VALUE_WEIGHT=0.36
-export MAX_GENS=60
+export MAX_GENS="${MAX_GENS:-66}"
 export LABEL_VIA_HUB=1
+# Plan 069 item 4b (exp086, 2026-10-27): the MC labels stream inside the generate phase (byte-identical
+# mc/ shards) on LABEL_STREAMS label-only streams next to the 48 game streams; the mc-label phase then
+# finds every shard labelled and is skipped. A test bed for the cluster: LABEL_STREAMING=0 = as before.
+export LABEL_STREAMING="${LABEL_STREAMING:-1}" LABEL_STREAMS="${LABEL_STREAMS:-16}"
 # The v9 benchmark (14x7/16x9 states from gen01) stays the series; a binary of this capacity replays
 # its 16x9-capacity corpus. VALUE_BENCH_2 is the 20x11 benchmark, frozen from the first 20x11
 # generation's held-out shards (plan 065 §4); scored once the file exists.
