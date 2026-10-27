@@ -453,10 +453,6 @@ fn team_counts(state: &GameState) -> [usize; 2] {
     n
 }
 
-fn stack_has(state: &GameState, names: &[&str]) -> bool {
-    state.proc_stack_iter().any(|p| names.contains(&p.name()))
-}
-
 struct Prev {
     half: u8,
     turns: [u8; 2],

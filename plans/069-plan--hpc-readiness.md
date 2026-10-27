@@ -397,6 +397,63 @@ client 7%, batcher thread 22% at batch 1.
 7. **Bug chasing before hours burn:** a 20x11/7 random-game fuzz at scale (panics, hash/eq invariants,
    kickoff table, 7-player setups); the probe findings (mirror asymmetry, rare-skill values, AV sign);
    full-size 26x15/11 fuzz and a tiny end-to-end loop for later.
+
+   **The S3 fuzz (exp085, 2026-10-27): `botbowl-ui fuzz`, `scripts/fuzz_s3.sh`.** Seeded, parallel
+   random games, each a pure function of its seed: the board from the loop's size mix at the binary's
+   capacity (`--boards loop`; `full` or a `--board-sizes` list), a full game from the coin toss or a
+   random-start drive played on to the end of the game (so `--next-drive` continuations, half time and
+   every later kick-off), a uniform / type-uniform / scripted policy (optionally a small MCTS search on
+   the loop's `chance_all_partial_gen` preset, or a net's bare policy via tract), fair or flattened dice
+   (pass/fail 50/50, 2D6 uniform, so every kick-off result and fumble comes up), `RegisterRolls` with
+   the fuzzer rolling or `RollDice` + `GameState::step` (the production path `mc-label` replays),
+   "wide" rosters (random characteristics, skills from every `Skill`, random re-rolls, bribes, fan
+   factor, cheerleaders, coaches), "tag-team" rosters full of Throw / Kick Team-mate and Right Stuff
+   playing hidden (human-only) actions 30% of the time, "brutal" rosters (soft armour, Mighty Blow,
+   Claws, Dirty Player) that run teams out of players, and the jump toggle. Built with the new `fuzz`
+   cargo profile (release + debug assertions + overflow checks). Checked after **every micro-step**
+   (classes in `summary.json`): panics; step states; the mask (a decision lists something, every
+   listed action is legal and has a policy cell, no hidden type listed, a deciding team that matches
+   `turn_team` / `setup_team`, `search_actions` non-empty, a subset and the same on a clone; every
+   4th decision every listed and hidden action applied to a clone); the encoder (shape, finite, cells
+   in range and round-tripping, a JSON round trip encodes the same, the mirror encodes identically and
+   the y-flip as the flipped planes at a `Turn` decision); Hash/PartialEq (clone every step; a JSON
+   round trip and a double mirror / y-flip every 8th decision); roster conservation, board/player
+   agreement, players and the ball inside the frame; at a `Turn` decision nobody out of bounds, at most
+   `team_size` a side, a standing carrier not in the end zone they attack (a missed touchdown), the
+   ball on the pitch and not under a player, re-rolls at most the half's start; once-per-turn
+   declarations, Secure the Ball's conditions, nobody `used` as a team turn starts; legal setups at the
+   kick; half / turn markers and scores monotone (Time-out's step back excepted), winner = score;
+   the search's chance children at every 4th roll (shipped and the loop's roll models: compatible,
+   probabilities summing to 1, each applying); termination (400k micro-steps); and replay of 25% of
+   games from seed + inputs, every state compared by hash. `--only-seed S [--dump-from STEP]` replays
+   one failure and writes its states as JSON lines for a test.
+
+   | capacity | boards | games | micro-steps | decisions | rolls | replays | failures |
+   |---|---|---|---|---|---|---|---|
+   | 20x11/7 | loop mix (12x6/3 .. 20x11/7), first check set (56c3f45), 6 threads, 40 min | 57,246 | 14.73M | 11.49M | 3.24M | 14,303 | 0 |
+   | 20x11/7 | loop mix, full check set (85f7ade), MCTS on 1% of decisions, 25 min | 28,624 | 7.36M | 5.73M | 1.63M | 7,024 | 0 |
+   | 20x11/7 | loop mix, gen58's bare policy on 80% of decisions (tract), 20 min | 1,080 | 0.48M | 0.37M | 0.11M | 247 | 0 |
+   | 16x9/6 | loop mix at 16x9 capacity, 10 min | 8,351 | 1.91M | 1.48M | 0.42M | 2,180 | 0 |
+   | 26x15/11 | full board only, 15 min | 4,398 | 1.30M | 1.03M | 0.27M | 1,102 | 0 |
+   | 20x11/7 | `roll-census` replay of the loop's S3 corpora gen56-59, fuzz profile | 8,590 trajectories | | 497,664 | | 8,590 | 0 diverged |
+
+   Coverage over the two 20x11 runs, as micro-steps with the procedure on top of the stack: 68.5k
+   kick-off table rolls (every result; Charge 15k, Quick
+   Snap 34k, Solid Defence 18k, High Kick 8k, Pitch Invasion 10k, Dodgy Snack 10k, Sweltering Heat
+   1.8k), Ejection (bribe offers) 5.5k, Stalling 13.9k, Secure the Ball 11.8k, jumps 99.7k, Throw /
+   Kick Team-mate 18.6k (4.4k landings), pass-to-square 1.4k, interceptions 0.6k, MA <= 2 stand-ups
+   18k, 95k touchdowns, 30k kicks with a side short of `team_size` and 191 with a side fielding
+   nobody. **No engine bug found**: every failure the first runs reported was a harness assumption,
+   now encoded as a rule of the checks (a player pushed into the crowd stands on the border square
+   while `Push` resolves the follow-up and crowd injury; a Time-out moves both markers back in one
+   micro-step; the side not to move keeps its `used` flags until its turn; a declared Throw
+   Team-mate asks only hidden decisions). Notes, not bugs: `GameState::get_player(id)` returns a
+   `Result` but panics on an id past the roster array; the search's "pruning emptied the action
+   list" fallback (a debug-build warning in `dynamics.rs`) fires at Blitz / Pass / Hand-off
+   activations whose pruning leaves nothing (P2 with an unreachable loose ball, P5 with no reachable
+   square next to a standing opponent, P1 before any move) — by design, but the search then expands
+   every raw move there. For the cluster's CPU partition: one `scripts/fuzz_s3.sh` task per node,
+   `THREADS` = its cores, a disjoint `SEED` range per task.
 8. **Experiment plan for the hours** (draft split): ~10% shakedown and benchmarks; ~20% one-step A/Bs run
    in parallel to choose the main configuration — net size (96x8 → 128x10 → 192x12), descents in
    generation (1000 vs 4000), label playouts (exp078 at 8/16/32), τ, value weight; ~60% the main 20x11
