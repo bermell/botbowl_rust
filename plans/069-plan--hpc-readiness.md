@@ -244,7 +244,10 @@ client 7%, batcher thread 22% at batch 1.
    the shim linked against the aarch64 wheel (`cross_check.sh`, Debian's cross gcc 12 in docker, no
    qemu), offline vendored builds with an empty `CARGO_HOME`. **Left for the cluster:** the
    `apptainer build` and its `%test`, torch on the H100, `parity066.sh`/`gatec066.sh` there, the
-   first-login checklist (README), and the 64K-page question. Arm results are not expected to be
+   first-login checklist (README), and the 64K-page question.
+   **Re-checked 2026-10-27 at 71af5b9** (after plan 070 and the S3 merge): `cross_check.sh` of both
+   workspaces clean, and release cross builds of `botbowl-ui`/`botbowl-worker`/`prepare` with `torch`
+   link the aarch64 wheel as before; no lockfile has changed since the bundle (024c963), so it is current. Arm results are not expected to be
    bit-identical to x86 (glibc libm FMA paths, tract kernels): determinism checks compare Arm with Arm.
 4. **Inference tuning suite** (scripted, so the first pilot hours measure instead of fiddle): bucket sizes
    up to 512–1024, lanes, streams per process, processes per GPU, multiple canvases (padding waste across
