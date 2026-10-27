@@ -719,15 +719,36 @@ impl Inner {
             }
             return Ok(Some(id));
         }
+        let mut superseded = Vec::new();
         for j in self.jobs.values().filter(|j| j.state == JobState::Running) {
             if let Some(o) = j.outputs().into_iter().find(|o| outputs.iter().any(|p| p == o)) {
+                // A drained job with nothing left on workers was abandoned by its submitter (a
+                // deadline, then a resubmission that differs — another environment, another
+                // label): it writes nothing more, so it gives way.
+                if j.draining && self.games_in_flight(j.id) == 0 {
+                    superseded.push(j.id);
+                    continue;
+                }
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!("job {} (another request) is already writing {}", j.id, o.display()),
                 ));
             }
         }
+        for id in superseded {
+            let job = self.jobs.get_mut(&id).expect("found");
+            job.fail("drained and superseded by a new request for the same files".into());
+        }
         Ok(None)
+    }
+
+    /// Games (label items) of job `id` on workers right now.
+    fn games_in_flight(&self, id: JobId) -> u32 {
+        self.in_flight
+            .values()
+            .filter(|f| f.job == id)
+            .map(|f| f.remaining.len() as u32)
+            .sum()
     }
 
     /// Record the request a new job was made from (see [`Inner::attach`]).
@@ -1020,12 +1041,7 @@ impl Inner {
     fn job_status_of(&self, j: &Job, now: Instant) -> JobStatus {
         let mut s = j.status(self.workers.len());
         s.hub_instance = self.instance;
-        s.in_flight = self
-            .in_flight
-            .values()
-            .filter(|f| f.job == j.id)
-            .map(|f| f.remaining.len() as u32)
-            .sum();
+        s.in_flight = self.games_in_flight(j.id);
         if j.state == JobState::Running {
             s.recent = Some(
                 self.ledger

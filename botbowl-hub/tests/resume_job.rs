@@ -264,6 +264,15 @@ async fn resubmitting_attaches_and_other_requests_on_the_same_files_are_refused(
     assert_eq!(hub.submit_generate(gen_job(&dir, false, false, true)).unwrap(), id);
     assert!(!hub.job_status(id).unwrap().draining);
     wait_done(&hub, id).await;
+
+    // A drained job with nothing in flight gives way to a different request for its files.
+    let dir = tmp("supersede");
+    let (hub, _url) = start_hub().await;
+    let old = hub.submit_generate(gen_job(&dir, false, false, true)).unwrap();
+    assert!(hub.drain(old));
+    let new = hub.submit_generate(gen_job(&dir, true, false, true)).unwrap();
+    assert_ne!(new, old);
+    assert!(matches!(hub.job_status(old).unwrap().state, JobState::Failed { .. }));
 }
 
 fn eval_job(dir: &Path, resume: bool) -> EvalJobRequest {

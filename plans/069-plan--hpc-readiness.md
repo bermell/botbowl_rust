@@ -332,9 +332,20 @@ client 7%, batcher thread 22% at batch 1.
    `LOOP_DEADLINE` + `STOP_MARGIN_SECS` + `STOP_PHASE_ESTIMATE` (exit 75 at a boundary the next
    phase cannot finish before, 76 when a phase is longer than a whole job), `EXIT_ON_SIGNAL`,
    `PREPARED_ROOT`. The persistent-hub variant is knobs only (`HUB_EXTERNAL=1` + worker arrays) and
-   needs PCD → compute reachability and Lustre on the VM. **Gap:** a generate phase cut by the
-   walltime restarts from scratch (the hub has no restart recovery, plan 041 phase 3), so with 2 h
-   jobs `GAMES_PER_SHARD` must keep a generate phase well inside one job.
+   needs PCD → compute reachability and Lustre on the VM. **Resume (2026-10-27, branch
+   `genresume`):** a generate phase spans jobs. `job generate --resume` (the loop's default,
+   `GEN_RESUME=on`) reads each shard first — every line names its seed — keeps the complete games,
+   cuts a torn tail, and plays only the missing seeds (the uninterrupted seed set); `job eval
+   --resume` refolds its per-game lines. At `LOOP_DEADLINE` the job client drains the job
+   (`PHASE_DRAIN_SECS` before: nothing new starts, the games on workers are written) and the loop
+   exits 75; the next job resubmits the identical request, and a hub restart under a waiting client
+   is resubmitted on its own. The hub exits on SIGTERM between writes, task ids are unique per hub
+   process (a worker's results for a dead hub's tasks are dropped, never written elsewhere), and the
+   same request attaches to its running job while another one on the same files is refused.
+   Generate is exempt from `STOP_PHASE_ESTIMATE` (it needs `GEN_MIN_SLICE_SECS` of a job, not the
+   whole phase). What a cut still costs: the games in flight at a kill (at a deadline, only games
+   longer than the drain window), the label shard in progress, a train. No protocol bump.
+   `botbowl-hub/CLAUDE.md` "Resume"; `scripts/hub_resume_test.sh`.
 6. **Scale tests here with fake workers:** the hub with thousands of streams (websockets, zstd, label
    items of 32 samples → many small messages), `prepare` and the data loader at 10–100× today's corpus,
    multi-GPU training (DDP) if one H100 cannot keep up.

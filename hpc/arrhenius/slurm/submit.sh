@@ -42,8 +42,8 @@ slurm_defaults || exit 2
 PARTITION="${PARTITION:-gpu}"
 NODES="${NODES:-1}"
 # The centre's default walltime is 2 h and its maximum is not known yet. Every phase of a
-# generation must fit in one job (the loop stops the chain with exit 76 when one cannot), and a
-# job under ~10 min wastes its startup.
+# generation but generate must fit in one job (the loop stops the chain with exit 76 when one
+# cannot; generate resumes across jobs, GEN_RESUME), and a job under ~10 min wastes its startup.
 WALLTIME="${WALLTIME:-2:00:00}"
 SIGNAL_SECS="${SIGNAL_SECS:-600}"
 SBATCH_EXTRA="${SBATCH_EXTRA:-}"
@@ -69,7 +69,7 @@ submit() {   # submit SCRIPT ARGS_FILE CHAIN_LEFT [extra sbatch args...]
 }
 case "$WALLTIME" in
     *-*|[4-9]:*|[1-9][0-9]:*) ;;
-    *) echo "note: WALLTIME=$WALLTIME — every phase of a generation must fit in one job; size GAMES_PER_SHARD so 'generate done (N min)' on status.md stays well under it" >&2 ;;
+    *) echo "note: WALLTIME=$WALLTIME — every phase but generate (which resumes across jobs) must fit in one job: mc-label, prepare and train" >&2 ;;
 esac
 
 mkdir -p "$STATE_DIR/logs"
