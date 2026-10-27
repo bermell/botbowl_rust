@@ -29,7 +29,7 @@ HUB="$BIN/botbowl-hub"; WORKER="$BIN/botbowl-worker"
 for b in "$HUB" "$WORKER"; do [ -x "$b" ] || { echo "missing $b (set BIN)"; exit 2; }; done
 TOKEN="$OUT/hub.token"   # this test's own token: the machine's token file is never touched
 URL="http://127.0.0.1:$PORT"
-GAMES="${GAMES:-24}"     # per shard
+GAMES="${GAMES:-60}"     # per shard
 SHARDS="0 1 2 3"
 unset BLOOD_MCTS_BUDGET BLOOD_NN_SERVER
 
@@ -80,7 +80,7 @@ def read(path):
         m = t['meta']
         out.setdefault(m['seed'], []).append((m['extra'].get('drive'), len(t['samples']), t['outcome']['home_score'], t['outcome']['away_score']))
     return out
-bad, same, diff, follow = [], 0, 0, 0
+bad, same, diff, follow, unchecked = [], 0, 0, 0, 0
 for k in shards:
     got, want = read(f'{d}/shard{k}.jsonl'), read(f'{ref}/shard{k}.jsonl')
     base = 7000000 + int(k) * 100000
@@ -91,9 +91,11 @@ for k in shards:
         if drives not in (['1'], ['1', '2']):
             bad.append(f'shard{k} seed {s}: records {drives}')
         follow += len(recs) == 2
-        if recs == want.get(s): same += 1
+        if s not in want: unchecked += 1
+        elif recs == want[s]: same += 1
         else: diff += 1
-print(f'{sum(1 for _ in shards)} shards, {same} games identical to the reference, {diff} different, {follow} with a follow-on drive')
+print(f'{sum(1 for _ in shards)} shards, {same} games identical to the reference, {diff} different'
+      + (f', {unchecked} beyond it' if unchecked else '') + f', {follow} with a follow-on drive')
 if bad:
     print('FAIL: ' + '; '.join(bad[:10])); sys.exit(1)
 if diff:
@@ -123,17 +125,19 @@ kill -9 "$HUB_PID"; wait "$HUB_PID" 2> /dev/null
 # What a kill mid-write leaves: half a line on one shard; on another, a game whose follow-on
 # record is missing (its scoring first drive is the last line).
 head -c 700 "$OUT/ref/shard1.jsonl" >> "$OUT/kill9/shard0.jsonl"
-"${PY:-python3}" - "$OUT/kill9/shard2.jsonl" << 'EOF'
+"${PY:-python3}" - "$OUT/kill9" << 'EOF' | tee -a "$OUT/test.log"
 import json, sys
-p = sys.argv[1]
-lines = open(p, 'rb').read().split(b'\n')[:-1]
-# cut after the last record that is a drive 1 followed by its drive 2
-for i in range(len(lines) - 2, -1, -1):
-    a, b = json.loads(lines[i]), json.loads(lines[i + 1])
-    if b['meta']['extra'].get('drive') == '2' and a['meta']['seed'] == b['meta']['seed']:
-        open(p, 'wb').write(b'\n'.join(lines[:i + 1]) + b'\n')
-        print(f'cut seed {a["meta"]["seed"]} before its follow-on')
-        break
+# On shard 1, 2 or 3: cut after the last first-drive record that is followed by its drive 2.
+for k in (1, 2, 3):
+    p = f'{sys.argv[1]}/shard{k}.jsonl'
+    lines = open(p, 'rb').read().split(b'\n')[:-1]
+    for i in range(len(lines) - 2, -1, -1):
+        a, b = json.loads(lines[i]), json.loads(lines[i + 1])
+        if b['meta']['extra'].get('drive') == '2' and a['meta']['seed'] == b['meta']['seed']:
+            open(p, 'wb').write(b'\n'.join(lines[:i + 1]) + b'\n')
+            print(f'kill9: shard{k} cut between seed {a["meta"]["seed"]} and its follow-on record')
+            sys.exit(0)
+print('kill9: no follow-on record on disk yet to cut')
 EOF
 log "kill9: hub killed at $(lines "$OUT/kill9") records; restarting"
 hub_up
@@ -159,7 +163,7 @@ verdict term "$OUT/term"
 job "$OUT/relaunch" --resume > "$OUT/relaunch.client.log" 2>&1 &
 CLIENT=$!
 wait_lines "$OUT/relaunch" $((TOTAL / 2))
-kill -9 "$CLIENT" "$HUB_PID"; wait 2> /dev/null
+kill -9 "$CLIENT" "$HUB_PID"; wait "$CLIENT" "$HUB_PID" 2> /dev/null
 log "relaunch: hub and client killed at $(lines "$OUT/relaunch") records"
 hub_up
 job "$OUT/relaunch" --resume >> "$OUT/relaunch.client.log" 2>&1 || { log "FAIL relaunch: exit $?"; FAILED=1; }
@@ -167,20 +171,23 @@ grep "resuming" "$OUT/hub.log" | tail -4 | sed 's/^/    /' | tee -a "$OUT/test.l
 verdict relaunch "$OUT/relaunch"
 
 # -- deadline: drained, exit 75, resubmitted ----------------------------------------
-DL=$(( $(date +%s) + 8 ))
-job "$OUT/deadline" --resume --deadline "$DL" --drain-secs 4 > "$OUT/deadline.client.log" 2>&1
+# Ten times the games, so the job outlives the client's first poll (5 s in), where it is drained;
+# the client exits 75 once the games then in flight are in. Seeds past the reference's are checked
+# for shape only.
+DL=$(( $(date +%s) + 25 ))
+GAMES=$((GAMES * 10)) job "$OUT/deadline" --resume --deadline "$DL" --drain-secs 23 > "$OUT/deadline.client.log" 2>&1
 RC=$?
 AT=$(lines "$OUT/deadline")
 [ "$RC" -eq 75 ] && log "deadline: client exit 75 at $AT records" || { log "FAIL deadline: exit $RC (want 75)"; FAILED=1; }
 grep -q "draining" "$OUT/hub.log" || { log "FAIL deadline: the job was never drained"; FAILED=1; }
-job "$OUT/deadline" --resume > "$OUT/deadline2.client.log" 2>&1 || { log "FAIL deadline: resubmit exit $?"; FAILED=1; }
-grep -q "no longer draining" "$OUT/hub.log" && log "deadline: resubmission attached to the drained job" || log "deadline: resubmission made a new job"
-verdict deadline "$OUT/deadline"
+GAMES=$((GAMES * 10)) job "$OUT/deadline" --resume > "$OUT/deadline2.client.log" 2>&1 || { log "FAIL deadline: resubmit exit $?"; FAILED=1; }
+grep -q "no longer draining" "$OUT/hub.log" && log "deadline: resubmission attached to the drained job" || { log "FAIL deadline: resubmission made a new job"; FAILED=1; }
+GAMES=$((GAMES * 10)) verdict deadline "$OUT/deadline"
 
 # -- the worker's stale results ---------------------------------------------------
 STALE=$(grep -c "holds seed" "$OUT/hub.log")
-DROP=$(grep -c "left with" "$OUT/hub.log")
-log "worker: $DROP disconnect(s) logged; $STALE result(s) of a dead hub's task that reached a live task (must be 0 with random task ids)"
+JOINS=$(grep -c '"w" joined' "$OUT/hub.log")
+log "worker: one process, $JOINS connections over the hub restarts; $STALE result(s) of a dead hub's task reached a live task (must be 0: task ids are random per hub)"
 [ "$STALE" -eq 0 ] || FAILED=1
 
 [ "$FAILED" -eq 0 ] && log "ALL PASS" || log "SOME FAILED (see $OUT)"
