@@ -578,6 +578,10 @@ STOP_MARGIN_SECS="${STOP_MARGIN_SECS:-0}"
 #   PREPARED_ROOT  where prepared_train/prepared_val go (genNN/ under it; default the generation's
 #                  own dir). Set, a generation marked prepared whose dirs are missing (another
 #                  job's node-local disk) is prepared again instead of failing.
+#   PREPARE_JOBS   plan 071 R8: `prepare --jobs N`, the window's shards encoded N at a time (one part
+#                  per shard, concatenated in shard order: byte-identical prepared dirs, measured on a
+#                  real 3-gen window). 1 (default) = one serial pass, exactly as before. Ignored (1)
+#                  when PREPARE_TARGET_ARGS has --dedup, which is serial by nature.
 #   GEN_RESUME     on|off. on: a generate phase resumes from the shards already in its gen dir
 #                  (`job generate --resume`: each shard's complete games are kept, a torn tail is cut,
 #                  only the missing seeds are played — the uninterrupted run's seed set), so a phase
@@ -597,6 +601,12 @@ GEN_MIN_SLICE_SECS="${GEN_MIN_SLICE_SECS:-900}"
 PHASE_DRAIN_SECS="${PHASE_DRAIN_SECS:-300}"
 HUB_LOST_SECS="${HUB_LOST_SECS:-0}"
 PREPARED_ROOT="${PREPARED_ROOT:-}"
+PREPARE_JOBS="${PREPARE_JOBS:-1}"
+# The extra `prepare` flags for the gen00 and per-generation prepare: empty at PREPARE_JOBS=1.
+PREPARE_JOB_ARGS=""
+if [ "$PREPARE_JOBS" -gt 1 ] && [[ " $PREPARE_TARGET_ARGS " != *" --dedup "* ]]; then
+    PREPARE_JOB_ARGS="--jobs $PREPARE_JOBS"
+fi
 LOOP_T0=$(date +%s)
 EXIT_ON_SIGNAL="${EXIT_ON_SIGNAL:-0}"
 if [ -n "$BOTBOWL_BIN_DIR" ]; then
@@ -1181,10 +1191,10 @@ if [ ! -f "$(champion)" ]; then
         for K in $TRAIN_SHARDS; do TRAIN_IN="$TRAIN_IN $GEN_DIR/shard$K.jsonl"; done
         for K in $VAL_SHARDS; do VAL_IN="$VAL_IN $GEN_DIR/shard$K.jsonl"; done
         # shellcheck disable=SC2086
-        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "gen00 prepare (train) failed"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "gen00 prepare (val) failed"
         status "gen00 prepare done ($((SECONDS / 60)) min), target $PREPARE_TARGET_ARGS"
         touch "$GEN_DIR/.prepared"
@@ -1583,12 +1593,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
         VAL_IN=$(window_shards "$G" val)
         [ -n "$TRAIN_IN" ] && [ -n "$VAL_IN" ] || die "$GG window is empty (WINDOW_GENS=$WINDOW_GENS)"
         WIN_GENS=$(echo "$TRAIN_IN" | tr ' ' '\n' | grep -c . )
-        status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards, target $PREPARE_TARGET_ARGS"
+        status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards, target $PREPARE_TARGET_ARGS${PREPARE_JOB_ARGS:+, $PREPARE_JOB_ARGS}"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $TRAIN_IN --out "$PREP_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $TRAIN_IN --out "$PREP_DIR/prepared_train" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (train) failed"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $VAL_IN --out "$PREP_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $VAL_IN --out "$PREP_DIR/prepared_val" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (val) failed"
         status "$GG prepare done ($((SECONDS / 60)) min), disk free $(free_gb)"
         touch "$GEN_DIR/.prepared"
