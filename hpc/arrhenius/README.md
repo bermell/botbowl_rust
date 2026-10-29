@@ -128,7 +128,8 @@ the pulled files.
 
 ## Corpus retention (`retain_corpora.sh`, plan 071 §5.3)
 
-On the cluster (login node or any job; needs `zstd`), against a run dir. **Dry run unless
+On the cluster (login node or any job; needs `zstd` on the host's PATH — the image does not
+install it, so run it on the host, not inside the container), against a run dir. **Dry run unless
 `--apply`**; prints every deletion and compression with its size:
 
 ```sh
