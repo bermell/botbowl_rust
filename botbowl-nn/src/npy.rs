@@ -214,6 +214,50 @@ impl<T: NpyScalar> StreamWriter<T> {
         Ok(())
     }
 
+    /// Append every element of a finished `.npy` file of the same dtype and trailing shape, byte
+    /// for byte (plan 071 R8: `prepare --jobs` concatenates per-input parts). The source's header
+    /// is parsed only to check dtype, trailing shape and payload length; the payload is copied
+    /// file to file without decoding.
+    pub fn append_npy_file(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path.as_ref();
+        let mut src = File::open(path)?;
+        let mut prefix = [0u8; PREFIX];
+        src.read_exact(&mut prefix)?;
+        let bad = |msg: String| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {msg}", path.display()));
+        if &prefix[..MAGIC.len()] != MAGIC || prefix[6] != 1 {
+            return Err(bad("not a v1.0 .npy file".into()));
+        }
+        let hlen = u16::from_le_bytes([prefix[8], prefix[9]]) as usize;
+        let mut header = vec![0u8; hlen];
+        src.read_exact(&mut header)?;
+        let mut whole = prefix.to_vec();
+        whole.extend_from_slice(&header);
+        let parsed = parse(&whole)?; // header only: the payload is empty here
+        if parsed.descr != T::DESCR || parsed.shape.get(1..) != Some(&self.trailing[..]) {
+            return Err(bad(format!(
+                "dtype {} shape {:?} does not append to {} (N, {:?})",
+                parsed.descr,
+                parsed.shape,
+                T::DESCR,
+                self.trailing
+            )));
+        }
+        let elems = parsed.shape.iter().product::<usize>();
+        let bytes = (elems * T::SIZE) as u64;
+        let len = src.metadata()?.len();
+        if len != (PREFIX + hlen) as u64 + bytes {
+            return Err(bad(format!(
+                "payload is {} bytes, the header says {bytes}",
+                len - (PREFIX + hlen) as u64
+            )));
+        }
+        self.file.flush()?;
+        let copied = io::copy(&mut src, self.file.get_mut())?;
+        assert_eq!(copied, bytes, "npy append: short copy from {}", path.display());
+        self.elems += elems;
+        Ok(())
+    }
+
     /// Number of leading-axis rows written so far.
     pub fn rows(&self) -> usize {
         self.elems / self.row_elems
@@ -365,6 +409,41 @@ mod tests {
         assert_eq!(b2.as_i64(), vec![1, 2, 3, 4, 5, 6]);
         std::fs::remove_file(&p1).ok();
         std::fs::remove_file(&p2).ok();
+    }
+
+    /// Plan 071 R8: appending finished streams equals streaming the rows in one go, byte for byte,
+    /// and a wrong trailing shape is refused.
+    #[test]
+    fn stream_writer_appends_finished_files_byte_for_byte() {
+        let (a, b, joined, direct, bad) = (tmp("app_a"), tmp("app_b"), tmp("app_j"), tmp("app_d"), tmp("app_x"));
+        let rows_a: Vec<i64> = (0..12).collect();
+        let rows_b: Vec<i64> = (100..108).collect();
+        for (p, rows) in [(&a, &rows_a), (&b, &rows_b)] {
+            let mut w = StreamWriter::<i64>::create(p, &[4]).unwrap();
+            w.push(rows).unwrap();
+            w.finish().unwrap();
+        }
+        let mut w = StreamWriter::<i64>::create(&joined, &[4]).unwrap();
+        w.append_npy_file(&a).unwrap();
+        w.append_npy_file(&b).unwrap();
+        assert_eq!(w.rows(), 5);
+        assert_eq!(w.finish().unwrap(), 5);
+        let mut w = StreamWriter::<i64>::create(&direct, &[4]).unwrap();
+        w.push(&rows_a).unwrap();
+        w.push(&rows_b).unwrap();
+        w.finish().unwrap();
+        assert_eq!(std::fs::read(&joined).unwrap(), std::fs::read(&direct).unwrap());
+
+        let mut w = StreamWriter::<i64>::create(&bad, &[2]).unwrap();
+        assert!(
+            w.append_npy_file(&a).is_err(),
+            "trailing shape (4) must not append to (2)"
+        );
+        let mut w = StreamWriter::<f32>::create(&bad, &[4]).unwrap();
+        assert!(w.append_npy_file(&a).is_err(), "i64 must not append to f32");
+        for p in [a, b, joined, direct, bad] {
+            std::fs::remove_file(p).ok();
+        }
     }
 
     #[test]

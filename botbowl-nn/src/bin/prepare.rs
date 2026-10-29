@@ -169,12 +169,54 @@ struct Args {
     /// corpus still records it, because replay rebuilds a trajectory from every played action.
     #[arg(long = "keep-forced")]
     keep_forced: bool,
+    /// Plan 071 R8: encode this many input files at once, each into its own part under
+    /// `OUT/.parts/`, then concatenate the parts in input order. The output is byte-identical to
+    /// `--jobs 1` (the default: one pass in input order), because every input's rows land in the
+    /// same order and a per-drive value weight never spans two files. `--dedup` keeps the first
+    /// copy across the whole input list, so it needs `--jobs 1`.
+    #[arg(long, default_value_t = 1)]
+    jobs: usize,
+}
+
+/// The per-sample settings, shared read-only by every worker.
+struct Opts {
+    solved_root: SolvedRootPolicy,
+    kind: PolicyTargetKind,
+    min_root_visits: u32,
+    value_blend: f32,
+    value_td_lambda: Option<f32>,
+    dedup: bool,
+    keep_forced: bool,
+}
+
+/// What happened to the samples read, summed over the inputs for the summary line.
+#[derive(Default, Clone, Copy)]
+struct Counts {
+    read: usize,
+    kept: usize,
+    skipped_policy: usize,
+    skipped_value: usize,
+    below_min: usize,
+    forced: usize,
+    dupes: usize,
+}
+
+impl Counts {
+    fn add(&mut self, o: &Counts) {
+        self.read += o.read;
+        self.kept += o.kept;
+        self.skipped_policy += o.skipped_policy;
+        self.skipped_value += o.skipped_value;
+        self.below_min += o.below_min;
+        self.forced += o.forced;
+        self.dupes += o.dupes;
+    }
 }
 
 /// One board shape's open output files, plus the little that must stay in RAM.
 ///
 /// Created lazily on the group's first sample: the `.npy` headers are
-/// back-patched at [`DimsGroup::finish`] time, so nothing here needs to know
+/// back-patched at [`DimsGroup::close`] time, so nothing here needs to know
 /// `N` up front.
 struct DimsGroup {
     subdir: PathBuf,
@@ -195,6 +237,19 @@ struct DimsGroup {
     offsets: Vec<i64>, // (N+1,), starts with 0
 }
 
+/// A group whose streamed files are finished (headers patched), its buffered arrays still in RAM:
+/// written next to them ([`Closed::write_buffered`]) or, for a `--jobs` part, appended to the
+/// merged group ([`DimsGroup::append`]).
+struct Closed {
+    subdir: PathBuf,
+    n: usize,
+    m: usize,
+    value: Vec<f32>,
+    weight: Vec<f32>,
+    chosen: Vec<i64>,
+    offsets: Vec<i64>,
+}
+
 impl DimsGroup {
     fn create(out: &Path, w: usize, h: usize) -> std::io::Result<Self> {
         let subdir = out.join(format!("dims_{w}x{h}"));
@@ -213,9 +268,25 @@ impl DimsGroup {
         })
     }
 
-    /// Back-patch the streamed headers and write the buffered arrays.
-    /// Returns `(N, M)`.
-    fn finish(self) -> std::io::Result<(usize, usize)> {
+    /// Append a closed part's rows (`--jobs`): its streamed files byte for byte past their
+    /// headers, its buffered arrays with the CSR offsets shifted past the rows already here.
+    fn append(&mut self, part: Closed) -> std::io::Result<()> {
+        let src = &part.subdir;
+        self.spatial.append_npy_file(src.join("spatial.npy"))?;
+        self.global.append_npy_file(src.join("global.npy"))?;
+        self.action_rows.append_npy_file(src.join("actions.npy"))?;
+        self.policy.append_npy_file(src.join("policy.npy"))?;
+        let base = *self.offsets.last().unwrap();
+        self.offsets.extend(part.offsets[1..].iter().map(|o| o + base));
+        self.value.extend(part.value);
+        self.weight.extend(part.weight);
+        self.chosen.extend(part.chosen);
+        self.n += part.n;
+        Ok(())
+    }
+
+    /// Back-patch the streamed headers; the buffered arrays come back unwritten.
+    fn close(self) -> std::io::Result<Closed> {
         let n = self.spatial.finish()?;
         assert_eq!(n, self.n, "spatial rows disagree with the sample count");
         assert_eq!(self.global.finish()?, n, "global rows disagree with the sample count");
@@ -225,13 +296,29 @@ impl DimsGroup {
             m,
             "action rows disagree with the policy length"
         );
-
-        npy::write_f32(self.subdir.join("value.npy"), &self.value, &[n])?;
         assert_eq!(self.weight.len(), n, "one value weight per sample");
+        assert_eq!(self.offsets.len(), n + 1, "CSR offsets are N+1 long");
+        Ok(Closed {
+            subdir: self.subdir,
+            n,
+            m,
+            value: self.value,
+            weight: self.weight,
+            chosen: self.chosen,
+            offsets: self.offsets,
+        })
+    }
+}
+
+impl Closed {
+    /// Write the buffered arrays next to the streamed ones. Returns `(N, M)`.
+    fn write_buffered(self) -> std::io::Result<(usize, usize)> {
+        let n = self.n;
+        npy::write_f32(self.subdir.join("value.npy"), &self.value, &[n])?;
         npy::write_f32(self.subdir.join("weight.npy"), &self.weight, &[n])?;
         npy::write_i64(self.subdir.join("chosen.npy"), &self.chosen, &[n])?;
         npy::write_i64(self.subdir.join("action_offsets.npy"), &self.offsets, &[n + 1])?;
-        Ok((n, m))
+        Ok((n, self.m))
     }
 }
 
@@ -263,6 +350,184 @@ fn encoding_digest(enc: &EncodedRaw) -> u128 {
     (u128::from(hi.finish()) << 64) | u128::from(lo.finish())
 }
 
+type Groups = BTreeMap<(usize, usize), DimsGroup>;
+
+/// Encode every sample of one input file into `groups` (created under `out` on first use).
+fn prepare_input(
+    input: &Path,
+    out: &Path,
+    opts: &Opts,
+    groups: &mut Groups,
+    counts: &mut Counts,
+    seen: &mut HashSet<u128>,
+) {
+    let reader = DatasetReader::open(input).unwrap_or_else(|e| panic!("cannot open input {}: {e}", input.display()));
+    for traj in reader {
+        let traj = traj.unwrap_or_else(|e| panic!("bad trajectory in {}: {e}", input.display()));
+        // Plan 036 W4. One JSONL trajectory is one drive, which is exactly
+        // the unit the value label is constant over, so the weight is known
+        // once the drive has been written: `1 / kept rows`. Counting *kept*
+        // rows rather than `traj.samples.len()` is what makes the weights
+        // sum to 1 per drive after filtering and dedup — the whole point is
+        // that each drive contributes one unit of value gradient per epoch.
+        let before: BTreeMap<(usize, usize), usize> = groups.iter().map(|(k, g)| (*k, g.n)).collect();
+        let td_values = opts.value_td_lambda.map(|l| value_targets_td_lambda(&traj.samples, l));
+        for (si, sample) in traj.samples.iter().enumerate() {
+            counts.read += 1;
+            // `children` is the root's post-pruning action set (searched or forced alike), so
+            // fewer than two means the decision had no choice to learn.
+            if !opts.keep_forced && sample.children.len() < 2 {
+                counts.forced += 1;
+                continue;
+            }
+            if sample.root_visits < opts.min_root_visits && !sample.scripted {
+                counts.below_min += 1;
+                continue;
+            }
+            let policy = match policy_target_of(sample, opts.solved_root, opts.kind) {
+                Some(p) => p,
+                None => {
+                    counts.skipped_policy += 1;
+                    continue;
+                }
+            };
+            let value = match td_values
+                .as_ref()
+                .map_or_else(|| value_target_blended(sample, opts.value_blend), |td| td[si])
+            {
+                Some(v) => v,
+                None => {
+                    // Value target missing (outcome not backfilled) — the
+                    // value head needs it, so drop the sample.
+                    counts.skipped_value += 1;
+                    continue;
+                }
+            };
+
+            let enc = encode_raw(&sample.state);
+            // Dedup on the encoded bytes, after the target filters: a row
+            // the net never sees cannot be the one we keep.
+            if opts.dedup && !seen.insert(encoding_digest(&enc)) {
+                counts.dupes += 1;
+                continue;
+            }
+            let mover = mover_for(&sample.state);
+            let dims = sample.state.board_dims;
+            // Lazy: creating the group creates its dims subdir and opens
+            // its output files, so an empty group never leaves a stub dir.
+            let group = match groups.entry((enc.w, enc.h)) {
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    std::fs::create_dir_all(out).expect("create output dir");
+                    let g = DimsGroup::create(out, enc.w, enc.h).expect("open dims output files");
+                    e.insert(g)
+                }
+            };
+
+            group.spatial.push(&enc.spatial).expect("write spatial");
+            group.global.push(&enc.global).expect("write global");
+            group.value.push(value);
+
+            // Legal actions (CSR): one row per child, aligned to the
+            // policy-target probabilities.
+            let mut chosen_local: i64 = -1;
+            let mut m_local = 0usize;
+            for (j, cstat) in sample.children.iter().enumerate() {
+                let cell = action_cell(cstat.action, mover, dims);
+                group
+                    .action_rows
+                    .push(&[cell.channel as i64, cell.y as i64, cell.x as i64, cell.is_simple as i64])
+                    .expect("write actions");
+                group.policy.push(&[policy.probs[j]]).expect("write policy");
+                m_local += 1;
+                if cstat.action == sample.chosen_action {
+                    chosen_local = j as i64;
+                }
+            }
+            // Fallback: if the played action isn't among the children
+            // (shouldn't happen), point at the policy argmax.
+            if chosen_local < 0 {
+                chosen_local = policy
+                    .probs
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                    .map(|(i, _)| i as i64)
+                    .unwrap_or(0);
+            }
+            group.chosen.push(chosen_local);
+
+            group.n += 1;
+            let last = *group.offsets.last().unwrap();
+            group.offsets.push(last + m_local as i64);
+            counts.kept += 1;
+        }
+
+        // The drive is written; back-fill its rows' value weights. A drive
+        // whose rows were all filtered out contributes none.
+        for (key, group) in groups.iter_mut() {
+            let kept = group.n - before.get(key).copied().unwrap_or(0);
+            if kept > 0 {
+                group.weight.extend(std::iter::repeat(1.0 / kept as f32).take(kept));
+            }
+        }
+    }
+}
+
+/// `--jobs N`: each input into `OUT/.parts/<index>` on one of N threads, then the parts appended
+/// to the final groups in input order (and deleted as they go). Returns the merged groups, still
+/// open, with the summed counts.
+fn prepare_parallel(inputs: &[PathBuf], out: &Path, opts: &Opts, jobs: usize) -> (Groups, Counts) {
+    let parts_root = out.join(".parts");
+    // A crashed run's parts are stale; never append them.
+    let _ = std::fs::remove_dir_all(&parts_root);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<(BTreeMap<(usize, usize), Closed>, Counts)>>> =
+        inputs.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..jobs.min(inputs.len()) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= inputs.len() {
+                    break;
+                }
+                let part_dir = parts_root.join(i.to_string());
+                let mut groups = Groups::new();
+                let mut counts = Counts::default();
+                let mut seen = HashSet::new(); // unused: --dedup is --jobs 1 only
+                prepare_input(&inputs[i], &part_dir, opts, &mut groups, &mut counts, &mut seen);
+                let closed = groups
+                    .into_iter()
+                    .map(|(k, g)| (k, g.close().expect("finalise part output files")))
+                    .collect();
+                *results[i].lock().unwrap() = Some((closed, counts));
+            });
+        }
+    });
+
+    let mut groups = Groups::new();
+    let mut counts = Counts::default();
+    for (i, slot) in results.into_iter().enumerate() {
+        let (parts, c) = slot.into_inner().unwrap().expect("every input was prepared");
+        counts.add(&c);
+        for ((w, h), part) in parts {
+            let group = match groups.entry((w, h)) {
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    std::fs::create_dir_all(out).expect("create output dir");
+                    e.insert(DimsGroup::create(out, w, h).expect("open dims output files"))
+                }
+            };
+            let part_dir = part.subdir.clone();
+            group.append(part).expect("append a part");
+            std::fs::remove_dir_all(&part_dir).expect("remove a merged part");
+        }
+        let _ = std::fs::remove_dir(parts_root.join(i.to_string()));
+    }
+    let _ = std::fs::remove_dir(&parts_root);
+    (groups, counts)
+}
+
 fn main() {
     let args = Args::parse();
     let solved_root: SolvedRootPolicy = args.solved_root.into();
@@ -275,138 +540,42 @@ fn main() {
             min_range: args.gumbel_min_range,
         },
     };
+    if args.jobs == 0 {
+        eprintln!("prepare: --jobs must be at least 1");
+        std::process::exit(2);
+    }
+    if args.dedup && args.jobs > 1 {
+        eprintln!("prepare: --dedup keeps the first copy across every input, so it needs --jobs 1");
+        std::process::exit(2);
+    }
+    let opts = Opts {
+        solved_root,
+        kind,
+        min_root_visits: args.min_root_visits,
+        value_blend: args.value_blend,
+        value_td_lambda: args.value_td_lambda,
+        dedup: args.dedup,
+        keep_forced: args.keep_forced,
+    };
 
     // Keyed by (w, h) engine dims.
-    let mut groups: BTreeMap<(usize, usize), DimsGroup> = BTreeMap::new();
-    let mut total_read = 0usize;
-    let mut total_kept = 0usize;
-    let mut total_skipped_policy = 0usize;
-    let mut total_skipped_value = 0usize;
-    let mut total_below_min = 0usize;
-    let mut total_forced = 0usize;
-    let mut total_dupes = 0usize;
-    // Plan 036 W5. A 128-bit digest of the `(spatial, global)` bytes, not the
-    // bytes themselves: a 3-generation window is ~350k rows x ~6 KB, which is
-    // 2 GB of exact keys against 5 MB of digests. At 128 bits the birthday
-    // probability over 350k rows is ~1e-28 — unlike the MCTS memory modes this
-    // repo forbids, a collision here drops one duplicate-looking training row
-    // rather than merging two live search nodes.
-    let mut seen: HashSet<u128> = HashSet::new();
-
-    for input in &args.inputs {
-        let reader =
-            DatasetReader::open(input).unwrap_or_else(|e| panic!("cannot open input {}: {e}", input.display()));
-        for traj in reader {
-            let traj = traj.unwrap_or_else(|e| panic!("bad trajectory in {}: {e}", input.display()));
-            // Plan 036 W4. One JSONL trajectory is one drive, which is exactly
-            // the unit the value label is constant over, so the weight is known
-            // once the drive has been written: `1 / kept rows`. Counting *kept*
-            // rows rather than `traj.samples.len()` is what makes the weights
-            // sum to 1 per drive after filtering and dedup — the whole point is
-            // that each drive contributes one unit of value gradient per epoch.
-            let before: BTreeMap<(usize, usize), usize> = groups.iter().map(|(k, g)| (*k, g.n)).collect();
-            let td_values = args.value_td_lambda.map(|l| value_targets_td_lambda(&traj.samples, l));
-            for (si, sample) in traj.samples.iter().enumerate() {
-                total_read += 1;
-                // `children` is the root's post-pruning action set (searched or forced alike), so
-                // fewer than two means the decision had no choice to learn.
-                if !args.keep_forced && sample.children.len() < 2 {
-                    total_forced += 1;
-                    continue;
-                }
-                if sample.root_visits < args.min_root_visits && !sample.scripted {
-                    total_below_min += 1;
-                    continue;
-                }
-                let policy = match policy_target_of(sample, solved_root, kind) {
-                    Some(p) => p,
-                    None => {
-                        total_skipped_policy += 1;
-                        continue;
-                    }
-                };
-                let value = match td_values
-                    .as_ref()
-                    .map_or_else(|| value_target_blended(sample, args.value_blend), |td| td[si])
-                {
-                    Some(v) => v,
-                    None => {
-                        // Value target missing (outcome not backfilled) — the
-                        // value head needs it, so drop the sample.
-                        total_skipped_value += 1;
-                        continue;
-                    }
-                };
-
-                let enc = encode_raw(&sample.state);
-                // Dedup on the encoded bytes, after the target filters: a row
-                // the net never sees cannot be the one we keep.
-                if args.dedup && !seen.insert(encoding_digest(&enc)) {
-                    total_dupes += 1;
-                    continue;
-                }
-                let mover = mover_for(&sample.state);
-                let dims = sample.state.board_dims;
-                // Lazy: creating the group creates its dims subdir and opens
-                // its output files, so an empty group never leaves a stub dir.
-                let group = match groups.entry((enc.w, enc.h)) {
-                    std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
-                    std::collections::btree_map::Entry::Vacant(e) => {
-                        std::fs::create_dir_all(&args.out).expect("create output dir");
-                        let g = DimsGroup::create(&args.out, enc.w, enc.h).expect("open dims output files");
-                        e.insert(g)
-                    }
-                };
-
-                group.spatial.push(&enc.spatial).expect("write spatial");
-                group.global.push(&enc.global).expect("write global");
-                group.value.push(value);
-
-                // Legal actions (CSR): one row per child, aligned to the
-                // policy-target probabilities.
-                let mut chosen_local: i64 = -1;
-                let mut m_local = 0usize;
-                for (j, cstat) in sample.children.iter().enumerate() {
-                    let cell = action_cell(cstat.action, mover, dims);
-                    group
-                        .action_rows
-                        .push(&[cell.channel as i64, cell.y as i64, cell.x as i64, cell.is_simple as i64])
-                        .expect("write actions");
-                    group.policy.push(&[policy.probs[j]]).expect("write policy");
-                    m_local += 1;
-                    if cstat.action == sample.chosen_action {
-                        chosen_local = j as i64;
-                    }
-                }
-                // Fallback: if the played action isn't among the children
-                // (shouldn't happen), point at the policy argmax.
-                if chosen_local < 0 {
-                    chosen_local = policy
-                        .probs
-                        .iter()
-                        .enumerate()
-                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                        .map(|(i, _)| i as i64)
-                        .unwrap_or(0);
-                }
-                group.chosen.push(chosen_local);
-
-                group.n += 1;
-                let last = *group.offsets.last().unwrap();
-                group.offsets.push(last + m_local as i64);
-                total_kept += 1;
-            }
-
-            // The drive is written; back-fill its rows' value weights. A drive
-            // whose rows were all filtered out contributes none.
-            for (key, group) in groups.iter_mut() {
-                let kept = group.n - before.get(key).copied().unwrap_or(0);
-                if kept > 0 {
-                    group.weight.extend(std::iter::repeat(1.0 / kept as f32).take(kept));
-                }
-            }
+    let (groups, counts) = if args.jobs > 1 {
+        prepare_parallel(&args.inputs, &args.out, &opts, args.jobs)
+    } else {
+        let mut groups = Groups::new();
+        let mut counts = Counts::default();
+        // Plan 036 W5. A 128-bit digest of the `(spatial, global)` bytes, not the
+        // bytes themselves: a 3-generation window is ~350k rows x ~6 KB, which is
+        // 2 GB of exact keys against 5 MB of digests. At 128 bits the birthday
+        // probability over 350k rows is ~1e-28 — unlike the MCTS memory modes this
+        // repo forbids, a collision here drops one duplicate-looking training row
+        // rather than merging two live search nodes.
+        let mut seen: HashSet<u128> = HashSet::new();
+        for input in &args.inputs {
+            prepare_input(input, &args.out, &opts, &mut groups, &mut counts, &mut seen);
         }
-    }
+        (groups, counts)
+    };
 
     if groups.is_empty() {
         eprintln!("prepare: no samples survived filtering — nothing written");
@@ -420,7 +589,10 @@ fn main() {
 
     for ((w, h), group) in groups {
         let subdir = group.subdir.clone();
-        let (n, m) = group.finish().expect("finalise dims output files");
+        let (n, m) = group
+            .close()
+            .and_then(Closed::write_buffered)
+            .expect("finalise dims output files");
 
         let manifest = serde_json::json!({
             "nn_schema_version": NN_SCHEMA_VERSION,
@@ -483,10 +655,17 @@ fn main() {
     }
 
     println!(
-        "prepare done: read {total_read} samples, kept {total_kept} \
-         (dropped {total_forced} with fewer than two actions, {total_below_min} below min-root-visits, \
-         {total_skipped_policy} without a policy target, \
-         {total_skipped_value} without a value target, {total_dupes} exact duplicates) \
-         across {group_count} board-dims group(s)"
+        "prepare done: read {} samples, kept {} \
+         (dropped {} with fewer than two actions, {} below min-root-visits, \
+         {} without a policy target, \
+         {} without a value target, {} exact duplicates) \
+         across {group_count} board-dims group(s)",
+        counts.read,
+        counts.kept,
+        counts.forced,
+        counts.below_min,
+        counts.skipped_policy,
+        counts.skipped_value,
+        counts.dupes
     );
 }
