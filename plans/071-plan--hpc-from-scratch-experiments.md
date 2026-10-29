@@ -171,7 +171,12 @@ Small code items, each default-off and testable here:
   run, with SEs). Today the loop has one reference plus `ORIGIN_REF`.
 - **R5** hub job priority: a `background` job (A/B arms, benchmarks) gets only streams no foreground
   generate game is waiting for, using the same rule label tasks follow today (plan 069 item 4b). This
-  fills the training windows.
+  fills the training windows. **Done (b283a1c):** `job eval|generate|label --priority background`,
+  hub-only (no protocol bump, still v25); foreground jobs are dispatched first, a background job gets
+  a stream only when no foreground job can take it (game streams for eval/generate, an idle label
+  stream for a label job); no preemption, so a foreground job arriving waits at most one background
+  task per stream; `/status` marks `· background`; `train_loop.sh` `BENCH_PRIORITY` (default
+  `foreground`) for the loop's benchmark/drive evals. Details in `botbowl-hub/CLAUDE.md`.
 - **R6** `cfgs/chance_all_partial_gen_formation.toml`: the C1 generation preset with plan 047's
   formation setup teacher (`setup = "formation"`, `setup_formation = "random"`), for gen 0 only.
 - **R7** `hpc/arrhenius/pull_home.sh`: one rsync with a filter list (§5.2), and a corpus
