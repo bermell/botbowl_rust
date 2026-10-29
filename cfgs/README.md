@@ -43,6 +43,12 @@ setup_horizon_turns = 0      # own-turns of lookahead at a setup root; 0 = horiz
 
 `cfgs/setup-teacher.toml` is the gen-0 setup teacher: formation-driven placements recorded as
 one-hot scripted samples.
+`cfgs/chance_all_partial_gen_formation.toml` (plan 071 R6) is that teacher on top of the C1
+generation preset `chance_all_partial_gen.toml`, and nothing else (`bot_config.rs` pins it): the
+generator of a from-scratch run's **gen 0 only**, so the first trained net starts from formation
+placement priors rather than a random net's searched ones; from gen 1 the generator is
+`chance_all_partial_gen` again (`setup = "auto"`, searched). Every setup decision under it is a
+scripted one-hot sample over the whole legal fan; every other decision is C1's search.
 `chance_model = "legacy"` restores the pre-2026-09-29 roll model: a broken armour always a
 casualty, every pass a fumble, fouls harmless, and a horizon that runs through half time. It
 exists for one head-to-head, `exact_visits.toml` against `legacy_chance_visits.toml` on the same

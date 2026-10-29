@@ -8,6 +8,7 @@ check, not a quality metric.
 """
 
 import argparse
+import contextlib
 import json
 import math
 import os
@@ -115,8 +116,26 @@ def set_train_mode(model, freeze_bn=False):
                 m.eval()
 
 
-def compute_losses(model, batch, device, per_drive_value_weight=False):
+AMP_MODES = ("off", "bf16")
+
+
+def autocast_context(device, amp="off"):
+    """Plan 071 R3: the forward pass's precision. ``off`` is a null context, so the default
+    trains in fp32 exactly as before (not an autocast with ``enabled=False``: nothing new runs).
+    ``bf16`` autocasts to bfloat16 on the device's own autocast (CUDA, or CPU for tests).
+    exp081 found bf16 fine for this net; bf16 keeps fp32's exponent, so no loss scaler."""
+    if amp in (None, "off"):
+        return contextlib.nullcontext()
+    if amp != "bf16":
+        raise ValueError(f"amp must be one of {AMP_MODES}, got {amp!r}")
+    return torch.autocast(torch.device(device).type, dtype=torch.bfloat16)
+
+
+def compute_losses(model, batch, device, per_drive_value_weight=False, amp="off"):
     """Policy CE + value loss: MSE for the scalar head, cross-entropy for the WDL one (plan 050).
+
+    With ``amp="bf16"`` only the model's forward runs under autocast; its outputs are cast back to
+    fp32 before the masking, softmaxes and losses (a no-op at the fp32 default).
 
     Returns ``(policy_loss, value_loss, top1, value_mse)``. ``value_mse`` is the squared error of
     the scalar the search reads (``P(self) - P(opp)`` for WDL) against the target, with the same
@@ -134,7 +153,9 @@ def compute_losses(model, batch, device, per_drive_value_weight=False):
     spatial = batch["spatial"].to(device)
     global_ = batch["global"].to(device)
     wdl = getattr(model, "value_head", "scalar") == "wdl"
-    policy_out, value_out = model(spatial, global_, wdl=True) if wdl else model(spatial, global_)
+    with autocast_context(device, amp):
+        policy_out, value_out = model(spatial, global_, wdl=True) if wdl else model(spatial, global_)
+    policy_out, value_out = policy_out.float(), value_out.float()
     logits = masked_policy_logits(policy_out, batch["actions"].to(device), batch["pad_mask"].to(device))
     logsm = F.log_softmax(logits, dim=1)
     target = batch["policy"].to(device)                       # (N, K), sums to 1 per row
@@ -257,7 +278,10 @@ def train(
     warmup_steps=0,
     min_lr=0.0,
     loader_workers=0,
+    amp="off",
 ):
+    if amp not in AMP_MODES:
+        raise ValueError(f"amp must be one of {AMP_MODES}, got {amp!r}")
     if lr_schedule not in ("constant", "cosine"):
         raise ValueError(f"lr_schedule must be constant or cosine, got {lr_schedule!r}")
     if freeze_bn and init is None:
@@ -372,6 +396,10 @@ def train(
         )
     else:
         opt = torch.optim.Adam(model.parameters(), lr=lr)
+    if amp != "off":
+        # Training steps only: every val pass, the restore criterion and the export stay fp32, so
+        # a bf16 run's val numbers are comparable with an fp32 run's.
+        print(f"amp: {amp} autocast on the training forward (val and export in fp32)")
     if value_weight != 1.0:
         print(f"value loss weight: {value_weight} (restore criterion stays unweighted)")
     if per_drive_value_weight:
@@ -524,7 +552,7 @@ def train(
         nb = 0
         for batch in loader:
             opt.zero_grad()
-            pl, vl, acc, _ = compute_losses(model, batch, device, per_drive_value_weight)
+            pl, vl, acc, _ = compute_losses(model, batch, device, per_drive_value_weight, amp)
             (pl + value_weight * vl).backward()
             opt.step()
             if sched is not None:
@@ -741,6 +769,13 @@ def main():
         help="keep BatchNorm in eval mode while training (the warm start's running statistics), so "
              "single-board batches are normalised the way inference normalises them",
     )
+    ap.add_argument(
+        "--amp",
+        choices=AMP_MODES,
+        default="off",
+        help="plan 071 R3: `bf16` autocasts the training forward to bfloat16 (val passes and the "
+             "export stay fp32). `off` (default) is fp32, bit for bit as before",
+    )
     args = ap.parse_args()
     train(
         args.data,
@@ -776,6 +811,7 @@ def main():
         warmup_steps=args.warmup_steps,
         min_lr=args.min_lr,
         loader_workers=args.loader_workers,
+        amp=args.amp,
     )
 
 

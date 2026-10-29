@@ -1,0 +1,21 @@
+# Plan 071 R6, gen 0 of a from-scratch run only: the C1 generation preset
+# (`chance_all_partial_gen.toml`, unchanged below) plus plan 047's setup teacher
+# (`setup-teacher.toml`). The bot never searches its own kickoff setup: each placement
+# is answered by a formation drawn per drive from those that fit the board and recorded
+# as a one-hot *scripted* sample, so the first trained net starts with formation-like
+# placement priors instead of the uniform ones a random net would search. Every other
+# decision is C1's search. From gen 1 the generator returns to `chance_all_partial_gen`
+# (`setup = "auto"`: searched with a net). Plan 071 §3.1, open decision D1.
+#
+#   botbowl-ui dataset --mode random-start --next-drive --evaluator nn --model gen00.onnx \
+#       --bot-config cfgs/chance_all_partial_gen_formation.toml ...
+budget_mode = "iterations"
+gumbel_m = 16
+gumbel_q_floor = 1000
+gumbel_scale = 1.0
+bounce_model = "catch"
+pass_scatter_model = "grouped"
+throw_in_model = "grouped"
+chance_backup = "partial"
+setup = "formation"
+setup_formation = "random"
