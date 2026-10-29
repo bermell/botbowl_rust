@@ -169,6 +169,19 @@ Small code items, each default-off and testable here:
 - **R4** the curve: `DRIVE_LADDER` (a list of reference nets each generation plays at fixed pairs,
   next to `DRIVE_REF=parent`) and `scripts/elo_fit.py` (Bradley–Terry over every pair result of the
   run, with SEs). Today the loop has one reference plus `ORIGIN_REF`.
+  **Done (e8212d7):** `DRIVE_LADDER` takes model files and/or `geo` (the run's gens 1, 2, 4, 8, …
+  below G, the parent left out, cut to the `DRIVE_LADDER_ANCHORS`=2 nearest the parent in the
+  pooled fit — `elo_fit.py --nearest`; newest first before any fit), every `DRIVE_LADDER_EVERY`
+  (1) gens at `DRIVE_LADDER_DRIVES` (400 per set = 200 pairs) without SPRT, each a hub eval job in
+  `genNN/drives_ladder_<net>` with its own status line, then a `genNN elo:` line (Elo per board,
+  the gain over 10 gens ± SE) and `RUN_DIR/elo.{json,csv,png}`. `DRIVE_SPRT=none` plays the parent
+  rung at a fixed `DRIVE_CAP`, so it too enters the fit unbiased (`elo_fit.py --fixed-only` drops
+  SPRT-stopped rows otherwise). The fit: quasi-binomial Bradley–Terry on pentanomial pair scores,
+  SE = inverse information × Pearson dispersion (equals plan 051's points_se for one match; z-scores
+  calibrated on synthetic ladders, `train/tests/test_elo_fit.py`), one fit per board, anchor
+  `ELO_ANCHOR` (default `auto` = gen00, else the init gen01 played; set `ELO_ANCHOR=gen01` for
+  §3.5's "gen 1 = 0"). All default off. Tested in isolation (the loop's `ladder_refs`,
+  `eval_submit`, `eval_report` against a stub hub), not in a live loop.
 - **R5** hub job priority: a `background` job (A/B arms, benchmarks) gets only streams no foreground
   generate game is waiting for, using the same rule label tasks follow today (plan 069 item 4b). This
   fills the training windows.
@@ -178,6 +191,12 @@ Small code items, each default-off and testable here:
   retention script (§5.3).
 - **R8** `prepare` per shard in parallel inside the loop, if the calibration shows a 5M-sample
   prepare taking more than a few minutes (exp083: ~12k samples/s single-process).
+  **Done (38fd716, f738b3f):** `prepare --jobs N` encodes one part per input shard on N threads and
+  appends the parts in input order (file-to-file copy, header checked): byte-identical to the serial
+  pass on gen61-63's real window (176 `.npy`, manifests equal but for the commit). `PREPARE_JOBS` in
+  `train_loop.sh` (default 1 = unchanged; ignored under `--dedup`). exp087: 1.6-3.6x at 6 jobs on
+  the 8-core box while the loop was generating; it scales with free cores. Transient disk: the
+  parts double the prepared size until merged.
 
 All of these merge before the image is built: **the run pins one commit for its whole life**
 (`BIN_MODE=image`). The az14x7 run died after gen02 when the encoder changed under it (plan 032
