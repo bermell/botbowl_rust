@@ -219,6 +219,12 @@ EXPLORE_ARGS="${EXPLORE_ARGS:-}"
 # before. A preset names its own budget mode, so GEN/EVAL_BUDGET_MODE do not apply under one.
 GEN_BOT_CONFIG="${GEN_BOT_CONFIG:-}"
 EVAL_BOT_CONFIG="${EVAL_BOT_CONFIG:-}"
+# Plan 071 R5: the hub priority of the loop's benchmark/drive eval jobs (eval_job). `background`
+# gives them only streams no foreground job (the generation, its labels) is waiting for, so they
+# never slow a generation down; but eval_finish still waits for them before the trainer, so on a
+# fleet without spare streams they run after the generation instead of beside it. Default
+# `foreground` = as before.
+BENCH_PRIORITY="${BENCH_PRIORITY:-foreground}"
 PREPARE_TARGET_ARGS="--policy-target $POLICY_TARGET"
 [ "$POLICY_TARGET" = cq ] && PREPARE_TARGET_ARGS="$PREPARE_TARGET_ARGS --tau $CQ_TAU"
 # Plan 036, adopted 2026-09-17 from gen04 on. The value head was fitting the
@@ -1322,7 +1328,7 @@ eval_job() {
     # shell's own child — it stops when its parent goes, instead of resubmitting into a later run.
     # shellcheck disable=SC2086,SC2046
     env ${EVAL_BUDGET_MODE:+BLOOD_MCTS_BUDGET=$EVAL_BUDGET_MODE} "$HUB" job eval --hub "$HUB_URL" --token-file "$HUB_TOKEN_FILE" \
-            --label "$label" --evaluator "$EVALUATOR" --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" \
+            --label "$label" --priority "$BENCH_PRIORITY" --evaluator "$EVALUATOR" --mcts-iters "$EVAL_MCTS_ITERS" --games "$EVAL_GAMES" \
             ${EVAL_BOT_CONFIG:+--bot-config "$EVAL_BOT_CONFIG" --vs-config "$EVAL_BOT_CONFIG"} \
             "$@" --per-game-out "$dir/eval.games.jsonl" --out "$dir/report.json" --resume $(job_wait_args) \
             --wait >> "$dir/eval.log" 2>&1 &

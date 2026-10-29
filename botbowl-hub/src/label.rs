@@ -315,9 +315,7 @@ impl LabelInput {
     /// [`Self::push_line`] for a record prepared off the lock.
     pub fn push(&mut self, p: Prepared) -> io::Result<std::ops::Range<u32>> {
         let st = self.stream.as_mut().expect("push on a sealed shard");
-        let lite = p
-            .lite
-            .map_err(|e| invalid(format!("{}: {e}", self.input.display())))?;
+        let lite = p.lite.map_err(|e| invalid(format!("{}: {e}", self.input.display())))?;
         let zstd = p.zstd;
         let t = self.seeds.len();
         let n = lite.samples.len();

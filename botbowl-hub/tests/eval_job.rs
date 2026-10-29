@@ -125,6 +125,7 @@ fn job(dir: &PathBuf) -> EvalJobRequest {
         drive_gate: None,
         label: None,
         resume: false,
+        priority: Default::default(),
     }
 }
 
@@ -448,6 +449,7 @@ async fn rungs_on_explicit_boards_carry_the_board_through() {
         drive_gate: None,
         label: None,
         resume: false,
+        priority: Default::default(),
     };
     let id = hub.submit_eval(req).unwrap();
     let status = tokio::time::timeout(Duration::from_secs(120), hub.wait(id))
@@ -737,4 +739,52 @@ async fn running_jobs_share_the_workers() {
         .unwrap()
         .unwrap();
     assert_eq!(sb.state, JobState::Done, "{sb:?}");
+}
+
+/// Plan 071 R5: a background job waits for the foreground one beside it, then writes exactly the
+/// files it would have written in the foreground (the per-game lines and the report of a
+/// single-process eval).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_background_job_runs_after_the_foreground_and_writes_the_same_files() {
+    let (hub, url) = start_hub().await;
+    let (df, db) = (tmp("prio_fg"), tmp("prio_bg"));
+    let (mut f, mut b) = (job(&df), job(&db));
+    f.batch = 1;
+    b.batch = 1;
+    b.priority = botbowl_hub::api::Priority::Background;
+    // The background job is queued first, both before any worker exists.
+    let ib = hub.submit_eval(b).unwrap();
+    let iff = hub.submit_eval(f).unwrap();
+    assert_eq!(
+        hub.job_status(ib).unwrap().priority,
+        botbowl_hub::api::Priority::Background
+    );
+    let _w = spawn_worker(worker_cfg(&url, "w", 1));
+    let sf = tokio::time::timeout(Duration::from_secs(120), hub.wait(iff))
+        .await
+        .expect("foreground job finished in time")
+        .expect("foreground job exists");
+    assert_eq!(sf.state, JobState::Done, "{sf:?}");
+    // One stream: the background job got it only once the foreground's last game was out, so at
+    // most the game that stream played meanwhile (and the next it took before this check) can be
+    // the background job's, of its 12. Round-robin would have played about half of them by now.
+    let sb = hub.job_status(ib).expect("background job exists");
+    let b_done: u32 = sb.units.iter().map(|u| u.done).sum::<u32>() + sb.in_flight;
+    assert!(b_done <= 2, "the background job ran beside the foreground one: {sb:?}");
+    let sb = tokio::time::timeout(Duration::from_secs(120), hub.wait(ib))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sb.state, JobState::Done, "{sb:?}");
+    let (want_lines, want_rows) = expected();
+    let mut want = want_lines;
+    want.sort_by_key(key);
+    for dir in [&df, &db] {
+        let mut got = read_lines(&dir.join("eval.games.jsonl"));
+        got.sort_by_key(key);
+        assert_eq!(got, want, "{}", dir.display());
+        let on_disk: botbowl_play::eval::Report =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(on_disk.ladder, want_rows, "{}", dir.display());
+    }
 }

@@ -7,7 +7,8 @@
 //! fleet with the next generation), a task is a small batch of games from one *unit* (a
 //! ladder rung of an eval job, a corpus shard of a generate job), a
 //! worker holds at most `parallel_games` game tasks plus `label_streams` label tasks (label tasks
-//! may also fill idle game streams, plan 069 item 4b), and anything a departed
+//! may also fill idle game streams, plan 069 item 4b), background jobs get only streams no
+//! foreground job is waiting for (plan 071 R5), and anything a departed
 //! worker had in flight goes back on the queue. Results are deduplicated
 //! on `(job, unit, game)` so a slow worker that reappears can never double
 //! count.
@@ -29,7 +30,7 @@ use botbowl_play::eval::{LadderRow, Report};
 
 use crate::api::{
     BotReq, Counts, EvalJobRequest, EvalStats, GenStats, GenerateJobRequest, HubStatus, JobId, JobKind, JobRequest,
-    JobState, JobStatus, LabelJobRequest, LabelStats, UnitProgress, UnitStats, WorkerStatus,
+    JobState, JobStatus, LabelJobRequest, LabelStats, Priority, UnitProgress, UnitStats, WorkerStatus,
 };
 use crate::label::{LabelInput, ShardWrite};
 use crate::rates::{Ledger, Live};
@@ -240,10 +241,7 @@ enum Kind {
     },
     /// Each shard carries its own `LabelConfig` and tag (`LabelInput.cfg` / `.tag`): a top-up
     /// continues every shard's own labelling (plan 067).
-    Label {
-        shards: Vec<LabelShard>,
-        model: ModelId,
-    },
+    Label { shards: Vec<LabelShard>, model: ModelId },
 }
 
 struct InFlight {
@@ -273,6 +271,8 @@ pub struct Job {
     /// `POST /api/jobs/{id}/drain`: hand out no more of its games (a deadline is near); results
     /// for games already out are still taken. Cleared when the same request is submitted again.
     draining: bool,
+    /// Plan 071 R5: a background job takes only streams no foreground job is waiting for.
+    priority: Priority,
 }
 
 impl Job {
@@ -397,6 +397,7 @@ impl Job {
             hub_instance: 0,
             draining: self.draining,
             in_flight: 0,
+            priority: self.priority,
         }
     }
 
@@ -808,9 +809,7 @@ impl Inner {
         let same = self
             .jobs
             .values()
-            .find(|j| {
-                (j.state == JobState::Running || self.labels_running(j)) && j.key.as_deref() == Some(key)
-            })
+            .find(|j| (j.state == JobState::Running || self.labels_running(j)) && j.key.as_deref() == Some(key))
             .map(|j| j.id);
         if let Some(id) = same {
             let job = self.jobs.get_mut(&id).expect("found");
@@ -954,7 +953,7 @@ impl Inner {
         }
         let shards = inputs.into_iter().map(LabelShard::new).collect();
         let kind = Kind::Label { shards, model };
-        let id = self.insert_job(kind, req.label, req.batch, pending);
+        let id = self.insert_job(kind, req.label, req.batch, req.priority, pending);
         let job = self.jobs.get_mut(&id).expect("just inserted");
         let mut writes = Vec::new();
         if let Kind::Label { shards, .. } = &mut job.kind {
@@ -1032,6 +1031,7 @@ impl Inner {
         }
         let per_game = open_out(&req.per_game_out, false)?;
         let batch = req.batch;
+        let priority = req.priority;
         let label = req.label.clone();
         let kind = Kind::Eval {
             req,
@@ -1040,7 +1040,7 @@ impl Inner {
             per_game,
             report: None,
         };
-        Ok(self.insert_finishing(kind, label, batch, pending))
+        Ok(self.insert_finishing(kind, label, batch, priority, pending))
     }
 
     pub fn submit_generate(&mut self, req: GenerateJobRequest) -> io::Result<JobId> {
@@ -1163,7 +1163,13 @@ impl Inner {
                 let label = m
                     .label
                     .or_else(|| req.label.as_ref().map(|l| format!("{l} · mc-label (streamed)")));
-                Some(self.insert_finishing(Kind::Label { shards: lshards, model }, label, m.batch, lpending))
+                Some(self.insert_finishing(
+                    Kind::Label { shards: lshards, model },
+                    label,
+                    m.batch,
+                    req.priority,
+                    lpending,
+                ))
             }
             _ => None,
         };
@@ -1174,6 +1180,7 @@ impl Inner {
             },
             req.label,
             req.batch,
+            req.priority,
             pending,
         );
         // A labelled shard with every game on disk already (none to play, or a resume that found
@@ -1201,9 +1208,10 @@ impl Inner {
         kind: Kind,
         label: Option<String>,
         batch: u16,
+        priority: Priority,
         pending: VecDeque<(usize, u32)>,
     ) -> JobId {
-        let id = self.insert_job(kind, label, batch, pending);
+        let id = self.insert_job(kind, label, batch, priority, pending);
         let job = self.jobs.get_mut(&id).expect("just inserted");
         if job.all_done() {
             Self::finish(job);
@@ -1258,7 +1266,14 @@ impl Inner {
         }
     }
 
-    fn insert_job(&mut self, kind: Kind, label: Option<String>, batch: u16, pending: VecDeque<(usize, u32)>) -> JobId {
+    fn insert_job(
+        &mut self,
+        kind: Kind,
+        label: Option<String>,
+        batch: u16,
+        priority: Priority,
+        pending: VecDeque<(usize, u32)>,
+    ) -> JobId {
         let id = self.next_job;
         self.next_job += 1;
         let job = Job {
@@ -1274,9 +1289,11 @@ impl Inner {
             by_worker: BTreeMap::new(),
             key: None,
             draining: false,
+            priority,
         };
         eprintln!(
-            "[hub] job {id} submitted: {}",
+            "[hub] job {id} submitted{}: {}",
+            if priority.is_foreground() { "" } else { " (background)" },
             job.units()
                 .iter()
                 .map(|u| format!("{} x{}", u.name, u.total))
@@ -1472,6 +1489,15 @@ impl Inner {
     /// stream as before, and labels streamed beside a generation use exactly the L streams sized
     /// for them, never a stream the generation could use. A worker with no label streams (0, the
     /// default) therefore takes a generation's streamed labels only once its games run out.
+    ///
+    /// **Two tiers (plan 071 R5, [`Priority`]).** The rules above pick among foreground jobs first,
+    /// computed from foreground jobs alone. A background job gets a stream only when no foreground
+    /// job can take it, by the same rules computed over every job — the rule streamed labels follow
+    /// beside a generation, one level up. Background eval and generate tasks need a game stream like
+    /// any game task (a worker's label threads run only label tasks); a background label job may
+    /// take a label stream the foreground leaves idle. Nothing is preempted: a foreground task that
+    /// arrives while background tasks hold every stream takes the next one that frees, after at most
+    /// one background task (a game batch).
     pub fn dispatch(&mut self) {
         let job_ids: Vec<JobId> = self
             .jobs
@@ -1503,39 +1529,45 @@ impl Inner {
                 let labels_here = w.tasks.iter().filter(|t| kind_of(t) == Some(2)).count();
                 let evals_here = w.tasks.iter().filter(|t| kind_of(t) == Some(0)).count();
                 let games_here = w.tasks.len() - labels_here;
-                // Plan 069 item 4b: the generation itself, not its streamed labels.
-                let gen_pending = self.jobs.values().any(|j| {
-                    j.state == JobState::Running
-                        && !j.draining
-                        && matches!(j.kind, Kind::Generate { .. })
-                        && !j.pending.is_empty()
-                });
-                // Labelling (plan 062) is on the loop's critical path too.
-                let generate_waiting = gen_pending
-                    || self.jobs.values().any(|j| {
-                        j.state == JobState::Running
-                            && !j.draining
-                            && matches!(j.kind, Kind::Label { .. })
-                            && !j.pending.is_empty()
-                    });
-                let eval_capped =
-                    generate_waiting && evals_here >= (w.parallel_games as usize / EVAL_SHARE_DIVISOR).max(1);
                 let game_ok = games_here < w.parallel_games as usize;
-                let label_ok = labels_here < w.label_streams as usize || !gen_pending;
-                let Some(job_id) = (0..job_ids.len())
-                    .map(|k| job_ids[(self.next_share + k) % job_ids.len()])
-                    .find(|id| {
-                        self.jobs.get(id).is_some_and(|j| {
-                            !j.draining
-                                && !j.pending.is_empty()
-                                && match j.kind {
-                                    Kind::Eval { .. } => game_ok && !eval_capped,
-                                    Kind::Generate { .. } => game_ok,
-                                    Kind::Label { .. } => label_ok,
-                                }
+                let eval_cap = (w.parallel_games as usize / EVAL_SHARE_DIVISOR).max(1);
+                // Plan 071 R5: the foreground tier first, with its rules computed from foreground
+                // jobs alone (a background generation never caps a foreground eval nor keeps
+                // foreground labels off an idle game stream). Only when no foreground job can use
+                // this stream does the background tier get it, under the same rules computed from
+                // every job, so a background task never takes a stream a foreground one could.
+                let pick = |background: bool| {
+                    let in_tier = |j: &Job| background || j.priority.is_foreground();
+                    let waiting = |j: &Job| j.state == JobState::Running && !j.draining && !j.pending.is_empty();
+                    // Plan 069 item 4b: the generation itself, not its streamed labels.
+                    let gen_pending = self
+                        .jobs
+                        .values()
+                        .any(|j| in_tier(j) && waiting(j) && matches!(j.kind, Kind::Generate { .. }));
+                    // Labelling (plan 062) is on the loop's critical path too.
+                    let generate_waiting = gen_pending
+                        || self
+                            .jobs
+                            .values()
+                            .any(|j| in_tier(j) && waiting(j) && matches!(j.kind, Kind::Label { .. }));
+                    let eval_capped = generate_waiting && evals_here >= eval_cap;
+                    let label_ok = labels_here < w.label_streams as usize || !gen_pending;
+                    (0..job_ids.len())
+                        .map(|k| job_ids[(self.next_share + k) % job_ids.len()])
+                        .find(|id| {
+                            self.jobs.get(id).is_some_and(|j| {
+                                j.priority.is_foreground() != background
+                                    && !j.draining
+                                    && !j.pending.is_empty()
+                                    && match j.kind {
+                                        Kind::Eval { .. } => game_ok && !eval_capped,
+                                        Kind::Generate { .. } => game_ok,
+                                        Kind::Label { .. } => label_ok,
+                                    }
+                            })
                         })
-                    })
-                else {
+                };
+                let Some(job_id) = pick(false).or_else(|| pick(true)) else {
                     break;
                 };
                 self.next_share = (job_ids.iter().position(|id| *id == job_id).unwrap() + 1) % job_ids.len();

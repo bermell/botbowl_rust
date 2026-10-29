@@ -106,6 +106,7 @@ fn gen_job(dir: &Path, next_drive: bool, truncate: bool, resume: bool) -> Genera
         batch: 2,
         label: None,
         resume,
+        priority: Default::default(),
         mc_label: None,
     }
 }
@@ -307,6 +308,7 @@ fn eval_job(dir: &Path, resume: bool) -> EvalJobRequest {
         drive_gate: None,
         label: None,
         resume,
+        priority: Default::default(),
     }
 }
 

@@ -30,6 +30,7 @@ botbowl-hub job label --in gen12/shard0.jsonl gen12/shard4.jsonl --model X.onnx 
 botbowl-hub job generate ... --model X.onnx --out-dir runs/<run>/gen12 --mc-label-playouts 8 --mc-label-seed 56012 \
     --mc-label-out-dir runs/<run>/gen12/mc [--mc-label-shards 0,1,2,3,4,5,6,7] [--mc-label-chunk-samples 32] --wait
 botbowl-worker ... --parallel-games 48 --label-streams 16                    # G game + L label-only streams
+botbowl-hub job eval ... --priority background --wait    # plan 071 R5: only streams no foreground job waits for (any job kind)
 botbowl-hub status            # JSON;  `status --text [--run-dir runs/<run>]` is the status page in a terminal
 # http://hub:7777/ is an index; http://hub:7777/status the status page: jobs by --label
 # (`job ... --label "gen03 generate"`), rungs and status lines shortened to how we name things
@@ -337,6 +338,23 @@ follow-on, SIGTERM, hub+client killed, a deadline, a worker straddling restarts)
   use, and a worker with L = 0 takes streamed labels only once the games run out. The in-process
   queue counts the label threads' forwards (`batch_queue::set_thread_class`, `label_samples=` in
   `NN_INPROC_STATS`); a game thread that borrows a label task counts as generation.
+- **Job priority (plan 071 R5), hub-only, no protocol bump.** `job eval|generate|label ...
+  --priority background` (`EvalJobRequest`/`GenerateJobRequest`/`LabelJobRequest.priority`; a
+  generate job's streamed labels inherit it; default `foreground` = everything before) puts a job in
+  a second tier: `dispatch` picks among foreground jobs first, by the rules above computed from
+  foreground jobs alone, and hands a stream to a background job only when no foreground job can take
+  it, by the same rules computed over every job. So a background eval/generate needs a free *game*
+  stream no foreground generate/eval/label task is waiting for; a background label job may also use
+  a label stream the foreground leaves idle (the worker's label threads run nothing else, so that
+  stream would sit empty); and a background generation never caps a foreground eval or keeps
+  foreground labels off idle game streams. **No preemption**: the protocol has no cancel, and a task
+  is one game batch, so a foreground job that arrives while background tasks hold every stream waits
+  at most one background task per stream. Keep background eval `--batch` small for that reason. The
+  field is `skip_serializing_if` foreground, so a foreground request's JSON (its attach key) is
+  unchanged; a resubmission with another priority is another request (409 on the same files while
+  the first runs). Status: `JobStatus.priority`; the page marks a job `<label> · background`.
+  `train_loop.sh`'s `BENCH_PRIORITY` (default `foreground`) sets it on the loop's benchmark/drive
+  evals (`eval_job`); `eval_finish` still waits for them before training.
 - **The board travels with the job, not the environment (plan 042, protocol v3).** A generate
   task's `GenerateConfig.board_sizes` draws each game's board from its seed; an eval rung carries
   `RungReq.board` → `Task::Eval.board`, and a multi-size ladder names rungs `opponent@14x7/4`
@@ -383,7 +401,10 @@ exact bytes, and a worker that vanishes mid-chunk loses and doubles nothing (pla
 `--test mc_label_stream`: labels streamed by a generate job are `mc-label`'s and `job label`'s bytes
 (fresh shards; an appended shard with a stale output and a relabelled follow-on). `botbowl-hub
 --test dispatch_pools`: game tasks stay within G, labels fill L and idle streams only with no game
-waiting (plan 069 item 4b).
+waiting (plan 069 item 4b); a background job drains when the foreground is idle, never takes a
+stream foreground work is waiting for, yields every freed stream to a foreground job that arrives
+later, and never caps a foreground eval (plan 071 R5). `eval_job.rs::a_background_job_runs_after_the_foreground_and_writes_the_same_files`
+pins that a background job's files equal a foreground one's.
 `cargo test -p botbowl-hub`: hub + two in-process workers reproduce a single-process eval
 exactly (search-free bots so it is exact on any tier); a generate job writes each shard's seed
 set exactly once with `dataset`'s provenance labels, truncates or appends as asked; a worker
