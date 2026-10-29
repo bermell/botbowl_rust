@@ -158,14 +158,19 @@ Small code items, each default-off and testable here:
 
 - **R1** `scripts/make_random_net.py`: the head knobs (`--value-conv --value-pool --value-hidden
   --policy-conv`), so gen 0 is a random 96x8+heads (or 128x10+heads) net. Today it builds plain
-  `BBNet(width, blocks)` only.
+  `BBNet(width, blocks)` only. **Done (bfda8bf):** same flags as `bbnn.train`, defaults unchanged
+  bit for bit; `test_make_random_net.py` round-trips them through `BBNet.shape_of` and `NET.ts`.
 - **R2** `train_loop.sh`: a scratch-training recipe for the `NO_WARM_FROM` path
   (`SCRATCH_TRAIN_ARGS`, `SCRATCH_EPOCHS`). Today that path reuses `EPOCHS` and
   `TRAIN_EXTRA_ARGS`, i.e. `--freeze-bn` at 3 epochs and a flat lr, where it wants plan 063's
   recipe (cosine, warmup, BN live). Also `TRAIN_BATCH`/`TRAIN_LOADER_WORKERS` pass-throughs and the
-  head knobs for a fresh net.
+  head knobs for a fresh net. **Done (fa1a04c):** the NO_WARM_FROM training takes `SCRATCH_EPOCHS`
+  (10), `SCRATCH_TRAIN_ARGS` (`--lr-schedule cosine --warmup-steps 2000`, BN live, lr `SCRATCH_LR`)
+  instead of `EPOCHS`/`TRAIN_EXTRA_ARGS`, and `SCRATCH_ARCH_ARGS` (empty = the NO_WARM_FROM net's own
+  shape); `TRAIN_BATCH`, `TRAIN_LOADER_WORKERS`, `TRAIN_AMP` reach every training. Unset = as before.
 - **R3** `bbnn.train`: bf16 autocast (`--amp bf16`, off by default; exp081 found bf16 fine for
-  training), pinned by a seeded test.
+  training), pinned by a seeded test. **Done (526349e):** autocast on the training forward only
+  (val, restore and export fp32); `test_amp.py`; `TRAIN_AMP=bf16` in the loop.
 - **R4** the curve: `DRIVE_LADDER` (a list of reference nets each generation plays at fixed pairs,
   next to `DRIVE_REF=parent`) and `scripts/elo_fit.py` (Bradley–Terry over every pair result of the
   run, with SEs). Today the loop has one reference plus `ORIGIN_REF`.
@@ -174,8 +179,11 @@ Small code items, each default-off and testable here:
   fills the training windows.
 - **R6** `cfgs/chance_all_partial_gen_formation.toml`: the C1 generation preset with plan 047's
   formation setup teacher (`setup = "formation"`, `setup_formation = "random"`), for gen 0 only.
+  **Done (95bb104):** pinned to C1-gen + the teacher by `bot_config.rs`; smoke: every setup
+  placement a scripted one-hot sample (50/50), the C1-gen control searched all 48.
 - **R7** `hpc/arrhenius/pull_home.sh`: one rsync with a filter list (§5.2), and a corpus
-  retention script (§5.3).
+  retention script (§5.3). **Done (adc41dd):** `pull_home.sh` and `retain_corpora.sh` (dry run
+  by default; the window + 2 generations never touched), documented in `hpc/arrhenius/README.md`.
 - **R8** `prepare` per shard in parallel inside the loop, if the calibration shows a 5M-sample
   prepare taking more than a few minutes (exp083: ~12k samples/s single-process).
 
