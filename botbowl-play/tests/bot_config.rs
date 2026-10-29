@@ -233,3 +233,25 @@ fn the_plan061_presets_differ_from_their_control_only_in_chance_knobs() {
     }
     assert_eq!(strip(control), control, "the control is on the shipped chance model");
 }
+
+/// Plan 071 R6: the gen-0 preset is the C1 generation preset plus plan 047's setup teacher, and
+/// nothing else — so gen 0 differs from gen 1 only in who answers the kickoff setups.
+#[test]
+fn the_gen0_formation_preset_is_c1_gen_plus_the_setup_teacher() {
+    use botbowl_mcts::dynamics::{SetupFormation, SetupPolicy};
+    let cfgs = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("cfgs");
+    let load = |name: &str| load_mcts_config(&cfgs.join(name)).expect(name).config;
+    let gen0 = load("chance_all_partial_gen_formation.toml");
+    let teacher = load("setup-teacher.toml");
+    assert_eq!(gen0.setup, SetupPolicy::Formation);
+    assert_eq!(gen0.setup_formation, SetupFormation::Random);
+    assert_eq!((teacher.setup, teacher.setup_formation), (gen0.setup, gen0.setup_formation));
+    let mut c1 = load("chance_all_partial_gen.toml");
+    assert_eq!(c1.setup, SetupPolicy::Auto, "gen 1 on searches its setups");
+    c1.setup = SetupPolicy::Formation;
+    c1.setup_formation = SetupFormation::Random;
+    assert_eq!(gen0, c1, "the gen-0 preset changes more than the setup teacher");
+}
