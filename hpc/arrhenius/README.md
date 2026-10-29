@@ -13,6 +13,8 @@ training box, so neither the build nor a job needs the internet or a module.
 | `build_image.sh` | stages HEAD (a shallow clone) into the bundle dir and runs `apptainer build` there |
 | `cross_check.sh`, `cross.Dockerfile` | on an x86 box, `cargo check`/`build` for aarch64 incl. the C/C++/asm parts (Debian bookworm's cross gcc 12, the image's compiler and glibc), no qemu |
 | `slurm/` | plan 069 item 5: the loop in chained Slurm jobs (a task per GH200, task 0 the loop, the rest workers), workers-only jobs, dry run; its own README |
+| `pull_home.sh` | plan 071 R7: nets and run records home in one rsync (one 2FA login), below |
+| `retain_corpora.sh` | plan 071 R7: corpus retention on the cluster, dry run by default, below |
 
 ## What the image runs on
 
@@ -94,6 +96,60 @@ Bind project storage into the container (`--bind /nobackup`, or `--bind $P`) —
 `$HOME`, the cwd and `/tmp` by default, not project storage. Workers' model cache
 (`~/.cache/botbowl/models`) is in home by default: point it at `$P/cache` (worker `--cache-dir`) so nets
 and their `.ts` files do not fill home.
+
+## What goes home (`pull_home.sh`, plan 071 §5.2)
+
+Daily, from the training box, one rsync over one login (password + 2FA once):
+
+```sh
+hpc/arrhenius/pull_home.sh <user>@login.hpc.arrhenius.naiss.se /nobackup/proj/disk/<project>/botbowl loop20x11 [more runs]
+hpc/arrhenius/pull_home.sh --dry-run ...      # rsync -n -v: what would come, nothing written
+hpc/arrhenius/pull_home.sh --print-filter ... # the filter list
+```
+
+It mirrors part of `$P` into `runs/hpc/` (`HPC_MIRROR`; additive, never deletes) and hard-links the
+nets into `models/hpc_<run>/` (`HPC_MODELS`):
+
+- **nets:** `models/<run>/*.{pt,onnx,ts}` (the `.ts` variants too);
+- **run records:** `status.md`, the run's `*.txt`/`*.tsv`/`*.json` (champion, `size_curve.tsv`),
+  `slurm/chain.{log,state}`, `positions/`; per generation `train.log`, `absorb.txt` and the other
+  `*.txt`/`*.json`/`*.tsv` (`td_rate.json`), `verdict`, and in any subdirectory (drives, a drive
+  ladder, `net_check/`, `value_bench*/`) `report.json`, `eval.games.jsonl`, `eval.args`,
+  `*summary*.txt`, `net_check.txt`; anything named `*tree_stats*`;
+- **positions and benches:** `$P/positions/`, `$P/value_bench/`;
+- **pilot outputs:** `runs/hpc_tune/**/{results.csv,results.md,meta.json}`.
+
+Never corpora: `shard*.jsonl[.zst]`, `mc/`, `prepared_*/`, worker caches and per-sample bench
+outputs stay. For a second rsync in the same session (or to keep the login), give ssh a master
+connection through rsync's own `RSYNC_RSH="ssh -o ControlMaster=auto -o ControlPath=~/.ssh/cm-%r@%h
+-o ControlPersist=1h"`, if the centre allows sharing (first-login checklist). `PULL_EXTRA_FILTER`
+names a file of extra rsync filter rules, read first. The registry rows are written at home from
+the pulled files.
+
+## Corpus retention (`retain_corpora.sh`, plan 071 §5.3)
+
+On the cluster (login node or any job; needs `zstd`), against a run dir. **Dry run unless
+`--apply`**; prints every deletion and compression with its size:
+
+```sh
+hpc/arrhenius/retain_corpora.sh $P/runs/loop20x11                 # what it would do
+hpc/arrhenius/retain_corpora.sh --apply $P/runs/loop20x11         # do it
+hpc/arrhenius/retain_corpora.sh --apply --protect "12 13" --prepared-root /scratch/local/botbowl-prepared/loop20x11 $P/runs/loop20x11
+```
+
+- **Untouched:** every generation from `C − WINDOW_GENS − 2 + 1` up (`C` the newest `genNN`, in
+  progress or not: the window the next training reads plus two of margin; `--window`, else
+  `WINDOW_GENS`, else the newest `slurm/env/job-*.loop.env`, else 3; `--keep-extra` the margin), a
+  generation not yet `.generated` and `.trained`, and `--protect`'ed ones (an A/B arm's window).
+- **Older generations:** `prepared_*`, `probe_val/` and `shadow_probe_val/` deleted (regenerable;
+  `.prepared` goes with them, as in the loop's `prune_prepared`); a raw train shard deleted once
+  `.mc_labelled` is set and `mc/shardK.jsonl[.zst]` has the same number of lines (else kept, and
+  said so); `mc/` train shards and both val shards (raw and `mc/`) compressed to
+  `shardK.jsonl.zst` (`zstd --long=27`, level `ZSTD_LEVEL` 10, verified before the original goes);
+  a raw train shard with no `mc/` copy is compressed, not deleted. Eval games, reports, logs and
+  nets are never touched.
+- Idempotent and safe to interrupt: run it after every generation or daily. Read a compressed shard
+  with `zstd -q -dc --long=27 shardK.jsonl.zst`; the loop itself never reads a generation this old.
 
 ## No modules
 
