@@ -113,6 +113,11 @@ pub struct EvalJobRequest {
     /// file is appended to as it is.
     #[serde(default)]
     pub resume: bool,
+    /// Plan 071 R5 (`--priority background`): take only streams no foreground job is waiting
+    /// for. Not serialised when foreground, so a foreground request's JSON (its attach key) is
+    /// what it was before the field existed.
+    #[serde(default, skip_serializing_if = "Priority::is_foreground")]
+    pub priority: Priority,
 }
 
 /// One corpus shard of a generate job: `games` trajectories with seeds
@@ -151,6 +156,9 @@ pub struct GenerateJobRequest {
     /// Exclusive with `truncate`.
     #[serde(default)]
     pub resume: bool,
+    /// As [`EvalJobRequest::priority`]; its streamed-label job (`mc_label`) gets the same.
+    #[serde(default, skip_serializing_if = "Priority::is_foreground")]
+    pub priority: Priority,
 }
 
 /// Plan 069 item 4b: the labelling a generate job streams. Its own label job (listed beside the
@@ -208,9 +216,56 @@ pub struct LabelJobRequest {
     /// --top-up` writes it, `topup/<shard>` records included.
     #[serde(default)]
     pub top_up: bool,
+    /// As [`EvalJobRequest::priority`].
+    #[serde(default, skip_serializing_if = "Priority::is_foreground")]
+    pub priority: Priority,
 }
 
 pub type JobId = u64;
+
+/// R5 of plan 071: which streams a job's tasks may take. It lives in the hub's queue alone (no
+/// worker frame carries it), so it needed no protocol bump.
+///
+/// A `Background` task is handed out only to a stream that no running foreground job has a task
+/// waiting for, under the same pool rules (game streams, label streams, the eval cap) the
+/// foreground follows; a foreground task that arrives later takes the next stream that frees up.
+/// Running background tasks are not preempted (the protocol has no cancel, and a task is one small
+/// game batch). See [`crate::state::Inner::dispatch`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    /// Today's behaviour: the loop's generation, its labels and its own benchmark.
+    #[default]
+    Foreground,
+    /// A/B arms, benchmarks, drives: only the streams the foreground leaves idle.
+    Background,
+}
+
+impl Priority {
+    pub fn is_foreground(&self) -> bool {
+        *self == Priority::Foreground
+    }
+}
+
+impl std::str::FromStr for Priority {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "foreground" => Ok(Priority::Foreground),
+            "background" => Ok(Priority::Background),
+            _ => Err(format!("priority must be foreground or background, not {s:?}")),
+        }
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Priority::Foreground => "foreground",
+            Priority::Background => "background",
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum JobState {
@@ -374,6 +429,9 @@ pub struct JobStatus {
     /// Games (label items) of this job on workers right now.
     #[serde(default)]
     pub in_flight: u32,
+    /// Plan 071 R5: foreground (the default) or background.
+    #[serde(default)]
+    pub priority: Priority,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

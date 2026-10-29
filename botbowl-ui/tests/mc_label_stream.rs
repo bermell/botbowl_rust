@@ -148,6 +148,7 @@ fn generate(dir: &Path, base: u64, shards: &[&str], labelled: &[&str], truncate:
             .collect(),
         truncate,
         resume: false,
+        priority: Default::default(),
         batch: 1,
         label: Some("test generate".into()),
         mc_label: Some(StreamLabelRequest {
@@ -202,6 +203,7 @@ fn label_job(dir: &Path, shards: &[&str], out: &Path) -> LabelJobRequest {
         batch: 2,
         label: None,
         top_up: false,
+        priority: Default::default(),
     }
 }
 

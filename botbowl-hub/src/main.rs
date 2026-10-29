@@ -210,6 +210,11 @@ struct ClientArgs {
     /// What the job is called on the status page (`gen03 drives vs gen21`). Ignored by `status`.
     #[arg(long)]
     label: Option<String>,
+    /// Plan 071 R5: `background` takes only worker streams no foreground job is waiting for (A/B
+    /// arms, benchmarks, drives); `foreground` is the default and what every job was before.
+    /// Ignored by `status`.
+    #[arg(long, default_value = "foreground")]
+    priority: botbowl_hub::api::Priority,
 }
 
 /// How `job ... --wait` behaves when the hub goes away or time runs out (plan 069 item 5).
@@ -331,6 +336,7 @@ fn build_label_request(a: &LabelJobArgs, m: &ArgMatches) -> Result<LabelJobReque
         batch: a.batch.max(1),
         label: a.client.label.clone(),
         top_up: ml.top_up.is_some(),
+        priority: a.client.priority,
     })
 }
 
@@ -605,6 +611,7 @@ fn build_generate_request(a: &GenerateJobArgs, m: &ArgMatches) -> Result<Generat
         label: a.client.label.clone(),
         mc_label,
         resume: a.resume,
+        priority: a.client.priority,
     })
 }
 
@@ -838,6 +845,7 @@ fn build_request(job: &EvalJobArgs, m: &ArgMatches) -> Result<EvalJobRequest, St
         drive_gate: a.drive_gate,
         label: job.client.label.clone(),
         resume: job.resume,
+        priority: job.client.priority,
     })
 }
 
@@ -1285,7 +1293,6 @@ fn print_progress(s: &JobStatus) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1437,6 +1444,23 @@ mod tests {
         let bad = generate(&[&base[..], &flags[..8], &["--mc-label-shards", "9"]].concat());
         assert!(bad.is_err());
         assert!(generate(&[&base[..], &flags[..4]].concat()).is_err());
+    }
+
+    /// Plan 071 R5: `--priority` defaults to foreground, and a foreground request's JSON (its
+    /// attach key) carries no priority field, so it is what it was before the flag existed.
+    #[test]
+    fn priority_defaults_to_foreground_and_stays_off_its_json() {
+        use botbowl_hub::api::Priority;
+        let fg = generate(&["generate", "--out-dir", "/tmp/g"]).unwrap();
+        assert_eq!(fg.priority, Priority::Foreground);
+        assert!(!serde_json::to_string(&fg).unwrap().contains("priority"));
+        let bg = generate(&["generate", "--out-dir", "/tmp/g", "--priority", "background"]).unwrap();
+        assert_eq!(bg.priority, Priority::Background);
+        let json = serde_json::to_string(&bg).unwrap();
+        assert!(json.contains(r#""priority":"background""#), "{json}");
+        let back: botbowl_hub::api::GenerateJobRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.priority, Priority::Background);
+        assert!(generate(&["generate", "--out-dir", "/tmp/g", "--priority", "urgent"]).is_err());
     }
 
     #[test]

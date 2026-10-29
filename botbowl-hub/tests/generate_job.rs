@@ -128,6 +128,7 @@ fn job(dir: &PathBuf, truncate: bool) -> GenerateJobRequest {
         label: None,
         mc_label: None,
         resume: false,
+        priority: Default::default(),
     }
 }
 

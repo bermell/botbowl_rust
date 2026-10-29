@@ -585,6 +585,11 @@ fn job_lines(out: &mut String, j: &JobStatus) {
             }
         )
     });
+    // Plan 071 R5: foreground is every job's default and goes unsaid; a background job says so.
+    let label = match j.priority {
+        crate::api::Priority::Foreground => label,
+        crate::api::Priority::Background => format!("{label} · background"),
+    };
     // A rung with an SPRT verdict takes no more games, so it counts as complete.
     let decided = |u: &crate::api::UnitProgress| matches!(&u.stats, Some(UnitStats::Eval(e)) if e.sprt.is_some_and(|s| s.verdict != botbowl_play::stats::Verdict::Undecided));
     let total: u32 = j.units.iter().map(|u| u.total).sum();
@@ -859,6 +864,28 @@ fn short_word(w: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plan 071 R5: a background job says so on its line; a foreground one (every job before the
+    /// flag) reads as it always did.
+    #[test]
+    fn a_background_job_is_marked() {
+        let line = |priority: &str| {
+            let j: JobStatus = serde_json::from_str(&format!(
+                r#"{{"id":3,"kind":"Eval","label":"gen60 drives vs gen59","state":"Running","units":[],
+                    "elapsed_secs":60,"workers_connected":1,"report":null,"priority":"{priority}"}}"#
+            ))
+            .unwrap();
+            let mut out = String::new();
+            job_lines(&mut out, &j);
+            out
+        };
+        assert!(
+            line("background").contains("gen60 drives vs gen59 · background"),
+            "{}",
+            line("background")
+        );
+        assert!(!line("foreground").contains("background"), "{}", line("foreground"));
+    }
 
     #[test]
     fn rung_names_read_as_we_say_them() {

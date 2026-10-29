@@ -152,6 +152,7 @@ fn request(f: &Fixture, out_dir: &Path, chunk_samples: u32, batch: u16) -> Label
         batch,
         label: Some("test mc-label".into()),
         top_up: false,
+        priority: Default::default(),
     }
 }
 
