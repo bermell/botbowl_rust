@@ -8,6 +8,14 @@ ends (see the root CLAUDE.md).
 
 ## v9 rules (2026-10-06 on)
 
+### <a id="exp087"></a>exp087: `prepare --jobs N`, the window's shards in parallel (plan 071 R8), run 2026-10-29
+
+- **Question:** does encoding one part per input shard in parallel and concatenating the parts in input order give the serial prepared dirs byte for byte, and how much faster is it on a real generation?
+- **Setup:** commit 38fd716 (`prepare --jobs`), 20x11/7 build in `target/agents/20x11`; reference = the live loop's own pre-R8 binary (`target/20x11/release/prepare`, executed read-only); inputs `runs/loopmix16x9v9/gen{61,62,63}/mc/shard{0,1,2,3,5,6}.jsonl` (the loop's gen63 train window: 18 files, 2.73 GB, 275,798 samples read, 219,840 kept, 22 board-dims groups) and gen63's 6 alone (0.90 GB, 90,375 read / 72,283 kept); the loop's target args `--policy-target cq --tau 100 --value-blend 1.0`; outputs in the session scratchpad, page cache warmed, `nice -n 5`. **The box was busy:** the loop was generating gen64 on all 8 cores (load 9-13), so timings are noisy and pessimistic.
+- **Result, equality:** `--jobs 6` vs the old serial binary on the 3-gen window: all 176 `.npy` files byte-identical, every manifest identical but for `git_commit`; no `.parts` left behind. `--jobs 1` (the refactored serial path) likewise.
+- **Result, timing (s; old serial / new `--jobs` J, interleaved repetitions):** one generation: old 10.9 / 10.4 / 12.4; J=1 14.3 / 8.8 / 8.3; J=2 9.7 / 12.1 / 5.4; J=4 6.4 / 12.3 / 3.6; J=6 5.2 / 7.5 / 2.9 — i.e. ~7.5k samples read/s serial vs up to ~31k/s at J=6. 3-gen window: old 25.5 / 26.4 (~10.6k read/s), J=1 24.6 / 24.4, J=6 11.0 / 16.2 (17-25k read/s), an earlier J=4 21.0, J=8 31.0 (8 cores shared with the loop).
+- **Conclusion:** exact, 1.6-3.6x on this contended 8-core box; it scales with free cores, so on a 72-core Grace node a 5M-sample window (~8 min serial at exp083's 12k/s) should drop to about a minute (I/O permitting). Transient disk: the parts double the prepared size until merged (copied file to file, deleted as appended). `PREPARE_JOBS` in `train_loop.sh` (default 1 = unchanged; ignored under `--dedup`).
+
 ### <a id="exp086"></a>exp086: MC labels streamed inside a generation, G game + L label streams per worker (plan 069 item 4b), run 2026-10-27
 
 - **Question:** can the mc-label phase run inside the generate phase (labels queued as each trajectory arrives) and stay byte-identical to the separate phase? What does one worker with G generation + L label streams do to wall time, GPU use and CPU per forward, to size G and L on a GH200?

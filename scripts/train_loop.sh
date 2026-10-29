@@ -548,7 +548,25 @@ DRIVE_REF="${DRIVE_REF:-}"
 ORIGIN_EVERY="${ORIGIN_EVERY:-0}"
 ORIGIN_REF="${ORIGIN_REF:-${INIT_CHAMPION:-}}"
 ORIGIN_DRIVES="${ORIGIN_DRIVES:-400}"
+# Plan 071 R4: DRIVE_LADDER adds fixed-size matches (DRIVE_LADDER_DRIVES per set, no SPRT, so every
+# pair is usable by scripts/elo_fit.py) next to the DRIVE_REF rung, every DRIVE_LADDER_EVERY
+# generations, each in its own sub `genNN/drives_ladder_<net>`. Entries (comma or space separated):
+#   a model file  a fixed reference (the gen58 yardstick, a losing bootstrap arm's last net, ...);
+#   geo           the run's own frozen anchors gens 1, 2, 4, 8, 16, ... below this generation (the
+#                 parent excluded under DRIVE_REF=parent: it is already played), of which the
+#                 DRIVE_LADDER_ANCHORS whose fitted Elo is nearest the parent's are played (plan 071
+#                 §3.5: "the two anchors whose score lands nearest 0.5"; newest first before a fit).
+# With it set, each benchmarked generation adds an Elo status line (elo_fit.py over every drive
+# sub of the run, anchored at ELO_ANCHOR, default gen00 or else the init) and writes
+# $RUN_DIR/elo.{json,csv} (and elo.png with matplotlib). Empty (default) = none of it.
+DRIVE_LADDER="${DRIVE_LADDER:-}"
+DRIVE_LADDER_EVERY="${DRIVE_LADDER_EVERY:-1}"
+DRIVE_LADDER_DRIVES="${DRIVE_LADDER_DRIVES:-400}"
+DRIVE_LADDER_ANCHORS="${DRIVE_LADDER_ANCHORS:-2}"
+ELO_ANCHOR="${ELO_ANCHOR:-auto}"
 DRIVE_POSITIONS="${DRIVE_POSITIONS:-}"
+# DRIVE_SPRT=none plays the DRIVE_REF rung at a fixed DRIVE_CAP drives per set, no SPRT (plan 071
+# §3.5: the parent step at fixed pairs, so it enters the Elo fit unbiased).
 DRIVE_SPRT="${DRIVE_SPRT:-0.5:0.55}"
 DRIVE_CAP="${DRIVE_CAP:-800}"
 # Plan 068: DRIVE_GATE=report|sprt runs the drive rung (not the origin match) under the divergence
@@ -616,6 +634,10 @@ STOP_MARGIN_SECS="${STOP_MARGIN_SECS:-0}"
 #   PREPARED_ROOT  where prepared_train/prepared_val go (genNN/ under it; default the generation's
 #                  own dir). Set, a generation marked prepared whose dirs are missing (another
 #                  job's node-local disk) is prepared again instead of failing.
+#   PREPARE_JOBS   plan 071 R8: `prepare --jobs N`, the window's shards encoded N at a time (one part
+#                  per shard, concatenated in shard order: byte-identical prepared dirs, measured on a
+#                  real 3-gen window). 1 (default) = one serial pass, exactly as before. Ignored (1)
+#                  when PREPARE_TARGET_ARGS has --dedup, which is serial by nature.
 #   GEN_RESUME     on|off. on: a generate phase resumes from the shards already in its gen dir
 #                  (`job generate --resume`: each shard's complete games are kept, a torn tail is cut,
 #                  only the missing seeds are played — the uninterrupted run's seed set), so a phase
@@ -635,6 +657,12 @@ GEN_MIN_SLICE_SECS="${GEN_MIN_SLICE_SECS:-900}"
 PHASE_DRAIN_SECS="${PHASE_DRAIN_SECS:-300}"
 HUB_LOST_SECS="${HUB_LOST_SECS:-0}"
 PREPARED_ROOT="${PREPARED_ROOT:-}"
+PREPARE_JOBS="${PREPARE_JOBS:-1}"
+# The extra `prepare` flags for the gen00 and per-generation prepare: empty at PREPARE_JOBS=1.
+PREPARE_JOB_ARGS=""
+if [ "$PREPARE_JOBS" -gt 1 ] && [[ " $PREPARE_TARGET_ARGS " != *" --dedup "* ]]; then
+    PREPARE_JOB_ARGS="--jobs $PREPARE_JOBS"
+fi
 LOOP_T0=$(date +%s)
 EXIT_ON_SIGNAL="${EXIT_ON_SIGNAL:-0}"
 if [ -n "$BOTBOWL_BIN_DIR" ]; then
@@ -1086,6 +1114,10 @@ case "$EVAL_VENUE" in
         [ "$ORIGIN_EVERY" -eq 0 ] || [ -f "$ORIGIN_REF" ] || die "ORIGIN_EVERY needs ORIGIN_REF, a model file (got '$ORIGIN_REF')"
         for f in ${DRIVE_POSITIONS//,/ }; do [ -f "$f" ] || die "position set not found: $f"; done
         [ -n "$DRIVE_POSITIONS" ] || die "EVAL_VENUE=drives needs DRIVE_POSITIONS"
+        for f in ${DRIVE_LADDER//,/ }; do [ "$f" = geo ] || [ -f "$f" ] || die "DRIVE_LADDER entry is neither 'geo' nor a model file: $f"; done
+        [ "$DRIVE_SPRT" != none ] || [ "$P1_GAMES" -eq 0 ] || die "P1_GAMES confirms a drive H1, which DRIVE_SPRT=none never gives"
+        [ "$DRIVE_SPRT" != none ] || [ "$DRIVE_GATE" != sprt ] || die "DRIVE_GATE=sprt needs DRIVE_SPRT"
+        [ -z "$DRIVE_LADDER" ] || status "benchmark ladder: every $DRIVE_LADDER_EVERY gens vs $(for f in ${DRIVE_LADDER//,/ }; do if [ "$f" = geo ]; then echo "the $DRIVE_LADDER_ANCHORS geometric anchors (gens 1,2,4,8,..) nearest in Elo"; else basename "$f" .onnx; fi; done | paste -sd,), $DRIVE_LADDER_DRIVES drives per set, no SPRT; Elo fit anchored at $ELO_ANCHOR"
         status "benchmark: drives vs $([ "$DRIVE_REF" = parent ] && echo "each generation's generator" || basename "$DRIVE_REF")$([ "$ORIGIN_EVERY" -gt 0 ] && echo ", and vs $(basename "$ORIGIN_REF") every $ORIGIN_EVERY gens ($ORIGIN_DRIVES per set, no SPRT)") from $(for f in ${DRIVE_POSITIONS//,/ }; do basename "$f" .json; done | paste -sd,), SPRT $DRIVE_SPRT, cap $DRIVE_CAP drives per set$([ "$P1_GAMES" -gt 0 ] && echo "; H1 confirmed on full games (P1, cap $P1_GAMES per board)")$([ "$ANCHOR_EVERY" -gt 0 ] && echo "; anchor $(basename "$ANCHOR") every $ANCHOR_EVERY gens")" ;;
     *) die "EVAL_VENUE must be games or drives, got $EVAL_VENUE" ;;
 esac
@@ -1219,10 +1251,10 @@ if [ ! -f "$(champion)" ]; then
         for K in $TRAIN_SHARDS; do TRAIN_IN="$TRAIN_IN $GEN_DIR/shard$K.jsonl"; done
         for K in $VAL_SHARDS; do VAL_IN="$VAL_IN $GEN_DIR/shard$K.jsonl"; done
         # shellcheck disable=SC2086
-        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $TRAIN_IN --out "$GEN_DIR/prepared_train" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "gen00 prepare (train) failed"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $VAL_IN --out "$GEN_DIR/prepared_val" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "gen00 prepare (val) failed"
         status "gen00 prepare done ($((SECONDS / 60)) min), target $PREPARE_TARGET_ARGS"
         touch "$GEN_DIR/.prepared"
@@ -1305,6 +1337,32 @@ drive_ref_of() {
     elif [ "$1" -le 1 ]; then echo "$INIT_CHAMPION"
     else echo "$MODEL_DIR/bbnet_${TIER}_$(printf 'gen%02d' $(($1 - 1))).onnx"; fi
 }
+# Plan 071 R4: the model files gen $1 plays on the ladder (DRIVE_LADDER), one per line. A fixed
+# entry is itself; `geo` is the run's own gens 1, 2, 4, 8, ... below $1 whose model exists (the
+# parent left out under DRIVE_REF=parent), cut to the DRIVE_LADDER_ANCHORS nearest the parent in
+# the run's pooled Elo fit (`elo_fit.py --nearest`; newest first while unrated, or if the fit
+# fails). A relaunch recomputes the choice, but a sub that has its report is never replayed.
+# A ladder sub's name: genNN for the run's own nets, the file stem for any other (a foreign
+# `bbnet_<tier>_gen58` must not read as this run's gen58).
+ladder_name() {
+    local stem; stem=$(basename "$1" .onnx)
+    case "$stem" in "bbnet_${TIER}_gen"*) echo "${stem#bbnet_"${TIER}"_}" ;; *) echo "$stem" ;; esac
+}
+ladder_refs() {
+    local G="$1" f k among="" picked
+    for f in ${DRIVE_LADDER//,/ }; do
+        if [ "$f" != geo ]; then echo "$f"; continue; fi
+        for ((k = 1; k < G; k *= 2)); do
+            [ "$DRIVE_REF" = parent ] && [ "$k" -eq $((G - 1)) ] && continue
+            [ -f "$MODEL_DIR/bbnet_${TIER}_$(printf 'gen%02d' "$k").onnx" ] && among="$among $(printf 'gen%02d' "$k")"
+        done
+        [ -n "$among" ] || continue
+        picked=$("$PY" "$REPO/scripts/elo_fit.py" "$RUN_DIR" --anchor "$ELO_ANCHOR" \
+            --nearest "$(printf 'gen%02d' $((G - 1)))" --among "$among" --k "$DRIVE_LADDER_ANCHORS" 2>> "$LOG") \
+            || picked=$(echo "$among" | tr ' ' '\n' | grep . | sort -r | head -n "$DRIVE_LADDER_ANCHORS")
+        for k in $picked; do echo "$MODEL_DIR/bbnet_${TIER}_$k.onnx"; done
+    done
+}
 eval_submit() {
     local G="$1" GG GEN_DIR MODEL RUNG_ARGS RUNG_DESC PG
     GG=$(printf 'gen%02d' "$G"); GEN_DIR="$RUN_DIR/$GG"; MODEL="$MODEL_DIR/bbnet_${TIER}_$GG"
@@ -1317,7 +1375,7 @@ eval_submit() {
         [ "$P1_GAMES" -gt 0 ] && ensure_ts "$MODEL_DIR/bbnet_${TIER}_$PG.onnx" "$(drive_ref_of $((G - 1)))"
         eval_job drives "$GEN_DIR/drives" "$GG drives vs $(net_name "$REF")" \
             --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
-            --positions "$DRIVE_POSITIONS" --sprt "$DRIVE_SPRT" --vs-games "$DRIVE_CAP" \
+            --positions "$DRIVE_POSITIONS" $([ "$DRIVE_SPRT" = none ] || echo "--sprt $DRIVE_SPRT") --vs-games "$DRIVE_CAP" \
             ${DRIVE_GATE:+--drive-gate "$DRIVE_GATE"} \
             --vs-evaluator "$EVALUATOR" --vs-model "$REF"
         if [ "$ORIGIN_EVERY" -gt 0 ] && [ $((G % ORIGIN_EVERY)) -eq 0 ]; then
@@ -1325,6 +1383,18 @@ eval_submit() {
                 --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
                 --positions "$DRIVE_POSITIONS" --vs-games "$ORIGIN_DRIVES" \
                 --vs-evaluator "$EVALUATOR" --vs-model "$ORIGIN_REF"
+        fi
+        # Plan 071 R4: the ladder, at fixed pairs.
+        if [ -n "$DRIVE_LADDER" ] && [ $((G % DRIVE_LADDER_EVERY)) -eq 0 ]; then
+            local LREF
+            for LREF in $(ladder_refs "$G"); do
+                ensure_ts "$LREF"
+                eval_job "ladder_$(ladder_name "$LREF")" "$GEN_DIR/drives_ladder_$(ladder_name "$LREF")" \
+                    "$GG drives vs $(ladder_name "$LREF") (ladder)" \
+                    --model "$MODEL.onnx" --seed 0 --skip-fixed-rungs \
+                    --positions "$DRIVE_POSITIONS" --vs-games "$DRIVE_LADDER_DRIVES" \
+                    --vs-evaluator "$EVALUATOR" --vs-model "$LREF"
+            done
         fi
         # P1: the previous generation's drive H1, on full games against the same reference.
         if [ "$P1_GAMES" -gt 0 ] && [ -e "$RUN_DIR/$PG/.confirm" ]; then
@@ -1413,6 +1483,16 @@ eval_report() {
     fi
     if [ -s "$GEN_DIR/drives_origin/report.json" ]; then
         status "$GG vs origin $(net_name "$ORIGIN_REF"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" --sub drives_origin | paste -sd'|')"
+    fi
+    # Plan 071 R4: the ladder's matches, then the Elo fit over every drive sub of the run.
+    if [ -n "$DRIVE_LADDER" ]; then
+        local LD
+        for LD in "$GEN_DIR"/drives_ladder_*; do
+            [ -s "$LD/report.json" ] || continue
+            status "$GG ladder vs ${LD##*/drives_ladder_}: $("$PY" "$SUMMARY" "$LD/report.json")"
+        done
+        status "$GG elo: $("$PY" "$REPO/scripts/elo_fit.py" "$RUN_DIR" --anchor "$ELO_ANCHOR" --summary "$GG" \
+            --json "$RUN_DIR/elo.json" --csv "$RUN_DIR/elo.csv" --png "$RUN_DIR/elo.png" 2>> "$LOG" || echo "elo_fit.py failed (see $LOG)")"
     fi
     if [ -s "$RUN_DIR/$PG/p1/report.json" ] && [ ! -e "$RUN_DIR/$PG/.p1_reported" ]; then
         status "$PG P1 vs $(net_name "$DRIVE_REF"): $("$PY" "$REPO/scripts/drive_curve.py" "$RUN_DIR" --sub p1 | paste -sd'|')"
@@ -1621,12 +1701,12 @@ while [ "$G" -le "$MAX_GENS" ]; do
         VAL_IN=$(window_shards "$G" val)
         [ -n "$TRAIN_IN" ] && [ -n "$VAL_IN" ] || die "$GG window is empty (WINDOW_GENS=$WINDOW_GENS)"
         WIN_GENS=$(echo "$TRAIN_IN" | tr ' ' '\n' | grep -c . )
-        status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards, target $PREPARE_TARGET_ARGS"
+        status "$GG prepare: window of $WINDOW_GENS gens -> $WIN_GENS train shards, $(echo "$VAL_IN" | tr ' ' '\n' | grep -c .) val shards, target $PREPARE_TARGET_ARGS${PREPARE_JOB_ARGS:+, $PREPARE_JOB_ARGS}"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $TRAIN_IN --out "$PREP_DIR/prepared_train" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $TRAIN_IN --out "$PREP_DIR/prepared_train" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (train) failed"
         # shellcheck disable=SC2086
-        "$PREPARE" --in $VAL_IN --out "$PREP_DIR/prepared_val" $PREPARE_TARGET_ARGS >> "$LOG" 2>&1 \
+        "$PREPARE" --in $VAL_IN --out "$PREP_DIR/prepared_val" $PREPARE_TARGET_ARGS $PREPARE_JOB_ARGS >> "$LOG" 2>&1 \
             || die "$GG prepare (val) failed"
         status "$GG prepare done ($((SECONDS / 60)) min), disk free $(free_gb)"
         touch "$GEN_DIR/.prepared"

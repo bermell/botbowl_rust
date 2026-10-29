@@ -272,3 +272,128 @@ fn prepare_skips_samples_with_fewer_than_two_children() {
     assert_eq!(read_manifest(&subdir)["skip_forced"], false);
     std::fs::remove_dir_all(subdir.parent().unwrap().parent().unwrap()).ok();
 }
+
+/// Plan 071 R8: `--jobs N` (one part per input, concatenated in input order) writes the same bytes
+/// as one serial pass, over several inputs, two board shapes, drives of different lengths and an
+/// input whose every sample is filtered out; `--dedup` refuses `--jobs` > 1.
+#[test]
+fn prepare_jobs_output_is_byte_identical_to_serial() {
+    use botbowl_engine::core::model::{BoardDims, HEIGHT, TEAM_SIZE, WIDTH};
+    let tmp = std::env::temp_dir().join(format!("botbowl_nn_prepare_jobs_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let big = GameStateBuilder::new_start_of_game().board_dims;
+    let small = if WIDTH as i8 >= 16 && HEIGHT as i8 >= 9 && TEAM_SIZE >= 4 {
+        BoardDims::new(16, 9, 4)
+    } else {
+        big
+    };
+    let outcome = |home: u8| Outcome {
+        home_score: home,
+        away_score: 1 - home,
+        winner: Some(if home == 1 { Team::Home } else { Team::Away }),
+        game_over: true,
+        z_home: if home == 1 { 1.0 } else { -1.0 },
+        lecture_status: None,
+    };
+    let mut inputs = Vec::new();
+    for k in 0..4u8 {
+        let path = tmp.join(format!("shard{k}.jsonl"));
+        let mut w = DatasetWriter::create(&path).unwrap();
+        for t in 0..(k as usize + 1) {
+            let dims = if (k as usize + t) % 2 == 0 { big } else { small };
+            let mut samples = Vec::new();
+            for s in 0..(2 + (t + k as usize) % 3) {
+                let mut children = vec![
+                    child(
+                        Action::Positional(PosAT::Move, Position::new((5, 5))),
+                        30 + s as u32,
+                        100,
+                        false,
+                    ),
+                    child(Action::Simple(SimpleAT::EndTurn), 10 + t as u32, -10, false),
+                ];
+                if k == 2 {
+                    children.truncate(1); // every sample forced: this input keeps nothing
+                }
+                let mut sample = make_sample(children, false);
+                sample.state = GameStateBuilder::new_start_of_game_with(dims);
+                samples.push(sample);
+            }
+            let traj = Trajectory::new(
+                TrajectoryMeta::new("test", dims).with_bots("mcts", "mcts"),
+                samples,
+                outcome((k + t as u8) % 2),
+            );
+            w.write(&traj).unwrap();
+        }
+        w.flush().unwrap();
+        inputs.push(path.to_str().unwrap().to_string());
+    }
+
+    let run = |out: &std::path::Path, extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_prepare"))
+            .arg("--in")
+            .args(&inputs)
+            .args(["--out", out.to_str().unwrap(), "--policy-target", "cq"])
+            .args(extra)
+            .output()
+            .expect("run prepare")
+    };
+    let summary = |o: &std::process::Output| {
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .find(|l| l.starts_with("prepare done"))
+            .unwrap()
+            .to_string()
+    };
+    let list = |d: &std::path::Path| {
+        let mut v: Vec<_> = walk(d)
+            .into_iter()
+            .map(|p| p.strip_prefix(d).unwrap().to_path_buf())
+            .collect();
+        v.sort();
+        v
+    };
+    let serial = tmp.join("serial");
+    let s = run(&serial, &[]);
+    assert!(s.status.success(), "{}", String::from_utf8_lossy(&s.stderr));
+    let files = list(&serial);
+    assert!(files.len() >= 9, "expected at least one dims dir: {files:?}");
+    for jobs in ["2", "4", "8"] {
+        let par = tmp.join(format!("jobs{jobs}"));
+        let p = run(&par, &["--jobs", jobs]);
+        assert!(p.status.success(), "{}", String::from_utf8_lossy(&p.stderr));
+        assert_eq!(summary(&s), summary(&p));
+        assert_eq!(
+            files,
+            list(&par),
+            "--jobs {jobs} wrote a different file set (parts left behind?)"
+        );
+        for f in &files {
+            assert_eq!(
+                std::fs::read(serial.join(f)).unwrap(),
+                std::fs::read(par.join(f)).unwrap(),
+                "--jobs {jobs}: {} differs",
+                f.display()
+            );
+        }
+    }
+    let d = run(&tmp.join("dedup"), &["--jobs", "2", "--dedup"]);
+    assert!(!d.status.success(), "--dedup with --jobs 2 must be refused");
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
