@@ -267,6 +267,22 @@ TRAIN_TARGET_ARGS="--value-weight $VALUE_WEIGHT"
 TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
 TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS $TRAIN_EXTRA_ARGS"
 [ "$PER_DRIVE_VALUE_WEIGHT" = on ] && TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS --per-drive-value-weight"
+# Plan 071 R2/R3: trainer pass-throughs for every training in the loop (gen00, each generation, the
+# shadow). Empty = the flag is not passed and bbnn.train's default holds, exactly as before:
+#   TRAIN_BATCH           --batch-size (trainer default 32; plan 063's scratch recipe ran 256)
+#   TRAIN_LOADER_WORKERS  --loader-workers (0 = load in the training process)
+#   TRAIN_AMP             --amp: off|bf16 (bf16 autocasts the training forward; val and the export
+#                         stay fp32; exp081 found bf16 fine for this net)
+TRAIN_BATCH="${TRAIN_BATCH:-}"
+TRAIN_LOADER_WORKERS="${TRAIN_LOADER_WORKERS:-}"
+TRAIN_AMP="${TRAIN_AMP:-}"
+TRAIN_COMMON_ARGS="--value-weight $VALUE_WEIGHT"
+[ "$PER_DRIVE_VALUE_WEIGHT" = on ] && TRAIN_COMMON_ARGS="$TRAIN_COMMON_ARGS --per-drive-value-weight"
+TRAIN_PASS_ARGS=""
+[ -n "$TRAIN_BATCH" ] && TRAIN_PASS_ARGS="$TRAIN_PASS_ARGS --batch-size $TRAIN_BATCH"
+[ -n "$TRAIN_LOADER_WORKERS" ] && TRAIN_PASS_ARGS="$TRAIN_PASS_ARGS --loader-workers $TRAIN_LOADER_WORKERS"
+[ -n "$TRAIN_AMP" ] && [ "$TRAIN_AMP" != off ] && TRAIN_PASS_ARGS="$TRAIN_PASS_ARGS --amp $TRAIN_AMP"
+TRAIN_TARGET_ARGS="$TRAIN_TARGET_ARGS$TRAIN_PASS_ARGS"
 # Validate every N optimizer steps instead of once per epoch (plan 031 D4/D5,
 # adopted 2026-09-07). The warm-started fine-tunes gen04-07 all restored at
 # epoch 0-2 of 10 because val_value bottoms out inside the first epoch or two
@@ -379,6 +395,28 @@ SCRATCH_LR="${SCRATCH_LR:-1e-3}"            # used when there is nothing to warm
 # name that .pt here and gen01 trains from random init at SCRATCH_LR instead.
 # Every later generation warm-starts from gen01 as usual.
 NO_WARM_FROM="${NO_WARM_FROM:-}"
+# Plan 071 R2: the recipe of that NO_WARM_FROM training (and only that one: the warm path, gen00's
+# heuristic bootstrap and an accidental random init — a missing .pt — keep EPOCHS/TRAIN_EXTRA_ARGS).
+# A fine-tune's recipe is wrong for random weights — TRAIN_EXTRA_ARGS' `--freeze-bn` even refuses to
+# run without --init — so this path replaces EPOCHS with SCRATCH_EPOCHS and TRAIN_EXTRA_ARGS with
+# SCRATCH_TRAIN_ARGS (plan 063 / exp072's recipe: peak lr SCRATCH_LR, linear warmup, then cosine to 0,
+# BatchNorm live). The value weight, per-drive weighting, SELECT_ON, EVAL_EVERY and the
+# TRAIN_BATCH / TRAIN_LOADER_WORKERS / TRAIN_AMP pass-throughs apply as on every training.
+#   SCRATCH_EPOCHS       epochs of the scratch training (plan 071 §3.1: 10)
+#   SCRATCH_TRAIN_ARGS   bbnn.train flags of the scratch training, instead of TRAIN_EXTRA_ARGS
+#   SCRATCH_ARCH_ARGS    the fresh net's shape (`--width --blocks --value-conv --value-pool
+#                        --value-hidden --policy-conv`). Empty = NO_WARM_FROM's own shape, read
+#                        with BBNet.shape_of, so gen01 trains the architecture gen00 played with.
+#                        Also given to gen00's heuristic bootstrap net when set (empty there = 64x6).
+SCRATCH_EPOCHS="${SCRATCH_EPOCHS:-10}"
+SCRATCH_TRAIN_ARGS="${SCRATCH_TRAIN_ARGS:---lr-schedule cosine --warmup-steps 2000}"
+SCRATCH_ARCH_ARGS="${SCRATCH_ARCH_ARGS:-}"
+net_arch_args() {   # the bbnn.train shape flags that rebuild the net saved in .pt $1 (BBNet.shape_of)
+    "$PY" -c 'import sys, torch
+from bbnn.model import BBNet
+shape = BBNet.shape_of(torch.load(sys.argv[1], map_location="cpu"))
+print(" ".join(f"--{k.replace(chr(95), chr(45))} {v}" for k, v in shape.items()))' "$1"
+}
 BOOTSTRAP_GAMES_PER_SHARD="${BOOTSTRAP_GAMES_PER_SHARD:-$GAMES_PER_SHARD}"
                                             # gen-0 corpus when no champion exists
 INIT_CHAMPION="${INIT_CHAMPION:-$REPO/models/bbnet_14x7_db.onnx}"
@@ -1201,7 +1239,7 @@ if [ ! -f "$(champion)" ]; then
         # shellcheck disable=SC2086
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
                 --epochs "$EPOCHS" --device "$TRAIN_DEVICE" \
-                $TRAIN_TARGET_ARGS \
+                $TRAIN_TARGET_ARGS $SCRATCH_ARCH_ARGS \
                 --out "$MODEL.pt" --onnx "$MODEL.onnx" --progress "$GEN_DIR/train.progress.json" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "gen00 training failed — see train.log"
@@ -1620,8 +1658,15 @@ while [ "$G" -le "$MAX_GENS" ]; do
                 INIT_PT="$CHAMP_PT"
             fi
         fi
+        TRAIN_EPOCHS="$EPOCHS"; GEN_TRAIN_ARGS="$TRAIN_TARGET_ARGS"
         if [ -n "$INIT_PT" ] && [ -n "$NO_WARM_FROM" ] && [ "$INIT_PT" = "$NO_WARM_FROM" ]; then
-            status "$GG train: not warm-starting from $(basename "$INIT_PT") (NO_WARM_FROM) — random init at lr $SCRATCH_LR"
+            # Plan 071 R2: the scratch recipe (SCRATCH_*), in the shape of the net it replaces.
+            ARCH_ARGS="$SCRATCH_ARCH_ARGS"
+            [ -n "$ARCH_ARGS" ] || ARCH_ARGS="$(net_arch_args "$INIT_PT")" \
+                || die "$GG: cannot read the shape of $INIT_PT (set SCRATCH_ARCH_ARGS)"
+            TRAIN_EPOCHS="$SCRATCH_EPOCHS"
+            GEN_TRAIN_ARGS="$TRAIN_COMMON_ARGS$TRAIN_PASS_ARGS $SCRATCH_TRAIN_ARGS $ARCH_ARGS"
+            status "$GG train: not warm-starting from $(basename "$INIT_PT") (NO_WARM_FROM) — random init at lr $SCRATCH_LR, $SCRATCH_EPOCHS epochs, $SCRATCH_TRAIN_ARGS, $ARCH_ARGS"
             INIT_PT=""
         fi
         if [ -n "$INIT_PT" ]; then
@@ -1636,9 +1681,9 @@ while [ "$G" -le "$MAX_GENS" ]; do
         fi
         # shellcheck disable=SC2086
         if ! "$PY" -m bbnn.train --data "$DIMS_TRAIN" --val-data "$DIMS_VAL" \
-                --epochs "$EPOCHS" --device "$TRAIN_DEVICE" $INIT_ARGS \
+                --epochs "$TRAIN_EPOCHS" --device "$TRAIN_DEVICE" $INIT_ARGS \
                 --select-on "$SELECT_ON" --eval-every "$EVAL_EVERY" \
-                $TRAIN_TARGET_ARGS \
+                $GEN_TRAIN_ARGS \
                 --out "$MODEL.pt" --onnx "$MODEL.onnx" --progress "$GEN_DIR/train.progress.json" \
                 > "$GEN_DIR/train.log" 2>&1; then
             die "$GG training failed — see train.log"
